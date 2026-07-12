@@ -4,7 +4,7 @@
 //! Display-order scheduling and output resource accounting.
 
 use super::{PipelineFrame, unsupported, unsupported_at};
-use splot_core::headers::frame::{FrameHeaderCore, FrameType};
+use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
 use splot_recon::BitDepth;
@@ -163,77 +163,6 @@ impl OutputScheduler {
         let mut newly = Vec::new();
         self.flush_lower_than(u32::MAX, &mut newly);
         newly
-    }
-}
-
-pub(super) struct DispOrderHints {
-    order_hint_bits: u32,
-    slots: Vec<Option<(u32, bool)>>,
-}
-
-impl DispOrderHints {
-    pub(super) fn new(order_hint_bits: u8, num_slots: usize) -> Self {
-        Self {
-            order_hint_bits: u32::from(order_hint_bits),
-            slots: vec![None; num_slots],
-        }
-    }
-
-    pub(super) fn extend(&self, core: &FrameHeaderCore) -> Result<u32> {
-        let Some(lsb) = core.order_hint_lsb else {
-            if core.implicit_output_frame == Some(true) {
-                return Err(unsupported(
-                    "implicit_output_requires_order_hints",
-                    None,
-                    "§ 7.21 implicit-output scheduling requires coded order hints",
-                ));
-            }
-            return Ok(0);
-        };
-        let restricted_switch = core.frame_type == Some(FrameType::Switch)
-            && core.restricted_prediction_switch == Some(true);
-        if core.is_key_frame || restricted_switch {
-            return Ok(lsb);
-        }
-        let max_disp = self
-            .slots
-            .iter()
-            .flatten()
-            .filter(|(_, showable)| *showable)
-            .map(|(hint, _)| *hint)
-            .max()
-            .unwrap_or(0);
-        let mut disp = lsb;
-        let offset = i64::from(max_disp) - ((1i64 << self.order_hint_bits) >> 1) - i64::from(lsb);
-        if offset >= 0 {
-            let wraps = u32::try_from(offset).unwrap_or(u32::MAX) >> self.order_hint_bits;
-            disp = disp.saturating_add((wraps + 1) << self.order_hint_bits);
-        }
-        if disp != lsb {
-            return Err(unsupported(
-                "order_hint_extension_beyond_parse_frontier",
-                None,
-                "the § 5.18.2 order-hint extension diverged from the coded LSB; parse-side hint consumers are still LSB-windowed",
-            ));
-        }
-        Ok(disp)
-    }
-
-    pub(super) fn refresh(
-        &mut self,
-        refresh_frame_flags: u32,
-        hint: u32,
-        showable: bool,
-        is_key_or_switch: bool,
-    ) {
-        let mut first = true;
-        for slot in 0..self.slots.len() {
-            if (refresh_frame_flags >> slot) & 1 == 0 {
-                continue;
-            }
-            self.slots[slot] = (!is_key_or_switch || first).then_some((hint, showable));
-            first = false;
-        }
     }
 }
 

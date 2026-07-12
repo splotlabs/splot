@@ -271,7 +271,6 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
             frames[0].ccso_params.clone(),
             frames[0].ccso_grid.clone(),
             frames[0].motion_field.clone(),
-            key_core.order_hint_lsb.unwrap_or(0),
         )?,
     );
 
@@ -397,7 +396,6 @@ fn parse_inter_core_for_validation(
             frames[0].ccso_params.clone(),
             frames[0].ccso_grid.clone(),
             frames[0].motion_field.clone(),
-            key_core.order_hint_lsb.unwrap_or(0),
         )?,
     );
 
@@ -2151,19 +2149,6 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
 }
 
 #[test]
-fn order_hint_history_wrap_guard() {
-    use super::cross_frame::order_hint_history_unwrapped as unwrapped;
-    assert!(unwrapped(&[true], &[0u32], 0, 5));
-    assert!(unwrapped(&[true], &[0u32], 4, 1));
-    assert!(unwrapped(&[true], &[0u32], 4, 9));
-    assert!(unwrapped(&[true], &[0u32], 4, 15));
-    assert!(!unwrapped(&[true], &[15u32], 4, 0));
-    assert!(!unwrapped(&[true], &[8u32], 4, 0));
-    assert!(unwrapped(&[true], &[7u32], 4, 0));
-    assert!(!unwrapped(&[true, true], &[0u32, 12], 4, 1));
-}
-
-#[test]
 fn tip_output_disables_saved_cdf_blending() {
     assert!(super::cdf_blending_enabled(true, None));
     assert!(super::cdf_blending_enabled(true, Some(TipFrameMode::AsRef)));
@@ -2184,6 +2169,7 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
             .expect("fixture has inter sequence config")
             .enable_tip_explicit_qp = false;
         core.order_hint_lsb = Some(10);
+        core.order_hint = Some(10);
         core.quantization_params = None;
         core.inter
             .as_mut()

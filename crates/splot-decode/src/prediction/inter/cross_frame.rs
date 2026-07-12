@@ -200,25 +200,3 @@ fn get_relative_dist(a: i32, b: i32) -> i32 {
 pub(crate) fn floor_log2(x: u64) -> i32 {
     if x == 0 { 0 } else { x.ilog2() as i32 }
 }
-
-pub(crate) fn order_hint_history_unwrapped(
-    ref_valid: &[bool],
-    ref_order_hint: &[u32],
-    order_hint_bits: u32,
-    next_order_hint_lsb: u32,
-) -> bool {
-    if order_hint_bits == 0 {
-        return true;
-    }
-    let half_window = 1u32 << (order_hint_bits.min(31).saturating_sub(1));
-    let max_prior = ref_valid
-        .iter()
-        .enumerate()
-        .filter(|(_, valid)| **valid)
-        .map(|(i, _)| ref_order_hint.get(i).copied().unwrap_or(0))
-        .max();
-    match max_prior {
-        Some(max_disp) => max_disp.saturating_sub(next_order_hint_lsb) < half_window,
-        None => true,
-    }
-}

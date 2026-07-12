@@ -14,6 +14,9 @@ fn key_update() -> FrameRefUpdate {
     FrameRefUpdate {
         refresh_frame_flags: 0xFF,
         order_hint: 0,
+        order_hint_lsb: 0,
+        implicit_output_frame: false,
+        immediate_output_frame: true,
         width: 64,
         height: 64,
         base_q_idx: 70,
@@ -35,6 +38,9 @@ fn inter_update(adapted: bool) -> FrameRefUpdate {
     FrameRefUpdate {
         refresh_frame_flags: 1 << 1,
         order_hint: 1,
+        order_hint_lsb: 1,
+        implicit_output_frame: true,
+        immediate_output_frame: false,
         width: 64,
         height: 64,
         base_q_idx: 109,
@@ -108,6 +114,9 @@ fn inter_refresh_adds_a_second_valid_slot() {
     assert!(buf.slots[0].valid);
     assert!(buf.slots[1].valid);
     assert_eq!(buf.slots[1].order_hint, 1);
+    assert_eq!(buf.slots[1].order_hint_lsb, 1);
+    assert!(buf.slots[1].implicit_output_frame);
+    assert!(!buf.slots[1].immediate_output_frame);
     assert_eq!(buf.slots[1].base_q_idx, 109);
     assert_eq!(buf.slots[1].counter, 1);
     assert_eq!(buf.slots[1].delta_q_u_ac, 4);
@@ -115,6 +124,24 @@ fn inter_refresh_adds_a_second_valid_slot() {
     assert_eq!(buf.slots[1].frame_index, Some(1));
     assert!(buf.slots[1].is_inter);
     assert!(!buf.slots[1].adapted);
+}
+
+#[test]
+fn reference_refresh_preserves_full_and_lsb_order_hints() {
+    let mut update = inter_update(false);
+    update.order_hint = 136;
+    update.order_hint_lsb = 8;
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    buf.update(1, &update);
+
+    assert_eq!(buf.slots[1].order_hint, 136);
+    assert_eq!(buf.slots[1].order_hint_lsb, 8);
+    let frames = vec![pipeline_frame(64, 64), pipeline_frame(64, 64)];
+    let metadata = buf.build_store_eight(&frames).unwrap().1;
+    assert_eq!(metadata.ref_order_hint[1], 136);
+    assert_eq!(metadata.ref_order_hint_lsbs[1], 8);
+    assert!(metadata.ref_implicit_output_frame[1]);
 }
 
 #[test]

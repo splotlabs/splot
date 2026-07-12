@@ -189,8 +189,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     })?;
     let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
-    let mut disp_hints = DispOrderHints::new(sequence_inter.order_hint_bits, num_ref_frames);
-
     let mut frames = Vec::new();
     let mut scheduler = OutputScheduler::new(num_ref_frames);
     let mut retained_frame_bytes = 0;
@@ -217,7 +215,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     frames.push(key_frame);
-    let key_hint = disp_hints.extend(&key_core)?;
     let key_update = frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
@@ -225,8 +222,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         frames[0].ccso_params.clone(),
         frames[0].ccso_grid.clone(),
         frames[0].motion_field.clone(),
-        key_hint,
     )?;
+    let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
     let evicted = scheduler.refresh(
@@ -239,12 +236,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     output_frame_bytes =
         charge_emitted_outputs(options, &frames, &scheduler, &evicted, output_frame_bytes)?;
     reference.update(0, &key_update);
-    disp_hints.refresh(
-        key_update.refresh_frame_flags,
-        key_hint,
-        key_implicit || key_immediate,
-        true,
-    );
     if key_immediate && !scheduler.already_emitted(0) {
         let emitted = scheduler.on_immediate(0, key_hint);
         output_frame_bytes =
@@ -389,7 +380,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                 let frame_index = frames.len();
                 frames.push(inter_frame);
                 retained_frame_bytes = next_retained_frame_bytes;
-                let inter_hint = disp_hints.extend(&inter_core)?;
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
                     inter_envelope.offset,
@@ -397,8 +387,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     frames[frame_index].ccso_params.clone(),
                     frames[frame_index].ccso_grid.clone(),
                     frames[frame_index].motion_field.clone(),
-                    inter_hint,
                 )?;
+                let inter_hint = inter_update.order_hint;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
                 let inter_key_or_switch =
@@ -418,12 +408,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     output_frame_bytes,
                 )?;
                 reference.update(frame_index, &inter_update);
-                disp_hints.refresh(
-                    inter_update.refresh_frame_flags,
-                    inter_hint,
-                    inter_implicit || inter_immediate,
-                    inter_key_or_switch,
-                );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, inter_hint);
                     output_frame_bytes = charge_emitted_outputs(
@@ -490,7 +474,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                 let frame_index = frames.len();
                 frames.push(key_frame);
                 retained_frame_bytes = next_retained_frame_bytes;
-                let key_hint = disp_hints.extend(&key_core)?;
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
@@ -498,8 +481,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     frames[frame_index].ccso_params.clone(),
                     frames[frame_index].ccso_grid.clone(),
                     frames[frame_index].motion_field.clone(),
-                    key_hint,
                 )?;
+                let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
                 let evicted = scheduler.refresh(
@@ -517,12 +500,6 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     output_frame_bytes,
                 )?;
                 reference.update(frame_index, &key_update);
-                disp_hints.refresh(
-                    key_update.refresh_frame_flags,
-                    key_hint,
-                    key_implicit || key_immediate,
-                    true,
-                );
                 if key_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, key_hint);
                     output_frame_bytes = charge_emitted_outputs(

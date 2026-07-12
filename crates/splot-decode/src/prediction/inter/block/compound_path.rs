@@ -101,7 +101,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     let ref_distance_nonnegative = compound_ref_distance_signs(
         ref_frame_idx,
         reference,
-        core.order_hint_lsb.unwrap_or(0),
+        core.display_order_hint().unwrap_or(0),
         num_total_refs,
         tile_offset,
     )?;
@@ -259,7 +259,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             && super::block_ref_within_temporal_distance(
                 reference,
                 ref_frame_idx,
-                core.order_hint_lsb.unwrap_or(0),
+                core.display_order_hint().unwrap_or(0),
                 compound.ref_frame0,
             );
         let temporal_first1 = compound_temporal_allowed
@@ -267,7 +267,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             && super::block_ref_within_temporal_distance(
                 reference,
                 ref_frame_idx,
-                core.order_hint_lsb.unwrap_or(0),
+                core.display_order_hint().unwrap_or(0),
                 compound.ref_frame1,
             );
         let independent_candidates = |idx0, idx1| {
@@ -1026,7 +1026,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         mi_col,
         mi_rows,
         mi_cols,
-        core.order_hint_lsb.unwrap_or(0),
+        core.display_order_hint().unwrap_or(0),
     )?;
     intrabc_state.record_block(
         frontier.r,
@@ -1632,7 +1632,7 @@ fn compound_sized_reference_distances<T: ReconSample>(
 }
 
 fn compound_current_order_hint(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<i32> {
-    i32::try_from(core.order_hint_lsb.unwrap_or(0)).map_err(|_| {
+    i32::try_from(core.display_order_hint().unwrap_or(0)).map_err(|_| {
         compound_cap!(
             "compound_order_hint_range",
             tile_offset,

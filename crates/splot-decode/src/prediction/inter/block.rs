@@ -200,7 +200,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         )
     })?;
     let coded_size = workspace.info().coded_luma_size();
-    let current_order_hint = core.order_hint_lsb.unwrap_or(0);
+    let current_order_hint = core.display_order_hint().unwrap_or(0);
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
         inter_missing!(
             "inter_sb_size",
@@ -1450,7 +1450,7 @@ fn decode_block<T: ReconSample>(
             n4h,
             mi_rows,
             mi_cols,
-            core.order_hint_lsb.unwrap_or(0),
+            core.display_order_hint().unwrap_or(0),
             ref_frame0,
             None,
             warp.mv,
@@ -1822,7 +1822,7 @@ fn decode_block<T: ReconSample>(
             n4h,
             mi_rows,
             mi_cols,
-            core.order_hint_lsb.unwrap_or(0),
+            core.display_order_hint().unwrap_or(0),
             ref_frame0,
             None,
             mv,
