@@ -667,7 +667,9 @@ fn subpel_predict_block_internal<T: ReconSample>(
             for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
                 let mut s: i64 = 0;
                 for (&tap, &sample) in taps.iter().zip(win) {
-                    s += i64::from(tap) * i64::from(sample.to_u16());
+                    if tap != 0 {
+                        s += i64::from(tap) * i64::from(sample.to_u16());
+                    }
                 }
                 *out = round2(s, INTER_ROUND0) as i32;
             }
@@ -685,6 +687,9 @@ fn subpel_predict_block_internal<T: ReconSample>(
             let taps = &h_filter_rows[phase];
             let mut s: i64 = 0;
             for (t, &tap) in taps.iter().enumerate() {
+                if tap == 0 {
+                    continue;
+                }
                 let ref_col = clip3(first_x, last_x, (p >> SCALE_SUBPEL_BITS) + t as i64 - 3);
                 s += i64::from(tap) * reference.sample(ref_row, ref_col as usize);
             }
@@ -719,6 +724,9 @@ fn subpel_predict_block_internal<T: ReconSample>(
         let acc = &mut acc[..w];
         acc.fill(0);
         for (t, &tap) in taps.iter().enumerate() {
+            if tap == 0 {
+                continue;
+            }
             let tap = i64::from(tap);
             for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
                 *a += tap * i64::from(v);
