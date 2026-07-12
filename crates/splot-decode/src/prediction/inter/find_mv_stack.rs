@@ -1486,7 +1486,11 @@ impl RefMvBank {
             &mut self.sizes[list],
             &mut self.starts[list],
             entry,
-            |candidate| *candidate == entry,
+            |candidate| {
+                candidate.key == entry.key
+                    && candidate.mv0 == entry.mv0
+                    && candidate.mv1 == entry.mv1
+            },
         );
     }
 
