@@ -24,6 +24,21 @@ const fn tip_uses_two_references(weight: i16) -> bool {
     weight != TIP_SINGLE_WEIGHT
 }
 
+const fn tip_temporal_mvs(
+    use_optflow: bool,
+    candidate: [Mv; 2],
+    refined: Option<[Mv; 2]>,
+) -> [Mv; 2] {
+    if use_optflow {
+        match refined {
+            Some(refined) => refined,
+            None => candidate,
+        }
+    } else {
+        candidate
+    }
+}
+
 fn tip_reference_pair_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
     inter_missing!(
         "inter_tip_reference_pair",
@@ -433,7 +448,12 @@ pub(super) fn reconstruct<T: ReconSample>(
     };
     for (unit, output) in units.into_iter().zip(outputs) {
         let stored_mvs = if let Some(output) = output {
-            let stored_mvs = output.stored_mvs_at_origin()?.unwrap_or(unit.mvs);
+            let refined_mvs = if use_optflow {
+                output.stored_mvs_at_origin()?
+            } else {
+                None
+            };
+            let stored_mvs = tip_temporal_mvs(use_optflow, unit.mvs, refined_mvs);
             output.publish(workspace)?;
             stored_mvs
         } else if use_optflow {
@@ -632,9 +652,10 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 mod tests {
     use super::{
         output_prediction_unit_size, prediction_unit_size, tip_refinemv_offsets_allowed,
-        tip_refinemv_references_allowed, tip_uses_refinemv, tip_uses_two_references,
-        tmvp_unit_size8,
+        tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
+        tip_uses_two_references, tmvp_unit_size8,
     };
+    use crate::prediction::inter::Mv;
     use splot_core::headers::frame::{FrameSize, FrameType};
     use splot_recon::InterpolationFilter;
 
@@ -692,6 +713,16 @@ mod tests {
         assert!(tip_refinemv_offsets_allowed(4, -4));
         assert!(!tip_refinemv_offsets_allowed(4, -5));
         assert!(!tip_refinemv_offsets_allowed(0, 0));
+    }
+
+    #[test]
+    fn tip_temporal_storage_uses_refined_mvs_only_with_optflow() {
+        let candidate = [Mv { row: 1, col: 2 }, Mv { row: 3, col: 4 }];
+        let refined = [Mv { row: 5, col: 6 }, Mv { row: 7, col: 8 }];
+
+        assert_eq!(tip_temporal_mvs(false, candidate, Some(refined)), candidate);
+        assert_eq!(tip_temporal_mvs(true, candidate, Some(refined)), refined);
+        assert_eq!(tip_temporal_mvs(true, candidate, None), candidate);
     }
 
     #[test]
