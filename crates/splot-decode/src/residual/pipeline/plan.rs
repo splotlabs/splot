@@ -109,11 +109,15 @@ impl GeneralIntraResidualPlan {
             RectLumaPlan::OneSidedLeftMrl {
                 p_angle,
                 mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
                 secondary_mrl,
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
                 p_angle,
                 mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
                 secondary_mrl,
                 use_tcq,
             },

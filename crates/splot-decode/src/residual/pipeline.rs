@@ -80,6 +80,8 @@ pub(crate) enum RectLumaPlan {
     OneSidedLeftMrl {
         p_angle: u16,
         mrl_index: usize,
+        above_mrl_index: usize,
+        is_sb_boundary: bool,
         secondary_mrl: bool,
         use_tcq: bool,
     },
@@ -204,6 +206,8 @@ enum ResidualReconstructionPlan {
     LumaRectOneSidedLeftMrl {
         p_angle: u16,
         mrl_index: usize,
+        above_mrl_index: usize,
+        is_sb_boundary: bool,
         secondary_mrl: bool,
         use_tcq: bool,
     },

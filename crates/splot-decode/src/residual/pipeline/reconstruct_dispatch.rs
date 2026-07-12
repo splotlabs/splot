@@ -15,34 +15,84 @@ use crate::tile::block_context::{BlockCtx, NeighbourAvailability};
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
+#[derive(Clone, Copy)]
+struct UnitMrlReplan {
+    mrl_index: usize,
+    above_mrl_index: usize,
+    is_sb_boundary: bool,
+    secondary_mrl: bool,
+}
+
 impl ResidualPlanePlan {
-    fn unit_directional_replan(
+    pub(super) fn unit_directional_replan(
         &self,
         luma_context: LumaTransformTypeContext,
     ) -> ResidualReconstructionPlan {
-        let (directional, use_tcq) = match self.reconstruction {
+        let (use_tcq, mrl) = match self.reconstruction {
             ResidualReconstructionPlan::LumaRectOneSidedAbove { use_tcq, .. }
             | ResidualReconstructionPlan::LumaRectOneSidedLeft { use_tcq, .. }
-            | ResidualReconstructionPlan::LumaRectMiddle { use_tcq, .. } => (true, use_tcq),
-            ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => (
-                matches!(
-                    plan,
+            | ResidualReconstructionPlan::LumaRectMiddle { use_tcq, .. }
+            | ResidualReconstructionPlan::LumaSquare {
+                plan:
                     crate::prediction::intra::IntraLumaPlan::DirectionalMiddle { .. }
-                        | crate::prediction::intra::IntraLumaPlan::DirectionalOneSidedAbove { .. }
-                        | crate::prediction::intra::IntraLumaPlan::DirectionalOneSidedLeft { .. }
-                        | crate::prediction::intra::IntraLumaPlan::DirectionalNeighbour { .. }
-                ),
+                    | crate::prediction::intra::IntraLumaPlan::DirectionalOneSidedAbove { .. }
+                    | crate::prediction::intra::IntraLumaPlan::DirectionalOneSidedLeft { .. }
+                    | crate::prediction::intra::IntraLumaPlan::DirectionalNeighbour { .. },
                 use_tcq,
+            } => (use_tcq, None),
+            ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+                mrl_index,
+                above_mrl_index,
+                secondary_mrl,
+                use_tcq,
+                ..
+            } => (
+                use_tcq,
+                Some(UnitMrlReplan {
+                    mrl_index,
+                    above_mrl_index,
+                    is_sb_boundary: above_mrl_index != mrl_index,
+                    secondary_mrl,
+                }),
             ),
-            _ => (false, false),
+            ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
+                mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
+                secondary_mrl,
+                use_tcq,
+                ..
+            }
+            | ResidualReconstructionPlan::LumaRectMiddleMrl {
+                mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
+                secondary_mrl,
+                use_tcq,
+                ..
+            } => (
+                use_tcq,
+                Some(UnitMrlReplan {
+                    mrl_index,
+                    above_mrl_index,
+                    is_sb_boundary,
+                    secondary_mrl,
+                }),
+            ),
+            _ => return self.reconstruction,
         };
-        if !directional || self.plane_id != PlaneId::Y || luma_context.mrl_index() != 0 {
+        if self.plane_id != PlaneId::Y {
             return self.reconstruction;
         }
         let Some(base) = luma_context.y_mode().mode_to_angle() else {
             return self.reconstruction;
         };
-        let nominal = i32::from(base) + i32::from(luma_context.angle_delta_y()) * 3;
+        let Some(mrl_delta) = crate::pipeline::general_intra::MRL_INDEX_TO_DELTA
+            .get(usize::from(luma_context.mrl_index()))
+        else {
+            return self.reconstruction;
+        };
+        let nominal = i32::from(base) + i32::from(luma_context.angle_delta_y()) * 3 + mrl_delta;
         let unit_w = 1usize << self.tx.width_log2();
         let unit_h = 1usize << self.tx.height_log2();
         let mapped =
@@ -52,6 +102,35 @@ impl ResidualPlanePlan {
         };
         if p_angle == 90 || p_angle == 180 {
             return self.reconstruction;
+        }
+        if let Some(mrl) = mrl {
+            if p_angle < 90 {
+                return ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
+                    p_angle,
+                    mrl_index: mrl.mrl_index,
+                    above_mrl_index: mrl.above_mrl_index,
+                    secondary_mrl: mrl.secondary_mrl,
+                    use_tcq,
+                };
+            }
+            if p_angle > 180 {
+                return ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
+                    p_angle,
+                    mrl_index: mrl.mrl_index,
+                    above_mrl_index: mrl.above_mrl_index,
+                    is_sb_boundary: mrl.is_sb_boundary,
+                    secondary_mrl: mrl.secondary_mrl,
+                    use_tcq,
+                };
+            }
+            return ResidualReconstructionPlan::LumaRectMiddleMrl {
+                p_angle,
+                mrl_index: mrl.mrl_index,
+                above_mrl_index: mrl.above_mrl_index,
+                is_sb_boundary: mrl.is_sb_boundary,
+                secondary_mrl: mrl.secondary_mrl,
+                use_tcq,
+            };
         }
         if p_angle < 90 {
             ResidualReconstructionPlan::LumaRectOneSidedAbove { p_angle, use_tcq }
@@ -367,6 +446,7 @@ impl ResidualPlanePlan {
                 mrl_index,
                 secondary_mrl,
                 use_tcq,
+                ..
             } => {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let edges = block_ctx.neighbours(PlaneId::Y);

@@ -1189,6 +1189,8 @@ fn admits_rect_luma_mrl_cases() {
             RectLumaPlan::OneSidedLeftMrl {
                 p_angle: 246,
                 mrl_index: 2,
+                above_mrl_index: 2,
+                is_sb_boundary: false,
                 secondary_mrl: false,
                 use_tcq: false,
             },
