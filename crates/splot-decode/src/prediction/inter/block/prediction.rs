@@ -210,6 +210,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             qindex,
             luma_use_tcq,
             residual_use_ddt,
+            false,
             bit_depth,
             tile_offset,
         )?;

@@ -536,6 +536,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
         101,
         false,
         true,
+        false,
         BitDepth::Eight,
         ByteOffset::new(0),
     )
@@ -543,6 +544,81 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
 
     assert_eq!(read_rect_samples(&workspace, PlaneId::U, rect), want_u);
     assert_eq!(read_rect_samples(&workspace, PlaneId::V, rect), want_v);
+}
+
+#[test]
+fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u16>(
+        16,
+        16,
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+    )
+    .unwrap();
+    let rect = PlaneRect::new(0, 0, 16, 16).unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect, &[84; 256], 16)
+        .unwrap();
+
+    let mut quant = vec![0; 256];
+    for (index, value) in [
+        (0, 63),
+        (1, -2),
+        (2, -16),
+        (3, 2),
+        (4, -1),
+        (16, -23),
+        (17, -1),
+        (18, 1),
+        (32, -2),
+        (34, 1),
+        (35, 1),
+        (48, -4),
+        (49, 1),
+        (50, 1),
+        (64, 1),
+        (80, 1),
+        (96, 1),
+    ] {
+        quant[index] = value;
+    }
+    let mut coeffs = luma_coeff_block(quant, 22, None);
+    coeffs.plane_tx_type = 1;
+    let residual = super::InterResidual {
+        blocks: vec![super::InterResidualBlock {
+            plane: PlaneId::Y,
+            x: 0,
+            y: 0,
+            tx_size: 2,
+            log2_width: 4,
+            log2_height: 4,
+            coeffs,
+        }],
+    };
+
+    super::add_inter_residual_to_workspace(
+        &mut workspace,
+        &residual,
+        150,
+        false,
+        true,
+        true,
+        BitDepth::Ten,
+        ByteOffset::new(0),
+    )
+    .unwrap();
+
+    let first_row = workspace
+        .rect_rows(PlaneId::Y, rect)
+        .unwrap()
+        .next()
+        .unwrap();
+    assert_eq!(
+        first_row,
+        [
+            81, 80, 78, 77, 75, 75, 75, 76, 78, 80, 81, 81, 79, 76, 74, 72
+        ]
+    );
 }
 
 #[test]

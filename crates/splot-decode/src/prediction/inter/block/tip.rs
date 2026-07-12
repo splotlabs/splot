@@ -424,6 +424,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             qindex,
             luma_use_tcq,
             residual_use_ddt,
+            false,
             bit_depth,
             tile_offset,
         )?;

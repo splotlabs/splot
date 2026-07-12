@@ -940,6 +940,7 @@ fn decode_block<T: ReconSample>(
                     block_qindex,
                     luma_use_tcq,
                     residual_use_ddt,
+                    true,
                     bit_depth,
                     tile_offset,
                 )?;
