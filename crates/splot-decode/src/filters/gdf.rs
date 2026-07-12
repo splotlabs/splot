@@ -282,8 +282,8 @@ fn compute_block<T: ReconSample>(
     let mut output = Vec::with_capacity(block.width * block.height);
     for row in 0..block.height {
         for col in 0..block.width {
-            let cls = usize::from(classes[(row >> 1) * (block.width >> 1) + (col >> 1)]);
-            let sample = gdf_sample(base_luma, source, &grad, &block, row, col, cls);
+            let class = &classes[(row >> 1) * (block.width >> 1) + (col >> 1)];
+            let sample = gdf_sample(base_luma, source, &block, row, col, class);
             output.push(T::try_from_u16(sample).map_err(|_| {
                 gdf_filter_error(
                     offset,
@@ -572,19 +572,25 @@ fn gradients<T: ReconSample>(
     grad
 }
 
-fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], width: usize, height: usize) -> Vec<u8> {
+#[derive(Clone, Copy, Default)]
+struct GdfClass {
+    index: u8,
+    strengths: [i64; GDF_DIRECTIONS],
+}
+
+fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], width: usize, height: usize) -> Vec<GdfClass> {
     let class_cols = width >> 1;
     let class_rows = height >> 1;
-    let mut classes = vec![0_u8; class_cols * class_rows];
+    let mut classes = vec![GdfClass::default(); class_cols * class_rows];
     for i in (0..class_rows).rev() {
         for j in 0..class_cols {
-            let mut str_values = [0_i64; GDF_DIRECTIONS];
+            let mut strengths = [0_i64; GDF_DIRECTIONS];
             for direction in 0..GDF_DIRECTIONS {
-                str_values[direction] = grad_sum(&grad[direction], width + 2, i * 2, j * 2, 4, 4);
+                strengths[direction] = grad_sum(&grad[direction], width + 2, i * 2, j * 2, 4, 4);
             }
-            let cls = u8::from(str_values[0] <= str_values[1])
-                | (u8::from(str_values[2] <= str_values[3]) << 1);
-            classes[i * class_cols + j] = cls;
+            let index = u8::from(strengths[0] <= strengths[1])
+                | (u8::from(strengths[2] <= strengths[3]) << 1);
+            classes[i * class_cols + j] = GdfClass { index, strengths };
         }
     }
     classes
@@ -593,15 +599,15 @@ fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], width: usize, height: usize) -> Ve
 fn gdf_sample<T: ReconSample>(
     base_luma: &[u16],
     source: &GdfSource<T>,
-    grad: &[Vec<i64>],
     block: &GdfBlock,
     row: usize,
     col: usize,
-    cls: usize,
+    class: &GdfClass,
 ) -> u16 {
     let x = block.x as isize + col as isize;
     let y = block.y as isize + row as isize;
     let sample2 = source.get(x, y);
+    let cls = usize::from(class.index);
     let mut gdf_idx = [0_i64; 3];
     for k in 0..22 {
         let alpha = i64::from(GDF_ALPHA[block.ref_dst_idx][block.qp_idx][k][cls]);
@@ -615,14 +621,7 @@ fn gdf_sample<T: ReconSample>(
             clip3(-512, 511, above + below)
         } else {
             let direction = k - GDF_COORDS.len();
-            let mut v = grad_sum(
-                &grad[direction],
-                block.width + 2,
-                (row >> 1) << 1,
-                (col >> 1) << 1,
-                4,
-                4,
-            );
+            let mut v = class.strengths[direction];
             v >>= if block.bit_depth == BitDepth::Eight {
                 2
             } else {
