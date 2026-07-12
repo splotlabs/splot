@@ -525,7 +525,7 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     };
 
     super::add_inter_residual_to_workspace(
-        &mut workspace,
+        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         101,
         false,
@@ -591,7 +591,7 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
     };
 
     super::add_inter_residual_to_workspace(
-        &mut workspace,
+        &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
         150,
         false,

@@ -250,21 +250,64 @@ pub(crate) fn tip_allowed_for_block_indices(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One TIP prediction unit's temporal-motion contribution, recorded by the
+/// caller once the unit's (possibly optical-flow refined) MVs are known.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TipTemporalRecord {
+    pub(super) mi_row: usize,
+    pub(super) mi_col: usize,
+    pub(super) n4w: usize,
+    pub(super) n4h: usize,
+    pub(super) ref_frame0: i8,
+    pub(super) ref_frame1: Option<i8>,
+    pub(super) mvs: [Mv; 2],
+}
+
+pub(super) fn apply_tip_temporal_records<T: ReconSample>(
+    motion_field: &mut TemporalMotionField,
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    frame_mi_rows: usize,
+    frame_mi_cols: usize,
+    current_order_hint: u32,
+    records: &[TipTemporalRecord],
+) {
+    for record in records {
+        super::temporal::record_temporal_motion_block(
+            motion_field,
+            reference,
+            ref_frame_idx,
+            record.mi_row,
+            record.mi_col,
+            record.n4w,
+            record.n4h,
+            frame_mi_rows,
+            frame_mi_cols,
+            current_order_hint,
+            record.ref_frame0,
+            record.ref_frame1,
+            record.mvs[0],
+            record.mvs[1],
+            [None, None],
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+    sink: &mut mc::WorkspaceSink<'_, T>,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<'_, T>,
-    mut output_motion_field: Option<&mut TemporalMotionField>,
     qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Vec<TipTemporalRecord>> {
     let references = temporal
         .tip_references()
         .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
@@ -337,7 +380,8 @@ pub(super) fn reconstruct<T: ReconSample>(
         && interpolation_filter == ReconInterpolationFilter::EightTapSharp
         && two_references
         && (output || weight == mc::CWP_EQUAL);
-    let frame_size = workspace.info().coded_luma_size();
+    let mut records = Vec::new();
+    let frame_size = sink.info().coded_luma_size();
     let block_w = placed
         .luma_w
         .min(frame_size.width().saturating_sub(placed.luma_x));
@@ -426,6 +470,7 @@ pub(super) fn reconstruct<T: ReconSample>(
         }
     }
     let outputs = if two_references && splot_parallel::on_worker_pool() {
+        let shared: &mc::WorkspaceSink<'_, T> = sink;
         let results: Vec<_> = units
             .par_iter()
             .map(|unit| {
@@ -434,7 +479,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                     .into_compound()
                     .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
                 mc::predict_compound_average_block(
-                    workspace,
+                    shared,
                     compound,
                     use_optflow.then_some(8),
                     tile_offset,
@@ -454,43 +499,33 @@ pub(super) fn reconstruct<T: ReconSample>(
                 None
             };
             let stored_mvs = tip_temporal_mvs(use_optflow, unit.mvs, refined_mvs);
-            output.publish(workspace)?;
+            output.publish(sink)?;
             stored_mvs
         } else if use_optflow {
             mc::motion_compensate_inter_block_with_optflow_mvs_into(
-                workspace,
+                sink,
                 unit.params,
                 8,
                 tile_offset,
             )?
             .unwrap_or(unit.mvs)
         } else {
-            mc::motion_compensate_inter_block_into(workspace, unit.params, tile_offset)?;
+            mc::motion_compensate_inter_block_into(sink, unit.params, tile_offset)?;
             unit.mvs
         };
-        if let Some(motion_field) = output_motion_field.as_deref_mut() {
-            super::temporal::record_temporal_motion_block(
-                motion_field,
-                reference,
-                ref_frame_idx,
-                unit.luma_y / 4,
-                unit.luma_x / 4,
-                unit.luma_w.div_ceil(4),
-                unit.luma_h.div_ceil(4),
-                frame_size.height().div_ceil(4),
-                frame_size.width().div_ceil(4),
-                core.display_order_hint().unwrap_or(0),
-                references.past_ref,
-                two_references.then_some(references.future_ref),
-                stored_mvs[0],
-                stored_mvs[1],
-                [None, None],
-            );
-        }
+        records.push(TipTemporalRecord {
+            mi_row: unit.luma_y / 4,
+            mi_col: unit.luma_x / 4,
+            n4w: unit.luma_w.div_ceil(4),
+            n4h: unit.luma_h.div_ceil(4),
+            ref_frame0: references.past_ref,
+            ref_frame1: two_references.then_some(references.future_ref),
+            mvs: stored_mvs,
+        });
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
-            workspace,
+            sink,
             residual,
             qindex,
             luma_use_tcq,
@@ -500,7 +535,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             tile_offset,
         )?;
     }
-    Ok(())
+    Ok(records)
 }
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
@@ -608,21 +643,30 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    reconstruct(
-        &mut workspace,
+    let records = reconstruct(
+        &mut mc::WorkspaceSink::Frame(&mut workspace),
         &placed,
         &temporal,
         sequence,
         core,
         ref_frame_idx,
         reference,
-        Some(&mut motion_field),
         0,
         false,
         false,
         bit_depth,
         offset,
     )?;
+    let coded = workspace.info().coded_luma_size();
+    apply_tip_temporal_records(
+        &mut motion_field,
+        reference,
+        ref_frame_idx,
+        coded.height().div_ceil(4),
+        coded.width().div_ceil(4),
+        core.display_order_hint().unwrap_or(0),
+        &records,
+    );
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params

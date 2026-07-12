@@ -175,7 +175,7 @@ fn normalized_sad(pred0: &[u16], pred1: &[u16], bit_depth: splot_recon::BitDepth
 }
 
 pub(super) fn compound_motion_grid<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    sink: &WorkspaceSink<'_, T>,
     block: CompoundMcBlock<'_, T>,
     unit_size: Option<usize>,
     refinemv: Option<&CompoundMotionGrid>,
@@ -232,7 +232,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             prediction_rect.luma_w = round_up(region_w)?;
             prediction_rect.luma_h = round_up(region_h)?;
             let pred0 = initial_luma_prediction(
-                workspace,
+                sink,
                 block.reference0,
                 prediction_rect,
                 base_mvs[0],
@@ -241,7 +241,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 offset,
             )?;
             let pred1 = initial_luma_prediction(
-                workspace,
+                sink,
                 block.reference1,
                 prediction_rect,
                 base_mvs[1],
@@ -250,7 +250,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 offset,
             )?;
             if block.optflow_sad_threshold.is_some_and(|threshold| {
-                normalized_sad(&pred0, &pred1, workspace.info().bit_depth()) < threshold
+                normalized_sad(&pred0, &pred1, sink.info().bit_depth()) < threshold
             }) {
                 return Ok(refinemv.cloned());
             }
@@ -260,7 +260,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 prediction_rect.luma_w,
                 prediction_rect.luma_h,
                 unit_size,
-                workspace.info().bit_depth(),
+                sink.info().bit_depth(),
                 distances,
             )?;
             let local_columns = prediction_rect.luma_w / unit_size;
@@ -327,7 +327,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
 }
 
 pub(super) fn initial_luma_prediction<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    sink: &WorkspaceSink<'_, T>,
     reference: &DecodedFrame<T>,
     rect: McBlockRect,
     mv: Mv,
@@ -375,14 +375,14 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
             first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
             last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
             last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-            bit_depth: workspace.info().bit_depth(),
+            bit_depth: sink.info().bit_depth(),
         },
     )
     .map_err(Into::into)
 }
 
 pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+    sink: &WorkspaceSink<'_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -474,7 +474,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                         first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
                         last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
                         last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-                        bit_depth: workspace.info().bit_depth(),
+                        bit_depth: sink.info().bit_depth(),
                     },
                 )?;
                 for local_row in 0..height {
