@@ -132,11 +132,10 @@ use show_existing::parse_show_existing_frame;
 /// The validator models the § 7.23 reference-frame buffer state and threads it in via
 /// [`FrameReferenceStateView::from_slots`]; callers with no modeled buffer (the
 /// inspector, a direct/fuzz caller) pass [`FrameReferenceStateView::unknown`]. The core
-/// parser does **not** yet branch on it: no § 5.18 intra parse path reads
-/// `RefValid`/`RefOrderHint`/dims, so today the view is forward plumbing for the § 5.18
-/// inter reference-state-dependent paths (explicit reference maps,
-/// `frame_size_with_refs()`, `primary_ref_frame`). The validator already consumes the
-/// modeled state directly for the § 6.17.2 show-existing-frame slot-validity check.
+/// parser uses it for § 5.18.2 `get_disp_order_hint()`, inter reference-map derivation,
+/// `frame_size_with_refs()`, primary-reference selection, and show-existing / bridge order
+/// hints. The validator also consumes the modeled state directly for the § 6.17.2
+/// show-existing-frame slot-validity check.
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
 pub struct FrameReferenceStateView<'a> {
@@ -144,6 +143,12 @@ pub struct FrameReferenceStateView<'a> {
     pub ref_valid: Option<&'a [bool]>,
     /// `RefOrderHint[ i ]` per reference slot, when modeled.
     pub ref_order_hint: Option<&'a [u32]>,
+    /// `RefOrderHintLsbs[ i ]` per reference slot, when modeled.
+    pub ref_order_hint_lsbs: Option<&'a [u32]>,
+    /// `RefImplicitOutputFrame[ i ]` per reference slot, when modeled.
+    pub ref_implicit_output_frame: Option<&'a [bool]>,
+    /// `RefImmediateOutputFrame[ i ]` per reference slot, when modeled.
+    pub ref_immediate_output_frame: Option<&'a [bool]>,
     /// `RefFrameWidth[ i ]` per reference slot, when modeled.
     pub ref_frame_width: Option<&'a [u32]>,
     /// `RefFrameHeight[ i ]` per reference slot, when modeled.
@@ -177,6 +182,9 @@ impl<'a> FrameReferenceStateView<'a> {
     const UNKNOWN: Self = Self {
         ref_valid: None,
         ref_order_hint: None,
+        ref_order_hint_lsbs: None,
+        ref_implicit_output_frame: None,
+        ref_immediate_output_frame: None,
         ref_frame_width: None,
         ref_frame_height: None,
         ref_base_q_idx: None,
@@ -258,6 +266,25 @@ impl<'a> FrameReferenceStateView<'a> {
     ) -> Self {
         self.ref_counter = Some(ref_counter);
         self.ref_frame_is_inter = Some(ref_frame_is_inter);
+        self
+    }
+
+    /// This compact view is exact only for the single-layer decode path: it does not carry
+    /// the temporal/modeling-layer dependency maps that the general `get_max_disp_order_hint`
+    /// filter also reads.
+    ///
+    /// It attaches the § 7.23 state used by § 5.18.2 `get_disp_order_hint()` and the
+    /// show-existing / bridge derivations.
+    #[must_use]
+    pub const fn with_single_layer_order_hint_state(
+        mut self,
+        ref_order_hint_lsbs: &'a [u32],
+        ref_implicit_output_frame: &'a [bool],
+        ref_immediate_output_frame: &'a [bool],
+    ) -> Self {
+        self.ref_order_hint_lsbs = Some(ref_order_hint_lsbs);
+        self.ref_implicit_output_frame = Some(ref_implicit_output_frame);
+        self.ref_immediate_output_frame = Some(ref_immediate_output_frame);
         self
     }
 
@@ -349,6 +376,8 @@ pub struct FrameHeaderCore {
     pub disable_cdf_update: Option<bool>,
     /// `OrderHintLsbs` (`order_hint` / `sef_order_hint`), when read.
     pub order_hint_lsb: Option<u32>,
+    /// `OrderHint`, derived from [`Self::order_hint_lsb`] and the § 7.23 reference state.
+    pub order_hint: Option<u32>,
     /// `refresh_frame_flags`, when derived or read.
     pub refresh_frame_flags: Option<u32>,
     /// `FrameWidth`/`FrameHeight` from `frame_size()`, when exactly known.
@@ -496,6 +525,57 @@ pub struct FrameHeaderCore {
     pub consumed_bits: u64,
 }
 
+impl FrameHeaderCore {
+    /// Returns the derived `OrderHint`; partial-parser callers that omit the required
+    /// reference state receive `None`, never the coded LSB as a semantic substitute.
+    #[must_use]
+    pub const fn display_order_hint(&self) -> Option<u32> {
+        self.order_hint
+    }
+}
+
+/// Derives `OrderHint` per AV2 v1.0.0 § 5.18.2 `get_disp_order_hint()`.
+fn get_disp_order_hint(
+    obu_type: ObuType,
+    frame_type: Option<FrameType>,
+    restricted_prediction_switch: Option<bool>,
+    order_hint_lsbs: u32,
+    order_hint_bits: u32,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Option<u32> {
+    let restricted_switch =
+        frame_type == Some(FrameType::Switch) && restricted_prediction_switch == Some(true);
+    if obu_type == ObuType::ClosedLoopKey || restricted_switch || order_hint_bits == 0 {
+        return Some(order_hint_lsbs);
+    }
+
+    let valid = reference_state.ref_valid?;
+    let hints = reference_state.ref_order_hint?;
+    let implicit = reference_state.ref_implicit_output_frame?;
+    let immediate = reference_state.ref_immediate_output_frame?;
+    let mut max_disp = 0u32;
+    for (index, is_valid) in valid.iter().copied().enumerate() {
+        if !is_valid {
+            continue;
+        }
+        let showable = implicit.get(index).copied()? || immediate.get(index).copied()?;
+        if showable {
+            let hint = hints.get(index).copied()?;
+            if hint != u32::MAX {
+                max_disp = max_disp.max(hint);
+            }
+        }
+    }
+
+    let half_window = 1u32.checked_shl(order_hint_bits - 1)?;
+    let offset = i64::from(max_disp) - i64::from(half_window) - i64::from(order_hint_lsbs);
+    if offset < 0 {
+        return Some(order_hint_lsbs);
+    }
+    let wraps = u32::try_from(offset).ok()? >> order_hint_bits;
+    order_hint_lsbs.checked_add((wraps + 1).checked_shl(order_hint_bits)?)
+}
+
 /// Matrix Feature ID for the frame-header-info coverage this phase does not model.
 const FRAME_HEADER_INFO_FEATURE: &str = "AV2-5.18.2-FRAME-HEADER-INFO";
 
@@ -572,6 +652,7 @@ pub(crate) fn init_core_from_prefix(
         implicit_output_frame: None,
         disable_cdf_update: None,
         order_hint_lsb: None,
+        order_hint: None,
         refresh_frame_flags: None,
         frame_size: None,
         frame_size_override_flag: None,
@@ -622,6 +703,16 @@ pub(crate) fn parse_core_body(
     let bridge_frame_ref_idx = if core.is_bridge {
         let idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
         core.bridge_frame_ref_idx = Some(idx);
+        if let Ok(index) = usize::try_from(idx) {
+            core.order_hint_lsb = reference_state
+                .ref_order_hint_lsbs
+                .and_then(|hints| hints.get(index))
+                .copied();
+            core.order_hint = reference_state
+                .ref_order_hint
+                .and_then(|hints| hints.get(index))
+                .copied();
+        }
         Some(idx)
     } else {
         None
@@ -636,7 +727,15 @@ pub(crate) fn parse_core_body(
         if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
             return parse_single_picture_bridge_tail(reader, core, seq, bridge_frame_ref_idx);
         }
-        return parse_intra_tail(reader, core, seq, mfh, FrameType::Key, true);
+        return parse_intra_tail(
+            reader,
+            core,
+            seq,
+            mfh,
+            FrameType::Key,
+            true,
+            reference_state,
+        );
     }
 
     if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
@@ -650,7 +749,7 @@ pub(crate) fn parse_core_body(
     let show_existing_frame = obu_type.is_sef();
     core.show_existing_frame = Some(show_existing_frame);
     if show_existing_frame {
-        return parse_show_existing_frame(reader, core, seq);
+        return parse_show_existing_frame(reader, core, seq, reference_state);
     }
 
     let frame_type = if obu_type == ObuType::Switch || obu_type == ObuType::RasFrame {
@@ -710,7 +809,7 @@ pub(crate) fn parse_core_body(
     core.implicit_output_frame = Some(implicit_output_frame);
 
     if frame_is_intra {
-        return parse_intra_tail(reader, core, seq, mfh, frame_type, false);
+        return parse_intra_tail(reader, core, seq, mfh, frame_type, false, reference_state);
     }
 
     parse_inter_path(reader, core, seq, mfh, frame_type, reference_state)
@@ -762,6 +861,14 @@ fn parse_inter_path(
 
         let order_hint = reader.read_f(seq.order_hint_bits)?;
         core.order_hint_lsb = Some(order_hint);
+        core.order_hint = get_disp_order_hint(
+            core.obu_type,
+            core.frame_type,
+            core.restricted_prediction_switch,
+            order_hint,
+            seq.order_hint_bits,
+            reference_state,
+        );
 
         let inter_seq = build_inter_seq_view(seq);
         let ctx = InterFrameContext {
@@ -770,7 +877,7 @@ fn parse_inter_path(
             is_bridge: false, // bridge frames take parse_bridge_inter_path, not this path
             bridge_frame_ref_idx: None,
             cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
-            order_hint,
+            order_hint: core.order_hint,
         };
 
         parse_inter_control_into(
@@ -1011,7 +1118,7 @@ fn parse_bridge_inter_path(
         is_bridge: true,
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
         cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
-        order_hint: 0,
+        order_hint: core.order_hint,
     };
 
     let mut control = crate::headers::frame::inter::InterControl::default();
@@ -1165,6 +1272,7 @@ fn parse_intra_tail(
     mfh: Option<&MfhFrameView>,
     frame_type: FrameType,
     single_picture: bool,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     let frame_size_override_flag = if single_picture {
         false
@@ -1173,7 +1281,16 @@ fn parse_intra_tail(
     };
     core.frame_size_override_flag = Some(frame_size_override_flag);
 
-    core.order_hint_lsb = Some(reader.read_f(seq.order_hint_bits)?);
+    let order_hint_lsb = reader.read_f(seq.order_hint_bits)?;
+    core.order_hint_lsb = Some(order_hint_lsb);
+    core.order_hint = get_disp_order_hint(
+        core.obu_type,
+        core.frame_type,
+        core.restricted_prediction_switch,
+        order_hint_lsb,
+        seq.order_hint_bits,
+        reference_state,
+    );
 
     core.refresh_frame_flags = Some(read_refresh_frame_flags(
         reader,

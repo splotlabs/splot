@@ -1251,3 +1251,8 @@ expect = "clean"
 path = "vectors/valid/syn-warp-inter-128x128.ivf"
 description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-orderhint-wrap-64x64.ivf"
+description = "Project-owned AVM inter stream ending at a complete frame-unit boundary immediately after the first 7-bit coded order-hint wrap; exercises §5.18.2 get_disp_order_hint and §7.23 persistence of distinct OrderHint and OrderHintLsbs values."
+expect = { diagnostics = ["frame-header/ccso-ext-filter-reserved", "frame-header/primary-ref-frame-out-of-range", "frame-header/qm-level-unavailable"] }

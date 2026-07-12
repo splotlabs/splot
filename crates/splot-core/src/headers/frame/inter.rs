@@ -410,11 +410,9 @@ pub(crate) struct InterFrameContext {
     /// from the sequence maxima; a `cur_mfh_id > 0` non-override inter size needs the
     /// resolved MFH defaults this phase does not thread on the inter path).
     pub cur_mfh_id_is_zero: bool,
-    /// `OrderHint` (§ 5.18.2): the parsed `order_hint` LSB value (`OrderHintLsbs`), threaded
-    /// for the implicit reference-map ranking (`get_ref_frames()` § 7.7). The minimal
-    /// at-most-one-valid-reference case does not depend on its value, but it is supplied for
-    /// the modeled `get_ref_frames()` input completeness.
-    pub order_hint: u32,
+    /// `OrderHint` (§ 5.18.2), including any extension beyond the coded `OrderHintLsbs`,
+    /// threaded into the implicit reference-map ranking (`get_ref_frames()` § 7.7).
+    pub order_hint: Option<u32>,
 }
 
 /// `RefValid[idx]` from the modeled reference state: `true` only when the slot is in
@@ -777,9 +775,9 @@ fn parse_inter_reference_region(
             && reader.read_flag()?;
         control.allow_tip_hole_fill = Some(allow_tip_hole_fill);
         if tip_frame_mode != TipFrameMode::Disabled {
-            let Some((num_past_refs, num_future_refs)) =
-                tip_ref_counts(reference_state, &control.ref_frame_idx, ctx.order_hint)
-            else {
+            let Some((num_past_refs, num_future_refs)) = ctx.order_hint.and_then(|order_hint| {
+                tip_ref_counts(reference_state, &control.ref_frame_idx, order_hint)
+            }) else {
                 control.stop = Some(InterStop::PoisonedReferenceState);
                 return Ok(());
             };
@@ -1008,6 +1006,11 @@ fn derive_implicit_ref_map(
         .take(num_ref_frames)
         .filter(|v| **v)
         .count();
+    let current_order_hint = if valid_count <= 1 {
+        ctx.order_hint.unwrap_or(0)
+    } else {
+        ctx.order_hint?
+    };
     if valid_count > 1 {
         let covers_active =
             |slice: Option<&[u32]>| slice.is_some_and(|s| s.len() >= num_ref_frames);
@@ -1059,7 +1062,7 @@ fn derive_implicit_ref_map(
     let input = GetRefFramesInput {
         num_ref_frames: seq.num_ref_frames,
         slots,
-        order_hint: i32::try_from(ctx.order_hint).unwrap_or(i32::MAX),
+        order_hint: i32::try_from(current_order_hint).unwrap_or(i32::MAX),
         obu_mlayer_id: 0,
         obu_tlayer_id: 0,
         allowed_frames: -1,
@@ -1117,7 +1120,7 @@ mod tests {
             is_bridge: false,
             bridge_frame_ref_idx: None,
             cur_mfh_id_is_zero: true,
-            order_hint: 0,
+            order_hint: Some(0),
         }
     }
 
@@ -1436,7 +1439,7 @@ mod tests {
         let mut seq = inter_seq();
         seq.explicit_ref_frame_map = false;
         let mut ctx = inter_ctx();
-        ctx.order_hint = 10;
+        ctx.order_hint = Some(10);
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         ref_valid[1] = true;
@@ -1471,7 +1474,7 @@ mod tests {
         let mut seq = inter_seq();
         seq.explicit_ref_frame_map = false;
         let mut ctx = inter_ctx();
-        ctx.order_hint = 10;
+        ctx.order_hint = Some(10);
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         ref_valid[1] = true;
@@ -1501,7 +1504,7 @@ mod tests {
         let mut seq = inter_seq();
         seq.explicit_ref_frame_map = false;
         let mut ctx = inter_ctx();
-        ctx.order_hint = 10;
+        ctx.order_hint = Some(10);
         let mut ref_valid = [false; NUM_REF_FRAMES];
         ref_valid[0] = true;
         ref_valid[1] = true;
@@ -1941,7 +1944,7 @@ mod tests {
             seq.enable_tip_refinemv = equal_weight;
             seq.enable_opfl_refine = if equal_weight { REFINE_ALL as u8 } else { 0 };
             let mut ctx = inter_ctx();
-            ctx.order_hint = if equal_weight { 5 } else { 0 };
+            ctx.order_hint = Some(if equal_weight { 5 } else { 0 });
             let ref_valid = [true, true, false, false, false, false, false, false];
             let ref_oh = if equal_weight {
                 [1, 9, 0, 0, 0, 0, 0, 0]

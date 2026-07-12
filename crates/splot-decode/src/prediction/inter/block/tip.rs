@@ -407,7 +407,7 @@ pub(super) fn reconstruct<T: ReconSample>(
                     luma_h.div_ceil(4),
                     frame_size.height().div_ceil(4),
                     frame_size.width().div_ceil(4),
-                    core.order_hint_lsb.unwrap_or(0),
+                    core.display_order_hint().unwrap_or(0),
                     references.past_ref,
                     two_references.then_some(references.future_ref),
                     stored_mvs[0],
@@ -471,7 +471,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let projection_step = tmvp_projection_step(core);
     let mut temporal = TemporalMvContext::from_references(
         (mi_rows, mi_cols),
-        core.order_hint_lsb.unwrap_or(0),
+        core.display_order_hint().unwrap_or(0),
         TemporalProjectionConfig {
             frame_size: (width, height),
             step: projection_step,

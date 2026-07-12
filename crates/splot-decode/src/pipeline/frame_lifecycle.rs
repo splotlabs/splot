@@ -370,7 +370,6 @@ pub(crate) fn frame_ref_update_from_core(
     ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     motion_field: inter::TemporalMotionField,
-    order_hint: u32,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
@@ -405,9 +404,26 @@ pub(crate) fn frame_ref_update_from_core(
         })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
     let adapted = core.obu_type != ObuType::RegularTip && core.disable_cdf_update != Some(true);
+    let order_hint = core.order_hint.ok_or_else(|| {
+        unsupported_at(
+            "missing_order_hint_for_ref_update",
+            offset,
+            "the § 7.23 reference update requires a derived OrderHint",
+        )
+    })?;
+    let order_hint_lsb = core.order_hint_lsb.ok_or_else(|| {
+        unsupported_at(
+            "missing_order_hint_lsb_for_ref_update",
+            offset,
+            "the § 7.23 reference update requires OrderHintLsbs",
+        )
+    })?;
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
         order_hint,
+        order_hint_lsb,
+        implicit_output_frame: core.implicit_output_frame == Some(true),
+        immediate_output_frame: core.immediate_output_frame == Some(true),
         width: frame_size.width,
         height: frame_size.height,
         base_q_idx: quantization.base_q_idx,

@@ -21,6 +21,9 @@ use crate::prediction::inter::TemporalMotionField;
 struct Slot {
     valid: bool,
     order_hint: u32,
+    order_hint_lsb: u32,
+    implicit_output_frame: bool,
+    immediate_output_frame: bool,
     width: u32,
     height: u32,
     base_q_idx: u32,
@@ -42,6 +45,9 @@ impl Slot {
     const EMPTY: Self = Self {
         valid: false,
         order_hint: 0,
+        order_hint_lsb: 0,
+        implicit_output_frame: false,
+        immediate_output_frame: false,
         width: 0,
         height: 0,
         base_q_idx: 0,
@@ -63,6 +69,9 @@ impl Slot {
         *self = Self {
             valid,
             order_hint: update.order_hint,
+            order_hint_lsb: update.order_hint_lsb,
+            implicit_output_frame: update.implicit_output_frame,
+            immediate_output_frame: update.immediate_output_frame,
             width: update.width,
             height: update.height,
             base_q_idx: update.base_q_idx,
@@ -86,6 +95,9 @@ impl Slot {
 pub(crate) struct FrameRefUpdate {
     pub(crate) refresh_frame_flags: u32,
     pub(crate) order_hint: u32,
+    pub(crate) order_hint_lsb: u32,
+    pub(crate) implicit_output_frame: bool,
+    pub(crate) immediate_output_frame: bool,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) base_q_idx: u32,
@@ -215,6 +227,9 @@ fn ensure_slot_matches_frame<T: splot_recon::ReconSample>(
 pub(crate) struct ReferenceMetadata {
     pub(crate) ref_valid: Vec<bool>,
     pub(crate) ref_order_hint: Vec<u32>,
+    pub(crate) ref_order_hint_lsbs: Vec<u32>,
+    pub(crate) ref_implicit_output_frame: Vec<bool>,
+    pub(crate) ref_immediate_output_frame: Vec<bool>,
     pub(crate) ref_frame_width: Vec<u32>,
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
@@ -236,6 +251,9 @@ impl ReferenceMetadata {
         Self {
             ref_valid: Vec::with_capacity(num),
             ref_order_hint: Vec::with_capacity(num),
+            ref_order_hint_lsbs: Vec::with_capacity(num),
+            ref_implicit_output_frame: Vec::with_capacity(num),
+            ref_immediate_output_frame: Vec::with_capacity(num),
             ref_frame_width: Vec::with_capacity(num),
             ref_frame_height: Vec::with_capacity(num),
             ref_base_q_idx: Vec::with_capacity(num),
@@ -256,6 +274,11 @@ impl ReferenceMetadata {
     fn push_slot(&mut self, slot: &Slot) {
         self.ref_valid.push(slot.valid);
         self.ref_order_hint.push(slot.order_hint);
+        self.ref_order_hint_lsbs.push(slot.order_hint_lsb);
+        self.ref_implicit_output_frame
+            .push(slot.implicit_output_frame);
+        self.ref_immediate_output_frame
+            .push(slot.immediate_output_frame);
         self.ref_frame_width.push(slot.width);
         self.ref_frame_height.push(slot.height);
         self.ref_base_q_idx.push(slot.base_q_idx);

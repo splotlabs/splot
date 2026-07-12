@@ -1282,3 +1282,10 @@ status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.secondary_ist"]
 ivf_sha256 = "c5798ef9cc059e820d35595624b3b10e899eccd46f77e78be39df9a635d3a20f"
 avm_raw_sha256 = "ab4739ab410a85cae6ef4eb149fd1b715e93f62b56324930d3cc57ab74be54a3"
+
+[[fixture]]
+id = "syn-orderhint-wrap-64x64"
+status = "must_pass"
+features = ["container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "fa5f53b161cd7fcc094807ea31429391179cbcfcfe87889ca05795cb7ecec096"
+avm_raw_sha256 = "0d032cacd2c307f0d2b2c32fb3281742edcb03781fb81c4d3ae476c09ce8648e"

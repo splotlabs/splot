@@ -1722,6 +1722,48 @@ fn one_valid_ref_64() -> (
     (ref_valid, ref_oh, ref_w, ref_h)
 }
 
+#[test]
+fn wrapped_display_order_hint_drives_implicit_reference_ranking() {
+    let mut bits = Bits::default();
+    minimal_inter_control_prefix(&mut bits);
+    let data = bits.into_bytes();
+    let seq = minimal_inter_seq_64();
+
+    let mut ref_valid = [false; NUM_REF_FRAMES];
+    ref_valid[0] = true;
+    ref_valid[1] = true;
+    let mut ref_order_hint = [0u32; NUM_REF_FRAMES];
+    ref_order_hint[0] = 127;
+    ref_order_hint[1] = 126;
+    let ref_order_hint_lsbs = ref_order_hint;
+    let ref_w = [64u32; NUM_REF_FRAMES];
+    let ref_h = [64u32; NUM_REF_FRAMES];
+    let ref_q = [40u32; NUM_REF_FRAMES];
+    let ref_implicit = [false; NUM_REF_FRAMES];
+    let ref_immediate = [true; NUM_REF_FRAMES];
+    let reference_state = FrameReferenceStateView::from_slots_with_base_q_idx(
+        &ref_valid,
+        &ref_order_hint,
+        &ref_w,
+        &ref_h,
+        &ref_q,
+    )
+    .with_single_layer_order_hint_state(&ref_order_hint_lsbs, &ref_implicit, &ref_immediate);
+
+    let (core, _) = parse_body_with_ref(
+        &data,
+        ObuType::RegularTileGroup,
+        false,
+        &seq,
+        None,
+        &reference_state,
+    )
+    .unwrap();
+    assert_eq!(core.order_hint_lsb, Some(1));
+    assert_eq!(core.order_hint, Some(129));
+    assert_eq!(core.inter.unwrap().ref_frame_idx, vec![0, 1]);
+}
+
 fn tip_output_seq_64() -> CoreSeqView {
     let mut seq = CoreSeqView::new_minimal_intra(64, 64).expect("64x64 is valid");
     seq.inter.explicit_ref_frame_map = true;
@@ -1791,7 +1833,10 @@ fn frame_header_core_tip_output_parses_terminal_tail() {
     bits.bit(0); // film_grain_config(): apply_grain
     let data = bits.into_bytes();
     let (rv, roh, rw, rh) = two_tip_refs_64();
-    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+    let implicit = [false; NUM_REF_FRAMES];
+    let immediate = [true; NUM_REF_FRAMES];
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh)
+        .with_single_layer_order_hint_state(&roh, &implicit, &immediate);
 
     let (core, consumed) =
         parse_body_with_ref(&data, ObuType::RegularTip, false, &seq, None, &rs).unwrap();
@@ -1818,7 +1863,10 @@ fn frame_header_core_tip_output_infers_disabled_tail_gates() {
     tip_output_control_prefix(&mut bits);
     let data = bits.into_bytes();
     let (rv, roh, rw, rh) = two_tip_refs_64();
-    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+    let implicit = [false; NUM_REF_FRAMES];
+    let immediate = [true; NUM_REF_FRAMES];
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh)
+        .with_single_layer_order_hint_state(&roh, &implicit, &immediate);
 
     let (core, consumed) =
         parse_body_with_ref(&data, ObuType::RegularTip, false, &seq, None, &rs).unwrap();
@@ -1840,7 +1888,10 @@ fn frame_header_core_tip_output_eof_in_tail_is_truncation() {
     tip_output_control_prefix(&mut bits);
     let data = bits.into_bytes();
     let (rv, roh, rw, rh) = two_tip_refs_64();
-    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh);
+    let implicit = [false; NUM_REF_FRAMES];
+    let immediate = [true; NUM_REF_FRAMES];
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh)
+        .with_single_layer_order_hint_state(&roh, &implicit, &immediate);
 
     let (core, consumed) =
         parse_body_with_ref(&data, ObuType::RegularTip, false, &seq, None, &rs).unwrap();
@@ -2258,6 +2309,55 @@ fn frame_header_core_olk_reads_long_term_ids_then_intra_tail() {
     assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
     assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
     assert!(core.intra_tail.is_some());
+}
+
+#[test]
+fn display_order_hint_extends_past_the_coded_lsb_window() {
+    let valid = [true];
+    let hints = [118];
+    let lsbs = [118];
+    let implicit = [false];
+    let immediate = [true];
+    let widths = [64];
+    let heights = [64];
+    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+        .with_single_layer_order_hint_state(&lsbs, &implicit, &immediate);
+
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            8,
+            7,
+            &reference_state,
+        ),
+        Some(136)
+    );
+}
+
+#[test]
+fn display_order_hint_ignores_non_showable_references() {
+    let valid = [true];
+    let hints = [118];
+    let lsbs = [118];
+    let output = [false];
+    let widths = [64];
+    let heights = [64];
+    let reference_state = FrameReferenceStateView::from_slots(&valid, &hints, &widths, &heights)
+        .with_single_layer_order_hint_state(&lsbs, &output, &output);
+
+    assert_eq!(
+        get_disp_order_hint(
+            ObuType::RegularTileGroup,
+            Some(FrameType::Inter),
+            None,
+            8,
+            7,
+            &reference_state,
+        ),
+        Some(8)
+    );
 }
 
 mod tail;

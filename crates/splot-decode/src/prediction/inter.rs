@@ -140,25 +140,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
 
     let initial_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
 
-    let order_hint_bits = sequence
-        .inter
-        .as_ref()
-        .map_or(0, |seq_inter| u32::from(seq_inter.order_hint_bits));
-    let this_order_hint = core.order_hint_lsb.unwrap_or(0);
-    if !order_hint_history_unwrapped(
-        &reference.ref_valid,
-        &reference.ref_order_hint,
-        order_hint_bits,
-        this_order_hint,
-    ) {
-        return Err(inter_cap!(
-            "inter_order_hint_wrapped",
-            offset,
-            "inter.order_hint.wrapped_reference_history",
-            SPEC_REFERENCE
-        ));
-    }
-
     let frame_size = core.frame_size.ok_or_else(|| {
         inter_missing!(
             "inter_missing_frame_size",
@@ -337,7 +318,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     );
     filter_sink.set_gdf_reference_context(Some(
         crate::filters::gdf::GdfReferenceContext::from_reference_list(
-            core.order_hint_lsb.unwrap_or(0),
+            core.display_order_hint().unwrap_or(0),
             ref_frame_idx,
             &reference.ref_order_hint,
         ),
@@ -395,23 +376,6 @@ fn decode_tip_output_frame<T: ReconSample>(
             SPEC_HEADER
         )
     })?;
-    let order_hint_bits = sequence
-        .inter
-        .as_ref()
-        .map_or(0, |seq_inter| u32::from(seq_inter.order_hint_bits));
-    if !order_hint_history_unwrapped(
-        &reference.ref_valid,
-        &reference.ref_order_hint,
-        order_hint_bits,
-        core.order_hint_lsb.unwrap_or(0),
-    ) {
-        return Err(inter_cap!(
-            "tip_output_order_hint_wrapped",
-            offset,
-            "inter.tip_output.order_hint.wrapped_reference_history",
-            SPEC_REFERENCE
-        ));
-    }
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,
@@ -433,7 +397,8 @@ fn resolve_initial_frame_cdfs(
     offset: ByteOffset,
 ) -> Result<FrameCdfSubset> {
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
-    let current_order_hint = i32::try_from(core.order_hint_lsb.unwrap_or(0)).unwrap_or(i32::MAX);
+    let current_order_hint =
+        i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
     let default_cdfs = || {
         FrameCdfSubset::default_for_base_q(current_base_q_idx).map_err(|_| {
             inter_cap!(
@@ -888,6 +853,9 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>,
     pub(crate) ref_valid: Vec<bool>,
     pub(crate) ref_order_hint: Vec<u32>,
+    pub(crate) ref_order_hint_lsbs: Vec<u32>,
+    pub(crate) ref_implicit_output_frame: Vec<bool>,
+    pub(crate) ref_immediate_output_frame: Vec<bool>,
     pub(crate) ref_frame_width: Vec<u32>,
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
@@ -911,6 +879,9 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             store,
             ref_valid: Vec::new(),
             ref_order_hint: Vec::new(),
+            ref_order_hint_lsbs: Vec::new(),
+            ref_implicit_output_frame: Vec::new(),
+            ref_immediate_output_frame: Vec::new(),
             ref_frame_width: Vec::new(),
             ref_frame_height: Vec::new(),
             ref_base_q_idx: Vec::new(),
@@ -936,6 +907,9 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             store,
             ref_valid: metadata.ref_valid,
             ref_order_hint: metadata.ref_order_hint,
+            ref_order_hint_lsbs: metadata.ref_order_hint_lsbs,
+            ref_implicit_output_frame: metadata.ref_implicit_output_frame,
+            ref_immediate_output_frame: metadata.ref_immediate_output_frame,
             ref_frame_width: metadata.ref_frame_width,
             ref_frame_height: metadata.ref_frame_height,
             ref_base_q_idx: metadata.ref_base_q_idx,
@@ -999,6 +973,11 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             &self.ref_base_q_idx,
         )
         .with_primary_reference_state(&self.ref_counter, &self.ref_is_inter)
+        .with_single_layer_order_hint_state(
+            &self.ref_order_hint_lsbs,
+            &self.ref_implicit_output_frame,
+            &self.ref_immediate_output_frame,
+        )
         .with_lr_frame_filter_class_counts(&self.lr_frame_filter_class_counts)
         .with_lr_frame_filter_taps(&self.lr_frame_filter_taps)
     }
@@ -1074,8 +1053,10 @@ fn infer_tip_output_quantization(
         &reference.ref_valid,
         &reference.ref_order_hint,
     );
-    let pair =
-        find_mv_stack::tip_reference_pair_from_hints(core.order_hint_lsb.unwrap_or(0), &hints);
+    let pair = find_mv_stack::tip_reference_pair_from_hints(
+        core.display_order_hint().unwrap_or(0),
+        &hints,
+    );
     let list_slot = |list_ref: i8| {
         usize::try_from(list_ref)
             .ok()
@@ -1249,6 +1230,14 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
+    if core.order_hint.is_none() {
+        return Err(inter_missing!(
+            "inter_missing_display_order_hint",
+            offset,
+            "inter.order_hint",
+            SPEC_HEADER
+        ));
+    }
     let Some(frame_size) = core.frame_size else {
         return Err(inter_missing!(
             "inter_unsupported_frame_size",
@@ -1390,7 +1379,7 @@ pub(crate) mod read_mv;
 mod single_ref;
 
 pub(crate) use block::decode_inter_blocks;
-use cross_frame::{ResolvedCdfLoad, order_hint_history_unwrapped, resolve_cdf_load};
+use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::TemporalMotionField;
 
 #[cfg(test)]

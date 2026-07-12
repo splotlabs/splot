@@ -18,7 +18,7 @@ use crate::obu::parse_trailing_bits;
 
 use super::{
     CoreSeqView, FRAME_HEADER_INFO_FEATURE, FrameHeaderCore, FrameHeaderParseStatus,
-    SefTrailingBits,
+    FrameReferenceStateView, SefTrailingBits, get_disp_order_hint,
 };
 
 /// Validates `trailing_bits( remainingPayloadBits )` over the rest of `reader`'s payload
@@ -42,14 +42,30 @@ pub(super) fn parse_show_existing_frame(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    core.frame_to_show_map_idx = Some(reader.read_f(ceil_log2(seq.num_ref_frames))?);
+    let frame_to_show_map_idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
+    core.frame_to_show_map_idx = Some(frame_to_show_map_idx);
     let derive_sef_order_hint = reader.read_flag()?;
     if !derive_sef_order_hint {
         core.order_hint_lsb = Some(reader.read_f(seq.order_hint_bits)?);
+        core.order_hint = get_disp_order_hint(
+            core.obu_type,
+            core.frame_type,
+            core.restricted_prediction_switch,
+            core.order_hint_lsb.unwrap_or(0),
+            seq.order_hint_bits,
+            reference_state,
+        );
+    } else if let Ok(index) = usize::try_from(frame_to_show_map_idx) {
+        core.order_hint = reference_state
+            .ref_order_hint
+            .and_then(|hints| hints.get(index))
+            .copied();
     }
     core.refresh_frame_flags = Some(0);
     core.immediate_output_frame = Some(true);
+    core.implicit_output_frame = Some(false);
 
     let Some(film_grain_params_present) = seq.film_grain_params_present else {
         core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
