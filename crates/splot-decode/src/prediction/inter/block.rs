@@ -1539,6 +1539,7 @@ fn decode_block<T: ReconSample>(
         });
         if deferred.parallel()
             && placed.block.interintra.is_none()
+            && !placed.block.bawp.enabled
             && deferred_recon::deferable_placed_geometry(&placed, frontier)
         {
             deferred.push(
