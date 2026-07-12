@@ -3,6 +3,8 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::num::NonZeroU64;
+
 use splot_parallel::ThreadCount;
 
 use super::*;
@@ -14,12 +16,25 @@ use crate::{
 
 const MONO_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
+const ORDER_HINT_WRAP_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf");
 const EXPECTED_DIGEST: &str = "92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af";
 const MONO_EXPECTED_DIGEST: &str =
     "2caad75a3f9a729187deee66d839eacf3a4705e62221cbdd6ece96c022334b6b";
 
 fn context(threads: ThreadCount) -> DecodeContext {
     DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
+}
+
+fn assert_minimal_fixture_limit(limits: DecodeLimits, expected: DecodeLimitName) {
+    let error = context(ThreadCount::from(1usize))
+        .decode_hash_report_bytes(MINIMAL_FIXTURE, DecodeOptions::new(limits))
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DecodeError::Limit { source } if source.name() == expected
+    ));
 }
 
 #[test]
@@ -168,37 +183,81 @@ fn tile_payload_byte_mutations_return_typed_results() {
 }
 
 #[test]
-fn output_byte_limit_fails_before_hash_report() {
+fn hash_report_is_not_raw_output_byte_limited() {
     let options = DecodeOptions::new(
-        DecodeLimits::default().with_max_output_bytes(DecodeLimitThreshold::Max(1)),
+        DecodeLimits::default().with_max_output_bytes(DecodeLimitThreshold::Max(0)),
+    );
+    let report = context(ThreadCount::from(1usize))
+        .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
+        .unwrap();
+
+    assert_eq!(report.frames.len(), 1);
+    assert_eq!(report.frames[0].hashes[0].digest_hex, EXPECTED_DIGEST);
+}
+
+#[test]
+fn long_hash_decode_keeps_reference_storage_bounded() {
+    let options = DecodeOptions::new(
+        DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_592)),
+    );
+    let report = context(ThreadCount::from(1usize))
+        .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, options)
+        .unwrap();
+
+    assert_eq!(report.frames.len(), 121);
+    assert_eq!(
+        report.frames[119].hashes[0].digest_hex,
+        "c6e91fa41a421a666ea3846bef406127d88c253b3d800a89bacabfd7ab0e4437"
+    );
+}
+
+#[test]
+fn long_hash_decode_rejects_live_store_cap_below_peak() {
+    let options = DecodeOptions::new(
+        DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_591)),
     );
     let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
+        .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, options)
         .unwrap_err();
 
-    assert!(matches!(
-        error,
-        DecodeError::Limit {
-            source
-        } if source.name() == DecodeLimitName::MaxOutputBytes
-    ));
+    assert!(matches!(error, DecodeError::Limit { .. }));
+    let DecodeError::Limit { source } = error else {
+        return;
+    };
+    let check = source.check().unwrap();
+    assert_eq!(source.name(), DecodeLimitName::MaxReferenceStoreBytes);
+    assert_eq!(check.actual(), 110_592);
+    assert_eq!(check.threshold(), DecodeLimitThreshold::Max(110_591));
+}
+
+#[test]
+fn hash_report_still_enforces_output_frame_limit() {
+    assert_minimal_fixture_limit(
+        DecodeLimits::default().with_max_output_frames(DecodeLimitThreshold::Max(0)),
+        DecodeLimitName::MaxOutputFrames,
+    );
+}
+
+#[test]
+fn requested_hash_output_limit_emits_one_frame() {
+    let options = DecodeOptions::default().with_output_frame_limit(NonZeroU64::new(1));
+    let report = context(ThreadCount::from(1usize))
+        .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, options)
+        .unwrap();
+
+    assert_eq!(report.frames.len(), 1);
+    assert_eq!(
+        report.frames[0].hashes[0].digest_hex,
+        "548b1f0574d2f692141da2f326aa5d94fb8af45d9f6af7f3ccec9e0326e3e4b6"
+    );
 }
 
 #[test]
 fn partition_frontier_limit_preserves_resource_limit() {
-    let options = DecodeOptions::new(
+    assert_minimal_fixture_limit(
         DecodeLimits::default().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
+        DecodeLimitName::MaxTilePartitionSteps,
     );
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        DecodeError::Limit {
-            source
-        } if source.name() == DecodeLimitName::MaxTilePartitionSteps
-    ));
 }
 
 #[test]

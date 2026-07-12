@@ -353,12 +353,12 @@ impl DecodeLimits {
         max_luma_samples_per_frame, with_max_luma_samples_per_frame, MaxLumaSamplesPerFrame, "Returns the maximum luma samples per frame threshold.", "Returns a copy with the maximum luma samples per frame threshold replaced.";
         max_decoded_frame_bytes, with_max_decoded_frame_bytes, MaxDecodedFrameBytes, "Returns the maximum decoded frame byte threshold.", "Returns a copy with the maximum decoded frame byte threshold replaced.";
         max_reference_slots, with_max_reference_slots, MaxReferenceSlots, "Returns the maximum reference slot threshold.", "Returns a copy with the maximum reference slot threshold replaced.";
-        max_reference_store_bytes, with_max_reference_store_bytes, MaxReferenceStoreBytes, "Returns the maximum reference-store byte threshold.", "Returns a copy with the maximum reference-store byte threshold replaced.";
+        max_reference_store_bytes, with_max_reference_store_bytes, MaxReferenceStoreBytes, "Returns the maximum peak live decoded-frame byte threshold.", "Returns a copy with the maximum peak live decoded-frame byte threshold replaced.";
         max_tile_count, with_max_tile_count, MaxTileCount, "Returns the maximum tile count threshold.", "Returns a copy with the maximum tile count threshold replaced.";
         max_tile_partition_steps, with_max_tile_partition_steps, MaxTilePartitionSteps, "Returns the maximum tile partition traversal step threshold.", "Returns a copy with the maximum tile partition traversal step threshold replaced.";
         max_tile_payload_bytes, with_max_tile_payload_bytes, MaxTilePayloadBytes, "Returns the maximum tile payload byte threshold.", "Returns a copy with the maximum tile payload byte threshold replaced.";
         max_loop_restoration_source_reads, with_max_loop_restoration_source_reads, MaxLoopRestorationSourceReads, "Returns the maximum loop-restoration source-read operation threshold.", "Returns a copy with the maximum loop-restoration source-read operation threshold replaced.";
-        max_output_bytes, with_max_output_bytes, MaxOutputBytes, "Returns the maximum output byte threshold.", "Returns a copy with the maximum output byte threshold replaced.";
+        max_output_bytes, with_max_output_bytes, MaxOutputBytes, "Returns the maximum materialized raw or Y4M output byte threshold.", "Returns a copy with the maximum materialized raw or Y4M output byte threshold replaced.";
     }
 }
 
@@ -392,7 +392,7 @@ pub enum DecodeLimitName {
     MaxDecodedFrameBytes,
     /// Maximum reference slots.
     MaxReferenceSlots,
-    /// Maximum reference-store bytes.
+    /// Maximum peak live decoded-frame bytes.
     MaxReferenceStoreBytes,
     /// Maximum tile count.
     MaxTileCount,
@@ -402,7 +402,7 @@ pub enum DecodeLimitName {
     MaxTilePayloadBytes,
     /// Maximum loop-restoration source-read operations.
     MaxLoopRestorationSourceReads,
-    /// Maximum output bytes.
+    /// Maximum materialized raw or Y4M output bytes.
     MaxOutputBytes,
 }
 

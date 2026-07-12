@@ -15,10 +15,12 @@ use crate::{DecodeLimitName, DecodeOptions};
 
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
-    frames: &[PipelineFrame],
+    frames: &[Option<PipelineFrame>],
     scheduler: &OutputScheduler,
     newly: &[usize],
     mut output_frame_bytes: u64,
+    charge_output_bytes: bool,
+    emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<u64> {
     if newly.is_empty() {
         return Ok(output_frame_bytes);
@@ -33,15 +35,18 @@ pub(super) fn charge_emitted_outputs(
         if (first_new + offset) as u64 >= requested {
             break;
         }
-        let frame = frames.get(frame_index).ok_or_else(|| {
+        let frame = frames.get(frame_index).and_then(Option::as_ref).ok_or_else(|| {
             unsupported(
                 "displayed_frame_index_unavailable",
                 None,
                 "decode pipeline output ordering references a decoded frame that is unavailable",
             )
         })?;
-        output_frame_bytes =
-            ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, frame)?;
+        emit(frame)?;
+        if charge_output_bytes {
+            output_frame_bytes =
+                ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, frame)?;
+        }
     }
     Ok(output_frame_bytes)
 }
@@ -159,6 +164,13 @@ impl OutputScheduler {
         self.emitted.contains(&frame_index)
     }
 
+    pub(super) fn retains(&self, frame_index: usize) -> bool {
+        self.pending
+            .iter()
+            .flatten()
+            .any(|(pending, _)| *pending == frame_index)
+    }
+
     pub(super) fn flush_all(&mut self) -> Vec<usize> {
         let mut newly = Vec::new();
         self.flush_lower_than(u32::MAX, &mut newly);
@@ -167,10 +179,9 @@ impl OutputScheduler {
 }
 
 pub(super) fn select_output_frames(
-    frames: Vec<PipelineFrame>,
+    mut frames: Vec<Option<PipelineFrame>>,
     output_frame_indices: Vec<usize>,
 ) -> Result<Vec<PipelineFrame>> {
-    let mut frames = frames.into_iter().map(Some).collect::<Vec<_>>();
     let mut outputs = Vec::with_capacity(output_frame_indices.len());
     for index in output_frame_indices {
         let output = frames.get_mut(index).and_then(Option::take).ok_or_else(|| {

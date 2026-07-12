@@ -22,9 +22,8 @@ pub(crate) fn decode_hash_report_from_plan(
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
-    let outputs = crate::pipeline::decode_frames_from_plan(bytes, options, plan)?;
-    let mut report_frames = Vec::with_capacity(outputs.len());
-    for output in &outputs {
+    let mut report_frames = Vec::new();
+    crate::pipeline::emit_frames_from_plan(bytes, options, plan, |output| {
         let report_frame = match &output.frame {
             PipelineDecodedFrame::Eight(frame) => {
                 let hash = DecodedFrameHashInput::new(frame).compute_hash();
@@ -36,7 +35,8 @@ pub(crate) fn decode_hash_report_from_plan(
             }
         };
         report_frames.push(report_frame);
-    }
+        Ok(())
+    })?;
 
     Ok(DecodeHashReport::raw_intermediate_output(
         resolved_threads.to_string(),

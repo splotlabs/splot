@@ -75,6 +75,45 @@ pub(crate) fn decode_frames_from_plan(
 ) -> Result<Vec<PipelineFrame>> {
     decode_frames_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
 }
+
+pub(crate) fn emit_frames_from_plan(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    emit: impl FnMut(&PipelineFrame) -> Result<()>,
+) -> Result<()> {
+    decode_frames_from_plan_impl(bytes, options, plan, |_| Ok(()), false, emit).map(drop)
+}
+
+fn reclaim_unowned_frames(
+    frames: &mut [Option<PipelineFrame>],
+    reference: &reference_buffer::RuntimeReferenceBuffer,
+    scheduler: &OutputScheduler,
+    retained_frame_bytes: &mut u64,
+) -> Result<()> {
+    for frame_index in 0..frames.len() {
+        if frames[frame_index].is_none() {
+            continue;
+        }
+        if reference.retains(frame_index) || scheduler.retains(frame_index) {
+            continue;
+        }
+        let Some(frame) = frames.get_mut(frame_index).and_then(Option::take) else {
+            continue;
+        };
+        let frame_bytes = retained_decoded_frame_bytes(&frame)?;
+        *retained_frame_bytes = retained_frame_bytes
+            .checked_sub(frame_bytes)
+            .ok_or_else(|| {
+                unsupported(
+                    "retained_frame_byte_accounting_underflow",
+                    None,
+                    "decode pipeline live-frame byte accounting underflowed",
+                )
+            })?;
+    }
+    Ok(())
+}
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_key_frame(
     bytes: &[u8],
@@ -150,6 +189,17 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     plan: &DecodeStreamPlan,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
 ) -> Result<Vec<PipelineFrame>> {
+    decode_frames_from_plan_impl(bytes, options, plan, preflight, true, |_| Ok(()))
+}
+
+fn decode_frames_from_plan_impl(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
+    retain_decoded_frames: bool,
+    mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
+) -> Result<Vec<PipelineFrame>> {
     ensure_multiframe_plan_shape(plan)?;
     let runtime_parse_timer = crate::timing::start();
     let parsed = parse_bitstream_partial(bytes);
@@ -214,15 +264,15 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
     )?;
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
-    frames.push(key_frame);
     let key_update = frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        frames[0].frame_cdfs.clone(),
-        frames[0].ccso_params.clone(),
-        frames[0].ccso_grid.clone(),
-        frames[0].motion_field.clone(),
+        key_frame.frame_cdfs.clone(),
+        key_frame.ccso_params.clone(),
+        key_frame.ccso_grid.clone(),
+        key_frame.motion_field.clone(),
     )?;
+    frames.push(Some(key_frame));
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
     let key_immediate = key_core.immediate_output_frame == Some(true);
@@ -233,16 +283,42 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
         key_implicit,
         true,
     );
-    output_frame_bytes =
-        charge_emitted_outputs(options, &frames, &scheduler, &evicted, output_frame_bytes)?;
+    output_frame_bytes = charge_emitted_outputs(
+        options,
+        &frames,
+        &scheduler,
+        &evicted,
+        output_frame_bytes,
+        retain_decoded_frames,
+        &mut emit,
+    )?;
     reference.update(0, &key_update);
     if key_immediate && !scheduler.already_emitted(0) {
         let emitted = scheduler.on_immediate(0, key_hint);
-        output_frame_bytes =
-            charge_emitted_outputs(options, &frames, &scheduler, &emitted, output_frame_bytes)?;
+        output_frame_bytes = charge_emitted_outputs(
+            options,
+            &frames,
+            &scheduler,
+            &emitted,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
+    }
+    if !retain_decoded_frames {
+        reclaim_unowned_frames(
+            &mut frames,
+            &reference,
+            &scheduler,
+            &mut retained_frame_bytes,
+        )?;
     }
     if output_frame_limit_reached(options, scheduler.emitted.len()) {
-        return select_output_frames(frames, scheduler.emitted);
+        return if retain_decoded_frames {
+            select_output_frames(frames, scheduler.emitted)
+        } else {
+            Ok(Vec::new())
+        };
     }
 
     for next_candidate in candidates {
@@ -378,16 +454,16 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &inter_frame,
                 )?;
                 let frame_index = frames.len();
-                frames.push(inter_frame);
-                retained_frame_bytes = next_retained_frame_bytes;
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
                     inter_envelope.offset,
-                    frames[frame_index].frame_cdfs.clone(),
-                    frames[frame_index].ccso_params.clone(),
-                    frames[frame_index].ccso_grid.clone(),
-                    frames[frame_index].motion_field.clone(),
+                    inter_frame.frame_cdfs.clone(),
+                    inter_frame.ccso_params.clone(),
+                    inter_frame.ccso_grid.clone(),
+                    inter_frame.motion_field.clone(),
                 )?;
+                frames.push(Some(inter_frame));
+                retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
                 let inter_implicit = inter_core.implicit_output_frame == Some(true);
                 let inter_immediate = inter_core.immediate_output_frame == Some(true);
@@ -406,6 +482,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &scheduler,
                     &evicted,
                     output_frame_bytes,
+                    retain_decoded_frames,
+                    &mut emit,
                 )?;
                 reference.update(frame_index, &inter_update);
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
@@ -416,6 +494,16 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                         &scheduler,
                         &emitted,
                         output_frame_bytes,
+                        retain_decoded_frames,
+                        &mut emit,
+                    )?;
+                }
+                if !retain_decoded_frames {
+                    reclaim_unowned_frames(
+                        &mut frames,
+                        &reference,
+                        &scheduler,
+                        &mut retained_frame_bytes,
                     )?;
                 }
                 if output_frame_limit_reached(options, scheduler.emitted.len()) {
@@ -472,16 +560,16 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &key_frame,
                 )?;
                 let frame_index = frames.len();
-                frames.push(key_frame);
-                retained_frame_bytes = next_retained_frame_bytes;
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
-                    frames[frame_index].frame_cdfs.clone(),
-                    frames[frame_index].ccso_params.clone(),
-                    frames[frame_index].ccso_grid.clone(),
-                    frames[frame_index].motion_field.clone(),
+                    key_frame.frame_cdfs.clone(),
+                    key_frame.ccso_params.clone(),
+                    key_frame.ccso_grid.clone(),
+                    key_frame.motion_field.clone(),
                 )?;
+                frames.push(Some(key_frame));
+                retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
                 let key_implicit = key_core.implicit_output_frame == Some(true);
                 let key_immediate = key_core.immediate_output_frame == Some(true);
@@ -498,6 +586,8 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                     &scheduler,
                     &evicted,
                     output_frame_bytes,
+                    retain_decoded_frames,
+                    &mut emit,
                 )?;
                 reference.update(frame_index, &key_update);
                 if key_immediate && !scheduler.already_emitted(frame_index) {
@@ -508,6 +598,16 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
                         &scheduler,
                         &emitted,
                         output_frame_bytes,
+                        retain_decoded_frames,
+                        &mut emit,
+                    )?;
+                }
+                if !retain_decoded_frames {
+                    reclaim_unowned_frames(
+                        &mut frames,
+                        &reference,
+                        &scheduler,
+                        &mut retained_frame_bytes,
                     )?;
                 }
                 if output_frame_limit_reached(options, scheduler.emitted.len()) {
@@ -526,9 +626,27 @@ pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
 
     if !output_frame_limit_reached(options, scheduler.emitted.len()) {
         let flushed = scheduler.flush_all();
-        output_frame_bytes =
-            charge_emitted_outputs(options, &frames, &scheduler, &flushed, output_frame_bytes)?;
+        output_frame_bytes = charge_emitted_outputs(
+            options,
+            &frames,
+            &scheduler,
+            &flushed,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
+        if !retain_decoded_frames {
+            reclaim_unowned_frames(
+                &mut frames,
+                &reference,
+                &scheduler,
+                &mut retained_frame_bytes,
+            )?;
+        }
         let _ = output_frame_bytes;
+    }
+    if !retain_decoded_frames {
+        return Ok(Vec::new());
     }
     let emitted = std::mem::take(&mut scheduler.emitted);
     let limited = match options.output_frame_limit() {
@@ -740,7 +858,6 @@ pub(crate) fn ensure_runtime_limits(
     )?;
     limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
     limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
-    limits.ensure(DecodeLimitName::MaxOutputBytes, budget.decoded_bytes)?;
     limits.ensure(DecodeLimitName::MaxTileCount, 1)?;
     limits.ensure(DecodeLimitName::MaxTilePayloadBytes, tile_payload_bytes)?;
     limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.luma_samples)?;
