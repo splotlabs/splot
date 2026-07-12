@@ -72,6 +72,13 @@ impl CompoundMotionGrid {
         self.refinemv_candidates
     }
 
+    pub(super) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
+        match self.mvs.as_slice() {
+            [mvs] => Some(*mvs),
+            _ => None,
+        }
+    }
+
     pub(super) fn stored_mvs_at_luma_offset(
         &self,
         x: usize,
@@ -535,6 +542,28 @@ mod tests {
             grid.stored_mvs_at_luma_offset(0, 0).unwrap(),
             [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
         );
+    }
+
+    #[test]
+    fn uniform_mvs_requires_exactly_one_motion_cell() {
+        let mvs = [[3, -5], [-7, 9]];
+        let grid = CompoundMotionGrid {
+            unit_size: 8,
+            columns: 1,
+            base_mvs: vec![[Mv::ZERO; 2]],
+            mvs: vec![mvs],
+            refinemv_candidates: None,
+        };
+        assert_eq!(grid.uniform_mvs(), Some(mvs));
+
+        let multiple = CompoundMotionGrid {
+            unit_size: 8,
+            columns: 2,
+            base_mvs: vec![[Mv::ZERO; 2]; 2],
+            mvs: vec![mvs; 2],
+            refinemv_candidates: None,
+        };
+        assert_eq!(multiple.uniform_mvs(), None);
     }
 
     #[test]

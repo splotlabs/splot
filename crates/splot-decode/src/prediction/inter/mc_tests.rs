@@ -492,6 +492,42 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
 }
 
 #[test]
+fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
+    let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];
+    let pred1 = [44 * 16, 120 * 16, 80 * 16, 180 * 16];
+    let mvs = [Mv::ZERO; 2];
+    let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![mvs]);
+    let multiple = CompoundMotionGrid::from_refinemv(2, mvs, vec![mvs; 2]);
+    let scaling = derive_plane_scaling_prescaled(4, 4, 0, 0, 0, 0, 8, 8);
+    let blend = CompoundBlend::average_with_implicit_mask(true);
+    let run = |motion| {
+        blend_compound_average(
+            &pred0,
+            &pred1,
+            BitDepth::Eight,
+            2,
+            2,
+            blend,
+            2,
+            2,
+            Some(motion),
+            4,
+            4,
+            scaling,
+            scaling,
+            32,
+            32,
+            None,
+            0,
+            0,
+        )
+        .expect("implicit-mask blend")
+    };
+
+    assert_eq!(run(&uniform), run(&multiple));
+}
+
+#[test]
 fn warp_skips_prediction_units_beyond_the_current_frame() {
     let reference = patterned_frame(16, 8);
     let mut workspace = workspace(16, 8);
