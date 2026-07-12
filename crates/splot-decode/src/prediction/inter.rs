@@ -659,7 +659,8 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
     residual: &InterResidual,
     qindex: u32,
     luma_use_tcq: bool,
-    residual_use_ddt: bool,
+    enable_inter_ddt: bool,
+    use_intrabc: bool,
     bit_depth: BitDepth,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -671,6 +672,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
             SPEC_MC
         )
     };
+    let use_ddt = enable_inter_ddt && !use_intrabc;
     let mut paired = vec![false; residual.blocks.len()];
     for (index, block) in residual.blocks.iter().enumerate() {
         if paired[index] {
@@ -687,13 +689,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
                 ));
             };
             reconstruct_inter_residual_chroma_cctx_pair(
-                workspace,
-                block,
-                v_block,
-                qindex,
-                cctx_type,
-                residual_use_ddt,
-                bit_depth,
+                workspace, block, v_block, qindex, cctx_type, use_ddt, bit_depth,
             )
             .map_err(map_recon)?;
             paired[index] = true;
@@ -711,7 +707,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
             block.log2_height,
             qindex,
             use_tcq,
-            residual_use_ddt,
+            use_ddt,
             bit_depth,
         )
         .map_err(map_recon)?;
