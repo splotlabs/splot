@@ -158,6 +158,21 @@ pub(crate) fn apply_frame<T: ReconSample>(
     let compute_band = |y: usize| -> Result<(usize, usize, Vec<T>)> {
         let height = MI_SIZE.min(luma_height - y);
         let mut band = vec![T::default(); luma_width * height];
+        let band_block = GdfBlock {
+            x: 0,
+            y,
+            width: luma_width,
+            height,
+            frame_width: luma_width,
+            frame_height: luma_height,
+            bit_depth,
+            qp_idx,
+            ref_dst_idx,
+            pix_scale,
+            max_sample,
+        };
+        let bounds = source_bounds(core, &band_block, offset)?;
+        let source = GdfSource::materialize(curr_luma, cdef_luma, &bounds, &band_block, offset)?;
         for x in (0..luma_width).step_by(MI_SIZE) {
             let width = MI_SIZE.min(luma_width - x);
             if width < 2 || height < 2 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
@@ -167,22 +182,12 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 ));
             }
             let mut block = compute_block(
-                core,
-                curr_luma,
-                cdef_luma,
+                &source,
                 &base_luma,
                 GdfBlock {
                     x,
-                    y,
                     width,
-                    height,
-                    frame_width: luma_width,
-                    frame_height: luma_height,
-                    bit_depth,
-                    qp_idx,
-                    ref_dst_idx,
-                    pix_scale,
-                    max_sample,
+                    ..band_block
                 },
                 offset,
             )?;
@@ -267,23 +272,18 @@ struct GdfBlock {
 }
 
 fn compute_block<T: ReconSample>(
-    core: &FrameHeaderCore,
-    curr_luma: &[u16],
-    cdef_luma: &[u16],
+    source: &GdfSource<T>,
     base_luma: &[u16],
     block: GdfBlock,
     offset: ByteOffset,
 ) -> Result<Vec<T>> {
-    let bounds = source_bounds(core, &block, offset)?;
-    let source: GdfSource<T> =
-        GdfSource::materialize(curr_luma, cdef_luma, &bounds, &block, offset)?;
-    let grad = gradients(&source, &block);
+    let grad = gradients(source, &block);
     let classes = classes(&grad, block.width, block.height);
     let mut output = Vec::with_capacity(block.width * block.height);
     for row in 0..block.height {
         for col in 0..block.width {
             let cls = usize::from(classes[(row >> 1) * (block.width >> 1) + (col >> 1)]);
-            let sample = gdf_sample(base_luma, &source, &grad, &block, row, col, cls);
+            let sample = gdf_sample(base_luma, source, &grad, &block, row, col, cls);
             output.push(T::try_from_u16(sample).map_err(|_| {
                 gdf_filter_error(
                     offset,
@@ -749,12 +749,73 @@ fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::D
 #[cfg(test)]
 mod tests {
     use super::{
-        GdfReferenceContext, RESTRICTED_ORDER_HINT, gdf_inter_ref_dst_idx,
-        gdf_inter_ref_dst_idx_from_max_dist, preserve_lossless_luma_samples,
+        GDF_READ_RADIUS, GdfBlock, GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT,
+        gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist, preserve_lossless_luma_samples,
     };
     use crate::filters::deblock::DeblockBlock;
     use crate::filters::lossless::LosslessBlockGrid;
     use splot_core::span::ByteOffset;
+    use splot_recon::{BitDepth, LoopRestorationSourceBounds};
+
+    #[test]
+    fn band_source_matches_per_block_windows() {
+        let frame_width = 16;
+        let frame_height = 16;
+        let curr: Vec<u16> = (0..frame_width * frame_height)
+            .map(|index| index as u16)
+            .collect();
+        let cdef: Vec<u16> = curr.iter().map(|&sample| sample + 1_000).collect();
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: frame_width - 1,
+            luma_start_y: 0,
+            luma_end_y: frame_height - 1,
+            luma_stripe_start_y: 4,
+            luma_stripe_end_y: 11,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+        let band_block = GdfBlock {
+            x: 0,
+            y: 4,
+            width: frame_width,
+            height: 4,
+            frame_width,
+            frame_height,
+            bit_depth: BitDepth::Ten,
+            qp_idx: 0,
+            ref_dst_idx: 0,
+            pix_scale: 1,
+            max_sample: 1_023,
+        };
+        let band_result =
+            GdfSource::<u16>::materialize(&curr, &cdef, &bounds, &band_block, ByteOffset::new(0));
+        assert!(band_result.is_ok());
+        let Ok(band_source) = band_result else {
+            return;
+        };
+
+        for x in (0..frame_width).step_by(4) {
+            let block = GdfBlock {
+                x,
+                width: 4,
+                ..band_block
+            };
+            let local_result =
+                GdfSource::<u16>::materialize(&curr, &cdef, &bounds, &block, ByteOffset::new(0));
+            assert!(local_result.is_ok());
+            let Ok(local_source) = local_result else {
+                return;
+            };
+            let radius = GDF_READ_RADIUS as isize;
+            for y in block.y as isize - radius..block.y as isize + block.height as isize + radius {
+                for x in block.x as isize - radius..block.x as isize + block.width as isize + radius
+                {
+                    assert_eq!(band_source.get(x, y), local_source.get(x, y));
+                }
+            }
+        }
+    }
 
     #[test]
     fn inter_ref_dst_idx_uses_first_two_reference_list_entries() {

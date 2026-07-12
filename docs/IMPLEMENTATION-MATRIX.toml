@@ -20930,6 +20930,7 @@ tests = [
     "crates/splot-recon/src/pc_wiener.rs::tests::grid_classification_matches_scalar_cells_and_reuses_features",
     "crates/splot-decode/src/filters/deblock.rs::tests::banded_parallel_pass_matches_serial_output",
     "crates/splot-decode/src/pipeline/frame_engine/intra_tests.rs::frame_gdf_is_bit_exact_across_worker_counts",
+    "crates/splot-decode/src/filters/gdf.rs::tests::band_source_matches_per_block_windows",
 ]
 commands = [
     "cargo test -p splot-core --lib",
