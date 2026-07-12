@@ -72,6 +72,13 @@ impl CompoundMotionGrid {
         self.refinemv_candidates
     }
 
+    pub(super) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
+        match self.mvs.as_slice() {
+            [mvs] => Some(*mvs),
+            _ => None,
+        }
+    }
+
     pub(super) fn stored_mvs_at_luma_offset(
         &self,
         x: usize,

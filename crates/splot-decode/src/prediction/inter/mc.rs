@@ -1178,10 +1178,45 @@ fn blend_compound_average(
     let ref_start_y0 = scaling0.start_y >> 10;
     let ref_start_x1 = scaling1.start_x >> 10;
     let ref_start_y1 = scaling1.start_y >> 10;
-    let max_sample = i64::from(bit_depth.max_sample());
-    let shift = 1 + compound_inter_post_round();
     let ref_mi_cols = ((frame_w << sub_x).div_ceil(4)) as i64;
     let ref_mi_rows = ((frame_h << sub_y).div_ceil(4)) as i64;
+    let extent = |scaling: PlaneScaling| {
+        let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i64;
+        let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i64;
+        (
+            scaling.start_x >> 10,
+            scaling.start_y >> 10,
+            end_x >> 10,
+            end_y >> 10,
+        )
+    };
+    let uniform_scaling = match motion {
+        None => Some([scaling0, scaling1]),
+        Some(motion) => motion.uniform_mvs().map(|mvs| {
+            core::array::from_fn(|reference| {
+                derive_plane_scaling_prescaled(
+                    plane_x as i64,
+                    plane_y as i64,
+                    i64::from(mvs[reference][0]),
+                    i64::from(mvs[reference][1]),
+                    sub_x,
+                    sub_y,
+                    ref_mi_cols,
+                    ref_mi_rows,
+                )
+            })
+        }),
+    };
+    let onscreen = |extent: (i64, i64, i64, i64)| {
+        extent.0 >= 0 && extent.1 >= 0 && extent.2 <= last_x && extent.3 <= last_y
+    };
+    if pred0.len() == w.saturating_mul(h)
+        && uniform_scaling.is_some_and(|scaling| scaling.into_iter().map(extent).all(onscreen))
+    {
+        return blend_compound_average_equal(pred0, pred1, bit_depth);
+    }
+    let max_sample = i64::from(bit_depth.max_sample());
+    let shift = 1 + compound_inter_post_round();
     let mut blended = Vec::with_capacity(w.saturating_mul(h));
     for (idx, (&left, &right)) in pred0
         .iter()
