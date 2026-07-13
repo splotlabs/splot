@@ -554,7 +554,6 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
         let mut coeffs = empty_luma_coeffs();
         coeffs.all_zero = all_zero;
         ParsedTransformUnit {
-            plan: plane,
             block: PositionedLumaCoeffBlock {
                 x: plane.x,
                 y: plane.y,

@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! General intra transform-block coefficient decode.
+//!
+//! Feature tracking: `DECODE-GENERAL-INTRA-TRANSFORM-UNIT-PREDICTION`.
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
@@ -46,11 +48,17 @@ use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffSta
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 mod cctx;
+mod luma_transform_partition;
 mod reconstruct;
 
 #[cfg(test)]
 use cctx::apply_cross_chroma_transform;
 pub(crate) use cctx::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
+#[cfg(test)]
+use luma_transform_partition::MAX_LUMA_TRANSFORM_PARTITION_UNITS;
+pub(crate) use luma_transform_partition::{
+    LumaTransformPartitionContext, LumaTransformPartitionUnits,
+};
 use reconstruct::{reconstruct_block_setup, resolve_secondary_inverse_transform};
 
 const TX_4X4: usize = 0;
@@ -410,18 +418,6 @@ impl LumaTransformTypeContext {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LumaTransformPartitionContext {
-    mi_size: usize,
-}
-
-impl LumaTransformPartitionContext {
-    #[must_use]
-    pub(crate) const fn new(mi_size: usize) -> Self {
-        Self { mi_size }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TransformToolResidualPolicy {
     Allow,
     AdmitTransformToolSubset {
@@ -668,7 +664,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
     angle_delta_uv: i32,
     fsc_mode: bool,
     transform_tool_residual_policy: TransformToolResidualPolicy,
-) -> Result<Vec<PositionedLumaCoeffBlock>, GeneralIntraResidualError> {
+) -> Result<LumaTransformPartitionUnits<PositionedLumaCoeffBlock>, GeneralIntraResidualError> {
     let reduced_tx_set = work_unit.coeff_frame_facts().reduced_tx_set();
     let records = read_luma_transform_partition_records(
         work_unit.cdf_mut().tile_cdfs_mut(),
@@ -681,10 +677,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
         false,
         reduced_tx_set,
     )?;
-    let mut blocks = Vec::new();
-    blocks
-        .try_reserve(records.len())
-        .map_err(|_| unsupported_transform_partition("partition-record-allocation"))?;
+    let mut blocks = LumaTransformPartitionUnits::new();
     let record_count = records.len();
     for record in records
         .into_iter()
@@ -723,7 +716,7 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             tx_size: record.tx_size,
             middle: record.middle,
             coeffs,
-        });
+        })?;
     }
     Ok(blocks)
 }
@@ -765,9 +758,11 @@ fn read_luma_transform_partition_records(
     fsc_mode: bool,
     is_inter: bool,
     reduced_tx_set: usize,
-) -> Result<Vec<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
+) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
     if context.mi_size == BLOCK_4X4 {
-        return Ok(vec![luma_transform_record(start_x, start_y, tx_size)]);
+        let mut records = LumaTransformPartitionUnits::new();
+        records.push(luma_transform_record(start_x, start_y, tx_size))?;
+        return Ok(records);
     }
     let max_tx_size =
         block_size_table_usize(&MAX_TX_SIZE_RECT, "Max_Tx_Size_Rect", context.mi_size)?;
@@ -791,14 +786,18 @@ fn read_luma_transform_partition_records(
                 index: context.mi_size,
             })?;
     if (block_width >> 6) > 1 || (block_height >> 6) > 1 {
-        return Ok(vec![luma_transform_record(start_x, start_y, tx_size)]);
+        let mut records = LumaTransformPartitionUnits::new();
+        records.push(luma_transform_record(start_x, start_y, tx_size))?;
+        return Ok(records);
     }
 
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     let allow_horz = tx_size_from_dimensions(tx_width, tx_height >> 1).is_some();
     let allow_vert = tx_size_from_dimensions(tx_width >> 1, tx_height).is_some();
     if !allow_horz && !allow_vert {
-        return Ok(vec![luma_transform_record(start_x, start_y, tx_size)]);
+        let mut records = LumaTransformPartitionUnits::new();
+        records.push(luma_transform_record(start_x, start_y, tx_size))?;
+        return Ok(records);
     }
 
     let tx_partition = read_luma_tx_partition_type(
@@ -916,13 +915,13 @@ fn luma_transform_records_for_partition(
     start_y: usize,
     tx_size: usize,
     tx_partition: usize,
-) -> Result<Vec<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
+) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     let mut w4 = tx_width / MI_SIZE;
     let mut h4 = tx_height / MI_SIZE;
     let col4 = start_x / MI_SIZE;
     let row4 = start_y / MI_SIZE;
-    let mut records = Vec::new();
+    let mut records = LumaTransformPartitionUnits::new();
     match tx_partition {
         TX_PARTITION_NONE => push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?,
         TX_PARTITION_HORZ => {
@@ -983,7 +982,7 @@ fn luma_transform_records_for_partition(
 }
 
 fn push_luma_transform_record(
-    records: &mut Vec<LumaTransformPartitionRecord>,
+    records: &mut LumaTransformPartitionUnits<LumaTransformPartitionRecord>,
     row4: usize,
     col4: usize,
     h4: usize,
@@ -1018,8 +1017,7 @@ fn push_luma_transform_record(
         y: row4 * MI_SIZE,
         tx_size,
         middle,
-    });
-    Ok(())
+    })
 }
 
 const fn luma_transform_record(x: usize, y: usize, tx_size: usize) -> LumaTransformPartitionRecord {

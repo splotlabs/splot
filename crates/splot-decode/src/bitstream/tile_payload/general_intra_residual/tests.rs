@@ -158,13 +158,51 @@ fn split_luma_transform_partition_records_follow_raster_order() {
 }
 
 #[test]
+fn five_way_luma_transform_partition_fills_bounded_storage() {
+    let records =
+        luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_HORZ5).unwrap();
+    let geometry: Vec<_> = records
+        .iter()
+        .map(|record| (record.x, record.y, record.middle))
+        .collect();
+
+    assert_eq!(records.len(), MAX_LUMA_TRANSFORM_PARTITION_UNITS);
+    assert_eq!(
+        geometry,
+        [
+            (64, 32, false),
+            (72, 32, true),
+            (64, 36, true),
+            (64, 44, true),
+            (72, 44, true),
+        ]
+    );
+}
+
+#[test]
+fn luma_transform_partition_storage_rejects_a_sixth_unit() {
+    let mut units = LumaTransformPartitionUnits::new();
+    for unit in 0..MAX_LUMA_TRANSFORM_PARTITION_UNITS {
+        units.push(unit).unwrap();
+    }
+
+    assert!(matches!(
+        units.push(MAX_LUMA_TRANSFORM_PARTITION_UNITS),
+        Err(GeneralIntraResidualError::UnsupportedTransformPartition {
+            reason: "unsupported_general_intra_tx_partition_record_capacity",
+        })
+    ));
+    assert!(units.iter().copied().eq(0..5));
+}
+
+#[test]
 fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     let records =
         luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_SPLIT).unwrap();
     assert!(!luma_partition_record_fills_block(
         true,
         records.len(),
-        records[0],
+        *records.iter().next().unwrap(),
         64,
         32
     ));

@@ -10,9 +10,9 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformPartitionContext,
-    LumaTransformTypeContext, PositionedLumaCoeffBlock, TileBlockDecodedState,
-    TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
-    decode_general_intra_plane_coeffs,
+    LumaTransformPartitionUnits, LumaTransformTypeContext, PositionedLumaCoeffBlock,
+    TileBlockDecodedState, TileCoeffContextState, TransformToolResidualPolicy,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -29,17 +29,17 @@ pub(super) struct ParsedResidualPlane {
     pub(super) cctx_role: CctxRole,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum ParsedResidualPlaneKind {
     Single {
         coeffs: LumaCoeffBlock,
         palette_color_map: Option<Vec<u8>>,
     },
     Lossless(Vec<ParsedTransformUnit>),
-    PartitionedLuma(Vec<ParsedTransformUnit>),
+    PartitionedLuma(LumaTransformPartitionUnits<ParsedTransformUnit>),
 }
 
 pub(super) struct ParsedTransformUnit {
-    pub(super) plan: ResidualPlanePlan,
     pub(super) block: PositionedLumaCoeffBlock,
     pub(super) palette_color_map: Option<Vec<u8>>,
 }
@@ -329,7 +329,6 @@ impl ResidualPlanePlan {
                     deblock.record_chroma_unit(unit.plane_id, block.x, block.y, block.tx_size);
                 }
                 units.push(ParsedTransformUnit {
-                    plan: unit,
                     block,
                     palette_color_map: unit_palette_color_map,
                 });
@@ -372,13 +371,11 @@ impl ResidualPlanePlan {
             policy,
         )?;
         let single = blocks.len() == 1;
-        let mut units = Vec::with_capacity(blocks.len());
+        let mut units = LumaTransformPartitionUnits::new();
         for block in blocks {
-            let unit = if single {
-                self
-            } else {
-                self.transform_unit_plan(&block)?
-            };
+            if !single {
+                self.transform_unit_plan(&block)?;
+            }
             let unit_palette_color_map =
                 self.palette_color_map_for_unit(palette_color_map, &block)?;
             let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
@@ -393,10 +390,9 @@ impl ResidualPlanePlan {
                 block.coeffs.eob,
             );
             units.push(ParsedTransformUnit {
-                plan: unit,
                 block,
                 palette_color_map: unit_palette_color_map,
-            });
+            })?;
         }
         Ok(ParsedResidualPlane {
             plane: self,
@@ -506,7 +502,8 @@ impl ParsedResidualPlane {
             ),
             ParsedResidualPlaneKind::Lossless(units) => {
                 for unit in units {
-                    unit.plan.reconstruct(
+                    let plan = self.plane.transform_unit_plan(&unit.block)?;
+                    plan.reconstruct(
                         workspace,
                         &unit.block.coeffs,
                         block_decoded,
@@ -518,27 +515,23 @@ impl ParsedResidualPlane {
                     let (log2_width, log2_height) = tx_size_log2(unit.block.tx_size)?;
                     let width4 = (1usize << log2_width) >> 2;
                     let height4 = (1usize << log2_height) >> 2;
-                    let (sub_x, sub_y) = self
-                        .plane
-                        .block_ctx
-                        .chroma()
-                        .subsampling(unit.plan.plane_id);
+                    let (sub_x, sub_y) = self.plane.block_ctx.chroma().subsampling(plan.plane_id);
                     let sb_mask = block_decoded.sb_size4().saturating_sub(1);
                     let row4 = ((unit.block.y >> 2) << sub_y) & sb_mask;
                     let col4 = ((unit.block.x >> 2) << sub_x) & sb_mask;
-                    block_decoded.set_block(
-                        unit.plan.plane_id.index(),
-                        row4,
-                        col4,
-                        width4,
-                        height4,
-                    );
+                    block_decoded.set_block(plan.plane_id.index(), row4, col4, width4, height4);
                 }
                 Ok(())
             }
             ParsedResidualPlaneKind::PartitionedLuma(units) => {
+                let single = units.len() == 1;
                 for unit in units {
-                    unit.plan.reconstruct(
+                    let plan = if single {
+                        self.plane
+                    } else {
+                        self.plane.transform_unit_plan(&unit.block)?
+                    };
+                    plan.reconstruct(
                         workspace,
                         &unit.block.coeffs,
                         block_decoded,
