@@ -4,7 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, TX_SIZE_SQR, TX_SIZE_SQR_UP};
+use splot_core::tables::conversion::{
+    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
+};
 
 use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
 use super::super::coeff_state::TileCoeffContextState;
@@ -28,6 +30,7 @@ use super::ordinary_pass::{
     NonZeroCoeffOrdinaryDerivedBasePass, apply_coeff_ordinary_branch,
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
+use super::scan_walk::derive_coeff_scan_order;
 use super::test_support::{
     OrdinaryBranchRun, run_ordinary_branch, seeded_context_state, setup_start_with_input,
     symbol_decoder,
@@ -490,6 +493,32 @@ fn coefficient_ordinary_branch_tx_size_scan_order_derives_vertical() {
         scan.as_slice(),
         &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     );
+}
+
+#[test]
+fn coefficient_ordinary_branch_tx_size_scan_order_matches_owned_scan_oracle_exhaustively() {
+    for width in [4, 8, 16, 32] {
+        for height in [4, 8, 16, 32] {
+            for plane_tx_type in 0..16 {
+                let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
+                let inline = tx_size_scan_for_test(width, height, plane_tx_type).unwrap();
+                let owned = derive_coeff_scan_order(width, height, tx_class).unwrap();
+                assert_eq!(inline, owned, "{width}x{height}, tx type {plane_tx_type}");
+                assert_scan_permutation(&inline);
+            }
+        }
+    }
+
+    for (&raw_width, &raw_height) in TX_WIDTH.iter().zip(&TX_HEIGHT) {
+        let width = usize::try_from(raw_width).unwrap();
+        let height = usize::try_from(raw_height).unwrap();
+        for plane_tx_type in 0..16 {
+            let tx_class = CoeffTransformClass::from_plane_tx_type(plane_tx_type);
+            let inline = tx_size_scan_for_test(width, height, plane_tx_type).unwrap();
+            let owned = derive_coeff_scan_order(width, height, tx_class).unwrap();
+            assert_eq!(inline, owned, "{width}x{height}, tx type {plane_tx_type}");
+        }
+    }
 }
 
 #[test]

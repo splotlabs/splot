@@ -3,8 +3,6 @@
 
 //! Ordinary non-FSC coefficient pass composition.
 
-use std::collections::TryReserveError;
-
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::TileCdfSubset;
@@ -301,8 +299,8 @@ pub(crate) enum CoeffOrdinaryBranchError {
         "ordinary coefficient branch directional UVMode {uv_mode} angle_delta_uv {angle_delta_uv} overflowed"
     )]
     DirectionalAngleOverflow { uv_mode: usize, angle_delta_uv: i32 },
-    #[error("ordinary coefficient branch scan allocation failed: {0}")]
-    ScanAllocation(#[from] TryReserveError),
+    #[error("ordinary coefficient branch scan derivation failed: {0}")]
+    ScanOrder(#[source] splot_recon::ReconError),
     #[error("ordinary coefficient branch handoff failed: {0}")]
     Branch(#[from] CoeffLoopContextError),
     #[error("ordinary coefficient branch nonzero pass failed: {0}")]
