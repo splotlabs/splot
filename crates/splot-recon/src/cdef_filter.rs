@@ -35,7 +35,7 @@
 //! Feature tracking: `RECON-CDEF-FILTER`.
 
 /// AV2 § 7.18.2 `Div_Table[9]`: reciprocal-scaling weights for the direction cost.
-const DIV_TABLE: [i64; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
+const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
 /// AV2 § 7.18.3 `Cdef_Pri_Taps[2][2]`: primary-tap weights, selected by
 /// `(priStr >> coeffShift) & 1`.
@@ -83,14 +83,14 @@ const fn floor_log2(x: u32) -> u32 {
 /// `0..8` and the variance `var = (bestCost - cost[(yDir + 4) & 7]) >> 10`.
 ///
 /// The `partial[][]` sums of eight `(sample - 128)` terms fit comfortably in `i32`,
-/// but the squared partials times `Div_Table` (up to `840`) accumulate well past
-/// `i32`, so the cost uses `i64` accumulators per the spec's exact index mapping.
+/// The squared partials times `Div_Table` use the same `i32` accumulators as AVM;
+/// the spec-bounded pre-shifted samples keep every directional cost in range.
 #[allow(clippy::needless_range_loop)]
-pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i64) {
-    let mut partial = [[0i64; 15]; 8];
+pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
+    let mut partial = [[0i32; 15]; 8];
     for i in 0..8 {
         for j in 0..8 {
-            let x = i64::from(block[i][j]);
+            let x = block[i][j];
             partial[0][i + j] += x;
             partial[1][i + j / 2] += x;
             partial[2][i] += x;
@@ -102,7 +102,7 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i64) {
         }
     }
 
-    let mut cost = [0i64; 8];
+    let mut cost = [0i32; 8];
     for i in 0..8 {
         cost[2] += partial[2][i] * partial[2][i];
         cost[6] += partial[6][i] * partial[6][i];
@@ -130,7 +130,7 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i64) {
         i += 2;
     }
 
-    let mut best_cost = 0i64;
+    let mut best_cost = 0i32;
     let mut y_dir = 0usize;
     for (dir, &c) in cost.iter().enumerate() {
         if c > best_cost {

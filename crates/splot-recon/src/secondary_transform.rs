@@ -26,7 +26,7 @@
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
 use crate::coefficient_scan::{TransformClass, coefficient_scan_order};
-use crate::math::round2_signed;
+use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
 
 /// AV2 § 3 `IST_4X4_HEIGHT`: rows in the 4x4 secondary-transform matrix.
@@ -108,8 +108,8 @@ pub struct SecondaryInverseTransform {
 /// for the large case, `Stx_Scan_Map`), honoring `transpose`.
 ///
 /// The computation is total and panic-free for valid inputs: the accumulation
-/// uses `i64` (at most 32 products of `Clip3`-bounded coefficients and small
-/// kernel weights, far inside `i64`), every table index is validated before use,
+/// uses `i32` (at most 32 products of § 7.14.4-bounded coefficients and kernels
+/// below 128, fitting below 2^30), every table index is validated before use,
 /// and the scan scratch is a fixed 32x32 stack buffer.
 ///
 /// # Errors
@@ -162,10 +162,11 @@ pub fn secondary_inverse_transform(
     let mut scan = [0u16; MAX_DIM * MAX_DIM];
     let scan = &mut scan[..expected];
     coefficient_scan_order(w, h, primary_scan_class, scan)?;
-    let mut coefs = [0i64; IST_8X8_HEIGHT];
+    let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
+    let mut coefs = [0i32; IST_8X8_HEIGHT];
     for (slot, &pos) in coefs[..n].iter_mut().zip(scan.iter()) {
         let index = pos as usize;
-        *slot = i64::from(dequant[index]);
+        *slot = dequant[index].clamp(-bound, bound - 1);
     }
     dequant.fill(0);
 
@@ -174,18 +175,17 @@ pub fn secondary_inverse_transform(
     } else {
         (2u32, 4usize)
     };
-    let bound = 1i64 << (u32::from(bit_depth.bits()) + 7);
     for i in 0..kernel_width {
-        let mut t = 0i64;
+        let mut t = 0i32;
         for (j, &coef) in coefs[..n].iter().enumerate() {
             let weight = if large {
                 IST_8X8_KERNEL[kernel][stx][j][i]
             } else {
                 IST_4X4_KERNEL[kernel][stx][j][i]
             };
-            t += coef * i64::from(weight);
+            t += coef * weight;
         }
-        let v = round2_signed(t, 7).clamp(-bound, bound - 1);
+        let v = round2_signed_i32(t, 7).clamp(-bound, bound - 1);
 
         let pos = if large {
             let mapped = usize::try_from(STX_SCAN_MAP[kernel][stx][i]).map_err(|_| {
@@ -202,7 +202,7 @@ pub fn secondary_inverse_transform(
         let x = pos & (scan_w - 1);
         let y = pos >> scan_bwl;
         let out_index = if transpose { x * w + y } else { y * w + x };
-        dequant[out_index] = v as i32;
+        dequant[out_index] = v;
     }
     Ok(())
 }
@@ -216,6 +216,20 @@ const fn is_valid_side(side: usize) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn round2_signed_reference(value: i64, shift: u32) -> i64 {
+        let magnitude = value.unsigned_abs();
+        let rounded = if shift == 0 {
+            magnitude
+        } else {
+            (magnitude + (1u64 << (shift - 1))) >> shift
+        };
+        if value < 0 {
+            -(rounded as i64)
+        } else {
+            rounded as i64
+        }
+    }
 
     fn params(
         w: usize,
@@ -268,7 +282,7 @@ mod tests {
                 };
                 t += c * i64::from(weight);
             }
-            let v = round2_signed(t, 7).clamp(-bound, bound - 1) as i32;
+            let v = round2_signed_reference(t, 7).clamp(-bound, bound - 1) as i32;
             let pos = if large {
                 STX_SCAN_ORDER_8X8[STX_SCAN_MAP[p.kernel][stx][i] as usize]
             } else {

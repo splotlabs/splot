@@ -26,18 +26,20 @@
 
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
-use crate::math::{clip3, round2};
+use crate::math::round2_i32;
 
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).
 const SCALE_SUBPEL_BITS: u32 = 10;
+const MIN_SCALE_STEP: i32 = 1 << (SCALE_SUBPEL_BITS - 4);
+const MAX_SCALE_STEP: i32 = 1 << (SCALE_SUBPEL_BITS + 1);
 
 /// AV2 § 3 `SUBPEL_BITS`: number of fractional bits when choosing a filter tap.
 const SUBPEL_BITS: u32 = 4;
 
 /// AV2 § 3 `SUBPEL_MASK = (1 << SUBPEL_BITS) - 1`: the 16-phase sub-pel mask used
 /// to index the inner `Subpel_Filters[...][phase]` dimension.
-const SUBPEL_MASK: i64 = (1 << SUBPEL_BITS) - 1;
+const SUBPEL_MASK: i32 = (1 << SUBPEL_BITS) - 1;
 
 /// AV2 § 7.13.3.16 `InterRound0`: the down-shift after the horizontal filter
 /// pass. Fixed at 3.
@@ -379,10 +381,10 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
     /// read additionally clamps to the view's own `width`/`height` so it is total
     /// even if a caller passes a clipping region wider than the actual plane
     /// (defense in depth — the function never indexes out of bounds).
-    pub fn sample(&self, row: usize, col: usize) -> i64 {
+    pub fn sample(&self, row: usize, col: usize) -> i32 {
         let row = row.min(self.height - 1);
         let col = col.min(self.width - 1);
-        i64::from(self.samples[row * self.stride + col].to_u16())
+        i32::from(self.samples[row * self.stride + col].to_u16())
     }
 }
 
@@ -398,24 +400,24 @@ pub struct SubpelPredictParams {
     pub h: usize,
     /// The § 7.13.3.17 `startX`: the reference block left edge in 1/1024-sample
     /// units (the `x` input to § 7.13.3.18).
-    pub start_x: i64,
+    pub start_x: i32,
     /// The § 7.13.3.17 `startY`: the reference block top edge in 1/1024-sample
     /// units (the `y` input to § 7.13.3.18).
-    pub start_y: i64,
+    pub start_y: i32,
     /// The § 7.13.3.17 `stepX`: the horizontal step in 1/1024-sample units
     /// (the `xStep` input to § 7.13.3.18).
-    pub step_x: i64,
+    pub step_x: i32,
     /// The § 7.13.3.17 `stepY`: the vertical step in 1/1024-sample units
     /// (the `yStep` input to § 7.13.3.18).
-    pub step_y: i64,
+    pub step_y: i32,
     /// The § 7.13.3.18 reference-clipping region left bound (`firstX`).
-    pub first_x: i64,
+    pub first_x: i32,
     /// The § 7.13.3.18 reference-clipping region top bound (`firstY`).
-    pub first_y: i64,
+    pub first_y: i32,
     /// The § 7.13.3.18 reference-clipping region right bound (`lastX`).
-    pub last_x: i64,
+    pub last_x: i32,
     /// The § 7.13.3.18 reference-clipping region bottom bound (`lastY`).
-    pub last_y: i64,
+    pub last_y: i32,
     /// The active bit depth, used by the final § 4.8 `Clip1`.
     pub bit_depth: BitDepth,
 }
@@ -447,9 +449,9 @@ pub fn subpel_predict_block<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<u16>> {
-    let max_sample = i64::from(params.bit_depth.max_sample());
+    let max_sample = i32::from(params.bit_depth.max_sample());
     subpel_predict_block_internal(reference, params, INTER_ROUND1_NON_COMPOUND, |pred| {
-        clip3(0, max_sample, i64::from(pred)) as u16
+        pred.clamp(0, max_sample) as u16
     })
 }
 
@@ -469,7 +471,7 @@ pub fn subpel_predict_block_into<T: ReconSample>(
     output: &mut [u16],
 ) -> Result<()> {
     let intermediate_height = validate_subpel_params(params)?;
-    let max_sample = i64::from(params.bit_depth.max_sample());
+    let max_sample = i32::from(params.bit_depth.max_sample());
     subpel_predict_block_internal_into_validated(
         reference,
         params,
@@ -477,7 +479,7 @@ pub fn subpel_predict_block_into<T: ReconSample>(
         intermediate_height,
         output,
         params.w,
-        |pred| clip3(0, max_sample, i64::from(pred)) as u16,
+        |pred| pred.clamp(0, max_sample) as u16,
     )
 }
 
@@ -572,13 +574,13 @@ pub fn blend_compound_average_weighted_sample(
     bit_depth: BitDepth,
     cwp_weight: i16,
 ) -> u16 {
-    let forward = i64::from(cwp_weight);
+    let forward = i32::from(cwp_weight);
     let backward = 16 - forward;
-    let blended = round2(
-        forward * i64::from(pred0) + backward * i64::from(pred1),
+    let blended = round2_i32(
+        forward * pred0 + backward * pred1,
         4 + compound_inter_post_round(),
     );
-    clip3(0, i64::from(bit_depth.max_sample()), blended) as u16
+    blended.clamp(0, i32::from(bit_depth.max_sample())) as u16
 }
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
@@ -627,11 +629,11 @@ fn subpel_copy_block_into<T: ReconSample, O>(
         x >= usize::try_from(params.first_x.max(0)).unwrap_or(usize::MAX)
             && x.checked_add(params.w).is_some_and(|end| {
                 end <= reference.width
-                    && i64::try_from(end - 1).is_ok_and(|last| last <= params.last_x)
+                    && i32::try_from(end - 1).is_ok_and(|last| last <= params.last_x)
             })
     });
     for r in 0..params.h {
-        let row = clip3(params.first_y, params.last_y, y0 + r as i64) as usize;
+        let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
         let output = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
             let row = row.min(reference.height - 1);
@@ -644,8 +646,8 @@ fn subpel_copy_block_into<T: ReconSample, O>(
             }
         } else {
             for (c, out) in output.iter_mut().enumerate() {
-                let col = clip3(params.first_x, params.last_x, x0 + c as i64) as usize;
-                *out = finish((reference.sample(row, col) as i32) << shift_up);
+                let col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
+                *out = finish(reference.sample(row, col) << shift_up);
             }
         }
     }
@@ -728,9 +730,15 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     if step_x < 0 || step_y < 0 {
         return Err(ReconError::SubpelNegativeStep { step_x, step_y });
     }
+    if !(MIN_SCALE_STEP..=MAX_SCALE_STEP).contains(&step_x)
+        || !(MIN_SCALE_STEP..=MAX_SCALE_STEP).contains(&step_y)
+    {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "subpel step outside AV2 reference-scaling range",
+        });
+    }
 
-    let h_i64 = h as i64;
-    let intermediate_height_i64 = (h_i64 - 1)
+    let intermediate_height_i32 = (h as i32 - 1)
         .checked_mul(step_y)
         .and_then(|p| p.checked_add((1 << SCALE_SUBPEL_BITS) - 1))
         .map(|p| (p >> SCALE_SUBPEL_BITS) + 8)
@@ -739,10 +747,10 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
             context: "subpel intermediate height",
         })?;
     let intermediate_height =
-        usize::try_from(intermediate_height_i64).map_err(|_| ReconError::ArithmeticOverflow {
+        usize::try_from(intermediate_height_i32).map_err(|_| ReconError::ArithmeticOverflow {
             context: "subpel intermediate height",
         })?;
-    (w as i64 - 1)
+    (w as i32 - 1)
         .checked_mul(step_x)
         .and_then(|m| start_x.checked_add(m))
         .ok_or(ReconError::ArithmeticOverflow {
@@ -817,13 +825,13 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     let x0 = start_x >> SCALE_SUBPEL_BITS;
     let x_window_direct = step_x == 1 << SCALE_SUBPEL_BITS
         && x0 - 3 >= first_x.max(0)
-        && x0 + w as i64 + 3 <= last_x.min(reference.width as i64 - 1);
+        && x0 + w as i32 + 3 <= last_x.min(reference.width as i32 - 1);
 
     let v_filter = interp.pass_index(h as u32);
     let mut read_lo = intermediate_height;
     let mut read_hi = 0usize;
     for r in 0..h {
-        let p = (start_y & 1023) + step_y * r as i64;
+        let p = scaled_position(start_y & 1023, step_y, r);
         let base = (p >> SCALE_SUBPEL_BITS) as usize;
         if base
             .checked_add(NUM_TAPS)
@@ -855,11 +863,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             })?;
     with_subpel_intermediate(intermediate_len, |intermediate| {
         for r in read_lo..read_hi {
-            let ref_row = clip3(
-                first_y,
-                last_y,
-                (start_y >> SCALE_SUBPEL_BITS) + r as i64 - 3,
-            );
+            let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
             let ref_row = (ref_row as usize).min(reference.height - 1);
             let window = x_window_direct
                 .then(|| {
@@ -880,42 +884,42 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
                 let taps = &taps[tap_start..tap_end];
                 for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
-                    let mut s: i64 = 0;
+                    let mut s = 0i32;
                     let samples = &win[tap_start..tap_start + taps.len()];
                     for (&tap, &sample) in taps.iter().zip(samples) {
-                        s += i64::from(tap) * i64::from(sample.to_u16());
+                        s += tap * i32::from(sample.to_u16());
                     }
-                    *out = round2(s, INTER_ROUND0) as i32;
+                    *out = round2_i32(s, INTER_ROUND0);
                 }
                 continue;
             }
             for c in 0..w {
-                let p = start_x + step_x * c as i64;
+                let p = scaled_position(start_x, step_x, c);
                 let phase = ((p >> 6) & SUBPEL_MASK) as usize;
                 if phase == 0 {
-                    let ref_col = clip3(first_x, last_x, p >> SCALE_SUBPEL_BITS);
-                    intermediate[r * w + c] = (reference.sample(ref_row, ref_col as usize) as i32)
-                        << (FILTER_BITS - INTER_ROUND0);
+                    let ref_col = (p >> SCALE_SUBPEL_BITS).clamp(first_x, last_x);
+                    intermediate[r * w + c] =
+                        reference.sample(ref_row, ref_col as usize) << (FILTER_BITS - INTER_ROUND0);
                     continue;
                 }
                 let taps = &h_filter_rows[phase];
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
                 let taps = &taps[tap_start..tap_end];
-                let mut s: i64 = 0;
+                let mut s = 0i32;
                 for (tap_offset, &tap) in taps.iter().enumerate() {
                     let t = tap_start + tap_offset;
-                    let ref_col = clip3(first_x, last_x, (p >> SCALE_SUBPEL_BITS) + t as i64 - 3);
-                    s += i64::from(tap) * reference.sample(ref_row, ref_col as usize);
+                    let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
+                    s += tap * reference.sample(ref_row, ref_col as usize);
                 }
-                intermediate[r * w + c] = round2(s, INTER_ROUND0) as i32;
+                intermediate[r * w + c] = round2_i32(s, INTER_ROUND0);
             }
         }
 
         let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
 
-        let mut acc = [0i64; MAX_BLOCK_DIM];
+        let mut acc = [0i32; MAX_BLOCK_DIM];
         for r in 0..h {
-            let p = (start_y & 1023) + step_y * r as i64;
+            let p = scaled_position(start_y & 1023, step_y, r);
             let phase = ((p >> 6) & SUBPEL_MASK) as usize;
             let taps = &v_filter_rows[phase];
             let base = (p >> SCALE_SUBPEL_BITS) as usize;
@@ -923,7 +927,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             if phase == 0 {
                 let center = &intermediate[(base + 3) * w..(base + 4) * w];
                 for (out, &value) in output.iter_mut().zip(center) {
-                    *out = finish(round2(i64::from(value) << FILTER_BITS, inter_round1) as i32);
+                    *out = finish(round2_i32(value << FILTER_BITS, inter_round1));
                 }
                 continue;
             }
@@ -934,18 +938,21 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             acc.fill(0);
             for (tap_offset, &tap) in taps.iter().enumerate() {
                 let t = tap_start + tap_offset;
-                let tap = i64::from(tap);
                 for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
-                    *a += tap * i64::from(v);
+                    *a += tap * v;
                 }
             }
             for (out, &s) in output.iter_mut().zip(acc.iter()) {
-                *out = finish(round2(s, inter_round1) as i32);
+                *out = finish(round2_i32(s, inter_round1));
             }
         }
 
         Ok(())
     })
+}
+
+fn scaled_position(start: i32, step: i32, index: usize) -> i32 {
+    start + step * index as i32
 }
 
 #[cfg(test)]

@@ -36,7 +36,7 @@
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
-use crate::math::round2;
+use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
@@ -104,8 +104,8 @@ pub struct DeblockSampleFilter {
 /// w_mult_neg * (maxWidthNeg - i), 3 + DF_SHIFT))` (unless `prev_lossless`).
 /// `q0`/`q1`/`p0`/`p1` are read from the original `line` before any write.
 ///
-/// The computation is total and panic-free for valid inputs: the ramp uses `i64`
-/// (each term is far inside `i64`), the `qThrClamp` bound is clamped non-negative
+/// The computation is total and panic-free for valid inputs: the ramp uses `i32`
+/// with saturating arithmetic, the `qThrClamp` bound is clamped non-negative
 /// so `Clip3` never inverts, and the line bounds are validated before any sample
 /// is read or written.
 ///
@@ -154,30 +154,36 @@ pub fn deblock_sample_filter<T: ReconSample>(
         });
     }
 
-    let q0 = i64::from(line[boundary].to_u16());
-    let q1 = i64::from(line[boundary + 1].to_u16());
-    let p0 = i64::from(line[boundary - 1].to_u16());
-    let p1 = i64::from(line[boundary - 2].to_u16());
+    let q0 = i32::from(line[boundary].to_u16());
+    let q1 = i32::from(line[boundary + 1].to_u16());
+    let p0 = i32::from(line[boundary - 1].to_u16());
+    let p1 = i32::from(line[boundary - 2].to_u16());
 
-    let q_thr_clamp = (i64::from(q_thr) * i64::from(q_thresh_mult)).max(0);
+    let q_thr_clamp = q_thr.saturating_mul(q_thresh_mult).max(0);
     let delta_m2 = ((p1 - q1 + 3 * (q0 - p0)) * 4).clamp(-q_thr_clamp, q_thr_clamp);
-    let delta_m2_neg = delta_m2 * i64::from(w_mult_neg);
-    let delta_m2_pos = delta_m2 * i64::from(w_mult_pos);
+    let delta_m2_neg = delta_m2.saturating_mul(w_mult_neg);
+    let delta_m2_pos = delta_m2.saturating_mul(w_mult_pos);
 
     let shift = 3 + DF_SHIFT;
-    let max_sample = i64::from(bit_depth.max_sample());
+    let max_sample = i32::from(bit_depth.max_sample());
     for i in 0..width {
-        let signed_i = i as i64;
-        let diff_pos = round2(delta_m2_pos * (max_width_pos as i64 - signed_i), shift);
+        let signed_i = i as i32;
+        let diff_pos = round2_i32(
+            delta_m2_pos.saturating_mul(max_width_pos as i32 - signed_i),
+            shift,
+        );
         if !curr_lossless {
             let index = boundary + i;
-            let value = (i64::from(line[index].to_u16()) - diff_pos).clamp(0, max_sample);
+            let value = (i32::from(line[index].to_u16()) - diff_pos).clamp(0, max_sample);
             line[index] = T::try_from_u16(value as u16)?;
         }
         if i < max_width_neg && !prev_lossless {
-            let diff_neg = round2(delta_m2_neg * (max_width_neg as i64 - signed_i), shift);
+            let diff_neg = round2_i32(
+                delta_m2_neg.saturating_mul(max_width_neg as i32 - signed_i),
+                shift,
+            );
             let index = boundary - 1 - i;
-            let value = (i64::from(line[index].to_u16()) + diff_neg).clamp(0, max_sample);
+            let value = (i32::from(line[index].to_u16()) + diff_neg).clamp(0, max_sample);
             line[index] = T::try_from_u16(value as u16)?;
         }
     }
@@ -240,13 +246,12 @@ const _MAX_WIDTH_CONST_CHECK: () =
 /// generated § 9.2 tables, which `splot-recon` cannot reach). This is a total
 /// `const fn`.
 pub const fn deblock_side_threshold_index(lvl: u32, bit_depth: BitDepth) -> usize {
-    let q = lvl as i64 - 24 * (bit_depth.bits() as i64 - 8);
-    if q < 0 {
-        0
-    } else if q > (MAX_SIDE_TABLE as i64 - 1) {
-        MAX_SIDE_TABLE - 1
+    let adjustment = 24 * (bit_depth.bits() - 8) as u32;
+    let q = lvl.saturating_sub(adjustment) as usize;
+    if q < MAX_SIDE_TABLE {
+        q
     } else {
-        q as usize
+        MAX_SIDE_TABLE - 1
     }
 }
 
@@ -264,18 +269,18 @@ pub const fn deblock_side_threshold_index(lvl: u32, bit_depth: BitDepth) -> usiz
 /// § 7.17.7.2 filter-choice process uses.
 ///
 /// The computation is total and panic-free: the quantizer lookup is total, and
-/// the `i64` arithmetic with `bit_depth` shifts (`12 - BitDepth` and
+/// the `i32` arithmetic with `bit_depth` shifts (`12 - BitDepth` and
 /// `13 - BitDepth` are positive for the 8- and 10-bit depths) cannot overflow.
 pub fn deblock_adaptive_filter_strength(
     lvl: u32,
     side_threshold: i32,
     bit_depth: BitDepth,
 ) -> (i32, i32) {
-    let bits = i64::from(bit_depth.bits());
-    let get_q = i64::from(quantizer_value(lvl, 0, bit_depth));
+    let bits = u32::from(bit_depth.bits());
+    let get_q = quantizer_value(lvl, 0, bit_depth) as i32;
     let q_thr = ((get_q + (1 << (QUANT_TABLE_BITS - 1))) >> QUANT_TABLE_BITS) >> 6;
-    let side = (i64::from(side_threshold) + (1i64 << (12 - bits))).max(0) >> (13 - bits);
-    (q_thr as i32, side as i32)
+    let side = side_threshold.saturating_add(1i32 << (12 - bits)).max(0) >> (13 - bits);
+    (q_thr, side)
 }
 
 /// Caller-resolved parameters for the AV2 § 7.17.7.2 deblocking filter-choice
@@ -325,7 +330,7 @@ pub struct DeblockFilterChoice {
 /// `[boundary - maxSamplesNeg, boundary + maxSamplesPos - 1]` window (with the
 /// unconditional `s[3]` read covered for every `maxWidthPos > 1`, and the deeper
 /// negative reads guarded by the matching `maxWidthNeg` conditions), the line
-/// lengths are validated before any sample is read, the `i64` arithmetic cannot
+/// lengths are validated before any sample is read, the `i32` arithmetic cannot
 /// overflow, and `q_first` is a fixed-size array so the `Q_First[dist - 4]`
 /// lookup (`dist - 4 <= 4`) is always in bounds.
 ///
@@ -380,12 +385,10 @@ pub fn deblock_filter_choice<T: ReconSample>(
         }
     }
 
-    let q_thr = i64::from(q_thr);
-    let side_thr = i64::from(side_thr);
-
-    let sample =
-        |line: &[T], k: i64| -> i64 { i64::from(line[(boundary as i64 + k) as usize].to_u16()) };
-    let second_deriv_at = |k: i64| -> i64 {
+    let sample = |line: &[T], k: i32| -> i32 {
+        i32::from(line[(boundary as isize + k as isize) as usize].to_u16())
+    };
+    let second_deriv_at = |k: i32| -> i32 {
         let deriv_s = (sample(s, k - 1) - (sample(s, k) << 1) + sample(s, k + 1)).abs();
         let deriv_t = (sample(t, k - 1) - (sample(t, k) << 1) + sample(t, k + 1)).abs();
         (deriv_s + deriv_t + 1) >> 1
@@ -419,7 +422,7 @@ pub fn deblock_filter_choice<T: ReconSample>(
         return Ok(2);
     }
 
-    let directional = |i: i64, j: i64, g: i64, n: i64| -> i64 {
+    let directional = |i: i32, j: i32, g: i32, n: i32| -> i32 {
         let deriv_s = (sample(s, i) - sample(s, j) - n * (sample(s, i) - sample(s, g))).abs();
         let deriv_t = (sample(t, i) - sample(t, j) - n * (sample(t, i) - sample(t, g))).abs();
         (deriv_s + deriv_t + 1) >> 1
@@ -440,13 +443,13 @@ pub fn deblock_filter_choice<T: ReconSample>(
     let mut prev_dist = 3usize;
     let mut dist = 4usize;
     while dist <= max_width_pos {
-        let q_thr4 = q_thr * i64::from(q_first[dist - 4]);
-        let end_thr4 = (side_thr * dist as i64) >> 4;
+        let q_thr4 = q_thr.saturating_mul(q_first[dist - 4]);
+        let end_thr4 = side_thr.saturating_mul(dist as i32) >> 4;
         if transition > q_thr4 {
             return Ok(prev_dist);
         }
         let dist2 = dist.min(7);
-        let n = dist2 as i64;
+        let n = dist2 as i32;
         if max_width_neg >= dist2 && directional(-1, -(n + 1), -2, n) > end_thr4 {
             return Ok(prev_dist);
         }
@@ -463,6 +466,7 @@ pub fn deblock_filter_choice<T: ReconSample>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::math::round2;
 
     #[allow(clippy::too_many_arguments)]
     fn params(

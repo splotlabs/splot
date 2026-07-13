@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::math::clip3;
-
 use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
@@ -38,53 +36,45 @@ const SEARCH_NEIGHBORS: [(i32, i32); 24] = [
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ReferenceAreaBounds {
-    pub(super) first_x: i64,
-    pub(super) first_y: i64,
-    pub(super) last_x: i64,
-    pub(super) last_y: i64,
+    pub(super) first_x: i32,
+    pub(super) first_y: i32,
+    pub(super) last_x: i32,
+    pub(super) last_y: i32,
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reference_area_bounds(
-    plane_x: i64,
-    plane_y: i64,
+    plane_x: i32,
+    plane_y: i32,
     width: usize,
     height: usize,
     candidate: Mv,
     sub_x: u32,
     sub_y: u32,
-    ref_mi_cols: i64,
-    ref_mi_rows: i64,
+    ref_mi_cols: i32,
+    ref_mi_rows: i32,
 ) -> ReferenceAreaBounds {
     let scaling = derive_plane_scaling(
         plane_x,
         plane_y,
-        i64::from(candidate.row),
-        i64::from(candidate.col),
+        candidate.row,
+        candidate.col,
         sub_x,
         sub_y,
         ref_mi_cols,
         ref_mi_rows,
-        width as i64,
-        height as i64,
+        width as i32,
+        height as i32,
     );
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
     let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
+    let last_x = scaling.start_x + scaling.step_x * width.saturating_sub(1) as i32;
+    let last_y = scaling.start_y + scaling.step_y * height.saturating_sub(1) as i32;
     ReferenceAreaBounds {
-        first_x: clip3(0, scaling.last_x, (scaling.start_x >> 10) - x_padding.0),
-        first_y: clip3(0, scaling.last_y, (scaling.start_y >> 10) - y_padding.0),
-        last_x: clip3(
-            0,
-            scaling.last_x,
-            ((scaling.start_x + scaling.step_x * (width.saturating_sub(1)) as i64) >> 10)
-                + x_padding.1,
-        ),
-        last_y: clip3(
-            0,
-            scaling.last_y,
-            ((scaling.start_y + scaling.step_y * (height.saturating_sub(1)) as i64) >> 10)
-                + y_padding.1,
-        ),
+        first_x: ((scaling.start_x >> 10) - x_padding.0).clamp(0, scaling.last_x),
+        first_y: ((scaling.start_y >> 10) - y_padding.0).clamp(0, scaling.last_y),
+        last_x: ((last_x >> 10) + x_padding.1).clamp(0, scaling.last_x),
+        last_y: ((last_y >> 10) + y_padding.1).clamp(0, scaling.last_y),
     }
 }
 
@@ -212,8 +202,7 @@ fn search_refinemv<T: ReconSample>(
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
     candidates.into_iter().all(|mv| {
         [mv.row, mv.col].into_iter().all(|component| {
-            i64::from(component) - i64::from(SEARCH_PADDING) >= i64::from(MV_LOW + 1)
-                && i64::from(component) + 2 * 8 <= i64::from(MV_UPP - 1)
+            (MV_LOW + 1 + SEARCH_PADDING..=MV_UPP - 1 - 2 * 8).contains(&component)
         })
     })
 }
@@ -242,7 +231,7 @@ fn search_refinemv_offset(
             .and_then(|area| area.checked_mul(2))
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "refine-MV SAD threshold",
-            })? as u64;
+            })? as u32;
         let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
         let biased_center = center - (center >> 3);
         if biased_center < threshold {
@@ -278,7 +267,7 @@ fn refinemv_sad(
     dx: i32,
     dy: i32,
     bit_depth: splot_recon::BitDepth,
-) -> splot_recon::Result<u64> {
+) -> splot_recon::Result<u32> {
     let start0_x = usize::try_from(2 + dx).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD left offset",
     })?;
@@ -291,7 +280,7 @@ fn refinemv_sad(
     let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD bottom offset",
     })?;
-    let mut sad = 0u64;
+    let mut sad = 0u32;
     for row in (0..height).step_by(2) {
         for col in 0..width {
             let index0 = (start0_y + row)
@@ -312,7 +301,7 @@ fn refinemv_sad(
             let right = *pred1.get(index1).ok_or(ReconError::ArithmeticOverflow {
                 context: "refine-MV SAD second lookup",
             })?;
-            sad += u64::from(left.abs_diff(right));
+            sad += u32::from(left.abs_diff(right));
         }
     }
     Ok(sad >> u32::from(bit_depth.bits().saturating_sub(8)))

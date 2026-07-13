@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::derive_optflow_mv_deltas;
-use splot_recon::math::round2_signed;
+use splot_recon::math::round2_signed_i32;
 
 use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
@@ -105,8 +105,8 @@ impl CompoundMotionGrid {
             let row_delta = cell.mvs[reference][0] - base.row * 2;
             let col_delta = cell.mvs[reference][1] - base.col * 2;
             Mv {
-                row: base.row + round2_signed(i64::from(row_delta), 1) as i32,
-                col: base.col + round2_signed(i64::from(col_delta), 1) as i32,
+                row: base.row + round2_signed_i32(row_delta, 1),
+                col: base.col + round2_signed_i32(col_delta, 1),
             }
         }))
     }
@@ -120,21 +120,21 @@ impl CompoundMotionGrid {
             return self.stored_mvs_at_luma_offset(x, y);
         }
         let base_mvs = self.cell_at_luma_offset(x, y)?.base_mvs;
-        let mut delta_sum = [[0i64; 2]; 2];
+        let mut delta_sum = [[0i32; 2]; 2];
         for dy in [0, 4] {
             for dx in [0, 4] {
                 let Ok(cell) = self.cell_at_luma_offset(x + dx, y + dy) else {
                     continue;
                 };
                 for (reference, sum) in delta_sum.iter_mut().enumerate() {
-                    sum[0] += i64::from(cell.mvs[reference][0] - cell.base_mvs[reference].row * 2);
-                    sum[1] += i64::from(cell.mvs[reference][1] - cell.base_mvs[reference].col * 2);
+                    sum[0] += cell.mvs[reference][0] - cell.base_mvs[reference].row * 2;
+                    sum[1] += cell.mvs[reference][1] - cell.base_mvs[reference].col * 2;
                 }
             }
         }
         Ok(core::array::from_fn(|reference| Mv {
-            row: base_mvs[reference].row + round2_signed(delta_sum[reference][0], 3) as i32,
-            col: base_mvs[reference].col + round2_signed(delta_sum[reference][1], 3) as i32,
+            row: base_mvs[reference].row + round2_signed_i32(delta_sum[reference][0], 3),
+            col: base_mvs[reference].col + round2_signed_i32(delta_sum[reference][1], 3),
         }))
     }
 
@@ -170,12 +170,12 @@ fn subblock_reference_area_size(
     (plane != PlaneId::Y || (width == 8 && height == 8)).then_some((width, height))
 }
 
-fn normalized_sad(pred0: &[u16], pred1: &[u16], bit_depth: splot_recon::BitDepth) -> u64 {
+fn normalized_sad(pred0: &[u16], pred1: &[u16], bit_depth: splot_recon::BitDepth) -> u32 {
     let sad = pred0
         .iter()
         .zip(pred1)
-        .map(|(&a, &b)| u64::from(a.abs_diff(b)))
-        .sum::<u64>();
+        .map(|(&a, &b)| u32::from(a.abs_diff(b)))
+        .sum::<u32>();
     sad >> bit_depth.bits().saturating_sub(8)
 }
 
@@ -304,11 +304,9 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                 for reference in 0..2 {
                     let base = [base_mvs[reference].row, base_mvs[reference].col];
                     for component in 0..2 {
-                        refined[reference][component] = clip3(
-                            -(1 << 17),
-                            (1 << 17) - 1,
-                            i64::from(base[component]) * 2 + i64::from(delta[reference][component]),
-                        ) as i32;
+                        refined[reference][component] = (base[component] * 2
+                            + delta[reference][component])
+                            .clamp(-(1 << 17), (1 << 17) - 1);
                     }
                 }
                 *cell = Some(MotionCell {
@@ -348,21 +346,21 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
 ) -> Result<()> {
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, PlaneId::Y, offset)?;
     let scaling = derive_plane_scaling(
-        rect.luma_x as i64,
-        rect.luma_y as i64,
-        i64::from(mv.row),
-        i64::from(mv.col),
+        rect.luma_x as i32,
+        rect.luma_y as i32,
+        mv.row,
+        mv.col,
         0,
         0,
         ref_mi_cols,
         ref_mi_rows,
-        rect.luma_w as i64,
-        rect.luma_h as i64,
+        rect.luma_w as i32,
+        rect.luma_h as i32,
     );
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         super::refinemv::reference_area_bounds(
-            rect.luma_x as i64,
-            rect.luma_y as i64,
+            rect.luma_x as i32,
+            rect.luma_y as i32,
             width,
             height,
             candidate,
@@ -429,10 +427,10 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
             .enumerate()
             {
                 let scaling = derive_plane_scaling_prescaled(
-                    (plane_x + col) as i64,
-                    (plane_y + row) as i64,
-                    i64::from(mvs[reference][0]),
-                    i64::from(mvs[reference][1]),
+                    (plane_x + col) as i32,
+                    (plane_y + row) as i32,
+                    mvs[reference][0],
+                    mvs[reference][1],
                     sub_x,
                     sub_y,
                     ref_mi_cols,
@@ -446,8 +444,8 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                     let refine_w = refine_unit_w.min(block_w - refine_col);
                     let refine_h = refine_unit_h.min(block_h - refine_row);
                     Some(super::refinemv::reference_area_bounds(
-                        (plane_x + refine_col) as i64,
-                        (plane_y + refine_row) as i64,
+                        (plane_x + refine_col) as i32,
+                        (plane_y + refine_row) as i32,
                         refine_w,
                         refine_h,
                         mvs[reference],
@@ -460,8 +458,8 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                     subblock_reference_area_size(plane, subblock_w, subblock_h)
                 {
                     Some(super::refinemv::reference_area_bounds(
-                        (plane_x + col) as i64,
-                        (plane_y + row) as i64,
+                        (plane_x + col) as i32,
+                        (plane_y + row) as i32,
                         area_width,
                         area_height,
                         base_mvs[reference],
@@ -498,28 +496,28 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     }
 
     let scaling0 = derive_plane_scaling(
-        plane_x as i64,
-        plane_y as i64,
-        i64::from(block.mv0.row),
-        i64::from(block.mv0.col),
+        plane_x as i32,
+        plane_y as i32,
+        block.mv0.row,
+        block.mv0.col,
         sub_x,
         sub_y,
         ref_mi_cols0,
         ref_mi_rows0,
-        block_w as i64,
-        block_h as i64,
+        block_w as i32,
+        block_h as i32,
     );
     let scaling1 = derive_plane_scaling(
-        plane_x as i64,
-        plane_y as i64,
-        i64::from(block.mv1.row),
-        i64::from(block.mv1.col),
+        plane_x as i32,
+        plane_y as i32,
+        block.mv1.row,
+        block.mv1.col,
         sub_x,
         sub_y,
         ref_mi_cols1,
         ref_mi_rows1,
-        block_w as i64,
-        block_h as i64,
+        block_w as i32,
+        block_h as i32,
     );
     Ok(CompoundPlanePrediction {
         pred0,

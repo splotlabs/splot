@@ -97,7 +97,7 @@ fn qlookup(q: u32) -> u32 {
 /// when `qindex` is 0 and `delta` is non-positive; otherwise it is `qlookup`
 /// of `qindex + delta` clamped to `1..=MaxQ`.
 ///
-/// The clamp arithmetic uses `i64` intermediates so any caller value (including
+/// Saturating `u32` add/subtract keeps any caller value (including
 /// out-of-contract `qindex` or `delta` extremes) produces a clamped quantizer
 /// value rather than overflowing or panicking.
 #[must_use]
@@ -105,9 +105,12 @@ pub fn quantizer_value(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
     if qindex == 0 && delta <= 0 {
         return u32::from(AC_QLOOKUP[0]);
     }
-    let max = i64::from(max_quantizer_index(bit_depth));
-    let clamped = (i64::from(qindex) + i64::from(delta)).clamp(1, max);
-    qlookup(clamped as u32)
+    let adjusted = if delta < 0 {
+        qindex.saturating_sub(delta.unsigned_abs())
+    } else {
+        qindex.saturating_add(delta as u32)
+    };
+    qlookup(adjusted.clamp(1, max_quantizer_index(bit_depth)))
 }
 
 /// AV2 § 7.14.2 `get_qindex( ignoreDeltaQ, segmentId )`: the resolved quantizer
@@ -129,7 +132,7 @@ pub fn quantizer_value(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
 /// otherwise. When the feature is inactive, the result is `current_q_index` if
 /// `delta_q` applies and `base_q_idx` otherwise (returned unclamped, matching the
 /// spec, since those inputs are already in range where the caller maintains
-/// them). The clamp arithmetic uses `i64` intermediates so all inputs are total
+/// them). Saturating `u32` add/subtract keeps all inputs total
 /// and panic-free.
 #[must_use]
 pub fn quantizer_index(
@@ -144,13 +147,16 @@ pub fn quantizer_index(
     let delta_q_applies = !ignore_delta_q && delta_q_present;
     if segment_alt_q_active {
         let base = if delta_q_applies {
-            i64::from(current_q_index)
+            current_q_index
         } else {
-            i64::from(base_q_idx)
+            base_q_idx
         };
-        let max = i64::from(max_quantizer_index(bit_depth));
-        let qindex = (base + i64::from(segment_alt_q_data)).clamp(0, max);
-        qindex as u32
+        let qindex = if segment_alt_q_data < 0 {
+            base.saturating_sub(segment_alt_q_data.unsigned_abs())
+        } else {
+            base.saturating_add(segment_alt_q_data as u32)
+        };
+        qindex.min(max_quantizer_index(bit_depth))
     } else if delta_q_applies {
         current_q_index
     } else {

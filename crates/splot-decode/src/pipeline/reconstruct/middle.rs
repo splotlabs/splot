@@ -479,7 +479,7 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
-    let max_logical = i64::try_from(height)
+    let max_logical = i32::try_from(height)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
         + 1;
     build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |logical| {
@@ -506,7 +506,7 @@ fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
-    let max_logical = i64::try_from(height)
+    let max_logical = i32::try_from(height)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
         + 1;
     build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |_| Ok(seed))
@@ -525,7 +525,7 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let max_logical = i64::try_from(width)
+    let max_logical = i32::try_from(width)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
         + 1;
     build_two_sided_middle_mrl_idif_edge(width, mrl_index, max_logical, |logical| {
@@ -559,7 +559,7 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let max_logical = i64::try_from(height)
+    let max_logical = i32::try_from(height)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
         + 1;
     let max_y = workspace
@@ -592,14 +592,14 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
 fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     side: usize,
     mrl_index: usize,
-    max_logical: i64,
-    sample: impl Fn(i64) -> core::result::Result<T, GeneralIntraResidualError>,
+    max_logical: i32,
+    sample: impl Fn(i32) -> core::result::Result<T, GeneralIntraResidualError>,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let len = side
         .checked_add(mrl_index)
         .and_then(|v| v.checked_add(4))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mrl = i64::try_from(mrl_index)
+    let mrl = i32::try_from(mrl_index)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let min_base = -1 - mrl;
     let mut edge = vec![T::default(); len];

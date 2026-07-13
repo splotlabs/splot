@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::math::round2_signed;
+use splot_recon::math::round2_signed_i32;
 
 use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_mv, temporal_grid_index};
 
@@ -368,9 +368,9 @@ fn fill_field_gaps(field: &mut TrajectoryMotionField, unit_size8: usize) {
 fn average(value: i32, count: i32) -> i32 {
     match count {
         1 => value,
-        2 => round2_signed(i64::from(value), 1) as i32,
-        3 => round2_signed(i64::from(value) * 85, 8) as i32,
-        _ => round2_signed(i64::from(value), 2) as i32,
+        2 => round2_signed_i32(value, 1),
+        3 => round2_signed_i32(value * 85, 8),
+        _ => round2_signed_i32(value, 2),
     }
 }
 

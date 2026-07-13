@@ -44,7 +44,7 @@ fn read_ns_small_n_reads_nothing() {
 
 #[test]
 fn read_ns_returns_values_in_range() {
-    for n in 2..16i64 {
+    for n in 2..16i32 {
         let mut symbols = SymbolDecoder::new(&[0xAA, 0x55, 0x80]).unwrap();
         let value = read_ns(&mut symbols, n, ByteOffset::new(0)).unwrap();
         assert!(

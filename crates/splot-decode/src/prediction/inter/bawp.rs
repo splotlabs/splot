@@ -21,11 +21,11 @@ const fn to_fullmv(mv: i32) -> i32 {
 
 #[derive(Default)]
 struct TemplateStats {
-    sum_x: i64,
-    sum_y: i64,
-    sum_xx: i64,
-    sum_xy: i64,
-    count: i64,
+    sum_x: i32,
+    sum_y: i32,
+    sum_xx: i32,
+    sum_xy: i32,
+    count: i32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -35,13 +35,13 @@ fn collect_template_stats<T, F>(
     height: usize,
     num_up: usize,
     num_left: usize,
-    ref_x: i64,
-    ref_y: i64,
+    ref_x: i32,
+    ref_y: i32,
     mut reference_sample: F,
 ) -> Option<TemplateStats>
 where
     T: ReconSample,
-    F: FnMut(i64, i64) -> Option<i64>,
+    F: FnMut(i32, i32) -> Option<i32>,
 {
     let mut stats = TemplateStats::default();
     if num_up > 0 {
@@ -49,8 +49,8 @@ where
         let above = edges.above_samples()?;
         let mut i = step >> 1;
         while i < width {
-            let recon = i64::from(above.get(i)?.to_u16());
-            let sample_col = i64::try_from(i)
+            let recon = i32::from(above.get(i)?.to_u16());
+            let sample_col = i32::try_from(i)
                 .ok()
                 .and_then(|offset| ref_x.checked_add(offset))?;
             let reference = reference_sample(ref_y - 1, sample_col)?;
@@ -60,15 +60,15 @@ where
             stats.sum_xx += reference * reference;
             i += step;
         }
-        stats.count = stats.count.checked_add(i64::try_from(num_up).ok()?)?;
+        stats.count = stats.count.checked_add(i32::try_from(num_up).ok()?)?;
     }
     if num_left > 0 {
         let step = height.checked_div(num_left)?;
         let left = edges.left_samples()?;
         let mut i = step >> 1;
         while i < height {
-            let recon = i64::from(left.get(i)?.to_u16());
-            let sample_row = i64::try_from(i)
+            let recon = i32::from(left.get(i)?.to_u16());
+            let sample_row = i32::try_from(i)
                 .ok()
                 .and_then(|offset| ref_y.checked_add(offset))?;
             let reference = reference_sample(sample_row, ref_x - 1)?;
@@ -78,7 +78,7 @@ where
             stats.sum_xx += reference * reference;
             i += step;
         }
-        stats.count = stats.count.checked_add(i64::try_from(num_left).ok()?)?;
+        stats.count = stats.count.checked_add(i32::try_from(num_left).ok()?)?;
     }
     Some(stats)
 }
@@ -91,7 +91,7 @@ pub(crate) fn apply_bawp<T: ReconSample>(
     mv: Mv,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let mut luma_alpha = 1i64 << SHIFT;
+    let mut luma_alpha = 1i16 << SHIFT;
     for (plane, sub_x, sub_y) in super::mc::YUV420_MC_PLANES {
         if plane != PlaneId::Y && !bawp.chroma {
             break;
@@ -135,16 +135,16 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     }
 
     let plane = workspace.plane(PlaneId::Y)?;
-    let Some(plane_width) = i64::try_from(plane.storage_size().width()).ok() else {
+    let Some(plane_width) = i32::try_from(plane.storage_size().width()).ok() else {
         return Ok(());
     };
-    let Some(plane_height) = i64::try_from(plane.storage_size().height()).ok() else {
+    let Some(plane_height) = i32::try_from(plane.storage_size().height()).ok() else {
         return Ok(());
     };
-    let Some(bw) = i64::try_from(target.width()).ok() else {
+    let Some(bw) = i32::try_from(target.width()).ok() else {
         return Ok(());
     };
-    let Some(bh) = i64::try_from(target.height()).ok() else {
+    let Some(bh) = i32::try_from(target.height()).ok() else {
         return Ok(());
     };
     let Some(ref_right) = ref_x.checked_add(bw) else {
@@ -186,19 +186,19 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
         return Ok(());
     };
 
-    let mut alpha = 1i64 << SHIFT;
+    let mut alpha = 1i16 << SHIFT;
     if count > 0 {
         let nor = sum_xy - sum_x * sum_y / count;
         let der = sum_xx - sum_x * sum_x / count;
         if der != 0 && nor != 0 {
-            alpha = i64::from(splot_recon::math::resolve_division(nor, der, SHIFT as u8));
+            alpha = splot_recon::math::resolve_division(nor, der, SHIFT as u8);
             if alpha == 0 {
                 alpha = 1 << SHIFT;
             }
         }
     }
     let beta = if count > 0 {
-        ((sum_y << SHIFT) - sum_x * alpha) / count
+        ((sum_y << SHIFT) - sum_x * i32::from(alpha)) / count
     } else {
         -(1 << (SHIFT - 1))
     };
@@ -217,9 +217,9 @@ fn apply_bawp_plane<T: ReconSample>(
     plane: PlaneId,
     sub_x: u32,
     sub_y: u32,
-    luma_alpha: i64,
+    luma_alpha: i16,
     tile_offset: ByteOffset,
-) -> Result<i64> {
+) -> Result<i16> {
     let plane_x = placed.luma_x >> sub_x;
     let plane_y = placed.luma_y >> sub_y;
     let plane_w = placed.luma_w >> sub_x;
@@ -233,27 +233,27 @@ fn apply_bawp_plane<T: ReconSample>(
     let Some(ref_x) = fullpel_ref_pos(placed.luma_x, dx).map(|x| x >> sub_x) else {
         return Ok(luma_alpha);
     };
-    let Some(plane_width) = i64::try_from(ref_width).ok() else {
+    let Some(plane_width) = i32::try_from(ref_width).ok() else {
         return Ok(luma_alpha);
     };
-    let Some(plane_height) = i64::try_from(ref_height).ok() else {
+    let Some(plane_height) = i32::try_from(ref_height).ok() else {
         return Ok(luma_alpha);
     };
-    let Some(plane_x_i64) = i64::try_from(plane_x).ok() else {
+    let Some(plane_x_i32) = i32::try_from(plane_x).ok() else {
         return Ok(luma_alpha);
     };
-    let Some(plane_y_i64) = i64::try_from(plane_y).ok() else {
+    let Some(plane_y_i32) = i32::try_from(plane_y).ok() else {
         return Ok(luma_alpha);
     };
-    let Some(plane_w_i64) = i64::try_from(plane_w).ok() else {
+    let Some(plane_w_i32) = i32::try_from(plane_w).ok() else {
         return Ok(luma_alpha);
     };
-    let Some(plane_h_i64) = i64::try_from(plane_h).ok() else {
+    let Some(plane_h_i32) = i32::try_from(plane_h).ok() else {
         return Ok(luma_alpha);
     };
     let (bw, bh) = (
-        plane_w_i64.min(plane_width - plane_x_i64),
-        plane_h_i64.min(plane_height - plane_y_i64),
+        plane_w_i32.min(plane_width - plane_x_i32),
+        plane_h_i32.min(plane_height - plane_y_i32),
     );
     if bw <= 0 || bh <= 0 {
         return Ok(luma_alpha);
@@ -291,7 +291,7 @@ fn apply_bawp_plane<T: ReconSample>(
     };
 
     let edges = workspace.intra_dc_edges_for_rect(plane, plane_x, plane_y, size)?;
-    let ref_at = |row: i64, col: i64| -> Option<i64> {
+    let ref_at = |row: i32, col: i32| -> Option<i32> {
         let row = usize::try_from(row).ok()?;
         let col = usize::try_from(col).ok()?;
         Some(ref_samples.sample(row, col))
@@ -310,11 +310,11 @@ fn apply_bawp_plane<T: ReconSample>(
         return Ok(luma_alpha);
     };
 
-    let mut alpha = 1i64 << SHIFT;
+    let mut alpha = 1i16 << SHIFT;
     if plane != PlaneId::Y {
         alpha = if count == 0 { 1 << SHIFT } else { luma_alpha };
     } else if bawp.explicit {
-        let mut scale = i64::from(bawp.list_index) + 1;
+        let mut scale = i16::from(bawp.list_index) + 1;
         if bawp.ref_dist_gt4 {
             scale += 1;
         }
@@ -326,14 +326,14 @@ fn apply_bawp_plane<T: ReconSample>(
         let nor = sum_xy - sum_x * sum_y / count;
         let der = sum_xx - sum_x * sum_x / count;
         if der != 0 && nor != 0 {
-            alpha = i64::from(splot_recon::math::resolve_division(nor, der, SHIFT as u8));
+            alpha = splot_recon::math::resolve_division(nor, der, SHIFT as u8);
             if alpha == 0 {
                 alpha = 1 << SHIFT;
             }
         }
     }
     let beta = if count > 0 {
-        ((sum_y << SHIFT) - sum_x * alpha) / count
+        ((sum_y << SHIFT) - sum_x * i32::from(alpha)) / count
     } else {
         -(1 << (SHIFT - 1))
     };
@@ -367,8 +367,8 @@ fn apply_bawp_region<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
     rect: PlaneRect,
-    alpha: i64,
-    beta: i64,
+    alpha: i16,
+    beta: i32,
 ) -> Result<()> {
     let storage = workspace.plane(plane)?.storage_size();
     let x = rect.x();
@@ -403,23 +403,23 @@ fn apply_bawp_region<T: ReconSample>(
     Ok(())
 }
 
-fn fullpel_ref_pos(origin: usize, delta: i32) -> Option<i64> {
-    i64::try_from(origin)
+fn fullpel_ref_pos(origin: usize, delta: i32) -> Option<i32> {
+    i32::try_from(origin)
         .ok()
-        .and_then(|origin| origin.checked_add(i64::from(delta)))
+        .and_then(|origin| origin.checked_add(delta))
 }
 
 fn intrabc_morph_sample<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
-    row: i64,
-    col: i64,
-) -> Option<i64> {
+    row: i32,
+    col: i32,
+) -> Option<i32> {
     let row = usize::try_from(row).ok()?;
     let col = usize::try_from(col).ok()?;
     workspace
         .reconstructed_sample(PlaneId::Y, col, row)
         .ok()
-        .map(|sample| i64::from(sample.to_u16()))
+        .map(|sample| i32::from(sample.to_u16()))
 }
 
 fn reference_plane<T: ReconSample>(

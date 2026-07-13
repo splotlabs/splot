@@ -9,7 +9,7 @@
 //! `secondPred` when the §7.13.2.7 `useIBP` gate and §7.13.2.9 mode gate fire.
 
 use crate::intra::IntraRectBlockSize;
-use crate::intra_dc_math::{DIV_LUT_BITS, resolve_divisor, round2};
+use crate::intra_dc_math::{DIV_LUT_BITS, resolve_divisor_32, round2_u32};
 use crate::intra_directional_angle::{
     DR_INTRA_DERIVATIVE, ZONE_1_MAX, ZONE_3_INDEX_BASE, ZONE_3_MIN,
 };
@@ -66,7 +66,7 @@ fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]
             context: "IBP angular weight angle index",
         },
     )?);
-    let dy = i64::from(
+    let dy = i32::from(
         *DR_INTRA_DERIVATIVE
             .get(index)
             .ok_or(ReconError::ArithmeticOverflow {
@@ -77,15 +77,15 @@ fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]
     for (r, row) in weights.iter_mut().enumerate() {
         let mut y = dy;
         for slot in row.iter_mut() {
-            let dist = ((i64::try_from(r).map_err(|_| ReconError::ArithmeticOverflow {
+            let dist = ((i32::try_from(r).map_err(|_| ReconError::ArithmeticOverflow {
                 context: "IBP angular weight row index",
             })? + 1)
                 << 6)
                 + y;
-            let dist_u64 = u64::try_from(dist).map_err(|_| ReconError::ArithmeticOverflow {
+            let dist_u32 = u32::try_from(dist).map_err(|_| ReconError::ArithmeticOverflow {
                 context: "IBP angular weight distance range",
             })?;
-            let (shift_raw, div) = resolve_divisor(dist_u64)?;
+            let (shift_raw, div) = resolve_divisor_32(dist_u32)?;
             let shift =
                 shift_raw
                     .checked_sub(DIV_LUT_BITS)
@@ -93,12 +93,12 @@ fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]
                         context: "IBP angular weight shift",
                     })?;
             let product = y
-                .checked_mul(i64::from(div))
-                .and_then(|p| u64::try_from(p).ok())
+                .checked_mul(i32::from(div))
+                .and_then(|p| u32::try_from(p).ok())
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "IBP angular weight product",
                 })?;
-            *slot = round2(product, shift);
+            *slot = round2_u32(product, shift) as u16;
             y += dy;
         }
     }
@@ -150,13 +150,13 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
                 weight_at(&weights, col_idx, row_idx)?
             };
             let index = row * width + column;
-            let primary_value = u64::from(primary[index].to_u16());
-            let second_value = u64::from(second[index].to_u16());
-            let inverse = u64::from(IBP_WEIGHT_MAX - s);
-            let blended = round2(
-                primary_value * u64::from(s) + second_value * inverse,
+            let primary_value = u32::from(primary[index].to_u16());
+            let second_value = u32::from(second[index].to_u16());
+            let inverse = u32::from(IBP_WEIGHT_MAX - s);
+            let blended = round2_u32(
+                primary_value * u32::from(s) + second_value * inverse,
                 IBP_WEIGHT_SHIFT,
-            );
+            ) as u16;
             primary[index] = T::try_from_u16(blended)?;
         }
     }

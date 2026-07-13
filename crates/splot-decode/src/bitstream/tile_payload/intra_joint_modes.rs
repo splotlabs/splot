@@ -475,7 +475,7 @@ impl TileSegmentIdState {
     }
 }
 
-pub(crate) fn neg_deinterleave(diff: i64, reference: i64, max: i64) -> i64 {
+pub(crate) fn neg_deinterleave(diff: i32, reference: i32, max: i32) -> i32 {
     if reference == 0 {
         return diff;
     }

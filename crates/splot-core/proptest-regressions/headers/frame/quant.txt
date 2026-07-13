@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc cc165318c548c60fe1771980316169c3b4c24f82d3f05543b38bc7fb2696cbfc # shrinks to data = [], quant = CoreSeqQuantView { bit_depth: 8, num_planes: 1, separate_uv_delta_q: false, equal_ac_dc_q: false, y_dc_delta_q_enabled: false, uv_dc_delta_q_enabled: false, uv_ac_delta_q_enabled: false, base_y_dc_delta_q: 0, base_uv_dc_delta_q: 232786322, base_uv_ac_delta_q: 0, enable_tcq: false, choose_tcq_per_frame: false, enable_parity_hiding: false }, base_q_idx = 0, deltas = [0, 1914697326, 0, 0, 0], using_qmatrix = false, pic_qm_num_minus_1 = 0, segmentation_enabled = false, alt_q = (false, 0), delta_q_present = false, max_segments = 1

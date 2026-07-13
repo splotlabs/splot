@@ -13,7 +13,7 @@
 //! Feature tracking: `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`.
 
 use crate::intra_dc_math::validate_sample_type;
-use crate::math::round2;
+use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
@@ -360,13 +360,13 @@ where
 {
     let m = validated_source_sample(chroma_source_sample, x, y, max_sample)?;
 
-    let mut s = i64::from(m) << WIENER_NS_PREC_BITS;
+    let mut s = i32::from(m) << WIENER_NS_PREC_BITS;
     for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV {
         let tap_x = offset_coord(x, dx, "Wiener NS chroma tap x")?;
         let tap_y = offset_coord(y, dy, "Wiener NS chroma tap y")?;
         let tap = validated_source_sample(chroma_source_sample, tap_x, tap_y, max_sample)?;
-        let diff = i64::from(tap) - i64::from(m);
-        s += diff * i64::from(params.coeffs[coeff_index]);
+        let diff = i32::from(tap) - i32::from(m);
+        s += diff * i32::from(params.coeffs[coeff_index]);
     }
 
     let m_luma = luma_ds.get_or_compute(context, x, y, max_sample, luma_source_sample)?;
@@ -379,11 +379,11 @@ where
         let tap_y = offset_coord(y, dy, "Wiener NS chroma luma tap y")?;
         let tap_luma =
             luma_ds.get_or_compute(context, tap_x, tap_y, max_sample, luma_source_sample)?;
-        let diff = i64::from(tap_luma) - i64::from(m_luma);
-        s += diff * i64::from(coeff);
+        let diff = i32::from(tap_luma) - i32::from(m_luma);
+        s += diff * i32::from(coeff);
     }
 
-    let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+    let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
     T::try_from_u16(value as u16)
 }
 

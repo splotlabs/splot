@@ -54,7 +54,7 @@ pub(super) fn record_temporal_motion_block<T: ReconSample>(
     ref_frame1: Option<i8>,
     mv0: Mv,
     mv1: Mv,
-    warp_params: [Option<[i64; 6]>; 2],
+    warp_params: [Option<[i32; 6]>; 2],
 ) {
     motion_field.record_block(TemporalMotionBlock {
         mi_row,

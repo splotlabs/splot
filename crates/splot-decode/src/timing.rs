@@ -10,7 +10,7 @@
 //! normal CLI output is unchanged.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
 fn enabled() -> bool {
@@ -41,20 +41,20 @@ pub(crate) fn report_detail(phase: &str, started: Option<Instant>, detail: &str)
 }
 
 pub(crate) struct WorkerTally {
-    mask: Option<AtomicU64>,
+    mask: Option<AtomicU32>,
 }
 
 impl WorkerTally {
     pub(crate) fn new() -> Self {
         Self {
-            mask: enabled().then(|| AtomicU64::new(0)),
+            mask: enabled().then(|| AtomicU32::new(0)),
         }
     }
 
     pub(crate) fn note_worker(&self) {
         if let Some(mask) = &self.mask {
             let index = splot_parallel::current_worker_index().unwrap_or(0);
-            mask.fetch_or(1 << index.min(63), Ordering::Relaxed);
+            mask.fetch_or(1 << index.min(31), Ordering::Relaxed);
         }
     }
 

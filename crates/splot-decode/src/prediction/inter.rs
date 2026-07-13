@@ -771,7 +771,7 @@ pub(crate) struct InterBlock {
     pub(crate) interp: ReconInterpolationFilter,
     /// Per-list § 7.13.3.23 warp models; slot 1 is only compound LOCALWARP and a
     /// `None` slot uses translational motion compensation.
-    pub(crate) warp_params: [Option<[i64; 6]>; 2],
+    pub(crate) warp_params: [Option<[i32; 6]>; 2],
     pub(crate) bawp: BawpSyntax,
     pub(crate) interintra: Option<InterIntraPrediction>,
     pub(crate) compound_blend: mc::CompoundBlend,
@@ -1083,10 +1083,11 @@ fn infer_tip_output_quantization(
             SPEC_HEADER
         ));
     };
+    let average_delta = |a: i32, b: i32| a / 2 + b / 2 + ((a % 2 + b % 2 + 1) >> 1);
     core.quantization_params = Some(QuantizationParams::inferred_tip(
         (past_q + future_q + 1) >> 1,
-        ((i64::from(past_u) + i64::from(future_u) + 1) >> 1) as i32,
-        ((i64::from(past_v) + i64::from(future_v) + 1) >> 1) as i32,
+        average_delta(past_u, future_u),
+        average_delta(past_v, future_v),
     ));
     Ok(())
 }

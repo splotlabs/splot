@@ -55,7 +55,7 @@ pub(crate) fn predict_intra_dc_subsampled_rect_value_from_sums<T: ReconSample>(
         [left, above]
             .into_iter()
             .flatten()
-            .try_fold((0u64, 0u64), |(sum, count), edge| {
+            .try_fold((0u32, 0u32), |(sum, count), edge| {
                 let sum = sum
                     .checked_add(edge.sum)
                     .ok_or(ReconError::ArithmeticOverflow {

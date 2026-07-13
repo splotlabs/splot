@@ -101,8 +101,8 @@ pub(crate) struct DeltaQState {
     present: bool,
     delta_q_res: u8,
     sb_size4: usize,
-    current_q_index: i64,
-    max_q: i64,
+    current_q_index: i32,
+    max_q: i32,
     current_sb: Option<(usize, usize)>,
     read_deltas: bool,
 }
@@ -216,8 +216,12 @@ impl DeltaQState {
             present,
             delta_q_res,
             sb_size4,
-            current_q_index: i64::from(base_q_idx),
-            max_q: i64::from(max_quantizer_index(bit_depth)),
+            current_q_index: i32::try_from(base_q_idx).map_err(|_| {
+                selectable_decode_error(tile_offset, selectable_reason!("quantizer_width"))
+            })?,
+            max_q: i32::try_from(max_quantizer_index(bit_depth)).map_err(|_| {
+                selectable_decode_error(tile_offset, selectable_reason!("quantizer_width"))
+            })?,
             current_sb: None,
             read_deltas: present,
         })
@@ -248,7 +252,7 @@ impl DeltaQState {
                 let sign_bit = symbols.read_literal(DELTA_Q_SIGN_BIT_WIDTH).map_err(|_| {
                     selectable_decode_error(tile_offset, selectable_reason!("delta_q_sign_read"))
                 })? != 0;
-                let delta_q_abs = i64::try_from(delta_q_abs).map_err(|_| {
+                let delta_q_abs = i32::try_from(delta_q_abs).map_err(|_| {
                     selectable_decode_error(tile_offset, selectable_reason!("delta_q_abs_width"))
                 })?;
                 let reduced_delta_q_index = if sign_bit { -delta_q_abs } else { delta_q_abs };
@@ -270,7 +274,7 @@ impl DeltaQState {
     }
 
     pub(crate) fn qindex_u32(&self) -> u32 {
-        u32::try_from(self.current_q_index.clamp(0, i64::from(u32::MAX))).unwrap_or(u32::MAX)
+        self.current_q_index.max(0) as u32
     }
 }
 
@@ -1053,12 +1057,12 @@ fn read_literal_usize(
 }
 
 fn updated_current_q_index(
-    current_q_index: i64,
-    reduced_delta_q_index: i64,
+    current_q_index: i32,
+    reduced_delta_q_index: i32,
     delta_q_res: u8,
-    max_q: i64,
-) -> i64 {
-    let scale = 1_i64 << delta_q_res;
+    max_q: i32,
+) -> i32 {
+    let scale = 1_i32 << delta_q_res;
     let delta = reduced_delta_q_index.saturating_mul(scale);
     current_q_index.saturating_add(delta).clamp(1, max_q)
 }

@@ -6,7 +6,9 @@
 //! Feature tracking: `RECON-INTRA-IBP-DC-PREDICTION`.
 
 use crate::intra::{IntraDcEdge, IntraDcEdges, IntraRectBlockSize};
-use crate::intra_dc_math::{round2, validate_dc_edge, validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{
+    round2_u32, validate_dc_edge, validate_output_shape, validate_sample_type,
+};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 const IBP_WEIGHT_MAX: u16 = 128;
@@ -205,13 +207,13 @@ fn blend_sample<T: ReconSample>(bit_depth: BitDepth, edge: T, pred: T, weight: u
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "IBP DC inverse weight",
             })?;
-    let edge_product = u64::from(edge.to_u16())
-        .checked_mul(u64::from(inverse_weight))
+    let edge_product = u32::from(edge.to_u16())
+        .checked_mul(u32::from(inverse_weight))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "IBP DC edge blend product",
         })?;
-    let pred_product = u64::from(pred.to_u16())
-        .checked_mul(u64::from(weight))
+    let pred_product = u32::from(pred.to_u16())
+        .checked_mul(u32::from(weight))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "IBP DC prediction blend product",
         })?;
@@ -220,7 +222,7 @@ fn blend_sample<T: ReconSample>(bit_depth: BitDepth, edge: T, pred: T, weight: u
         .ok_or(ReconError::ArithmeticOverflow {
             context: "IBP DC blend sum",
         })?;
-    let sample = round2(blended, IBP_WEIGHT_SHIFT);
+    let sample = round2_u32(blended, IBP_WEIGHT_SHIFT) as u16;
     if sample > bit_depth.max_sample() {
         return Err(ReconError::IntraPredictionOutputSampleOutOfRange {
             sample_index: 0,
@@ -299,11 +301,11 @@ mod tests {
     }
 
     fn expected_blend(edge: u16, pred: u16, weight: u16) -> u16 {
-        round2(
-            u64::from(edge) * u64::from(IBP_WEIGHT_MAX - weight)
-                + u64::from(pred) * u64::from(weight),
+        round2_u32(
+            u32::from(edge) * u32::from(IBP_WEIGHT_MAX - weight)
+                + u32::from(pred) * u32::from(weight),
             IBP_WEIGHT_SHIFT,
-        )
+        ) as u16
     }
 
     #[test]

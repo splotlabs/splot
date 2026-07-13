@@ -28,7 +28,7 @@
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
-use crate::math::round2;
+use crate::intra_dc_math::round2_u32;
 use crate::{BitDepth, ReconError, Result};
 
 /// Maximum dequantized transform-block side (§ 7.14.4 `Min(32, Tx_Width/Height)`).
@@ -49,17 +49,17 @@ const QM_WEIGHT_SHIFT: u32 = 5;
 /// `1 << shift`. The result is
 /// `Clip3(-(1 << (7 + BitDepth)), (1 << (7 + BitDepth)) - 1, sign * (Round2(Abs(qc) * q2 & 0xFFFFFF, QUANT_TABLE_BITS) / dq_denom))`.
 ///
-/// The computation is total and panic-free: the product and rounding use `i64`,
+/// The computation is total and panic-free: only the product's low 24 bits are
+/// normative, so wrapping `u32` multiplication computes them exactly;
 /// `unsigned_abs` handles `i32::MIN`, and a zero `dq_denom` is treated as 1.
 #[must_use]
 pub fn dequant_coefficient(quant_coeff: i32, q2: u32, dq_denom: u32, bit_depth: BitDepth) -> i32 {
-    let sign: i64 = if quant_coeff < 0 { -1 } else { 1 };
-    let dq_high = i64::from(quant_coeff.unsigned_abs()) * i64::from(q2);
-    let dq = round2(dq_high & 0xFF_FFFF, QUANT_TABLE_BITS);
-    let denom = i64::from(dq_denom.max(1));
-    let dq2 = sign * (dq / denom);
-    let bound = 1i64 << (7 + u32::from(bit_depth.bits()));
-    dq2.clamp(-bound, bound - 1) as i32
+    let sign = if quant_coeff < 0 { -1 } else { 1 };
+    let dq_high = quant_coeff.unsigned_abs().wrapping_mul(q2);
+    let dq = round2_u32(dq_high & 0xFF_FFFF, QUANT_TABLE_BITS as u8);
+    let dq2 = sign * (dq / dq_denom.max(1)) as i32;
+    let bound = 1i32 << (7 + u32::from(bit_depth.bits()));
+    dq2.clamp(-bound, bound - 1)
 }
 
 /// Caller-resolved parameters for the AV2 § 7.14.4 transform-block

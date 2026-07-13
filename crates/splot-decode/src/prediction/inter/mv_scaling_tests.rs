@@ -43,3 +43,20 @@ fn prescaled_chroma_mv_rounds_odd_components() {
     let prescaled = derive_plane_scaling_prescaled(3, 5, -13, 21, 1, 1, 16, 16);
     assert_eq!(ordinary, prescaled);
 }
+
+#[test]
+fn maximum_av2_geometry_and_mv_fit_scaling_state() {
+    let scaling = derive_plane_scaling(65_535, 0, -65_535, 65_535, 0, 0, 16_384, 16_384, 128, 128);
+    let expected_start = |plane_pos: i64, mv: i64| {
+        let half_sample = 1i64 << (SUBPEL_BITS - 1);
+        let orig = (plane_pos << SUBPEL_BITS) + 2 * mv + half_sample;
+        let base = orig * (1 << REF_SCALE_SHIFT) - (half_sample << REF_SCALE_SHIFT);
+        round2_signed(base, REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS)
+            + (1 << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) / 2
+    };
+
+    assert_eq!(i64::from(scaling.start_x), expected_start(65_535, 65_535));
+    assert_eq!(i64::from(scaling.start_y), expected_start(0, -65_535));
+    assert_eq!(scaling.last_x, 65_535);
+    assert_eq!(scaling.last_y, 65_535);
+}

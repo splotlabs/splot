@@ -19,7 +19,7 @@ use splot_tables::tables::loop_restoration::{
 
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
-use crate::math::{round2, round2_signed};
+use crate::math::{round2_i32, round2_signed_i32};
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `PC_WIENER_NUM_FEATURES`.
@@ -59,7 +59,7 @@ const PC_WIENER_LEAD: isize = 1;
 /// AV2 § 7.20.4 `PC_WIENER_LAG`.
 const PC_WIENER_LAG: isize = 4;
 /// AV2 § 7.20.4 `Pc_Wiener_Normalizer`.
-const PC_WIENER_NORMALIZER: [i64; PC_WIENER_NUM_FEATURES + 1] = [0, 3739, 3273, 3074, 7];
+const PC_WIENER_NORMALIZER: [i32; PC_WIENER_NUM_FEATURES + 1] = [0, 3739, 3273, 3074, 7];
 /// AV2 § 3 `PC_WIENER_PREC_BITS`.
 const PC_WIENER_PREC_BITS: u32 = 7;
 /// One representative from each symmetric pair in § 7.20.4 `Pc_Wiener_Config`.
@@ -78,14 +78,14 @@ const PC_WIENER_CONFIG: [(isize, isize); 12] = [
     (0, 3),
 ];
 /// AV2 § 7.20.4 `Mode_Weights`.
-const MODE_WEIGHTS: [[i64; 3]; PC_WIENER_NUM_FEATURES] = [
+const MODE_WEIGHTS: [[i32; 3]; PC_WIENER_NUM_FEATURES] = [
     [-527, 15325, 321],
     [26436, -17705, 17905],
     [366, -147, -194],
     [202, -267, -179],
 ];
 /// AV2 § 7.20.4 `Mode_Offsets`.
-const MODE_OFFSETS: [i64; PC_WIENER_NUM_FEATURES] = [-547, -21565, -573, -680];
+const MODE_OFFSETS: [i32; PC_WIENER_NUM_FEATURES] = [-547, -21565, -573, -680];
 
 /// Caller-resolved parameters for AV2 § 7.20.4 skip-filter classification.
 ///
@@ -134,13 +134,13 @@ pub struct PcWienerTxSkipLookup {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerClassification {
     /// Raw unnormalized accumulated feature values from the 6x6 feature window.
-    pub raw_features: [i64; PC_WIENER_NUM_FEATURES],
+    pub raw_features: [i32; PC_WIENER_NUM_FEATURES],
     /// Normalized feature values returned by `get_box_features`.
-    pub features: [i64; PC_WIENER_NUM_FEATURES],
+    pub features: [i32; PC_WIENER_NUM_FEATURES],
     /// Raw accumulated `LrTxSkip` values over the 6x6 feature window.
-    pub raw_tx_skip_sum: i64,
+    pub raw_tx_skip_sum: i32,
     /// Normalized `tskip` value returned by `get_box_features`.
-    pub tx_skip: i64,
+    pub tx_skip: i32,
     /// AV2 § 7.20.4 `lutInput` in `0..4096`.
     pub lut_input: u16,
     /// AV2 § 7.20.4 `cls = Pc_Wiener_Lut_To_Class[lutInput]`.
@@ -221,8 +221,8 @@ where
     validate_sample_type::<T>(params.bit_depth)?;
     validate_params(params)?;
 
-    let mut raw_features = [0i64; PC_WIENER_NUM_FEATURES];
-    let mut raw_tx_skip_sum = 0i64;
+    let mut raw_features = [0i32; PC_WIENER_NUM_FEATURES];
+    let mut raw_tx_skip_sum = 0i32;
     for dy in -PC_WIENER_LEAD..=PC_WIENER_LAG {
         for dx in -PC_WIENER_LEAD..=PC_WIENER_LAG {
             let feature_x = coordinate_add(params.x, dx, "PC-Wiener feature x")?;
@@ -244,11 +244,12 @@ where
                     value: skip,
                 });
             }
-            raw_tx_skip_sum = raw_tx_skip_sum.checked_add(i64::from(skip)).ok_or(
-                ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener tx-skip accumulation",
-                },
-            )?;
+            raw_tx_skip_sum =
+                raw_tx_skip_sum
+                    .checked_add(skip)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "PC-Wiener tx-skip accumulation",
+                    })?;
         }
     }
 
@@ -568,13 +569,13 @@ where
                     context: "PC-Wiener source-grid center column",
                 })?;
             let center_index = (row + 1) * geo.source_width + center_col;
-            let m = i64::from(source_cache[center_index]);
-            let up = i64::from(source_cache[center_index - geo.source_width]);
-            let down = i64::from(source_cache[center_index + geo.source_width]);
-            let upright = i64::from(source_cache[center_index - geo.source_width + 1]);
-            let downleft = i64::from(source_cache[center_index + geo.source_width - 1]);
-            let downright = i64::from(source_cache[center_index + geo.source_width + 1]);
-            let upleft = i64::from(source_cache[center_index - geo.source_width - 1]);
+            let m = i32::from(source_cache[center_index]);
+            let up = i32::from(source_cache[center_index - geo.source_width]);
+            let down = i32::from(source_cache[center_index + geo.source_width]);
+            let upright = i32::from(source_cache[center_index - geo.source_width + 1]);
+            let downleft = i32::from(source_cache[center_index + geo.source_width - 1]);
+            let downright = i32::from(source_cache[center_index + geo.source_width + 1]);
+            let upleft = i32::from(source_cache[center_index - geo.source_width - 1]);
             let values = [
                 0,
                 (up - 2 * m + down).abs(),
@@ -594,7 +595,7 @@ where
             }
             cached.push(CachedPcWienerFeature {
                 values,
-                tx_skip: i64::from(skip),
+                tx_skip: skip,
             });
         }
     }
@@ -623,8 +624,8 @@ where
                     context: "PC-Wiener classification-grid column",
                 },
             )?;
-            let mut raw_features = [0i64; PC_WIENER_NUM_FEATURES];
-            let mut raw_tx_skip_sum = 0i64;
+            let mut raw_features = [0i32; PC_WIENER_NUM_FEATURES];
+            let mut raw_tx_skip_sum = 0i32;
             for row in 0..PC_WIENER_FEATURE_WINDOW_SIDE {
                 let start = feature_row
                     .checked_add(row)
@@ -669,15 +670,15 @@ where
 }
 
 fn finish_pc_wiener_classification(
-    raw_features: [i64; PC_WIENER_NUM_FEATURES],
-    raw_tx_skip_sum: i64,
+    raw_features: [i32; PC_WIENER_NUM_FEATURES],
+    raw_tx_skip_sum: i32,
     base_q_idx: u32,
     bit_depth: BitDepth,
 ) -> Result<PcWienerClassification> {
     let scale_shift = u32::from(bit_depth.bits() - 8);
-    let mut features = [0i64; PC_WIENER_NUM_FEATURES];
+    let mut features = [0i32; PC_WIENER_NUM_FEATURES];
     for (i, feature) in features.iter_mut().enumerate() {
-        *feature = round2(
+        *feature = round2_i32(
             raw_features[i].checked_mul(PC_WIENER_NORMALIZER[i]).ok_or(
                 ReconError::ArithmeticOverflow {
                     context: "PC-Wiener feature normalization",
@@ -784,7 +785,7 @@ where
     validate_sample_type::<T>(params.bit_depth)?;
     let (sample_count, filters) = validate_pc_wiener_filter(output.len(), params)?;
 
-    let max_sample = i64::from(params.bit_depth.max_sample());
+    let max_sample = i32::from(params.bit_depth.max_sample());
     let mut filtered = Vec::with_capacity(sample_count);
     for row in 0..params.height {
         for col in 0..params.width {
@@ -797,7 +798,7 @@ where
             let index = filtered.len();
             let coeffs = &filters[params.subclasses[index]];
             let center = source_value(&mut source_sample, col, row, params.bit_depth)?;
-            let mut sum = (center << PC_WIENER_PREC_BITS) + center * i64::from(coeffs[12]);
+            let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
             for (&(dy, dx), &coeff) in PC_WIENER_CONFIG.iter().zip(coeffs) {
                 let positive = source_value(
                     &mut source_sample,
@@ -811,9 +812,9 @@ where
                     coordinate_add(row, -dy, "PC-Wiener filter y")?,
                     params.bit_depth,
                 )?;
-                sum += (positive + negative) * i64::from(coeff);
+                sum += (positive + negative) * coeff;
             }
-            let sample = round2(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
+            let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
             filtered.push(T::try_from_u16(sample as u16)?);
         }
     }
@@ -921,7 +922,7 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
                 row_i,
                 max_sample,
             )?;
-            let mut sum = (center << PC_WIENER_PREC_BITS) + center * i64::from(coeffs[12]);
+            let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
             for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
                 let positive = padded_filter_value(
                     source.samples,
@@ -937,9 +938,9 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
                     row_i - dy,
                     max_sample,
                 )?;
-                sum += (positive + negative) * i64::from(coeffs[i]);
+                sum += (positive + negative) * coeffs[i];
             }
-            let sample = round2(sum, PC_WIENER_PREC_BITS).clamp(0, i64::from(max_sample));
+            let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(max_sample));
             filtered.push(T::try_from_u16(sample as u16)?);
         }
     }
@@ -1033,7 +1034,7 @@ fn padded_filter_value<T: ReconSample>(
     x: isize,
     y: isize,
     max_sample: u16,
-) -> Result<i64> {
+) -> Result<i32> {
     let value = samples[index].to_u16();
     if value > max_sample {
         return Err(ReconError::PcWienerSourceSampleOutOfRange {
@@ -1043,7 +1044,7 @@ fn padded_filter_value<T: ReconSample>(
             max: max_sample,
         });
     }
-    Ok(i64::from(value))
+    Ok(i32::from(value))
 }
 
 const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
@@ -1063,13 +1064,13 @@ const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PcWienerFeatureValues {
     x: isize,
-    values: [i64; PC_WIENER_NUM_FEATURES],
+    values: [i32; PC_WIENER_NUM_FEATURES],
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CachedPcWienerFeature {
-    values: [i64; PC_WIENER_NUM_FEATURES],
-    tx_skip: i64,
+    values: [i32; PC_WIENER_NUM_FEATURES],
+    tx_skip: i32,
 }
 
 #[inline]
@@ -1142,12 +1143,12 @@ where
 }
 
 #[inline]
-fn source_value<T, F>(source_sample: &mut F, x: isize, y: isize, bit_depth: BitDepth) -> Result<i64>
+fn source_value<T, F>(source_sample: &mut F, x: isize, y: isize, bit_depth: BitDepth) -> Result<i32>
 where
     T: ReconSample,
     F: FnMut(isize, isize) -> Result<T>,
 {
-    Ok(i64::from(source_sample_u16(
+    Ok(i32::from(source_sample_u16(
         source_sample,
         x,
         y,
@@ -1203,15 +1204,15 @@ fn tx_skip_lookup(
 
 #[inline]
 fn pc_wiener_lut_input(
-    features: [i64; PC_WIENER_NUM_FEATURES],
-    tx_skip: i64,
+    features: [i32; PC_WIENER_NUM_FEATURES],
+    tx_skip: i32,
     qindex: u32,
     bit_depth: BitDepth,
 ) -> Result<u16> {
     let terms = QvalTxSkipTerms::new(qindex, tx_skip, bit_depth)?;
-    let mut lut_input = 0i64;
+    let mut lut_input = 0i32;
     for (i, feature) in features.iter().enumerate() {
-        let qval = round2_signed(
+        let qval = round2_signed_i32(
             feature.checked_add(qval_given_tx_skip(&terms, i)?).ok_or(
                 ReconError::ArithmeticOverflow {
                     context: "PC-Wiener feature qval",
@@ -1236,18 +1237,22 @@ fn pc_wiener_lut_input(
 /// Feature-independent § 7.20.4 `get_qval_given_tskip` terms, derived once per
 /// classification instead of once per feature.
 struct QvalTxSkipTerms {
-    shifted_tx_skip: i64,
-    qstep: i64,
-    prod: i64,
+    shifted_tx_skip: i32,
+    qstep: i32,
+    prod: i32,
 }
 
 impl QvalTxSkipTerms {
-    fn new(qindex: u32, tx_skip: i64, bit_depth: BitDepth) -> Result<Self> {
-        let mut qstep = i64::from(quantizer_value(qindex, 0, bit_depth));
+    fn new(qindex: u32, tx_skip: i32, bit_depth: BitDepth) -> Result<Self> {
+        let mut qstep = i32::try_from(quantizer_value(qindex, 0, bit_depth)).map_err(|_| {
+            ReconError::ArithmeticOverflow {
+                context: "PC-Wiener quantizer value",
+            }
+        })?;
         let qstep_shift = QUANT_TABLE_BITS + 10;
-        qstep = round2(qstep, u32::from(bit_depth.bits() - 8));
+        qstep = round2_i32(qstep, u32::from(bit_depth.bits() - 8));
         let diff_shift = qstep_shift - 8;
-        let prod = round2(
+        let prod = round2_i32(
             tx_skip
                 .checked_mul(qstep)
                 .ok_or(ReconError::ArithmeticOverflow {
@@ -1270,7 +1275,7 @@ impl QvalTxSkipTerms {
 }
 
 #[inline]
-fn qval_given_tx_skip(terms: &QvalTxSkipTerms, feature_index: usize) -> Result<i64> {
+fn qval_given_tx_skip(terms: &QvalTxSkipTerms, feature_index: usize) -> Result<i32> {
     let qstep_shift = QUANT_TABLE_BITS + 10;
     let qval = MODE_WEIGHTS[feature_index][0]
         .checked_mul(terms.shifted_tx_skip)
@@ -1280,7 +1285,7 @@ fn qval_given_tx_skip(terms: &QvalTxSkipTerms, feature_index: usize) -> Result<i
             context: "PC-Wiener tx-skip qval",
         })?;
     MODE_OFFSETS[feature_index]
-        .checked_add(round2_signed(qval, qstep_shift))
+        .checked_add(round2_signed_i32(qval, qstep_shift))
         .and_then(|v| v.checked_mul(255))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener tx-skip qval offset",
@@ -1383,8 +1388,8 @@ mod tests {
         let result = pc_wiener_classify::<u16, _, _>(
             &params(BitDepth::Ten),
             |x, y| {
-                let x = i64::try_from(x).unwrap();
-                let y = i64::try_from(y).unwrap();
+                let x = i32::try_from(x).unwrap();
+                let y = i32::try_from(y).unwrap();
                 Ok(u16::try_from(100 + x * x + 2 * y * y + 3 * x * y).unwrap())
             },
             |_| Ok(1),
@@ -1397,6 +1402,21 @@ mod tests {
         assert_eq!(result.tx_skip, 252);
         assert_eq!(result.lut_input, 128);
         assert_eq!(result.class, 243);
+    }
+
+    #[test]
+    fn maximum_ten_bit_feature_window_fits_i32_classification_state() {
+        let result = pc_wiener_classify::<u16, _, _>(
+            &params(BitDepth::Ten),
+            |_, y| Ok(if y & 1 == 0 { 1023 } else { 0 }),
+            |_| Ok(1),
+        )
+        .unwrap();
+
+        assert_eq!(result.raw_features, [0, 73_656, 73_656, 73_656]);
+        assert_eq!(result.features, [0, 68_849_946, 60_269_022, 56_604_636]);
+        assert_eq!(result.raw_tx_skip_sum, 36);
+        assert_eq!(result.tx_skip, 252);
     }
 
     #[test]

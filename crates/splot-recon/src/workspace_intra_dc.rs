@@ -139,7 +139,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 }
 
 impl<T: ReconSample> CurrentFramePlane<T> {
-    fn intra_dc_edge_sums_for_rect(&self, rect: PlaneRect) -> Result<(Option<u64>, Option<u64>)> {
+    fn intra_dc_edge_sums_for_rect(&self, rect: PlaneRect) -> Result<(Option<u32>, Option<u32>)> {
         Ok((
             self.dc_edge_sum_for_rect(rect, IntraDcEdge::Left)?,
             self.dc_edge_sum_for_rect(rect, IntraDcEdge::Above)?,

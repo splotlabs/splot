@@ -731,7 +731,7 @@ pub fn parse_timing_info(reader: &mut BitReader<'_>) -> Result<TimingInfo> {
         let ticks_offset = reader.byte_offset();
         let ticks_bit_offset = reader.bit_offset();
         let value = reader.read_uvlc()?;
-        if u64::from(value) > (1u64 << 32) - 2 {
+        if value == u32::MAX {
             return Err(invalid_sequence_header(
                 ticks_offset,
                 ticks_bit_offset,

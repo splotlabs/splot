@@ -45,15 +45,15 @@ pub const MAX_PIC_QM_NUM: usize = 4;
 const SEG_LVL_ALT_Q: usize = 0;
 
 /// `MAXQ_8_BITS = 255` (AV2 v1.0.0 § 3): maximum quantizer when bit depth is 8.
-const MAXQ_8_BITS: i64 = 255;
+const MAXQ_8_BITS: i32 = 255;
 
 /// `MAXQ_OFFSET = 24` (AV2 v1.0.0 § 3): increase in allowed quantizer for each
 /// increase in bit depth.
-const MAXQ_OFFSET: i64 = 24;
+const MAXQ_OFFSET: i32 = 24;
 
 /// `MAXQ_10_BITS = MAXQ_8_BITS + 2 * MAXQ_OFFSET` (AV2 v1.0.0 § 3): maximum
 /// quantizer when bit depth is 10.
-const MAXQ_10_BITS: i64 = MAXQ_8_BITS + 2 * MAXQ_OFFSET;
+const MAXQ_10_BITS: i32 = MAXQ_8_BITS + 2 * MAXQ_OFFSET;
 
 /// Sequence-derived inputs for the § 5.18.6 quantization structures, the
 /// § 5.18.7.8 quantizer-index delta parameters, and the § 5.18.2 per-segment
@@ -154,7 +154,7 @@ impl CoreSeqQuantView {
     /// `docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-1`):
     /// `MAXQ_8_BITS` when `BitDepth == 8`, else `MAXQ_10_BITS` (`BitDepth == 10`
     /// is the only other non-reserved value).
-    const fn max_q(&self) -> i64 {
+    const fn max_q(&self) -> i32 {
         if self.bit_depth == 8 {
             MAXQ_8_BITS
         } else {
@@ -285,18 +285,19 @@ pub(crate) fn get_qindex_ignore_delta_q(
     base_q_idx: u32,
     segmentation: &SegmentationParams,
     segment_id: usize,
-) -> i64 {
+) -> i32 {
     let feature = segmentation
         .features
         .get(segment_id)
         .and_then(|features| features.get(SEG_LVL_ALT_Q))
         .copied()
         .unwrap_or(SegmentFeature::DISABLED);
+    let base_q_idx = i32::try_from(base_q_idx).unwrap_or(i32::MAX);
     if segmentation.segmentation_enabled && feature.enabled {
-        let qindex = i64::from(base_q_idx) + i64::from(feature.data);
+        let qindex = base_q_idx.saturating_add(feature.data);
         qindex.clamp(0, quant.max_q())
     } else {
-        i64::from(base_q_idx)
+        base_q_idx
     }
 }
 
@@ -500,13 +501,16 @@ pub fn parse_lossless_info(
     {
         let qindex =
             get_qindex_ignore_delta_q(quant, quantization.base_q_idx, segmentation, segment_id);
-        *lossless = qindex == 0
-            && !delta_q.delta_q_present
-            && i64::from(quantization.delta_q_y_dc) + i64::from(quant.base_y_dc_delta_q) <= 0
-            && i64::from(quantization.delta_q_u_dc) + i64::from(quant.base_uv_dc_delta_q) <= 0
-            && i64::from(quantization.delta_q_v_dc) + i64::from(quant.base_uv_dc_delta_q) <= 0
-            && i64::from(quantization.delta_q_u_ac) + i64::from(quant.base_uv_ac_delta_q) <= 0
-            && i64::from(quantization.delta_q_v_ac) + i64::from(quant.base_uv_ac_delta_q) <= 0;
+        let deltas_non_positive = [
+            (quantization.delta_q_y_dc, quant.base_y_dc_delta_q),
+            (quantization.delta_q_u_dc, quant.base_uv_dc_delta_q),
+            (quantization.delta_q_v_dc, quant.base_uv_dc_delta_q),
+            (quantization.delta_q_u_ac, quant.base_uv_ac_delta_q),
+            (quantization.delta_q_v_ac, quant.base_uv_ac_delta_q),
+        ]
+        .into_iter()
+        .all(|(delta, base)| delta.saturating_add(base) <= 0);
+        *lossless = qindex == 0 && !delta_q.delta_q_present && deltas_non_positive;
         if *lossless {
             has_lossless_segment = true;
         } else {

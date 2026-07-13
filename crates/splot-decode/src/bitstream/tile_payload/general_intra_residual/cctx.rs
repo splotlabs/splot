@@ -3,7 +3,7 @@
 
 //! Cross-chroma transform reconstruction helpers.
 
-use splot_recon::math::round2_signed;
+use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BitDepth, PlaneId, ReconSample, inverse_transform_2d_outer, reconstruct_add_residual,
 };
@@ -99,22 +99,16 @@ pub(super) fn apply_cross_chroma_transform(
                 .ok_or(GeneralIntraResidualError::UnexpectedBranch)?,
         )
         .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
-    let bound = 1i64 << (u32::from(bit_depth.bits()) + 7);
+    let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
     for (u, v) in u_dequant.iter_mut().zip(v_dequant.iter_mut()) {
-        let saved_u = i64::from(*u);
-        let saved_v = i64::from(*v);
-        let next_u = round2_signed(
-            saved_u * i64::from(cos) - saved_v * i64::from(sin),
-            CCTX_PREC_BITS,
-        )
-        .clamp(-bound, bound - 1);
-        let next_v = round2_signed(
-            saved_u * i64::from(sin) + saved_v * i64::from(cos),
-            CCTX_PREC_BITS,
-        )
-        .clamp(-bound, bound - 1);
-        *u = next_u as i32;
-        *v = next_v as i32;
+        let saved_u = (*u).clamp(-bound, bound - 1);
+        let saved_v = (*v).clamp(-bound, bound - 1);
+        let next_u = round2_signed_i32(saved_u * cos - saved_v * sin, CCTX_PREC_BITS)
+            .clamp(-bound, bound - 1);
+        let next_v = round2_signed_i32(saved_u * sin + saved_v * cos, CCTX_PREC_BITS)
+            .clamp(-bound, bound - 1);
+        *u = next_u;
+        *v = next_v;
     }
     Ok(())
 }

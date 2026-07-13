@@ -18,24 +18,24 @@ const DIV_LUT: [u16; 129] = [
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DcEdgeSum {
-    pub(crate) sum: u64,
-    pub(crate) count: u64,
+    pub(crate) sum: u32,
+    pub(crate) count: u32,
 }
 
 pub(crate) fn predict_intra_dc_rect_value_from_sums<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,
-    left_sum: Option<u64>,
-    above_sum: Option<u64>,
+    left_sum: Option<u32>,
+    above_sum: Option<u32>,
 ) -> Result<T> {
     validate_sample_type::<T>(bit_depth)?;
     let predicted = match (left_sum, above_sum) {
         (Some(left), Some(above)) => clip1(
-            approx_divide(left + above, (size.width() + size.height()) as u64)?,
+            approx_divide(left + above, (size.width() + size.height()) as u32)?,
             bit_depth,
         ),
-        (Some(left), None) => round2(left, size.log2_height()),
-        (None, Some(above)) => round2(above, size.log2_width()),
+        (Some(left), None) => round2_u32(left, size.log2_height()) as u16,
+        (None, Some(above)) => round2_u32(above, size.log2_width()) as u16,
         (None, None) => dc_midpoint(bit_depth),
     };
 
@@ -89,7 +89,7 @@ pub(crate) fn validate_dc_edge<T: ReconSample>(
     samples: Option<&[T]>,
     expected_len: usize,
     bit_depth: BitDepth,
-) -> Result<Option<u64>> {
+) -> Result<Option<u32>> {
     Ok(
         validate_dc_edge_sampled_sum(edge, samples, expected_len, 1, bit_depth)?
             .map(|sampled| sampled.sum),
@@ -122,8 +122,8 @@ pub(crate) fn validate_dc_edge_sampled_sum<T: ReconSample>(
     }
 
     let max = bit_depth.max_sample();
-    let mut sum = 0u64;
-    let mut count = 0u64;
+    let mut sum = 0u32;
+    let mut count = 0u32;
     for (sample_index, sample) in samples.iter().enumerate() {
         let value = sample.to_u16();
         if value > max {
@@ -136,7 +136,7 @@ pub(crate) fn validate_dc_edge_sampled_sum<T: ReconSample>(
         }
         if sample_index % step == 0 {
             sum = sum
-                .checked_add(u64::from(value))
+                .checked_add(u32::from(value))
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "intra DC edge sample sum",
                 })?;
@@ -193,48 +193,50 @@ pub(crate) fn fill_validated_output_shape<T: ReconSample>(
     debug_assert!(required <= output.len());
 }
 
-pub(crate) fn approx_divide(num: u64, den: u64) -> Result<u16> {
+pub(crate) fn approx_divide(num: u32, den: u32) -> Result<u16> {
     if den == 0 {
         return Err(ReconError::ArithmeticOverflow {
             context: "intra DC approximate divisor",
         });
     }
-    let (shift, scale) = resolve_divisor(den)?;
+    let (shift, scale) = resolve_divisor_32(den)?;
     let scaled = num
-        .checked_mul(u64::from(scale))
+        .checked_mul(u32::from(scale))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "intra DC approximate division product",
         })?;
-    Ok(round2(scaled, shift))
+    u16::try_from(round2_u32(scaled, shift)).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "intra DC approximate division result",
+    })
 }
 
-pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
+pub(crate) fn resolve_division(num: i32, den: i32, shift: u8) -> i16 {
     if num == 0 || den <= 0 {
         return 0;
     }
     let sign_negative = num < 0;
     let n_abs = num.unsigned_abs();
-    let d = den as u64;
+    let d = den as u32;
     let shift_n = n_abs.ilog2() as u8;
     let shift_d = d.ilog2() as u8;
-    let e_d = d - (1u64 << shift_d);
+    let e_d = d - (1u32 << shift_d);
     let f_d = if shift_d > DIV_LUT_BITS {
-        round2_u64(e_d, shift_d - DIV_LUT_BITS) as usize
+        round2_u32(e_d, shift_d - DIV_LUT_BITS) as usize
     } else {
         (e_d << (DIV_LUT_BITS - shift_d)) as usize
     };
     let f_n = if shift_n > DIV_LUT_BITS {
-        round2_u64(n_abs, shift_n - DIV_LUT_BITS)
+        round2_u32(n_abs, shift_n - DIV_LUT_BITS)
     } else {
         n_abs << (DIV_LUT_BITS - shift_n)
     };
     let shift_add = i32::from(shift_d) - i32::from(shift_n) - i32::from(shift);
-    let max = (2i64 << shift) - 1;
+    let max = (2i32 << shift) - 1;
     let mut ret = if shift_add <= 1 {
         let shift0 = i32::from(DIV_LUT_PREC_BITS) + i32::from(DIV_LUT_BITS) + shift_add;
         if shift0 >= 0 {
-            let scale = i64::from(DIV_LUT.get(f_d).copied().unwrap_or(0));
-            (scale * i64::try_from(f_n).unwrap_or(i64::MAX)) >> shift0
+            let scale = i32::from(DIV_LUT.get(f_d).copied().unwrap_or(0));
+            (scale * f_n as i32) >> shift0
         } else {
             max
         }
@@ -246,6 +248,44 @@ pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
         ret = -ret;
     }
     ret as i16
+}
+
+pub(crate) fn round2_u32(value: u32, shift: u8) -> u32 {
+    let shift = u32::from(shift);
+    if shift == 0 {
+        value
+    } else if shift < u32::BITS {
+        (value >> shift) + ((value >> (shift - 1)) & 1)
+    } else if shift == u32::BITS {
+        value >> (u32::BITS - 1)
+    } else {
+        0
+    }
+}
+
+macro_rules! resolve_divisor_for_width {
+    ($den:ident, $one:expr, $round:path, $zero_context:literal, $lookup_context:literal) => {{
+        if $den == 0 {
+            return Err(ReconError::ArithmeticOverflow {
+                context: $zero_context,
+            });
+        }
+
+        let n = $den.ilog2() as u8;
+        let e = $den - ($one << n);
+        let f = if n > DIV_LUT_BITS {
+            $round(e, n - DIV_LUT_BITS) as usize
+        } else {
+            (e << (DIV_LUT_BITS - n)) as usize
+        };
+        let scale = DIV_LUT
+            .get(f)
+            .copied()
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: $lookup_context,
+            })?;
+        Ok((n + DIV_LUT_PREC_BITS, scale))
+    }};
 }
 
 /// AV2 §7.13.2.9 / §7.13.2.12 `resolve_divisor(D)`: decomposes `D` so that
@@ -260,30 +300,23 @@ pub(crate) fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
 /// Returns [`ReconError::ArithmeticOverflow`] for a zero divisor or an
 /// out-of-table lookup index.
 pub fn resolve_divisor(den: u64) -> Result<(u8, u16)> {
-    if den == 0 {
-        return Err(ReconError::ArithmeticOverflow {
-            context: "intra DC divisor resolution",
-        });
-    }
-
-    let n = den.ilog2() as u8;
-    let e = den - (1u64 << n);
-    let f = if n > DIV_LUT_BITS {
-        round2_u64(e, n - DIV_LUT_BITS) as usize
-    } else {
-        (e << (DIV_LUT_BITS - n)) as usize
-    };
-    let scale = DIV_LUT
-        .get(f)
-        .copied()
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "intra DC divisor lookup",
-        })?;
-    Ok((n + DIV_LUT_PREC_BITS, scale))
+    resolve_divisor_for_width!(
+        den,
+        1u64,
+        round2_u64,
+        "intra DC divisor resolution",
+        "intra DC divisor lookup"
+    )
 }
 
-pub(crate) fn round2(value: u64, shift: u8) -> u16 {
-    round2_u64(value, shift) as u16
+pub(crate) fn resolve_divisor_32(den: u32) -> Result<(u8, u16)> {
+    resolve_divisor_for_width!(
+        den,
+        1u32,
+        round2_u32,
+        "32-bit divisor resolution",
+        "32-bit divisor lookup"
+    )
 }
 
 fn round2_u64(value: u64, shift: u8) -> u64 {

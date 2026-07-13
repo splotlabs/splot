@@ -319,8 +319,8 @@ fn user_defined_qm(
 #[allow(clippy::many_single_char_names)]
 pub(crate) fn diagonal_scan_2d(width: usize, height: usize) -> Vec<usize> {
     let mut out = vec![0usize; width * height];
-    let (w, h) = (width as i64, height as i64);
-    let (mut x, mut y) = (0i64, 0i64);
+    let (w, h) = (width as i32, height as i32);
+    let (mut x, mut y) = (0i32, 0i32);
     for slot in &mut out {
         *slot = (y as usize) * width + (x as usize);
         x += 1;

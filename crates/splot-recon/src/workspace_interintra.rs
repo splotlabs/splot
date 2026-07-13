@@ -4,7 +4,7 @@
 //! AV2 § 7.13.3.29 intra mode variant mask and § 7.13.3.30 interintra blend.
 
 use super::{CurrentFramePlane, CurrentFrameWorkspace, checked_sample_block_rect};
-use crate::math::round2;
+use crate::math::round2_i32;
 use crate::{IntraRectBlockSize, PlaneId, ReconError, ReconSample, Result};
 
 /// AV2 § 7.13.3.29 `Ii_Weights_1d[128]` smooth-interintra blending weights.
@@ -226,14 +226,14 @@ pub fn wedge_mask_plane_sample(
     let x0 = x << sub_x;
     let y0 = y << sub_y;
     if sub_y == 0 {
-        let sum = i64::from(wedge_mask_luma_sample(
+        let sum = i32::from(wedge_mask_luma_sample(
             luma_width,
             luma_height,
             wedge_index,
             sign,
             x0,
             y0,
-        )?) + i64::from(wedge_mask_luma_sample(
+        )?) + i32::from(wedge_mask_luma_sample(
             luma_width,
             luma_height,
             wedge_index,
@@ -241,32 +241,30 @@ pub fn wedge_mask_plane_sample(
             x0 + 1,
             y0,
         )?);
-        return u16::try_from(round2(sum, 1)).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "interintra wedge horizontal chroma mask",
-        });
+        return Ok(round2_i32(sum, 1) as u16);
     }
-    let sum = i64::from(wedge_mask_luma_sample(
+    let sum = i32::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
         sign,
         x0,
         y0,
-    )?) + i64::from(wedge_mask_luma_sample(
+    )?) + i32::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
         sign,
         x0 + 1,
         y0,
-    )?) + i64::from(wedge_mask_luma_sample(
+    )?) + i32::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
         sign,
         x0,
         y0 + 1,
-    )?) + i64::from(wedge_mask_luma_sample(
+    )?) + i32::from(wedge_mask_luma_sample(
         luma_width,
         luma_height,
         wedge_index,
@@ -274,9 +272,7 @@ pub fn wedge_mask_plane_sample(
         x0 + 1,
         y0 + 1,
     )?);
-    u16::try_from(round2(sum, 2)).map_err(|_| ReconError::ArithmeticOverflow {
-        context: "interintra wedge chroma mask",
-    })
+    Ok(round2_i32(sum, 2) as u16)
 }
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
@@ -444,11 +440,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         x: usize,
         y: usize,
         size: IntraRectBlockSize,
-        alpha: i64,
-        beta: i64,
+        alpha: i16,
+        beta: i32,
     ) -> Result<()> {
         let rect = super::block_rect(x, y, size)?;
-        let max_sample = i64::from(self.info().bit_depth().max_sample());
+        let max_sample = i32::from(self.info().bit_depth().max_sample());
         self.plane_mut(plane)?
             .apply_bawp_rect(rect, alpha, beta, max_sample)
     }
@@ -461,16 +457,16 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     fn apply_bawp_rect(
         &mut self,
         rect: crate::PlaneRect,
-        alpha: i64,
-        beta: i64,
-        max_sample: i64,
+        alpha: i16,
+        beta: i32,
+        max_sample: i32,
     ) -> Result<()> {
         let rect = self.clamp_rect_to_storage(rect)?;
         for i in 0..rect.height() {
             let row_start = self.sample_index(rect.x(), rect.y() + i)?;
             for j in 0..rect.width() {
-                let orig = i64::from(self.samples[row_start + j].to_u16());
-                let scaled = ((orig * alpha + beta) >> 8).clamp(0, max_sample);
+                let orig = i32::from(self.samples[row_start + j].to_u16());
+                let scaled = ((orig * i32::from(alpha) + beta) >> 8).clamp(0, max_sample);
                 let stored = u16::try_from(scaled)
                     .ok()
                     .and_then(|value| T::try_from_u16(value).ok())

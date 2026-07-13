@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use crate::math::{clip3, round2_signed};
-use crate::{BitDepth, ReconError, Result, resolve_divisor};
+use crate::intra_dc_math::resolve_divisor_32;
+use crate::math::round2_signed_i32;
+use crate::{BitDepth, ReconError, Result};
 
 const GRADIENT_UNIT: usize = 16;
 const MAX_LS_BITS: u32 = 26;
 const MV_REFINE_PREC_BITS: i32 = 4;
-const MV_DELTA_LIMIT: i64 = 1 << MV_REFINE_PREC_BITS;
+const MV_DELTA_LIMIT: i32 = 1 << MV_REFINE_PREC_BITS;
 
 /// Derives the AV2 § 7.13.3.9 optical-flow motion-vector deltas for each
 /// `unit_size` square in a pair of clipped, row-major luma predictors.
@@ -77,18 +78,29 @@ pub fn derive_optflow_mv_deltas(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow scratch sample count",
         })?;
-    let mut scratch = vec![0i32; scratch_len];
+    let mut scratch = vec![0i16; scratch_len];
     let (weighted, scratch) = scratch.split_at_mut(expected);
     let (difference, scratch) = scratch.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch.split_at_mut(expected);
+    let max_sample = bit_depth.max_sample();
     for index in 0..expected {
-        let left = i64::from(pred0[index]);
-        let right = i64::from(pred1[index]);
-        weighted[index] = round2_signed(
-            i64::from(distances[0]) * left - i64::from(distances[1]) * right,
-            downshift,
-        ) as i32;
-        difference[index] = round2_signed(left - right, downshift) as i32;
+        let left = pred0[index];
+        let right = pred1[index];
+        for (predictor, value) in [(0, left), (1, right)] {
+            if value > max_sample {
+                return Err(ReconError::OptflowPredictorSampleOutOfRange {
+                    predictor,
+                    sample_index: index,
+                    value,
+                    max: max_sample,
+                });
+            }
+        }
+        let left = i32::from(left);
+        let right = i32::from(right);
+        weighted[index] =
+            round2_signed_i32(distances[0] * left - distances[1] * right, downshift) as i16;
+        difference[index] = round2_signed_i32(left - right, downshift) as i16;
     }
 
     gradients(weighted, width, height, gradient_x, gradient_y);
@@ -127,11 +139,11 @@ fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
 }
 
 fn gradients(
-    values: &[i32],
+    values: &[i16],
     width: usize,
     height: usize,
-    horizontal: &mut [i32],
-    vertical: &mut [i32],
+    horizontal: &mut [i16],
+    vertical: &mut [i16],
 ) {
     for row in 0..height {
         for col in 0..width {
@@ -143,49 +155,55 @@ fn gradients(
             let col_prev2 = col.saturating_sub(2).max(col_start);
             let col_next = (col + 1).min(col_end);
             let col_next2 = (col + 2).min(col_end);
-            let mut value = 42 * (values[row * width + col_next] - values[row * width + col_prev])
-                - 5 * (values[row * width + col_next2] - values[row * width + col_prev2]);
+            let mut value = 42
+                * (i32::from(values[row * width + col_next])
+                    - i32::from(values[row * width + col_prev]))
+                - 5 * (i32::from(values[row * width + col_next2])
+                    - i32::from(values[row * width + col_prev2]));
             if col + 1 > col_end || col < col_start + 1 {
                 value *= 2;
             }
-            horizontal[row * width + col] = round2_signed(i64::from(value), 7) as i32;
+            horizontal[row * width + col] = round2_signed_i32(value, 7) as i16;
 
             let row_prev = row.saturating_sub(1).max(row_start);
             let row_prev2 = row.saturating_sub(2).max(row_start);
             let row_next = (row + 1).min(row_end);
             let row_next2 = (row + 2).min(row_end);
-            let mut value = 42 * (values[row_next * width + col] - values[row_prev * width + col])
-                - 5 * (values[row_next2 * width + col] - values[row_prev2 * width + col]);
+            let mut value = 42
+                * (i32::from(values[row_next * width + col])
+                    - i32::from(values[row_prev * width + col]))
+                - 5 * (i32::from(values[row_next2 * width + col])
+                    - i32::from(values[row_prev2 * width + col]));
             if row + 1 > row_end || row < row_start + 1 {
                 value *= 2;
             }
-            vertical[row * width + col] = round2_signed(i64::from(value), 7) as i32;
+            vertical[row * width + col] = round2_signed_i32(value, 7) as i16;
         }
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn solve_unit(
-    gradient_x: &[i32],
-    gradient_y: &[i32],
-    difference: &[i32],
+    gradient_x: &[i16],
+    gradient_y: &[i16],
+    difference: &[i16],
     stride: usize,
     unit_x: usize,
     unit_y: usize,
     unit_size: usize,
     distances: [i32; 2],
 ) -> Result<[[i32; 2]; 2]> {
-    let mut su2 = (unit_size * unit_size) as i64;
+    let mut su2 = (unit_size * unit_size) as i32;
     let mut sv2 = su2;
-    let mut suv = 0i64;
-    let mut suw = 0i64;
-    let mut svw = 0i64;
+    let mut suv = 0i32;
+    let mut suw = 0i32;
+    let mut svw = 0i32;
     for row in unit_y..unit_y + unit_size {
         for col in unit_x..unit_x + unit_size {
             let index = row * stride + col;
-            let u = i64::from(gradient_x[index]);
-            let v = i64::from(gradient_y[index]);
-            let w = i64::from(difference[index]);
+            let u = i32::from(gradient_x[index]);
+            let v = i32::from(gradient_y[index]);
+            let w = i32::from(difference[index]);
             su2 += u * u;
             suv += u * v;
             sv2 += v * v;
@@ -194,18 +212,18 @@ fn solve_unit(
         }
     }
 
-    let max_product_bits = (1 + msb(su2)) + (1 + msb(sv2));
+    let max_product_bits = (1 + msb(su2 as u32)) + (1 + msb(sv2 as u32));
     let max_product_bits = max_product_bits
-        .max((1 + msb(sv2)) + (1 + msb(suw.abs())))
-        .max((1 + msb(suv.abs())) + (1 + msb(svw.abs())))
-        .max((1 + msb(su2)) + (1 + msb(svw.abs())))
-        .max((1 + msb(suv.abs())) + (1 + msb(suw.abs())));
+        .max((1 + msb(sv2 as u32)) + (1 + msb(suw.unsigned_abs())))
+        .max((1 + msb(suv.unsigned_abs())) + (1 + msb(svw.unsigned_abs())))
+        .max((1 + msb(su2 as u32)) + (1 + msb(svw.unsigned_abs())))
+        .max((1 + msb(suv.unsigned_abs())) + (1 + msb(suw.unsigned_abs())));
     let reduction = max_product_bits.saturating_sub(MAX_LS_BITS - 3) >> 1;
-    su2 = round2_signed(su2, reduction);
-    sv2 = round2_signed(sv2, reduction);
-    suv = round2_signed(suv, reduction);
-    suw = round2_signed(suw, reduction);
-    svw = round2_signed(svw, reduction);
+    su2 = round2_signed_i32(su2, reduction);
+    sv2 = round2_signed_i32(sv2, reduction);
+    suv = round2_signed_i32(suv, reduction);
+    suw = round2_signed_i32(suw, reduction);
+    svw = round2_signed_i32(svw, reduction);
 
     let determinant = su2 * sv2 - suv * suv;
     if determinant <= 0 {
@@ -220,65 +238,49 @@ fn solve_unit(
     let row = -solution[1];
     Ok([
         [
-            clip3(
-                -MV_DELTA_LIMIT,
-                MV_DELTA_LIMIT,
-                row * i64::from(distances[0]),
-            ) as i32,
-            clip3(
-                -MV_DELTA_LIMIT,
-                MV_DELTA_LIMIT,
-                col * i64::from(distances[0]),
-            ) as i32,
+            (row * distances[0]).clamp(-MV_DELTA_LIMIT, MV_DELTA_LIMIT),
+            (col * distances[0]).clamp(-MV_DELTA_LIMIT, MV_DELTA_LIMIT),
         ],
         [
-            clip3(
-                -MV_DELTA_LIMIT,
-                MV_DELTA_LIMIT,
-                row * i64::from(distances[1]),
-            ) as i32,
-            clip3(
-                -MV_DELTA_LIMIT,
-                MV_DELTA_LIMIT,
-                col * i64::from(distances[1]),
-            ) as i32,
+            (row * distances[1]).clamp(-MV_DELTA_LIMIT, MV_DELTA_LIMIT),
+            (col * distances[1]).clamp(-MV_DELTA_LIMIT, MV_DELTA_LIMIT),
         ],
     ])
 }
 
-fn divide_and_round(values: [i64; 2], denominator: i64, shift: i32) -> Result<[i64; 2]> {
+fn divide_and_round(values: [i32; 2], denominator: i32, shift: i32) -> Result<[i32; 2]> {
     let (denominator_shift, inverse) = if denominator == 1 {
-        (0i32, 1i64)
+        (0i32, 1i32)
     } else {
-        let (denominator_shift, inverse) = resolve_divisor(denominator as u64)?;
-        (i32::from(denominator_shift), i64::from(inverse))
+        let (denominator_shift, inverse) = resolve_divisor_32(denominator as u32)?;
+        (i32::from(denominator_shift), i32::from(inverse))
     };
-    let inverse_msb = msb(inverse);
-    let mut result = [0i64; 2];
+    let inverse_msb = msb(inverse as u32);
+    let mut result = [0i32; 2];
     for (output, value) in result.iter_mut().zip(values) {
         if value == 0 {
             continue;
         }
         let sign = value.signum();
         let mut magnitude = value.abs();
-        let reduction = (msb(magnitude) + inverse_msb + 4).saturating_sub(MAX_LS_BITS);
-        magnitude = round2_signed(magnitude, reduction);
+        let reduction = (msb(magnitude as u32) + inverse_msb + 4).saturating_sub(MAX_LS_BITS);
+        magnitude = round2_signed_i32(magnitude, reduction);
         let increase = shift + reduction as i32 - denominator_shift;
         magnitude = if increase <= -31 {
-            let reduced = round2_signed(magnitude, (-increase - 30) as u32);
-            round2_signed(reduced * inverse, 30)
+            let reduced = round2_signed_i32(magnitude, (-increase - 30) as u32);
+            round2_signed_i32(reduced * inverse, 30)
         } else if increase >= 0 {
-            magnitude * inverse * (1i64 << increase)
+            magnitude * inverse * (1i32 << increase)
         } else {
-            round2_signed(magnitude * inverse, (-increase) as u32)
+            round2_signed_i32(magnitude * inverse, (-increase) as u32)
         };
         *output = sign * magnitude;
     }
     Ok(result)
 }
 
-fn msb(value: i64) -> u32 {
-    i64::BITS - 1 - value.max(1).leading_zeros()
+fn msb(value: u32) -> u32 {
+    u32::BITS - 1 - value.max(1).leading_zeros()
 }
 
 #[cfg(test)]
@@ -328,5 +330,34 @@ mod tests {
             derive_optflow_mv_deltas(&left, &right, 8, 8, 8, BitDepth::Eight, [0, -1],).unwrap(),
             vec![[[0; 2]; 2]],
         );
+    }
+
+    #[test]
+    fn maximum_ten_bit_contrast_fits_i16_scratch_and_i32_solver() {
+        let left: Vec<u16> = (0..8 * 8)
+            .map(|index| if index & 1 == 0 { 1023 } else { 0 })
+            .collect();
+        let right: Vec<u16> = left.iter().map(|&value| 1023 - value).collect();
+
+        let deltas =
+            derive_optflow_mv_deltas(&left, &right, 8, 8, 8, BitDepth::Ten, [2, -1]).unwrap();
+        assert!(deltas[0].iter().flatten().all(|&value| value.abs() <= 16));
+    }
+
+    #[test]
+    fn rejects_predictors_outside_active_bit_depth() {
+        let mut predictor = vec![0; 8 * 8];
+        predictor[7] = 256;
+        let other = vec![0; 8 * 8];
+
+        assert!(matches!(
+            derive_optflow_mv_deltas(&predictor, &other, 8, 8, 8, BitDepth::Eight, [1, -1],),
+            Err(ReconError::OptflowPredictorSampleOutOfRange {
+                predictor: 0,
+                sample_index: 7,
+                value: 256,
+                max: 255,
+            })
+        ));
     }
 }
