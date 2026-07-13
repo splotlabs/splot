@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use splot_parallel::{ThreadCount, WorkerPool};
 
 fn update(plane: usize, x4: usize, y4: usize, w4: usize, h4: usize) -> CoeffContextUpdate {
     CoeffContextUpdate {
@@ -116,13 +117,12 @@ fn transform_block_recycler_is_thread_local() {
     drop(TransformCoeffBlockState::new(4, 4).unwrap());
     assert_eq!(transform_coeff_buffer_counts(), (1, 1));
 
-    std::thread::spawn(|| {
+    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
+    pool.install(|| {
         assert_eq!(transform_coeff_buffer_counts(), (0, 0));
         drop(TransformCoeffBlockState::new(4, 4).unwrap());
         assert_eq!(transform_coeff_buffer_counts(), (1, 1));
-    })
-    .join()
-    .unwrap();
+    });
 
     assert_eq!(transform_coeff_buffer_counts(), (1, 1));
 }
