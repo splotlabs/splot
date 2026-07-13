@@ -658,6 +658,105 @@ fn compound_intermediate_keeps_unclipped_prescaled_predictor() {
 }
 
 #[test]
+fn compound_intermediate_into_matches_owned_copy_and_filtered() {
+    let ref_w = 16usize;
+    let ref_h = 16usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 13 + 7) % 256) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let copy = full_pel_params(
+        InterpolationFilter::EightTap,
+        4,
+        4,
+        3,
+        4,
+        ref_w as i64,
+        ref_h as i64,
+    );
+    let filtered = SubpelPredictParams {
+        start_x: (3 << SCALE_SUBPEL_BITS) + (5 << 6),
+        start_y: (4 << SCALE_SUBPEL_BITS) + (11 << 6),
+        ..copy
+    };
+
+    for params in [copy, filtered] {
+        let expected = subpel_predict_block_compound_intermediate(&view, &params).unwrap();
+        let stride = params.w + 3;
+        let sentinel = -12345;
+        let mut output = vec![sentinel; stride * params.h + 2];
+        subpel_predict_block_compound_intermediate_into(&view, &params, &mut output, stride)
+            .unwrap();
+
+        for row in 0..params.h {
+            assert_eq!(
+                &output[row * stride..row * stride + params.w],
+                &expected[row * params.w..(row + 1) * params.w]
+            );
+            assert!(
+                output[row * stride + params.w..(row + 1) * stride]
+                    .iter()
+                    .all(|&sample| sample == sentinel)
+            );
+        }
+        assert!(
+            output[stride * params.h..]
+                .iter()
+                .all(|&sample| sample == sentinel)
+        );
+    }
+}
+
+#[test]
+fn compound_intermediate_into_rejects_invalid_destination_without_writes() {
+    let ref_w = 8usize;
+    let ref_h = 8usize;
+    let samples = build_ref(vec![80u16; ref_w * ref_h], ref_w, ref_h);
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = full_pel_params(
+        InterpolationFilter::EightTap,
+        4,
+        4,
+        2,
+        2,
+        ref_w as i64,
+        ref_h as i64,
+    );
+    let sentinel = -12345;
+
+    let mut short_stride = vec![sentinel; 64];
+    assert_eq!(
+        subpel_predict_block_compound_intermediate_into(
+            &view,
+            &params,
+            &mut short_stride,
+            params.w - 1,
+        ),
+        Err(ReconError::StrideTooSmall {
+            stride_samples: params.w - 1,
+            storage_width: params.w,
+        })
+    );
+    assert!(short_stride.iter().all(|&sample| sample == sentinel));
+
+    let stride = params.w + 3;
+    let required = (params.h - 1) * stride + params.w;
+    let mut short_output = vec![sentinel; required - 1];
+    assert_eq!(
+        subpel_predict_block_compound_intermediate_into(&view, &params, &mut short_output, stride,),
+        Err(ReconError::BufferLengthMismatch {
+            expected: required,
+            actual: required - 1,
+        })
+    );
+    assert!(short_output.iter().all(|&sample| sample == sentinel));
+}
+
+#[test]
 fn compound_equal_average_blend_rounds_and_clips() {
     let left = [20 * 16, 60 * 16, 255 * 16];
     let right = [44 * 16, 120 * 16, 255 * 16];

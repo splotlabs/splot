@@ -464,7 +464,8 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                 } else {
                     None
                 };
-                let predicted = subpel_predict_block_compound_intermediate(
+                let start = row * block_w + col;
+                subpel_predict_block_compound_intermediate_into(
                     view,
                     &SubpelPredictParams {
                         interp: block.interp,
@@ -480,12 +481,9 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                         last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
                         bit_depth: sink.info().bit_depth(),
                     },
+                    &mut output[start..],
+                    block_w,
                 )?;
-                for local_row in 0..height {
-                    let source = &predicted[local_row * width..(local_row + 1) * width];
-                    let start = (row + local_row) * block_w + col;
-                    output[start..start + width].copy_from_slice(source);
-                }
             }
         }
     }
