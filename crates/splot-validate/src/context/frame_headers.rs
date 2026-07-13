@@ -105,31 +105,17 @@ impl ValidatorContext {
             let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
             let mut rap_refs = FrameRapReferences::default();
             if let Some(active_sequence) = self.sequence_headers.get(&seq_id) {
-                let mut ref_valid = [false; NUM_REF_FRAMES];
-                let mut ref_oh = [0u32; NUM_REF_FRAMES];
-                let mut ref_w = [0u32; NUM_REF_FRAMES];
-                let mut ref_h = [0u32; NUM_REF_FRAMES];
-                let reference_buffer = if self
+                let mut reference_scratch = ReferenceStateScratch::default();
+                let reference_buffer = self
                     .reference_state
-                    .view_into(
-                        obu.header.extended_layer_id,
-                        &mut ref_valid,
-                        &mut ref_oh,
-                        &mut ref_w,
-                        &mut ref_h,
-                    )
-                    .is_some()
-                {
-                    FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
-                } else {
-                    FrameReferenceStateView::unknown()
-                };
+                    .view_into(obu.header.extended_layer_id, &mut reference_scratch)
+                    .unwrap_or_else(FrameReferenceStateView::unknown);
                 rap_refs = frame_header_core_checks(
                     obu,
                     first_picture_in_tu,
                     active_sequence,
                     mfh_record,
-                    FrameReferenceAvailability {
+                    &FrameReferenceAvailability {
                         qm: &self.qm,
                         film_grain: &self.film_grain,
                         reference_buffer,

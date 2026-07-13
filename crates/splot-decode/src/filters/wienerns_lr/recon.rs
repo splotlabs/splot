@@ -29,6 +29,7 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
     cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
     tx_skip_records: Vec<super::WienerNsLrTxSkipTransformRecord>,
     lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
@@ -117,6 +118,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             chroma_deblock_blocks: [Vec::new(), Vec::new()],
             cdef_grid: None,
             ccso_grid: None,
+            gdf_grid: None,
             tx_skip_grid: None,
             tx_skip_records: Vec::new(),
             lr_source_blocks: Vec::new(),
@@ -141,6 +143,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     pub(crate) fn set_ccso_grid(&mut self, grid: Option<crate::filters::ccso::CcsoUnitGrid>) {
         self.ccso_grid = grid;
+    }
+
+    pub(crate) fn set_gdf_grid(&mut self, grid: Option<crate::filters::gdf::GdfBlockGrid>) {
+        self.gdf_grid = grid;
     }
 
     pub(crate) const fn set_cfl_ds_filter_index(&mut self, index: u8) {
@@ -178,6 +184,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     pub(crate) fn into_filtered_frame(
         mut self,
         core: &splot_core::headers::frame::FrameHeaderCore,
+        disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         offset: ByteOffset,
     ) -> Result<DecodedFrame<T>> {
@@ -223,6 +230,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 mi_rows,
                 mi_cols,
                 filter,
+                core.tile_info.as_ref(),
+                disable_loopfilters_across_tiles,
                 deblock_quant_deltas,
                 self.bit_depth,
             )
@@ -404,10 +413,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 core,
                 &deblocked_luma,
                 &cdef_luma,
+                self.gdf_grid.as_ref(),
                 self.lossless_grid.as_ref(),
                 self.luma_width,
                 self.luma_height,
                 self.bit_depth,
+                disable_loopfilters_across_tiles,
                 self.gdf_reference,
                 offset,
             )?;

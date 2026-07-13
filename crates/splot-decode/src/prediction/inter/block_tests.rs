@@ -14,15 +14,13 @@ use splot_recon::{
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::warp::extend_warp_base_position;
 use super::{
-    chroma_smooth_grid_dimensions, ensure_intra_leaf_quantizer_delta_scope,
-    inter_residual_geometry_supported_flags, inter_skip_txfm_ctx, predict_interintra_planes,
-    read_inter_intra_syntax_enabled, validate_segment_id,
+    chroma_smooth_grid_dimensions, inter_skip_txfm_ctx, leaf_uses_general_intra,
+    predict_interintra_planes, read_inter_intra_syntax_enabled, validate_segment_id,
 };
 use crate::bitstream::tile_payload::{
     BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
 };
 use crate::error::DecodeError;
-use crate::prediction::inter::SPEC_MODE_INFO;
 use crate::prediction::inter::{
     BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock,
     find_mv_stack::{BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid, NeighbourYMode},
@@ -94,14 +92,10 @@ fn skip_mode_selects_the_upper_skip_txfm_context_bank() {
 }
 
 #[test]
-fn inter_residual_geometry_allows_shared_leaves() {
-    assert!(inter_residual_geometry_supported_flags(false, false));
-}
-
-#[test]
-fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
-    assert!(!inter_residual_geometry_supported_flags(true, false));
-    assert!(!inter_residual_geometry_supported_flags(false, true));
+fn partitioned_leaves_route_to_general_intra_before_inter_syntax() {
+    assert!(leaf_uses_general_intra(false, true, false));
+    assert!(leaf_uses_general_intra(false, false, true));
+    assert!(!leaf_uses_general_intra(false, false, false));
 }
 
 #[test]
@@ -138,24 +132,6 @@ fn shared_chroma_size_disables_compound_prediction() -> TestResult {
     assert!(!sub8x8_chroma_disables_compound(block_8x8, block_8x8));
     assert!(sub8x8_chroma_disables_compound(block_8x8, block_16x16));
     Ok(())
-}
-
-#[test]
-fn inter_frame_intra_leaf_rejects_nonzero_quantizer_deltas() {
-    let result = ensure_intra_leaf_quantizer_delta_scope(false, false, ByteOffset::new(13));
-    assert!(matches!(
-        &result,
-        Err(DecodeError::UnsupportedFeature { unsupported })
-            if unsupported.reason() == "inter_block_intra_leaf_nonzero_quantizer_delta"
-                && unsupported.spec_section() == SPEC_MODE_INFO
-                && unsupported.byte_offset() == Some(ByteOffset::new(13))
-    ));
-}
-
-#[test]
-fn intra_leaf_quantizer_delta_guard_allows_installed_or_zero_delta_scope() {
-    assert!(ensure_intra_leaf_quantizer_delta_scope(true, false, ByteOffset::new(0)).is_ok());
-    assert!(ensure_intra_leaf_quantizer_delta_scope(false, true, ByteOffset::new(0)).is_ok());
 }
 
 #[test]
@@ -294,6 +270,36 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
+    for (format, chroma_samples, chroma_subsampling) in [
+        (PixelFormat::Yuv422, 32, (1, 0)),
+        (PixelFormat::Yuv444, 64, (0, 0)),
+    ] {
+        let workspace = CurrentFrameWorkspace::<u8>::new(frame_info(8, 8, format)?, 128)?;
+        let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
+        let mut placed = placed_luma_block(0, 0, 8, 8, InterIntraMode::Smooth);
+        placed.interintra_chroma = true;
+
+        let planes = predict_interintra_planes(
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Smooth,
+            false,
+            BitDepth::Eight,
+            ByteOffset::new(0),
+        )?;
+
+        assert_eq!(planes.len(), 3);
+        for plane in &planes[1..] {
+            assert_eq!((plane.sub_x, plane.sub_y), chroma_subsampling);
+            assert_eq!(plane.samples.len(), chroma_samples);
+        }
+    }
+    Ok(())
+}
+
 fn write_symbol(
     tile: &mut crate::bitstream::tile_payload::TileCdfSubset,
     encoder: &mut SymbolEncoder,
@@ -307,10 +313,18 @@ fn write_symbol(
 }
 
 fn monochrome_info(width: usize, height: usize) -> splot_recon::Result<DecodedFrameInfo> {
+    frame_info(width, height, PixelFormat::Monochrome)
+}
+
+fn frame_info(
+    width: usize,
+    height: usize,
+    pixel_format: PixelFormat,
+) -> splot_recon::Result<DecodedFrameInfo> {
     DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
-        PixelFormat::Monochrome,
+        pixel_format,
         PlaneSize::new(width, height)?,
         PlaneRect::new(0, 0, width, height)?,
     )

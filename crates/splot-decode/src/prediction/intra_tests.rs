@@ -187,6 +187,32 @@ fn plans_supported_luma_prediction_classes() {
             expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 45 }),
         },
         Case {
+            label: "10-bit d45 top-left no-neighbour fallback",
+            bit_depth: BitDepth::Ten,
+            row4: 0,
+            col4: 0,
+            width4: 16,
+            height4: 16,
+            frame_cols4: 16,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D45),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 45 }),
+        },
+        Case {
+            label: "10-bit d67 top-left no-neighbour fallback",
+            bit_depth: BitDepth::Ten,
+            row4: 0,
+            col4: 0,
+            width4: 16,
+            height4: 16,
+            frame_cols4: 16,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D67),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 67 }),
+        },
+        Case {
             label: "d203 top-left no-neighbour default",
             bit_depth: BitDepth::Eight,
             row4: 0,
@@ -197,7 +223,7 @@ fn plans_supported_luma_prediction_classes() {
             dc: false,
             nondc: None,
             directional: Some(SupportedDirectionalLumaMode::D203),
-            expected: Expected::Error("general_intra_d203_unverified_position"),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }),
         },
         Case {
             label: "smooth full-sb neighbour",
@@ -699,19 +725,6 @@ fn rejects_unsupported_luma_prediction_classes() {
             directional: Some(SupportedDirectionalLumaMode::D45),
             expected: Expected::Error("general_intra_d45_unverified_position"),
         },
-        Case {
-            label: "10-bit d45 top-left no-neighbour",
-            bit_depth: BitDepth::Ten,
-            row4: 0,
-            col4: 0,
-            width4: 16,
-            height4: 16,
-            frame_cols4: 16,
-            dc: false,
-            nondc: None,
-            directional: Some(SupportedDirectionalLumaMode::D45),
-            expected: Expected::Error("general_intra_d45_unverified_position"),
-        },
     ];
 
     for case in cases {
@@ -771,41 +784,85 @@ fn plans_verified_cardinal_no_neighbour_luma_with_explicit_admission() {
 }
 
 #[test]
-fn plans_verified_d203_no_neighbour_luma_with_explicit_admission() {
-    let case = Case {
-        label: "explicit d203 no-neighbour",
-        bit_depth: BitDepth::Eight,
+fn plans_d203_across_all_neighbour_domains() {
+    for case in [
+        Case {
+            label: "10-bit d203 no neighbours",
+            bit_depth: BitDepth::Ten,
+            row4: 0,
+            col4: 0,
+            width4: 16,
+            height4: 16,
+            frame_cols4: 32,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D203),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }),
+        },
+        Case {
+            label: "d203 above only small block",
+            bit_depth: BitDepth::Eight,
+            row4: 8,
+            col4: 0,
+            width4: 2,
+            height4: 4,
+            frame_cols4: 32,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D203),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }),
+        },
+        Case {
+            label: "d203 left only small block",
+            bit_depth: BitDepth::Ten,
+            row4: 0,
+            col4: 8,
+            width4: 4,
+            height4: 2,
+            frame_cols4: 32,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D203),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }),
+        },
+        Case {
+            label: "d203 above and left 4x4 block",
+            bit_depth: BitDepth::Eight,
+            row4: 8,
+            col4: 8,
+            width4: 1,
+            height4: 1,
+            frame_cols4: 32,
+            dc: false,
+            nondc: None,
+            directional: Some(SupportedDirectionalLumaMode::D203),
+            expected: Expected::Plan(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }),
+        },
+    ] {
+        assert_case(case);
+    }
+
+    let no_neighbour = Case {
+        label: "d203 angle delta no neighbours",
+        bit_depth: BitDepth::Ten,
         row4: 0,
         col4: 0,
-        width4: 16,
-        height4: 16,
-        frame_cols4: 16,
+        width4: 8,
+        height4: 8,
+        frame_cols4: 32,
         dc: false,
         nondc: None,
-        directional: Some(SupportedDirectionalLumaMode::D203),
+        directional: None,
         expected: Expected::Error("unused"),
     };
-    let modes = GeneralIntraBlockModes::luma_only(
-        crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-            y_mode: IntraYMode::D203_PRED_FOR_TEST,
-            angle_delta_y: 0,
-            intra_joint_mode: 0,
-            mrl_index: 0,
-            mrl_sec_index: None,
-            fsc_mode: 0,
-            uses_mrls: 0,
-            use_dip: 0,
-            dip_transpose: 0,
-            dip_mode: 0,
-            use_dpcm_y: 0,
-            dpcm_mode_y: 0,
-        },
-    );
-
-    assert!(plan_luma_prediction(&modes, ctx(case), false).is_err());
     assert_eq!(
-        plan_luma_prediction(&modes, ctx(case), true).unwrap(),
-        IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 }
+        plan_directional_luma_angle(
+            SupportedDirectionalLumaMode::D203,
+            209,
+            ctx(no_neighbour),
+            false,
+        ),
+        Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 209 })
     );
 }
 

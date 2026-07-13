@@ -233,7 +233,7 @@ impl TrajectoryState {
         backward: bool,
     ) {
         let reference_offset = reference_offset.abs();
-        if reference_offset == 0 || reference_offset > super::MAX_FRAME_DISTANCE {
+        if reference_offset > super::MAX_FRAME_DISTANCE {
             return;
         }
         let numerator = if backward {
@@ -387,6 +387,15 @@ mod tests {
 
         assert_eq!(state.fields[1].cell(1, 1), Some(Mv { row: -8, col: -16 }));
         assert_eq!(state.fields[0].cell(1, 1), Some(Mv { row: 8, col: 16 }));
+    }
+
+    #[test]
+    fn zero_offset_projection_records_the_source_trajectory() {
+        let mut state = TrajectoryState::new((8, 8), 1, 1, 8).unwrap();
+
+        state.observe_projection(0, None, None, 1, 1, Mv::ZERO, 2, 0, false);
+
+        assert_eq!(state.fields[0].cell(1, 1), Some(Mv::ZERO));
     }
 
     #[test]

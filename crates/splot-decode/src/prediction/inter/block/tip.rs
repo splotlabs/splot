@@ -72,16 +72,62 @@ fn tip_refinemv_references_allowed(
     ref_frame_height: &[u32],
     references: [(i8, i32); 2],
 ) -> bool {
-    if frame_type == Some(FrameType::Switch)
-        || !tip_refinemv_offsets_allowed(references[0].1, references[1].1)
-    {
+    if !tip_refinemv_offsets_allowed(references[0].1, references[1].1) {
+        return false;
+    }
+    tip_references_unscaled(
+        frame_type,
+        frame_size,
+        ref_frame_idx,
+        ref_order_hint,
+        ref_frame_width,
+        ref_frame_height,
+        [references[0].0, references[1].0],
+    )
+}
+
+#[doc = "AV2 § 5.20.7.14 opposite-direction reference gate for optical flow."]
+fn tip_optflow_references_allowed(
+    frame_type: Option<FrameType>,
+    frame_size: Option<splot_core::headers::frame::FrameSize>,
+    ref_frame_idx: &[u32],
+    ref_order_hint: &[u32],
+    ref_frame_width: &[u32],
+    ref_frame_height: &[u32],
+    references: [(i8, i32); 2],
+) -> bool {
+    if (references[0].1 <= 0) == (references[1].1 <= 0) {
+        return false;
+    }
+    tip_references_unscaled(
+        frame_type,
+        frame_size,
+        ref_frame_idx,
+        ref_order_hint,
+        ref_frame_width,
+        ref_frame_height,
+        [references[0].0, references[1].0],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tip_references_unscaled(
+    frame_type: Option<FrameType>,
+    frame_size: Option<splot_core::headers::frame::FrameSize>,
+    ref_frame_idx: &[u32],
+    ref_order_hint: &[u32],
+    ref_frame_width: &[u32],
+    ref_frame_height: &[u32],
+    references: [i8; 2],
+) -> bool {
+    if frame_type == Some(FrameType::Switch) {
         return false;
     }
     let Some(frame_size) = frame_size else {
         return false;
     };
     let no_scale = 1_u32 << 14;
-    references.into_iter().all(|(ref_frame, _)| {
+    references.into_iter().all(|ref_frame| {
         usize::try_from(ref_frame)
             .ok()
             .and_then(|index| ref_frame_idx.get(index))
@@ -344,6 +390,18 @@ pub(super) fn reconstruct<T: ReconSample>(
         .as_ref()
         .is_some_and(|tools| tools.enable_tip_refinemv);
     let output = inter.tip_frame_mode == Some(TipFrameMode::AsOutput);
+    let refined_references_allowed = tip_refinemv_references_allowed(
+        core.frame_type,
+        core.frame_size,
+        ref_frame_idx,
+        &reference.ref_order_hint,
+        &reference.ref_frame_width,
+        &reference.ref_frame_height,
+        [
+            (references.past_ref, references.past_offset),
+            (references.future_ref, references.future_offset),
+        ],
+    );
     let use_refinemv = sequence.inter.as_ref().is_some_and(|tools| {
         tip_uses_refinemv(
             output,
@@ -352,19 +410,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             weight,
         )
     });
-    let search_refinemv = use_refinemv
-        && tip_refinemv_references_allowed(
-            core.frame_type,
-            core.frame_size,
-            ref_frame_idx,
-            &reference.ref_order_hint,
-            &reference.ref_frame_width,
-            &reference.ref_frame_height,
-            [
-                (references.past_ref, references.past_offset),
-                (references.future_ref, references.future_offset),
-            ],
-        );
+    let search_refinemv = use_refinemv && refined_references_allowed;
     let interpolation_filter = if output {
         output_interpolation_filter(inter, tile_offset)?
     } else {
@@ -380,7 +426,20 @@ pub(super) fn reconstruct<T: ReconSample>(
         && enable_tip_refinemv
         && interpolation_filter == ReconInterpolationFilter::EightTapSharp
         && two_references
-        && (output || weight == mc::CWP_EQUAL);
+        && (output
+            || weight == mc::CWP_EQUAL
+                && tip_optflow_references_allowed(
+                    core.frame_type,
+                    core.frame_size,
+                    ref_frame_idx,
+                    &reference.ref_order_hint,
+                    &reference.ref_frame_width,
+                    &reference.ref_frame_height,
+                    [
+                        (references.past_ref, references.past_offset),
+                        (references.future_ref, references.future_offset),
+                    ],
+                ));
     let mut records = Vec::new();
     let frame_size = sink.info().coded_luma_size();
     let block_w = placed
@@ -471,7 +530,10 @@ pub(super) fn reconstruct<T: ReconSample>(
         }
     }
     let parallel_output = two_references && splot_parallel::on_worker_pool();
-    let output_stride = unit_size * unit_size * 3 / 2;
+    let output_stride = mc::mc_planes(sink.info().pixel_format())
+        .into_iter()
+        .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))
+        .sum::<usize>();
     let mut output_samples = if parallel_output {
         let arena_len =
             units
@@ -571,19 +633,6 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         .inter
         .as_ref()
         .ok_or_else(|| missing("missing required input: inter.tip_output.control"))?;
-    if inter.apply_deblocking_filter_tip == Some(true)
-        && core
-            .tile_info
-            .as_ref()
-            .is_none_or(|tile| tile.tile_cols != 1 || tile.tile_rows != 1)
-    {
-        return Err(inter_cap!(
-            "tip_output_multi_tile_deblocking",
-            offset,
-            "inter.tip_output.multi_tile_deblocking",
-            "7.10.6"
-        ));
-    }
     let ref_frame_idx = &inter.ref_frame_idx;
     let width = usize::try_from(frame_size.width)
         .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
@@ -623,12 +672,16 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let global_mv = inter
         .tip_global_mv
         .ok_or_else(|| missing("missing required input: inter.tip_output.global_mv"))?;
-    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<T>(
-        width,
-        height,
-        bit_depth,
-        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
-    )?;
+    let visible_luma_rect =
+        crate::pipeline::derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
+    let mut workspace =
+        crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect::<T>(
+            width,
+            height,
+            bit_depth,
+            PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
+            visible_luma_rect,
+        )?;
     let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
         .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field"))?;
     motion_field.set_reference_metadata(true, (width, height), temporal.reference_order_hints());
@@ -703,6 +756,12 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             output_prediction_unit_size(enable_tip_refinemv, interpolation_filter),
             quant,
             seq_quant.base_uv_ac_delta_q,
+            core.tile_info
+                .as_ref()
+                .map(|tile| (tile.mi_col_starts.as_slice(), tile.mi_row_starts.as_slice())),
+            sequence
+                .filter
+                .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
             bit_depth,
         )
         .map_err(|_| missing("unsupported capability: inter.tip_output.deblocking"))?;
@@ -713,9 +772,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 #[cfg(test)]
 mod tests {
     use super::{
-        output_prediction_unit_size, prediction_unit_size, tip_refinemv_offsets_allowed,
-        tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
-        tip_uses_two_references, tmvp_unit_size8,
+        output_prediction_unit_size, prediction_unit_size, tip_optflow_references_allowed,
+        tip_refinemv_offsets_allowed, tip_refinemv_references_allowed, tip_temporal_mvs,
+        tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::Mv;
     use splot_core::headers::frame::{FrameSize, FrameType};
@@ -775,6 +834,33 @@ mod tests {
         assert!(tip_refinemv_offsets_allowed(4, -4));
         assert!(!tip_refinemv_offsets_allowed(4, -5));
         assert!(!tip_refinemv_offsets_allowed(0, 0));
+    }
+
+    #[test]
+    fn tip_optflow_accepts_unequal_opposite_direction_references() {
+        let allowed = |offsets: (i32, i32)| {
+            tip_optflow_references_allowed(
+                Some(FrameType::Inter),
+                Some(FrameSize::new(64, 64)),
+                &[0, 1],
+                &[1, 2],
+                &[64, 64],
+                &[64, 64],
+                [(0, offsets.0), (1, offsets.1)],
+            )
+        };
+
+        assert!(allowed((1, -2)));
+        assert!(!allowed((1, 2)));
+        assert!(!tip_optflow_references_allowed(
+            Some(FrameType::Inter),
+            Some(FrameSize::new(64, 64)),
+            &[0, 1],
+            &[1, 2],
+            &[63, 64],
+            &[64, 64],
+            [(0, 1), (1, -2)],
+        ));
     }
 
     #[test]

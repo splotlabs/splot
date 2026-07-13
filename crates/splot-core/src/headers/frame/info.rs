@@ -114,6 +114,7 @@ use crate::headers::sequence::{SequenceHeader, SequenceHeaderId};
 use crate::hls::{MfhId, MultiFrameHeaderRecord};
 use crate::types::ObuType;
 
+use super::global_motion::{SavedGlobalMotionOrderHints, SavedGlobalMotionParams};
 use super::{FrameHeaderPrefix, parse_frame_header_prefix};
 
 mod seq_view;
@@ -161,11 +162,23 @@ pub struct FrameReferenceStateView<'a> {
     /// at-most-one-valid-slot behavior — the unmodeled `RefBaseQIdx` makes a
     /// multi-valid-slot derivation an honest `UnmodeledDerivation` stop.
     pub ref_base_q_idx: Option<&'a [u32]>,
+    /// `[RefDeltaQUAc[i], RefDeltaQVAc[i]]` per reference slot (AV2 § 7.23), used by
+    /// bridge and implicit-QP TIP output frames.
+    pub ref_chroma_ac_deltas: Option<&'a [[i32; 2]]>,
     /// `RefCounter[ i ]` per reference slot (AV2 § 7.23), used to identify the first slot
     /// holding each distinct frame when deriving primary-reference eligibility.
     pub ref_counter: Option<&'a [u32]>,
     /// Whether each reference slot stores an inter frame (`RefFrameType == INTER_FRAME`).
     pub ref_frame_is_inter: Option<&'a [bool]>,
+    /// `RefLongTermId[i]` per reference slot, with `None` representing the spec's `-1`
+    /// sentinel (not a long-term reference frame).
+    pub ref_long_term_id: Option<&'a [Option<u32>]>,
+    /// `RefNumTotalRefs[i]` retained by § 7.23 for global-motion base selection.
+    pub ref_num_total_refs: Option<&'a [u32]>,
+    /// `SavedOrderHints[i]` retained by § 7.23 for global-motion base distances.
+    pub saved_global_motion_order_hints: Option<&'a [SavedGlobalMotionOrderHints]>,
+    /// `SavedGmParams[i]` retained by § 7.23 for global-motion predictors and bases.
+    pub saved_global_motion_params: Option<&'a [SavedGlobalMotionParams]>,
     /// Per-slot retained frame-level Wiener-NS filter class counts for Y/U/V. The inter
     /// `lr_params()` frame-filter dictionary uses these counts when reading the next
     /// frame's frame-level Wiener-NS match indices.
@@ -188,8 +201,13 @@ impl<'a> FrameReferenceStateView<'a> {
         ref_frame_width: None,
         ref_frame_height: None,
         ref_base_q_idx: None,
+        ref_chroma_ac_deltas: None,
         ref_counter: None,
         ref_frame_is_inter: None,
+        ref_long_term_id: None,
+        ref_num_total_refs: None,
+        saved_global_motion_order_hints: None,
+        saved_global_motion_params: None,
         lr_frame_filter_class_counts: None,
         lr_frame_filter_taps: None,
     };
@@ -266,6 +284,38 @@ impl<'a> FrameReferenceStateView<'a> {
     ) -> Self {
         self.ref_counter = Some(ref_counter);
         self.ref_frame_is_inter = Some(ref_frame_is_inter);
+        self
+    }
+
+    /// Attaches the § 7.23 long-term reference identifiers used by OLK and RAS frames.
+    #[must_use]
+    pub const fn with_long_term_id_state(mut self, ref_long_term_id: &'a [Option<u32>]) -> Self {
+        self.ref_long_term_id = Some(ref_long_term_id);
+        self
+    }
+
+    /// Attaches the § 7.23 state consumed by `global_motion_params()`.
+    #[must_use]
+    pub const fn with_global_motion_state(
+        mut self,
+        ref_num_total_refs: &'a [u32],
+        saved_order_hints: &'a [SavedGlobalMotionOrderHints],
+        saved_gm_params: &'a [SavedGlobalMotionParams],
+    ) -> Self {
+        self.ref_num_total_refs = Some(ref_num_total_refs);
+        self.saved_global_motion_order_hints = Some(saved_order_hints);
+        self.saved_global_motion_params = Some(saved_gm_params);
+        self
+    }
+
+    /// Attaches the remaining per-slot quantizer state inferred by bridge and TIP-output
+    /// frame headers (AV2 § 5.18.2).
+    #[must_use]
+    pub const fn with_quantizer_delta_state(
+        mut self,
+        ref_chroma_ac_deltas: &'a [[i32; 2]],
+    ) -> Self {
+        self.ref_chroma_ac_deltas = Some(ref_chroma_ac_deltas);
         self
     }
 
@@ -396,6 +446,10 @@ pub struct FrameHeaderCore {
     pub bridge_frame_ref_idx: Option<u32>,
     /// `frame_to_show_map_idx`, when read (show-existing-frame).
     pub frame_to_show_map_idx: Option<u32>,
+    /// `derive_sef_order_hint`, when read on the show-existing-frame path. When `true`,
+    /// AV2 § 5.18.2 derives `OrderHint` from `RefOrderHint[frame_to_show_map_idx]` and
+    /// saves the parsed film-grain parameters into that reference slot.
+    pub derive_sef_order_hint: Option<bool>,
     /// `allow_screen_content_tools`, when `screen_content_params()` was reached.
     pub allow_screen_content_tools: Option<bool>,
     /// `force_integer_mv` from `screen_content_params()` (§ 5.18.3.3), when reached. The
@@ -485,6 +539,10 @@ pub struct FrameHeaderCore {
     /// `apply_grain`. `Some` only when the inter path parsed to completion
     /// ([`FrameHeaderParseStatus::InterHeaderComplete`]).
     pub inter_tail: Option<crate::headers::frame::inter_shared_tail::InterTail>,
+    /// The bridge early-return arm's parsed `film_grain_config()` (§ 5.18.10.1).
+    /// Non-single-picture bridge frames infer `apply_grain = 0`; the field still records
+    /// that completed no-bit derivation separately from the regular inter tail.
+    pub bridge_film_grain: Option<FilmGrainConfig>,
     /// The show-existing-frame `film_grain_config()` (§ 5.18.10.1, mirror :4186). `Some`
     /// only on the SEF path once it parsed to completion
     /// ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]); the SEF path reads only
@@ -658,6 +716,7 @@ pub(crate) fn init_core_from_prefix(
         frame_size_override_flag: None,
         bridge_frame_ref_idx: None,
         frame_to_show_map_idx: None,
+        derive_sef_order_hint: None,
         allow_screen_content_tools: None,
         force_integer_mv: None,
         allow_intrabc: None,
@@ -680,6 +739,7 @@ pub(crate) fn init_core_from_prefix(
         ccso_params: None,
         intra_tail: None,
         inter_tail: None,
+        bridge_film_grain: None,
         sef_film_grain: None,
         sef_trailing_bits: None,
         inter: None,
@@ -725,7 +785,13 @@ pub(crate) fn parse_core_body(
         core.immediate_output_frame = Some(true);
         core.implicit_output_frame = Some(false);
         if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
-            return parse_single_picture_bridge_tail(reader, core, seq, bridge_frame_ref_idx);
+            return parse_single_picture_bridge_tail(
+                reader,
+                core,
+                seq,
+                bridge_frame_ref_idx,
+                reference_state,
+            );
         }
         return parse_intra_tail(
             reader,
@@ -739,6 +805,7 @@ pub(crate) fn parse_core_body(
     }
 
     if let Some(bridge_frame_ref_idx) = bridge_frame_ref_idx {
+        core.show_existing_frame = Some(false);
         core.frame_type = Some(FrameType::Inter);
         core.frame_is_intra = Some(false);
         core.immediate_output_frame = Some(false);
@@ -871,6 +938,7 @@ fn parse_inter_path(
         );
 
         let inter_seq = build_inter_seq_view(seq);
+        let ras_long_term_ref_mask = ras_long_term_ref_mask(core, seq, reference_state);
         let ctx = InterFrameContext {
             obu_type,
             frame_type,
@@ -878,6 +946,7 @@ fn parse_inter_path(
             bridge_frame_ref_idx: None,
             cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
             order_hint: core.order_hint,
+            ras_long_term_ref_mask,
         };
 
         parse_inter_control_into(
@@ -917,6 +986,35 @@ fn parse_inter_path(
     })();
 
     finish_inter_control_with_tail(core, control, result, tail_ran)
+}
+
+fn ras_long_term_ref_mask(
+    core: &FrameHeaderCore,
+    seq: &CoreSeqView,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Option<u32> {
+    if core.obu_type != ObuType::RasFrame {
+        return None;
+    }
+    if core.ref_long_term_ids.is_empty() {
+        return Some(0);
+    }
+    let valid = reference_state.ref_valid?;
+    let long_term_ids = reference_state.ref_long_term_id?;
+    let mut mask = 0u32;
+    let num_ref_frames = usize::try_from(seq.num_ref_frames).unwrap_or(0);
+    for index in 0..num_ref_frames {
+        let retained = valid.get(index).copied().unwrap_or(false)
+            && long_term_ids
+                .get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|id| core.ref_long_term_ids.contains(&id));
+        if retained {
+            mask |= 1u32.checked_shl(index as u32).unwrap_or(0);
+        }
+    }
+    Some(mask)
 }
 
 /// Parses the `TipFrameMode == TIP_FRAME_AS_OUTPUT` terminal arm of § 5.18.2
@@ -993,18 +1091,8 @@ fn parse_tip_output_tail(
 ///   header`. Without this the `Err` would propagate out of `parse_frame_header_core` and the
 ///   validator's `.ok()` would drop ALL facts and the truncation.
 /// - Any other `Err`: a genuine malformed-input error propagates unchanged.
-fn finish_inter_control(
-    core: &mut FrameHeaderCore,
-    control: crate::headers::frame::inter::InterControl,
-    result: Result<()>,
-) -> Result<()> {
-    if let Some(force_integer_mv) = control.force_integer_mv {
-        core.force_integer_mv = Some(force_integer_mv);
-    }
-    finish_inter_control_with_tail(core, control, result, false)
-}
-
-/// Like [`finish_inter_control`], but for the non-bridge inter path that may have continued
+///
+/// Finishes an inter-control parse that may have continued
 /// past `InterStop::ReachedSharedTail` into the § 5.18.2 shared tail
 /// ([`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail)).
 ///
@@ -1097,11 +1185,10 @@ fn build_inter_seq_view(seq: &CoreSeqView) -> crate::headers::frame::inter::Inte
 /// arms (mirror :4489/:4533), `NumTotalRefs = 1` (mirror :4597),
 /// `ref_frame_idx[0] = bridge_frame_ref_idx` (mirror :4615, no bits), and
 /// `frame_size_with_bridge()` (mirror :4633, § 5.18.4.2). It then hits the
-/// `IsBridge` early-return arm (mirror :4971/:5045), stopping with
-/// [`InterStop::BruInactiveOrBridgeReturn`](crate::headers::frame::inter::InterStop::BruInactiveOrBridgeReturn)
-/// — the bridge tail (`film_grain_config()` / `tile_info()`) needs reference-frame dims /
-/// `MiRows`/`MiCols` this phase does not thread, an honest coverage stop. The parsed bridge
-/// facts are preserved on `core.inter`.
+/// `IsBridge` early-return arm (mirror :4971/:5045). With the selected reference's
+/// § 7.23 quantizer state available, the zero-bit bridge `tile_info()` layout, inherited
+/// quantizer, and `film_grain_config()` are derived and the header completes. Missing
+/// reference facts remain an honest unsupported stop, with parsed bridge facts preserved.
 fn parse_bridge_inter_path(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
@@ -1109,7 +1196,7 @@ fn parse_bridge_inter_path(
     bridge_frame_ref_idx: u32,
     reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
-    use crate::headers::frame::inter::{InterFrameContext, parse_inter_control_into};
+    use crate::headers::frame::inter::{InterFrameContext, InterStop, parse_inter_control_into};
 
     let inter_seq = build_inter_seq_view(seq);
     let ctx = InterFrameContext {
@@ -1119,19 +1206,103 @@ fn parse_bridge_inter_path(
         bridge_frame_ref_idx: Some(bridge_frame_ref_idx),
         cur_mfh_id_is_zero: core.cur_mfh_id.is_zero(),
         order_hint: core.order_hint,
+        ras_long_term_ref_mask: None,
     };
 
     let mut control = crate::headers::frame::inter::InterControl::default();
-    let result = parse_inter_control_into(
-        reader,
-        &inter_seq,
-        &ctx,
-        reference_state,
-        false,
-        &mut control,
-    );
+    let mut tail_ran = false;
+    let result = (|| -> Result<()> {
+        parse_inter_control_into(
+            reader,
+            &inter_seq,
+            &ctx,
+            reference_state,
+            false,
+            &mut control,
+        )?;
+        if control.stop == Some(InterStop::BruInactiveOrBridgeReturn) {
+            control.disable_cdf_update = Some(true);
+            tail_ran = true;
+            parse_bridge_return_tail(
+                reader,
+                core,
+                seq,
+                &control,
+                bridge_frame_ref_idx,
+                reference_state,
+            )?;
+        }
+        Ok(())
+    })();
 
-    finish_inter_control(core, control, result)
+    finish_inter_control_with_tail(core, control, result, tail_ran)
+}
+
+/// Completes the non-single-picture `IsBridge` early-return arm of § 5.18.2.
+fn parse_bridge_return_tail(
+    reader: &mut BitReader<'_>,
+    core: &mut FrameHeaderCore,
+    seq: &CoreSeqView,
+    control: &crate::headers::frame::inter::InterControl,
+    bridge_frame_ref_idx: u32,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Result<()> {
+    let Some(frame_size) = control.frame_size else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+    let Some(index) = usize::try_from(bridge_frame_ref_idx).ok() else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+    let quantizer = reference_state
+        .ref_base_q_idx
+        .and_then(|values| values.get(index))
+        .copied()
+        .zip(
+            reference_state
+                .ref_chroma_ac_deltas
+                .and_then(|values| values.get(index))
+                .copied(),
+        );
+    let Some((base_q_idx, [delta_q_u_ac, delta_q_v_ac])) = quantizer else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+
+    core.tile_info = Some(parse_tile_info(
+        reader, &seq.tile, frame_size, false, true, false,
+    )?);
+    core.quantization_params = Some(QuantizationParams::inferred_tip(
+        base_q_idx,
+        delta_q_u_ac,
+        delta_q_v_ac,
+    ));
+
+    let Some(film_grain_params_present) = seq.film_grain_params_present else {
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: FRAME_HEADER_INFO_FEATURE,
+        };
+        return Ok(());
+    };
+    core.bridge_film_grain = Some(parse_film_grain_config(
+        reader,
+        &FrameTailInput {
+            coded_lossless: false,
+            film_grain_params_present,
+            single_picture_header_flag: false,
+            immediate_output_frame: false,
+            implicit_output_frame: false,
+        },
+    )?);
+    core.status = FrameHeaderParseStatus::InterHeaderComplete;
+    Ok(())
 }
 
 /// Parses a single-picture `IsBridge` frame's `frame_header_info()` tail (AV2 § 5.18.2).
@@ -1151,52 +1322,55 @@ fn parse_bridge_inter_path(
 ///   bridge_frame_ref_idx` (no bits); when `== 1` it is read (the bridge arm — AVM
 ///   `has_refresh_frame_flags` f(1) + `frame_to_refresh` on the `enable_short_refresh_frame_flags`
 ///   path, else `f(NumRefFrames)`).
-/// - `frame_size()` on the `FrameIsIntra` arm (:4565-4567). `frame_size_override_flag` is never
-///   assigned on the `IsBridge` arm (:4343 runs instead of the :4357 else), so it keeps its
-///   default `0` → the § 5.18.4.1 non-override default dimensions (no bits).
+/// - The § 5.18.4.2 bridge maximum width and height, clamped to the selected reference.
+///   AVM's `setup_frame_size()` applies this bridge-specific read even though the enclosing
+///   § 5.18.2 branch classifies a single-picture frame as intra.
 /// - `screen_content_params()` (:4569) and `intrabc_params()` (:4571, `FrameIsIntra`).
 ///
 /// It then reaches the `if ( TipFrameMode == TIP_FRAME_AS_OUTPUT || bru_inactive || IsBridge )`
 /// arm (:4971): for `IsBridge` this reads a zero-bit `tile_info()` (:4987; `uniform_tile_spacing_flag`
-/// forced `1` and the `increment_tile_*_log2` loops gated behind `!IsBridge`), INFERS
+/// forced `1` and the `increment_tile_*_log2` loops gated behind `!IsBridge`), infers
 /// `base_q_idx = RefBaseQIdx[bridge_frame_ref_idx]` from the referenced frame (:4997), SKIPS
 /// `disable_cdf_update` (the :5039 else-arm), and forces the whole quant/segmentation/deblocking/
-/// cdef/ccso/restoration cluster off with no bits (:5045-5083) — all reference-derived or no-bit,
-/// so the `base_q_idx`/quant values stay unmodeled. Unlike the non-single bridge
+/// cdef/ccso/restoration cluster off with no bits (:5045-5083). Unlike the non-single bridge
 /// ([`parse_bridge_inter_path`], whose `immediate_output_frame == 0` makes `apply_grain == 0`),
-/// the arm's `film_grain_config()` (:5011 / § 5.18.10.1) is the LAST modeled read and IS decidable
-/// without reference state: `apply_grain` is inferred (single-picture + `immediate_output_frame ==
-/// 1`) and reads `fgm_id` f(3) + `grain_seed` f(16) when grain is present. This consumes that tail
-/// (for `consumed_bits` accuracy + truncation detection) and then stops with
+/// the arm's `film_grain_config()` (:5011 / § 5.18.10.1) is the LAST modeled read, after the
+/// zero-bit bridge `tile_info()` and reference-derived quantizer. `apply_grain` is inferred
+/// (single-picture + `immediate_output_frame == 1`) and reads `fgm_id` f(3) + `grain_seed` f(16)
+/// when grain is present. This consumes that tail (for `consumed_bits` accuracy + truncation
+/// detection) and then completes with
 /// [`InterStop::BruInactiveOrBridgeReturn`](crate::headers::frame::inter::InterStop::BruInactiveOrBridgeReturn),
-/// the parsed prefix preserved on `core.inter`, reporting
-/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] (the reference-derived quant is unmodeled).
+/// with the parsed facts preserved on `core.inter`.
 /// An EOF inside the modeled prefix or the grain tail is converted to the facts-preserving
-/// [`FrameHeaderParseStatus::StoppedInsideInterControl`] by [`finish_inter_control`].
+/// [`FrameHeaderParseStatus::StoppedInsideInterControl`] by
+/// [`finish_inter_control_with_tail`].
 /// When `film_grain_params_present` is unknown (a bounded sequence-header stop), `apply_grain`
 /// is undecidable, so the parse stops before the grain read (the same honest behavior as the
 /// intra / SEF tails).
 ///
 /// SPEC FIDELITY: the single-picture bridge is a degenerate corner where the normative spec is
-/// internally inconsistent. (1) refresh_frame_flags: § 5.18.2 syntax would read it unconditionally
+/// internally inconsistent. (1) `refresh_frame_flags`: § 5.18.2 syntax would read it unconditionally
 /// on the KEY arm (:4429-4445), but § 6.17.2 semantics (:4522-4524) says it is inferred from
 /// `bridge_frame_ref_idx` when `bridge_frame_overwrite_flag == 0`; AVM follows § 6.17.2. Per the
 /// maintainer decision this parser follows § 6.17.2 + AVM (overwrite-gated) so a validator matches
-/// the reference decoder. (2) AVM's `setup_frame_size` also reads two `bridge_frame_max_width`/
-/// `_height` fields the § 5.18.2 `FrameIsIntra` `frame_size()` does not — splot follows § 5.18.2
-/// (no frame-size bits) here, a remaining documented divergence. dav2d does not model the
-/// single-picture bridge at all; keep it isolated to the frame-header bridge logic.
+/// the reference decoder. (2) AVM's `setup_frame_size()` reads the § 5.18.4.2
+/// `bridge_frame_width_minus_1` / `bridge_frame_height_minus_1` fields even though the literal
+/// § 5.18.2 `FrameIsIntra` control flow points at `frame_size()`. Per the maintainer decision this
+/// parser follows AVM and the bridge-specific § 5.18.4.2 syntax. dav2d does not model this corner;
+/// keep it isolated to the frame-header bridge logic.
 fn parse_single_picture_bridge_tail(
     reader: &mut BitReader<'_>,
     core: &mut FrameHeaderCore,
     seq: &CoreSeqView,
     bridge_frame_ref_idx: u32,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     use crate::headers::frame::inter::{InterControl, InterStop, TipFrameMode};
 
     const PRIMARY_REF_NONE: u8 = 7;
 
     let mut control = InterControl::default();
+    let mut tail_ran = false;
     let result = (|| -> Result<()> {
         let bridge_frame_overwrite_flag = reader.read_flag()?;
         control.bridge_frame_overwrite_flag = Some(bridge_frame_overwrite_flag);
@@ -1214,14 +1388,26 @@ fn parse_single_picture_bridge_tail(
         };
         control.refresh_frame_flags = Some(refresh_frame_flags);
 
-        core.frame_size_override_flag = Some(false);
-        control.frame_size = parse_frame_size(
-            reader,
-            false,
-            seq.frame_width_bits,
-            seq.frame_height_bits,
-            Some((seq.max_frame_width, seq.max_frame_height)),
-        )?;
+        let bridge_max_width = reader.read_f(seq.frame_width_bits)?.saturating_add(1);
+        let bridge_max_height = reader.read_f(seq.frame_height_bits)?.saturating_add(1);
+        let index = usize::try_from(bridge_frame_ref_idx).ok();
+        let reference_valid = index
+            .and_then(|index| reference_state.ref_valid?.get(index))
+            .copied()
+            == Some(true);
+        let reference_size = index.and_then(|index| {
+            reference_state
+                .ref_frame_width?
+                .get(index)
+                .copied()
+                .zip(reference_state.ref_frame_height?.get(index).copied())
+        });
+        if reference_valid && let Some((reference_width, reference_height)) = reference_size {
+            control.frame_size = Some(FrameSize::new(
+                bridge_max_width.min(reference_width),
+                bridge_max_height.min(reference_height),
+            ));
+        }
 
         let scc = parse_screen_content_params_full(
             reader,
@@ -1240,22 +1426,54 @@ fn parse_single_picture_bridge_tail(
         control.num_total_refs = Some(0);
         control.tip_frame_mode = Some(TipFrameMode::Disabled);
         control.primary_ref_frame = Some(PRIMARY_REF_NONE);
+        control.disable_cdf_update = Some(true);
 
-        if let Some(film_grain_params_present) = seq.film_grain_params_present {
-            let input = FrameTailInput {
-                coded_lossless: false,
-                film_grain_params_present,
-                single_picture_header_flag: true,
-                immediate_output_frame: true,
-                implicit_output_frame: false,
-            };
-            let _ = parse_film_grain_config(reader, &input)?;
+        let quantizer = index.and_then(|index| {
+            reference_state
+                .ref_base_q_idx?
+                .get(index)
+                .copied()
+                .zip(reference_state.ref_chroma_ac_deltas?.get(index).copied())
+        });
+        if let (Some(frame_size), Some((base_q_idx, [delta_q_u_ac, delta_q_v_ac]))) =
+            (control.frame_size, quantizer)
+        {
+            core.tile_info = Some(parse_tile_info(
+                reader, &seq.tile, frame_size, true, true, false,
+            )?);
+            core.quantization_params = Some(QuantizationParams::inferred_tip(
+                base_q_idx,
+                delta_q_u_ac,
+                delta_q_v_ac,
+            ));
+            if let Some(film_grain_params_present) = seq.film_grain_params_present {
+                let input = FrameTailInput {
+                    coded_lossless: false,
+                    film_grain_params_present,
+                    single_picture_header_flag: true,
+                    immediate_output_frame: true,
+                    implicit_output_frame: false,
+                };
+                core.bridge_film_grain = Some(parse_film_grain_config(reader, &input)?);
+            }
         }
         control.stop = Some(InterStop::BruInactiveOrBridgeReturn);
+        core.status = if control.frame_size.is_some()
+            && core.tile_info.is_some()
+            && core.quantization_params.is_some()
+            && core.bridge_film_grain.is_some()
+        {
+            FrameHeaderParseStatus::InterHeaderComplete
+        } else {
+            FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: FRAME_HEADER_INFO_FEATURE,
+            }
+        };
+        tail_ran = true;
         Ok(())
     })();
 
-    finish_inter_control(core, control, result)
+    finish_inter_control_with_tail(core, control, result, tail_ran)
 }
 
 /// Parses the intra-frame tail (AV2 § 5.18.2), from frame-size provenance through

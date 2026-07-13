@@ -77,7 +77,9 @@ use crate::headers::frame::filtering::{
     GdfGeometry, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
     parse_gdf_params,
 };
-use crate::headers::frame::global_motion::{GlobalMotionInput, parse_global_motion_params};
+use crate::headers::frame::global_motion::{
+    GlobalMotionInput, GlobalMotionParams, GlobalMotionReferenceState, parse_global_motion_params,
+};
 use crate::headers::frame::info::{
     CoreSeqView, FrameHeaderCore, FrameHeaderParseStatus, FrameReferenceStateView,
 };
@@ -131,8 +133,8 @@ pub struct InterTail {
     pub allow_warpmv_mode: bool,
     /// `reduced_tx_set` (`f(2)`, mirror :5337), always read.
     pub reduced_tx_set: u8,
-    /// `use_global_motion` from `global_motion_params()` (§ 5.18.9.1).
-    pub use_global_motion: bool,
+    /// Complete per-reference `global_motion_params()` state (§ 5.18.9.1).
+    pub global_motion: GlobalMotionParams,
     /// Parsed `film_grain_config()` (§ 5.18.10.1).
     pub film_grain: FilmGrainConfig,
 }
@@ -322,7 +324,15 @@ pub(crate) fn parse_inter_shared_tail(
 
     store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
 
-    parse_inter_tail_arms(reader, core, seq, control, frame_type, coded_lossless)
+    parse_inter_tail_arms(
+        reader,
+        core,
+        seq,
+        control,
+        frame_type,
+        coded_lossless,
+        reference_state,
+    )
 }
 
 fn derived_primary_is_none(
@@ -444,6 +454,7 @@ fn parse_inter_tail_arms(
     control: &InterControl,
     frame_type: FrameType,
     coded_lossless: bool,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Result<()> {
     let tx_mode = read_tx_mode(reader, coded_lossless)?;
 
@@ -482,6 +493,28 @@ fn parse_inter_tail_arms(
             enable_global_motion: seq.inter.enable_global_motion,
             num_total_refs,
             ref_frame_idx: &control.ref_frame_idx,
+            reference_state: match (
+                core.order_hint,
+                reference_state.ref_order_hint,
+                reference_state.ref_num_total_refs,
+                reference_state.saved_global_motion_order_hints,
+                reference_state.saved_global_motion_params,
+            ) {
+                (
+                    Some(order_hint),
+                    Some(ref_order_hint),
+                    Some(ref_num_total_refs),
+                    Some(saved_order_hints),
+                    Some(saved_gm_params),
+                ) => Some(GlobalMotionReferenceState {
+                    order_hint,
+                    ref_order_hint,
+                    ref_num_total_refs,
+                    saved_order_hints,
+                    saved_gm_params,
+                }),
+                _ => None,
+            },
         },
     )?;
     if gm.stop.is_some() {
@@ -513,7 +546,7 @@ fn parse_inter_tail_arms(
         allow_bawp,
         allow_warpmv_mode,
         reduced_tx_set,
-        use_global_motion: gm.use_global_motion,
+        global_motion: gm,
         film_grain,
     });
     core.status = FrameHeaderParseStatus::InterHeaderComplete;

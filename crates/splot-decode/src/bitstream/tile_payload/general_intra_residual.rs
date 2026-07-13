@@ -12,8 +12,8 @@ use splot_core::tables::conversion::{
     TX_WIDTH, TX_WIDTH_LOG2,
 };
 use splot_recon::{
-    BitDepth, DpcmDirection, PlaneId, QM_OFFSET, QmDequant, QmFrameLevels, QuantizerDeltas,
-    ReconError, ReconSample, SecondaryInverseTransform,
+    BitDepth, DpcmDirection, PlaneId, QM_OFFSET, QmDequant, QmFrameLevels, QmUserPlane,
+    QuantizerDeltas, ReconError, ReconSample, SecondaryInverseTransform,
     reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
@@ -90,52 +90,60 @@ const ZERO_QUANTIZER_DELTAS: QuantizerDeltas = QuantizerDeltas {
     v_ac: 0,
 };
 const NUM_CUSTOM_QMS: usize = 15;
+use std::{cell::RefCell, sync::Arc};
+
+#[derive(Clone, Debug)]
+pub(crate) struct FrameUserQmLevel {
+    pub(crate) transforms: [[Option<QmUserPlane>; 3]; 3],
+}
+
+pub(crate) type FrameUserQmLevels = Arc<[Option<FrameUserQmLevel>; NUM_CUSTOM_QMS]>;
+
 thread_local! {
     static FRAME_QUANTIZER_DELTAS: core::cell::Cell<QuantizerDeltas> =
         const { core::cell::Cell::new(ZERO_QUANTIZER_DELTAS) };
     static FRAME_QM: core::cell::Cell<Option<QmFrameLevels>> = const { core::cell::Cell::new(None) };
+    static FRAME_USER_QM: RefCell<Option<FrameUserQmLevels>> = const { RefCell::new(None) };
     static FRAME_QM_SEGMENT_ID: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
 }
 
-pub(crate) struct FrameQuantizerDeltasScope(QuantizerDeltas);
+macro_rules! frame_cell_scope {
+    ($name:ident, $cell:ident, $value:ty) => {
+        pub(crate) struct $name($value);
 
-impl FrameQuantizerDeltasScope {
-    pub(crate) fn install(deltas: QuantizerDeltas) -> Self {
-        Self(FRAME_QUANTIZER_DELTAS.with(|cell| cell.replace(deltas)))
+        impl $name {
+            pub(crate) fn install(value: $value) -> Self {
+                Self($cell.with(|cell| cell.replace(value)))
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                $cell.with(|cell| cell.set(self.0));
+            }
+        }
+    };
+}
+
+frame_cell_scope!(
+    FrameQuantizerDeltasScope,
+    FRAME_QUANTIZER_DELTAS,
+    QuantizerDeltas
+);
+frame_cell_scope!(FrameQmScope, FRAME_QM, Option<QmFrameLevels>);
+frame_cell_scope!(FrameQmSegmentScope, FRAME_QM_SEGMENT_ID, usize);
+
+pub(crate) struct FrameUserQmScope(Option<FrameUserQmLevels>);
+
+impl FrameUserQmScope {
+    pub(crate) fn install(levels: Option<FrameUserQmLevels>) -> Self {
+        Self(FRAME_USER_QM.with(|cell| cell.replace(levels)))
     }
 }
 
-impl Drop for FrameQuantizerDeltasScope {
+impl Drop for FrameUserQmScope {
     fn drop(&mut self) {
-        FRAME_QUANTIZER_DELTAS.with(|cell| cell.set(self.0));
-    }
-}
-
-pub(crate) struct FrameQmScope(Option<QmFrameLevels>);
-
-impl FrameQmScope {
-    pub(crate) fn install(levels: Option<QmFrameLevels>) -> Self {
-        Self(FRAME_QM.with(|cell| cell.replace(levels)))
-    }
-}
-
-impl Drop for FrameQmScope {
-    fn drop(&mut self) {
-        FRAME_QM.with(|cell| cell.set(self.0));
-    }
-}
-
-pub(crate) struct FrameQmSegmentScope(usize);
-
-impl FrameQmSegmentScope {
-    pub(crate) fn install(segment_id: usize) -> Self {
-        Self(FRAME_QM_SEGMENT_ID.with(|cell| cell.replace(segment_id)))
-    }
-}
-
-impl Drop for FrameQmSegmentScope {
-    fn drop(&mut self) {
-        FRAME_QM_SEGMENT_ID.with(|cell| cell.set(self.0));
+        let _ = FRAME_USER_QM.with(|cell| cell.replace(self.0.take()));
     }
 }
 
@@ -143,12 +151,11 @@ pub(crate) fn current_frame_qm_segment_id() -> usize {
     FRAME_QM_SEGMENT_ID.with(core::cell::Cell::get)
 }
 
-/// Snapshot of the thread-local frame quantizer state, for re-installing on a
-/// worker thread that reconstructs a deferred block.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct FrameQuantizerSnapshot {
     deltas: QuantizerDeltas,
     qm: Option<QmFrameLevels>,
+    user_qm: Option<FrameUserQmLevels>,
 }
 
 impl FrameQuantizerSnapshot {
@@ -156,23 +163,26 @@ impl FrameQuantizerSnapshot {
         Self {
             deltas: FRAME_QUANTIZER_DELTAS.with(core::cell::Cell::get),
             qm: FRAME_QM.with(core::cell::Cell::get),
+            user_qm: FRAME_USER_QM.with(|cell| cell.borrow().clone()),
         }
     }
 
     pub(crate) fn install(
         &self,
         segment_id: usize,
-    ) -> (FrameQuantizerDeltasScope, FrameQmScope, FrameQmSegmentScope) {
+    ) -> (
+        FrameQuantizerDeltasScope,
+        FrameQmScope,
+        FrameUserQmScope,
+        FrameQmSegmentScope,
+    ) {
         (
             FrameQuantizerDeltasScope::install(self.deltas),
             FrameQmScope::install(self.qm),
+            FrameUserQmScope::install(self.user_qm.clone()),
             FrameQmSegmentScope::install(segment_id),
         )
     }
-}
-
-fn current_segment_id() -> usize {
-    current_frame_qm_segment_id()
 }
 
 fn current_quantizer_deltas() -> QuantizerDeltas {
@@ -199,7 +209,7 @@ fn resolve_block_qm(
     let seg_level = usize::from(if tw > 8 || th > 8 {
         levels.levels_gt8[plane_idx]
     } else {
-        let segment_id = current_segment_id();
+        let segment_id = current_frame_qm_segment_id();
         levels
             .levels_le8
             .get(segment_id)
@@ -210,10 +220,24 @@ fn resolve_block_qm(
     }
     let tx_sz = tx_size_index(log2_width, log2_height).ok()?;
     let qm_offset = usize::try_from(*QM_OFFSET.get(tx_sz)?).ok()?;
+    let transform = match tw.cmp(&th) {
+        core::cmp::Ordering::Less => 2,
+        core::cmp::Ordering::Greater => 1,
+        core::cmp::Ordering::Equal => 0,
+    };
+    let user = if tw <= 8 && th <= 8 {
+        FRAME_USER_QM.with(|cell| {
+            let levels = cell.borrow();
+            levels.as_ref()?[seg_level].as_ref()?.transforms[transform][plane_idx].clone()
+        })
+    } else {
+        None
+    };
     Some(QmDequant {
         seg_level,
         plane_is_chroma: plane_idx != 0,
         qm_offset,
+        user,
     })
 }
 const H_PRED: usize = 2;
@@ -1050,7 +1074,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let frame_facts = work_unit.coeff_frame_facts();
     let lossless = frame_facts
-        .lossless_for_segment(current_segment_id())
+        .lossless_for_segment(current_frame_qm_segment_id())
         .unwrap_or(false);
     let tx_size = if lossless && !is_inter && !fsc_mode {
         TX_4X4
@@ -1141,7 +1165,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             plane_tx_type: DCT_DCT,
             use_tcq: false,
             lossless: frame_facts
-                .lossless_for_segment(current_segment_id())
+                .lossless_for_segment(current_frame_qm_segment_id())
                 .unwrap_or(false),
         });
     }
@@ -1178,7 +1202,7 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         );
     }
 
-    let segment_id = current_segment_id();
+    let segment_id = current_frame_qm_segment_id();
     let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
         unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
     )?;
@@ -1262,7 +1286,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     )
     .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
     let eob = start.eob_read().eob().eob();
-    let segment_id = current_segment_id();
+    let segment_id = current_frame_qm_segment_id();
     let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
         unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
     )?;

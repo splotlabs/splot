@@ -46,10 +46,10 @@ pub(in crate::validator::tests) struct FrameCoreSeq {
     /// `mlayer_dependency_present_flag` f(1) after `decoder_model_info_present_flag`
     /// (mirror :507-509, here cleared so no dependency map reads) — and, crucially, it
     /// takes the §5.18.2 refresh derivation OUT of the `OBU_RAS_FRAME && max_mlayer_id == 0`
-    /// arm (mirror :4493) that reads RefValid/RefLongTermId and forces the inter parser's
-    /// honest early stop. A `max_mlayer_id != 0` RAS frame falls through to the explicit
-    /// SWITCH `refresh_frame_flags f(NumRefFrames)` arm (mirror :4507-4509), so the parse
-    /// continues into the reference region and records `ref_frame_idx`.
+    /// arm (mirror :4493) that derives refresh flags from RefValid/RefLongTermId. That arm
+    /// reaches the reference region when the modeled §7.23 state is available and stops
+    /// honestly when it is not. A `max_mlayer_id != 0` RAS frame instead falls through to
+    /// the explicit SWITCH `refresh_frame_flags f(NumRefFrames)` arm (mirror :4507-4509).
     pub(in crate::validator::tests) max_mlayer_id: u32,
     /// `max_tlayer_id` (§ 5.4.1, mirror :385): the highest temporal layer the CVS may
     /// declare. When `> 0` the header reads `tlayer_dependency_present_flag` f(1) after

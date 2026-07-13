@@ -19,10 +19,11 @@
 //! SWITCH_FRAME) ? first : 1`, where `first` is `1` only for the *lowest* refreshed
 //! slot and `0` thereafter (so a key/switch frame leaves only its lowest refreshed
 //! slot valid, invalidating the rest it touches). `RefOrderHint[ i ] = OrderHint`,
-//! `RefFrameWidth[ i ] = FrameWidth`, `RefFrameHeight[ i ] = FrameHeight`. This phase
-//! models the subset the parsed intra header decides: `RefValid`, `RefOrderHint`, and
-//! the frame dimensions; the remaining § 7.23 arrays (motion vectors, CDFs, grain,
-//! CCSO, …) are out of scope for the validator's reference-state checks.
+//! `RefFrameWidth[ i ] = FrameWidth`, `RefFrameHeight[ i ] = FrameHeight`. The validator
+//! additionally retains the order-hint LSB, base quantizer, output flags, frame kind,
+//! long-term id, and distinct-frame counter needed by later frame-header derivations.
+//! Pixel data, motion fields, CDFs, grain, CCSO, and the other reconstruction-only § 7.23
+//! arrays remain outside validation state.
 //!
 //! # Resets (grounded, never guessed)
 //!
@@ -40,13 +41,14 @@
 //!
 //! # Honest poisoning
 //!
-//! When a frame's refresh mask is **not parsed** — an inter / TIP / bridge frame, a
-//! truncation, an `Unknown`-classed frame, or an [`FrameBoundary::Ambiguous`] coded-frame
-//! boundary — the mask could refresh *any* slot, so **all** slots are poisoned to
+//! When a frame's refresh effect is **not grounded** — for example a bridge header that
+//! stops before completion, a truncation, an `Unknown`-classed frame, or an
+//! [`FrameBoundary::Ambiguous`] coded-frame boundary — the mask could refresh *any* slot,
+//! so **all** slots are poisoned to
 //! [`SlotState::Unknown`]. Per-slot `Unknown` is the resting state; the tracker never
 //! guesses which slots an unparsed mask touched.
 
-use splot_core::headers::frame::FrameType;
+use splot_core::headers::frame::{FrameReferenceStateView, FrameType};
 use splot_core::types::ExtendedLayerId;
 
 use std::collections::BTreeMap;
@@ -59,8 +61,8 @@ pub(crate) const NUM_REF_FRAMES: usize = 16;
 
 /// One reference-frame slot's modeled § 7.23 state.
 ///
-/// Only the reference-state-relevant subset is modeled (the parsed-intra-header-decidable
-/// fields): validity plus, when valid, `RefOrderHint` and the stored dimensions.
+/// Only the reference-state subset required for later frame-header parsing and conformance
+/// checks is modeled; reconstruction-only state remains in the decoder runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SlotState {
     /// The slot's state is not known to the validator: it was never established in this
@@ -78,14 +80,26 @@ pub(crate) enum SlotState {
 /// The § 7.23 stored facts for a proven-valid slot that this phase models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SlotFacts {
-    /// `RefOrderHint[ i ]` — the modeled `OrderHint` LSB proxy stored at refresh time
-    /// (§ 7.23 :14123). The intra path parses `order_hint` / `sef_order_hint` as the LSB,
-    /// so this is the LSB value the parser decided (see [`crate::celu`]).
+    /// `RefOrderHint[ i ]` (§ 7.23).
     pub(crate) order_hint: u32,
+    /// `RefOrderHintLsbs[ i ]` (§ 7.23).
+    pub(crate) order_hint_lsb: u32,
     /// `RefFrameWidth[ i ]` (§ 7.23 :14102).
     pub(crate) width: u32,
     /// `RefFrameHeight[ i ]` (§ 7.23 :14103).
     pub(crate) height: u32,
+    /// `RefBaseQIdx[ i ]` (§ 7.23), used by § 7.7 reference ranking.
+    pub(crate) base_q_idx: u32,
+    /// `RefDeltaQUAc[ i ]` (§ 7.23).
+    pub(crate) delta_q_u_ac: i32,
+    /// `RefDeltaQVAc[ i ]` (§ 7.23).
+    pub(crate) delta_q_v_ac: i32,
+    /// `RefImplicitOutputFrame[ i ]` (§ 7.23).
+    pub(crate) implicit_output_frame: bool,
+    /// `RefImmediateOutputFrame[ i ]` (§ 7.23).
+    pub(crate) immediate_output_frame: bool,
+    /// Whether `RefFrameType[ i ] == INTER_FRAME` (§ 7.23).
+    pub(crate) frame_is_inter: bool,
     /// `RefLongTermId[ i ]` (§ 7.23 :14113), the slot's modeled long-term id. `None` models
     /// the spec's `-1` sentinel ("not a long-term reference frame"); `Some(id)` is a KEY
     /// frame's `LongTermId = long_term_id_plus_1 - 1` (§ 5.18.2 mirror :4231-4239), the only
@@ -103,19 +117,24 @@ pub(crate) struct SlotFacts {
 /// which a CLK starts a new CVS and resets the reference buffers (§ 7.3.6). So the
 /// reference buffer is modeled per extended layer, matching the existing CVS-epoch and
 /// `frame_header_copy_record` keying. (Embedded/temporal layers select *which* slots a
-/// frame references within that buffer via the inter syntax — not modeled this phase —
-/// but the buffer itself is one per extended layer.)
+/// frame references within that buffer via the inter syntax; the buffer itself is one per
+/// extended layer.)
 #[derive(Debug, Clone)]
 struct LayerReferenceState {
     /// The `NUM_REF_FRAMES` slots. Initialized all-[`SlotState::Unknown`] (a fresh /
     /// mid-stream-join layer has an unestablished buffer).
     slots: [SlotState; NUM_REF_FRAMES],
+    /// `RefCounter[ i ]` (§ 7.23), identifying slots holding the same frame.
+    counters: [u32; NUM_REF_FRAMES],
+    next_counter: u32,
 }
 
 impl Default for LayerReferenceState {
     fn default() -> Self {
         Self {
             slots: [SlotState::Unknown; NUM_REF_FRAMES],
+            counters: [0; NUM_REF_FRAMES],
+            next_counter: 0,
         }
     }
 }
@@ -130,6 +149,7 @@ impl LayerReferenceState {
         for slot in &mut self.slots[..bound] {
             *slot = SlotState::ProvenInvalid;
         }
+        self.next_counter = 0;
     }
 
     /// Applies the § 7.23 update for a parsed frame: for each set bit of
@@ -141,6 +161,8 @@ impl LayerReferenceState {
         is_key_or_switch: bool,
         facts: SlotFacts,
     ) {
+        let counter = self.next_counter;
+        self.next_counter = self.next_counter.wrapping_add(1);
         let mut first = true;
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if (refresh_frame_flags >> i) & 1 != 1 {
@@ -152,6 +174,7 @@ impl LayerReferenceState {
             } else {
                 SlotState::ProvenInvalid
             };
+            self.counters[i] = counter;
             first = false;
         }
     }
@@ -169,6 +192,42 @@ pub(crate) struct ReferenceStateTracker {
     /// Per extended layer, its `NUM_REF_FRAMES`-slot buffer. A layer with no entry has
     /// an all-[`SlotState::Unknown`] buffer (lazily inserted on first observation).
     layers: BTreeMap<ExtendedLayerId, LayerReferenceState>,
+}
+
+#[derive(Default)]
+pub(crate) struct ReferenceStateScratch {
+    valid: [bool; NUM_REF_FRAMES],
+    order_hint: [u32; NUM_REF_FRAMES],
+    width: [u32; NUM_REF_FRAMES],
+    height: [u32; NUM_REF_FRAMES],
+    base_q_idx: [u32; NUM_REF_FRAMES],
+    chroma_ac_deltas: [[i32; 2]; NUM_REF_FRAMES],
+    counter: [u32; NUM_REF_FRAMES],
+    frame_is_inter: [bool; NUM_REF_FRAMES],
+    long_term_id: [Option<u32>; NUM_REF_FRAMES],
+    order_hint_lsbs: [u32; NUM_REF_FRAMES],
+    implicit_output_frame: [bool; NUM_REF_FRAMES],
+    immediate_output_frame: [bool; NUM_REF_FRAMES],
+}
+
+impl ReferenceStateScratch {
+    fn view(&self) -> FrameReferenceStateView<'_> {
+        FrameReferenceStateView::from_slots_with_base_q_idx(
+            &self.valid,
+            &self.order_hint,
+            &self.width,
+            &self.height,
+            &self.base_q_idx,
+        )
+        .with_quantizer_delta_state(&self.chroma_ac_deltas)
+        .with_primary_reference_state(&self.counter, &self.frame_is_inter)
+        .with_long_term_id_state(&self.long_term_id)
+        .with_single_layer_order_hint_state(
+            &self.order_hint_lsbs,
+            &self.implicit_output_frame,
+            &self.immediate_output_frame,
+        )
+    }
 }
 
 /// The grounded outcome of a completed frame for the § 7.23 update, derived by the
@@ -204,8 +263,8 @@ pub(crate) enum FrameRefUpdate {
     /// A show-existing-frame: `refresh_frame_flags = 0` (§ 5.18.2 :4180), so § 7.23
     /// updates **no** slot. The buffer is unchanged.
     SefNoUpdate,
-    /// The frame's refresh mask could not be parsed (inter / TIP / bridge / truncated /
-    /// Unknown-classed / ambiguous-boundary frame): poison all slots, since the unknown
+    /// The frame's refresh effect could not be grounded (incomplete bridge, truncated,
+    /// Unknown-classed, or ambiguous-boundary frame): poison all slots, since the unknown
     /// mask could refresh any of them.
     PoisonAll,
 }
@@ -281,29 +340,42 @@ impl ReferenceStateTracker {
     pub(crate) fn view_into<'a>(
         &self,
         xlayer: ExtendedLayerId,
-        ref_valid: &'a mut [bool; NUM_REF_FRAMES],
-        ref_order_hint: &'a mut [u32; NUM_REF_FRAMES],
-        ref_width: &'a mut [u32; NUM_REF_FRAMES],
-        ref_height: &'a mut [u32; NUM_REF_FRAMES],
-    ) -> Option<()> {
+        scratch: &'a mut ReferenceStateScratch,
+    ) -> Option<FrameReferenceStateView<'a>> {
         let layer = self.layers.get(&xlayer)?;
         for (i, slot) in layer.slots.iter().enumerate() {
             match slot {
                 SlotState::Valid(facts) => {
-                    ref_valid[i] = true;
-                    ref_order_hint[i] = facts.order_hint;
-                    ref_width[i] = facts.width;
-                    ref_height[i] = facts.height;
+                    scratch.valid[i] = true;
+                    scratch.order_hint[i] = facts.order_hint;
+                    scratch.width[i] = facts.width;
+                    scratch.height[i] = facts.height;
+                    scratch.base_q_idx[i] = facts.base_q_idx;
+                    scratch.chroma_ac_deltas[i] = [facts.delta_q_u_ac, facts.delta_q_v_ac];
+                    scratch.counter[i] = layer.counters[i];
+                    scratch.frame_is_inter[i] = facts.frame_is_inter;
+                    scratch.long_term_id[i] = facts.long_term_id;
+                    scratch.order_hint_lsbs[i] = facts.order_hint_lsb;
+                    scratch.implicit_output_frame[i] = facts.implicit_output_frame;
+                    scratch.immediate_output_frame[i] = facts.immediate_output_frame;
                 }
                 SlotState::Unknown | SlotState::ProvenInvalid => {
-                    ref_valid[i] = false;
-                    ref_order_hint[i] = 0;
-                    ref_width[i] = 0;
-                    ref_height[i] = 0;
+                    scratch.valid[i] = false;
+                    scratch.order_hint[i] = 0;
+                    scratch.width[i] = 0;
+                    scratch.height[i] = 0;
+                    scratch.base_q_idx[i] = 0;
+                    scratch.chroma_ac_deltas[i] = [0; 2];
+                    scratch.counter[i] = 0;
+                    scratch.frame_is_inter[i] = false;
+                    scratch.long_term_id[i] = None;
+                    scratch.order_hint_lsbs[i] = 0;
+                    scratch.implicit_output_frame[i] = false;
+                    scratch.immediate_output_frame[i] = false;
                 }
             }
         }
-        Some(())
+        Some(scratch.view())
     }
 
     /// Whether no per-layer state has been observed yet.
@@ -325,15 +397,25 @@ impl ReferenceStateTracker {
 /// can be fully grounded while its `LongTermId` defaults to "not long-term", which is the
 /// only conformant value when `long_term_frame_id_bits == 0`.
 pub(crate) fn slot_facts(
-    order_hint_lsb: Option<u32>,
-    width: Option<u32>,
-    height: Option<u32>,
+    order_hints: (Option<u32>, Option<u32>),
+    dimensions: (Option<u32>, Option<u32>),
+    base_q_idx: Option<u32>,
+    quantizer_deltas: (Option<i32>, Option<i32>),
+    output_flags: (Option<bool>, Option<bool>),
+    frame_type: Option<FrameType>,
     long_term_id: Option<i32>,
 ) -> Option<SlotFacts> {
     Some(SlotFacts {
-        order_hint: order_hint_lsb?,
-        width: width?,
-        height: height?,
+        order_hint: order_hints.0?,
+        order_hint_lsb: order_hints.1?,
+        width: dimensions.0?,
+        height: dimensions.1?,
+        base_q_idx: base_q_idx?,
+        delta_q_u_ac: quantizer_deltas.0?,
+        delta_q_v_ac: quantizer_deltas.1?,
+        implicit_output_frame: output_flags.0?,
+        immediate_output_frame: output_flags.1?,
+        frame_is_inter: frame_type? == FrameType::Inter,
         long_term_id: long_term_id.and_then(|id| u32::try_from(id).ok()),
     })
 }
@@ -355,8 +437,15 @@ mod tests {
     fn facts(order_hint: u32) -> SlotFacts {
         SlotFacts {
             order_hint,
+            order_hint_lsb: order_hint,
             width: 320,
             height: 240,
+            base_q_idx: 0,
+            delta_q_u_ac: 0,
+            delta_q_v_ac: 0,
+            implicit_output_frame: false,
+            immediate_output_frame: false,
+            frame_is_inter: false,
             long_term_id: None,
         }
     }
@@ -364,10 +453,8 @@ mod tests {
     /// A long-term-bearing slot fact with the given `RefLongTermId`.
     fn lt_facts(order_hint: u32, long_term_id: u32) -> SlotFacts {
         SlotFacts {
-            order_hint,
-            width: 320,
-            height: 240,
             long_term_id: Some(long_term_id),
+            ..facts(order_hint)
         }
     }
 
@@ -515,61 +602,77 @@ mod tests {
                 is_key_or_switch: false,
                 facts: SlotFacts {
                     order_hint: 11,
+                    order_hint_lsb: 11,
                     width: 64,
                     height: 48,
-                    long_term_id: None,
+                    ..facts(11)
                 },
             },
         );
-        let mut ref_valid = [false; NUM_REF_FRAMES];
-        let mut ref_order_hint = [0u32; NUM_REF_FRAMES];
-        let mut ref_width = [0u32; NUM_REF_FRAMES];
-        let mut ref_height = [0u32; NUM_REF_FRAMES];
-        let got = tracker.view_into(
-            XL,
-            &mut ref_valid,
-            &mut ref_order_hint,
-            &mut ref_width,
-            &mut ref_height,
-        );
-        assert!(got.is_some());
-        assert!(ref_valid[0]);
-        assert_eq!(ref_order_hint[0], 11);
-        assert_eq!(ref_width[0], 64);
-        assert_eq!(ref_height[0], 48);
-        assert!(!ref_valid[1]);
-        let absent = tracker.view_into(
-            ExtendedLayerId::from_bits(2),
-            &mut ref_valid,
-            &mut ref_order_hint,
-            &mut ref_width,
-            &mut ref_height,
-        );
+        let mut scratch = ReferenceStateScratch::default();
+        assert!(tracker.view_into(XL, &mut scratch).is_some());
+        assert!(scratch.valid[0]);
+        assert_eq!(scratch.order_hint[0], 11);
+        assert_eq!(scratch.width[0], 64);
+        assert_eq!(scratch.height[0], 48);
+        assert!(!scratch.valid[1]);
+        let absent = tracker.view_into(ExtendedLayerId::from_bits(2), &mut scratch);
         assert!(absent.is_none());
     }
 
     #[test]
     fn slot_facts_requires_order_hint_and_dims_but_not_long_term_id() {
-        assert!(slot_facts(Some(1), Some(2), Some(3), Some(-1)).is_some());
-        assert!(slot_facts(None, Some(2), Some(3), Some(-1)).is_none());
-        assert!(slot_facts(Some(1), None, Some(3), Some(-1)).is_none());
-        assert!(slot_facts(Some(1), Some(2), None, Some(-1)).is_none());
+        let complete = || {
+            slot_facts(
+                (Some(1), Some(1)),
+                (Some(2), Some(3)),
+                Some(4),
+                (Some(0), Some(0)),
+                (Some(false), Some(true)),
+                Some(FrameType::Inter),
+                Some(-1),
+            )
+        };
+        assert!(complete().is_some());
+        assert!(
+            slot_facts(
+                (None, Some(1)),
+                (Some(2), Some(3)),
+                Some(4),
+                (Some(0), Some(0)),
+                (Some(false), Some(true)),
+                Some(FrameType::Inter),
+                Some(-1),
+            )
+            .is_none()
+        );
+        assert_eq!(complete().unwrap().long_term_id, None);
         assert_eq!(
-            slot_facts(Some(1), Some(2), Some(3), Some(-1))
-                .unwrap()
-                .long_term_id,
+            slot_facts(
+                (Some(1), Some(1)),
+                (Some(2), Some(3)),
+                Some(4),
+                (Some(0), Some(0)),
+                (Some(false), Some(true)),
+                Some(FrameType::Inter),
+                None,
+            )
+            .unwrap()
+            .long_term_id,
             None
         );
         assert_eq!(
-            slot_facts(Some(1), Some(2), Some(3), None)
-                .unwrap()
-                .long_term_id,
-            None
-        );
-        assert_eq!(
-            slot_facts(Some(1), Some(2), Some(3), Some(4))
-                .unwrap()
-                .long_term_id,
+            slot_facts(
+                (Some(1), Some(1)),
+                (Some(2), Some(3)),
+                Some(4),
+                (Some(0), Some(0)),
+                (Some(false), Some(true)),
+                Some(FrameType::Inter),
+                Some(4),
+            )
+            .unwrap()
+            .long_term_id,
             Some(4)
         );
     }
@@ -621,7 +724,7 @@ mod tests {
         ) {
             let mut tracker = ReferenceStateTracker::default();
             let xl = ExtendedLayerId::from_bits(xlayer_raw);
-            let f = SlotFacts { order_hint, width, height, long_term_id: None };
+            let f = SlotFacts { order_hint, order_hint_lsb: order_hint, width, height, ..facts(order_hint) };
             let update = match kind {
                 0 => FrameRefUpdate::ClkReset { num_ref_frames: num_ref, refresh_frame_flags: mask, facts: f },
                 1 => FrameRefUpdate::Refresh { refresh_frame_flags: mask, is_key_or_switch: is_kos, facts: f },
@@ -639,7 +742,7 @@ mod tests {
         #[test]
         fn refresh_validates_exactly_set_bits(mask in any::<u16>()) {
             let mut tracker = ReferenceStateTracker::default();
-            let f = SlotFacts { order_hint: 1, width: 2, height: 3, long_term_id: None };
+            let f = SlotFacts { width: 2, height: 3, ..facts(1) };
             tracker.apply(
                 XL,
                 FrameRefUpdate::Refresh {
@@ -667,7 +770,7 @@ mod tests {
                 FrameRefUpdate::Refresh {
                     refresh_frame_flags: mask,
                     is_key_or_switch: is_kos,
-                    facts: SlotFacts { order_hint: 9, width: 9, height: 9, long_term_id: None },
+                    facts: SlotFacts { width: 9, height: 9, ..facts(9) },
                 },
             );
             tracker.apply(XL, FrameRefUpdate::PoisonAll);

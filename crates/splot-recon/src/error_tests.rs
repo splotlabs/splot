@@ -212,11 +212,6 @@ fn all_variants() -> Vec<ReconError> {
             edge: IntraDirectionalAngleEdge::Above,
             rect: rc(4, 5, 6, 7),
         },
-        ReconError::WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
-            plane: PlaneId::Y,
-            p_angle: 45,
-            rect: rc(5, 6, 7, 8),
-        },
         ReconError::InvalidReferenceStoreCapacity {
             capacity: 20,
             max_slots: 16,
@@ -395,7 +390,7 @@ fn all_variants() -> Vec<ReconError> {
 
 /// Golden `Display` rendering of each [`all_variants`] entry, in the same order,
 /// captured from the pre-`thiserror` hand-written `Display` impl.
-const EXPECTED: [&str; 89] = [
+const EXPECTED: [&str; 88] = [
     "unsupported AV2 bit_depth_idc 7; expected 0 or 1",
     "unsupported AV2 chroma_format_idc 9; expected 0 through 3",
     "plane width must be greater than zero",
@@ -440,7 +435,6 @@ const EXPECTED: [&str; 89] = [
     "current-frame workspace U intra prediction requires top-left edge for rectangle x=1 y=2 width=3 height=4",
     "current-frame workspace V smooth intra prediction requires bottom-left edge for rectangle x=2 y=3 width=4 height=5",
     "current-frame workspace V directional intra prediction pAngle 67 requires above edge for rectangle x=4 y=5 width=6 height=7",
-    "current-frame workspace Y directional angle intra prediction pAngle 45 requires luma IDIF for rectangle x=5 y=6 width=7 height=8",
     "reference frame store capacity 20 is outside 1..=16",
     "reference slot index 18 is outside 0..16",
     "reference refresh mask 0x00010001 contains bits outside 0..16",
@@ -502,5 +496,5 @@ fn display_matches_pre_migration_messages() {
 
 #[test]
 fn variant_count_is_locked() {
-    assert_eq!(all_variants().len(), 89);
+    assert_eq!(all_variants().len(), 88);
 }

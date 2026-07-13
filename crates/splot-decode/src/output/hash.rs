@@ -26,12 +26,12 @@ pub(crate) fn decode_hash_report_from_plan(
     crate::pipeline::emit_frames_from_plan(bytes, options, plan, |output| {
         let report_frame = match &output.frame {
             PipelineDecodedFrame::Eight(frame) => {
-                let hash = DecodedFrameHashInput::new(frame).compute_hash();
-                hash_frame_from_decoded(frame, hash.to_hex())
+                let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
+                hash_frame_from_decoded(frame.get(), hash.to_hex())
             }
             PipelineDecodedFrame::Ten(frame) => {
-                let hash = DecodedFrameHashInput::new(frame).compute_hash();
-                hash_frame_from_decoded(frame, hash.to_hex())
+                let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
+                hash_frame_from_decoded(frame.get(), hash.to_hex())
             }
         };
         report_frames.push(report_frame);

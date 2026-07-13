@@ -19,7 +19,7 @@ use splot_core::headers::film_grain::{
 use splot_core::headers::frame::{
     CCSO_BAND_NUM, CcsoParams, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameHeaderPrefix, FrameReferenceStateView, FrameType, SetupQmParams,
-    TileInfo, parse_frame_header_core, parse_frame_header_prefix,
+    TileInfo, TipFrameMode, get_relative_dist, parse_frame_header_core, parse_frame_header_prefix,
 };
 use splot_core::headers::layer_config_record::{
     LayerConfigurationRecord, LcrAggregateInfo, LcrRepInfo, parse_layer_config_record,
@@ -69,7 +69,8 @@ use crate::metadata_lifetime::{
 };
 use crate::options::{ExternalHlsMode, ValidationOptions};
 use crate::reference_state::{
-    FrameRefUpdate, NUM_REF_FRAMES, ReferenceStateTracker, SlotState, is_key_or_switch, slot_facts,
+    FrameRefUpdate, NUM_REF_FRAMES, ReferenceStateScratch, ReferenceStateTracker, SlotFacts,
+    SlotState, is_key_or_switch, slot_facts,
 };
 
 mod annex_a_iop;

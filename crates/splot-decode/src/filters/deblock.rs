@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams};
+use splot_core::headers::frame::{DeblockingFilterParams, QuantizationParams, TileInfo};
 use splot_core::tables::conversion::{
     Q_FIRST, Q_THRESH_MULTS, SIDE_THRESHOLDS, TX_HEIGHT, TX_WIDTH, W_MULT,
 };
@@ -147,6 +147,8 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     mi_rows: usize,
     mi_cols: usize,
     filter: DeblockingFilterParams,
+    tile_info: Option<&TileInfo>,
+    disable_loopfilters_across_tiles: bool,
     quant_deltas: DeblockQuantDeltas,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
@@ -175,7 +177,15 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
             else {
                 continue;
             };
-            deblock_plane_pass(workspace, plane_grid, plane_pass, mi_rows, mi_cols)?;
+            deblock_plane_pass(
+                workspace,
+                plane_grid,
+                plane_pass,
+                mi_rows,
+                mi_cols,
+                tile_info,
+                disable_loopfilters_across_tiles,
+            )?;
         }
     }
 
@@ -187,6 +197,8 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
     luma_unit_size: usize,
     quant: QuantizationParams,
     base_uv_ac_delta_q: i32,
+    tile_starts: Option<(&[u32], &[u32])>,
+    disable_loopfilters_across_tiles: bool,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
     let pixel_format = workspace.info().pixel_format();
@@ -221,8 +233,12 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
         let mut plane_ctx = PlaneCtx::new(view.samples_mut(), stride, width, height)?;
         for y in (0..height).step_by(MI_SIZE) {
             for x in (unit_width..width).step_by(unit_width) {
+                let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
+                if disable_loopfilters_across_tiles && tile_edge {
+                    continue;
+                }
                 let (max_width_neg, max_width_pos) =
-                    tip_filter_widths(plane, unit_width, false, x, sub_y);
+                    deblock_filter_max_width(unit_width, plane != 0, tile_edge);
                 apply_tip_filter_edge(
                     &mut plane_ctx,
                     x,
@@ -240,8 +256,15 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
         }
         for x in (0..width).step_by(MI_SIZE) {
             for y in (unit_height..height).step_by(unit_height) {
-                let (max_width_neg, max_width_pos) =
-                    tip_filter_widths(plane, unit_height, true, y, sub_y);
+                let tile_edge = tip_tile_edge(tile_starts.map(|(_, rows)| rows), y, sub_y);
+                if disable_loopfilters_across_tiles && tile_edge {
+                    continue;
+                }
+                let (max_width_neg, max_width_pos) = deblock_filter_max_width(
+                    unit_height,
+                    plane != 0,
+                    y.is_multiple_of(64 >> sub_y),
+                );
                 apply_tip_filter_edge(
                     &mut plane_ctx,
                     x,
@@ -261,29 +284,19 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
     Ok(())
 }
 
-fn tip_filter_widths(
-    plane: usize,
-    unit_size: usize,
-    horizontal: bool,
-    coordinate: usize,
-    sub_y: usize,
-) -> (usize, usize) {
-    // AV2 § 7.17.3, docs/spec/av2/1.0.0/07-decoding-process.md.
-    let superblock_edge = horizontal && coordinate.is_multiple_of(64 >> sub_y);
-    let max_width_pos = match unit_size {
-        0..=4 => 1,
-        8 => 3,
-        16 if plane != 0 => 4,
-        16 => 6,
-        _ if plane != 0 => 4,
-        _ => 8,
+fn tip_tile_edge(starts: Option<&[u32]>, coordinate: usize, subsampling: usize) -> bool {
+    let Some(starts) = starts else {
+        return false;
     };
-    let max_width_neg = if superblock_edge {
-        max_width_pos.min(if plane != 0 { 2 } else { 6 })
-    } else {
-        max_width_pos
+    let Some(luma_coordinate) = coordinate.checked_mul(1 << subsampling) else {
+        return false;
     };
-    (max_width_neg, max_width_pos)
+    let Ok(mi_coordinate) = u32::try_from(luma_coordinate / MI_SIZE) else {
+        return false;
+    };
+    starts
+        .get(1..starts.len().saturating_sub(1))
+        .is_some_and(|starts| starts.contains(&mi_coordinate))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,6 +357,8 @@ fn deblock_plane_pass<T: ReconSample>(
     plane_pass: PlanePass,
     mi_rows: usize,
     mi_cols: usize,
+    tile_info: Option<&TileInfo>,
+    disable_loopfilters_across_tiles: bool,
 ) -> Result<(), DeblockError> {
     let plane_id = plane_pass.plane_id;
     if workspace.plane(plane_id).is_err() {
@@ -429,7 +444,8 @@ fn deblock_plane_pass<T: ReconSample>(
                             deblock_filter_edge(
                                 &mut ctx,
                                 grid,
-                                plane_pass.edge_context(r, c),
+                                plane_pass.edge_context(r, c, tile_info),
+                                disable_loopfilters_across_tiles,
                                 &mut strengths,
                             )?;
                         }
@@ -444,7 +460,8 @@ fn deblock_plane_pass<T: ReconSample>(
                             deblock_filter_edge(
                                 &mut ctx,
                                 grid,
-                                plane_pass.edge_context(r, c),
+                                plane_pass.edge_context(r, c, tile_info),
+                                disable_loopfilters_across_tiles,
                                 &mut strengths,
                             )?;
                         }
@@ -472,7 +489,8 @@ fn deblock_plane_pass<T: ReconSample>(
             deblock_filter_edge(
                 &mut ctx,
                 grid,
-                plane_pass.edge_context(r, c),
+                plane_pass.edge_context(r, c, tile_info),
+                disable_loopfilters_across_tiles,
                 &mut strengths,
             )?;
         }
@@ -610,7 +628,19 @@ impl PlanePass {
         })
     }
 
-    fn edge_context(self, row: usize, col: usize) -> EdgeContext {
+    fn edge_context(self, row: usize, col: usize, tile_info: Option<&TileInfo>) -> EdgeContext {
+        let tile_edge = tile_info.is_some_and(|tile_info| {
+            let (starts, coordinate) = if self.pass == 0 {
+                (&tile_info.mi_col_starts, col)
+            } else {
+                (&tile_info.mi_row_starts, row)
+            };
+            u32::try_from(coordinate).is_ok_and(|coordinate| {
+                starts
+                    .get(1..starts.len().saturating_sub(1))
+                    .is_some_and(|starts| starts.contains(&coordinate))
+            })
+        });
         EdgeContext {
             plane: self.plane,
             pass: self.pass,
@@ -622,6 +652,7 @@ impl PlanePass {
             quant_delta: self.quant_delta,
             bit_depth: self.bit_depth,
             allow_df_sub_pu: self.allow_df_sub_pu,
+            tile_edge,
         }
     }
 }
@@ -638,6 +669,7 @@ struct EdgeContext {
     quant_delta: i32,
     bit_depth: BitDepth,
     allow_df_sub_pu: bool,
+    tile_edge: bool,
 }
 
 fn column_chunks<T>(row: &mut [T], size: usize) -> core::slice::ChunksMut<'_, T> {
@@ -713,6 +745,7 @@ fn deblock_filter_edge<T: ReconSample>(
     plane_ctx: &mut PlaneCtx<'_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
+    disable_loopfilters_across_tiles: bool,
     strengths: &mut StrengthCache,
 ) -> Result<(), DeblockError> {
     let EdgeContext {
@@ -726,6 +759,7 @@ fn deblock_filter_edge<T: ReconSample>(
         quant_delta,
         bit_depth,
         allow_df_sub_pu,
+        tile_edge,
     } = ctx;
 
     let (dx, dy) = if pass == 0 { (1usize, 0usize) } else { (0, 1) };
@@ -733,7 +767,11 @@ fn deblock_filter_edge<T: ReconSample>(
     let x = col * MI_SIZE;
     let y = row * MI_SIZE;
 
-    let sb_edge = pass == 1 && y.is_multiple_of(SB_SIZE);
+    if disable_loopfilters_across_tiles && tile_edge {
+        return Ok(());
+    }
+
+    let sb_edge = pass == 1 && y.is_multiple_of(SB_SIZE) || pass == 0 && tile_edge;
 
     let on_screen = !((pass == 0 && x == 0) || (pass == 1 && y == 0));
     if !on_screen {

@@ -11,15 +11,16 @@ use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
     FrameHeaderParseMode, FrameHeaderParseStatus, FrameReferenceStateView, FrameType,
-    parse_frame_header_core,
+    GlobalMotionRef, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
-    BitDepthIdc, ChromaFormatIdc, SequenceHeader, parse_sequence_header,
+    BitDepthIdc, ChromaFormatIdc, CroppingWindow, SequenceHeader, parse_sequence_header,
 };
+use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, DecodedFrameHashInput};
+use splot_recon::{DecodedFrame, DecodedFrameHashInput, PlaneRect, ReconError, SharedFrame};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::{DecodeError, Result};
@@ -39,8 +40,24 @@ pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bo
 }
 
 pub(crate) enum PipelineDecodedFrame {
-    Eight(DecodedFrame<u8>),
-    Ten(DecodedFrame<u16>),
+    Eight(SharedFrame<u8>),
+    Ten(SharedFrame<u16>),
+}
+
+impl PipelineDecodedFrame {
+    fn share(&self) -> Self {
+        match self {
+            Self::Eight(frame) => Self::Eight(frame.share()),
+            Self::Ten(frame) => Self::Ten(frame.share()),
+        }
+    }
+
+    pub(super) fn handle_count(&self) -> usize {
+        match self {
+            Self::Eight(frame) => frame.handle_count(),
+            Self::Ten(frame) => frame.handle_count(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +83,7 @@ pub(crate) fn deblock_quant_deltas(
 pub(crate) struct PipelineFrame {
     pub(crate) frame: PipelineDecodedFrame,
     pub(crate) display_grain: Option<ActiveFilmGrain>,
+    pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: FrameCdfSubset,
     pub(crate) motion_field: inter::TemporalMotionField,
     pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
@@ -97,7 +115,7 @@ impl PipelineFrameRate {
 impl PipelineFrame {
     pub(crate) fn frame_eight(&self) -> Result<&DecodedFrame<u8>> {
         match &self.frame {
-            PipelineDecodedFrame::Eight(frame) => Ok(frame),
+            PipelineDecodedFrame::Eight(frame) => Ok(frame.get()),
             PipelineDecodedFrame::Ten(_) => Err(unsupported(
                 "unsupported_10bit_reference_retention",
                 None,
@@ -107,7 +125,7 @@ impl PipelineFrame {
     }
     pub(crate) fn frame_ten(&self) -> Result<&DecodedFrame<u16>> {
         match &self.frame {
-            PipelineDecodedFrame::Ten(frame) => Ok(frame),
+            PipelineDecodedFrame::Ten(frame) => Ok(frame.get()),
             PipelineDecodedFrame::Eight(_) => Err(unsupported(
                 "unsupported_8bit_reference_for_10bit_decode",
                 None,
@@ -117,15 +135,27 @@ impl PipelineFrame {
     }
     pub(crate) fn byte_len(&self) -> Result<usize> {
         match &self.frame {
-            PipelineDecodedFrame::Eight(frame) => Ok(DecodedFrameHashInput::new(frame).byte_len()?),
-            PipelineDecodedFrame::Ten(frame) => Ok(DecodedFrameHashInput::new(frame).byte_len()?),
+            PipelineDecodedFrame::Eight(frame) => {
+                Ok(DecodedFrameHashInput::new(frame.get()).byte_len()?)
+            }
+            PipelineDecodedFrame::Ten(frame) => {
+                Ok(DecodedFrameHashInput::new(frame.get()).byte_len()?)
+            }
         }
+    }
+
+    pub(crate) fn validate_output_effects(&self) -> Result<()> {
+        self.output_effects.validate_for_output()
+    }
+
+    pub(crate) fn share_decoded_frame(&self) -> PipelineDecodedFrame {
+        self.frame.share()
     }
     #[cfg(test)]
     #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         match &self.frame {
-            PipelineDecodedFrame::Eight(frame) => frame,
+            PipelineDecodedFrame::Eight(frame) => frame.get(),
             PipelineDecodedFrame::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
         }
     }
@@ -144,7 +174,9 @@ impl FilmGrainSlots {
 
     pub(super) fn update_from_obus(&mut self, obus: &[ObuEnvelope<'_>]) -> Result<()> {
         for envelope in obus {
-            self.update_from_obu(*envelope)?;
+            if envelope.header.obu_type == ObuType::FilmGrain {
+                self.update_from_obu(*envelope)?;
+            }
         }
         Ok(())
     }
@@ -228,6 +260,9 @@ fn film_grain_config_for_core(core: &FrameHeaderCore) -> Option<FilmGrainConfig>
     if let Some(config) = core.inter.as_ref().and_then(|inter| inter.tip_film_grain) {
         return Some(config);
     }
+    if let Some(config) = core.bridge_film_grain {
+        return Some(config);
+    }
     if let Some(tail) = core.inter_tail.as_ref() {
         return Some(tail.film_grain);
     }
@@ -261,20 +296,6 @@ pub(super) fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -
             "decode runtime requires a supported Annex A profile/chroma combination",
         ));
     }
-    if general.max_tlayer_id.get() != 0 || general.max_mlayer_id.get() != 0 {
-        return Err(unsupported_at(
-            "non_base_layer_sequence",
-            offset,
-            "decode runtime requires a single base temporal and embedded layer",
-        ));
-    }
-    if general.seq_cropping_window_present_flag {
-        return Err(unsupported_at(
-            "crop_window_present",
-            offset,
-            "decode runtime does not support sequence crop windows",
-        ));
-    }
     if sequence.intra.is_none() {
         return Err(unsupported_at(
             "missing_sequence_intra_config",
@@ -285,19 +306,55 @@ pub(super) fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -
     Ok(())
 }
 
-pub(super) fn ensure_repeated_key_sequence_compatible(
-    leading: &SequenceHeader,
-    repeated: &SequenceHeader,
-    offset: ByteOffset,
-) -> Result<()> {
-    if repeated != leading {
-        return Err(unsupported_at(
-            "repeated_key_sequence_changed",
-            offset,
-            "repeated closed-loop-key frame units must repeat the leading sequence until runtime sequence switching is implemented",
-        ));
-    }
-    Ok(())
+pub(crate) fn derive_visible_luma_rect(
+    sequence: &SequenceHeader,
+    frame_width: u32,
+    frame_height: u32,
+) -> Result<PlaneRect> {
+    let general = &sequence.general;
+    Ok(derive_visible_luma_rect_from_offsets(
+        general.cropping_window,
+        general.max_frame_width.get(),
+        general.max_frame_height.get(),
+        frame_width,
+        frame_height,
+    )?)
+}
+
+fn derive_visible_luma_rect_from_offsets(
+    crop: CroppingWindow,
+    max_frame_width: u32,
+    max_frame_height: u32,
+    frame_width: u32,
+    frame_height: u32,
+) -> splot_recon::Result<PlaneRect> {
+    let frame_width = u64::from(frame_width);
+    let frame_height = u64::from(frame_height);
+    let max_frame_width = u64::from(max_frame_width);
+    let max_frame_height = u64::from(max_frame_height);
+
+    let left = u64::from(crop.left) * frame_width / max_frame_width;
+    let right = frame_width - u64::from(crop.right) * frame_width / max_frame_width;
+    let top = u64::from(crop.top) * frame_height / max_frame_height;
+    let bottom = frame_height - u64::from(crop.bottom) * frame_height / max_frame_height;
+    let width = positive_crop_extent(right, left, "visible width")?;
+    let height = positive_crop_extent(bottom, top, "visible height")?;
+
+    PlaneRect::new(crop_usize(left)?, crop_usize(top)?, width, height)
+}
+
+fn positive_crop_extent(end: u64, start: u64, field: &'static str) -> splot_recon::Result<usize> {
+    let extent = end
+        .checked_sub(start)
+        .filter(|extent| *extent != 0)
+        .ok_or(ReconError::ZeroDimension { field })?;
+    crop_usize(extent)
+}
+
+fn crop_usize(value: u64) -> splot_recon::Result<usize> {
+    usize::try_from(value).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "sequence crop window",
+    })
 }
 
 fn supported_profile_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
@@ -332,6 +389,30 @@ pub(crate) fn parse_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
 ) -> Result<FrameHeaderCore> {
+    parse_frame_core_with_mfh(envelope, sequence, None)
+}
+
+pub(crate) fn parse_frame_core_with_mfh(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+) -> Result<FrameHeaderCore> {
+    parse_frame_core_with_reference(
+        envelope,
+        sequence,
+        mfh_record,
+        true,
+        &FrameReferenceStateView::unknown(),
+    )
+}
+
+pub(crate) fn parse_frame_core_with_reference(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+    first_picture_in_tu: bool,
+    reference_state: &FrameReferenceStateView<'_>,
+) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let is_first_tile_group = reader.read_bit().map_err(|_| {
         unsupported_at(
@@ -349,10 +430,10 @@ pub(crate) fn parse_frame_core(
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
-        first_picture_in_tu: true,
+        first_picture_in_tu,
         active_sequence: Some(sequence),
-        mfh_record: None,
-        reference_state: FrameReferenceStateView::unknown(),
+        mfh_record,
+        reference_state: *reference_state,
         mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|_| {
@@ -370,6 +451,7 @@ pub(crate) fn frame_ref_update_from_core(
     ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     motion_field: inter::TemporalMotionField,
+    embedded_layer_id: splot_core::types::EmbeddedLayerId,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {
         unsupported_at(
@@ -403,8 +485,10 @@ pub(crate) fn frame_ref_update_from_core(
             )
         })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
-    let adapted = core.obu_type != ObuType::RegularTip && core.disable_cdf_update != Some(true);
-    let order_hint = core.order_hint.ok_or_else(|| {
+    let adapted = !core.obu_type.is_tip_frame()
+        && core.obu_type != ObuType::BridgeFrame
+        && core.disable_cdf_update != Some(true);
+    let order_hint = core.display_order_hint().ok_or_else(|| {
         unsupported_at(
             "missing_order_hint_for_ref_update",
             offset,
@@ -418,6 +502,26 @@ pub(crate) fn frame_ref_update_from_core(
             "the § 7.23 reference update requires OrderHintLsbs",
         )
     })?;
+    let mut saved_order_hints = [0; 7];
+    let mut saved_gm_params = [GlobalMotionRef::identity().gm_params; 7];
+    let num_total_refs = core
+        .inter
+        .as_ref()
+        .and_then(|inter| inter.num_total_refs)
+        .unwrap_or(0);
+    if let Some(inter) = core.inter.as_ref() {
+        for (target, &hint) in saved_order_hints.iter_mut().zip(&inter.order_hints) {
+            *target = hint;
+        }
+    }
+    if let Some(tail) = core.inter_tail.as_ref() {
+        for (target, model) in saved_gm_params
+            .iter_mut()
+            .zip(tail.global_motion.references)
+        {
+            *target = model.gm_params;
+        }
+    }
     Ok(reference_buffer::FrameRefUpdate {
         refresh_frame_flags,
         order_hint,
@@ -429,13 +533,19 @@ pub(crate) fn frame_ref_update_from_core(
         base_q_idx: quantization.base_q_idx,
         delta_q_u_ac: quantization.delta_q_u_ac,
         delta_q_v_ac: quantization.delta_q_v_ac,
-        is_key_or_switch: core.is_key_frame || core.frame_type == Some(FrameType::Switch),
+        is_key_or_switch: (core.is_key_frame && !core.is_bridge)
+            || core.frame_type == Some(FrameType::Switch),
         is_inter,
         adapted,
+        num_total_refs,
+        saved_order_hints,
+        saved_gm_params,
         frame_cdfs,
         ccso_params,
         ccso_grid,
         motion_field,
+        long_term_id: core.long_term_id.and_then(|id| u32::try_from(id).ok()),
+        embedded_layer_id,
         lr_frame_filter_class_counts: lr_frame_filter_class_counts(core),
         lr_frame_filter_taps: lr_frame_filter_taps(core),
     })
@@ -508,5 +618,71 @@ pub(crate) fn incomplete_intra_header_error(
             offset,
             "decode runtime requires a complete intra frame header",
         ),
+    }
+}
+
+#[cfg(test)]
+mod crop_tests {
+    use super::*;
+
+    #[test]
+    fn crop_window_derives_visible_rect_at_sequence_maximum() -> splot_recon::Result<()> {
+        let rect = derive_visible_luma_rect_from_offsets(
+            CroppingWindow {
+                left: 2,
+                right: 4,
+                top: 6,
+                bottom: 8,
+            },
+            64,
+            64,
+            64,
+            64,
+        )?;
+
+        assert_eq!(rect, PlaneRect::new(2, 6, 58, 50)?);
+        Ok(())
+    }
+
+    #[test]
+    fn crop_window_scales_offsets_for_smaller_frames() -> splot_recon::Result<()> {
+        let rect = derive_visible_luma_rect_from_offsets(
+            CroppingWindow {
+                left: 3,
+                right: 5,
+                top: 7,
+                bottom: 9,
+            },
+            128,
+            128,
+            64,
+            64,
+        )?;
+
+        assert_eq!(rect, PlaneRect::new(1, 3, 61, 57)?);
+        Ok(())
+    }
+
+    #[test]
+    fn crop_window_rejects_nonpositive_visible_extent() {
+        let error = derive_visible_luma_rect_from_offsets(
+            CroppingWindow {
+                left: 3,
+                right: 1,
+                top: 0,
+                bottom: 0,
+            },
+            4,
+            4,
+            4,
+            4,
+        );
+
+        assert!(matches!(
+            error,
+            Err(ReconError::ZeroDimension {
+                field: "visible width"
+            })
+        ));
     }
 }

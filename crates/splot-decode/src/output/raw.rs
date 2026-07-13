@@ -25,11 +25,13 @@ pub(crate) fn encode_raw_stream_from_plan(
     for output in &outputs {
         match &output.frame {
             PipelineDecodedFrame::Eight(frame) => {
-                let display = film_grain::frame_for_output(frame, output.display_grain.as_ref())?;
+                let display =
+                    film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
                 write_raw_frame(display.as_ref(), &mut bytes)?;
             }
             PipelineDecodedFrame::Ten(frame) => {
-                let display = film_grain::frame_for_output(frame, output.display_grain.as_ref())?;
+                let display =
+                    film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
                 write_raw_frame(display.as_ref(), &mut bytes)?;
             }
         }

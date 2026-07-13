@@ -484,6 +484,28 @@ fn compound_refinemv_suppresses_cwp_symbols() {
 }
 
 #[test]
+fn refine_all_requires_equal_weight_non_global_average() {
+    let equal = mc::CompoundBlend::default();
+    let unequal = equal.average_with_cwp_weight(12);
+    let masked = mc::CompoundBlend::DiffWeighted { inverse: false };
+    let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+        y_mode: CompoundYMode::NearNear,
+        use_optflow: false,
+        ref_frame0: 0,
+        ref_frame1: 1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+
+    assert!(compound_all_opfl_block_allowed(compound, 2, 2, equal));
+    assert!(!compound_all_opfl_block_allowed(compound, 1, 2, equal));
+    assert!(!compound_all_opfl_block_allowed(compound, 2, 2, unequal));
+    assert!(!compound_all_opfl_block_allowed(compound, 2, 2, masked));
+    compound.y_mode = CompoundYMode::GlobalGlobal;
+    assert!(!compound_all_opfl_block_allowed(compound, 2, 2, equal));
+}
+
+#[test]
 fn compound_refinemv_switchability_matches_mode_and_optflow() {
     let mut compound = crate::prediction::inter::compound::CompoundBlockSyntax {
         y_mode: CompoundYMode::NearNear,

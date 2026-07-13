@@ -309,6 +309,7 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
             &grid,
             &block,
             Mv::ZERO,
+            DEFAULT_WARP_PARAMS,
             None,
             &WarpParamBank::new(),
             false,
@@ -367,6 +368,7 @@ fn single_mv_stack_derives_tip_neighbour_for_another_reference() {
         &grid,
         &block,
         Mv::ZERO,
+        DEFAULT_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -425,6 +427,7 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
         &grid,
         &block,
         Mv::ZERO,
+        DEFAULT_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -749,20 +752,10 @@ fn warp_sample_storage_keeps_the_first_eight_samples() {
         mi_cols: 10,
     };
 
-    let samples = match find_warp_samples(&grid, &block, 0) {
-        WarpSampleCollection::Samples(samples) => Some(samples),
-        WarpSampleCollection::List1MvUnretained => None,
-    };
-    assert!(
-        samples.is_some(),
-        "single-reference samples retain list-zero motion vectors"
-    );
-    let Some(samples) = samples else {
-        return;
-    };
+    let samples = find_warp_samples(&grid, &block, 0);
 
-    assert_eq!(samples.as_slice().len(), LEAST_SQUARES_SAMPLES_MAX);
-    for (col, sample) in samples.as_slice().iter().enumerate() {
+    assert_eq!(samples.len(), LEAST_SQUARES_SAMPLES_MAX);
+    for (col, sample) in samples.iter().enumerate() {
         let source_x = (col as i32 * 4 + 1) * 8;
         assert_eq!(
             *sample,
@@ -1685,6 +1678,35 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
 }
 
 #[test]
+fn warp_stack_appends_global_motion_after_the_parameter_bank() {
+    let mut bank = WarpParamBank::new();
+    let older = [1 << 16, 0, 65536 + 64, 0, 0, 65536];
+    let newer = [-2 << 16, 7 << 16, 65536 - 128, 320, -640, 65536 + 256];
+    let global = [3 << 16, -5 << 16, 65536 + 512, 64, -128, 65536 - 256];
+    bank.update(0, older);
+    bank.update(0, newer);
+
+    let stack = find_mv_stack_with_temporal(
+        &empty_grid(),
+        &block_at(8, 8),
+        Mv::ZERO,
+        global,
+        None,
+        &bank,
+        true,
+        DrlReorder::Disabled,
+        None,
+        None,
+        false,
+    );
+
+    assert_eq!(stack.warp_candidate(0), newer);
+    assert_eq!(stack.warp_candidate(1), older);
+    assert_eq!(stack.warp_candidate(2), global);
+    assert_eq!(stack.warp_candidate(3), DEFAULT_WARP_PARAMS);
+}
+
+#[test]
 fn warp_bank_hit_keeps_the_original_translation_and_evicts_oldest() {
     let mut bank = WarpParamBank::new();
     let base = |trans: i32, scale: i32| [trans, -trans, 65536 + scale, 0, 0, 65536 - scale];
@@ -1846,9 +1868,10 @@ fn warp_predicted_mv_projects_the_block_center() {
     let mut bank = WarpParamBank::new();
     let translation = [3 << 16, -2 << 16, 1 << 16, 0, 0, 1 << 16];
     bank.update(0, translation);
+    let block = block_at(4, 8);
     let stack = find_mv_stack(
         &empty_grid(),
-        &block_at(4, 8),
+        &block,
         Mv::ZERO,
         None,
         &bank,
@@ -1858,12 +1881,20 @@ fn warp_predicted_mv_projects_the_block_center() {
     );
     assert_eq!(stack.warp_candidate(0), translation);
     assert_eq!(
-        stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
+        warp_predicted_mv(
+            stack.warp_candidate(0),
+            &block,
+            super::super::read_mv::MV_PRECISION_EIGHTH_PEL,
+        ),
         Mv { row: -16, col: 24 },
         "a pure-translation model projects to its eighth-pel translation"
     );
     assert_eq!(
-        stack.warp_predicted_mv(1, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
+        warp_predicted_mv(
+            stack.warp_candidate(1),
+            &block,
+            super::super::read_mv::MV_PRECISION_EIGHTH_PEL,
+        ),
         Mv::ZERO,
         "identity default projects to zero"
     );
@@ -1873,7 +1904,7 @@ fn warp_predicted_mv_projects_the_block_center() {
     bank.update(0, scale);
     let stack = find_mv_stack(
         &empty_grid(),
-        &block_at(4, 8),
+        &block,
         Mv::ZERO,
         None,
         &bank,
@@ -1882,12 +1913,20 @@ fn warp_predicted_mv_projects_the_block_center() {
         false,
     );
     assert_eq!(
-        stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_EIGHTH_PEL),
+        warp_predicted_mv(
+            stack.warp_candidate(0),
+            &block,
+            super::super::read_mv::MV_PRECISION_EIGHTH_PEL,
+        ),
         Mv { row: 0, col: 6 },
         "xc = 1024 * center_x(47) rounds to 6 eighth-pel at PREC-3"
     );
     assert_eq!(
-        stack.warp_predicted_mv(0, super::super::read_mv::MV_PRECISION_HALF_PEL),
+        warp_predicted_mv(
+            stack.warp_candidate(0),
+            &block,
+            super::super::read_mv::MV_PRECISION_HALF_PEL,
+        ),
         Mv { row: 0, col: 6 },
         "non-eighth precisions round at PREC-2 then double"
     );
@@ -2049,6 +2088,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         &grid,
         &block,
         Mv::ZERO,
+        DEFAULT_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -2105,6 +2145,7 @@ fn same_side_spatial_projection_survives_disabled_temporal_scan() {
         &grid,
         &block,
         Mv::ZERO,
+        DEFAULT_WARP_PARAMS,
         None,
         &WarpParamBank::new(),
         false,
@@ -2277,6 +2318,72 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
     let mut list1 = WarpParamStack::new();
     bank.fill(1, &mut list1);
     assert_eq!(list1.num_found, 0, "row-above seeding uses only model 0");
+}
+
+#[test]
+fn extend_warp_uses_retained_compound_list1_mv() {
+    let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
+    let mv1 = Mv { row: -24, col: 40 };
+    grid.record_compound_block(
+        8,
+        0,
+        N4_32,
+        N4_32,
+        0,
+        1,
+        false,
+        true,
+        Mv { row: 8, col: 16 },
+        mv1,
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+        [None, None],
+    );
+    let mut block = block_at(8, 8);
+    block.ref_frame0 = 1;
+
+    let params = extend_warp_neighbour_params(&grid, &block, 0, -1)
+        .expect("compound list1 neighbour retains its MV");
+    assert_eq!(params[0], mv1.col << (WARPEDMODEL_PREC_BITS - 3));
+    assert_eq!(params[1], mv1.row << (WARPEDMODEL_PREC_BITS - 3));
+    assert_eq!(params[2..], splot_recon::IDENTITY_WARP_PARAMS[2..]);
+}
+
+#[test]
+fn local_warp_samples_include_retained_compound_list1_mv() {
+    let mut grid = NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap();
+    let mv1 = Mv { row: -24, col: 40 };
+    grid.record_compound_block(
+        0,
+        8,
+        N4_32,
+        N4_32,
+        0,
+        1,
+        false,
+        true,
+        Mv { row: 8, col: 16 },
+        mv1,
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+        [None, None],
+    );
+    let block = block_at(8, 8);
+
+    assert_eq!(
+        &find_warp_samples(&grid, &block, 1)[..],
+        &[[120, 376, 120 + mv1.row, 376 + mv1.col]]
+    );
 }
 
 #[test]

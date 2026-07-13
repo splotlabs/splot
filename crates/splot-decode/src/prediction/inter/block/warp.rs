@@ -218,26 +218,15 @@ fn extend_warp_estimation(
             "7.13.3.24"
         ));
     };
-    let params = match super::super::find_mv_stack::extend_warp_neighbour_params(
+    let Some(params) = super::super::find_mv_stack::extend_warp_neighbour_params(
         mv_grid, block_ctx, delta_row, delta_col,
-    ) {
-        super::super::find_mv_stack::ExtendWarpNeighbour::Params(params) => params,
-        super::super::find_mv_stack::ExtendWarpNeighbour::List1MvUnretained => {
-            return Err(inter_cap!(
-                "inter_warp_extend_list1_mv_unretained",
-                tile_offset,
-                "inter.warp_extend.second_list_neighbour_mv",
-                "7.13.3.24"
-            ));
-        }
-        super::super::find_mv_stack::ExtendWarpNeighbour::Missing => {
-            return Err(inter_cap!(
-                "inter_warp_extend_neighbour_missing",
-                tile_offset,
-                "inter.warp_extend.base_position",
-                "7.13.3.24"
-            ));
-        }
+    ) else {
+        return Err(inter_cap!(
+            "inter_warp_extend_neighbour_missing",
+            tile_offset,
+            "inter.warp_extend.base_position",
+            "7.13.3.24"
+        ));
     };
     let geometry_error = || warp_model_error(tile_offset);
     let mid_y = i32::try_from(
@@ -446,31 +435,12 @@ pub(crate) fn read_warp_extend_syntax(
         col: mv_clamp_to_integer(pred_mv.col + diff.col),
     };
     let warp_params = if motion_mode == MotionMode::LocalWarp {
-        match super::super::find_mv_stack::find_warp_samples(
+        let samples = super::super::find_mv_stack::find_warp_samples(
             mv_grid,
             block_ctx,
             block_ctx.ref_frame0,
-        ) {
-            super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
-                local_warp_estimation(
-                    samples.as_slice(),
-                    mv,
-                    mi_row,
-                    mi_col,
-                    n4w,
-                    n4h,
-                    tile_offset,
-                )?
-            }
-            super::super::find_mv_stack::WarpSampleCollection::List1MvUnretained => {
-                return Err(inter_cap!(
-                    "inter_warp_sample_list1_mv_unretained",
-                    tile_offset,
-                    "inter.local_warp.second_list_neighbour_mv",
-                    "7.12.3.2"
-                ));
-            }
-        }
+        );
+        local_warp_estimation(&samples, mv, mi_row, mi_col, n4w, n4h, tile_offset)?
     } else {
         extend_warp_estimation(
             mv_grid,
@@ -572,11 +542,7 @@ pub(crate) fn read_warpmv_delta_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     mv_config: MvReadConfig,
-    _b_size: usize,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
+    block_ctx: &MvBlockContext,
     stack: &super::super::find_mv_stack::MvStack,
     tile_offset: ByteOffset,
 ) -> Result<ParsedWarpNewmv> {
@@ -591,7 +557,11 @@ pub(crate) fn read_warpmv_delta_syntax(
     } else {
         MV_PRECISION_EIGHTH_PEL
     };
-    let base_mv = stack.warp_predicted_mv(ref_warp_idx, base_precision);
+    let base_mv = warp_predicted_mv(
+        stack.warp_candidate(ref_warp_idx),
+        block_ctx,
+        base_precision,
+    );
     let mv = if warpmv_with_mvd {
         let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, mv_config)?;
         let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, mv_config, false, 1)?;
@@ -604,7 +574,15 @@ pub(crate) fn read_warpmv_delta_syntax(
     };
     let mut warp_params = stack.warp_candidate(ref_warp_idx);
     reduce_warp_model(&mut warp_params);
-    set_warp_translation(&mut warp_params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
+    set_warp_translation(
+        &mut warp_params,
+        mv,
+        block_ctx.mi_row,
+        block_ctx.mi_col,
+        block_ctx.bw4,
+        block_ctx.bh4,
+        tile_offset,
+    )?;
     Ok(ParsedWarpNewmv {
         mv,
         warp_params,

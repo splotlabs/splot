@@ -8,7 +8,7 @@ use splot_recon::PlaneId;
 
 use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock,
-    SupportedDirectionalLumaMode, current_frame_qm_segment_id,
+    current_frame_qm_segment_id,
 };
 use crate::prediction::intra::IntraLumaPlan;
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
@@ -51,6 +51,7 @@ impl ResidualPlanePlan {
         let reconstruction = match self.reconstruction {
             ResidualReconstructionPlan::Rect { .. }
             | ResidualReconstructionPlan::Chroma { .. }
+            | ResidualReconstructionPlan::ChromaCfl { .. }
             | ResidualReconstructionPlan::ChromaMiddle(..)
             | ResidualReconstructionPlan::ChromaOneSided(..)
             | ResidualReconstructionPlan::LumaPalette { .. }
@@ -134,6 +135,10 @@ impl ResidualPlanePlan {
                 use_tcq,
             },
             ResidualReconstructionPlan::LumaSquare {
+                plan: IntraLumaPlan::Palette { palette },
+                use_tcq,
+            } => ResidualReconstructionPlan::LumaPalette { palette, use_tcq },
+            ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::CardinalNeighbour { direction },
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectCardinal { direction, use_tcq },
@@ -167,25 +172,8 @@ impl ResidualPlanePlan {
             } => ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq },
             ResidualReconstructionPlan::LumaSquare {
                 plan:
-                    IntraLumaPlan::DirectionalFirst {
-                        mode:
-                            mode @ (SupportedDirectionalLumaMode::D113
-                            | SupportedDirectionalLumaMode::D135
-                            | SupportedDirectionalLumaMode::D157),
-                    },
-                use_tcq,
-            } if block.coeffs.lossless => {
-                if block.x == self.x && block.y == self.y {
-                    self.reconstruction
-                } else {
-                    ResidualReconstructionPlan::LumaRectMiddle {
-                        p_angle: crate::prediction::intra::directional_mode_p_angle(mode),
-                        use_tcq,
-                    }
-                }
-            }
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::DirectionalNeighbour { mode },
+                    IntraLumaPlan::DirectionalFirst { mode }
+                    | IntraLumaPlan::DirectionalNeighbour { mode },
                 use_tcq,
             } => {
                 let p_angle = crate::prediction::intra::directional_mode_p_angle(mode);
@@ -198,24 +186,9 @@ impl ResidualPlanePlan {
                 }
             }
             ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::NonDcNeighbour { mode },
+                plan: IntraLumaPlan::NonDcFirst { mode } | IntraLumaPlan::NonDcNeighbour { mode },
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::NonDcFirst { mode },
-                use_tcq,
-            } => {
-                if block.x == self.x && block.y == self.y {
-                    self.reconstruction
-                } else {
-                    ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq }
-                }
-            }
-            _ => {
-                return Err(GeneralIntraResidualError::UnsupportedTransformPartition {
-                    reason: "general_intra_partitioned_interior_edge_prediction",
-                });
-            }
         };
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let width4 = (1usize << log2_width) >> 2;

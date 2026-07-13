@@ -12,12 +12,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use splot_decode::DecodeOptions;
 
 mod common;
-use common::read_dir_names;
+use common::{empty_avmenc_ivf, read_dir_names};
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 const PLANABLE_CLOSED_LOOP_KEY: &[u8] = &[0x01, 0x10];
-const UNSUPPORTED_OPEN_LOOP_KEY: &[u8] = &[0x01, 0x14];
+const UNSUPPORTED_MULTISTREAM: &[u8] = &[0x01, 0x50];
 const MALFORMED_ANNEX_B: &[u8] = &[0x05, 0x10];
 const LOCAL_DECODER_MISSION_ENV: &str = "SPLOT_LOCAL_DECODER_MISSION_IVF";
 
@@ -181,6 +181,29 @@ fn decode_hash_output_format_emits_unsupported_text_without_output_path() {
             "stderr did not contain {expected:?}: {stderr}"
         );
     }
+}
+
+#[test]
+fn decode_hash_empty_ivf_emits_success_report_without_frames() {
+    let input = temp_input("ivf", &empty_avmenc_ivf());
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["contract_id"], "splot.decode.hash_report");
+    assert_eq!(
+        json["selected_output_variants"][0],
+        "raw_intermediate_output"
+    );
+    assert_eq!(json["frames"], serde_json::json!([]));
 }
 
 #[test]
@@ -826,7 +849,7 @@ fn decode_malformed_source_json_mode_emits_detail_fields() {
 
 #[test]
 fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
-    let input = temp_input("av2", UNSUPPORTED_OPEN_LOOP_KEY);
+    let input = temp_input("av2", UNSUPPORTED_MULTISTREAM);
     let output = temp_output("y4m");
     let original_output = b"unsupported output sentinel";
     std::fs::write(&output, original_output).expect("write temporary output sentinel");
@@ -843,10 +866,10 @@ fn decode_unsupported_structure_json_mode_uses_planner_metadata() {
     assert!(out.stderr.is_empty(), "stderr was not empty");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["rule_id"], "decode/unsupported-feature");
-    assert_eq!(json["spec_section"], "5.2.1");
+    assert_eq!(json["spec_section"], "7.1");
     assert_eq!(json["detail_kind"], "unsupported_structure");
-    assert_eq!(json["unsupported_reason"], "unsupported_frame_obu");
-    assert_eq!(json["obu_type"], "OBU_OPEN_LOOP_KEY");
+    assert_eq!(json["unsupported_reason"], "multistream_selection");
+    assert_eq!(json["obu_type"], "OBU_MSDO");
     assert_eq!(json["byte_offset"], 1);
     assert_eq!(
         std::fs::read(&output).expect("read temporary output sentinel"),

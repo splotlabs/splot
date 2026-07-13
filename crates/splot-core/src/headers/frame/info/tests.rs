@@ -627,6 +627,7 @@ fn frame_header_core_sef_unknown_grain_flag_preserves_facts_then_stops() {
     let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
     assert_eq!(core.show_existing_frame, Some(true));
     assert_eq!(core.frame_to_show_map_idx, Some(6));
+    assert_eq!(core.derive_sef_order_hint, Some(false));
     assert_eq!(core.order_hint_lsb, Some(11));
     assert_eq!(core.refresh_frame_flags, Some(0));
     assert!(matches!(
@@ -660,6 +661,7 @@ fn frame_header_core_sef_with_grain_reads_apply_grain_then_completes() {
     let data = bits.into_bytes();
     let (core, _) = parse_body(&data, ObuType::RegularSef, true, &seq).unwrap();
     assert_eq!(core.show_existing_frame, Some(true));
+    assert_eq!(core.derive_sef_order_hint, Some(true));
     assert_eq!(
         core.status,
         FrameHeaderParseStatus::ShowExistingFrameComplete
@@ -1229,9 +1231,34 @@ fn frame_header_core_single_picture_bridge_reads_prefix_then_bridge_return() {
     bits.uvlc(0); // seq_header_id_in_frame_header
     bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
     bits.bit(0); // bridge_frame_overwrite_flag = 0 f(1) (mirror :4423)
+    bits.f(32 - 1, 12); // bridge_frame_width_minus_1 (§ 5.18.4.2)
+    bits.f(48 - 1, 12); // bridge_frame_height_minus_1 (§ 5.18.4.2)
     bits.bit(0); // allow_intrabc = 0 f(1) (intrabc_params(), mirror :4571)
     let data = bits.into_bytes();
-    let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
+    let mut valid = [false; NUM_REF_FRAMES];
+    valid[5] = true;
+    let mut hints = [0; NUM_REF_FRAMES];
+    hints[5] = 9;
+    let mut widths = [0; NUM_REF_FRAMES];
+    widths[5] = 64;
+    let mut heights = [0; NUM_REF_FRAMES];
+    heights[5] = 64;
+    let mut base_q = [0; NUM_REF_FRAMES];
+    base_q[5] = 21;
+    let chroma_deltas = [[0; 2]; NUM_REF_FRAMES];
+    let reference_state = FrameReferenceStateView::from_slots_with_base_q_idx(
+        &valid, &hints, &widths, &heights, &base_q,
+    )
+    .with_quantizer_delta_state(&chroma_deltas);
+    let (core, _) = parse_body_with_ref(
+        &data,
+        ObuType::BridgeFrame,
+        true,
+        &seq,
+        None,
+        &reference_state,
+    )
+    .unwrap();
 
     assert!(core.is_bridge, "the OBU is still an OBU_BRIDGE_FRAME");
     assert_eq!(
@@ -1273,18 +1300,15 @@ fn frame_header_core_single_picture_bridge_reads_prefix_then_bridge_return() {
         "PRIMARY_REF_NONE (mirror :4345)"
     );
     assert_eq!(core.refresh_frame_flags, Some(1 << 5));
-    assert_eq!(core.frame_size, Some(FrameSize::new(4096, 2304)));
+    assert_eq!(core.frame_size, Some(FrameSize::new(32, 48)));
     assert_eq!(core.allow_screen_content_tools, Some(false));
     assert_eq!(core.allow_intrabc, Some(false));
+    assert_eq!(core.disable_cdf_update, Some(true));
+    assert!(core.tile_info.is_some());
     assert_eq!(
-        core.disable_cdf_update, None,
-        "the IsBridge early-return arm never reads disable_cdf_update (mirror :4971/:5039)"
+        core.quantization_params.map(|quant| quant.base_q_idx),
+        Some(21)
     );
-    assert!(
-        core.tile_info.is_none(),
-        "no quant/tile structure cluster on the IsBridge early-return arm"
-    );
-    assert!(core.quantization_params.is_none());
     assert!(
         core.intra_tail.is_none(),
         "the full intra tail is NOT taken for a single-picture bridge"
@@ -1294,10 +1318,7 @@ fn frame_header_core_single_picture_bridge_reads_prefix_then_bridge_return() {
         Some(InterStop::BruInactiveOrBridgeReturn),
         "stops at the § 5.18.2 IsBridge early-return arm (mirror :4971), not IntraHeaderComplete"
     );
-    assert!(matches!(
-        core.status,
-        FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
-    ));
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
 }
 
 #[test]
@@ -1314,6 +1335,8 @@ fn frame_header_core_single_picture_bridge_reads_scc_and_intrabc_conditionals() 
     bits.bit(1); // bridge_frame_overwrite_flag = 1 (mirror :4423) -> refresh IS read
     bits.bit(1); // has_refresh_frame_flags = 1 (overwrite==1 short path)
     bits.f(5, 3); // frame_to_refresh = 5 f(CeilLog2(8) == 3) -> refresh = 1 << 5
+    bits.f(64 - 1, 12); // bridge_frame_width_minus_1
+    bits.f(64 - 1, 12); // bridge_frame_height_minus_1
     bits.bit(1); // allow_screen_content_tools = 1 (mirror :4569 / §5.18.3.3)
     bits.bit(1); // force_integer_mv = 1 (allow_sct && seq_force_integer_mv == SELECT)
     bits.bit(1); // allow_intrabc = 1 (mirror :4571 / §5.18.3.4)
@@ -1386,11 +1409,32 @@ fn frame_header_core_single_picture_bridge_reads_film_grain_tail() {
     bits.uvlc(0); // seq_header_id_in_frame_header (1 bit)
     bits.f(5, 3); // bridge_frame_ref_idx = 5 (3 bits)
     bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit) -> refresh inferred 1 << 5, no bits
+    bits.f(64 - 1, 12); // bridge_frame_width_minus_1
+    bits.f(64 - 1, 12); // bridge_frame_height_minus_1
     bits.bit(0); // allow_intrabc = 0 (1 bit)
     bits.f(5, 3); // fgm_id = 5
     bits.f(0xBEEF, 16); // grain_seed
     let data = bits.into_bytes();
-    let (core, consumed) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
+    let mut valid = [false; NUM_REF_FRAMES];
+    valid[5] = true;
+    let hints = [0; NUM_REF_FRAMES];
+    let widths = [64; NUM_REF_FRAMES];
+    let heights = [64; NUM_REF_FRAMES];
+    let base_q = [21; NUM_REF_FRAMES];
+    let chroma_deltas = [[0; 2]; NUM_REF_FRAMES];
+    let reference_state = FrameReferenceStateView::from_slots_with_base_q_idx(
+        &valid, &hints, &widths, &heights, &base_q,
+    )
+    .with_quantizer_delta_state(&chroma_deltas);
+    let (core, consumed) = parse_body_with_ref(
+        &data,
+        ObuType::BridgeFrame,
+        true,
+        &seq,
+        None,
+        &reference_state,
+    )
+    .unwrap();
 
     assert!(core.is_bridge);
     let inter = core.inter.as_ref().expect("bridge facts recorded");
@@ -1400,15 +1444,23 @@ fn frame_header_core_single_picture_bridge_reads_film_grain_tail() {
         "overwrite == 0 -> refresh inferred (no bits)"
     );
     assert_eq!(inter.stop, Some(InterStop::BruInactiveOrBridgeReturn));
-    assert!(matches!(
-        core.status,
-        FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
-    ));
-    assert_eq!(consumed, 25, "consumed_bits covers the film-grain tail");
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+    assert_eq!(
+        consumed, 49,
+        "consumed_bits covers bridge sizing and film grain"
+    );
+    assert_eq!(
+        core.bridge_film_grain,
+        Some(FilmGrainConfig {
+            apply_grain: true,
+            fgm_id: Some(5),
+            grain_seed: Some(0xBEEF),
+        })
+    );
 }
 
 #[test]
-fn frame_header_core_single_picture_bridge_eof_in_film_grain_is_truncation() {
+fn frame_header_core_single_picture_bridge_waits_for_tile_state_before_film_grain() {
     let mut seq = base_seq();
     seq.single_picture_header_flag = true;
     seq.filter.single_picture_header_flag = true;
@@ -1417,30 +1469,31 @@ fn frame_header_core_single_picture_bridge_eof_in_film_grain_is_truncation() {
     bits.uvlc(0); // seq_header_id (1 bit)
     bits.f(5, 3); // bridge_frame_ref_idx (3 bits) -> 4
     bits.bit(0); // bridge_frame_overwrite_flag = 0 (1 bit) -> 5; refresh inferred (no bits)
+    bits.f(64 - 1, 12); // bridge_frame_width_minus_1
+    bits.f(64 - 1, 12); // bridge_frame_height_minus_1
     bits.bit(0); // allow_intrabc (1 bit) -> 6
     bits.f(5, 3); // fgm_id f(3) -> 9; grain_seed f(16) then runs out of bits -> EOF.
     let data = bits.into_bytes();
     let (core, _) = parse_body(&data, ObuType::BridgeFrame, true, &seq).unwrap();
 
-    assert_eq!(
+    assert!(matches!(
         core.status,
-        FrameHeaderParseStatus::StoppedInsideInterControl
-    );
-    let inter = core.inter.as_ref().expect("pre-EOF facts preserved");
+        FrameHeaderParseStatus::UnsupportedUntilFeature { .. }
+    ));
+    let inter = core.inter.as_ref().expect("pre-stop facts preserved");
     assert_eq!(inter.bridge_frame_overwrite_flag, Some(false));
     assert_eq!(
         inter.refresh_frame_flags,
         Some(1 << 5),
-        "the inferred refresh (overwrite == 0) parsed before the grain-tail EOF is preserved"
+        "the inferred refresh is preserved before reference-derived tile state"
     );
     assert_eq!(
-        core.frame_size,
-        Some(FrameSize::new(4096, 2304)),
-        "facts parsed before the grain-tail EOF are preserved"
+        core.frame_size, None,
+        "unknown reference state prevents deriving the clamped bridge size"
     );
     assert_eq!(
-        inter.stop, None,
-        "the bridge-return stop was never reached (EOF inside the grain tail)"
+        core.bridge_film_grain, None,
+        "film grain follows tile_info and is not read without reference-derived tile state"
     );
 }
 
@@ -1513,6 +1566,51 @@ fn frame_header_core_bridge_overwrite_reads_refresh_frame_flags() {
     assert_eq!(inter.refresh_frame_flags, Some(0b1010_0101));
     assert_eq!(core.frame_size, Some(FrameSize::new(1280, 720)));
     assert_eq!(inter.stop, Some(InterStop::BruInactiveOrBridgeReturn));
+}
+
+#[test]
+fn frame_header_core_bridge_completes_with_reference_quantizer_state() {
+    let mut bits = Bits::default();
+    bits.uvlc(4); // seq_header_id_in_frame_header
+    bits.f(5, 3); // bridge_frame_ref_idx = 5
+    bits.bit(0); // bridge_frame_overwrite_flag = 0 -> refresh = 1 << 5
+    bits.f(1920 - 1, 12); // bridge_frame_width_minus_1
+    bits.f(1080 - 1, 12); // bridge_frame_height_minus_1
+    let data = bits.into_bytes();
+
+    let mut ref_valid = [false; NUM_REF_FRAMES];
+    ref_valid[5] = true;
+    let ref_oh = [0u32; NUM_REF_FRAMES];
+    let mut ref_w = [0u32; NUM_REF_FRAMES];
+    let mut ref_h = [0u32; NUM_REF_FRAMES];
+    let mut ref_q = [0u32; NUM_REF_FRAMES];
+    let mut ref_chroma_ac_deltas = [[0i32; 2]; NUM_REF_FRAMES];
+    ref_w[5] = 1280;
+    ref_h[5] = 720;
+    ref_q[5] = 91;
+    ref_chroma_ac_deltas[5] = [-3, 4];
+    let rs = FrameReferenceStateView::from_slots_with_base_q_idx(
+        &ref_valid, &ref_oh, &ref_w, &ref_h, &ref_q,
+    )
+    .with_quantizer_delta_state(&ref_chroma_ac_deltas);
+    let (core, _) =
+        parse_body_with_ref(&data, ObuType::BridgeFrame, true, &base_seq(), None, &rs).unwrap();
+
+    assert_eq!(core.status, FrameHeaderParseStatus::InterHeaderComplete);
+    assert_eq!(core.frame_size, Some(FrameSize::new(1280, 720)));
+    assert!(core.tile_info.is_some());
+    assert_eq!(
+        core.quantization_params,
+        Some(QuantizationParams::inferred_tip(91, -3, 4))
+    );
+    assert_eq!(
+        core.bridge_film_grain,
+        Some(FilmGrainConfig {
+            apply_grain: false,
+            fgm_id: None,
+            grain_seed: None,
+        })
+    );
 }
 
 #[test]
@@ -1949,7 +2047,7 @@ fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values()
     assert!(!tail.allow_bawp);
     assert!(!tail.allow_warpmv_mode);
     assert_eq!(tail.reduced_tx_set, 2);
-    assert!(!tail.use_global_motion);
+    assert!(!tail.global_motion.use_global_motion);
     assert!(tail.film_grain.apply_grain);
     assert_eq!(tail.film_grain.fgm_id, Some(5));
     assert_eq!(tail.film_grain.grain_seed, Some(0x1234));
@@ -2209,7 +2307,7 @@ fn frame_header_core_bridge_eof_inside_control_region_is_truncation() {
 }
 
 #[test]
-fn frame_header_core_ras_reads_num_key_ref_frames_then_stops() {
+fn frame_header_core_ras_with_unknown_reference_state_stops_after_long_term_ids() {
     let mut seq = base_seq();
     seq.long_term_frame_id_bits = 4;
     let mut bits = Bits::default();

@@ -7,6 +7,7 @@ use super::{PipelineFrame, unsupported, unsupported_at};
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::span::ByteOffset;
+use splot_core::types::ObuType;
 use splot_recon::BitDepth;
 
 use crate::error::Result;
@@ -42,6 +43,7 @@ pub(super) fn charge_emitted_outputs(
                 "decode pipeline output ordering references a decoded frame that is unavailable",
             )
         })?;
+        frame.validate_output_effects()?;
         emit(frame)?;
         if charge_output_bytes {
             output_frame_bytes =
@@ -67,6 +69,8 @@ pub(super) fn frame_is_output(core: &FrameHeaderCore) -> bool {
 pub(super) struct OutputScheduler {
     pub(super) pending: Vec<Option<(usize, u32)>>,
     pub(super) emitted: Vec<usize>,
+    open_loop_active: bool,
+    open_loop_order_hint: Option<u32>,
 }
 
 impl OutputScheduler {
@@ -74,6 +78,8 @@ impl OutputScheduler {
         Self {
             pending: vec![None; num_slots],
             emitted: Vec::new(),
+            open_loop_active: false,
+            open_loop_order_hint: None,
         }
     }
 
@@ -176,6 +182,93 @@ impl OutputScheduler {
         self.flush_lower_than(u32::MAX, &mut newly);
         newly
     }
+
+    pub(super) fn prepare_for_frame(
+        &mut self,
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+    ) -> Vec<usize> {
+        if !self.open_loop_active || !first_picture_in_tu || !is_regular_frame_obu(obu_type) {
+            return Vec::new();
+        }
+        self.open_loop_active = false;
+        let limit = self.open_loop_order_hint.take();
+        let mut newly = Vec::new();
+        loop {
+            let next = self
+                .pending
+                .iter()
+                .flatten()
+                .filter(|(_, ordering)| limit.is_none_or(|limit| *ordering < limit))
+                .min_by_key(|(_, ordering)| *ordering)
+                .copied();
+            let Some((frame_index, _)) = next else {
+                return newly;
+            };
+            self.emit(frame_index, &mut newly);
+        }
+    }
+
+    pub(super) fn note_frame(
+        &mut self,
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+        order_hint: u32,
+        immediate: bool,
+        implicit: bool,
+    ) {
+        if obu_type == ObuType::OpenLoopKey {
+            self.open_loop_active = true;
+            self.open_loop_order_hint = implicit.then_some(order_hint);
+        } else if self.open_loop_active
+            && is_regular_frame_obu(obu_type)
+            && !first_picture_in_tu
+            && (immediate || implicit)
+        {
+            self.open_loop_order_hint = Some(order_hint);
+        }
+    }
+
+    pub(super) fn restrict_slots(&mut self, slots: &[usize]) -> Vec<usize> {
+        let mut newly = Vec::new();
+        loop {
+            let next = slots
+                .iter()
+                .filter_map(|&slot| self.pending.get(slot).copied().flatten())
+                .min_by_key(|(_, ordering)| *ordering);
+            let Some((frame_index, ordering)) = next else {
+                break;
+            };
+            newly.extend(self.on_immediate(frame_index, ordering));
+        }
+        for &slot in slots {
+            if let Some(pending) = self.pending.get_mut(slot) {
+                *pending = None;
+            }
+        }
+        newly
+    }
+
+    pub(super) fn start_new_sequence(&mut self, num_slots: usize) -> Vec<usize> {
+        let newly = self.flush_all();
+        self.pending = vec![None; num_slots];
+        self.open_loop_active = false;
+        self.open_loop_order_hint = None;
+        newly
+    }
+}
+
+const fn is_regular_frame_obu(obu_type: ObuType) -> bool {
+    matches!(
+        obu_type,
+        ObuType::OpenLoopKey
+            | ObuType::RegularTileGroup
+            | ObuType::RegularTip
+            | ObuType::RegularSef
+            | ObuType::Switch
+            | ObuType::RasFrame
+            | ObuType::BridgeFrame
+    )
 }
 
 pub(super) fn select_output_frames(
@@ -258,7 +351,11 @@ pub(super) fn ensure_retained_frame_byte_limits_for_bytes(
 }
 
 pub(super) fn retained_decoded_frame_bytes(frame: &PipelineFrame) -> Result<u64> {
-    Ok(frame.byte_len()? as u64)
+    if frame.frame.handle_count() == 1 {
+        Ok(frame.byte_len()? as u64)
+    } else {
+        Ok(0)
+    }
 }
 
 pub(super) fn ensure_output_frame_byte_limits(
@@ -276,9 +373,69 @@ pub(super) fn ensure_output_frame_byte_limits(
     Ok(next_output_frame_bytes)
 }
 
+#[cfg(test)]
+mod open_loop_tests {
+    use super::*;
+
+    #[test]
+    fn open_loop_boundary_flushes_only_hints_below_the_tu_limit() {
+        let mut scheduler = OutputScheduler::new(2);
+        scheduler.pending[0] = Some((10, 3));
+        scheduler.pending[1] = Some((11, 6));
+        scheduler.note_frame(ObuType::OpenLoopKey, true, 5, false, true);
+
+        let emitted = scheduler.prepare_for_frame(ObuType::RegularTileGroup, true);
+
+        assert_eq!(emitted, vec![10]);
+        assert_eq!(scheduler.pending[1], Some((11, 6)));
+    }
+
+    #[test]
+    fn open_loop_boundary_flushes_pending_frames_in_display_order() {
+        let mut scheduler = OutputScheduler::new(2);
+        scheduler.pending[0] = Some((10, 4));
+        scheduler.pending[1] = Some((11, 2));
+        scheduler.note_frame(ObuType::OpenLoopKey, true, 5, false, true);
+
+        let emitted = scheduler.prepare_for_frame(ObuType::RegularTileGroup, true);
+
+        assert_eq!(emitted, vec![11, 10]);
+    }
+
+    #[test]
+    fn restricted_slots_output_eligible_frames_before_clearing_them() {
+        let mut scheduler = OutputScheduler::new(3);
+        scheduler.pending[0] = Some((10, 4));
+        scheduler.pending[1] = Some((11, 2));
+        scheduler.pending[2] = Some((12, 7));
+
+        let emitted = scheduler.restrict_slots(&[0, 2]);
+
+        assert_eq!(emitted, vec![11, 10, 12]);
+        assert!(scheduler.pending.iter().all(Option::is_none));
+    }
+}
+
 pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
     match bit_depth {
         BitDepth::Eight => 1,
         BitDepth::Ten => 2,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_sequence_flushes_pending_output_and_recreates_slots() {
+        let mut scheduler = OutputScheduler::new(2);
+        assert!(scheduler.refresh(0b11, 7, 5, true, false).is_empty());
+
+        let flushed = scheduler.start_new_sequence(4);
+
+        assert_eq!(flushed, vec![7]);
+        assert_eq!(scheduler.emitted, vec![7]);
+        assert_eq!(scheduler.pending, vec![None; 4]);
     }
 }

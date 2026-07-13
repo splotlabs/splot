@@ -98,8 +98,8 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
             "5.20.7.22"
         )
     };
-    let mut planes = Vec::with_capacity(mc::YUV420_MC_PLANES.len());
-    for (plane, sub_x, sub_y) in mc::YUV420_MC_PLANES {
+    let mut planes = Vec::with_capacity(3);
+    for (plane, sub_x, sub_y) in mc::mc_planes(workspace.info().pixel_format()) {
         if plane != ReconPlaneId::Y && !placed.interintra_chroma {
             continue;
         }

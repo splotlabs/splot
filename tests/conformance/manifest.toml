@@ -45,6 +45,11 @@ description = "Single flat 8-bit 4:2:0 intra key frame (IVF, 64x64) from project
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-crop-intra-64x64-q80.ivf"
+description = "Single flat 8-bit 4:2:0 intra key frame (IVF, 64x64) from project-owned synthetic input, avmenc-encoded at base_q_idx 80 with broad decode tools disabled and sequence crop offsets left=right=top=bottom=2; visible output is 60x60 luma at origin (2,2), and splot raw output agrees byte-for-byte with pinned and current avmdec; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-flat-intra-64x64-10bit-q80.ivf"
 description = "Single flat 10-bit (bit_depth_idc == 0, AV2 §6.4.1) 4:2:0 intra key frame (IVF, 64x64) from project-owned synthetic input with broad decode tools disabled at base_q_idx 80, a single 64x64 DC_PRED-luma + DC-chroma block; the first 10-bit general-intra reconstruction target whose avmdec and dav2d raw outputs agree byte-for-byte (Y == 400, U == 480, V == 520); validates clean."
 expect = "clean"
@@ -542,7 +547,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-2sb-smchroma-intra-128x64-10bit-q160.ivf"
-description = "Valid 10-bit 4:2:0 two-superblock intra key frame (IVF, 128x64) whose first superblock uses SMOOTH chroma (no-neighbour top-left) and second uses DC chroma; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature unsupported_10bit_non_dc_intra because 10-bit SMOOTH chroma is oracle-pinned only for a single 64x64 frame (the mixed multi-superblock shape has no committed oracle fixture)."
+description = "Valid 10-bit 4:2:0 two-superblock intra key frame (IVF, 128x64) whose first superblock uses SMOOTH chroma over the no-neighbour top-left edges and whose second uses DC chroma over a real reconstructed left edge. Splot matches avmdec's complete 24,576-byte raw I420 SHA-256 dd96ae02ba422d0da6c38f9f748ee06c74d89a5d70170db29550c6916cb5fbaa; validates clean."
 expect = "clean"
 
 [[vector]]
@@ -568,6 +573,11 @@ expect = "clean"
 [[vector]]
 path = "vectors/valid/syn-hrect-intra-64x64-q120.ivf"
 description = "Rectangular (non-square) partition 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned input with a strong horizontal LUMA edge (top half flat 60, bottom half flat 200) and FLAT chroma (U=V=128), encoded with broad decode tools disabled plus --enable-ext-partitions=0 --enable-smooth-intra=0 at base_q_idx 120, so the 64x64 superblock SPLITs via PARTITION_HORZ into two RECTANGULAR 64x32 DC_PRED leaves (no SMOOTH chroma). The first general-intra rectangular (non-square) partition decode target: the section 7.13.2.4 DC predictor reads only the immediate in-frame left column / above row (no section 7.13.2.1 above-right / below-left sentinels, so no section 5.20.2.3 BlockDecoded state is needed), and the section 5.20.7.27 coefficient loop plus section 7.14.4 / section 7.15.4 reconstruction read transform width and height independently from the section 9.2 conversion tables (TX_64X32 luma, TX_32X16 chroma, incl. the section 7.15.4.1 sqrt(2) rescale for the odd log2 ratio). avmdec and dav2d raw outputs agree (md5 2234d07aa62a60f347917f340a964425) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-rect-noedge-d157-intra-128x64-q116.ivf"
+description = "Minimal 103-byte one-frame 8-bit 4:2:0 AVMenc fixture with two 64x64 tile columns. The second tile recursively partitions to a 16x64 D157_PRED luma leaf at x=64,y=0, where tile-local availability gives haveAbove=haveLeft=0. AV2 section 7.13.2.1 therefore synthesizes the directional reference rows from midpoint constants before section 7.13.2.8 predicts the rectangular block. Pre-fix splot rejected at byte offset 84 with general_intra_rect_non_dc_luma; fixed splot and pinned/current avmdec produce byte-identical 12,288-byte raw I420 output; validates clean."
 expect = "clean"
 
 [[vector]]
@@ -701,8 +711,43 @@ description = "Full 2-D grid 8-bit 4:2:0 intra key frame (IVF, 128x128, two supe
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-d113-chroma-top-left-64x64-q192.ivf"
+description = "Minimal 77-byte one-frame 8-bit 4:2:0 AVMenc fixture at 64x64 and base_q_idx 192, deterministically re-encoded from the project-owned syn-lossless-nondc-chroma-d113-intra-64x64 fixture with broad tools disabled. Its top-left block codes DC_PRED luma and explicit D113_PRED chroma at pAngle 113 while haveAbove and haveLeft are both false, so section 7.13.2.1 supplies the synthesized middle-angle edges and section 7.13.2.8 performs bilinear chroma prediction. The old decoder rejected this branch as general_intra_directional_d113_chroma_neighbour at byte 64; fixed splot and pinned/current avmdec produce the same complete 6,144-byte raw I420 SHA-256 991b1a40edefbde26e76a81a37e2221048880636238eb93f44574d801e86ca35; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-d135-chroma-nonfull-32x32-q7.ivf"
+description = "Minimal 66-byte one-frame 8-bit 4:2:0 AVMenc fixture at 32x32 and base_q_idx 7, deterministically encoded from a project-owned crop of the decoded syn-lossless-nondc-chroma-d135-intra-64x64 fixture with fixed 32x32 partitions and broad tools disabled. Its only non-full-superblock block codes DC_PRED luma and explicit D135_PRED chroma while haveAbove and haveLeft are both false, so section 7.13.2.1 supplies the synthesized middle-angle edges and section 7.13.2.8 performs bilinear chroma prediction. Pre-fix splot rejected at byte 64 with general_intra_directional_chroma_neighbour; fixed splot and pinned/current avmdec produce the same complete 1,536-byte raw I420 SHA-256 9a1caf04eeed5402053edc129525d145477fcac645984e84ea2ec735ca4d47fa; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-d157-chroma-nonfull-32x32-q1.ivf"
+description = "Minimal 66-byte one-frame 8-bit 4:2:0 current-AVMenc fixture at 32x32 and base_q_idx 1, deterministically encoded from a project-owned synthetic frame whose luma is flat 128 and whose U/V planes are the section 7.13.2.8 D157 predictor over section 7.13.2.1 no-neighbour edges. Fixed 32x32 partitions and broad unrelated tools are disabled. Its only non-full-superblock block codes DC_PRED luma and explicit D157_PRED chroma while haveAbove and haveLeft are false; pre-fix splot rejected at byte 64 with general_intra_directional_d157_chroma_neighbour. A repeated encode is byte-identical, and fixed splot plus pinned/current avmdec produce the same complete 1,536-byte raw I420 SHA-256 9084f7311718d3558b0e9b5ed09315a989f39b55b585d3e387fe878c436d40e7; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-rect-noedge-d113follow-chroma-64x64-q7.ivf"
+description = "Current-AVMenc one-frame 8-bit 4:2:0 fixture at 64x64 and base_q_idx 7, deterministically re-encoded from the project-owned decoded pixels of syn-lossless-nondc-luma-d157-chroma-follow-intra-64x64.ivf with broad tools disabled. Its top-left 64x64 coding block resolves both luma and directional-follow chroma to D113_PRED at pAngle 113 with haveAbove and haveLeft false; the luma prediction selects the generic rectangular-plan fallback, whose chroma handoff must use the section 7.13.2.1 synthesized middle-angle edges instead of rejecting the non-DC mode. Pre-fix splot failed closed at byte 65 with general_intra_rect_non_dc_chroma; fixed splot and pinned/current avmdec produce the same complete 6,144-byte raw I420 SHA-256 f831430d302267653add61fbc5054c1f3ab193a10ab7529fbcda74be6cdff70e; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-d45-intra-192x128-q80.ivf"
 description = "Full 2-D grid 8-bit 4:2:0 intra key frame (IVF, 192x128, three superblock columns by two rows) from a project-owned input whose top-left / top-middle / bottom-left / bottom-right 64x64 superblocks are DC_PRED, whose top-right DC superblock carries a horizontal-gradient residual (so it reconstructs NON-FLAT), and whose BOTTOM-MIDDLE 64x64 superblock (frontier.r 16, frontier.c 16, haveLeft && haveAbove, NON-rightmost so a decoded above-right superblock is in frame) codes the section 7.13.2.8 ZONE-1 one-sided D45_PRED directional luma mode (the section 5.20.5.3 y_mode_offset escape y_mode_offset 0 -> modeIdx 7 -> modeDelta 8 -> Reordered_Y_Mode[5] == D45_PRED == canonical mode 3, section 8.3.2 ctx 0, AngleDeltaY 0) plus its uv_mode 0 directional-follow D45 chroma, broad decode tools disabled at base_q_idx 80 with --sb-size=64. The decisive element: D45 is the ZONE-1 one-sided angle (pAngle < 90, needRight) -- dx = Dr_Intra_Derivative[45] = 64 projects UP-AND-RIGHT into the above-right (pred[i][j] = AboveRow[base], base = i + 1 + j, up to maxBaseX = w + h - 1 = 127). Unlike the section 7.13.2.8 MIDDLE angles (which stay within AboveRow[0..w)), the upper-right triangle reads h REAL reconstructed above-right samples -- the bottom row of the already-decoded top-right superblock (a horizontal gradient, 32 distinct values 42..228, NOT flat) -- via section 7.13.2.1 AboveRow[i] = CurrFrame[0][63][Min(aboveLimit, 64 + i)] with aboveLimit = Min(maxX = 191, 64 + 64 + 4*num4AboveRight - 1) and num4AboveRight = 16 (the full above-right superblock, section 5.20.7.25 count_top_right_avail over section 5.20.2.3 BlockDecoded). Every D45 projection has shift 0 ((i + 1) * 64 >> 1 & 0x1F == 0), so the luma section 7.13.2.8 IDIF 4-tap reduces to the sample copy AboveRow[base] -- bit-identical to the chroma enableIdif == 0 bilinear one-sided branch over the same real above-right. Chroma is flat (U=120, V=130) and reconstructs flat over the real (uniform) above-right. The prior brick rejected this frame (general_intra_unsupported_y_mode because D45's supported_directional() returned None); the first general-intra ZONE-1 one-sided D45 decode reading a real reconstructed above-right (the one-sided zone the middle angles never touch). avmdec and dav2d raw outputs agree (md5 8fe6a134c01b0d20be4016348ccd3b99) and splot reproduces byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-d45-follow-chroma-top-left-64x64-q182.ivf"
+description = "Minimal 106-byte one-frame 8-bit 4:2:0 AVMenc fixture at 64x64 and base_q_idx 182, deterministically encoded from a project-owned synthetic source with broad tools disabled. Its single top-left block codes D45_PRED luma and directional-follow D45_PRED chroma at exact pAngle 45 while haveAbove and haveLeft are both false. Section 7.13.2.1 therefore fills AboveRow with the no-neighbour value 127, and the section 7.13.2.8 chroma bilinear zone-1 projection remains 127 for every predictor sample. The old decoder rejected this valid branch as general_intra_directional_d45_chroma_neighbour at byte 65; fixed splot and pinned/current avmdec produce the same complete 6,144-byte raw I420 SHA-256 5f048c577d2fd6a392302aad8be4dbdb070d5dd33ccaecfe4cbadb5374aec0c3; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-d45-follow-intra-64x64-10bit-q128.ivf"
+description = "Minimal 120-byte one-frame 10-bit 4:2:0 AVMenc fixture at 64x64 and base_q_idx 128. Its top-left block codes exact D45_PRED luma plus directional-follow D45 chroma over the §7.13.2.1 synthesized 10-bit no-neighbour edges. Pre-fix splot failed closed as unsupported_10bit_non_dc_intra_chroma at byte 64; fixed splot and pinned/current avmdec produce the same complete 12,288-byte raw I420 SHA-256 176168529b5970cafe650525f68cdd34df4a9bd9cca1e784005248ec71aa7ed7; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-d45-mono-intra-64x64-10bit-q128.ivf"
+description = "Minimal 119-byte one-frame 10-bit monochrome AVMenc fixture at 64x64 and base_q_idx 128. Its top-left luma block codes exact D45_PRED over the §7.13.2.1 synthesized 10-bit no-neighbour edge. Pre-fix splot failed closed as unsupported_10bit_non_dc_intra at byte 64; fixed splot and pinned/current avmdec produce the same complete 8,192-byte native monochrome raw SHA-256 2efc7a2cdb39694755fb06ff31e70bc06b5711e26196d5a756daad43e546d6cc; validates clean."
 expect = "clean"
 
 [[vector]]
@@ -721,6 +766,11 @@ description = "Single superblock-row 8-bit 4:2:0 intra key frame (IVF, 128x64, t
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-noedge-zone3-p186-intra-128x64-q120.ivf"
+description = "Minimal 100-byte one-frame 8-bit 4:2:0 AVMenc fixture with two tile columns. Its top-left 64x64 luma block codes H_PRED with AngleDeltaY=2, deriving pAngle=186 in the section 7.13.2.7 zone-3 one-sided branch while haveAbove=haveLeft=0. Section 7.13.2.1 therefore synthesizes both reference edges from midpoint constants; enable_ibp=1 and the even angle delta activate section 7.13.2.7/7.13.2.9 IBP. The legacy general_intra_d203_unverified_position reason names the whole pAngle>180 branch, not only canonical D203_PRED: pre-fix splot rejects this exact block at byte 66, while fixed splot and pinned/current avmdec produce the same complete 12,288-byte raw I420 SHA-256 8cac414672397d2ab67b143f3003c567c9a4efceceaf4222ec8cd4680bb0c5ee; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-vgrid-intra-192x128-q120.ivf"
 description = "Full 2-D grid 8-bit 4:2:0 intra key frame (IVF, 192x128, three superblock columns by two superblock rows) from a project-owned vertical-gradient luma input (top 20, bottom 230, small per-superblock-column tint, flat chroma U=120 V=130) with broad decode tools disabled at base_q_idx 120, so the right two superblock columns code as SMOOTH_V_PRED luma. The decisive block is the row > 0 SMOOTH_V_PRED luma superblock at the MIDDLE (non-rightmost) column: unlike the first-row syn-mbvg SMOOTH_V block (haveAbove 0, above row a section 7.13.2.1 fallback), this one has haveAbove 1, so section 7.13.2.1 supplies the REAL reconstructed above row CurrFrame[0][y-1][...] (the bottom row of the already-decoded above superblock); being non-rightmost it also has a decoded above-right superblock so full_sb_num4_above_right / the section 7.13.2.1 AboveRow[w] resolver run (SMOOTH_V reads AboveRow[j] and the bottom-left sentinel, not the top-right one). The prior brick gated SMOOTH luma neighbour decode to the first superblock row and rejected this frame (general_intra_multirow_neighbour_non_dc); the first general-intra 2-D grid non-DC luma decode reading a real reconstructed above row, whose avmdec and dav2d raw outputs agree (md5 136a87190eeecb1ccd32e7cf27861c9c) and splot reproduces byte-for-byte; validates clean."
 expect = "clean"
@@ -736,6 +786,21 @@ description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-ow
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-cardinal-v-chroma-top-left-64x64-q64.ivf"
+description = "Minimal 108-byte one-frame 8-bit 4:2:0 AVMenc fixture at 64x64 and base_q_idx 64, generated from a project-owned planar source with broad tools disabled. Its top-left chroma resolves to cardinal V_PRED / vertical-follow at exact pAngle 90 while haveAbove and haveLeft are both false, so section 7.13.2.1 supplies the synthesized no-neighbour edges and section 7.13.2.7 performs the exact vertical copy. The old decoder rejected this branch as general_intra_cardinal_vertical_chroma at byte 64; fixed splot and pinned/current avmdec produce the same complete 6,144-byte raw I420 SHA-256 d615e4d9cb9f6463d6765cb8b523d96eeaa0ab9fc7e3b802d20f9d567eaaa267; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cardinal-h-chroma-top-left-64x64-q192.ivf"
+description = "Minimal 66-byte one-frame 8-bit 4:2:0 AVMenc fixture at 64x64 and base_q_idx 192, deterministically re-encoded from the project-owned syn-lossless-nondc-luma-d113-chroma-follow-intra-64x64 fixture with broad tools disabled. Its top-left chroma resolves to cardinal H_PRED / horizontal-follow at exact pAngle 180 while haveAbove and haveLeft are both false, so section 7.13.2.1 supplies the synthesized no-neighbour left edge and section 7.13.2.8 performs the horizontal copy. The old decoder rejected this branch as general_intra_cardinal_horizontal_chroma at byte 64; fixed splot and pinned/current avmdec produce the same complete 6,144-byte raw I420 SHA-256 9406aad1ff978564b0d9f0879e0ce1dcb414b74f6d3e250703eb7873937fa0d0; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cardinal-h-chroma-tile-origin-128x64-q1.ivf"
+description = "Minimal 75-byte one-frame 8-bit 4:2:0 current-AVMenc fixture at 128x64 and base_q_idx 1, deterministically encoded from a project-owned flat planar frame with Y=128 and U=V=129. Fixed 32x32 partitions and two tile columns make the first block of the second tile a non-full-superblock block at a nonzero frame position with haveAbove and haveLeft both false. Its luma is DC_PRED while its explicit chroma mode is H_PRED: section 5.20.5.6 permits that UV mode without a position restriction, section 7.13.2.1 synthesizes LeftCol as the 8-bit midpoint plus one (129), and section 7.13.2.8 copies that left edge horizontally. Pre-fix splot rejected at byte 71 with general_intra_horizontal_chroma_position; fixed splot and pinned/current avmdec produce the same complete 12,288-byte raw I420 SHA-256 8efb0e30f50271df41154e6227cbd0ad6df2dc6405c7c29b5615f7ba188ebf6; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-hpred-top-left-intra-64x64-q96.ivf"
 description = "Single 8-bit 4:2:0 intra key frame (IVF, 64x64) from a project-owned flat luma input (Y=129, U=128, V=128), broad decode tools disabled at base_q_idx 96, and a single top-left 64x64 superblock. The block codes H_PRED syntax through section 5.20.5.3 with AngleDeltaY 0, producing pAngle 180: this is the exact section 7.13.2.8 cardinal horizontal copy over the section 7.13.2.1 no-neighbour left fallback. The old decoder failed closed as general_intra_cardinal_horizontal_unverified at byte offset 64 because the top-left block had no real left edge. avmdec raw SHA-256 is f06ae152103a1abcb6d853faf078d35c770734acd99827c625763bd8b73a2854 and splot reproduces it byte-for-byte; validates clean."
 expect = "clean"
@@ -747,8 +812,8 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-key-inter-64x64.ivf"
-description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input. It references custom quantizer-matrix levels without an in-band QM OBU, so standalone validation flags the external-HLS dependency once the inter shared tail reaches setup_qm_params()."
-expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
+description = "Key frame plus two inter frames (IVF, 64x64) from project-owned synthetic input. All three frames signal using_qmatrix == 0, so §7.3.8.9 quantizer-matrix availability is inactive; validates clean."
+expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-2frame-inter-64x64.ivf"
@@ -765,6 +830,17 @@ avmdec --rawvideo --i420 and dav2d --demuxer ivf raw outputs agree byte-for-byte
 (decoded-output md5 4e1bd39f0b541ef1f479cff049e6985c, 12288 bytes), so frame 1 decodes \
 bit-exact to a copy of frame 0. The committed verified target for the first inter decode \
 brick (DECODE-FIRST-INTER-FRAME-FRONTIER); validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-reserved-obu-64x64.ivf"
+description = """
+Structured derivative of the AVM-encoded syn-2frame-inter-64x64.ivf fixture. Seven
+§5.3-conformant reserved OBUs of types 0, 26, and 31, each with a non-zero payload,
+are inserted before and after ordinary OBUs across both IVF frame records; record
+lengths are updated while every original AVM byte remains unchanged and in order.
+Conforming decoders ignore the reserved OBUs per §6.2.2, and splot, pinned avmdec,
+and current avmdec produce byte-identical 12,288-byte raw output; validates clean."""
 expect = "clean"
 
 [[vector]]
@@ -808,6 +884,21 @@ and dav2d --demuxer ivf raw outputs agree byte-for-byte (decoded-output md5 \
 ab2b067aed48cf46035fa031cefb3ab1, 12288 bytes; frame 1 luma differs from frame 0, \
 chroma flat). The committed verified target for the first inter-residual decode \
 brick (DECODE-INTER-RESIDUAL-DCT); validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-flatstep-inter-y-dc-delta1-64x64-q80.ivf"
+description = """
+Two-frame validator-clean IVF (64x64, 8-bit 4:2:0) generated from project-owned \
+flat gray frames with an isolated AVM encoder at revision \
+3935f4bf31ee774177d9300341bbbaf5b6116500. A local-only encoder patch enables \
+the normative Y DC delta syntax and sets DeltaQYDc=1; no AVM source is vendored. \
+Frame 1 is a single-reference skip=0 inter block with a coded luma DC residual. \
+Splot and the unmodified AVM decoder produce byte-identical 12288-byte raw \
+output (SHA-256 a3109f9f21810ac7dc529212e5978fd9a038aedf4f1c9e680fb1990581c91f6d); \
+all 4096 luma samples change while chroma remains flat. The committed target for \
+frame quantizer-delta propagation through inter residual reconstruction; \
+validates clean."""
 expect = "clean"
 
 [[vector]]
@@ -862,6 +953,29 @@ The §5.20.2.1 decode_tile() raster loop iterates the two superblocks. avmdec \
 (decoded-output md5 477a993d671e93d37b92a0d368c238ff, 24576 bytes). The committed \
 verified target for the first multi-superblock inter decode brick \
 (DECODE-INTER-MULTI-SB-SPATIAL); validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2tile-inter-128x64-q80.ivf"
+description = """
+Two-frame, two-tile-column inter stream (IVF, 128x64) generated by pinned AVMenc
+from the project-owned decoded pixels of syn-2sb-inter-128x64-q80.ivf. Both tile
+columns contain one 64x64 block in the key frame and inter frame. The decoder
+derives the §5.18.7.2 tile plan, decodes both §5.20.1 work units, and reproduces
+pinned and current avmdec's complete 24,576-byte raw output byte-for-byte. This
+is the regression fixture for DECODE-INTER-MULTI-TILE; validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2tile-zone1-edge-128x64-q192.ivf"
+description = """
+Minimal one-frame, two-tile-column intra stream (IVF, 128x64, 81 bytes) generated
+by pinned AVMenc from a project-owned deterministic I420 source. The right tile
+contains a D67_PRED 64x32 luma block at (64,32); its §7.13.2.1 zone-1 edge has a
+real above row but no tile-local left neighbour. This pins the tile-seam edge
+fallback used by the key-frame side of DECODE-INTER-MULTI-TILE: pinned AVM,
+current AVM, and splot agree on the complete 12,288-byte raw I420 frame; validates
+clean."""
 expect = "clean"
 
 [[vector]]
@@ -1007,6 +1121,23 @@ compound-average brick (DECODE-INTER-COMPOUND-AVERAGE); validates clean."""
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
+description = """
+Eight-frame reordered COMPOUND-AVERAGE stream (IVF, 64x64, 8-bit 4:2:0) from \
+project-owned testsrc2 input. A clean AVM 3935f4bf fixture build changes the \
+display-order-hint-5 block from the encoder-selected GLOBAL_GLOBALMV to \
+NEAR_NEARMV after mode search, retaining its opposite-side reference pair \
+(display hints 3 and 7), CWP_EQUAL, simple translation, and one 64x64 block. \
+The sequence signals opfl_refine_type == REFINE_ALL, so §5.20.7.6 infers \
+OpticalFlowRefine == 1 for that block; an instrumented clean AVM decoder trace \
+confirms the optical-flow path executes. Isolated and current avmdec output \
+the same 49,152 raw bytes (SHA-256 \
+2617506663727b6b1f5d8e80eafb31c893700ee5d0bdb2ce5db243d841b35548), \
+providing the active-path oracle for DECODE-INTER-COMPOUND-AVERAGE; validates \
+clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/invalid/syn-key-intra-64x64-truncated.ivf"
 description = """
 The intra key-frame vector truncated to 100 bytes (mid-payload): the IVF frame \
@@ -1026,8 +1157,8 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-inter-96x64.ivf"
-description = "Non-square key + inter frames at 96x64. It references custom quantizer-matrix levels without an in-band QM OBU, so standalone validation flags the external-HLS dependency once the inter shared tail reaches setup_qm_params()."
-expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
+description = "Non-square key + inter frames at 96x64. All four frame headers signal using_qmatrix == 0; validates clean."
+expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-intra-64x64-10bit.ivf"
@@ -1036,8 +1167,8 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-ops-64x64.ivf"
-description = "Stream carrying an OBU_OPERATING_POINT_SET (--enable-operating-point-sets). It references custom quantizer-matrix levels without an in-band QM OBU, so standalone validation flags the external-HLS dependency once the inter shared tail reaches setup_qm_params()."
-expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
+description = "Stream carrying an OBU_OPERATING_POINT_SET (--enable-operating-point-sets). All four frame headers signal using_qmatrix == 0; validates clean."
+expect = "clean"
 
 # These two are VALID AVM streams that AVM produces for EXTERNAL-HLS provision:
 # AVM's --enable-lcr emits a local LCR referencing an absent global LCR, and
@@ -1050,11 +1181,10 @@ expect = { diagnostics = ["frame-header/qm-level-unavailable"] }
 path = "vectors/needs-external-hls/syn-lcr-64x64.ivf"
 description = """
 AVM --enable-lcr stream: a local layer configuration record references a global \
-LCR id that is not present in-band, and later frames reference QM levels without \
-an in-band QM OBU. Standalone (external HLS disabled), the validator emits the \
-§7.3.8.3 global-LCR-unavailable diagnostic and the §7.3.8.9 \
-qm-level-unavailable diagnostic."""
-expect = { diagnostics = ["lcr/global-lcr-unavailable", "frame-header/qm-level-unavailable"] }
+LCR id that is not present in-band. All four frame headers signal using_qmatrix \
+== 0. Standalone (external HLS disabled), the validator emits the §7.3.8.3 \
+global-LCR-unavailable diagnostic."""
+expect = { diagnostics = ["lcr/global-lcr-unavailable"] }
 
 [[vector]]
 path = "vectors/needs-external-hls/syn-qm-64x64.ivf"
@@ -1157,6 +1287,56 @@ NEGATIVE decode pin proving the frame decodes to the block's comp_mode read \
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-same-ref-global-global-64x64-q80.ivf"
+description = """
+Two-frame 8-bit 4:2:0 64x64 IVF generated from two identical project-owned gray
+frames by an isolated AVM encoder at revision
+3935f4bf31ee774177d9300341bbbaf5b6116500. A local-only encoder force patch
+selects the valid same-reference GLOBAL_GLOBALMV mode for the inter block; the
+unmodified decoder reads same-reference compound symbol 2. Frame global motion
+is disabled, so both global MVs are the normative identity/zero vectors and the
+block reconstructs the sole reference twice with equal-weight averaging. The
+105-byte stream validates clean. Splot, the isolated unmodified AVM decoder,
+and the current local AVM decoder produce byte-identical 12,288-byte raw I420
+output (SHA-256 21e1e10d0b1bf3932eac3842e87af17450ad2deb0b765e8179177a2a08881231).
+The AVM patch is not committed or vendored.
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-global-translation-64x64-q80.ivf"
+description = """
+Two-frame 8-bit 4:2:0 64x64 IVF generated from project-owned flat input by an
+isolated AVM encoder at revision 3935f4bf31ee774177d9300341bbbaf5b6116500.
+An encoder-only force patch selects GLOBALMV and signals a ROTZOOM model whose
+linear terms are identity and whose translation is (2, 1) luma samples. The
+115-byte stream validates clean; Splot, the isolated unmodified AVM decoder,
+and the current local AVM decoder produce byte-identical 12,288-byte raw I420
+output (SHA-256 db9ca8e6c0880c60fc319943f8522081dcd7d2826a17f0ce133d933e17c5c7e3).
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-global-rotzoom-64x64-q80.ivf"
+description = """
+The ROTZOOM sibling of syn-2frame-global-translation: the inter frame signals
+GLOBALMV with gm_params [131072, 65536, 65600, 256, -256, 65600]. The 115-byte
+stream validates clean and decodes to the same 12,288 raw bytes in Splot and
+both unmodified AVM decoder builds (SHA-256 db9ca8e6c0880c60fc319943f8522081dcd7d2826a17f0ce133d933e17c5c7e3).
+"""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-global-affine-64x64-q80.ivf"
+description = """
+The AFFINE sibling of syn-2frame-global-translation: the inter frame signals
+GLOBALMV with gm_params [131072, 65536, 65600, 256, -128, 65728]. The 116-byte
+stream validates clean and decodes to the same 12,288 raw bytes in Splot and
+both unmodified AVM decoder builds (SHA-256 db9ca8e6c0880c60fc319943f8522081dcd7d2826a17f0ce133d933e17c5c7e3).
+"""
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf"
 description = """
 Three-frame 10-bit 4:2:0 64x32 inter stream (IVF) whose INTER frames code \
@@ -1173,8 +1353,18 @@ description = "Tiny AVM seq.chroma.444 fixture; validates clean, and the general
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-cfl-444-intra-64x64-q255.ivf"
+description = "Minimal 73-byte AVMenc 8-bit 4:4:4 intra fixture whose chroma uses CfL over a project-owned U=V=Y source. It exercises the §7.13.5 non-subsampled 8*v luma reference, and splot matches pinned/current avmdec's 12,288-byte native planar raw output byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-422-intra-64x64.ivf"
 description = "Tiny AVM seq.chroma.422 fixture; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-cfl-422-intra-64x64-q128.ivf"
+description = "AVMenc 8-bit 4:2:2 intra fixture with active CfL, generated from the project-owned decoded pixels of syn-422-intra-64x64.ivf. It exercises the §7.13.5 Cfl_Filters_422 horizontal luma downsampling, and splot matches pinned/current avmdec's 8,192-byte native planar raw output byte-for-byte; validates clean."
 expect = "clean"
 
 [[vector]]
@@ -1193,8 +1383,19 @@ description = "Tiny AVM tile.multiple fixture (decode-oracle coverage; splot fai
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2tile-2group-intra-128x64-q80.ivf"
+description = """
+Minimal one-frame 8-bit 4:2:0 intra stream with two 64x64 tile columns split
+across two §5.19 tile-group OBUs (tg_start/tg_end 0/0 then 1/1), generated by
+AVMenc from a project-owned flat-gray source. Splot joins both source-backed
+tile work units, treats the second OBU as a continuation of the same coded
+frame, and matches pinned/current avmdec's 12,288-byte raw output exactly;
+validates clean."""
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-filmgrain-intra-64x64.ivf"
-description = "Tiny AVM film_grain.present fixture (decode-oracle coverage; splot fails closed unsupported_output_effect_obu); validates clean."
+description = "Tiny AVM film_grain.present fixture with decoder-managed film-grain state; validates clean."
 expect = "clean"
 
 [[vector]]
@@ -1214,7 +1415,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-mrl-intra-128x128.ivf"
-description = "Tiny AVM intra.mrl fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
+description = "Tiny AVM intra.mrl fixture with active multi-reference-line directional blocks. Fixed splot and current avmdec produce the same complete 24,576-byte raw I420 SHA-256 ff66557f26d838051d533347ec98ea54d0090d0baf9f1ff83b6a9c72278542ae; validates clean."
 expect = "clean"
 
 [[vector]]
@@ -1248,11 +1449,183 @@ description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is by
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-gdf-per-block-intra-128x128-q120.ivf"
+description = "Minimal AVMenc-generated 128x128 8-bit 4:2:0 intra fixture with four fixed 64x64 superblocks and GDF selected per block. Its TileUseGdfCdf symbols are 1,1,0,1 in raster order; splot, pinned avmdec, and current avmdec produce the same 24,576-byte raw I420 SHA-256 13af253aff07dbbdcd9cd9e904597376e5cdca89e4be02d6900419ad9dbaf599; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-4tile-gdf-intra-128x128-q120.ivf"
+description = "Minimal AVMenc-generated 128x128 8-bit 4:2:0 intra GDF fixture with a 2-by-2 tile layout and disable_loopfilters_across_tiles equal to 1. Splot, pinned avmdec, and current avmdec produce the same 24,576-byte raw I420 SHA-256 3d74979b2e766b285c535c6ff68078b8175f8b835d6f8a4380f215cc19874107; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-inter-444-64x64-q128.ivf"
+description = "Minimal current-AVMenc two-frame 8-bit 4:4:4 stream. The second frame is a single-reference zero-MV inter block; fixed splot and current avmdec produce the same 24,576-byte native planar 4:4:4 SHA-256 92cb67a5828266a983aca929f2c97b1e86ea5047ea9bca6ded0e467c3cb781e2; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-txpart-d135-intra-64x64-q100.ivf"
+description = "Minimal 68-byte current-AVMenc 64x64 8-bit 4:2:0 D135 intra fixture with a split transform and per-transform-unit prediction. Fixed splot, pinned avmdec, and current avmdec produce the same 6,144-byte raw I420 SHA-256 5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-warp-inter-128x128.ivf"
 description = "Tiny AVM inter.warp fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-orderhint-wrap-64x64.ivf"
-description = "Project-owned AVM inter stream ending at a complete frame-unit boundary immediately after the first 7-bit coded order-hint wrap; exercises §5.18.2 get_disp_order_hint and §7.23 persistence of distinct OrderHint and OrderHintLsbs values."
-expect = { diagnostics = ["frame-header/ccso-ext-filter-reserved", "frame-header/primary-ref-frame-out-of-range", "frame-header/qm-level-unavailable"] }
+description = "Project-owned AVM inter stream ending at a complete frame-unit boundary immediately after the first 7-bit coded order-hint wrap; exercises §5.18.2 get_disp_order_hint, §7.23 persistence of distinct OrderHint and OrderHintLsbs values, and a §7.13.3.24 EXTENDWARP neighbour whose matching reference and MV are in list 1 of a compound block; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-warp-sample-list1-48x48-q90.ivf"
+description = "Minimal two-record prefix of a deterministic current-AVMenc 48x48 10-bit 4:2:0 stream. A local-warp sample matches list 1 of a neighbouring compound block, exercising the §7.12.3.2 Mvs[candRow][candCol][list] path; fixed splot and current avmdec produce the same complete 13,824-byte raw I420 SHA-256 d1c84d805c7e01737a88779051a6e9363fac552c5c543d21b8bb99fd3388a787; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2frame-refscale-inter-64x64-51x51-q80.ivf"
+description = """
+Minimal deterministic current-AVMenc two-frame 8-bit 4:2:0 stream generated
+from project-owned pixels with --resize-mode=4. The 64x64 closed-loop key frame
+is retained while the following 51x51 single-reference inter frame samples it
+through the §7.13.3.17 non-identity xScale/yScale path. Before support landed,
+splot failed closed at byte 102 with inter_reference_resolution_mismatch; fixed
+splot, pinned avmdec, and current avmdec produce the same complete 10,097-byte
+raw output SHA-256 4ca2e77c74dc68920ce0ba333e5a984b65836ac6f07e5d2d89e1f715e93ea590.
+The stream validates clean."""
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-rect-chroma-chunks-444-intra-128x64-q80.ivf"
+description = "Minimal deterministic 77-byte current-AVMenc 128x64 8-bit 4:4:4 intra stream with one fixed BLOCK_128X64 coding block. Residual syntax parses two 64x64 luma chunks and their paired 64x64 U/V chunks in normative order; fixed splot, pinned avmdec, and current avmdec produce the same 24,576-byte raw 4:4:4 SHA-256 7cbec0da6486a3ef302af168bcd58cdf5658acef05ffbfb64dbb14b068e6e3a6; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-base-only-intra-64x64.ivf"
+description = "A 136-byte IVF wrapping the official AVM scalable-encoder example's unchanged 92-byte Annex B payload for one 64x64 8-bit 4:2:0 key frame. Its sequence header declares max_tlayer_id 1 while every frame OBU belongs to temporal layer 0. Splot keeps the planner's base-layer selection, and fixed splot, pinned avmdec, and current avmdec produce the same 6,144-byte raw I420 SHA-256 ae245dff6e5b9272ba039d820c58fc77ed9d1184f031fa103b0ee101914eff32; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tlayer2-base-and-enhancement-64x64.obu"
+description = "A deterministic 49-byte raw Annex B stream from AVM's official scalable-encoder example for two flat 64x64 8-bit 4:2:0 frames in temporal layers 0 and 1. Splot retains all five OBUs for truthful traversal, selects only the temporal-layer-0 frame per Annex F.3.2, and emits the same 6,144-byte base-frame raw I420 output as pinned and current avmdec with --limit=1 (SHA-256 ce03721c5041e45d02106592c6c55db2bcda0d651568729b92f4ef5d4a665774); validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-empty-avmenc-64x64.ivf"
+description = "Current AVMenc header-only AV02 IVF produced from an empty 64x64 8-bit I420 input. Its header truthfully declares zero frame records; validation is clean, and fixed splot, pinned avmdec, and current avmdec all produce the empty raw byte stream."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-ivf-advisory-empty-record-64x64.ivf"
+description = "A 78-byte structured derivative of the project-owned AVMenc minimal 64x64 AV02 IVF. Its non-normative IVF metadata declares zero width and height and nine frames while the file contains one zero-size no-op record followed by the original coded frame. Validation is clean; fixed splot, pinned avmdec, and current avmdec all produce the original 6,144-byte raw I420 SHA-256 92c4477c8b50d5646c6ed5351cbb8f4fc04517ba39354a127c306e196fd059af."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2seq-compatible-intra-64x64.obu"
+description = "A 52-byte Annex B stream composed from two unchanged AVMenc-generated 64x64 key-frame units with different activated sequence headers but the same 8-bit 4:2:0 visible output format. The second CLK starts a new coded video sequence per AV2 §7.3.6/§7.4.3. Fixed splot, pinned avmdec, and current avmdec produce the same 12,288-byte raw I420 SHA-256 a29b83d3b3d8b9dc2336e7b29e8a9f9ea64b3cdf18f5816d82ed64e73a2c964c; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-2seq-crop-intra-64x64.obu"
+description = "A minimal 56-byte Annex B stream composed from two unchanged AVMenc-generated key-frame units. Its second CLK activates a changed sequence header and transitions visible 8-bit 4:2:0 output from 64x64 to a 60x60 crop at origin (2,2). Fixed splot, pinned avmdec, and current avmdec produce the same 11,544 raw bytes SHA-256 215d5e9d52a581a9ada3ba4d153016f2a65012661fc1e67289bd27e3ff74af0e; validates clean."
+expect = "clean"
+[[vector]]
+path = "vectors/valid/syn-output-mfh-64x64.ivf"
+description = "Minimal 8-bit 4:2:0 AVMenc key frame with an in-band multi-frame-header OBU selecting the frame state; validates clean and decodes byte-exact to AVM."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-output-brt-64x64.ivf"
+description = "Minimal 8-bit 4:2:0 AVMenc key frame with decoder-model sequence timing and an in-band buffer-removal-timing OBU; validates clean and decodes byte-exact to AVM."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-output-ci-2frame-64x64.ivf"
+description = "Two-frame 8-bit 4:2:0 AVMenc stream with content-interpretation timing state; validates clean and decodes byte-exact to AVM."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-output-metadata-group-64x64.ivf"
+description = "Minimal 8-bit 4:2:0 AVMenc key frame carrying a prefix ICC profile in a metadata-group OBU; validates clean and decodes byte-exact to AVM."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-output-metadata-short-prefix-suffix-64x64.ivf"
+description = "Minimal 8-bit 4:2:0 AVMenc key frame carrying prefix and suffix ICC-profile metadata-short OBUs; the suffix flag is a structured correction of AVMenc's duplicated prefix flag, and the result validates clean and decodes byte-exact to AVM."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-output-user-qm-64x64.ivf"
+description = "Minimal 8-bit 4:2:0 AVMenc flat-step key frame with an in-band user-defined level-6 quantizer-matrix OBU and forced 8x8 partitioning; validates clean and decodes byte-exact to AVM."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-standalone-olk-64x64.ivf"
+description = "Minimal 125-byte TD+sequence-header+open-loop-key IVF derived from an AVMenc open-GOP record by truncating after the OLK and updating only the IVF record length/count. It proves decoding can start at an OLK without external reference state; fixed splot, pinned avmdec, and current avmdec produce the same 6,144-byte raw I420 SHA-256 7ccdd8e95f70849d93650136562854419f79379ab897edca10fba785a61d46ab; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-frame-olk-leading-64x64.ivf"
+description = "AVMenc open-GOP stream containing a closed-loop key, open-loop key, and three leading tile-group frames. It exercises OLK reference-state retention, leading-frame scheduling, and the first regular-output boundary; fixed splot and both AVM decoders produce the same 30,720-byte raw I420 SHA-256 76d5068785638d85a8e796a6eb856437aaa335d3aaf9cc45d297566788f4725c; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-frame-switch-64x64.ivf"
+description = "Minimal AVMenc stream containing a closed-loop key, regular tile-group frame, and OBU_SWITCH frame. It exercises switch-frame parsing, reconstruction, reference refresh, output scheduling, and reset state; fixed splot and both AVM decoders produce the same 18,432-byte raw I420 SHA-256 606263b14593f7391fab93e5829360d9b962e10057b722f0b5d84bfb84648674; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-frame-ras-64x64.ivf"
+description = "Stateful AVMenc random-access-switch stream whose final RAS frame decodes from sequentially retained long-term reference state. It exercises RAS parsing, long-term reference selection, reconstruction, refresh, and output scheduling; fixed splot and both AVM decoders produce the same 49,152-byte raw I420 SHA-256 14a757c99a68ce5d91817392f143fa7ae4e1217b16cd349fc3c62ff5c5c2c76f; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-hidden-clk-ras-initial-tu-64x64.ivf"
+description = "Minimal one-record initial-TU fixture composed from unchanged AVMenc OBUs in TD, sequence-header, hidden-CLK, RAS order. The sequence uses 3-bit long-term IDs; the hidden CLK stores ID 0 with both output flags false, and the RAS lists ID 0. It exercises the §7.3.9.1 in-band long-term prelude and §7.4.5 availability gate; fixed splot and both AVM decoders produce the same 6,144-byte raw I420 SHA-256 8ae2742597d896935c7cad17ee3e6154aaf5fd45117e3df54b9e498a8ec441e6; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-frame-sef-families-64x64.ivf"
+description = "AVMenc stream containing regular and leading show-existing-frame OBUs after an OLK and leading frames. It exercises zero-copy reference output, derive-order-hint eligibility, film-grain slot state, and frame-counter scheduling; fixed splot and both AVM decoders produce the same 24,576-byte raw I420 SHA-256 074c7ea9e44e30e5017ffcd197a7528acbdd8b45e79f66839bc28e504208aa5d; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-frame-tip-families-64x64.ivf"
+description = "AVMenc stream containing six leading TIP OBUs and one regular TIP OBU after OLK/leading/reference frames. It exercises TIP-as-output motion-field construction, reconstruction, filtering, and scheduling; fixed splot and both AVM decoders produce the same 79,872-byte raw I420 SHA-256 e5303b39328be05f633aff002349bb0705e3977245943f390157c82164a21e8c; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-output-2tile-mono-128x64-q160.ivf"
+description = "Natural AVMenc 8-bit monochrome 128x64 open-GOP stream with two tiles, five leading TIP frames, and seven regular TIP frames. It exercises §7.9.1 reference sorting, §7.9.3 projection, multi-tile TIP reconstruction, and §7.16 deblocking without chroma; fixed splot and both AVM decoders produce the same 163,840-byte raw output SHA-256 297fb2b8eca1fa6810bb6571c140c6917fa48cc90a3412a2e32e573cb226265a; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-output-422-64x64-q80.ivf"
+description = "AVMenc 8-bit 4:2:2 64x64 stream with sixteen regular TIP output frames. It exercises TIP chroma reconstruction and native raw-output geometry with vertically full-resolution chroma; fixed splot and both AVM decoders produce the same 163,840-byte raw output SHA-256 362da297d05f8b428820089d6a44ee271c8eb97725f5fe5c28836eefbb664b56; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-output-444-64x64-q80.ivf"
+description = "AVMenc 8-bit 4:4:4 64x64 stream with sixteen regular TIP output frames. It exercises TIP chroma reconstruction and native raw-output geometry with full-resolution chroma; fixed splot and both AVM decoders produce the same 245,760-byte raw output SHA-256 de5b4b7082bca0eb0467a18806463fcc8e654faa0df8d8c085abfbc41ba62980; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-tip-output-deblock-2tile-mono-128x64-q160.ivf"
+description = "AVMenc 8-bit monochrome 128x64 open-GOP prefix with two tiles, three leading TIP frames, and active sample-changing TIP deblocking. It exercises tile-edge availability and cross-tile filtering in §7.16; fixed splot and both AVM decoders produce the same 73,728-byte raw output SHA-256 eacccbd6fa6d275ff0501d0ff7b7f4580a3a3986c8176668a10b67230fccdb22; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bridge-celu-64x64.ivf"
+description = "One-record AV02 IVF wrapper around an unchanged 57-byte AVMenc coded extended layer unit containing a 64x64 key and 16x16 bridge frame. It exercises bridge reference selection, reference-derived quantization, scaled reconstruction, visible crop, refresh, and output; fixed splot and both AVM decoders produce the same 6,528-byte raw I420 SHA-256 135baa1c73745a9fdf6030b2a42dc0ad75b55774a4c4592a2564351ace0c8d13; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bridge-scaled-box-64x64.ivf"
+description = "One-record AV02 IVF wrapper around a 72-byte AVMenc-derived stream containing a non-flat 64x64 key, a non-output bridge, and the following output frame in one coded extended layer unit. It exercises scaled zero-motion bridge reconstruction and refresh propagation; splot plus pinned and current unmodified AVM produce the same 6,528-byte raw I420 SHA-256 254fc16ae3bdebb3e063342234a9c4d9d4c9f2f7d1767cdbc5ed23e6bf8f0be2; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-bridge-single-picture-32x32.ivf"
+description = "One-record AV02 IVF wrapper around a 37-byte patched-AVM fixture containing a 64x64 reference key and a 32x32 single-picture bridge. It exercises the internally inconsistent §5.18.2/§5.18.4.2 single-picture bridge corner; splot and the isolated decoder-only AVM repair produce the same 7,680-byte raw I420 SHA-256 908a47be9c1e679265d4a8efbf66702f705b06d5111aca57f7e05dcba23fcc58. Unmodified pinned and current AVM are recorded as oracle xfails because they crash in setup_frame_size; validates clean."
+expect = "clean"

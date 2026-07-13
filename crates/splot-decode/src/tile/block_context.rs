@@ -203,10 +203,6 @@ impl NeighbourAvailability {
         self.has_left
     }
 
-    pub(crate) const fn is_top_left(self) -> bool {
-        !self.has_above && !self.has_left
-    }
-
     pub(crate) const fn num_above_right(self) -> usize {
         self.num_above_right
     }
@@ -318,8 +314,8 @@ impl BlockCtx {
         self
     }
 
-    pub(crate) const fn has_chroma_ref(self) -> bool {
-        self.chroma_ref.is_some()
+    pub(crate) const fn chroma_ref(self) -> Option<(BlockRect, TxShape)> {
+        self.chroma_ref
     }
 
     pub(crate) const fn is_top_left(self) -> bool {
@@ -354,10 +350,6 @@ impl BlockCtx {
             num_above_right,
             num_below_left,
         )
-    }
-
-    pub(crate) fn has_uncapped_above_right(self, plane: PlaneId) -> bool {
-        self.uncapped_num_above_right(plane) > 0
     }
 
     pub(crate) fn neighbours_from_block_decoded(

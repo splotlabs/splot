@@ -384,7 +384,7 @@ impl ResidualPlanePlan {
                     w,
                     h,
                 )?;
-                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 && edges.left {
+                if apply_ibp && luma_context.angle_delta_y() % 2 == 0 {
                     let secondary_filter = crate::prediction::intra_edge::unit_edge_filter(
                         intra_edge,
                         workspace,
@@ -444,6 +444,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
                 p_angle,
                 mrl_index,
+                above_mrl_index,
                 secondary_mrl,
                 use_tcq,
                 ..
@@ -464,6 +465,7 @@ impl ResidualPlanePlan {
                         neighbours.num_below_left(),
                         block_ctx.neighbours(PlaneId::Y).has_above(),
                         mrl_index,
+                        above_mrl_index,
                         use_tcq,
                         availability.left,
                         block_ctx.bit_depth(),
@@ -482,6 +484,7 @@ impl ResidualPlanePlan {
                         neighbours.num_below_left(),
                         block_ctx.neighbours(PlaneId::Y).has_above(),
                         mrl_index,
+                        above_mrl_index,
                         use_tcq,
                         Some(luma_context),
                         None,
@@ -498,6 +501,7 @@ impl ResidualPlanePlan {
                 secondary_mrl,
                 use_tcq,
             } => {
+                let edges = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_cardinal_mrl_luma_block_into(
                     workspace,
                     coeffs,
@@ -511,6 +515,7 @@ impl ResidualPlanePlan {
                     above_mrl_index,
                     secondary_mrl,
                     use_tcq,
+                    EdgeAvail::new(edges.has_above(), edges.has_left()),
                     block_ctx.bit_depth(),
                 )
             }
@@ -581,6 +586,7 @@ impl ResidualPlanePlan {
                         qindex,
                         neighbours.num_below_left(),
                         block_ctx.neighbours(PlaneId::Y).has_above(),
+                        0,
                         0,
                         use_tcq,
                         Some(luma_context),
@@ -680,6 +686,7 @@ impl ResidualPlanePlan {
                         qindex,
                         neighbours.num_below_left(),
                         neighbours.has_above(),
+                        0,
                         0,
                         false,
                         None,

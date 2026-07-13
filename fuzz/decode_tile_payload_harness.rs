@@ -15,7 +15,7 @@ use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
 use crate::bitstream::tile_payload::{
-    TileBruPath, TileFrameFacts, TileGridFacts, TilePayloadBoundaryInput, TilePayloadSource,
+    TileFrameFacts, TileGridFacts, TilePayloadBoundaryInput, TilePayloadSource,
     plan_tile_payload_boundary,
 };
 use crate::{DecodeLayerSelection, DecodeLimitThreshold, DecodeLimits, DecodeObuSourceKind};
@@ -122,7 +122,7 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
         tile_size_bytes,
         framing_is_bridge,
     );
-    let frame = frame_facts(flags, detail_seed, framing_is_bridge);
+    let frame = frame_facts(flags, detail_seed);
     let grid = TileGridFacts::new(1, 1, &MI_COL_STARTS, &MI_ROW_STARTS);
     let input = TilePayloadBoundaryInput::new(
         payload,
@@ -179,25 +179,16 @@ fn fuzz_limits(seed: u8) -> DecodeLimits {
         .with_max_luma_samples_per_frame(max(256))
 }
 
-fn frame_facts(flags: u8, detail_seed: u8, framing_is_bridge: bool) -> TileFrameFacts {
+fn frame_facts(flags: u8, detail_seed: u8) -> TileFrameFacts {
     let obu_type = if detail_seed & 0b1000_0000 == 0 {
         ObuType::ClosedLoopKey
     } else {
         ObuType::RasFrame
     };
-    let bru_path = match detail_seed & 0b0000_0011 {
-        1 => TileBruPath::Active,
-        2 => TileBruPath::Inactive,
-        _ => TileBruPath::NotUsed,
-    };
-
     TileFrameFacts::new(
         obu_type,
         detail_seed & 0b0100_0000 == 0,
-        detail_seed & 0b0010_0000 == 0,
         detail_seed & 0b0001_0000 == 0,
-        framing_is_bridge,
-        bru_path,
         255,
         flags & 0b0000_0001 != 0,
     )

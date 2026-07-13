@@ -10,6 +10,120 @@ use splot_recon::{
 };
 
 #[test]
+fn motion_compensation_planes_follow_output_chroma_format() {
+    assert_eq!(
+        mc_planes(PixelFormat::Yuv420),
+        [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)]
+    );
+    assert_eq!(
+        mc_planes(PixelFormat::Yuv422),
+        [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 0), (PlaneId::V, 1, 0)]
+    );
+    assert_eq!(
+        mc_planes(PixelFormat::Yuv444),
+        [(PlaneId::Y, 0, 0), (PlaneId::U, 0, 0), (PlaneId::V, 0, 0)]
+    );
+}
+
+#[test]
+fn dispatcher_copies_non420_reference_planes() {
+    for format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
+        let reference = flat_frame_with_format(format, 8, 8, 40, 90, 120);
+        let mut workspace = workspace_with_format(format, 8, 8);
+
+        motion_compensate_inter_block_into(
+            &mut super::WorkspaceSink::Frame(&mut workspace),
+            InterBlockParams::single(
+                &reference,
+                rect(0, 0, 8, 8),
+                Mv::ZERO,
+                InterpolationFilter::EightTap,
+            ),
+            ByteOffset::new(0),
+        )
+        .expect("non-4:2:0 single-reference dispatcher");
+
+        let decoded = workspace.freeze().expect("freeze non-4:2:0 workspace");
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                visible_samples(&decoded, plane),
+                visible_samples(&reference, plane),
+                "format={format:?} plane={plane:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn compound_and_warp_copy_non420_chroma_at_native_resolution() {
+    for format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
+        let reference = flat_frame_with_format(format, 8, 8, 40, 90, 120);
+        for params in [
+            InterBlockParams::compound_average(
+                &reference,
+                &reference,
+                rect(0, 0, 8, 8),
+                Mv::ZERO,
+                Mv::ZERO,
+                InterpolationFilter::EightTap,
+                CompoundBlend::default(),
+            ),
+            InterBlockParams::single_warp(
+                &reference,
+                rect(0, 0, 8, 8),
+                Mv::ZERO,
+                InterpolationFilter::EightTap,
+                crate::prediction::inter::find_mv_stack::DEFAULT_WARP_PARAMS,
+            ),
+        ] {
+            let mut workspace = workspace_with_format(format, 8, 8);
+            motion_compensate_inter_block_into(
+                &mut super::WorkspaceSink::Frame(&mut workspace),
+                params,
+                ByteOffset::new(0),
+            )
+            .expect("non-4:2:0 compound or warp dispatcher");
+
+            let decoded = workspace.freeze().expect("freeze non-4:2:0 workspace");
+            for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+                assert_eq!(
+                    visible_samples(&decoded, plane),
+                    visible_samples(&reference, plane),
+                    "format={format:?} plane={plane:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn deferred_window_uses_444_chroma_coordinates() {
+    let reference = flat_frame_with_format(PixelFormat::Yuv444, 16, 16, 40, 90, 120);
+    let mut workspace = workspace_with_format(PixelFormat::Yuv444, 16, 16);
+    let block_rect = rect(4, 4, 8, 8);
+    let mut window = BlockReconWindow::for_block(&workspace, block_rect).expect("4:4:4 window");
+
+    motion_compensate_inter_block_into(
+        &mut WorkspaceSink::Window(&mut window),
+        InterBlockParams::single(
+            &reference,
+            block_rect,
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+        ),
+        ByteOffset::new(0),
+    )
+    .expect("4:4:4 deferred prediction");
+    window
+        .publish(&mut workspace)
+        .expect("publish 4:4:4 window");
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::U, 4, 4), Ok(90));
+    assert_eq!(workspace.reconstructed_sample(PlaneId::V, 11, 11), Ok(120));
+    assert_eq!(workspace.reconstructed_sample(PlaneId::U, 2, 2), Ok(0));
+}
+
+#[test]
 fn dispatcher_zero_mv_copies_single_reference_planes() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);
@@ -215,6 +329,40 @@ fn dispatcher_rebuilds_optflow_compound_planes_from_refined_grid() {
     assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 64]);
     assert_eq!(visible_samples(&decoded, PlaneId::U), vec![100; 16]);
     assert_eq!(visible_samples(&decoded, PlaneId::V), vec![130; 16]);
+}
+
+#[test]
+fn optflow_reuses_the_luma_motion_grid_for_every_chroma_format() {
+    for format in [
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        let reference0 = flat_frame_with_format(format, 8, 8, 40, 90, 120);
+        let reference1 = flat_frame_with_format(format, 8, 8, 80, 110, 140);
+        let mut workspace = workspace_with_format(format, 8, 8);
+        motion_compensate_inter_block_into(
+            &mut super::WorkspaceSink::Frame(&mut workspace),
+            InterBlockParams::compound_average(
+                &reference0,
+                &reference1,
+                rect(0, 0, 8, 8),
+                Mv::ZERO,
+                Mv::ZERO,
+                InterpolationFilter::EightTapSharp,
+                CompoundBlend::default(),
+            )
+            .with_optflow_distances(Some([1, -1])),
+            ByteOffset::new(0),
+        )
+        .expect("optical-flow chroma dispatcher");
+
+        let decoded = workspace.freeze().expect("freeze optical-flow workspace");
+        assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 64]);
+        let chroma_len = 64 >> (format.subsampling_x() + format.subsampling_y());
+        assert_eq!(visible_samples(&decoded, PlaneId::U), vec![100; chroma_len]);
+        assert_eq!(visible_samples(&decoded, PlaneId::V), vec![130; chroma_len]);
+    }
 }
 
 #[test]
@@ -657,7 +805,7 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
     let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![MotionCell::from_refinemv(mvs)]);
     let multiple =
         CompoundMotionGrid::from_refinemv(2, mvs, vec![MotionCell::from_refinemv(mvs); 2]);
-    let scaling = derive_plane_scaling_prescaled(4, 4, 0, 0, 0, 0, 8, 8);
+    let scaling = derive_plane_scaling(4, 4, 0, 0, 0, 0, 32, 32, 32, 32);
     let blend = CompoundBlend::average_with_implicit_mask(true);
     let run = |motion| {
         let mut output = vec![0; pred0.len()];
@@ -729,6 +877,48 @@ fn direct_compound_blend_preserves_sample_storage_width() {
 }
 
 #[test]
+fn scaled_compound_references_disable_implicit_mask_blending() {
+    let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];
+    let pred1 = [44 * 16, 120 * 16, 80 * 16, 180 * 16];
+    let scaling = derive_plane_scaling(4, 4, 0, 0, 0, 0, 64, 64, 32, 32);
+
+    let mut got = vec![0; pred0.len()];
+    blend_compound_average::<u16>(
+        &pred0,
+        &pred1,
+        BitDepth::Eight,
+        2,
+        2,
+        CompoundBlend::average_with_implicit_mask(true),
+        2,
+        2,
+        None,
+        4,
+        4,
+        scaling,
+        scaling,
+        32,
+        32,
+        None,
+        0,
+        0,
+        &mut got,
+    )
+    .expect("scaled compound blend");
+    let mut expected = vec![0; pred0.len()];
+    blend_compound_average_weighted_samples::<u16>(
+        &pred0,
+        &pred1,
+        BitDepth::Eight,
+        CWP_EQUAL,
+        &mut expected,
+    )
+    .expect("weighted compound blend");
+
+    assert_eq!(got, expected);
+}
+
+#[test]
 fn warp_skips_prediction_units_beyond_the_current_frame() {
     let reference = patterned_frame(16, 8);
     let mut workspace = workspace(16, 8);
@@ -763,7 +953,7 @@ fn warp_skips_prediction_units_beyond_the_current_frame() {
 
 #[test]
 fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
-    let reference = patterned_frame(24, 8);
+    let reference = patterned_frame(16, 8);
     let mut workspace = workspace(16, 8);
 
     motion_compensate_inter_block_into(
@@ -789,19 +979,27 @@ fn extended_warp_skips_prediction_units_beyond_the_current_frame() {
         assert_eq!(&y[row * 16..row * 16 + 12], &[0; 12]);
         assert_eq!(
             &y[row * 16 + 12..row * 16 + 16],
-            &reference_y[row * 24 + 12..row * 24 + 16]
+            &reference_y[row * 16 + 12..row * 16 + 16]
         );
     }
     assert!(y[4 * 16..].iter().all(|&sample| sample == 0));
 }
 
 fn workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+    workspace_with_format(PixelFormat::Yuv420, width, height)
+}
+
+fn workspace_with_format(
+    pixel_format: PixelFormat,
+    width: usize,
+    height: usize,
+) -> CurrentFrameWorkspace<u8> {
     let luma_size = PlaneSize::new(width, height).expect("luma size");
     let visible = PlaneRect::new(0, 0, width, height).expect("visible rect");
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
-        PixelFormat::Yuv420,
+        pixel_format,
         luma_size,
         visible,
     )
@@ -854,9 +1052,21 @@ fn patterned_frame(width: usize, height: usize) -> DecodedFrame<u8> {
 }
 
 fn flat_frame(width: usize, height: usize, y: u8, u: u8, v: u8) -> DecodedFrame<u8> {
-    let chroma_width = width.div_ceil(2);
-    let chroma_height = height.div_ceil(2);
-    frame(
+    flat_frame_with_format(PixelFormat::Yuv420, width, height, y, u, v)
+}
+
+fn flat_frame_with_format(
+    pixel_format: PixelFormat,
+    width: usize,
+    height: usize,
+    y: u8,
+    u: u8,
+    v: u8,
+) -> DecodedFrame<u8> {
+    let chroma_width = width.div_ceil(1 << pixel_format.subsampling_x());
+    let chroma_height = height.div_ceil(1 << pixel_format.subsampling_y());
+    frame_with_format(
+        pixel_format,
         width,
         height,
         vec![y; width * height],
@@ -866,16 +1076,27 @@ fn flat_frame(width: usize, height: usize, y: u8, u: u8, v: u8) -> DecodedFrame<
 }
 
 fn frame(width: usize, height: usize, y: Vec<u8>, u: Vec<u8>, v: Vec<u8>) -> DecodedFrame<u8> {
+    frame_with_format(PixelFormat::Yuv420, width, height, y, u, v)
+}
+
+fn frame_with_format(
+    pixel_format: PixelFormat,
+    width: usize,
+    height: usize,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+) -> DecodedFrame<u8> {
     let luma_size = PlaneSize::new(width, height).expect("luma size");
     let luma_rect = PlaneRect::new(0, 0, width, height).expect("luma rect");
-    let chroma_width = width.div_ceil(2);
-    let chroma_height = height.div_ceil(2);
+    let chroma_width = width.div_ceil(1 << pixel_format.subsampling_x());
+    let chroma_height = height.div_ceil(1 << pixel_format.subsampling_y());
     let chroma_size = PlaneSize::new(chroma_width, chroma_height).expect("chroma size");
     let chroma_rect = PlaneRect::new(0, 0, chroma_width, chroma_height).expect("chroma rect");
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
-        PixelFormat::Yuv420,
+        pixel_format,
         luma_size,
         luma_rect,
     )

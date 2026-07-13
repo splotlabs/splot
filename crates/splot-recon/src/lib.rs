@@ -70,7 +70,7 @@ pub use dequant::{
     quantizer_value,
 };
 pub use dequant_process::{
-    DequantBlockParams, QmDequant, QmFrameLevels, QmWeightIndex, dequant_coefficient,
+    DequantBlockParams, QmDequant, QmFrameLevels, QmUserPlane, QmWeightIndex, dequant_coefficient,
     dequantize_block, qm_weighted_quantizer, quantization_matrix_weight,
 };
 pub use error::{ReconError, Result};

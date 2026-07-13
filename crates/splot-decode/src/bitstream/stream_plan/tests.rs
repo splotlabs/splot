@@ -11,15 +11,28 @@ const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
 const OBU_CLOSED_LOOP_KEY: u8 = 0x10;
 const OBU_OPEN_LOOP_KEY: u8 = 0x14;
+const OBU_LEADING_TILE_GROUP: u8 = 0x18;
 const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
+const OBU_SWITCH: u8 = 0x28;
+const OBU_LEADING_SEF: u8 = 0x2C;
+const OBU_REGULAR_SEF: u8 = 0x30;
+const OBU_LEADING_TIP: u8 = 0x34;
 const OBU_REGULAR_TIP: u8 = 0x38;
+const OBU_BRIDGE_FRAME: u8 = 0x4C;
+const OBU_RAS_FRAME: u8 = 0x54;
 const OBU_METADATA_SHORT: u8 = 0x20;
 const OBU_OPERATING_POINT_SET: u8 = 0x48;
 const OBU_MSDO: u8 = 0x50;
 const OBU_PADDING: u8 = 0x64;
+const OBU_RESERVED_26: u8 = 0x68;
+const OBU_RESERVED_31: u8 = 0x7C;
 
 fn obu(header: u8) -> [u8; 2] {
     [0x01, header]
+}
+
+fn obu_with_payload(header: u8, payload: u8) -> [u8; 3] {
+    [0x02, header, payload]
 }
 
 fn extended_obu(header: u8, extension: u8) -> [u8; 3] {
@@ -93,6 +106,156 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
 }
 
 #[test]
+fn non_base_temporal_obus_are_retained_but_not_selected() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER | 0x01).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_REGULAR_TILE_GROUP | 0x01).as_slice(),
+        obu(OBU_MSDO | 0x01).as_slice(),
+    ]
+    .concat();
+
+    let parsed_plan = plan(&bytes);
+    let byte_plan = plan_bytes(&bytes);
+    let obus: Vec<_> = parsed_plan.obus().collect();
+
+    assert_eq!(byte_plan, parsed_plan);
+    assert_eq!(parsed_plan.obu_count(), 4);
+    assert_eq!(parsed_plan.frame_candidate_count(), 1);
+    assert_eq!(parsed_plan.frame_candidates_all().count(), 1);
+    assert_eq!(obus[0].role(), DecodePlannedObuRole::Global);
+    assert_eq!(obus[1].role(), DecodePlannedObuRole::FrameCandidate);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::UnselectedLayer);
+    assert_eq!(obus[3].role(), DecodePlannedObuRole::UnselectedLayer);
+    assert!(
+        obus.iter()
+            .filter(|obu| obu.header().temporal_layer_id.get() == 1)
+            .all(|obu| !obu.role().is_frame_candidate())
+    );
+}
+
+#[test]
+fn non_base_temporal_obus_consume_obu_but_not_frame_limits() {
+    let bytes = [
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_REGULAR_TILE_GROUP | 0x01).as_slice(),
+    ]
+    .concat();
+    let frame_options = DecodeOptions::new(
+        DecodeLimits::unlimited()
+            .with_max_obus(DecodeLimitThreshold::Max(2))
+            .with_max_frames_to_decode(DecodeLimitThreshold::Max(1)),
+    );
+
+    let byte_plan = context(ThreadCount::from(1usize))
+        .plan_bytes(&bytes, frame_options)
+        .unwrap();
+    let parsed = parse_bitstream_partial(&bytes);
+    let parsed_plan = context(ThreadCount::from(1usize))
+        .plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            frame_options,
+        )
+        .unwrap();
+    for plan in [byte_plan, parsed_plan] {
+        assert_eq!(plan.frame_candidate_count(), 1);
+    }
+
+    let error = context(ThreadCount::from(1usize))
+        .plan_bytes(
+            &bytes,
+            DecodeOptions::new(
+                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxObus
+    ));
+
+    let parsed = parse_bitstream_partial(&bytes);
+    let error = context(ThreadCount::from(1usize))
+        .plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::new(
+                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)),
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxObus
+    ));
+}
+
+#[test]
+fn non_base_temporal_obu_does_not_hide_later_eof() {
+    let bytes = [
+        obu(OBU_REGULAR_TILE_GROUP | 0x01).as_slice(),
+        &[0x05, OBU_CLOSED_LOOP_KEY],
+    ]
+    .concat();
+
+    let byte_error = context(ThreadCount::from(1usize))
+        .plan_bytes(&bytes, DecodeOptions::default())
+        .unwrap_err();
+    assert!(matches!(byte_error, DecodeError::MalformedSource { .. }));
+
+    let parsed = parse_bitstream_partial(&bytes);
+    let parsed_error = context(ThreadCount::from(1usize))
+        .plan_stream(
+            DecodeStreamInput::new(&parsed, bytes.len() as u64),
+            DecodeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(parsed_error, DecodeError::MalformedSource { .. }));
+}
+
+#[test]
+fn reserved_obus_are_retained_without_layer_selection() {
+    let reserved_0 = [0x02, 0x00, 0x80];
+    let reserved_non_base = extended_obu(OBU_RESERVED_26 | 0x80, 0x20);
+    let reserved_31 = [0x02, OBU_RESERVED_31, 0x80];
+    let bytes = [
+        reserved_0.as_slice(),
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        reserved_non_base.as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        reserved_31.as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+    ]
+    .concat();
+
+    let plan = plan(&bytes);
+    let obus: Vec<_> = plan.obus().collect();
+
+    assert_eq!(plan_bytes(&bytes), plan);
+    assert_eq!(plan.obu_count(), 6);
+    assert_eq!(plan.frame_candidate_count(), 1);
+    assert_eq!(obus[0].payload_len(), 1);
+    assert_eq!(obus[0].role(), DecodePlannedObuRole::Global);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::Global);
+    assert_eq!(obus[4].role(), DecodePlannedObuRole::Global);
+    assert!(obus[0].header().obu_type.is_reserved());
+    assert!(obus[2].header().obu_type.is_reserved());
+    assert!(obus[4].header().obu_type.is_reserved());
+
+    let error = context(ThreadCount::from(1usize))
+        .plan_bytes(
+            &bytes,
+            DecodeOptions::new(
+                DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(5)),
+            ),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxObus
+    ));
+}
+
+#[test]
 fn operating_point_set_is_non_frame_state() {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
@@ -111,6 +274,18 @@ fn operating_point_set_is_non_frame_state() {
     assert_eq!(obus[1].role(), DecodePlannedObuRole::SelectedLayerState);
     assert_eq!(obus[2].role(), DecodePlannedObuRole::Global);
     assert_eq!(obus[4].role(), DecodePlannedObuRole::FrameCandidate);
+}
+
+#[test]
+fn output_effect_obus_are_selected_layer_state() {
+    let bytes = obu(OBU_METADATA_SHORT);
+    let plan = plan(&bytes);
+    let planned = plan.obus().next();
+
+    assert!(matches!(
+        planned.map(DecodePlannedObu::role),
+        Some(DecodePlannedObuRole::SelectedLayerState)
+    ));
 }
 
 #[test]
@@ -138,6 +313,27 @@ fn regular_tile_group_is_admitted_as_inter_frame_candidate() {
 }
 
 #[test]
+fn non_first_tile_groups_continue_one_frame_candidate() {
+    let bytes = [
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        obu_with_payload(OBU_CLOSED_LOOP_KEY, 0x80).as_slice(),
+        obu_with_payload(OBU_CLOSED_LOOP_KEY, 0x00).as_slice(),
+    ]
+    .concat();
+
+    let plan = plan(&bytes);
+    let obus: Vec<_> = plan.obus().collect();
+
+    assert_eq!(plan_bytes(&bytes), plan);
+    assert_eq!(plan.frame_candidate_count(), 1);
+    assert_eq!(plan.frame_candidates_all().count(), 1);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
+    assert_eq!(obus[3].role(), DecodePlannedObuRole::FrameContinuation);
+    assert!(obus[3].role().is_frame_continuation());
+}
+
+#[test]
 fn regular_tip_is_admitted_as_inter_frame_candidate() {
     let bytes = [
         obu(OBU_TEMPORAL_DELIMITER).as_slice(),
@@ -158,6 +354,56 @@ fn regular_tip_is_admitted_as_inter_frame_candidate() {
     assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
     assert_eq!(obus[4].role(), DecodePlannedObuRole::InterFrameCandidate);
     assert!(obus[4].role().is_frame_candidate());
+}
+
+#[test]
+fn bridge_frame_is_admitted_as_inter_frame_candidate() {
+    let bytes = [
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+        obu(OBU_BRIDGE_FRAME).as_slice(),
+    ]
+    .concat();
+
+    let plan = plan(&bytes);
+    let obus: Vec<_> = plan.obus().collect();
+
+    assert_eq!(plan_bytes(&bytes), plan);
+    assert_eq!(plan.frame_candidate_count(), 2);
+    assert_eq!(plan.frame_candidates_all().count(), 2);
+    assert_eq!(obus[2].role(), DecodePlannedObuRole::InterFrameCandidate);
+}
+
+#[test]
+fn every_frame_obu_family_is_admitted_as_a_candidate() {
+    for (header, role) in [
+        (OBU_CLOSED_LOOP_KEY, DecodePlannedObuRole::FrameCandidate),
+        (OBU_OPEN_LOOP_KEY, DecodePlannedObuRole::FrameCandidate),
+        (
+            OBU_LEADING_TILE_GROUP,
+            DecodePlannedObuRole::InterFrameCandidate,
+        ),
+        (
+            OBU_REGULAR_TILE_GROUP,
+            DecodePlannedObuRole::InterFrameCandidate,
+        ),
+        (OBU_SWITCH, DecodePlannedObuRole::InterFrameCandidate),
+        (OBU_LEADING_SEF, DecodePlannedObuRole::InterFrameCandidate),
+        (OBU_REGULAR_SEF, DecodePlannedObuRole::InterFrameCandidate),
+        (OBU_LEADING_TIP, DecodePlannedObuRole::InterFrameCandidate),
+        (OBU_REGULAR_TIP, DecodePlannedObuRole::InterFrameCandidate),
+        (OBU_BRIDGE_FRAME, DecodePlannedObuRole::InterFrameCandidate),
+        (OBU_RAS_FRAME, DecodePlannedObuRole::InterFrameCandidate),
+    ] {
+        let bytes = obu(header);
+        let plan = plan(&bytes);
+        assert_eq!(plan.frame_candidate_count(), 1, "header {header:#04x}");
+        assert_eq!(
+            plan.obus().next().map(DecodePlannedObu::role),
+            Some(role),
+            "header {header:#04x}"
+        );
+    }
 }
 
 #[test]
@@ -355,7 +601,7 @@ fn malformed_ivf_container_and_frame_payload_are_transactional() {
 
 #[test]
 fn malformed_later_ivf_payload_wins_over_earlier_unsupported_obu() {
-    let unsupported = obu(OBU_OPEN_LOOP_KEY);
+    let unsupported = obu(OBU_MSDO);
     let malformed = [0x05, OBU_CLOSED_LOOP_KEY];
     let bytes = ivf_with_payloads(&[&unsupported, &malformed]);
 
@@ -438,7 +684,7 @@ fn parsed_ivf_obu_limits_win_before_later_payload_errors() {
 
 #[test]
 fn byte_ivf_record_limit_wins_over_earlier_unsupported_obu() {
-    let unsupported = obu(OBU_OPEN_LOOP_KEY);
+    let unsupported = obu(OBU_MSDO);
     let second = obu(OBU_TEMPORAL_DELIMITER);
     let bytes = ivf_with_payloads(&[&unsupported, &second]);
 
@@ -610,24 +856,23 @@ fn byte_planner_limits_reject_before_unbounded_traversal() {
 fn unsupported_layers_and_obu_types_are_typed() {
     let cases = [
         (
-            obu(OBU_OPEN_LOOP_KEY).to_vec(),
-            DecodeUnsupportedReason::UnsupportedFrameObu,
-        ),
-        (
             obu(OBU_MSDO).to_vec(),
             DecodeUnsupportedReason::MultistreamSelection,
         ),
-        (
-            obu(OBU_METADATA_SHORT).to_vec(),
-            DecodeUnsupportedReason::UnsupportedOutputEffectObu,
-        ),
-        (obu(0x00).to_vec(), DecodeUnsupportedReason::ReservedObu),
         (
             extended_obu(0x90, 0x20).to_vec(),
             DecodeUnsupportedReason::NonBaseEmbeddedLayer,
         ),
         (
             extended_obu(0x90, 0x01).to_vec(),
+            DecodeUnsupportedReason::NonBaseExtendedLayer,
+        ),
+        (
+            extended_obu(0x91, 0x20).to_vec(),
+            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
+        ),
+        (
+            extended_obu(0x91, 0x01).to_vec(),
             DecodeUnsupportedReason::NonBaseExtendedLayer,
         ),
         (
@@ -641,10 +886,6 @@ fn unsupported_layers_and_obu_types_are_typed() {
         (
             extended_obu(0x84, 0x1F).to_vec(),
             DecodeUnsupportedReason::InvalidLayerScope,
-        ),
-        (
-            obu(OBU_CLOSED_LOOP_KEY | 0x01).to_vec(),
-            DecodeUnsupportedReason::NonBaseTemporalLayer,
         ),
     ];
 
@@ -673,24 +914,23 @@ fn unsupported_layers_and_obu_types_are_typed() {
 fn byte_planner_propagates_unsupported_structures() {
     let cases = [
         (
-            obu(OBU_OPEN_LOOP_KEY).to_vec(),
-            DecodeUnsupportedReason::UnsupportedFrameObu,
-        ),
-        (
             obu(OBU_MSDO).to_vec(),
             DecodeUnsupportedReason::MultistreamSelection,
         ),
-        (
-            obu(OBU_METADATA_SHORT).to_vec(),
-            DecodeUnsupportedReason::UnsupportedOutputEffectObu,
-        ),
-        (obu(0x00).to_vec(), DecodeUnsupportedReason::ReservedObu),
         (
             extended_obu(0x90, 0x20).to_vec(),
             DecodeUnsupportedReason::NonBaseEmbeddedLayer,
         ),
         (
             extended_obu(0x90, 0x01).to_vec(),
+            DecodeUnsupportedReason::NonBaseExtendedLayer,
+        ),
+        (
+            extended_obu(0x91, 0x20).to_vec(),
+            DecodeUnsupportedReason::NonBaseEmbeddedLayer,
+        ),
+        (
+            extended_obu(0x91, 0x01).to_vec(),
             DecodeUnsupportedReason::NonBaseExtendedLayer,
         ),
         (
@@ -704,10 +944,6 @@ fn byte_planner_propagates_unsupported_structures() {
         (
             extended_obu(0x84, 0x1F).to_vec(),
             DecodeUnsupportedReason::InvalidLayerScope,
-        ),
-        (
-            obu(OBU_CLOSED_LOOP_KEY | 0x01).to_vec(),
-            DecodeUnsupportedReason::NonBaseTemporalLayer,
         ),
     ];
 
@@ -820,7 +1056,7 @@ fn plan_bytes_error_signature(
 #[test]
 fn byte_planning_errors_are_deterministic_across_thread_policies() {
     let malformed = [0x01, OBU_TEMPORAL_DELIMITER, 0x05, OBU_CLOSED_LOOP_KEY];
-    let unsupported = obu(OBU_OPEN_LOOP_KEY);
+    let unsupported = obu(OBU_MSDO);
     let limit_options =
         DecodeOptions::new(DecodeLimits::unlimited().with_max_obus(DecodeLimitThreshold::Max(1)));
     let limit = [

@@ -354,6 +354,86 @@ fn compound_average_reads_same_reference_mode_symbol() {
 }
 
 #[test]
+fn same_reference_compound_mode_mapping_is_complete() {
+    for (symbol, expected) in [
+        (COMPOUND_MODE_NEAR_NEARMV, CompoundYMode::NearNear),
+        (COMPOUND_MODE_NEAR_NEWMV, CompoundYMode::NearNew),
+        (
+            COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV,
+            CompoundYMode::GlobalGlobal,
+        ),
+        (COMPOUND_MODE_SAME_REF_NEW_NEWMV, CompoundYMode::NewNew),
+    ] {
+        let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::new();
+        encode_symbol(
+            &mut enc_tile,
+            &mut encoder,
+            TileCdfSelector::CompoundModeSameRefs { ctx: 0 },
+            symbol,
+        );
+        let bytes = encoder.finish().unwrap().into_bytes();
+        let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut symbols = symbol_decoder(&bytes);
+
+        let syntax = read_compound_mode_syntax(
+            &mut dec_tile,
+            &mut symbols,
+            (0, 0),
+            0,
+            0,
+            ByteOffset::new(0),
+        )
+        .unwrap();
+
+        assert_eq!(syntax.y_mode, expected, "symbol {symbol}");
+        assert_eq!([syntax.ref_frame0, syntax.ref_frame1], [0, 0]);
+        assert_eq!([syntax.mv0, syntax.mv1], [Mv::ZERO; 2]);
+        assert!(!syntax.use_optflow);
+        symbols.exit_symbol().unwrap();
+        assert_eq!(
+            enc_tile
+                .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+                .unwrap(),
+            dec_tile
+                .row(TileCdfSelector::CompoundModeSameRefs { ctx: 0 })
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn same_reference_compound_mode_rejects_out_of_range_context() {
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    encode_symbol(
+        &mut enc_tile,
+        &mut encoder,
+        TileCdfSelector::CompoundModeSameRefs { ctx: 0 },
+        COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV,
+    );
+    let bytes = encoder.finish().unwrap().into_bytes();
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes);
+
+    let error = read_compound_mode_syntax(
+        &mut dec_tile,
+        &mut symbols,
+        (0, 0),
+        usize::MAX,
+        0,
+        ByteOffset::new(7),
+    )
+    .unwrap_err();
+
+    let crate::error::DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("out-of-range context must fail as a typed unsupported feature");
+    };
+    assert_eq!(unsupported.reason(), "compound_block_mode_parse");
+    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(7)));
+}
+
+#[test]
 fn compound_average_accepts_joint_mode_without_non_joint_symbol() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();

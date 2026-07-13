@@ -17,6 +17,7 @@ macro_rules! tile_cdf_common_count_rows {
         $rows!(lossless_tx_size.flatten());
         $row!(lossless_inter_tx_type);
         $row!(delta_q);
+        $row!(use_gdf);
         $rows!(cdef_index0);
         $rows!(ccso_blk.flatten());
         $row!(cdef_index_minus1_with3);
@@ -70,7 +71,7 @@ use splot_core::tables::cdf::{
     DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_RECT_TYPE_CDF, DEFAULT_REGION_TYPE_CDF,
     DEFAULT_SEG_ID_EXT_FLAG_CDF, DEFAULT_SEGMENT_ID_CDF, DEFAULT_SEGMENT_ID_EXT_CDF,
     DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
-    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF,
+    DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_USE_GDF_CDF,
 };
 
 use self::block_rows::BlockCdfRows;
@@ -376,6 +377,7 @@ pub(crate) enum TileCdfSelector {
     },
     LosslessInterTxType,
     DeltaQ,
+    UseGdf,
     CdefIndex0 {
         ctx: usize,
     },
@@ -694,6 +696,7 @@ tile_cdf_arrays! {
     TxPartitionTypeReduced => "TileTxPartitionTypeReducedCdf",
     LosslessTxSize => "TileLosslessTxSizeCdf",
     LosslessInterTxType => "TileLosslessInterTxTypeCdf",
+    UseGdf => "TileUseGdfCdf",
     CdefIndex0 => "TileCdefIndex0Cdf",
     CcsoBlk => "TileCcsoBlkCdf",
     CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
@@ -985,6 +988,7 @@ pub(crate) struct TileCdfRows {
     lossless_tx_size: LosslessTxSizeCdfRows,
     lossless_inter_tx_type: LosslessInterTxTypeCdfRow,
     delta_q: DeltaQCdfRow,
+    use_gdf: [i32; CDF_ROW_LEN],
     cdef_index0: CdefIndex0CdfRows,
     ccso_blk: CcsoBlkCdfRows,
     cdef_index_minus1_with3: CdefIndexMinus1With3CdfRow,
@@ -1183,6 +1187,7 @@ macro_rules! tile_cdf_row {
             }
             TileCdfSelector::LosslessInterTxType => Ok($self.lossless_inter_tx_type.$as_slice()),
             TileCdfSelector::DeltaQ => Ok($self.delta_q.$as_slice()),
+            TileCdfSelector::UseGdf => Ok($self.use_gdf.$as_slice()),
             TileCdfSelector::CdefIndex0 { ctx } => {
                 selected_cdf_row!(
                     $self.cdef_index0,
@@ -1321,6 +1326,7 @@ impl TileCdfRows {
             lossless_tx_size: DEFAULT_LOSSLESS_TX_SIZE_CDF,
             lossless_inter_tx_type: DEFAULT_LOSSLESS_INTER_TX_TYPE_CDF,
             delta_q: DEFAULT_DELTA_Q_CDF,
+            use_gdf: DEFAULT_USE_GDF_CDF,
             cdef_index0: DEFAULT_CDEF_INDEX0_CDF,
             ccso_blk: DEFAULT_CCSO_BLK_CDF,
             cdef_index_minus1_with3: DEFAULT_CDEF_INDEX_MINUS1_WITH3_CDF,

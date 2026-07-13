@@ -100,6 +100,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             primary_num4_far,
             availability.above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
+            0, // above_mrl_index
             availability.left,
             bit_depth,
             primary_edge_filter,
@@ -139,6 +140,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             secondary.num4_far,
             availability.above,
             0, // mrl_index: the §7.13.2.7 IBP blend is gated to the immediate edge
+            0, // above_mrl_index
             availability.left,
             bit_depth,
             secondary.edge_filter,

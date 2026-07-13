@@ -3,7 +3,8 @@
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, MvPrecision, TipFrameMode, TxMode, get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, MvPrecision,
+    TipFrameMode, TxMode, get_qindex,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -18,10 +19,11 @@ use splot_recon::{
 };
 
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, ModeContext, MotionMode, MvBlockContext,
-    NeighbourMvGrid, NeighbourYMode, TIP_REF_FRAME, TemporalMotionField, TemporalMvContext,
-    TemporalProjectionConfig, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
-    find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_with_temporal,
+    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, ModeContext, MotionMode,
+    MvBlockContext, NeighbourMvGrid, NeighbourYMode, TIP_REF_FRAME, TemporalMotionField,
+    TemporalMvContext, TemporalProjectionConfig, block_neighbour_ctx,
+    find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
+    find_mv_stack_with_temporal, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -31,8 +33,7 @@ use super::read_mv::{
 use super::{
     BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
     InterResidualBlock, Mv, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, effective_quantizer_deltas_are_zero, mc, unsupported_at,
-    unsupported_compound_at,
+    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc, unsupported_at, unsupported_compound_at,
 };
 use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, BlockSize, CoeffContextReset,
@@ -52,7 +53,7 @@ use crate::filters::wienerns_lr::intrabc_records::{
 };
 use crate::filters::wienerns_lr::tx_records::{
     CdefState, DeltaQState, SelectableLumaTxRecord, ccso::CcsoState,
-    derive_inter_luma_tx_records_for_block,
+    derive_inter_luma_tx_records_for_block, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
@@ -69,6 +70,45 @@ const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
 const WARP_DELTA_NUM_SYMBOLS_HIGH: u8 = 8;
 pub(crate) const WARPEDMODEL_PREC_BITS: u32 = 16;
 const MI_SIZE_LOG2: u32 = 2;
+
+fn global_motion_model(core: &FrameHeaderCore, logical_ref: i8) -> GlobalMotionRef {
+    usize::try_from(logical_ref)
+        .ok()
+        .and_then(|index| {
+            core.inter_tail
+                .as_ref()?
+                .global_motion
+                .references
+                .get(index)
+        })
+        .copied()
+        .unwrap_or_else(GlobalMotionRef::identity)
+}
+
+fn global_motion_mv(
+    core: &FrameHeaderCore,
+    logical_ref: i8,
+    block: &MvBlockContext,
+    precision: u8,
+) -> Mv {
+    warp_predicted_mv(
+        global_motion_model(core, logical_ref).gm_params,
+        block,
+        precision,
+    )
+}
+
+fn global_motion_warp(
+    core: &FrameHeaderCore,
+    logical_ref: i8,
+    force_integer_mv: bool,
+    n4w: usize,
+    n4h: usize,
+) -> Option<[i32; 6]> {
+    let model = global_motion_model(core, logical_ref);
+    (!force_integer_mv && n4w >= 2 && n4h >= 2 && model.gm_type != GmType::Identity)
+        .then_some(model.gm_params)
+}
 pub(crate) const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARP_TRANS_INTEGER_BITS: u32 = 12;
 const WARP_DELTA_STEP_BITS: u32 = 10;
@@ -103,6 +143,7 @@ pub(crate) struct InterFilterInputs {
     pub(crate) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    pub(crate) gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     pub(crate) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -129,7 +170,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-    initial_cdfs: FrameCdfSubset,
+    initial_cdfs: &FrameCdfSubset,
 ) -> Result<(FrameCdfSubset, InterFilterInputs)> {
     let offset = frame_envelope.offset;
     let frame_is_intra = core.frame_is_intra == Some(true);
@@ -251,6 +292,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         temporal_context.reference_order_hints(),
     );
     let mut cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
+    let mut gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
     let mut ccso_state = CcsoState::new(
         mi_rows,
         mi_cols,
@@ -269,10 +311,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     } else {
         transform_tool_residual_policy(sequence)
     };
-    let residual_quantizer_deltas_are_zero = core
-        .quantization_params
-        .as_ref()
-        .is_some_and(|quant| effective_quantizer_deltas_are_zero(sequence, quant));
     let enable_adaptive_mvd = sequence
         .inter
         .as_ref()
@@ -378,6 +416,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                     sequence,
                     core,
                     &mut coeff_ctx,
+                    &mut gdf_state,
                     &mut cdef_state,
                     &mut ccso_state,
                     &mut delta_q_state,
@@ -396,7 +435,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                     max_drl_bits_minus_1,
                     frame_interpolation_filter,
                     residual_tool_policy,
-                    residual_quantizer_deltas_are_zero,
                     num_total_refs,
                     reference_select,
                     num_same_ref_compound,
@@ -485,6 +523,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         chroma_deblock_blocks,
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,
         ccso_grid: ccso_state.into_grid(first_tile_offset)?,
+        gdf_grid: gdf_state.into_grid(first_tile_offset)?,
         lr_source_blocks: active_source_blocks,
         lr_unit_filters: unit_filters,
         tx_skip_records,
@@ -628,6 +667,7 @@ fn decode_block<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     coeff_ctx: &mut TileCoeffContextState,
+    gdf_state: &mut GdfState,
     cdef_state: &mut CdefState,
     ccso_state: &mut CcsoState,
     delta_q_state: &mut DeltaQState,
@@ -646,7 +686,6 @@ fn decode_block<T: ReconSample>(
     max_drl_bits_minus_1: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
     residual_tool_policy: TransformToolResidualPolicy,
-    residual_quantizer_deltas_are_zero: bool,
     num_total_refs: usize,
     reference_select: bool,
     num_same_ref_compound: u8,
@@ -800,10 +839,11 @@ fn decode_block<T: ReconSample>(
         tile_offset,
     )?;
 
-    let is_inter = if core.frame_is_intra == Some(true)
-        || frontier.is_luma_part()
-        || frontier.is_chroma_part()
-    {
+    let is_inter = if leaf_uses_general_intra(
+        core.frame_is_intra == Some(true),
+        frontier.is_luma_part(),
+        frontier.is_chroma_part(),
+    ) {
         0
     } else if skip_mode == 1 || frontier.shared_mixed_chroma_ref_forces_inter() {
         1
@@ -869,6 +909,7 @@ fn decode_block<T: ReconSample>(
                     tile_offset,
                 )?;
             }
+            gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
             cdef_state.read_for_block(
                 work_unit,
                 symbols,
@@ -1010,11 +1051,6 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        ensure_intra_leaf_quantizer_delta_scope(
-            core.frame_is_intra == Some(true),
-            residual_quantizer_deltas_are_zero,
-            tile_offset,
-        )?;
         flush_pending!();
         let leaf = crate::pipeline::general_intra::decode_one_general_intra_block::<T>(
             work_unit,
@@ -1115,6 +1151,7 @@ fn decode_block<T: ReconSample>(
     };
     let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
 
+    gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
     cdef_state.read_for_block(
         work_unit,
         symbols,
@@ -1167,7 +1204,6 @@ fn decode_block<T: ReconSample>(
             sb_h4,
             max_drl_bits_minus_1,
             drl_reorder,
-            residual_quantizer_deltas_are_zero,
             residual_tool_policy,
             block_qindex,
             luma_use_tcq,
@@ -1244,7 +1280,6 @@ fn decode_block<T: ReconSample>(
             drl_reorder,
             temporal_first_frame,
             enable_adaptive_mvd,
-            residual_quantizer_deltas_are_zero,
             residual_tool_policy,
             block_qindex,
             frame_interpolation_filter,
@@ -1293,6 +1328,16 @@ fn decode_block<T: ReconSample>(
         SINGLE_REF_FRAME0
     };
     block_ctx.ref_frame0 = ref_frame0;
+    let global_mv = if tip_ref {
+        Mv::ZERO
+    } else {
+        global_motion_mv(
+            core,
+            ref_frame0,
+            &block_ctx,
+            frame_mv_precision(core, tile_offset)?,
+        )
+    };
     let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
     let force_integer_mv = effective_force_integer_mv(core);
     let warp_mode = if tip_ref {
@@ -1321,7 +1366,8 @@ fn decode_block<T: ReconSample>(
         let stack = find_mv_stack_with_temporal(
             mv_grid,
             &block_ctx,
-            Mv::ZERO,
+            global_mv,
+            global_motion_model(core, ref_frame0).gm_params,
             ref_mv_bank
                 .as_ref()
                 .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
@@ -1385,18 +1431,9 @@ fn decode_block<T: ReconSample>(
                 max_drl_bits_minus_1,
                 tile_offset,
             )?,
-            (WarpInterMode::Warpmv, _) => read_warpmv_delta_syntax(
-                cdfs,
-                symbols,
-                mv_config,
-                frontier.b_size.index(),
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                &stack,
-                tile_offset,
-            )?,
+            (WarpInterMode::Warpmv, _) => {
+                read_warpmv_delta_syntax(cdfs, symbols, mv_config, &block_ctx, &stack, tile_offset)?
+            }
         };
         let warp_inter_intra = if warp_mode == WarpInterMode::Warpmv {
             read_warp_inter_intra_syntax(
@@ -1412,22 +1449,6 @@ fn decode_block<T: ReconSample>(
         };
         let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra, tile_offset)?;
         let residual = if skip == 0 {
-            if !residual_quantizer_deltas_are_zero {
-                return Err(inter_cap!(
-                    "inter_block_residual_quantizer_delta_warp",
-                    tile_offset,
-                    "inter.residual.nonzero_quantizer_delta",
-                    SPEC_MODE_INFO
-                ));
-            }
-            if !inter_residual_geometry_supported(frontier) {
-                return Err(inter_cap!(
-                    "inter_block_chroma_partitioned_residual_warp",
-                    tile_offset,
-                    "inter.residual.chroma_partition_geometry",
-                    SPEC_MODE_INFO
-                ));
-            }
             Some(read_inter_residual(
                 work_unit,
                 symbols,
@@ -1609,6 +1630,11 @@ fn decode_block<T: ReconSample>(
         neighbour_ctx.amvd_ctx(ref_frame0),
         tile_offset,
     )?;
+    let reference_scaled = if tip_ref {
+        false
+    } else {
+        block_reference_is_scaled(core, reference, ref_frame_idx, ref_frame0, tile_offset)?
+    };
     let bawp = if tip_ref {
         BawpSyntax::default()
     } else {
@@ -1617,6 +1643,7 @@ fn decode_block<T: ReconSample>(
             symbols,
             BawpParseInput {
                 allow_bawp,
+                reference_scaled,
                 frame_is_switch,
                 single_mode,
                 use_amvd,
@@ -1671,7 +1698,8 @@ fn decode_block<T: ReconSample>(
     let stack = find_mv_stack_with_temporal(
         mv_grid,
         &block_ctx,
-        Mv::ZERO,
+        global_mv,
+        DEFAULT_WARP_PARAMS,
         ref_mv_bank
             .as_ref()
             .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
@@ -1713,7 +1741,9 @@ fn decode_block<T: ReconSample>(
 
     let pred_mv = stack.candidate(ref_mv_idx);
     let mv = match single_mode {
-        SINGLE_MODE_GLOBALMV => Mv::ZERO,
+        SINGLE_MODE_GLOBALMV => {
+            global_motion_mv(core, ref_frame0, &block_ctx, precision.mv_precision)
+        }
         SINGLE_MODE_NEARMV => pred_mv,
         _ => {
             let config = MvReadConfig::inter(precision.mv_precision);
@@ -1749,7 +1779,6 @@ fn decode_block<T: ReconSample>(
             }
         }
     };
-
     let interp = if tip_ref {
         ReconInterpolationFilter::EightTapSharp
     } else {
@@ -1764,22 +1793,6 @@ fn decode_block<T: ReconSample>(
         )?
     };
     let residual = if skip == 0 {
-        if !residual_quantizer_deltas_are_zero {
-            return Err(inter_cap!(
-                "inter_block_residual_quantizer_delta",
-                tile_offset,
-                "inter.residual.nonzero_quantizer_delta",
-                SPEC_MODE_INFO
-            ));
-        }
-        if !inter_residual_geometry_supported(frontier) {
-            return Err(inter_cap!(
-                "inter_block_chroma_partitioned_residual",
-                tile_offset,
-                "inter.residual.chroma_partition_geometry",
-                SPEC_MODE_INFO
-            ));
-        }
         Some(read_inter_residual(
             work_unit,
             symbols,
@@ -1829,6 +1842,14 @@ fn decode_block<T: ReconSample>(
     } else {
         NeighbourYMode::Other
     };
+    let warp_params = if !tip_ref && single_mode == SINGLE_MODE_GLOBALMV {
+        [
+            global_motion_warp(core, ref_frame0, force_integer_mv, n4w, n4h),
+            None,
+        ]
+    } else {
+        [None, None]
+    };
     if tip_ref {
         mv_grid.record_tip_block(
             mi_row,
@@ -1841,6 +1862,21 @@ fn decode_block<T: ReconSample>(
             interp_filter_symbol(interp),
             use_amvd,
             tip_uses_16x16_units,
+            precision,
+        );
+    } else if let Some(params) = warp_params[0] {
+        mv_grid.record_global_block(
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            ref_frame0,
+            y_mode,
+            mv,
+            skip == 1,
+            interp_filter_symbol(interp),
+            use_amvd,
+            params,
             precision,
         );
     } else {
@@ -1876,7 +1912,7 @@ fn decode_block<T: ReconSample>(
             None,
             mv,
             Mv::ZERO,
-            [None, None],
+            warp_params,
         );
     }
     if let Some(bank) = ref_mv_bank.as_mut() {
@@ -1915,7 +1951,7 @@ fn decode_block<T: ReconSample>(
         mv,
         mv1: Mv::ZERO,
         interp,
-        warp_params: [None, None],
+        warp_params,
         bawp,
         interintra,
         compound_blend: mc::CompoundBlend::default(),
@@ -2026,13 +2062,6 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
             prediction.target,
             prediction.scaling,
         )?;
-    } else if prediction.source.size() != prediction.target.size() {
-        return Err(inter_cap!(
-            "inter_intrabc_fractional_predictor",
-            tile_offset,
-            "inter.intrabc.fractional_predictor",
-            SPEC_MODE_INFO
-        ));
     } else {
         workspace
             .copy_rect_within_plane(ReconPlaneId::Y, prediction.source, prediction.target)
@@ -2076,6 +2105,14 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
         prediction
     };
     let luma = chroma_prediction.target;
+    let frame_size = core.frame_size.ok_or_else(|| {
+        inter_missing!(
+            "inter_intrabc_missing_frame_size",
+            tile_offset,
+            "inter.intrabc.frame_size",
+            SPEC_MODE_INFO
+        )
+    })?;
     for plane in [ReconPlaneId::U, ReconPlaneId::V] {
         let (cx, cy) = (luma.x() >> sub_x, luma.y() >> sub_y);
         let (cw, ch) = (luma.width() >> sub_x, luma.height() >> sub_y);
@@ -2089,10 +2126,10 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
             info.block_mv.col,
             sub_x,
             sub_y,
-            chroma_prediction.ref_mi_cols,
-            chroma_prediction.ref_mi_rows,
-            cw as i32,
-            ch as i32,
+            frame_size.width as i32,
+            frame_size.height as i32,
+            frame_size.width as i32,
+            frame_size.height as i32,
         );
         let target = splot_recon::PlaneRect::new(cx, cy, cw, ch).map_err(|_| {
             inter_cap!(
@@ -2111,12 +2148,12 @@ pub(crate) fn is_comp_ref_allowed(n4w: usize, n4h: usize) -> bool {
     n4w.min(n4h) >= 2 || (n4w == 1 && n4h >= 4) || (n4h == 1 && n4w >= 4)
 }
 
-fn inter_residual_geometry_supported(frontier: &DecodeBlockFrontier) -> bool {
-    inter_residual_geometry_supported_flags(frontier.is_luma_part(), frontier.is_chroma_part())
-}
-
-const fn inter_residual_geometry_supported_flags(is_luma_part: bool, is_chroma_part: bool) -> bool {
-    !is_luma_part && !is_chroma_part
+const fn leaf_uses_general_intra(
+    frame_is_intra: bool,
+    is_luma_part: bool,
+    is_chroma_part: bool,
+) -> bool {
+    frame_is_intra || is_luma_part || is_chroma_part
 }
 
 fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
@@ -2268,6 +2305,7 @@ fn read_inter_intra_syntax_enabled(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BawpParseInput {
     allow_bawp: bool,
+    reference_scaled: bool,
     frame_is_switch: bool,
     single_mode: u8,
     use_amvd: bool,
@@ -2283,6 +2321,7 @@ fn read_bawp_syntax(
     tile_offset: ByteOffset,
 ) -> Result<BawpSyntax> {
     if !input.allow_bawp
+        || input.reference_scaled
         || input.frame_is_switch
         || input.single_mode == SINGLE_MODE_GLOBALMV
         || input.n4w < 2
@@ -2330,6 +2369,65 @@ fn read_bawp_syntax(
     })
 }
 
+fn block_reference_is_scaled<T: ReconSample>(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<'_, T>,
+    ref_frame_idx: &[u32],
+    ref_frame: i8,
+    tile_offset: ByteOffset,
+) -> Result<bool> {
+    let frame_size = core.frame_size.ok_or_else(|| {
+        inter_missing!(
+            "inter_block_missing_frame_size",
+            tile_offset,
+            "inter.frame_size",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let slot = usize::try_from(ref_frame)
+        .ok()
+        .and_then(|index| ref_frame_idx.get(index))
+        .and_then(|&slot| usize::try_from(slot).ok())
+        .ok_or_else(|| {
+            inter_missing!(
+                "inter_block_missing_reference_slot",
+                tile_offset,
+                "inter.reference_slot",
+                SPEC_MODE_INFO
+            )
+        })?;
+    let width = reference
+        .ref_frame_width
+        .get(slot)
+        .copied()
+        .ok_or_else(|| {
+            inter_missing!(
+                "inter_block_missing_reference_width",
+                tile_offset,
+                "inter.reference_width",
+                SPEC_MODE_INFO
+            )
+        })?;
+    let height = reference
+        .ref_frame_height
+        .get(slot)
+        .copied()
+        .ok_or_else(|| {
+            inter_missing!(
+                "inter_block_missing_reference_height",
+                tile_offset,
+                "inter.reference_height",
+                SPEC_MODE_INFO
+            )
+        })?;
+    Ok(super::mv_scaling::reference_is_scaled(
+        width as i32,
+        height as i32,
+        frame_size.width as i32,
+        frame_size.height as i32,
+    ))
+}
+
 fn explicit_bawp_context(single_mode: u8, use_amvd: bool) -> usize {
     if single_mode == SINGLE_MODE_NEARMV {
         0
@@ -2351,22 +2449,6 @@ fn symbol_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
         "inter.block.mode_info_symbols",
         SPEC_MODE_INFO
     )
-}
-
-fn ensure_intra_leaf_quantizer_delta_scope(
-    frame_is_intra: bool,
-    residual_quantizer_deltas_are_zero: bool,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if !frame_is_intra && !residual_quantizer_deltas_are_zero {
-        return Err(inter_cap!(
-            "inter_block_intra_leaf_nonzero_quantizer_delta",
-            tile_offset,
-            "inter.residual.nonzero_quantizer_delta",
-            SPEC_MODE_INFO
-        ));
-    }
-    Ok(())
 }
 
 fn map_inter_multiblock_error(

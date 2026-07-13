@@ -323,6 +323,22 @@ mod tests {
     }
 
     #[test]
+    fn ten_bit_normalization_matches_eight_bit_deltas() {
+        let left: Vec<u16> = (0..8)
+            .flat_map(|_| (0..8).map(|column| 100 + column))
+            .collect();
+        let right = vec![100; 8 * 8];
+        let left_10bit: Vec<u16> = left.iter().map(|sample| sample * 4).collect();
+        let right_10bit: Vec<u16> = right.iter().map(|sample| sample * 4).collect();
+
+        assert_eq!(
+            derive_optflow_mv_deltas(&left_10bit, &right_10bit, 8, 8, 8, BitDepth::Ten, [1, -1],)
+                .unwrap(),
+            derive_optflow_mv_deltas(&left, &right, 8, 8, 8, BitDepth::Eight, [1, -1]).unwrap(),
+        );
+    }
+
+    #[test]
     fn zero_distance_disables_refinement() {
         let left = vec![0; 8 * 8];
         let right = vec![255; 8 * 8];

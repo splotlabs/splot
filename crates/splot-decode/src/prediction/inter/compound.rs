@@ -12,6 +12,7 @@ const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
 const COMPOUND_MODE_NEAR_NEWMV: u8 = 1;
 const COMPOUND_MODE_NEW_NEARMV: u8 = 2;
 const COMPOUND_MODE_GLOBAL_GLOBALMV: u8 = 3;
+const COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV: u8 = 2;
 const COMPOUND_MODE_SAME_REF_NEW_NEWMV: u8 = 3;
 const COMPOUND_MODE_NEW_NEWMV: u8 = 4;
 const RANKED_REF0_TO_PRUNE: usize = 3;
@@ -236,15 +237,9 @@ pub(crate) fn read_compound_mode_syntax(
         let y_mode = match compound_mode {
             COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
             1 => CompoundYMode::NearNew,
+            COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
             COMPOUND_MODE_SAME_REF_NEW_NEWMV => CompoundYMode::NewNew,
-            _ => {
-                return Err(compound_cap!(
-                    "compound_block_unsupported_same_ref_mode",
-                    tile_offset,
-                    "inter.compound.same_ref_mode not in {NEAR_NEARMV, NEAR_NEWMV, NEW_NEWMV}",
-                    SPEC_INTER_BLOCK_MODE_INFO
-                ));
-            }
+            _ => return Err(compound_symbol_read_error(tile_offset)),
         };
         return Ok(CompoundBlockSyntax {
             y_mode,

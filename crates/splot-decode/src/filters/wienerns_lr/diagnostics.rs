@@ -34,6 +34,11 @@ pub(crate) fn wienerns_lr_selectable_transform_record_error_reason(
             "Per-block §5.20.10.2 CCSO ccso_blk parsing hit an internal CCSO-grid inconsistency; decoded samples, loop-restoration filtering/output, and reference refresh are unsupported",
             "5.20.10.2",
         ),
+        "unsupported_wienerns_lr_selectable_transform_records_gdf_grid"
+        | "unsupported_wienerns_lr_selectable_transform_records_gdf_symbol" => (
+            "Per-block §5.20.10.3 GDF use_gdf parsing hit an invalid symbol or GDF-grid state",
+            "5.20.10.3",
+        ),
         _ => (
             "TX_MODE_SELECT LrTxSkip handoff reached a selectable transform-record subcase outside the supported non-FSC intra subset; decoded samples, FilterClass retention, filtering, output, and reference refresh are unsupported",
             "5.20.6.1",

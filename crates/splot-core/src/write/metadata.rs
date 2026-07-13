@@ -601,7 +601,7 @@ fn check_unit_type_and_size(unit: &MetadataUnit) -> WriteResult<()> {
 }
 
 /// Returns `true` if `metadata_type` selects `payload`'s variant (AV2 § 6.16, Table 6.17).
-fn type_matches_payload(metadata_type: MetadataType, payload: &MetadataPayload) -> bool {
+pub const fn type_matches_payload(metadata_type: MetadataType, payload: &MetadataPayload) -> bool {
     matches!(
         (metadata_type, payload),
         (MetadataType::HdrCll, MetadataPayload::HdrCll(_))

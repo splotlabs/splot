@@ -20,6 +20,7 @@ use crate::filters::cdef::CdefUnitGrid;
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
 pub(crate) mod ccso;
+pub(crate) mod gdf;
 
 const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;

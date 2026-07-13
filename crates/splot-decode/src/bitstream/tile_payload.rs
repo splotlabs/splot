@@ -64,9 +64,10 @@ pub(crate) use general_intra_block::{
 };
 pub(crate) use general_intra_residual::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, FrameQmScope, FrameQmSegmentScope,
-    FrameQuantizerDeltasScope, FrameQuantizerSnapshot, GeneralIntraResidualError, IntraIstSyntax,
-    LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformTypeContext,
-    PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
+    FrameQuantizerDeltasScope, FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels,
+    FrameUserQmScope, GeneralIntraResidualError, IntraIstSyntax, LumaCoeffBlock,
+    LumaTransformPartitionContext, LumaTransformTypeContext, PositionedLumaCoeffBlock,
+    TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_with_prediction,
@@ -217,10 +218,7 @@ impl<'a> TileGridFacts<'a> {
 pub(crate) struct TileFrameFacts {
     obu_type: ObuType,
     is_frame_intra: bool,
-    is_complete_intra_first_tile_group: bool,
     is_last_tile_group: bool,
-    is_bridge: bool,
-    bru_path: TileBruPath,
     base_q_idx: u32,
     coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
@@ -229,25 +227,18 @@ pub(crate) struct TileFrameFacts {
 }
 
 impl TileFrameFacts {
-    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     #[must_use]
     pub(crate) const fn new(
         obu_type: ObuType,
         is_frame_intra: bool,
-        is_complete_intra_first_tile_group: bool,
         is_last_tile_group: bool,
-        is_bridge: bool,
-        bru_path: TileBruPath,
         base_q_idx: u32,
         disable_cdf_update: bool,
     ) -> Self {
         Self {
             obu_type,
             is_frame_intra,
-            is_complete_intra_first_tile_group,
             is_last_tile_group,
-            is_bridge,
-            bru_path,
             base_q_idx,
             coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
@@ -402,13 +393,6 @@ impl TileCoeffFrameFacts {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TileBruPath {
-    NotUsed,
-    Active,
-    Inactive,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTilePayloadPlan<'a> {
     source: TilePayloadSource,
@@ -447,6 +431,25 @@ impl<'a> DecodeTilePayloadPlan<'a> {
     pub(crate) const fn frame_end(&self) -> FrameEndBoundary {
         self.frame_end
     }
+
+    pub(crate) fn append_continuation(
+        &mut self,
+        mut continuation: DecodeTilePayloadPlan<'a>,
+    ) -> Result<(), TilePayloadBoundaryError> {
+        let expected = self
+            .work_units
+            .last()
+            .and_then(|tile| tile.tile_num.checked_add(1));
+        let actual = continuation.work_units.first().map(|tile| tile.tile_num);
+        if self.frame_end.reaches_last_tile_group || expected != actual {
+            return Err(TilePayloadBoundaryError::Malformed(
+                TilePayloadMalformed::NonContiguousTileGroups { expected, actual },
+            ));
+        }
+        self.work_units.append(&mut continuation.work_units);
+        self.frame_end = continuation.frame_end;
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -463,7 +466,6 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
     tile_size: u64,
     current_q_index_at_entry: u32,
     coeff_frame_facts: TileCoeffFrameFacts,
-    bru_path: TileBruPath,
     symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
 }
@@ -607,24 +609,16 @@ impl FrameEndBoundary {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePayloadUnsupportedReason {
     DecodeTileSyntax,
-    MissingCompleteIntraFirstTileGroup,
     MissingTileFramingRecords,
-    MultipleTileGroups,
     NonClosedLoopKey,
     NonIntraFrame,
-    BridgeTile,
-    BruTileActivity,
 }
 
 crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
     DecodeTileSyntax => "decode_tile_syntax",
-    MissingCompleteIntraFirstTileGroup => "missing_complete_intra_first_tile_group",
     MissingTileFramingRecords => "missing_tile_framing_records",
-    MultipleTileGroups => "multiple_tile_groups",
     NonClosedLoopKey => "non_closed_loop_key",
     NonIntraFrame => "non_intra_frame",
-    BridgeTile => "bridge_tile",
-    BruTileActivity => "bru_tile_activity",
 });
 
 impl TilePayloadUnsupportedReason {
@@ -632,11 +626,7 @@ impl TilePayloadUnsupportedReason {
     pub(crate) const fn spec_section(self) -> &'static str {
         match self {
             Self::DecodeTileSyntax => "5.20.2.1",
-            Self::MissingCompleteIntraFirstTileGroup
-            | Self::MissingTileFramingRecords
-            | Self::MultipleTileGroups
-            | Self::BridgeTile
-            | Self::BruTileActivity => "5.20.1",
+            Self::MissingTileFramingRecords => "5.20.1",
             Self::NonClosedLoopKey | Self::NonIntraFrame => "7.1",
         }
     }
@@ -725,6 +715,10 @@ pub(crate) enum TilePayloadMalformed {
     InvalidTileGrid {
         tile_num: u32,
     },
+    NonContiguousTileGroups {
+        expected: Option<u32>,
+        actual: Option<u32>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -759,6 +753,10 @@ impl fmt::Display for TilePayloadMalformed {
             Self::InvalidTileGrid { tile_num } => {
                 write!(f, "tile grid facts do not cover framed tile {tile_num}")
             }
+            Self::NonContiguousTileGroups { expected, actual } => write!(
+                f,
+                "tile-group continuation starts at {actual:?}, expected {expected:?}"
+            ),
         }
     }
 }
@@ -803,50 +801,36 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             TilePayloadMalformed::FramingDefect(defect),
         ));
     }
-    if input.frame.is_bridge {
-        return Err(unsupported_boundary_without_tile(
-            TilePayloadUnsupportedReason::BridgeTile,
-            input.payload_base,
-            "bridge tile payload behavior is outside the current tile payload boundary tier.",
-        ));
-    }
     match (input.frame.obu_type, input.frame.is_frame_intra) {
-        (ObuType::ClosedLoopKey, true) | (ObuType::RegularTileGroup, false) => {}
-        (ObuType::RegularTileGroup, true) | (_, false) => {
+        (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, true)
+        | (
+            ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup
+            | ObuType::Switch
+            | ObuType::RasFrame,
+            false,
+        ) => {}
+        (
+            ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup
+            | ObuType::Switch
+            | ObuType::RasFrame,
+            true,
+        )
+        | (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, false) => {
             return Err(unsupported_boundary_without_tile(
                 TilePayloadUnsupportedReason::NonIntraFrame,
                 input.payload_base,
-                "inter-only tile payload behavior is outside the current tile payload boundary tier.",
+                "the tile payload frame type does not match the OBU frame family.",
             ));
         }
         _ => {
             return Err(unsupported_boundary_without_tile(
                 TilePayloadUnsupportedReason::NonClosedLoopKey,
                 input.payload_base,
-                "only OBU_CLOSED_LOOP_KEY (intra) or OBU_REGULAR_TILE_GROUP (inter) is inside the current tile payload boundary tier.",
+                "the OBU type is not a supported intra or inter tile-group frame.",
             ));
         }
-    }
-    if !input.frame.is_complete_intra_first_tile_group {
-        return Err(unsupported_boundary_without_tile(
-            TilePayloadUnsupportedReason::MissingCompleteIntraFirstTileGroup,
-            input.payload_base,
-            "tile payload planning requires a complete first tile group.",
-        ));
-    }
-    if !input.frame.is_last_tile_group {
-        return Err(unsupported_boundary_without_tile(
-            TilePayloadUnsupportedReason::MultipleTileGroups,
-            input.payload_base,
-            "multiple tile groups are outside the current tile payload boundary tier.",
-        ));
-    }
-    if input.frame.bru_path != TileBruPath::NotUsed {
-        return Err(unsupported_boundary_without_tile(
-            TilePayloadUnsupportedReason::BruTileActivity,
-            input.payload_base,
-            "BRU tile activity is outside the current tile payload boundary tier.",
-        ));
     }
     if input.framing.tiles.is_empty() {
         return Err(unsupported_boundary_without_tile(
@@ -904,7 +888,6 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             tile_size: tile.tile_size,
             current_q_index_at_entry: input.frame.base_q_idx,
             coeff_frame_facts: input.frame.coeff_frame_facts,
-            bru_path: input.frame.bru_path,
             symbol,
             cdf,
         });

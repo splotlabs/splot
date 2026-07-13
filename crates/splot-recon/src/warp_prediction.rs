@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! AV2 § 7.13.3.19 block-warp prediction kernel.
+//! AV2 § 7.13.3.19 block-warp and § 7.13.3.20 extended-warp prediction kernels.
 //!
 //! This module implements the narrow source-backed single-reference block-warp
 //! predictor used after the caller has already decoded `IsWarp` / `WarpMv` and
-//! derived the six affine warp parameters. It owns only the § 7.13.3.19 8x8
-//! convolution and the § 7.13.3.21 setup-shear check; model derivation, motion
-//! mode selection, `SubMvs` storage, compound blending, extended warp, scaled
-//! reference fallback, and decode entropy remain caller responsibilities.
+//! derived the six affine warp parameters. It owns the § 7.13.3.19 8x8
+//! convolution, the scaled and unscaled § 7.13.3.20 extended-warp paths, and
+//! the § 7.13.3.21 setup-shear check; model derivation, motion mode selection,
+//! `SubMvs` storage, compound blending, and decode entropy remain caller
+//! responsibilities.
 //!
 //! Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER`,
 //! `DECODE-INTER-COMPOUND-LOCALWARP`.
@@ -18,7 +19,6 @@ use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
 use crate::intra_dc_math::resolve_divisor_32;
-#[cfg(test)]
 use crate::math::round2;
 use crate::math::{round2_i32, round2_signed, round2_signed_i32};
 use crate::subpel_mc::ReferencePlaneView;
@@ -27,6 +27,8 @@ use crate::subpel_mc::ReferencePlaneView;
 pub const WARPED_BLOCK_SIZE: usize = 8;
 
 const WARPEDMODEL_PREC_BITS: u32 = 16;
+const REF_SCALE_SHIFT: u32 = 14;
+const SCALE_SUBPEL_BITS: u32 = 10;
 const WARPEDDIFF_PREC_BITS: u32 = 10;
 const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARPEDPIXEL_PREC_SHIFTS: i32 = 1 << 6;
@@ -66,6 +68,10 @@ pub struct WarpPredictBlockParams {
     /// Plane vertical chroma subsampling (`subY`): `0` for luma, otherwise the
     /// sequence `SubsamplingY` value.
     pub subsampling_y: u8,
+    /// Horizontal reference-to-current scale in `REF_SCALE_SHIFT` precision.
+    pub reference_scale_x: i32,
+    /// Vertical reference-to-current scale in `REF_SCALE_SHIFT` precision.
+    pub reference_scale_y: i32,
     /// Inclusive left reference-sampling bound (`firstX`).
     pub first_x: i32,
     /// Inclusive top reference-sampling bound (`firstY`).
@@ -91,7 +97,7 @@ pub fn warp_shear_is_valid(warp_params: [i32; 6]) -> bool {
     setup_shear(warp_params).is_ok()
 }
 
-/// AV2 § 7.13.3.20 extended block warp (unscaled arm): predicts one 4x4 unit
+/// AV2 § 7.13.3.20 extended block warp: predicts one 4x4 unit
 /// at `(j4, i4)` (in 4-sample units relative to the block's plane top-left) by
 /// projecting the unit centre through the warp model and running the fixed-
 /// phase `Ext_Warped_Filters` two-pass interpolation over the clipped
@@ -137,8 +143,39 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
         src_y,
         "extended-warp projected y",
     )?;
-    let x4 = dst_x >> sub_x;
-    let y4 = dst_y >> sub_y;
+    let mut x4 = dst_x >> sub_x;
+    let mut y4 = dst_y >> sub_y;
+    if params.reference_scale_x != 1 << REF_SCALE_SHIFT
+        || params.reference_scale_y != 1 << REF_SCALE_SHIFT
+    {
+        let scaled_coordinate =
+            |coordinate: i64, scale: i32, context: &'static str| -> Result<i64> {
+                let coordinate = coordinate
+                    .checked_sub(2 << WARPEDMODEL_PREC_BITS)
+                    .and_then(|value| value.checked_mul(i64::from(scale)))
+                    .ok_or(ReconError::ArithmeticOverflow { context })?;
+                Ok(round2_signed(coordinate, REF_SCALE_SHIFT))
+            };
+        x4 = scaled_coordinate(
+            x4,
+            params.reference_scale_x,
+            "scaled extended-warp projected x",
+        )?;
+        y4 = scaled_coordinate(
+            y4,
+            params.reference_scale_y,
+            "scaled extended-warp projected y",
+        )?;
+        let step_x = i64::from(round2_signed_i32(
+            params.reference_scale_x,
+            REF_SCALE_SHIFT - SCALE_SUBPEL_BITS,
+        )) << (WARPEDMODEL_PREC_BITS - SCALE_SUBPEL_BITS);
+        let step_y = i64::from(round2_signed_i32(
+            params.reference_scale_y,
+            REF_SCALE_SHIFT - SCALE_SUBPEL_BITS,
+        )) << (WARPEDMODEL_PREC_BITS - SCALE_SUBPEL_BITS);
+        return ext_warp_predict_scaled(reference, params, x4, y4, step_x, step_y, round1);
+    }
     let ix4 =
         i32::try_from(x4 >> WARPEDMODEL_PREC_BITS).map_err(|_| ReconError::ArithmeticOverflow {
             context: "extended-warp projected x",
@@ -184,6 +221,77 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
         }
     }
     Ok(output)
+}
+
+fn ext_warp_predict_scaled<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    x4: i64,
+    y4: i64,
+    step_x: i64,
+    step_y: i64,
+    round1: u32,
+) -> Result<[i32; 16]> {
+    let phase = |s: i64| -> Result<&'static [i32; EXT_WARP_TAPS]> {
+        let offs = round2(s, EXT_WARP_ROUND_BITS);
+        let offset = i32::try_from(offs).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "scaled extended-warp filter offset",
+        })?;
+        usize::try_from(offset)
+            .ok()
+            .and_then(|offs| EXT_WARPED_FILTERS.get(offs))
+            .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset })
+    };
+    let fetch = |row: i64, col: i64| -> i64 {
+        let rr = row.clamp(i64::from(params.first_y), i64::from(params.last_y));
+        let cc = col.clamp(i64::from(params.first_x), i64::from(params.last_x));
+        i64::from(reference.sample(rr as usize, cc as usize))
+    };
+    let iy4 = y4 >> WARPEDMODEL_PREC_BITS;
+    let intermediate_height =
+        ((y4 + step_y * 3) >> WARPEDMODEL_PREC_BITS) - iy4 + EXT_WARP_TAPS as i64;
+    let intermediate_height =
+        usize::try_from(intermediate_height).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "scaled extended-warp intermediate height",
+        })?;
+    let mut intermediate = vec![0i64; intermediate_height.saturating_mul(4)];
+    for k in 0..intermediate_height {
+        for l in 0..4 {
+            let sample_x = x4 + step_x * l as i64;
+            let int_x = sample_x >> WARPEDMODEL_PREC_BITS;
+            let taps_x = phase(sample_x & ((1 << WARPEDMODEL_PREC_BITS) - 1))?;
+            let int_y = iy4 + k as i64 - 2;
+            let mut sum = 0i64;
+            for (m, &tap) in taps_x.iter().enumerate() {
+                sum += i64::from(tap) * fetch(int_y, int_x - 2 + m as i64);
+            }
+            intermediate[k * 4 + l] = round2(sum, INTER_ROUND0);
+        }
+    }
+    let mut out = [0i32; 16];
+    for l in 0..4 {
+        for k in 0..4 {
+            let sample_y = y4 + step_y * k as i64;
+            let row = usize::try_from((sample_y >> WARPEDMODEL_PREC_BITS) - iy4).map_err(|_| {
+                ReconError::ArithmeticOverflow {
+                    context: "scaled extended-warp intermediate row",
+                }
+            })?;
+            let taps_y = phase(sample_y & ((1 << WARPEDMODEL_PREC_BITS) - 1))?;
+            let mut sum = 0i64;
+            for (m, &tap) in taps_y.iter().enumerate() {
+                let value =
+                    intermediate
+                        .get((row + m) * 4 + l)
+                        .ok_or(ReconError::ArithmeticOverflow {
+                            context: "scaled extended-warp intermediate access",
+                        })?;
+                sum += i64::from(tap) * value;
+            }
+            out[k * 4 + l] = round2(sum, round1) as i32;
+        }
+    }
+    Ok(out)
 }
 
 /// prediction section and returns row-major samples after the final `Clip1`.
@@ -249,6 +357,11 @@ fn validate_params(params: &WarpPredictBlockParams) -> Result<()> {
         return Err(ReconError::WarpSubsamplingUnsupported {
             subsampling_x: params.subsampling_x,
             subsampling_y: params.subsampling_y,
+        });
+    }
+    if params.reference_scale_x <= 0 || params.reference_scale_y <= 0 {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "block-warp reference scale",
         });
     }
     if params.first_x < 0
@@ -563,6 +676,8 @@ mod tests {
             block_y,
             subsampling_x: 0,
             subsampling_y: 0,
+            reference_scale_x: 1 << REF_SCALE_SHIFT,
+            reference_scale_y: 1 << REF_SCALE_SHIFT,
             first_x: 0,
             first_y: 0,
             last_x: ref_w - 1,
@@ -744,6 +859,24 @@ mod tests {
         let params = default_params(8, 12, ref_w as i32, ref_h as i32);
         let out = ext_warp_predict_unit(&view, &params, 0, 0, true).unwrap();
         assert_eq!(out, [16 * 77i32; 16]);
+    }
+
+    #[test]
+    fn scaled_ext_warp_identity_samples_the_reference_at_scaled_steps() {
+        let (ref_w, ref_h) = (16usize, 16usize);
+        let samples = (0..ref_h)
+            .flat_map(|row| (0..ref_w).map(move |col| (row * ref_w + col) as u16))
+            .collect::<Vec<_>>();
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
+        params.reference_scale_x = 2 << REF_SCALE_SHIFT;
+        params.reference_scale_y = 2 << REF_SCALE_SHIFT;
+
+        let out = ext_warp_predict_unit(&view, &params, 0, 0, false).unwrap();
+        assert_eq!(
+            out,
+            [0, 2, 4, 6, 32, 34, 36, 38, 64, 66, 68, 70, 96, 98, 100, 102]
+        );
     }
 
     #[test]

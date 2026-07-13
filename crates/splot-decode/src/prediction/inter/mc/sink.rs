@@ -16,7 +16,7 @@ use splot_recon::{
     ReconError, ReconSample, WorkspaceRectRows,
 };
 
-use super::McBlockRect;
+use super::{McBlockRect, mc_planes};
 use crate::Result;
 
 #[derive(Debug)]
@@ -34,8 +34,7 @@ pub(crate) struct BlockReconWindow<T: ReconSample> {
     planes: [Option<WindowPlane<T>>; 3],
 }
 
-const WINDOW_PLANES: [(PlaneId, u32, u32); 3] =
-    [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
+const PLANE_IDS: [PlaneId; 3] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 impl<T: ReconSample> BlockReconWindow<T> {
     /// Builds a window covering the block's per-plane rects, clamped to the
@@ -49,7 +48,7 @@ impl<T: ReconSample> BlockReconWindow<T> {
     ) -> splot_recon::Result<Self> {
         let info = workspace.info();
         let mut planes = [None, None, None];
-        for (plane, sub_x, sub_y) in WINDOW_PLANES {
+        for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
             let Ok(workspace_plane) = workspace.plane(plane) else {
                 continue;
             };
@@ -85,7 +84,7 @@ impl<T: ReconSample> BlockReconWindow<T> {
     /// # Errors
     /// Propagates workspace write errors.
     pub(crate) fn publish(&self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
-        for (plane, _, _) in WINDOW_PLANES {
+        for plane in PLANE_IDS {
             let Some(window_plane) = &self.planes[plane.index()] else {
                 continue;
             };

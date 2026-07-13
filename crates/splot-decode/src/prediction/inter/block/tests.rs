@@ -5,19 +5,8 @@
 
 use splot_core::span::ByteOffset;
 
-use super::{inter_residual_geometry_supported_flags, validate_intra_segment_id};
+use super::validate_intra_segment_id;
 use crate::error::DecodeError;
-
-#[test]
-fn inter_residual_geometry_allows_shared_leaves() {
-    assert!(inter_residual_geometry_supported_flags(false, false));
-}
-
-#[test]
-fn inter_residual_geometry_rejects_chroma_partitioned_leaves() {
-    assert!(!inter_residual_geometry_supported_flags(true, false));
-    assert!(!inter_residual_geometry_supported_flags(false, true));
-}
 
 #[test]
 fn intra_segment_id_validation_accepts_last_active_segment() {

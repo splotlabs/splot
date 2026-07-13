@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use crate::bitstream::tile_payload::SupportedChromaMode;
 
 impl IntraEdgeAvailability {
     const fn all() -> Self {
@@ -395,6 +396,38 @@ fn zone1_above_edge_uses_first_above_sample_as_corner_at_first_column() {
 }
 
 #[test]
+fn zone1_above_edge_does_not_read_corner_across_tile_boundary() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(32, 16, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    ws.set_reconstructed_sample(PlaneId::Y, 7, 7, 200).unwrap();
+    for col in 8..24 {
+        ws.set_reconstructed_sample(PlaneId::Y, col, 7, 20 + col as u8)
+            .unwrap();
+    }
+
+    let edge = build_one_sided_above_idif_edge(
+        &ws,
+        PlaneId::Y,
+        8,
+        8,
+        4,
+        4,
+        1,
+        0,
+        0,
+        IntraEdgeAvailability {
+            above: true,
+            left: false,
+        },
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    assert_eq!(&edge[..4], &[28, 28, 28, 29]);
+}
+
+#[test]
 fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
     let mut ws =
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
@@ -441,6 +474,122 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
             );
         }
     }
+}
+
+#[test]
+fn cardinal_mrl_synthesizes_both_missing_edges() {
+    for (direction, expected) in [
+        (IntraCardinalDirection::Vertical, 127),
+        (IntraCardinalDirection::Horizontal, 129),
+    ] {
+        let mut ws =
+            new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420)
+                .unwrap();
+        reconstruct_general_intra_cardinal_mrl_luma_block_into(
+            &mut ws,
+            &all_zero_luma_block(),
+            direction,
+            0,
+            0,
+            2,
+            2,
+            0,
+            3,
+            0,
+            false,
+            false,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            BitDepth::Eight,
+        )
+        .unwrap();
+
+        for row in 0..4 {
+            for col in 0..4 {
+                assert_eq!(
+                    ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(),
+                    expected,
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn zone3_mrl_without_left_uses_above_mrl_row() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    lay_above_row(&mut ws, 7, 4, &[201; 16]);
+    ws.set_reconstructed_sample(PlaneId::Y, 0, 5, 73).unwrap();
+
+    reconstruct_general_intra_one_sided_left_neighbour_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        203,
+        PlaneId::Y,
+        0,
+        8,
+        2,
+        2,
+        0,
+        0,
+        true,
+        1,
+        2,
+        false,
+        None,
+        None,
+        IntraEdgeAvailability {
+            above: true,
+            left: false,
+        },
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    for row in 8..12 {
+        for col in 0..4 {
+            assert_eq!(ws.reconstructed_sample(PlaneId::Y, col, row).unwrap(), 73,);
+        }
+    }
+}
+
+#[test]
+fn zone2_mrl_synthesizes_both_missing_edges() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_two_sided_middle_luma_mrl_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        135,
+        0,
+        0,
+        2,
+        2,
+        0,
+        3,
+        0,
+        true,
+        false,
+        false,
+        None,
+        MiddleEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let actual: Vec<u8> = (0..4)
+        .flat_map(|row| (0..4).map(move |col| (row, col)))
+        .map(|(row, col)| ws.reconstructed_sample(PlaneId::Y, col, row).unwrap())
+        .collect();
+    assert_eq!(actual, [128; 16]);
 }
 
 /// §7.13.2.8 ZONE-2 TWO-SIDED GUARD — a non-canonical `pAngle == 132` middle leaf
@@ -728,6 +877,7 @@ fn zone3_d203_interior_leaf_reads_diagonal_above_left_corner() {
         0,
         true,
         0,
+        0,
         false,
         None,
         None,
@@ -867,6 +1017,7 @@ fn zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference() {
         2, // num4_below_left: cover the maxBase = 17 below-left reads (rows up to 39)
         true,
         1, // mrl_index
+        1, // above_mrl_index
         false,
         None,
         None,
@@ -1319,6 +1470,7 @@ fn zone3_d203_top_left_synthesizes_no_neighbour_left_fallback() {
         0,
         false,
         0,
+        0,
         false,
         None,
         None,
@@ -1391,6 +1543,117 @@ fn cardinal_vertical_top_left_uses_no_neighbour_above_fallback() {
 #[test]
 fn cardinal_horizontal_top_left_uses_no_neighbour_left_fallback() {
     assert_cardinal_top_left_fallback(IntraCardinalDirection::Horizontal, 129);
+}
+
+#[test]
+fn cardinal_horizontal_follow_chroma_top_left_uses_no_neighbour_left_fallback() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_chroma_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        PlaneId::U,
+        0,
+        0,
+        2,
+        2,
+        0,
+        SupportedChromaMode::HorizontalFollow,
+        None,
+        0,
+        0,
+        false,
+        IntraEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for row in 0..4 {
+        for col in 0..4 {
+            assert_eq!(
+                ws.reconstructed_sample(PlaneId::U, col, row).unwrap(),
+                129,
+                "top-left H-follow chroma sample ({col},{row}) must use the no-neighbour left fallback",
+            );
+        }
+    }
+}
+
+#[test]
+fn d45_follow_chroma_top_left_uses_no_neighbour_above_fallback() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_chroma_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        PlaneId::U,
+        0,
+        0,
+        2,
+        2,
+        0,
+        SupportedChromaMode::D45Follow,
+        None,
+        0,
+        0,
+        false,
+        IntraEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    for row in 0..4 {
+        for col in 0..4 {
+            assert_eq!(ws.reconstructed_sample(PlaneId::U, col, row).unwrap(), 127,);
+        }
+    }
+}
+
+#[test]
+fn d113_chroma_top_left_uses_no_neighbour_middle_edges() {
+    let mut ws =
+        new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_chroma_block_into(
+        &mut ws,
+        &all_zero_luma_block(),
+        PlaneId::U,
+        0,
+        0,
+        2,
+        2,
+        0,
+        SupportedChromaMode::D113,
+        None,
+        0,
+        0,
+        false,
+        IntraEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let actual: Vec<u8> = (0..4)
+        .flat_map(|row| (0..4).map(move |col| (row, col)))
+        .map(|(row, col)| ws.reconstructed_sample(PlaneId::U, col, row).unwrap())
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            127, 127, 127, 127, 128, 127, 127, 127, 128, 127, 127, 127, 129, 128, 127, 127
+        ],
+    );
 }
 
 fn assert_cardinal_top_left_fallback(direction: IntraCardinalDirection, expected: u8) {
@@ -1831,4 +2094,57 @@ fn one_sided_ibp_p203_synthesizes_missing_left_edge_from_above() {
         83, 85, 88, 89, 91,  93,  95,  96,
     ];
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn one_sided_ibp_p45_synthesizes_both_missing_edges() {
+    let mut workspace =
+        new_general_intra_workspace::<u8>(16, 16, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    reconstruct_general_intra_one_sided_ibp_luma_block_into(
+        &mut workspace,
+        &all_zero_luma_block(),
+        45,
+        PlaneId::Y,
+        0,
+        0,
+        3,
+        2,
+        0,
+        0,
+        OneSidedEdgeFilter::default(),
+        IbpSecondary {
+            second_angle: 225,
+            edge_filter: OneSidedEdgeFilter::default(),
+            num4_far: 0,
+        },
+        IntraEdgeAvailability {
+            above: false,
+            left: false,
+        },
+        false,
+        None,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let actual: Vec<_> = (0..4)
+        .flat_map(|row| {
+            (0..8).map({
+                let workspace = &workspace;
+                move |col| {
+                    workspace
+                        .reconstructed_sample(PlaneId::Y, col, row)
+                        .unwrap()
+                }
+            })
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            128, 128, 128, 127, 127, 127, 127, 127, 128, 128, 128, 128, 128, 128, 127, 127, 129,
+            128, 128, 128, 128, 128, 128, 128, 129, 128, 128, 128, 128, 128, 128, 128,
+        ]
+    );
 }

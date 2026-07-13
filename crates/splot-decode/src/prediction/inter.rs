@@ -6,9 +6,10 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, RESTRICTED_OH,
-    TipFrameMode, get_relative_dist, parse_frame_header_core,
+    SefTrailingBits, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
-use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::SequenceHeader;
+use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
@@ -19,11 +20,11 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{
-    FrameCdfSubset, GeneralIntraResidualError,
+    FrameCdfSubset, FrameQuantizerDeltasScope, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
 use crate::error::DecodeError;
-use crate::pipeline::ensure_runtime_limits;
+use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
@@ -108,7 +109,17 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
 
-    if frame_envelope.header.obu_type == ObuType::RegularTip {
+    if frame_envelope.header.obu_type == ObuType::BridgeFrame {
+        return decode_bridge_frame(
+            frame_envelope,
+            core,
+            sequence,
+            options,
+            reference,
+            bit_depth,
+        );
+    }
+    if frame_envelope.header.obu_type.is_tip_frame() {
         return decode_tip_output_frame(
             frame_envelope,
             core,
@@ -118,26 +129,17 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             bit_depth,
         );
     }
-    if frame_envelope.header.obu_type != ObuType::RegularTileGroup {
+    if !matches!(
+        frame_envelope.header.obu_type,
+        ObuType::LeadingTileGroup | ObuType::RegularTileGroup | ObuType::Switch | ObuType::RasFrame
+    ) {
         return Err(inter_cap!(
             "inter_unexpected_obu_type",
             offset,
-            "inter.obu_type != regular_tile_group",
+            "inter.obu_type not in the inter tile-group family",
             SPEC_HEADER
         ));
     }
-    if !matches!(
-        sequence.general.chroma_format_idc,
-        ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
-    ) {
-        return Err(inter_cap!(
-            "inter_non_420_chroma",
-            offset,
-            "inter.chroma_format != monochrome_or_4:2:0",
-            SPEC_MC
-        ));
-    }
-
     let initial_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
 
     let frame_size = core.frame_size.ok_or_else(|| {
@@ -186,40 +188,9 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     if block_reference_select {
         validate_compound_sequence_subset(sequence, &core, offset)?;
     }
-    if tail.use_global_motion {
-        return Err(inter_cap!(
-            "inter_use_global_motion",
-            offset,
-            "inter.global_motion",
-            SPEC_MV
-        ));
-    }
-
-    for &slot in ref_frame_idx {
-        let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
-            inter_missing!(
-                "inter_missing_reference_frame",
-                offset,
-                "inter.reference_frame",
-                SPEC_REFERENCE
-            )
-        })?;
-        let ref_luma = ref_frame.y();
-        if ref_luma.visible_size().width() != frame_width as usize
-            || ref_luma.visible_size().height() != frame_height as usize
-        {
-            return Err(inter_cap!(
-                "inter_reference_resolution_mismatch",
-                offset,
-                "inter.reference_scaling",
-                SPEC_MC
-            ));
-        }
-    }
-
     let limits = options.limits();
     let tile_size = {
-        let mut tile_plan = crate::pipeline::derive_inter_tile_plan(
+        let tile_plan = crate::pipeline::derive_inter_tile_plan(
             plan,
             candidate,
             bytes,
@@ -227,17 +198,21 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             sequence,
             &core,
             options,
-            initial_cdfs.clone(),
+            &initial_cdfs,
         )?;
-        let [tile] = tile_plan.work_units_mut() else {
-            return Err(inter_cap!(
-                "inter_unexpected_tile_work_units",
-                offset,
-                "inter.tile_count != 1",
-                SPEC_HEADER
-            ));
-        };
-        tile.tile_size()
+        tile_plan
+            .work_units()
+            .iter()
+            .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
+            .max()
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_missing_tile_work_units",
+                    offset,
+                    "inter.tile_count > 0",
+                    "5.20.1"
+                )
+            })?
     };
     ensure_runtime_limits(
         limits,
@@ -247,7 +222,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-
     let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
         inter_missing!(
             "inter_missing_interpolation_filter",
@@ -257,23 +231,32 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         )
     })?;
 
-    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<T>(
-        frame_width as usize,
-        frame_height as usize,
-        bit_depth,
-        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
-    )?;
-    let qindex = core
-        .quantization_params
-        .map(|quant| quant.base_q_idx)
-        .ok_or_else(|| {
-            unsupported_at(
-                "inter_missing_base_q",
-                offset,
-                "minimal inter residual decode requires a parsed base_q_idx",
-                SPEC_HEADER,
-            )
-        })?;
+    let visible_luma_rect = derive_visible_luma_rect(sequence, frame_width, frame_height)?;
+    let mut workspace =
+        crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect::<T>(
+            frame_width as usize,
+            frame_height as usize,
+            bit_depth,
+            PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
+            visible_luma_rect,
+        )?;
+    let quantization = core.quantization_params.as_ref().ok_or_else(|| {
+        unsupported_at(
+            "inter_missing_base_q",
+            offset,
+            "minimal inter residual decode requires a parsed base_q_idx",
+            SPEC_HEADER,
+        )
+    })?;
+    let qindex = quantization.base_q_idx;
+    let quantizer_deltas = effective_quantizer_deltas(sequence, quantization).ok_or_else(|| {
+        inter_missing!(
+            "inter_missing_quantizer_delta_state",
+            offset,
+            "sequence.transform_quant_entropy",
+            SPEC_HEADER
+        )
+    })?;
     let luma_use_tcq = core
         .lossless_info
         .as_ref()
@@ -283,6 +266,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         .as_ref()
         .is_some_and(|tq| tq.enable_inter_ddt);
 
+    let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let (frame_cdfs, filter_inputs) = decode_inter_blocks(
         plan,
         candidate,
@@ -306,7 +290,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         luma_use_tcq,
         residual_use_ddt,
         bit_depth,
-        initial_cdfs,
+        &initial_cdfs,
     )?;
     let motion_field = filter_inputs.motion_field.clone();
 
@@ -330,6 +314,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     let ccso_grid = filter_inputs.ccso_grid.clone();
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_gdf_grid(filter_inputs.gdf_grid);
     filter_sink.set_cfl_ds_filter_index(
         sequence
             .intra
@@ -339,8 +324,12 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     filter_sink.set_tx_skip_records(filter_inputs.tx_skip_records);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
+    let disable_loopfilters_across_tiles = sequence
+        .filter
+        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
     let frame = filter_sink.into_filtered_frame(
         &core,
+        disable_loopfilters_across_tiles,
         crate::pipeline::deblock_quant_deltas(sequence, &core),
         offset,
     )?;
@@ -357,17 +346,6 @@ fn decode_tip_output_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
-    if !matches!(
-        sequence.general.chroma_format_idc,
-        ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
-    ) {
-        return Err(inter_cap!(
-            "tip_output_non_420_chroma",
-            offset,
-            "inter.tip_output.chroma_format != monochrome_or_4:2:0",
-            SPEC_MC
-        ));
-    }
     let frame_size = core.frame_size.ok_or_else(|| {
         inter_missing!(
             "tip_output_state",
@@ -387,6 +365,78 @@ fn decode_tip_output_frame<T: ReconSample>(
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
     let (frame, motion_field) =
         block::tip::reconstruct_output(sequence, &core, reference, bit_depth, offset)?;
+    Ok((frame, core, frame_cdfs, None, motion_field))
+}
+
+fn decode_bridge_frame<T: ReconSample>(
+    frame_envelope: ObuEnvelope<'_>,
+    core: FrameHeaderCore,
+    sequence: &SequenceHeader,
+    options: &DecodeOptions,
+    reference: &InterReferenceState<'_, T>,
+    bit_depth: BitDepth,
+) -> Result<InterDecodeOutput<T>> {
+    let offset = frame_envelope.offset;
+    let frame_size = core.frame_size.ok_or_else(|| {
+        inter_missing!(
+            "bridge_missing_frame_size",
+            offset,
+            "inter.bridge.frame_size",
+            SPEC_HEADER
+        )
+    })?;
+    ensure_runtime_limits(
+        options.limits(),
+        frame_size.width,
+        frame_size.height,
+        0,
+        bit_depth,
+        sequence.general.chroma_format_idc,
+    )?;
+    let ref_slot = core.bridge_frame_ref_idx.ok_or_else(|| {
+        inter_missing!(
+            "bridge_missing_reference_slot",
+            offset,
+            "inter.bridge.reference_slot",
+            SPEC_HEADER
+        )
+    })?;
+    let source = reference.frame_for_slot(ref_slot).ok_or_else(|| {
+        inter_missing!(
+            "bridge_missing_reference_frame",
+            offset,
+            "inter.bridge.reference_frame",
+            SPEC_REFERENCE
+        )
+    })?;
+    let reference_order_hint = reference
+        .ref_order_hint
+        .get(ref_slot as usize)
+        .copied()
+        .ok_or_else(|| {
+            inter_missing!(
+                "bridge_missing_reference_order_hint",
+                offset,
+                "inter.bridge.reference_order_hint",
+                SPEC_REFERENCE
+            )
+        })?;
+    let motion_field = bridge::motion_field(
+        frame_size,
+        core.display_order_hint().unwrap_or(0),
+        reference_order_hint,
+    )
+    .ok_or_else(|| {
+        inter_cap!(
+            "bridge_motion_field_dimensions",
+            offset,
+            "inter.bridge.motion_field_dimensions",
+            SPEC_REFERENCE
+        )
+    })?;
+    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
+    let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
+    let frame = bridge::reconstruct(source, frame_size, visible, 0, offset)?;
     Ok((frame, core, frame_cdfs, None, motion_field))
 }
 
@@ -862,9 +912,15 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_counter: Vec<u32>,
     pub(crate) ref_delta_q_u_ac: Vec<i32>,
     pub(crate) ref_delta_q_v_ac: Vec<i32>,
+    ref_chroma_ac_deltas: Vec<[i32; 2]>,
     pub(crate) ref_is_inter: Vec<bool>,
+    pub(crate) ref_long_term_id: Vec<Option<u32>>,
     #[allow(dead_code)]
     pub(crate) ref_adapted: Vec<bool>,
+    pub(crate) ref_num_total_refs: Vec<u32>,
+    pub(crate) saved_global_motion_order_hints:
+        Vec<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
+    pub(crate) saved_global_motion_params: Vec<splot_core::headers::frame::SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
@@ -888,8 +944,13 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_counter: Vec::new(),
             ref_delta_q_u_ac: Vec::new(),
             ref_delta_q_v_ac: Vec::new(),
+            ref_chroma_ac_deltas: Vec::new(),
             ref_is_inter: Vec::new(),
+            ref_long_term_id: Vec::new(),
             ref_adapted: Vec::new(),
+            ref_num_total_refs: Vec::new(),
+            saved_global_motion_order_hints: Vec::new(),
+            saved_global_motion_params: Vec::new(),
             lr_frame_filter_class_counts: Vec::new(),
             lr_frame_filter_taps: Vec::new(),
             ref_frame_cdfs: Vec::new(),
@@ -903,6 +964,13 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
         store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>,
         metadata: ReferenceMetadata,
     ) -> Self {
+        let ref_chroma_ac_deltas = metadata
+            .ref_delta_q_u_ac
+            .iter()
+            .copied()
+            .zip(metadata.ref_delta_q_v_ac.iter().copied())
+            .map(|(u, v)| [u, v])
+            .collect();
         Self {
             store,
             ref_valid: metadata.ref_valid,
@@ -916,8 +984,13 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_counter: metadata.ref_counter,
             ref_delta_q_u_ac: metadata.ref_delta_q_u_ac,
             ref_delta_q_v_ac: metadata.ref_delta_q_v_ac,
+            ref_chroma_ac_deltas,
             ref_is_inter: metadata.ref_is_inter,
+            ref_long_term_id: metadata.ref_long_term_id,
             ref_adapted: metadata.ref_adapted,
+            ref_num_total_refs: metadata.ref_num_total_refs,
+            saved_global_motion_order_hints: metadata.saved_global_motion_order_hints,
+            saved_global_motion_params: metadata.saved_global_motion_params,
             lr_frame_filter_class_counts: metadata.lr_frame_filter_class_counts,
             lr_frame_filter_taps: metadata.lr_frame_filter_taps,
             ref_frame_cdfs: metadata.ref_frame_cdfs,
@@ -964,7 +1037,7 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             })
     }
 
-    fn header_view(&self) -> FrameReferenceStateView<'_> {
+    pub(crate) fn header_view(&self) -> FrameReferenceStateView<'_> {
         FrameReferenceStateView::from_slots_with_base_q_idx(
             &self.ref_valid,
             &self.ref_order_hint,
@@ -972,7 +1045,14 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             &self.ref_frame_height,
             &self.ref_base_q_idx,
         )
+        .with_quantizer_delta_state(&self.ref_chroma_ac_deltas)
         .with_primary_reference_state(&self.ref_counter, &self.ref_is_inter)
+        .with_long_term_id_state(&self.ref_long_term_id)
+        .with_global_motion_state(
+            &self.ref_num_total_refs,
+            &self.saved_global_motion_order_hints,
+            &self.saved_global_motion_params,
+        )
         .with_single_layer_order_hint_state(
             &self.ref_order_hint_lsbs,
             &self.ref_implicit_output_frame,
@@ -982,37 +1062,126 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
         .with_lr_frame_filter_taps(&self.lr_frame_filter_taps)
     }
 }
-pub(crate) fn parse_validated_inter_frame_core(
+pub(crate) fn parse_inter_frame_activation(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<'_, impl ReconSample>,
+    first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
-    let mut core = if envelope.header.obu_type == ObuType::RegularTip {
-        parse_tip_output_frame_core(envelope, sequence, reference)?
+    if envelope.header.obu_type.is_sef() {
+        parse_sef_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
+    } else if envelope.header.obu_type.is_tip_frame() {
+        parse_tip_output_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
     } else {
-        parse_inter_frame_core(envelope, sequence, reference)?
+        parse_inter_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
+    }
+}
+
+pub(crate) fn parse_validated_inter_frame_core_with_mfh(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+    first_picture_in_tu: bool,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+) -> Result<FrameHeaderCore> {
+    let mut core = if envelope.header.obu_type.is_sef() {
+        parse_sef_frame_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            mfh_record,
+        )?
+    } else if envelope.header.obu_type.is_tip_frame() {
+        parse_tip_output_frame_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            mfh_record,
+        )?
+    } else {
+        parse_inter_frame_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            mfh_record,
+        )?
     };
-    if envelope.header.obu_type == ObuType::RegularTip {
+    if envelope.header.obu_type.is_sef() {
+        validate_sef_frame_core(&core, envelope.offset)?;
+    } else if envelope.header.obu_type.is_tip_frame() {
         infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
         validate_tip_output_frame_core(&core, envelope.offset)?;
     } else {
         resolve_ccso_reference_reuse(&mut core, reference, envelope.offset)?;
         validate_inter_frame_core(&core, sequence, envelope.offset)?;
+        validate_ras_reference_ids(&core, reference, envelope.offset)?;
     }
     Ok(core)
+}
+
+fn parse_sef_frame_core(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+    first_picture_in_tu: bool,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
+) -> Result<FrameHeaderCore> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    let input = FrameHeaderParseInput {
+        obu_type: envelope.header.obu_type,
+        first_picture_in_tu,
+        active_sequence: Some(sequence),
+        mfh_record,
+        reference_state: reference.header_view(),
+        mode: FrameHeaderParseMode::Core,
+    };
+    parse_frame_header_core(&mut reader, &input).map_err(|_| {
+        inter_missing!(
+            "sef_frame_header_parse",
+            envelope.offset,
+            "show_existing.frame_header_core",
+            SPEC_HEADER
+        )
+    })
+}
+
+fn validate_sef_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+    let complete = core.status == FrameHeaderParseStatus::ShowExistingFrameComplete
+        && core.show_existing_frame == Some(true)
+        && core.frame_to_show_map_idx.is_some()
+        && core.order_hint.is_some()
+        && core.refresh_frame_flags == Some(0)
+        && core.immediate_output_frame == Some(true)
+        && core.implicit_output_frame == Some(false)
+        && core.sef_film_grain.is_some()
+        && core.sef_trailing_bits == Some(SefTrailingBits::Valid);
+    if !complete {
+        return Err(inter_cap!(
+            "sef_incomplete_state",
+            offset,
+            "inter.show_existing.complete_state",
+            SPEC_HEADER
+        ));
+    }
+    Ok(())
 }
 
 fn parse_tip_output_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<'_, impl ReconSample>,
+    first_picture_in_tu: bool,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
-        first_picture_in_tu: false,
+        first_picture_in_tu,
         active_sequence: Some(sequence),
-        mfh_record: None,
+        mfh_record,
         reference_state: reference.header_view(),
         mode: FrameHeaderParseMode::Core,
     };
@@ -1094,7 +1263,7 @@ fn infer_tip_output_quantization(
 
 fn validate_tip_output_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
     let complete = core.status == FrameHeaderParseStatus::InterHeaderComplete
-        && core.obu_type == ObuType::RegularTip
+        && core.obu_type.is_tip_frame()
         && core.frame_is_intra == Some(false)
         && core
             .inter
@@ -1167,29 +1336,33 @@ fn parse_inter_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<'_, impl ReconSample>,
+    first_picture_in_tu: bool,
+    mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-    let is_first_tile_group = reader.read_bit().map_err(|_| {
-        inter_missing!(
-            "inter_tile_group_prefix_parse",
-            envelope.offset,
-            "inter.tile_group_prefix",
-            SPEC_HEADER
-        )
-    })? != 0;
-    if !is_first_tile_group {
-        return Err(inter_cap!(
-            "inter_non_first_tile_group",
-            envelope.offset,
-            "inter.frame_header_not_in_first_tile_group",
-            SPEC_HEADER
-        ));
+    if envelope.header.obu_type != ObuType::BridgeFrame {
+        let is_first_tile_group = reader.read_bit().map_err(|_| {
+            inter_missing!(
+                "inter_tile_group_prefix_parse",
+                envelope.offset,
+                "inter.tile_group_prefix",
+                SPEC_HEADER
+            )
+        })? != 0;
+        if !is_first_tile_group {
+            return Err(inter_cap!(
+                "inter_non_first_tile_group",
+                envelope.offset,
+                "inter.frame_header_not_in_first_tile_group",
+                SPEC_HEADER
+            ));
+        }
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
-        first_picture_in_tu: false,
+        first_picture_in_tu,
         active_sequence: Some(sequence),
-        mfh_record: None,
+        mfh_record,
         reference_state: reference.header_view(),
         mode: FrameHeaderParseMode::Core,
     };
@@ -1207,6 +1380,9 @@ fn validate_inter_frame_core(
     sequence: &SequenceHeader,
     offset: ByteOffset,
 ) -> Result<()> {
+    if core.obu_type == ObuType::BridgeFrame {
+        return validate_bridge_frame_core(core, offset);
+    }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
         return Err(inter_missing!(
             "inter_incomplete_frame_header",
@@ -1265,19 +1441,11 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    let Some(tile_info) = core.tile_info.as_ref() else {
+    if core.tile_info.is_none() {
         return Err(inter_missing!(
             "inter_missing_tile_info",
             offset,
             "inter.tile_info",
-            SPEC_HEADER
-        ));
-    };
-    if tile_info.tile_cols != 1 || tile_info.tile_rows != 1 {
-        return Err(inter_cap!(
-            "inter_multi_tile_frame",
-            offset,
-            "inter.tile_count != 1",
             SPEC_HEADER
         ));
     }
@@ -1290,7 +1458,7 @@ fn validate_inter_frame_core(
                 &seg.features,
             )
         })
-        || core.setup_qm_params.is_none_or(|qm| qm.using_qmatrix)
+        || core.setup_qm_params.is_none()
         || core.delta_q_params.is_none()
         || core.lossless_info.is_none()
         || sequence.inter.is_none()
@@ -1310,6 +1478,72 @@ fn validate_inter_frame_core(
     Ok(())
 }
 
+fn validate_ras_reference_ids(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<'_, impl ReconSample>,
+    offset: ByteOffset,
+) -> Result<()> {
+    if core.obu_type != ObuType::RasFrame {
+        return Ok(());
+    }
+    let inter = core.inter.as_ref().ok_or_else(|| {
+        inter_missing!(
+            "ras_missing_reference_map",
+            offset,
+            "inter.ras.reference_map",
+            "6.17.2"
+        )
+    })?;
+    let count = usize::try_from(inter.num_total_refs.unwrap_or(0)).unwrap_or(usize::MAX);
+    for &slot in inter.ref_frame_idx.iter().take(count) {
+        let id = reference
+            .ref_long_term_id
+            .get(slot as usize)
+            .copied()
+            .flatten();
+        if id.is_none_or(|id| !core.ref_long_term_ids.contains(&id)) {
+            return Err(inter_cap!(
+                "ras_reference_long_term_id_not_listed",
+                offset,
+                "inter.ras.reference_long_term_id",
+                "6.17.2"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_bridge_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+    let reference_map_complete = core.inter.as_ref().is_some_and(|inter| {
+        if core.frame_is_intra == Some(true) {
+            inter.num_total_refs == Some(0)
+        } else {
+            inter.num_total_refs == Some(1)
+                && inter.ref_frame_idx.first() == core.bridge_frame_ref_idx.as_ref()
+        }
+    });
+    let complete = core.status == FrameHeaderParseStatus::InterHeaderComplete
+        && core.frame_is_intra.is_some()
+        && core.show_existing_frame == Some(false)
+        && core.order_hint.is_some()
+        && core
+            .frame_size
+            .is_some_and(|size| size.width != 0 && size.height != 0)
+        && core.tile_info.is_some()
+        && core.quantization_params.is_some()
+        && core.bridge_film_grain.is_some()
+        && reference_map_complete;
+    if !complete {
+        return Err(inter_cap!(
+            "bridge_incomplete_state",
+            offset,
+            "inter.bridge.complete_state",
+            SPEC_HEADER
+        ));
+    }
+    Ok(())
+}
+
 fn inter_segmentation_supported(
     enabled: bool,
     update_map: bool,
@@ -1322,19 +1556,6 @@ fn inter_segmentation_supported(
             && features
                 .iter()
                 .all(|features| features[1..].iter().all(|feature| !feature.enabled)))
-}
-
-pub(crate) fn effective_quantizer_deltas_are_zero(
-    sequence: &SequenceHeader,
-    quantization: &QuantizationParams,
-) -> bool {
-    effective_quantizer_deltas(sequence, quantization).is_some_and(|deltas| {
-        deltas.y_dc == 0
-            && deltas.u_dc == 0
-            && deltas.v_dc == 0
-            && deltas.u_ac == 0
-            && deltas.v_ac == 0
-    })
 }
 
 pub(crate) fn effective_quantizer_deltas(
@@ -1371,6 +1592,7 @@ pub(crate) fn effective_quantizer_deltas(
 
 mod bawp;
 mod block;
+mod bridge;
 mod compound;
 mod cross_frame;
 mod find_mv_stack;
@@ -1386,6 +1608,9 @@ pub(crate) use find_mv_stack::TemporalMotionField;
 #[cfg(test)]
 #[path = "inter/test_support_tests.rs"]
 pub(crate) mod test_support;
+
+#[cfg(test)]
+mod global_motion_tests;
 
 #[cfg(test)]
 mod tests;

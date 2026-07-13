@@ -76,7 +76,7 @@ pub(super) fn parse_frame_core(
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
     mfh_record: Option<&MultiFrameHeaderRecord>,
-    reference_state: FrameReferenceStateView<'_>,
+    reference_state: &FrameReferenceStateView<'_>,
 ) -> Option<FrameHeaderCore> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
@@ -92,7 +92,7 @@ pub(super) fn parse_frame_core(
         first_picture_in_tu,
         active_sequence: Some(active_sequence),
         mfh_record,
-        reference_state,
+        reference_state: *reference_state,
         mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).ok()
@@ -109,32 +109,18 @@ impl ValidatorContext {
 
         let mfh_record = self.resolve_frame_mfh_record(obu, first_picture_in_tu, seq_id);
 
-        let mut ref_valid = [false; NUM_REF_FRAMES];
-        let mut ref_oh = [0u32; NUM_REF_FRAMES];
-        let mut ref_w = [0u32; NUM_REF_FRAMES];
-        let mut ref_h = [0u32; NUM_REF_FRAMES];
-        let reference_state = if self
+        let mut reference_scratch = ReferenceStateScratch::default();
+        let reference_state = self
             .reference_state
-            .view_into(
-                obu.header.extended_layer_id,
-                &mut ref_valid,
-                &mut ref_oh,
-                &mut ref_w,
-                &mut ref_h,
-            )
-            .is_some()
-        {
-            FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h)
-        } else {
-            FrameReferenceStateView::unknown()
-        };
+            .view_into(obu.header.extended_layer_id, &mut reference_scratch)
+            .unwrap_or_else(FrameReferenceStateView::unknown);
 
         let core = parse_frame_core(
             obu,
             first_picture_in_tu,
             active_sequence,
             mfh_record,
-            reference_state,
+            &reference_state,
         )?;
 
         let referenced = if core.cur_mfh_id.is_zero() {
@@ -165,7 +151,9 @@ impl ValidatorContext {
                 is_suffix: metadata_is_suffix(obu),
             },
             ObuType::LeadingSef | ObuType::RegularSef => SegRole::SefFrame,
-            ObuType::BridgeFrame => SegRole::BridgeFrame,
+            ObuType::BridgeFrame => SegRole::BridgeFrame {
+                output: self.bridge_output_class(obu),
+            },
             ObuType::LeadingTip | ObuType::RegularTip => SegRole::TipFrame {
                 output: self.frame_output_class(obu, first_picture_in_tu),
             },
@@ -175,6 +163,17 @@ impl ValidatorContext {
             },
             _ => SegRole::Padding,
         }
+    }
+
+    /// Returns the output class implied by the active sequence header for a bridge frame.
+    /// AV2 § 5.18.2 makes every single-picture frame an immediate output frame; a bridge in
+    /// a video sequence remains the § 7.3.4 non-output bridge form.
+    fn bridge_output_class(&self, obu: &ObuEnvelope<'_>) -> Option<bool> {
+        let seq_id = self
+            .active_sequence_by_xlayer
+            .get(&obu.header.extended_layer_id)?;
+        let seq = self.sequence_headers.get(seq_id)?;
+        Some(seq.general.single_picture_header_flag)
     }
 
     /// Reads `is_first_tile_group` from a tile-group OBU's prefix (AV2 § 5.19),
@@ -332,7 +331,11 @@ impl ValidatorContext {
         let obu_type = obu.header.obu_type;
         let leadingness = frame_leadingness(obu_type);
 
-        let type_decided = type_decided_output(obu_type);
+        let type_decided = if obu_type == ObuType::BridgeFrame {
+            self.bridge_output_class(obu)
+        } else {
+            type_decided_output(obu_type)
+        };
 
         let core = self.frame_core_against_referenced_header(obu, first_picture_in_tu);
         let (flag_output, order_hint, bits) = match &core {

@@ -13,7 +13,7 @@ use crate::bitstream::tile_payload::{
     LumaTransformTypeContext, SupportedChromaMode, SupportedDirectionalLumaMode,
     SupportedNonDcLumaMode, TransformToolResidualPolicy, read_lossless_luma_tx_size,
 };
-use crate::prediction::intra::{IntraLumaUnsupported, plan_luma_prediction};
+use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE, plan_luma_prediction};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, RectChromaPlan, RectLumaPlan, ResidualPipelineUnsupported,
 };
@@ -349,17 +349,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         sb_mib,
         tile_offset,
     )?;
-    if luma_only {
-        ensure_10bit_general_intra_luma_capability(
-            &modes,
-            block_ctx,
-            sb_mib,
-            lossless,
-            tile_offset,
-        )?;
-    } else {
-        ensure_10bit_general_intra_capability(&modes, block_ctx, sb_mib, lossless, tile_offset)?;
-    }
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
             read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size.index(), true, true)
@@ -514,7 +503,6 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         block_ctx,
         cfl_ds_filter_index,
         sb_mib,
-        lossless,
     )
     .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
@@ -926,7 +914,7 @@ fn lossless_chroma_part_rect_prediction_verified(
     if !top_left_smooth && !neighbours.has_above() && !neighbours.has_left() {
         return false;
     }
-    ensure_supported_rect_chroma_capability(mode, block_ctx).is_ok()
+    true
 }
 
 pub(super) fn lossless_chroma_block_prediction_verified(
@@ -947,7 +935,7 @@ pub(super) fn lossless_chroma_block_prediction_verified(
     let Some(mode) = mode else {
         return false;
     };
-    if lossless_chroma_block_rect_prediction_verified(mode, block_ctx) {
+    if lossless_chroma_block_rect_prediction_verified(block_ctx) {
         return true;
     }
     if !lossless_chroma_full_64_block(block_ctx) {
@@ -1008,15 +996,9 @@ pub(super) fn lossless_chroma_block_prediction_verified(
             )))
 }
 
-fn lossless_chroma_block_rect_prediction_verified(
-    mode: SupportedChromaMode,
-    block_ctx: BlockCtx,
-) -> bool {
+fn lossless_chroma_block_rect_prediction_verified(block_ctx: BlockCtx) -> bool {
     let neighbours = block_ctx.neighbours(PlaneId::U);
-    lossless_chroma_8bit_420(block_ctx)
-        && neighbours.has_above()
-        && neighbours.has_left()
-        && ensure_supported_rect_chroma_capability(mode, block_ctx).is_ok()
+    lossless_chroma_8bit_420(block_ctx) && neighbours.has_above() && neighbours.has_left()
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
@@ -1126,72 +1108,60 @@ fn rect_luma_mrl_plan_for_parts(
     use_tcq: bool,
     sb_mib: usize,
 ) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
-    let nominal = y_mode.mode_to_angle().ok_or_else(unsupported_rect_luma)?;
+    let nominal = y_mode.mode_to_angle().ok_or(UNSUPPORTED_LUMA_MODE)?;
     let mrl_index = usize::from(mrl_index);
     let mrl_delta = *MRL_INDEX_TO_DELTA
         .get(mrl_index)
-        .ok_or_else(unsupported_rect_luma)?;
+        .ok_or(UNSUPPORTED_LUMA_MODE)?;
     let block = block_ctx.block();
     let width = block.width4().saturating_mul(MI_SIZE);
     let height = block.height4().saturating_mul(MI_SIZE);
     let nominal_angle = i32::from(nominal) + i32::from(angle_delta_y) * ANGLE_STEP + mrl_delta;
     let p_angle = wide_angle_mapped_p_angle(width, height, nominal_angle);
-    let neighbours = block_ctx.neighbours(PlaneId::Y);
-    let has_edge = neighbours.has_above() || neighbours.has_left();
     let is_sb_boundary = sb_mib != 0 && block.row4().is_multiple_of(sb_mib);
     let above_mrl_index = if is_sb_boundary { 0 } else { mrl_index };
     let secondary_mrl = mrl_sec_index == Some(1) && !(width == MI_SIZE && height == MI_SIZE);
-    if p_angle == 90 && neighbours.has_above() {
-        return Ok(RectLumaPlan::CardinalMrl {
+    let p_angle = u16::try_from(p_angle).map_err(|_| UNSUPPORTED_LUMA_MODE)?;
+    match p_angle {
+        90 => Ok(RectLumaPlan::CardinalMrl {
             direction: IntraCardinalDirection::Vertical,
             mrl_index,
             above_mrl_index,
             secondary_mrl,
             use_tcq,
-        });
-    }
-    if p_angle == 180 && neighbours.has_left() {
-        return Ok(RectLumaPlan::CardinalMrl {
+        }),
+        180 => Ok(RectLumaPlan::CardinalMrl {
             direction: IntraCardinalDirection::Horizontal,
             mrl_index,
             above_mrl_index,
             secondary_mrl,
             use_tcq,
-        });
-    }
-    if p_angle > 0 && p_angle < 90 && (neighbours.has_above() || neighbours.has_left()) {
-        let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;
-        return Ok(RectLumaPlan::OneSidedAboveMrl {
+        }),
+        1..=89 => Ok(RectLumaPlan::OneSidedAboveMrl {
             p_angle,
             mrl_index,
             above_mrl_index,
             secondary_mrl,
             use_tcq,
-        });
-    }
-    if p_angle > 180 && p_angle < 270 && neighbours.has_left() {
-        let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;
-        return Ok(RectLumaPlan::OneSidedLeftMrl {
+        }),
+        91..=179 => Ok(RectLumaPlan::MiddleMrl {
             p_angle,
             mrl_index,
             above_mrl_index,
             is_sb_boundary,
             secondary_mrl,
             use_tcq,
-        });
+        }),
+        181..=269 => Ok(RectLumaPlan::OneSidedLeftMrl {
+            p_angle,
+            mrl_index,
+            above_mrl_index,
+            is_sb_boundary,
+            secondary_mrl,
+            use_tcq,
+        }),
+        _ => Err(UNSUPPORTED_LUMA_MODE),
     }
-    if !(90 < p_angle && p_angle < 180 && has_edge) {
-        return Err(unsupported_rect_luma());
-    }
-    let p_angle = u16::try_from(p_angle).map_err(|_| unsupported_rect_luma())?;
-    Ok(RectLumaPlan::MiddleMrl {
-        p_angle,
-        mrl_index,
-        above_mrl_index,
-        is_sb_boundary,
-        secondary_mrl,
-        use_tcq,
-    })
 }
 
 fn rect_luma_plan_for_parts_ext(
@@ -1199,20 +1169,12 @@ fn rect_luma_plan_for_parts_ext(
     nondc: Option<SupportedNonDcLumaMode>,
     directional_p_angle: Option<u16>,
     luma_is_dc: bool,
-    block_ctx: BlockCtx,
+    _block_ctx: BlockCtx,
     use_tcq: bool,
 ) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
     if luma_is_dc {
         return Ok(RectLumaPlan::Dc { use_tcq });
     }
-    let block = block_ctx.block();
-    let supported_rect = block.width4() >= 8 && block.height4() >= 8;
-    let supported_cardinal_rect = block.width4() >= 1 && block.height4() >= 1;
-    let supported_middle_rect = block.width4() >= 1 && block.height4() >= 1;
-    let supported_one_sided_above_rect = block.width4() >= 1 && block.height4() >= 1;
-    let supported_one_sided_left_rect = block.width4() >= 1 && block.height4() >= 1;
-    let neighbours = block_ctx.neighbours(PlaneId::Y);
-    let has_edge = neighbours.has_above() || neighbours.has_left();
     if luma_is_paeth {
         return Ok(RectLumaPlan::Paeth { use_tcq });
     }
@@ -1220,39 +1182,30 @@ fn rect_luma_plan_for_parts_ext(
         return Ok(RectLumaPlan::Smooth { mode, use_tcq });
     }
     match directional_p_angle {
-        Some(90) if supported_cardinal_rect => {
+        Some(90) => {
             return Ok(RectLumaPlan::Cardinal {
                 direction: IntraCardinalDirection::Vertical,
                 use_tcq,
             });
         }
-        Some(180) if supported_cardinal_rect => {
+        Some(180) => {
             return Ok(RectLumaPlan::Cardinal {
                 direction: IntraCardinalDirection::Horizontal,
                 use_tcq,
             });
         }
-        Some(p_angle @ 91..=179) if supported_middle_rect && has_edge => {
+        Some(p_angle @ 91..=179) => {
             return Ok(RectLumaPlan::Middle { p_angle, use_tcq });
         }
         _ => {}
     }
-    if let Some(p_angle @ 1..=89) = directional_p_angle
-        && ((neighbours.has_above() && supported_one_sided_above_rect)
-            || (!neighbours.has_above() && supported_one_sided_above_rect && neighbours.has_left()))
-    {
+    if let Some(p_angle @ 1..=89) = directional_p_angle {
         return Ok(RectLumaPlan::OneSidedAbove { p_angle, use_tcq });
     }
-    match directional_p_angle {
-        Some(p_angle @ 181..=269)
-            if (neighbours.has_left() || neighbours.has_above())
-                && (supported_rect || supported_one_sided_left_rect) =>
-        {
-            return Ok(RectLumaPlan::OneSidedLeft { p_angle, use_tcq });
-        }
-        _ => {}
+    if let Some(p_angle @ 181..=269) = directional_p_angle {
+        return Ok(RectLumaPlan::OneSidedLeft { p_angle, use_tcq });
     }
-    Err(unsupported_rect_luma())
+    Err(UNSUPPORTED_LUMA_MODE)
 }
 
 fn rect_luma_directional_p_angle(
@@ -1290,10 +1243,9 @@ fn rect_chroma_plan(
         );
     }
     let mode = modes.supported_chroma_mode().ok_or(unsupported_chroma(
-        "general_intra_rect_non_dc_chroma",
-        missing_capability_message!("intra.rect.chroma_mode", mode = "unsupported_non_dc"),
+        "general_intra_non_dc_chroma",
+        missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
-    ensure_supported_rect_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
@@ -1321,8 +1273,7 @@ fn chroma_plan_for_modes(
         "general_intra_non_dc_chroma",
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
-    if let Err(error) =
-        ensure_supported_chroma_capability(mode, modes.chroma_dpcm_direction(), block_ctx)
+    if let Err(error) = ensure_supported_chroma_capability(mode, block_ctx)
         && !(lossless
             && lossless_chroma_block_prediction_verified(
                 Some(mode),
@@ -1390,7 +1341,6 @@ fn chroma_plan_for_parts(
     block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    lossless: bool,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
     if chroma.is_cfl() {
         return cfl_chroma_plan(
@@ -1406,18 +1356,6 @@ fn chroma_plan_for_parts(
             "general_intra_chroma_part_non_dc_chroma",
             missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
         ))?;
-    if let Err(error) = ensure_supported_rect_chroma_capability(mode, block_ctx)
-        && !(lossless
-            && lossless_chroma_part_prediction_verified(
-                Some(mode),
-                chroma.uses_dpcm_uv(),
-                y_mode,
-                block_ctx,
-                sb_mib,
-            ))
-    {
-        return Err(error);
-    }
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(chroma.coeff_uv_mode(), y_mode, angle_delta_y),
@@ -1465,124 +1403,6 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
         p_angle - 180
     } else {
         p_angle
-    }
-}
-
-const fn unsupported_rect_luma() -> IntraLumaUnsupported {
-    IntraLumaUnsupported::new(
-        "general_intra_rect_non_dc_luma",
-        missing_capability_message!("intra.rect.luma_mode", mode = "non_dc"),
-    )
-}
-
-fn ensure_10bit_general_intra_luma_capability(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-    lossless: bool,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if block_ctx.bit_depth() == BitDepth::Eight {
-        return Ok(());
-    }
-    let luma_admitted = modes.luma_is_dc()
-        || plan_luma_prediction_for_segment(modes, block_ctx, lossless, sb_mib).is_ok()
-        || rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok();
-    if luma_admitted {
-        return Ok(());
-    }
-    Err(general_intra_at!(
-        "unsupported_10bit_non_dc_intra",
-        tile_offset,
-        missing_capability_message!("intra.10bit.non_dc", luma = "non_dc",),
-        GENERAL_INTRA_MODE_SPEC_SECTION,
-    ))
-}
-
-fn ensure_10bit_general_intra_capability(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-    lossless: bool,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if block_ctx.bit_depth() == BitDepth::Eight {
-        return Ok(());
-    }
-    let chroma_admitted = if modes.is_cfl() {
-        modes.cfl_params().is_some_and(|params| match params.index {
-            CflIndex::Explicit | CflIndex::DerivedAlpha => true,
-            CflIndex::Multi => params.mh_dir.is_some_and(|dir| dir <= 2),
-        })
-    } else {
-        ten_bit_general_intra_chroma_admitted(modes.supported_chroma_mode(), block_ctx)
-    };
-    let luma_admitted = modes.luma_is_dc()
-        || plan_luma_prediction_for_segment(modes, block_ctx, lossless, sb_mib).is_ok()
-        || rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok();
-    if !luma_admitted || !chroma_admitted {
-        return Err(general_intra_at!(
-            "unsupported_10bit_non_dc_intra_chroma",
-            tile_offset,
-            missing_capability_message!("intra.10bit.non_dc", luma = "non_dc_or_chroma_neighbour",),
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ));
-    }
-    Ok(())
-}
-
-fn ten_bit_general_intra_chroma_admitted(
-    mode: Option<SupportedChromaMode>,
-    block_ctx: BlockCtx,
-) -> bool {
-    let neighbours = block_ctx.neighbours(PlaneId::U);
-    let has_edge = neighbours.has_above() || neighbours.has_left();
-    let full_sb = block_ctx.block().width4() == FULL_SB_N4_LUMA;
-    let chroma_block = block_ctx.plane_block(PlaneId::U);
-    let chroma_smooth_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let chroma_cardinal_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let chroma_middle_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let chroma_one_sided_above_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let one_sided_above_available = (neighbours.has_above()
-        && block_ctx.has_uncapped_above_right(PlaneId::U))
-        || (!neighbours.has_above() && neighbours.has_left());
-    let no_neighbour_horizontal_first = mode == Some(SupportedChromaMode::Horizontal)
-        && block_ctx.block().width4() == FULL_SB_N4_LUMA
-        && block_ctx.block().height4() == FULL_SB_N4_LUMA
-        && block_ctx.is_top_left();
-    match mode {
-        Some(
-            SupportedChromaMode::Dc | SupportedChromaMode::D203Follow | SupportedChromaMode::D203,
-        ) => true,
-        Some(
-            SupportedChromaMode::Smooth
-            | SupportedChromaMode::SmoothVertical
-            | SupportedChromaMode::SmoothHorizontal,
-        ) => full_sb || (chroma_smooth_shape && has_edge),
-        Some(SupportedChromaMode::Vertical | SupportedChromaMode::VerticalFollow) => {
-            chroma_cardinal_shape && has_edge
-        }
-        Some(SupportedChromaMode::Horizontal | SupportedChromaMode::HorizontalFollow) => {
-            chroma_cardinal_shape && (has_edge || no_neighbour_horizontal_first)
-        }
-        Some(
-            SupportedChromaMode::D113Follow
-            | SupportedChromaMode::D113
-            | SupportedChromaMode::D135Follow
-            | SupportedChromaMode::D135
-            | SupportedChromaMode::D157Follow
-            | SupportedChromaMode::D157,
-        ) => chroma_middle_shape && has_edge,
-        Some(
-            SupportedChromaMode::D45Follow
-            | SupportedChromaMode::D45
-            | SupportedChromaMode::D67Follow
-            | SupportedChromaMode::D67,
-        ) => chroma_one_sided_above_shape && one_sided_above_available,
-        Some(SupportedChromaMode::Paeth) => {
-            chroma_smooth_shape && (neighbours.has_above() || neighbours.has_left())
-        }
-        _ => false,
     }
 }
 
@@ -1646,27 +1466,31 @@ struct ChromaCapabilityUnsupported {
 
 fn ensure_supported_chroma_capability(
     mode: SupportedChromaMode,
-    dpcm: Option<DpcmDirection>,
     block_ctx: BlockCtx,
 ) -> core::result::Result<(), ChromaCapabilityUnsupported> {
     let n4w = block_ctx.block().width4();
-    let neighbours = block_ctx.neighbours(PlaneId::U);
     let chroma_block = block_ctx.plane_block(PlaneId::U);
     let full_sb = n4w == FULL_SB_N4_LUMA;
-    let has_edge = neighbours.has_above() || neighbours.has_left();
-    let above_left = full_sb && neighbours.has_above() && neighbours.has_left();
-    let left_only = full_sb && !neighbours.has_above() && neighbours.has_left();
     let smooth_subblock = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let cardinal_subblock = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
     let paeth_subblock = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let middle_subblock = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let one_sided_above_subblock = chroma_block.width4() >= 1
-        && chroma_block.height4() >= 1
-        && (neighbours.has_above() || neighbours.has_left()); // § 7.13.2.1 clamps the above-right read to the frame edge (`aboveLimit`), so a right-edge subblock with no above-right is admissible like the cardinal path
     match mode {
-        SupportedChromaMode::Dc | SupportedChromaMode::D203Follow | SupportedChromaMode::D203 => {
-            Ok(())
-        }
+        SupportedChromaMode::Dc
+        | SupportedChromaMode::D135Follow
+        | SupportedChromaMode::D135
+        | SupportedChromaMode::D157Follow
+        | SupportedChromaMode::D157
+        | SupportedChromaMode::D113Follow
+        | SupportedChromaMode::D113
+        | SupportedChromaMode::VerticalFollow
+        | SupportedChromaMode::Vertical
+        | SupportedChromaMode::HorizontalFollow
+        | SupportedChromaMode::Horizontal
+        | SupportedChromaMode::D45Follow
+        | SupportedChromaMode::D45
+        | SupportedChromaMode::D67Follow
+        | SupportedChromaMode::D67
+        | SupportedChromaMode::D203Follow
+        | SupportedChromaMode::D203 => Ok(()),
         SupportedChromaMode::Smooth
         | SupportedChromaMode::SmoothVertical
         | SupportedChromaMode::SmoothHorizontal
@@ -1684,113 +1508,6 @@ fn ensure_supported_chroma_capability(
                 block = "subpartition",
             ),
         )),
-        SupportedChromaMode::D135Follow
-        | SupportedChromaMode::D135
-        | SupportedChromaMode::D157
-        | SupportedChromaMode::Horizontal
-            if full_sb && neighbours.is_top_left() =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::D135Follow
-        | SupportedChromaMode::D135
-        | SupportedChromaMode::D157Follow
-        | SupportedChromaMode::D157
-            if left_only || above_left || (middle_subblock && has_edge) =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::D135Follow | SupportedChromaMode::D135 => Err(unsupported_chroma(
-            "general_intra_directional_chroma_neighbour",
-            missing_capability_message!(
-                "intra.chroma.directional.d135",
-                neighbour = "unsupported",
-                block = "non_full_sb_or_first_col",
-            ),
-        )),
-        SupportedChromaMode::D113Follow | SupportedChromaMode::D113
-            if above_left || (middle_subblock && has_edge) =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::D113Follow | SupportedChromaMode::D113 => Err(unsupported_chroma(
-            "general_intra_directional_d113_chroma_neighbour",
-            missing_capability_message!(
-                "intra.chroma.directional.d113",
-                neighbour = "above_left",
-                block = "non_full_sb_or_edge",
-            ),
-        )),
-        SupportedChromaMode::D157Follow | SupportedChromaMode::D157 => Err(unsupported_chroma(
-            "general_intra_directional_d157_chroma_neighbour",
-            missing_capability_message!(
-                "intra.chroma.directional.d157",
-                neighbour = "left_or_above_left",
-                block = "non_full_sb_or_not_first_row",
-            ),
-        )),
-        SupportedChromaMode::D45 if full_sb && neighbours.is_top_left() => Ok(()),
-        SupportedChromaMode::D45Follow
-        | SupportedChromaMode::D45
-        | SupportedChromaMode::D67Follow
-        | SupportedChromaMode::D67
-            if one_sided_above_subblock =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::D45Follow
-        | SupportedChromaMode::D45
-        | SupportedChromaMode::D67Follow
-        | SupportedChromaMode::D67 => Err(unsupported_chroma(
-            "general_intra_directional_d45_chroma_neighbour",
-            missing_capability_message!(
-                "intra.chroma.directional.above_right",
-                neighbour = "above_right",
-                block = "non_full_sb_or_edge",
-            ),
-        )),
-        SupportedChromaMode::VerticalFollow
-        | SupportedChromaMode::Vertical
-        | SupportedChromaMode::HorizontalFollow
-        | SupportedChromaMode::Horizontal
-            if (cardinal_subblock || full_sb) && has_edge =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::Vertical if dpcm.is_some() && full_sb && neighbours.is_top_left() => {
-            Ok(())
-        }
-        SupportedChromaMode::Horizontal
-            if cardinal_subblock && chroma_block.x() == 0 && chroma_block.y() == 0 =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::VerticalFollow | SupportedChromaMode::Vertical => {
-            Err(unsupported_chroma(
-                "general_intra_cardinal_vertical_chroma",
-                missing_capability_message!(
-                    "intra.chroma.cardinal.vertical",
-                    neighbour = "above",
-                    block = "non_full_sb_or_first_row",
-                ),
-            ))
-        }
-        SupportedChromaMode::HorizontalFollow => Err(unsupported_chroma(
-            "general_intra_cardinal_horizontal_chroma",
-            missing_capability_message!(
-                "intra.chroma.cardinal.horizontal",
-                neighbour = "left",
-                block = "non_full_sb_or_first_col",
-            ),
-        )),
-        SupportedChromaMode::Horizontal => Err(unsupported_chroma(
-            "general_intra_horizontal_chroma_position",
-            missing_capability_message!(
-                "intra.chroma.horizontal",
-                neighbour = "top_left_only",
-                block = "non_full_sb_or_neighbour",
-            ),
-        )),
         SupportedChromaMode::Paeth if paeth_subblock => Ok(()),
         SupportedChromaMode::Paeth => Err(unsupported_chroma(
             "general_intra_paeth_chroma",
@@ -1801,83 +1518,6 @@ fn ensure_supported_chroma_capability(
             ),
         )),
     }
-}
-
-fn ensure_supported_rect_chroma_capability(
-    mode: SupportedChromaMode,
-    block_ctx: BlockCtx,
-) -> core::result::Result<(), ChromaCapabilityUnsupported> {
-    let neighbours = block_ctx.neighbours(PlaneId::U);
-    let chroma_block = block_ctx.plane_block(PlaneId::U);
-    let supported_middle_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let supported_smooth_shape = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    match mode {
-        SupportedChromaMode::Dc => Ok(()),
-        SupportedChromaMode::D203Follow | SupportedChromaMode::D203
-            if supported_smooth_shape && (neighbours.has_above() || neighbours.has_left()) =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::Vertical
-        | SupportedChromaMode::VerticalFollow
-        | SupportedChromaMode::Horizontal
-        | SupportedChromaMode::HorizontalFollow
-        | SupportedChromaMode::Smooth
-        | SupportedChromaMode::SmoothVertical
-        | SupportedChromaMode::SmoothHorizontal
-            if supported_smooth_shape =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::Horizontal
-            if supported_smooth_shape && chroma_block.x() == 0 && chroma_block.y() == 0 =>
-        {
-            Ok(())
-        }
-        mode if rect_chroma_is_middle_directional(mode)
-            && supported_middle_shape
-            && (neighbours.has_above() || neighbours.has_left()) =>
-        {
-            Ok(())
-        }
-        mode if rect_chroma_is_one_sided_above_directional(mode)
-            && supported_smooth_shape
-            && (neighbours.has_above() || neighbours.has_left()) =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::Paeth
-            if supported_smooth_shape && (neighbours.has_above() || neighbours.has_left()) =>
-        {
-            Ok(())
-        }
-        _ => Err(unsupported_chroma(
-            "general_intra_rect_non_dc_chroma",
-            missing_capability_message!("intra.rect.chroma_mode", mode = "unsupported_non_dc"),
-        )),
-    }
-}
-
-const fn rect_chroma_is_middle_directional(mode: SupportedChromaMode) -> bool {
-    matches!(
-        mode,
-        SupportedChromaMode::D135Follow
-            | SupportedChromaMode::D135
-            | SupportedChromaMode::D113Follow
-            | SupportedChromaMode::D113
-            | SupportedChromaMode::D157Follow
-            | SupportedChromaMode::D157
-    )
-}
-
-const fn rect_chroma_is_one_sided_above_directional(mode: SupportedChromaMode) -> bool {
-    matches!(
-        mode,
-        SupportedChromaMode::D45Follow
-            | SupportedChromaMode::D45
-            | SupportedChromaMode::D67Follow
-            | SupportedChromaMode::D67
-    )
 }
 
 const fn unsupported_chroma(

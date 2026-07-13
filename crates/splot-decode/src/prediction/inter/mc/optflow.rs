@@ -5,7 +5,6 @@ use splot_recon::derive_optflow_mv_deltas;
 use splot_recon::math::round2_signed_i32;
 
 use super::*;
-use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct MotionCell {
@@ -344,7 +343,9 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     offset: ByteOffset,
     output: &mut [u16],
 ) -> Result<()> {
-    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, PlaneId::Y, offset)?;
+    let (view, _, _) = reference_plane_view(reference, PlaneId::Y, offset)?;
+    let reference_size = reference.info().coded_luma_size();
+    let frame_size = sink.info().coded_luma_size();
     let scaling = derive_plane_scaling(
         rect.luma_x as i32,
         rect.luma_y as i32,
@@ -352,10 +353,10 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
         mv.col,
         0,
         0,
-        ref_mi_cols,
-        ref_mi_rows,
-        rect.luma_w as i32,
-        rect.luma_h as i32,
+        reference_size.width() as i32,
+        reference_size.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
     );
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         super::refinemv::reference_area_bounds(
@@ -366,8 +367,7 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
             candidate,
             0,
             0,
-            ref_mi_cols,
-            ref_mi_rows,
+            scaling,
         )
     });
     subpel_predict_block_into(
@@ -400,11 +400,37 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     motion: &CompoundMotionGrid,
     offset: ByteOffset,
 ) -> Result<CompoundPlanePrediction> {
-    let (view0, ref_mi_cols0, ref_mi_rows0) =
-        reference_plane_view(block.reference0, plane, offset)?;
-    let (view1, ref_mi_cols1, ref_mi_rows1) =
-        reference_plane_view(block.reference1, plane, offset)?;
+    let (view0, _, _) = reference_plane_view(block.reference0, plane, offset)?;
+    let (view1, _, _) = reference_plane_view(block.reference1, plane, offset)?;
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
+    let frame_size = sink.info().coded_luma_size();
+    let reference_size0 = block.reference0.info().coded_luma_size();
+    let reference_size1 = block.reference1.info().coded_luma_size();
+    let scaling0 = derive_plane_scaling(
+        plane_x as i32,
+        plane_y as i32,
+        block.mv0.row,
+        block.mv0.col,
+        sub_x,
+        sub_y,
+        reference_size0.width() as i32,
+        reference_size0.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
+    );
+    let scaling1 = derive_plane_scaling(
+        plane_x as i32,
+        plane_y as i32,
+        block.mv1.row,
+        block.mv1.col,
+        sub_x,
+        sub_y,
+        reference_size1.width() as i32,
+        reference_size1.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
+    );
+    let scaling_templates = [scaling0, scaling1];
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let [mut pred0, mut pred1] = super::take_compound_prediction_buffers(block_w * block_h);
@@ -419,22 +445,17 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
             let base_mvs = cell.base_mvs;
             let mvs = cell.mvs;
             let candidates = motion.refinemv_candidates();
-            for (reference, (view, ref_mi_cols, ref_mi_rows, output)) in [
-                (&view0, ref_mi_cols0, ref_mi_rows0, &mut pred0),
-                (&view1, ref_mi_cols1, ref_mi_rows1, &mut pred1),
-            ]
-            .into_iter()
-            .enumerate()
+            for (reference, (view, output)) in [(&view0, &mut pred0), (&view1, &mut pred1)]
+                .into_iter()
+                .enumerate()
             {
-                let scaling = derive_plane_scaling_prescaled(
+                let scaling = scaling_templates[reference].with_prescaled_mv(
                     (plane_x + col) as i32,
                     (plane_y + row) as i32,
                     mvs[reference][0],
                     mvs[reference][1],
                     sub_x,
                     sub_y,
-                    ref_mi_cols,
-                    ref_mi_rows,
                 );
                 let bounds = if let Some(mvs) = candidates {
                     let refine_unit_w = 16usize >> sub_x;
@@ -451,8 +472,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                         mvs[reference],
                         sub_x,
                         sub_y,
-                        ref_mi_cols,
-                        ref_mi_rows,
+                        scaling_templates[reference],
                     ))
                 } else if let Some((area_width, area_height)) =
                     subblock_reference_area_size(plane, subblock_w, subblock_h)
@@ -465,8 +485,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                         base_mvs[reference],
                         sub_x,
                         sub_y,
-                        ref_mi_cols,
-                        ref_mi_rows,
+                        scaling_templates[reference],
                     ))
                 } else {
                     None
@@ -495,30 +514,6 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
         }
     }
 
-    let scaling0 = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        block.mv0.row,
-        block.mv0.col,
-        sub_x,
-        sub_y,
-        ref_mi_cols0,
-        ref_mi_rows0,
-        block_w as i32,
-        block_h as i32,
-    );
-    let scaling1 = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        block.mv1.row,
-        block.mv1.col,
-        sub_x,
-        sub_y,
-        ref_mi_cols1,
-        ref_mi_rows1,
-        block_w as i32,
-        block_h as i32,
-    );
     Ok(CompoundPlanePrediction {
         pred0,
         pred1,

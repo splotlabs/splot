@@ -208,7 +208,7 @@ fn execute<T: ReconSample>(
 fn run_windowed<T: ReconSample>(
     block: &PendingBlock,
     workspace: &CurrentFrameWorkspace<T>,
-    snapshot: FrameQuantizerSnapshot,
+    snapshot: &FrameQuantizerSnapshot,
     shared: &FlushShared<'_, '_, T>,
 ) -> JobResult<T> {
     let mut window =
@@ -299,7 +299,7 @@ pub(super) fn flush_deferred<T: ReconSample>(
         let frame: &CurrentFrameWorkspace<T> = workspace;
         pending
             .par_iter()
-            .map(|block| Some(run_windowed(block, frame, snapshot, &shared)))
+            .map(|block| Some(run_windowed(block, frame, &snapshot, &shared)))
             .collect()
     } else {
         pending.iter().map(|_| None).collect()

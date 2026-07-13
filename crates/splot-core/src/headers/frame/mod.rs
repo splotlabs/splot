@@ -63,14 +63,15 @@ pub use encoder_input::{
 pub(crate) use filtering::gdf_per_block_is_coded;
 pub use filtering::{
     CdefParams, CdefStrengthSet, CoreSeqFilterView, DeblockingFilterParams, GdfGeometry, GdfParams,
-    InterpolationFilter, MfhDeblockingView, parse_cdef_params, parse_deblocking_filter_params,
-    parse_gdf_params, read_interpolation_filter,
+    InterpolationFilter, MfhDeblockingView, gdf_block_size, parse_cdef_params,
+    parse_deblocking_filter_params, parse_gdf_params, read_interpolation_filter,
 };
 pub use get_ref_frames::{RESTRICTED_OH, get_relative_dist};
 pub use global_motion::{
-    GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionStop, GmType,
+    GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionReferenceState,
+    GlobalMotionStop, GmType, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
     decode_signed_subexp_with_ref, decode_subexp, decode_unsigned_subexp_with_ref,
-    inverse_recenter, parse_global_motion_params, read_global_param,
+    inverse_recenter, parse_global_motion_params, read_global_param, scale_warp_model,
 };
 pub use info::{
     CoreSeqInterView, CoreSeqView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,

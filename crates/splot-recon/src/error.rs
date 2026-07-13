@@ -502,16 +502,6 @@ pub enum ReconError {
         /// Prediction rectangle needing the edge.
         rect: PlaneRect,
     },
-    /// A workspace directional-angle helper would need luma IDIF.
-    #[error("current-frame workspace {} directional angle intra prediction pAngle {} requires luma IDIF for rectangle x={} y={} width={} height={}", .plane.name(), .p_angle, .rect.x(), .rect.y(), .rect.width(), .rect.height())]
-    WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
-        /// Luma plane whose workspace storage was rejected.
-        plane: PlaneId,
-        /// Directional pAngle being computed.
-        p_angle: u16,
-        /// Prediction rectangle needing luma IDIF.
-        rect: PlaneRect,
-    },
     /// A reference frame store capacity was outside the supported slot range.
     #[error("reference frame store capacity {capacity} is outside 1..={max_slots}")]
     InvalidReferenceStoreCapacity {
