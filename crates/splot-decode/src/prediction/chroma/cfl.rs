@@ -10,13 +10,13 @@ use splot_recon::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
-    predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
+    BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize, PixelFormat,
+    PlaneId, ReconSample, predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
 };
 
 use crate::bitstream::tile_payload::{
     CflIndex, CflParams, GeneralIntraResidualError, LumaCoeffBlock,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
 };
 
 const MI_SIZE: usize = 4;
@@ -48,9 +48,20 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let out = reconstruct_general_intra_chroma_cfl_block(
+    let block_size = IntraRectBlockSize::new(
+        u8::try_from(log2_width).unwrap_or(u8::MAX),
+        u8::try_from(log2_height).unwrap_or(u8::MAX),
+    )?;
+    let mut out = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    let result = reconstruct_general_intra_chroma_cfl_block(
         workspace,
         block,
+        &mut out,
         plane_id,
         x,
         y,
@@ -64,13 +75,14 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
         num4_below_left,
         bit_depth,
         None,
-    )?;
-    let block_size = IntraRectBlockSize::new(
-        u8::try_from(log2_width).unwrap_or(u8::MAX),
-        u8::try_from(log2_height).unwrap_or(u8::MAX),
-    )?;
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    )
+    .and_then(|()| {
+        workspace
+            .write_rect_block(plane_id, x, y, block_size, &out)
+            .map_err(Into::into)
+    });
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, out);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -106,10 +118,33 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             bit_depth,
         )?)
     };
-    let run = |(plane_id, block, neighbours): (PlaneId, &LumaCoeffBlock, (usize, usize))| {
+    let block_size = IntraRectBlockSize::new(
+        u8::try_from(log2_width).unwrap_or(u8::MAX),
+        u8::try_from(log2_height).unwrap_or(u8::MAX),
+    )?;
+    let mut u_out = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        PlaneId::U,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    let mut v_out = match workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Secondary,
+        PlaneId::V,
+        block_size.sample_count(),
+        T::default(),
+    ) {
+        Ok(out) => out,
+        Err(source) => {
+            workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, u_out);
+            return Err(source.into());
+        }
+    };
+    let run = |plane_id, block, (num4_above_right, num4_below_left), out: &mut Vec<T>| {
         reconstruct_general_intra_chroma_cfl_block(
             workspace,
             block,
+            out,
             plane_id,
             x,
             y,
@@ -119,27 +154,34 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             cfl_params,
             cfl_ds_filter_index,
             sb_mib,
-            neighbours.0,
-            neighbours.1,
+            num4_above_right,
+            num4_below_left,
             bit_depth,
             luma_ac.as_deref(),
         )
     };
-    let u_out = run((PlaneId::U, u_block, u_neighbours))?;
-    let v_out = run((PlaneId::V, v_block, v_neighbours))?;
-    let block_size = IntraRectBlockSize::new(
-        u8::try_from(log2_width).unwrap_or(u8::MAX),
-        u8::try_from(log2_height).unwrap_or(u8::MAX),
-    )?;
-    workspace.write_rect_block(PlaneId::U, x, y, block_size, &u_out)?;
-    workspace.write_rect_block(PlaneId::V, x, y, block_size, &v_out)?;
-    Ok(())
+    let result = run(PlaneId::U, u_block, u_neighbours, &mut u_out)
+        .and_then(|()| run(PlaneId::V, v_block, v_neighbours, &mut v_out))
+        .and_then(|()| {
+            workspace
+                .write_rect_block(PlaneId::U, x, y, block_size, &u_out)
+                .map_err(Into::into)
+        })
+        .and_then(|()| {
+            workspace
+                .write_rect_block(PlaneId::V, x, y, block_size, &v_out)
+                .map_err(Into::into)
+        });
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, u_out);
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, v_out);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
+    out: &mut Vec<T>,
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -153,7 +195,7 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
     luma_ac: Option<&[i32]>,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let prediction = if cfl_params.index == CflIndex::Multi {
@@ -186,22 +228,24 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
             luma_ac,
         )?
     };
-    let out = if block.all_zero {
-        prediction
+    if block.all_zero {
+        out.copy_from_slice(&prediction);
+        Ok(())
     } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
+        reconstruct_general_intra_coeff_block_rect_with_prediction_into(
             block,
             &prediction,
+            out,
             qindex,
             plane_id,
             log2_width,
             log2_height,
             false,
             None,
+            None,
             bit_depth,
-        )?
-    };
-    Ok(out)
+        )
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

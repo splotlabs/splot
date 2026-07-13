@@ -70,9 +70,8 @@ pub(crate) use general_intra_residual::{
     PositionedLumaCoeffBlock, TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
     reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,

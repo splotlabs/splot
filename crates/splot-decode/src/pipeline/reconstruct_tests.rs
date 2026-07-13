@@ -144,6 +144,79 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
     }
 }
 
+#[test]
+fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
+    let mut workspace =
+        new_general_intra_workspace::<u8>(8, 8, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+    let block_size = IntraRectBlockSize::new(2, 2).unwrap();
+    workspace
+        .write_rect_block(PlaneId::Y, 0, 0, block_size, &[23; 16])
+        .unwrap();
+    let prediction = workspace
+        .take_intra_prediction_buffer(
+            splot_recon::IntraPredictionScratchBuffer::Primary,
+            PlaneId::Y,
+            16,
+            100,
+        )
+        .unwrap();
+    let prediction_allocation = prediction.as_ptr();
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 0,
+        quant: vec![0; 15],
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: 0,
+        use_tcq: false,
+        lossless: false,
+    };
+
+    let result = write_intra_prediction_block(
+        &mut workspace,
+        &block,
+        prediction,
+        PlaneId::Y,
+        0,
+        0,
+        block_size,
+        64,
+        false,
+        None,
+        None,
+        BitDepth::Eight,
+    );
+
+    assert!(matches!(
+        result,
+        Err(GeneralIntraResidualError::QuantLength {
+            expected: 16,
+            actual: 15,
+        })
+    ));
+    for y in 0..4 {
+        for x in 0..4 {
+            assert_eq!(
+                workspace.reconstructed_sample(PlaneId::Y, x, y).unwrap(),
+                23
+            );
+        }
+    }
+    let prediction = workspace
+        .take_intra_prediction_buffer(
+            splot_recon::IntraPredictionScratchBuffer::Primary,
+            PlaneId::Y,
+            16,
+            7,
+        )
+        .unwrap();
+    assert_eq!(prediction.as_ptr(), prediction_allocation);
+    workspace.recycle_intra_prediction_buffer(
+        splot_recon::IntraPredictionScratchBuffer::Primary,
+        prediction,
+    );
+}
+
 /// Lays an `above_row` pattern (length `width`) so that workspace row `edge_y` is
 /// that pattern over `x[0, width)`. Writes a `width x 4` block at `(0, edge_y-3)`
 /// whose every row carries the pattern (so its bottom row `edge_y` does too).
@@ -1972,14 +2045,17 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         lossless: false,
     };
 
-    let want = reconstruct_general_intra_coeff_block_rect_with_prediction(
+    let mut want = Vec::new();
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         &block,
         &paeth_pred,
+        &mut want,
         149,
         PlaneId::Y,
         3,
         4,
         true,
+        None,
         None,
         BitDepth::Eight,
     )

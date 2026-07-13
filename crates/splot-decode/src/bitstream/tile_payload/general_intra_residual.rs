@@ -59,6 +59,7 @@ use luma_transform_partition::MAX_LUMA_TRANSFORM_PARTITION_UNITS;
 pub(crate) use luma_transform_partition::{
     LumaTransformPartitionContext, LumaTransformPartitionUnits,
 };
+pub(crate) use reconstruct::reconstruct_general_intra_coeff_block_rect_with_prediction_into;
 use reconstruct::{reconstruct_block_setup, resolve_secondary_inverse_transform};
 
 const TX_4X4: usize = 0;
@@ -2198,35 +2199,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: ReconSample>(
-    block: &LumaCoeffBlock,
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
-    use_tcq: bool,
-    dpcm: Option<DpcmDirection>,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    reconstruct_general_intra_block_rect_with_prediction_core(
-        &block.quant,
-        prediction,
-        qindex,
-        plane_id,
-        log2_width,
-        log2_height,
-        block.plane_tx_type,
-        use_tcq && block.use_tcq,
-        false,
-        block.lossless,
-        None,
-        dpcm,
-        bit_depth,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
@@ -2239,9 +2211,11 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
+    let mut out = Vec::new();
     reconstruct_general_intra_block_rect_with_prediction_core(
         quant,
         prediction,
+        &mut out,
         qindex,
         plane_id,
         log2_width,
@@ -2253,7 +2227,8 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
         None,
         None,
         bit_depth,
-    )
+    )?;
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2270,9 +2245,11 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
 ) -> Result<Vec<T>, GeneralIntraResidualError> {
     let secondary =
         resolve_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, None)?;
+    let mut out = Vec::new();
     reconstruct_general_intra_block_rect_with_prediction_core(
         &block.quant,
         prediction,
+        &mut out,
         qindex,
         plane_id,
         log2_width,
@@ -2284,48 +2261,15 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt
         secondary.as_ref(),
         None,
         bit_depth,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_block_rect_with_prediction_and_ist<T: ReconSample>(
-    block: &LumaCoeffBlock,
-    prediction: &[T],
-    qindex: u32,
-    log2_width: u32,
-    log2_height: u32,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-    luma_context: LumaTransformTypeContext,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let secondary = resolve_secondary_inverse_transform(
-        block,
-        log2_width,
-        log2_height,
-        bit_depth,
-        Some(luma_context),
     )?;
-    reconstruct_general_intra_block_rect_with_prediction_core(
-        &block.quant,
-        prediction,
-        qindex,
-        PlaneId::Y,
-        log2_width,
-        log2_height,
-        block.plane_tx_type,
-        use_tcq && block.use_tcq,
-        false,
-        block.lossless,
-        secondary.as_ref(),
-        luma_context.dpcm,
-        bit_depth,
-    )
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
+    out: &mut Vec<T>,
     qindex: u32,
     plane_id: PlaneId,
     log2_width: u32,
@@ -2337,7 +2281,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     secondary: Option<&SecondaryInverseTransform>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
+) -> Result<(), GeneralIntraResidualError> {
     let setup = reconstruct_block_setup(
         prediction.len(),
         qindex,
@@ -2357,7 +2301,8 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             actual: quant.len(),
         });
     }
-    let mut out = vec![T::default(); setup.samples];
+    out.clear();
+    out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
         let residual_scratch = &mut scratch.residual[..setup.samples];
@@ -2369,11 +2314,11 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             secondary,
             dequant_scratch,
             residual_scratch,
-            &mut out,
+            out,
         )
     })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
-    Ok(out)
+    Ok(())
 }
 
 const MAX_ADJUSTED_COEFFS: usize = 32 * 32;

@@ -12,9 +12,8 @@ use splot_recon::{
 use crate::Result;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
     reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -160,22 +159,37 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
                 })?;
         prediction.push(T::try_from_u16(sample)?);
     }
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
-    Ok(())
+    if block.all_zero {
+        return workspace
+            .write_rect_block(PlaneId::Y, x, y, block_size, &prediction)
+            .map_err(Into::into);
+    }
+    let mut out = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Secondary,
+        PlaneId::Y,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        block,
+        &prediction,
+        &mut out,
+        qindex,
+        PlaneId::Y,
+        log2_width,
+        log2_height,
+        use_tcq,
+        Some(luma_context),
+        None,
+        bit_depth,
+    )
+    .and_then(|()| {
+        workspace
+            .write_rect_block(PlaneId::Y, x, y, block_size, &out)
+            .map_err(Into::into)
+    });
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, out);
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -316,32 +330,38 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
             .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
         return result.map_err(Into::into);
     }
-    let reconstructed = if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            dpcm,
-            bit_depth,
-        )
+    let mut out = match workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Secondary,
+        plane_id,
+        block_size.sample_count(),
+        T::default(),
+    ) {
+        Ok(out) => out,
+        Err(source) => {
+            workspace
+                .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
+            return Err(source.into());
+        }
     };
+    let reconstructed = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        block,
+        &prediction,
+        &mut out,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
-    let out = reconstructed?;
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    let result = reconstructed.and_then(|()| {
+        workspace
+            .write_rect_block(plane_id, x, y, block_size, &out)
+            .map_err(Into::into)
+    });
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, out);
+    result
 }

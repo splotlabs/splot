@@ -15,7 +15,7 @@ mod smooth;
 #[cfg(test)]
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, SupportedDirectionalLumaMode,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
 };
 #[cfg(test)]
 use splot_recon::{
