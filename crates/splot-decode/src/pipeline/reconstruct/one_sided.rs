@@ -3,6 +3,8 @@
 
 //! One-sided directional, MRL, and cardinal-MRL intra entries with idif edge builders.
 
+use core::ops::Deref;
+
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraDirectionalAngle,
     IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges, IntraRectBlockSize, PlaneId,
@@ -20,6 +22,33 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_coeff_block_rect_with_prediction,
     reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
+
+const ONE_SIDED_IDIF_EDGE_CAPACITY: usize = 138;
+
+pub(crate) struct OneSidedIdifEdge<T: ReconSample> {
+    samples: [T; ONE_SIDED_IDIF_EDGE_CAPACITY],
+    len: usize,
+}
+
+impl<T: ReconSample> OneSidedIdifEdge<T> {
+    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
+        if len > ONE_SIDED_IDIF_EDGE_CAPACITY {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
+        Ok(Self {
+            samples: [T::default(); ONE_SIDED_IDIF_EDGE_CAPACITY],
+            len,
+        })
+    }
+}
+
+impl<T: ReconSample> Deref for OneSidedIdifEdge<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.samples[..self.len]
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct OneSidedEdgeFilter {
@@ -411,7 +440,7 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<OneSidedIdifEdge<T>, GeneralIntraResidualError> {
     if !availability.above {
         if !availability.left {
             return build_one_sided_idif_edge(
@@ -477,24 +506,27 @@ fn build_one_sided_idif_edge<T: ReconSample>(
     edge_filter: OneSidedEdgeFilter,
     corner: impl FnOnce() -> core::result::Result<T, splot_recon::ReconError>,
     in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<OneSidedIdifEdge<T>, GeneralIntraResidualError> {
+    let mrl_span = mrl_index
+        .checked_mul(2)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let max_base = width
         .checked_add(height)
         .and_then(|v| v.checked_sub(1))
-        .and_then(|v| v.checked_add(mrl_index << 1))
+        .and_then(|v| v.checked_add(mrl_span))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let edge_len = max_base
         .checked_add(5)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mut edge = vec![T::default(); edge_len];
-    edge[1] = corner()?;
+    let mut edge = OneSidedIdifEdge::new(edge_len)?;
+    edge.samples[1] = corner()?;
     for i in 0..=max_base {
         let slot = i
             .checked_add(2)
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-        edge[slot] = in_edge(i)?;
+        edge.samples[slot] = in_edge(i)?;
     }
-    finalize_one_sided_idif_edge(&mut edge, max_base, edge_filter)?;
+    finalize_one_sided_idif_edge(&mut edge.samples[..edge.len], max_base, edge_filter)?;
     Ok(edge)
 }
 
@@ -758,7 +790,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
     have_left: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<OneSidedIdifEdge<T>, GeneralIntraResidualError> {
     if !have_left {
         if !have_above {
             return build_one_sided_idif_edge(

@@ -372,6 +372,42 @@ fn workspace_intra_edge_extends_partial_right_above_with_last_in_frame_sample() 
 }
 
 #[test]
+fn workspace_intra_edges_hold_maximum_u8_and_u16_blocks_inline() {
+    let u8_left = [11_u8; 64];
+    let u8_above = [22_u8; 64];
+    let mut u8_workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 65, 65), 0).unwrap();
+    u8_workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 64), &u8_left, 1)
+        .unwrap();
+    u8_workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 64, 1), &u8_above, 64)
+        .unwrap();
+    let u8_edges = u8_workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, 1, 1, rect_block(6, 6))
+        .unwrap();
+    assert_eq!(u8_edges.left_samples(), Some(u8_left.as_slice()));
+    assert_eq!(u8_edges.above_samples(), Some(u8_above.as_slice()));
+
+    let u16_left = [300_u16; 64];
+    let u16_above = [700_u16; 64];
+    let mut u16_workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Ten, 65, 65), 0).unwrap();
+    u16_workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, 64), &u16_left, 1)
+        .unwrap();
+    u16_workspace
+        .write_rect(PlaneId::Y, rect(1, 0, 64, 1), &u16_above, 64)
+        .unwrap();
+    let u16_edges = u16_workspace
+        .intra_dc_edges_for_rect(PlaneId::Y, 1, 1, rect_block(6, 6))
+        .unwrap()
+        .clone();
+    assert_eq!(u16_edges.left_samples(), Some(u16_left.as_slice()));
+    assert_eq!(u16_edges.above_samples(), Some(u16_above.as_slice()));
+}
+
+#[test]
 fn workspace_copy_rect_within_plane_copies_luma_samples() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 5, 4), 0).unwrap();

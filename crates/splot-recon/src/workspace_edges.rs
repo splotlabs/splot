@@ -12,6 +12,8 @@ use crate::{
     ReconError, ReconSample, Result,
 };
 
+const CURRENT_FRAME_INTRA_EDGE_CAPACITY: usize = 64;
+
 /// Iterator over checked workspace rectangle rows.
 #[derive(Clone, Debug)]
 pub struct WorkspaceRectRows<'a, T: ReconSample> {
@@ -56,23 +58,19 @@ impl<T: ReconSample> ExactSizeIterator for WorkspaceRectRows<'_, T> {}
 /// Owned edge samples read from a current-frame workspace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CurrentFrameIntraEdges<T: ReconSample> {
-    left: Option<Vec<T>>,
-    above: Option<Vec<T>>,
+    left: Option<([T; CURRENT_FRAME_INTRA_EDGE_CAPACITY], usize)>,
+    above: Option<([T; CURRENT_FRAME_INTRA_EDGE_CAPACITY], usize)>,
 }
 
 impl<T: ReconSample> CurrentFrameIntraEdges<T> {
-    const fn new(left: Option<Vec<T>>, above: Option<Vec<T>>) -> Self {
-        Self { left, above }
-    }
-
     /// Returns left edge samples when they were inside workspace storage.
     pub fn left_samples(&self) -> Option<&[T]> {
-        self.left.as_deref()
+        self.left.as_ref().map(|(samples, len)| &samples[..*len])
     }
 
     /// Returns above edge samples when they were inside workspace storage.
     pub fn above_samples(&self) -> Option<&[T]> {
-        self.above.as_deref()
+        self.above.as_ref().map(|(samples, len)| &samples[..*len])
     }
 
     /// Borrows the owned edges as DC prediction inputs.
@@ -87,10 +85,10 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         nominal: PlaneRect,
     ) -> Result<CurrentFrameIntraEdges<T>> {
         let rect = self.clamp_rect_to_storage(nominal)?;
-        Ok(CurrentFrameIntraEdges::new(
-            self.dc_edge_samples(nominal, rect, IntraDcEdge::Left)?,
-            self.dc_edge_samples(nominal, rect, IntraDcEdge::Above)?,
-        ))
+        Ok(CurrentFrameIntraEdges {
+            left: self.dc_edge_samples(nominal, rect, IntraDcEdge::Left)?,
+            above: self.dc_edge_samples(nominal, rect, IntraDcEdge::Above)?,
+        })
     }
 
     pub(super) fn dc_edge_sum_for_rect(
@@ -247,29 +245,38 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         nominal: PlaneRect,
         rect: PlaneRect,
         edge: IntraDcEdge,
-    ) -> Result<Option<Vec<T>>> {
+    ) -> Result<Option<([T; CURRENT_FRAME_INTRA_EDGE_CAPACITY], usize)>> {
         if !dc_edge_available(nominal, edge) {
             return Ok(None);
         }
 
         let nominal_len = dc_edge_len(nominal, edge);
-        let mut samples = match edge {
-            IntraDcEdge::Left => self.left_edge_samples(
-                rect.x() - 1,
-                rect.y()..rect.y() + rect.height(),
-                nominal_len,
-                dc_edge_context(edge),
-            )?,
-            IntraDcEdge::Above => self.above_edge_samples(
-                rect.y() - 1,
-                rect.x(),
-                rect.width(),
-                nominal_len,
-                dc_edge_context(edge),
-            )?,
+        if nominal_len > CURRENT_FRAME_INTRA_EDGE_CAPACITY {
+            return Err(ReconError::ArithmeticOverflow {
+                context: "workspace intra edge inline capacity",
+            });
+        }
+
+        let mut samples = [T::default(); CURRENT_FRAME_INTRA_EDGE_CAPACITY];
+        let actual_len = match edge {
+            IntraDcEdge::Left => {
+                for (index, row) in (rect.y()..rect.y() + rect.height()).enumerate() {
+                    samples[index] = self.samples[self.sample_index(rect.x() - 1, row)?];
+                }
+                rect.height()
+            }
+            IntraDcEdge::Above => {
+                let range = self.row_range(rect.y() - 1, rect.x(), rect.width())?;
+                // splot-copy-ok: materialize bounded above-edge scratch for intra prediction
+                samples[..rect.width()].copy_from_slice(&self.samples[range]);
+                rect.width()
+            }
         };
-        extend_edge_to_nominal(&mut samples, nominal_len);
-        Ok(Some(samples))
+        if actual_len < nominal_len {
+            let last = samples[actual_len - 1];
+            samples[actual_len..nominal_len].fill(last);
+        }
+        Ok(Some((samples, nominal_len)))
     }
 
     fn fold_dc_edge_samples<A: Copy>(
@@ -374,13 +381,6 @@ const fn dc_edge_len(rect: PlaneRect, edge: IntraDcEdge) -> usize {
     }
 }
 
-const fn dc_edge_context(edge: IntraDcEdge) -> &'static str {
-    match edge {
-        IntraDcEdge::Left => "left intra edge",
-        IntraDcEdge::Above => "above intra edge",
-    }
-}
-
 const fn dc_sum_context(edge: IntraDcEdge) -> &'static str {
     match edge {
         IntraDcEdge::Left => "workspace intra DC left sample sum",
@@ -400,11 +400,4 @@ const fn dc_sampled_count_context(edge: IntraDcEdge) -> &'static str {
         IntraDcEdge::Left => "workspace subsampled intra DC left sample count",
         IntraDcEdge::Above => "workspace subsampled intra DC above sample count",
     }
-}
-
-fn extend_edge_to_nominal<T: ReconSample>(edge: &mut Vec<T>, nominal_len: usize) {
-    let Some(&last) = edge.last() else {
-        return;
-    };
-    edge.resize(nominal_len, last);
 }
