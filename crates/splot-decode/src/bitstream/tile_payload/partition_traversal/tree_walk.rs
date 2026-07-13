@@ -253,6 +253,7 @@ where
     let sb_mask = sb_size4.saturating_sub(1);
     let mut step_count: u64 = 0;
     let mut sdp_state = SdpPartitionState::default();
+    let mut stack = Vec::new();
 
     let mut sb_row = mi_row_start;
     while sb_row < mi_row_end {
@@ -261,7 +262,8 @@ where
         while sb_col < mi_col_end {
             block_decoded.clear_superblock(sb_row, sb_col);
             let root = TilePartitionCall::root(sb_row, sb_col, frame.sb_size, frame.has_chroma);
-            let mut stack = vec![TilePartitionStackEntry::Partition(root)];
+            stack.clear();
+            stack.push(TilePartitionStackEntry::Partition(root));
             while let Some(entry) = stack.pop() {
                 let (call, forced_extended_sdp_chroma_block) = match entry {
                     TilePartitionStackEntry::Partition(call) => (call, false),
