@@ -291,9 +291,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         temporal_config.frame_size,
         temporal_context.reference_order_hints(),
     );
-    let mut cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
-    let mut gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
-    let mut ccso_state = CcsoState::new(
+    let cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
+    let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
+    let ccso_state = CcsoState::new(
         mi_rows,
         mi_cols,
         sequence,
@@ -322,201 +322,58 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         .is_some_and(|tail| tail.allow_warpmv_mode);
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
-    let mut deblock_blocks: Vec<crate::filters::deblock::DeblockBlock> = Vec::new();
-    let mut chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2] =
-        [Vec::new(), Vec::new()];
-    let mut tx_skip_records = Vec::new();
-    let mut decoded_any = false;
     let limits = options.limits();
-    let (mut active_source_blocks, mut unit_filters) = (Vec::new(), Vec::new());
-    for tile in work_units {
-        let tile_offset = tile.tile_byte_span().start;
-        let (tile_num, save_policy) = (tile.tile_num(), tile.cdf().save_policy());
-        let chroma = sequence.general.chroma_format_idc;
-        let mut coeff_ctx =
-            TileCoeffContextState::new_chroma(mi_rows, mi_cols, chroma).map_err(|_| {
-                inter_cap!(
-                    "inter_coeff_context_state",
-                    tile_offset,
-                    "inter.residual_context_state",
-                    SPEC_MODE_INFO
-                )
-            })?;
-        let mut delta_q_state = DeltaQState::new(sequence, core, tile_offset)?;
-        let mut intrabc_state = TileIntrabcPreludeState::new(
-            mi_rows,
-            mi_cols,
-            sequence,
-            core.frame_is_intra == Some(true),
-            tile_offset,
-        )?;
-        let mut segment_id_state = TileSegmentIdState::new(mi_rows, mi_cols).map_err(|_| {
-            inter_missing!(
-                "inter_segment_id_grid",
-                tile_offset,
-                "inter.segment_id_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
-        let mut mv_grid = NeighbourMvGrid::new(mi_rows, mi_cols).ok_or_else(|| {
-            inter_cap!(
-                "inter_mv_grid",
-                tile_offset,
-                "inter.mv_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
-        let mut y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new(mi_rows, mi_cols)
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_y_smooth_grid",
-                    tile_offset,
-                    "inter.y_smooth_grid",
-                    SPEC_MODE_INFO
-                )
-            })?;
-        let mut chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new(
-            chroma_smooth_rows,
-            chroma_smooth_cols,
-        )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_chroma_smooth_grid",
-                tile_offset,
-                "inter.chroma_smooth_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
-        let mut deferred = deferred_recon::DeferredInterRecon::new();
-        let mut ref_mv_bank = sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_refmvbank)
-            .then(super::find_mv_stack::RefMvBank::new);
-        let mut warp_param_bank = super::find_mv_stack::WarpParamBank::new();
-        let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
-            tile,
-            sequence,
-            core,
-            limits,
-            |work_unit,
-             symbols,
-             frontier,
-             joint_modes,
-             uses_mrls,
-             use_dip,
-             fsc_modes,
-             palette_state,
-             is_cfl_ctx,
-             block_decoded| {
-                let leaf = decode_block(
-                    work_unit,
-                    symbols,
-                    frontier,
-                    sequence,
-                    core,
-                    &mut coeff_ctx,
-                    &mut gdf_state,
-                    &mut cdef_state,
-                    &mut ccso_state,
-                    &mut delta_q_state,
-                    &mut intrabc_state,
-                    &mut segment_id_state,
-                    &mut mv_grid,
-                    &temporal_context,
-                    &mut motion_field,
-                    &mut y_smooth,
-                    &mut chroma_smooth,
-                    &mut ref_mv_bank,
-                    &mut warp_param_bank,
-                    sb_h4,
-                    mi_rows,
-                    mi_cols,
-                    max_drl_bits_minus_1,
-                    frame_interpolation_filter,
-                    residual_tool_policy,
-                    num_total_refs,
-                    reference_select,
-                    num_same_ref_compound,
-                    joint_modes,
-                    uses_mrls,
-                    use_dip,
-                    fsc_modes,
-                    palette_state,
-                    is_cfl_ctx,
-                    block_decoded,
-                    &mut deferred,
-                    workspace,
-                    &mut deblock_blocks,
-                    &mut chroma_deblock_blocks,
-                    &mut tx_skip_records,
-                    luma_use_tcq,
-                    residual_use_ddt,
-                    ref_frame_idx,
-                    reference,
-                    bit_depth,
-                    enable_adaptive_mvd,
-                    allow_bawp,
-                    allow_warpmv_mode,
-                    frame_is_switch,
-                    current_order_hint,
-                    tile_offset,
-                )?;
-                decoded_any = true;
-                Ok(leaf)
-            },
-        )
-        .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
-        deferred_recon::flush_deferred(
-            &mut deferred,
-            workspace,
-            &mut motion_field,
-            Some(&temporal_context),
-            reference,
-            ref_frame_idx,
-            sequence,
-            core,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-            luma_use_tcq,
-            residual_use_ddt,
-            bit_depth,
-        )?;
-        let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
-            symbols,
-            active_source_blocks: tile_source_blocks,
-            unit_filters: tile_unit_filters,
-        } = walk;
-        symbols.exit_symbol().map_err(|_| {
-            if reference_select {
-                compound_cap!(
-                    "compound_exit_symbol",
-                    tile_offset,
-                    "inter.compound.exit_symbol",
-                    SPEC_MODE_INFO
-                )
-            } else {
-                inter_cap!(
-                    "inter_exit_symbol",
-                    tile_offset,
-                    "inter.exit_symbol",
-                    SPEC_MODE_INFO
-                )
-            }
-        })?;
-        active_source_blocks.extend(tile_source_blocks);
-        unit_filters.extend(tile_unit_filters);
-        saved_cdfs.apply_completed_tile(tile_num, tile.cdf().tile_cdfs(), save_policy);
+    let output = tile::decode_tiles(
+        work_units,
+        sequence,
+        core,
+        limits,
+        chroma_smooth_rows,
+        chroma_smooth_cols,
+        mi_rows,
+        mi_cols,
+        sb_h4,
+        max_drl_bits_minus_1,
+        frame_interpolation_filter,
+        residual_tool_policy,
+        num_total_refs,
+        reference_select,
+        num_same_ref_compound,
+        &temporal_context,
+        reference,
+        workspace,
+        luma_use_tcq,
+        residual_use_ddt,
+        ref_frame_idx,
+        bit_depth,
+        enable_adaptive_mvd,
+        allow_bawp,
+        allow_warpmv_mode,
+        frame_is_switch,
+        current_order_hint,
+        cdef_state,
+        gdf_state,
+        ccso_state,
+        motion_field,
+    )?;
+    for tile in work_units.iter() {
+        saved_cdfs.apply_completed_tile(
+            tile.tile_num(),
+            tile.cdf().tile_cdfs(),
+            tile.cdf().save_policy(),
+        );
     }
-    if !decoded_any {
-        return Err(inter_missing!(
-            "inter_no_decoded_block",
-            first_tile_offset,
-            "inter.block",
-            SPEC_MODE_INFO
-        ));
-    }
+    let tile::TileDecodeOutput {
+        cdef_state,
+        gdf_state,
+        ccso_state,
+        motion_field,
+        deblock_blocks,
+        chroma_deblock_blocks,
+        tx_skip_records,
+        active_source_blocks,
+        unit_filters,
+    } = output;
     frame_cdfs.frame_end_update_from_saved(&saved_cdfs);
     let filter_inputs = InterFilterInputs {
         deblock_blocks,
@@ -2171,6 +2028,7 @@ mod prediction;
 mod residual;
 mod syntax;
 mod temporal;
+mod tile;
 pub(super) mod tip;
 mod warp;
 

@@ -464,6 +464,25 @@ impl CdefState {
             })
     }
 
+    pub(crate) fn merge_tile_from(
+        &mut self,
+        source: &Self,
+        mi_rows: core::ops::Range<usize>,
+        mi_cols: core::ops::Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        let unit_rows = mi_rows.start / CDEF_UNIT_MI..mi_rows.end.div_ceil(CDEF_UNIT_MI);
+        let unit_cols = mi_cols.start / CDEF_UNIT_MI..mi_cols.end.div_ceil(CDEF_UNIT_MI);
+        for row in unit_rows {
+            for col in unit_cols.clone() {
+                let target = self.index(row, col, tile_offset)?;
+                let source_index = source.index(row, col, tile_offset)?;
+                self.values[target] = source.values[source_index];
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
         CdefUnitGrid::new(self.rows, self.cols, self.values).map_err(|_| {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_shape"))

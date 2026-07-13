@@ -1163,16 +1163,27 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
 
 #[test]
 fn multi_tile_inter_fixture_decodes_bit_exact() {
-    let frames = decode_fixture(MULTI_TILE_INTER_FIXTURE);
-    assert_yuv420_8bit_frames(&frames, 128, 64);
-    assert_eq!(
-        frame_hashes(&frames),
-        [
-            "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
-            "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd"
-        ],
-        "two-tile output must match the pinned avmdec frames"
-    );
+    for threads in [1usize, 4] {
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))
+            .expect("context");
+        let plan = context
+            .plan_bytes(MULTI_TILE_INTER_FIXTURE, options)
+            .expect("plan");
+        let frames = context
+            .pool()
+            .install(|| decode_frames_from_plan(MULTI_TILE_INTER_FIXTURE, &options, &plan))
+            .expect("decode");
+        assert_yuv420_8bit_frames(&frames, 128, 64);
+        assert_eq!(
+            frame_hashes(&frames),
+            [
+                "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
+                "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd"
+            ],
+            "two-tile output must match the pinned avmdec frames"
+        );
+    }
 }
 
 #[test]

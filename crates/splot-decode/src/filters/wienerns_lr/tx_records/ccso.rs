@@ -180,6 +180,37 @@ impl CcsoState {
         unit_row.checked_mul(self.grid_cols)?.checked_add(unit_col)
     }
 
+    pub(crate) fn merge_tile_from(
+        &mut self,
+        source: &Self,
+        mi_rows: core::ops::Range<usize>,
+        mi_cols: core::ops::Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let unit_mi = 1usize
+            .checked_shl(self.shift)
+            .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+        let unit_rows = mi_rows.start / unit_mi..mi_rows.end.div_ceil(unit_mi);
+        let unit_cols = mi_cols.start / unit_mi..mi_cols.end.div_ceil(unit_mi);
+        for plane in 0..CCSO_PLANES {
+            for row in unit_rows.clone() {
+                for col in unit_cols.clone() {
+                    let target = self
+                        .block_index(row, col)
+                        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+                    let source_index = source
+                        .block_index(row, col)
+                        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+                    self.blocks[plane][target] = source.blocks[plane][source_index];
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn load_reused_blocks(
         &mut self,
         core: &FrameHeaderCore,

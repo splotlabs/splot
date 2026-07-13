@@ -202,6 +202,7 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
     "crates/splot-decode/src/filters/ccso.rs",
     "crates/splot-decode/src/prediction/inter/block/deferred_recon.rs",
+    "crates/splot-decode/src/prediction/inter/block/tile.rs",
     "crates/splot-decode/src/filters/cdef.rs",
     "crates/splot-decode/src/filters/deblock.rs",
     "crates/splot-decode/src/filters/gdf.rs",
