@@ -248,10 +248,11 @@ pub(crate) fn read_nonzero_coeff_signs(
     inputs: &[CoeffSignReadInput],
 ) -> Result<Vec<CoeffSignRead>, CoeffSignReadError> {
     let entries = walk.entries();
-    let levels = preflight_nonzero_coeff_signs(block, walk, inputs)?;
+    preflight_nonzero_coeff_signs(block, walk, inputs)?;
     let mut reads = Vec::new();
     reads.try_reserve(entries.len())?;
-    for (input, level) in inputs.iter().copied().zip(levels) {
+    for (entry, input) in entries.iter().copied().zip(inputs.iter().copied()) {
+        let level = block.level_at(entry.row(), entry.col())?;
         reads.push(read_preflighted_nonzero_coeff_sign(
             cdfs, symbols, input, level,
         )?);
@@ -263,7 +264,7 @@ pub(crate) fn preflight_nonzero_coeff_signs(
     block: &TransformCoeffBlockState,
     walk: &NonZeroCoeffScanWalk,
     inputs: &[CoeffSignReadInput],
-) -> Result<Vec<u32>, CoeffSignReadError> {
+) -> Result<(), CoeffSignReadError> {
     let entries = walk.entries();
     if inputs.len() != entries.len() {
         return Err(CoeffSignReadError::InputCountMismatch {
@@ -272,8 +273,6 @@ pub(crate) fn preflight_nonzero_coeff_signs(
         });
     }
 
-    let mut levels = Vec::new();
-    levels.try_reserve(entries.len())?;
     for (index, (entry, input)) in entries
         .iter()
         .copied()
@@ -295,9 +294,8 @@ pub(crate) fn preflight_nonzero_coeff_signs(
                 level,
             });
         }
-        levels.push(level);
     }
-    Ok(levels)
+    Ok(())
 }
 
 pub(crate) fn read_preflighted_nonzero_coeff_sign(

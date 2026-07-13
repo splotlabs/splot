@@ -22,7 +22,7 @@ use super::base_symbol::{
 };
 use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::level_state::{CoeffLevelStateWriteError, apply_nonzero_coeff_base_levels};
-use super::max_level::{CoeffMaxLevelConfig, CoeffTransformClass, derive_nonzero_coeff_max_levels};
+use super::max_level::{CoeffMaxLevelConfig, CoeffTransformClass, derive_coeff_max_level};
 use super::quant_pass::{
     CoeffQuantPassConfig, CoeffQuantPassError, CoeffQuantPassMaxLevelConfig, NonZeroCoeffQuantPass,
     validate_coeff_quant_pass_config,
@@ -426,7 +426,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass(
     let level_state = apply_nonzero_coeff_base_levels(input.start, &walk, &base_reads)?;
     let (eob_read, mut block) = level_state.into_parts();
 
-    let sign_levels = preflight_nonzero_coeff_signs(&block, &walk, input.sign_inputs)?;
+    preflight_nonzero_coeff_signs(&block, &walk, input.sign_inputs)?;
     let quant_config = CoeffQuantPassConfig {
         hr_level_avg: 0,
         ..input.quant_config
@@ -438,7 +438,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass(
             block: &mut block,
             walk: &walk,
             sign_inputs: input.sign_inputs,
-            sign_levels: &sign_levels,
             max_level_config: input.max_level_config,
             config: quant_config,
         },
@@ -484,7 +483,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
             h4: sign_config.h4,
         },
     )?;
-    let sign_levels = preflight_nonzero_coeff_signs(
+    preflight_nonzero_coeff_signs(
         base_level_pass.block(),
         base_level_pass.walk(),
         &sign_inputs,
@@ -504,7 +503,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
             block,
             walk,
             sign_inputs: &sign_inputs,
-            sign_levels: &sign_levels,
             max_level_config: CoeffQuantPassMaxLevelConfig {
                 plane: base_config.plane,
                 tx_class: base_config.tx_class,
@@ -593,7 +591,6 @@ struct InterleavedSignQuantPassInput<'a> {
     block: &'a mut TransformCoeffBlockState,
     walk: &'a NonZeroCoeffScanWalk,
     sign_inputs: &'a [CoeffSignReadInput],
-    sign_levels: &'a [u32],
     max_level_config: CoeffQuantPassMaxLevelConfig,
     config: CoeffQuantPassConfig,
 }
@@ -607,24 +604,19 @@ fn apply_interleaved_sign_and_quant_pass(
         block,
         walk,
         sign_inputs,
-        sign_levels,
         max_level_config,
         config,
     } = input;
     validate_coeff_quant_pass_config(config)?;
 
     let entries = walk.entries();
-    let max_levels = derive_nonzero_coeff_max_levels(
-        walk,
-        CoeffMaxLevelConfig {
-            plane: max_level_config.plane,
-            tx_class: max_level_config.tx_class,
-            is_hidden: config.is_hidden,
-        },
-    )
-    .map_err(CoeffQuantPassError::from)?;
-    for (index, (entry, max_level)) in entries.iter().copied().zip(max_levels.iter()).enumerate() {
-        debug_assert_eq!(max_level.entry, entry);
+    let max_level_config = CoeffMaxLevelConfig {
+        plane: max_level_config.plane,
+        tx_class: max_level_config.tx_class,
+        is_hidden: config.is_hidden,
+    };
+    for (index, entry) in entries.iter().copied().enumerate() {
+        let max_level = derive_coeff_max_level(entry, max_level_config);
         max_level
             .max_level
             .checked_sub(u32::from(config.use_tcq))
@@ -661,14 +653,16 @@ fn apply_interleaved_sign_and_quant_pass(
         lossless: config.lossless,
     });
 
-    for (index, (((entry, sign_input), level), max_level)) in entries
+    for (index, (entry, sign_input)) in entries
         .iter()
         .copied()
         .zip(sign_inputs.iter().copied())
-        .zip(sign_levels.iter().copied())
-        .zip(max_levels.iter().copied())
         .enumerate()
     {
+        let level = block
+            .level_at(entry.row(), entry.col())
+            .map_err(CoeffSignReadError::from)?;
+        let max_level = derive_coeff_max_level(entry, max_level_config);
         let sign = read_preflighted_nonzero_coeff_sign(cdfs, symbols, sign_input, level)?;
         if config.is_hidden
             && config.sum_abs1 > 0
