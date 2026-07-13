@@ -41,59 +41,6 @@ pub(super) fn cctx_allowed(plane: ResidualPlanePlan) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct_deferred_planes<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block_decoded: &TileBlockDecodedState,
-    deferred: Vec<(ResidualPlanePlan, LumaCoeffBlock)>,
-    qindex: u32,
-    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-    luma_context: LumaTransformTypeContext,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    let mut pending_u = None;
-    for (plane, coeffs) in deferred {
-        if plane.plane_id == PlaneId::U {
-            pending_u = Some((plane, coeffs));
-            continue;
-        }
-        if plane.plane_id == PlaneId::V
-            && let Some(u) = pending_u.take()
-        {
-            reconstruct_chroma_pair_or_planes(
-                workspace,
-                block_decoded,
-                u,
-                Some((plane, coeffs)),
-                qindex,
-                intra_edge,
-                luma_context,
-            )?;
-            continue;
-        }
-        plane.reconstruct(
-            workspace,
-            &coeffs,
-            block_decoded,
-            None,
-            qindex,
-            intra_edge,
-            luma_context,
-        )?;
-    }
-    if let Some((plane, coeffs)) = pending_u {
-        plane.reconstruct(
-            workspace,
-            &coeffs,
-            block_decoded,
-            None,
-            qindex,
-            intra_edge,
-            luma_context,
-        )?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,

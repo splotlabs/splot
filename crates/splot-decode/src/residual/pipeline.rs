@@ -28,7 +28,10 @@ pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
 use plan::{coeff_plane, rect_tx_size_from_log2};
 #[cfg(test)]
-use plane_execution::{ResidualPlaneExecution, chroma_angle_delta_uv};
+use plane_execution::{
+    CctxRole, ParsedResidualPlane, ParsedResidualPlaneKind, ParsedTransformUnit,
+    chroma_angle_delta_uv,
+};
 #[cfg(test)]
 use splot_core::tables::conversion::TX_WIDTH_LOG2;
 #[cfg(test)]
