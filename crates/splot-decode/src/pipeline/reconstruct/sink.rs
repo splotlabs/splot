@@ -111,12 +111,10 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         workspace,
         block,
         prediction,
-        IntraPredictionScratchBuffer::Primary,
         plane_id,
         x,
         y,
-        log2_width,
-        log2_height,
+        block_size,
         qindex,
         use_tcq,
         luma_context,
@@ -262,29 +260,60 @@ pub(super) fn average_luma_prediction_with<T: ReconSample>(
     Ok(())
 }
 
+pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_size: IntraRectBlockSize,
+    blend_secondary: bool,
+    mut predict: impl FnMut(
+        &CurrentFrameWorkspace<T>,
+        bool,
+        &mut [T],
+    ) -> core::result::Result<(), GeneralIntraResidualError>,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        PlaneId::Y,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    predict(workspace, false, &mut prediction)?;
+    if blend_secondary {
+        let mut secondary = workspace.take_intra_prediction_buffer(
+            IntraPredictionScratchBuffer::Secondary,
+            PlaneId::Y,
+            block_size.sample_count(),
+            T::default(),
+        )?;
+        let result = predict(workspace, true, &mut secondary)
+            .and_then(|()| average_luma_prediction_with(&mut prediction, &secondary));
+        workspace
+            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
+        result?;
+    }
+    Ok(prediction)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     prediction: Vec<T>,
-    scratch_slot: IntraPredictionScratchBuffer,
     plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_width: u32,
-    log2_height: u32,
+    block_size: IntraRectBlockSize,
     qindex: u32,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let log2_width = u32::from(block_size.log2_width());
+    let log2_height = u32::from(block_size.log2_height());
     if block.all_zero {
         let result = workspace.write_rect_block(plane_id, x, y, block_size, &prediction);
-        workspace.recycle_intra_prediction_buffer(scratch_slot, prediction);
+        workspace
+            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
         return result.map_err(Into::into);
     }
     let reconstructed = if let Some(luma_context) = luma_context {
@@ -311,7 +340,7 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
             bit_depth,
         )
     };
-    workspace.recycle_intra_prediction_buffer(scratch_slot, prediction);
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     let out = reconstructed?;
     workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())

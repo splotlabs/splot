@@ -16,7 +16,7 @@ use splot_recon::{
 
 use super::one_sided::{OneSidedEdgeFilter, finalize_one_sided_idif_edge};
 use super::sink::{
-    IntraEdgeAvailability, average_luma_prediction_with, noneighbour_above, noneighbour_corner,
+    IntraEdgeAvailability, build_mrl_luma_prediction, noneighbour_above, noneighbour_corner,
     noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
@@ -119,12 +119,10 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         workspace,
         block,
         prediction,
-        IntraPredictionScratchBuffer::Primary,
         plane_id,
         x,
         y,
-        log2_side,
-        log2_side,
+        block_size,
         qindex,
         use_tcq,
         luma_context,
@@ -262,12 +260,10 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
         workspace,
         block,
         prediction,
-        IntraPredictionScratchBuffer::Primary,
         plane_id,
         x,
         y,
-        log2_width,
-        log2_height,
+        block_size,
         qindex,
         use_tcq,
         luma_context,
@@ -295,64 +291,42 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     availability: MiddleEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let mut prediction = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Primary,
-        PlaneId::Y,
-        width * height,
-        T::default(),
-    )?;
-    predict_two_sided_middle_luma_mrl_into(
+    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
+    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
+    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let prediction = build_mrl_luma_prediction(
         workspace,
-        p_angle,
-        x,
-        y,
-        log2_width,
-        log2_height,
-        mrl_index,
-        above_mrl_index,
-        is_sb_boundary,
-        availability,
-        bit_depth,
-        &mut prediction,
+        block_size,
+        secondary_mrl,
+        |workspace, secondary, prediction| {
+            let (mrl_index, above_mrl_index, is_sb_boundary) = if secondary {
+                (0, 0, false)
+            } else {
+                (mrl_index, above_mrl_index, is_sb_boundary)
+            };
+            predict_two_sided_middle_luma_mrl_into(
+                workspace,
+                p_angle,
+                x,
+                y,
+                block_size,
+                mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
+                availability,
+                bit_depth,
+                prediction,
+            )
+        },
     )?;
-    if secondary_mrl {
-        let mut secondary = workspace.take_intra_prediction_buffer(
-            IntraPredictionScratchBuffer::Secondary,
-            PlaneId::Y,
-            width * height,
-            T::default(),
-        )?;
-        predict_two_sided_middle_luma_mrl_into(
-            workspace,
-            p_angle,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            0,
-            0,
-            false,
-            availability,
-            bit_depth,
-            &mut secondary,
-        )?;
-        let blend = average_luma_prediction_with(&mut prediction, &secondary);
-        workspace
-            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
-        blend?;
-    }
     write_intra_prediction_block(
         workspace,
         block,
         prediction,
-        IntraPredictionScratchBuffer::Primary,
         PlaneId::Y,
         x,
         y,
-        log2_width,
-        log2_height,
+        block_size,
         qindex,
         use_tcq,
         luma_context,
@@ -367,8 +341,7 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
     p_angle: u16,
     x: usize,
     y: usize,
-    log2_width: u32,
-    log2_height: u32,
+    block_size: IntraRectBlockSize,
     mrl_index: usize,
     above_mrl_index: usize,
     is_sb_boundary: bool,
@@ -376,11 +349,8 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
     bit_depth: BitDepth,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    let width = block_size.width();
+    let height = block_size.height();
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
     let (above_idif, left_idif) = match (availability.above, availability.left) {
         (true, true) => (
@@ -728,12 +698,10 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         workspace,
         block,
         prediction,
-        IntraPredictionScratchBuffer::Primary,
         plane_id,
         x,
         y,
-        log2_width,
-        log2_height,
+        block_size,
         qindex,
         use_tcq,
         luma_context,

@@ -5,8 +5,7 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize,
-    IntraSmoothEdges, IntraSmoothMode, PlaneId, ReconError, ReconSample,
-    predict_intra_smooth_rect_into,
+    IntraSmoothEdges, IntraSmoothMode, PlaneId, ReconSample, predict_intra_smooth_rect_into,
 };
 
 use super::sink::{
@@ -111,12 +110,10 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
         workspace,
         block,
         prediction,
-        IntraPredictionScratchBuffer::Primary,
         plane_id,
         x,
         y,
-        log2_width,
-        log2_height,
+        block_size,
         qindex,
         use_tcq,
         luma_context,
@@ -207,44 +204,10 @@ pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
         above_right_sentinel,
         bottom_left_sentinel,
         bit_depth,
-    )?;
-    let smooth_edges = IntraSmoothEdges::new(left.as_slice(), above.as_slice());
+    );
+    let smooth_edges = IntraSmoothEdges::new(&left[..=height], &above[..=width]);
     predict_intra_smooth_rect_into(bit_depth, block_size, mode, smooth_edges, prediction, width)?;
     Ok(())
-}
-
-pub(crate) fn predict_intra_smooth_over_available_edges<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    request: SmoothIntraPredictionRequest,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    let mut prediction =
-        vec![T::default(); request.block_size.width() * request.block_size.height()];
-    predict_intra_smooth_over_available_edges_into(workspace, request, &mut prediction)?;
-    Ok(prediction)
-}
-
-struct SmoothEdgeSamples<T> {
-    samples: [T; SMOOTH_EDGE_CAPACITY],
-    len: usize,
-}
-
-impl<T: ReconSample> SmoothEdgeSamples<T> {
-    fn filled(fill: T, len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
-        if len > SMOOTH_EDGE_CAPACITY {
-            return Err(ReconError::ArithmeticOverflow {
-                context: "smooth intra edge inline capacity",
-            }
-            .into());
-        }
-        Ok(Self {
-            samples: [fill; SMOOTH_EDGE_CAPACITY],
-            len,
-        })
-    }
-
-    fn as_slice(&self) -> &[T] {
-        &self.samples[..self.len]
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -258,41 +221,37 @@ fn build_smooth_edges<T: ReconSample>(
     above_right_sentinel: Option<T>,
     bottom_left_sentinel: Option<T>,
     bit_depth: BitDepth,
-) -> core::result::Result<(SmoothEdgeSamples<T>, SmoothEdgeSamples<T>), GeneralIntraResidualError> {
+) -> ([T; SMOOTH_EDGE_CAPACITY], [T; SMOOTH_EDGE_CAPACITY]) {
     let left_len = height + 1;
     let above_len = width + 1;
     let left = match (have_left, left_neighbour) {
-        (true, Some(samples)) => fill_edge_from_neighbour(samples, left_len, bit_depth)?,
+        (true, Some(samples)) => fill_edge_from_neighbour(samples, left_len, bit_depth),
         _ if have_above => {
             let seed = above_neighbour
                 .and_then(|samples| samples.first().copied())
                 .unwrap_or(noneighbour_left::<T>(bit_depth));
-            SmoothEdgeSamples::filled(seed, left_len)?
+            [seed; SMOOTH_EDGE_CAPACITY]
         }
-        _ => SmoothEdgeSamples::filled(noneighbour_left::<T>(bit_depth), left_len)?,
+        _ => [noneighbour_left::<T>(bit_depth); SMOOTH_EDGE_CAPACITY],
     };
     let mut above = match (have_above, above_neighbour) {
-        (true, Some(samples)) => fill_edge_from_neighbour(samples, above_len, bit_depth)?,
+        (true, Some(samples)) => fill_edge_from_neighbour(samples, above_len, bit_depth),
         _ if have_left => {
             let seed = left_neighbour
                 .and_then(|samples| samples.first().copied())
                 .unwrap_or(noneighbour_above::<T>(bit_depth));
-            SmoothEdgeSamples::filled(seed, above_len)?
+            [seed; SMOOTH_EDGE_CAPACITY]
         }
-        _ => SmoothEdgeSamples::filled(noneighbour_above::<T>(bit_depth), above_len)?,
+        _ => [noneighbour_above::<T>(bit_depth); SMOOTH_EDGE_CAPACITY],
     };
-    if let Some(sentinel) = above_right_sentinel
-        && let Some(slot) = above.samples.get_mut(width)
-    {
-        *slot = sentinel;
+    if let Some(sentinel) = above_right_sentinel {
+        above[width] = sentinel;
     }
     let mut left = left;
-    if let Some(sentinel) = bottom_left_sentinel
-        && let Some(slot) = left.samples.get_mut(height)
-    {
-        *slot = sentinel;
+    if let Some(sentinel) = bottom_left_sentinel {
+        left[height] = sentinel;
     }
-    Ok((left, above))
+    (left, above)
 }
 
 fn resolve_smooth_above_right_sentinel<T: ReconSample>(
@@ -413,15 +372,14 @@ fn fill_edge_from_neighbour<T: ReconSample>(
     samples: &[T],
     edge_len: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<SmoothEdgeSamples<T>, GeneralIntraResidualError> {
-    let mut edge = SmoothEdgeSamples::filled(noneighbour_left::<T>(bit_depth), edge_len)?;
-    for i in 0..edge_len {
-        let sample = samples
-            .get(i)
+) -> [T; SMOOTH_EDGE_CAPACITY] {
+    let mut edge = [noneighbour_left::<T>(bit_depth); SMOOTH_EDGE_CAPACITY];
+    for (index, slot) in edge[..edge_len].iter_mut().enumerate() {
+        *slot = samples
+            .get(index)
             .or_else(|| samples.last())
             .copied()
             .unwrap_or(noneighbour_left::<T>(bit_depth));
-        edge.samples[i] = sample;
     }
-    Ok(edge)
+    edge
 }

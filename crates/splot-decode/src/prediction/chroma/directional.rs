@@ -341,19 +341,7 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
     )?;
     predict_directional_noneighbour_into(mode, block_size, side, bit_depth, &mut prediction)?;
     write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        x,
-        y,
-        log2_side,
-        log2_side,
-        qindex,
-        false,
-        None,
-        None,
+        workspace, block, prediction, plane_id, x, y, block_size, qindex, false, None, None,
         bit_depth,
     )
 }
@@ -392,19 +380,7 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
         width,
     )?;
     write_intra_prediction_block(
-        workspace,
-        block,
-        prediction,
-        IntraPredictionScratchBuffer::Primary,
-        plane_id,
-        x,
-        y,
-        log2_width,
-        log2_height,
-        qindex,
-        false,
-        None,
-        dpcm,
+        workspace, block, prediction, plane_id, x, y, block_size, qindex, false, None, dpcm,
         bit_depth,
     )
 }
