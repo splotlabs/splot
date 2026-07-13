@@ -259,20 +259,24 @@ pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
         return Ok(());
     }
     let geometry = lr_unit_geometry(input)?;
-    let mut rows = Vec::new();
+    let mut row_start = None;
+    let mut row_end = input.tile_bounds.mi_row_start;
     for row in input.tile_bounds.mi_row_start..input.tile_bounds.mi_row_end {
         if lr_unit_row_for_mi(input, geometry, row)? == input.unit_row {
-            rows.push(row);
+            row_start.get_or_insert(row);
+            row_end = checked_add("lr_source_row_end", row, 1)?;
         }
     }
-    let mut cols = Vec::new();
+    let mut col_start = None;
+    let mut col_end = input.tile_bounds.mi_col_start;
     for col in input.tile_bounds.mi_col_start..input.tile_bounds.mi_col_end {
         if lr_unit_col_for_mi(input, geometry, col)? == input.unit_col {
-            cols.push(col);
+            col_start.get_or_insert(col);
+            col_end = checked_add("lr_source_col_end", col, 1)?;
         }
     }
-    for &row in &rows {
-        for &col in &cols {
+    for row in row_start.unwrap_or(row_end)..row_end {
+        for col in col_start.unwrap_or(col_end)..col_end {
             let block = lr_source_block_for(input, row, col)?;
             lr_activity.record_source_block(block, limits)?;
         }
