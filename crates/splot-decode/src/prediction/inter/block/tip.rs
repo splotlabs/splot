@@ -4,7 +4,7 @@
 use super::*;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
-use splot_recon::{DecodedFrame, PixelFormat};
+use splot_recon::{DecodedFrame, PixelFormat, ReconError};
 
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
@@ -469,22 +469,39 @@ pub(super) fn reconstruct<T: ReconSample>(
             });
         }
     }
-    let outputs = if two_references && splot_parallel::on_worker_pool() {
+    let parallel_output = two_references && splot_parallel::on_worker_pool();
+    let output_stride = unit_size * unit_size * 3 / 2;
+    let mut output_samples = if parallel_output {
+        let arena_len =
+            units
+                .len()
+                .checked_mul(output_stride)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "TIP compound output arena length",
+                })?;
+        vec![T::default(); arena_len]
+    } else {
+        Vec::new()
+    };
+    let outputs = if parallel_output {
         let shared: &mc::WorkspaceSink<'_, T> = sink;
-        let results: Vec<_> = units
-            .par_iter()
-            .map(|unit| {
+        let results: Vec<_> = output_samples
+            .par_chunks_mut(output_stride)
+            .zip(units.par_iter())
+            .map(|(samples, unit)| {
                 let compound = unit
                     .params
                     .into_compound()
                     .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-                mc::predict_compound_average_block(
+                let metadata = mc::predict_compound_average_block_into(
                     shared,
                     compound,
                     use_optflow.then_some(8),
                     tile_offset,
-                )
-                .map(Some)
+                    samples,
+                )?;
+                let samples: &[T] = samples;
+                Ok(Some((metadata, samples)))
             })
             .collect();
         results.into_iter().collect::<Result<Vec<_>>>()?
@@ -492,14 +509,14 @@ pub(super) fn reconstruct<T: ReconSample>(
         (0..units.len()).map(|_| None).collect()
     };
     for (unit, output) in units.into_iter().zip(outputs) {
-        let stored_mvs = if let Some(output) = output {
+        let stored_mvs = if let Some((metadata, samples)) = output {
             let refined_mvs = if use_optflow {
-                output.stored_mvs_at_origin()?
+                metadata.stored_mvs_at_origin()?
             } else {
                 None
             };
             let stored_mvs = tip_temporal_mvs(use_optflow, unit.mvs, refined_mvs);
-            output.publish(sink)?;
+            metadata.publish(samples, sink)?;
             stored_mvs
         } else if use_optflow {
             mc::motion_compensate_inter_block_with_optflow_mvs_into(
