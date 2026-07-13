@@ -975,44 +975,37 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     }
 
     let max_sample = params.bit_depth.max_sample();
+    let padded_width = params.width + 2 * PC_WIENER_FILTER_TAP_RADIUS;
+    let padded_rows = params.height + 2 * PC_WIENER_FILTER_TAP_RADIUS;
+    // Invalid input still takes the original access order, preserving its exact error.
+    let source_is_valid = (0..padded_rows).all(|row| {
+        let start = row * stride;
+        source.samples[start..start + padded_width]
+            .iter()
+            .all(|sample| sample.to_u16() <= max_sample)
+    });
+    if !source_is_valid {
+        return pc_wiener_filter_block(output, params, |x, y| {
+            let index = padded_filter_offset(stride, y, x)?;
+            Ok(source.samples[index])
+        });
+    }
+
     let mut filtered = Vec::with_capacity(sample_count);
+    let max_sample = i32::from(max_sample);
     for row in 0..params.height {
-        let row_i = isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener filter row",
-        })?;
         for col in 0..params.width {
-            let col_i = isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
-                context: "PC-Wiener filter column",
-            })?;
             let window_base = row * stride + col;
             let index = filtered.len();
             let coeffs = &filters[params.subclasses[index]];
-            let center = padded_filter_value(
-                source.samples,
-                window_base + center_offset,
-                col_i,
-                row_i,
-                max_sample,
-            )?;
+            let center = i32::from(source.samples[window_base + center_offset].to_u16());
             let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
-            for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
-                let positive = padded_filter_value(
-                    source.samples,
-                    window_base + pos_offsets[i],
-                    col_i + dx,
-                    row_i + dy,
-                    max_sample,
-                )?;
-                let negative = padded_filter_value(
-                    source.samples,
-                    window_base + neg_offsets[i],
-                    col_i - dx,
-                    row_i - dy,
-                    max_sample,
-                )?;
+            for i in 0..PC_WIENER_CONFIG.len() {
+                let positive = i32::from(source.samples[window_base + pos_offsets[i]].to_u16());
+                let negative = i32::from(source.samples[window_base + neg_offsets[i]].to_u16());
                 sum += (positive + negative) * coeffs[i];
             }
-            let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, i32::from(max_sample));
+            let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
             filtered.push(T::try_from_u16(sample as u16)?);
         }
     }
@@ -1097,26 +1090,6 @@ fn padded_filter_offset(stride: usize, dy: isize, dx: isize) -> Result<usize> {
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener padded tap offset",
         })
-}
-
-#[inline]
-fn padded_filter_value<T: ReconSample>(
-    samples: &[T],
-    index: usize,
-    x: isize,
-    y: isize,
-    max_sample: u16,
-) -> Result<i32> {
-    let value = samples[index].to_u16();
-    if value > max_sample {
-        return Err(ReconError::PcWienerSourceSampleOutOfRange {
-            x,
-            y,
-            value,
-            max: max_sample,
-        });
-    }
-    Ok(i32::from(value))
 }
 
 const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
@@ -1766,6 +1739,42 @@ mod tests {
         pc_wiener_filter_block_padded(&mut padded_output, &params, &source).unwrap();
 
         assert_eq!(callback_output, padded_output);
+    }
+
+    #[test]
+    fn padded_filter_preserves_out_of_range_error_order_and_output() {
+        let width = 1;
+        let height = 1;
+        let radius = PC_WIENER_FILTER_TAP_RADIUS;
+        let stride = width + 2 * radius;
+        let rows = height + 2 * radius;
+        let params = PcWienerFilter {
+            width,
+            height,
+            output_stride: width,
+            bit_depth: BitDepth::Eight,
+            filter_set_index: 0,
+            subclasses: &[0],
+        };
+
+        for (index, x, y) in [(radius * stride + radius, 0, 0), (radius * stride, -3, 0)] {
+            let mut padded = vec![0_u16; stride * rows];
+            padded[index] = 256;
+            let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+            let mut output = [77_u16];
+            let error = pc_wiener_filter_block_padded(&mut output, &params, &source).unwrap_err();
+
+            assert_eq!(
+                error,
+                ReconError::PcWienerSourceSampleOutOfRange {
+                    x,
+                    y,
+                    value: 256,
+                    max: 255,
+                }
+            );
+            assert_eq!(output, [77]);
+        }
     }
 
     #[test]
