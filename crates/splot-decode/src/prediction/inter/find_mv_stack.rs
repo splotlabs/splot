@@ -11,6 +11,64 @@ pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
 pub(crate) const MAX_WARP_REF_CANDIDATES: usize = 4;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FixedStack<T, const N: usize> {
+    entries: [T; N],
+    len: usize,
+}
+
+impl<T: Default, const N: usize> FixedStack<T, N> {
+    fn new() -> Self {
+        Self {
+            entries: core::array::from_fn(|_| T::default()),
+            len: 0,
+        }
+    }
+
+    fn from_entries(entries: impl IntoIterator<Item = T>) -> Self {
+        let mut stack = Self::new();
+        for entry in entries {
+            if !stack.try_push(entry) {
+                break;
+            }
+        }
+        stack
+    }
+}
+
+impl<T, const N: usize> FixedStack<T, N> {
+    fn try_push(&mut self, entry: T) -> bool {
+        let Some(slot) = self.entries.get_mut(self.len) else {
+            return false;
+        };
+        *slot = entry;
+        self.len += 1;
+        true
+    }
+
+    fn try_swap(&mut self, a: usize, b: usize) -> bool {
+        if a >= self.len || b >= self.len {
+            return false;
+        }
+        self.entries.swap(a, b);
+        true
+    }
+}
+
+impl<T, const N: usize> core::ops::Deref for FixedStack<T, N> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.entries[..self.len]
+    }
+}
+
+impl<T, const N: usize> core::ops::DerefMut for FixedStack<T, N> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries[..self.len]
+    }
+}
+
 pub(crate) const TIP_REF_FRAME: i8 = 7;
 
 pub(crate) const DEFAULT_WARP_PARAMS: [i64; 6] = [
@@ -1059,24 +1117,22 @@ fn collect_neighbour_context_cells(
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MvStack {
-    stack: Vec<(Mv, (i32, i32))>,
+    stack: FixedStack<(Mv, (i32, i32)), MAX_REF_MV_STACK_SIZE>,
     warp: WarpParamStack,
     block: MvBlockContext,
 }
 
 impl MvStack {
+    fn entry(&self, idx: usize) -> Option<&(Mv, (i32, i32))> {
+        self.stack.get(idx).or_else(|| self.stack.last())
+    }
+
     pub(crate) fn candidate(&self, idx: usize) -> Mv {
-        self.stack
-            .get(idx)
-            .or_else(|| self.stack.last())
-            .map_or(Mv::ZERO, |entry| entry.0)
+        self.entry(idx).map_or(Mv::ZERO, |entry| entry.0)
     }
 
     pub(crate) fn candidate_offsets(&self, idx: usize) -> (i32, i32) {
-        self.stack
-            .get(idx)
-            .or_else(|| self.stack.last())
-            .map_or((0, 0), |entry| entry.1)
+        self.entry(idx).map_or((0, 0), |entry| entry.1)
     }
 
     pub(crate) fn warp_candidate(&self, idx: usize) -> [i64; 6] {
@@ -1131,13 +1187,15 @@ impl Default for CompoundMvCandidate {
 }
 
 pub(crate) struct CompoundMvStack {
-    stack: Vec<CompoundMvCandidate>,
+    stack: FixedStack<CompoundMvCandidate, MAX_REF_MV_STACK_SIZE>,
 }
 
 impl CompoundMvStack {
     #[cfg(test)]
     pub(crate) fn from_candidates(stack: Vec<CompoundMvCandidate>) -> Self {
-        Self { stack }
+        Self {
+            stack: FixedStack::from_entries(stack),
+        }
     }
 
     pub(crate) fn candidate(&self, idx: usize) -> CompoundMvCandidate {
@@ -1188,8 +1246,20 @@ pub(crate) fn extend_warp_neighbour_params(
 
 const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
 
+pub(crate) struct WarpSamples(FixedStack<[i64; 4], LEAST_SQUARES_SAMPLES_MAX>);
+
+impl WarpSamples {
+    pub(crate) fn as_slice(&self) -> &[[i64; 4]] {
+        &self.0
+    }
+}
+
+#[allow(
+    clippy::large_enum_variant,
+    reason = "warp samples intentionally stay stack allocated"
+)]
 pub(crate) enum WarpSampleCollection {
-    Samples(Vec<[i64; 4]>),
+    Samples(WarpSamples),
     List1MvUnretained,
 }
 
@@ -1198,7 +1268,7 @@ pub(crate) fn find_warp_samples(
     block: &MvBlockContext,
     target_ref: i8,
 ) -> WarpSampleCollection {
-    let mut samples: Vec<[i64; 4]> = Vec::with_capacity(LEAST_SQUARES_SAMPLES_MAX);
+    let mut samples = FixedStack::new();
     let mi_row = block.mi_row as i32;
     let mi_col = block.mi_col as i32;
     let w4 = block.bw4 as i32;
@@ -1206,7 +1276,9 @@ pub(crate) fn find_warp_samples(
     let mi_rows = block.mi_rows as i32;
     let mi_cols = block.mi_cols as i32;
     let mut missing_list1 = false;
-    let mut add_sample = |samples: &mut Vec<[i64; 4]>, delta_row: i32, delta_col: i32| {
+    let mut add_sample = |samples: &mut FixedStack<[i64; 4], LEAST_SQUARES_SAMPLES_MAX>,
+                          delta_row: i32,
+                          delta_col: i32| {
         if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
             return;
         }
@@ -1227,7 +1299,7 @@ pub(crate) fn find_warp_samples(
             };
             let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i64 - 1;
             let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i64 - 1;
-            samples.push([
+            let _ = samples.try_push([
                 mid_y * 8,
                 mid_x * 8,
                 mid_y * 8 + i64::from(mv.row),
@@ -1301,7 +1373,7 @@ pub(crate) fn find_warp_samples(
     if missing_list1 {
         return WarpSampleCollection::List1MvUnretained;
     }
-    WarpSampleCollection::Samples(samples)
+    WarpSampleCollection::Samples(WarpSamples(samples))
 }
 
 const REF_MV_BANK_SIZE: usize = 4;
@@ -1499,7 +1571,7 @@ impl RefMvBank {
     fn fill(
         &self,
         block: &MvBlockContext,
-        entries: &mut Vec<MvStackEntry>,
+        entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
         prune_count: &mut usize,
     ) {
@@ -1540,18 +1612,20 @@ impl RefMvBank {
             {
                 continue;
             }
-            entries.push(MvStackEntry {
+            if !entries.try_push(MvStackEntry {
                 mv: candidate.mv0,
                 weight: 0,
                 offsets: (0, 0),
-            });
+            }) {
+                return;
+            }
         }
     }
 
     fn fill_compound(
         &self,
         block: &MvBlockContext,
-        entries: &mut Vec<CompoundMvStackEntry>,
+        entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
         prune_count: &mut usize,
     ) {
@@ -1697,7 +1771,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     order_hints: Option<OrderHintMvContext<'_>>,
     use_temporal_first: bool,
 ) -> MvStack {
-    let mut entries: Vec<MvStackEntry> = Vec::with_capacity(MAX_REF_MV_STACK_SIZE);
+    let mut entries = FixedStack::new();
     let mut prune_count = 0usize;
     let mut derived = DerivedMvState::new(temporal, order_hints);
     let mut warp = derive_wrl.then(WarpParamStack::new);
@@ -1754,14 +1828,14 @@ pub(crate) fn find_mv_stack_with_temporal(
         DrlReorder::Disabled => false,
     };
     if use_sort && num_nearest > 1 {
-        let mut max_idx = 0usize;
-        for (idx, entry) in entries.iter().enumerate().take(num_nearest).skip(1) {
-            if entry.weight > entries[max_idx].weight {
-                max_idx = idx;
-            }
-        }
+        let max_idx = entries
+            .iter()
+            .take(num_nearest)
+            .enumerate()
+            .max_by_key(|(idx, entry)| (entry.weight, core::cmp::Reverse(*idx)))
+            .map_or(0, |(idx, _)| idx);
         if max_idx != 0 {
-            entries.swap(0, max_idx);
+            let _ = entries.try_swap(0, max_idx);
         }
     }
     let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
@@ -1777,10 +1851,11 @@ pub(crate) fn find_mv_stack_with_temporal(
         }
     }
 
-    let stack: Vec<(Mv, (i32, i32))> = entries
-        .into_iter()
-        .map(|entry| (clamp_mv(block, entry.mv), entry.offsets))
-        .collect();
+    let stack = FixedStack::from_entries(
+        entries
+            .iter()
+            .map(|entry| (clamp_mv(block, entry.mv), entry.offsets)),
+    );
 
     MvStack {
         stack,
@@ -1815,14 +1890,15 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
         DrlReorder::Disabled => false,
     };
     if use_sort && num_nearest > 1 {
-        let mut max_idx = 0usize;
-        for (idx, entry) in state.entries.iter().enumerate().take(num_nearest).skip(1) {
-            if entry.weight > state.entries[max_idx].weight {
-                max_idx = idx;
-            }
-        }
+        let max_idx = state
+            .entries
+            .iter()
+            .take(num_nearest)
+            .enumerate()
+            .max_by_key(|(idx, entry)| (entry.weight, core::cmp::Reverse(*idx)))
+            .map_or(0, |(idx, _)| idx);
         if max_idx != 0 {
-            state.entries.swap(0, max_idx);
+            let _ = state.entries.try_swap(0, max_idx);
         }
     }
     let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
@@ -1843,22 +1919,17 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
         &mut state.entries,
         &mut state.prune_count,
     );
-    CompoundMvStack {
-        stack: state
-            .entries
-            .into_iter()
-            .map(|entry| CompoundMvCandidate {
-                mvs: [
-                    clamp_mv(block, entry.candidate.mvs[0]),
-                    clamp_mv(block, entry.candidate.mvs[1]),
-                ],
-                cwp_weight: entry.candidate.cwp_weight,
-            })
-            .collect(),
-    }
+    let stack = FixedStack::from_entries(state.entries.iter().map(|entry| CompoundMvCandidate {
+        mvs: [
+            clamp_mv(block, entry.candidate.mvs[0]),
+            clamp_mv(block, entry.candidate.mvs[1]),
+        ],
+        cwp_weight: entry.candidate.cwp_weight,
+    }));
+    CompoundMvStack { stack }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct CompoundMvStackEntry {
     candidate: CompoundMvCandidate,
     weight: u32,
@@ -2001,7 +2072,7 @@ fn scan_compound_temporal_mv_stack(
 }
 
 fn insert_compound_mv_stack_entry(
-    entries: &mut Vec<CompoundMvStackEntry>,
+    entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     candidate: CompoundMvCandidate,
     weight: u32,
@@ -2018,11 +2089,14 @@ fn insert_compound_mv_stack_entry(
             }
         }
     }
-    entries.push(CompoundMvStackEntry { candidate, weight });
-    StackInsert::Inserted
+    if entries.try_push(CompoundMvStackEntry { candidate, weight }) {
+        StackInsert::Inserted
+    } else {
+        StackInsert::Skipped
+    }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct MvStackEntry {
     mv: Mv,
     weight: u32,
@@ -2033,7 +2107,7 @@ fn scan_mv_stack_col(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     delta_col: i32,
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     derived: &mut DerivedMvState<'_>,
     mut warp: Option<&mut WarpParamStack>,
@@ -2071,7 +2145,7 @@ fn scan_mv_stack_probe(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     probe: RelativeProbe,
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     derived: &mut DerivedMvState<'_>,
     warp: Option<&mut WarpParamStack>,
@@ -2125,7 +2199,7 @@ enum StackInsert {
 }
 
 fn insert_mv_stack_entry(
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     candidate_mv: Mv,
     weight: u32,
@@ -2143,18 +2217,21 @@ fn insert_mv_stack_entry(
             }
         }
     }
-    entries.push(MvStackEntry {
+    if entries.try_push(MvStackEntry {
         mv: candidate_mv,
         weight,
         offsets,
-    });
-    StackInsert::Inserted
+    }) {
+        StackInsert::Inserted
+    } else {
+        StackInsert::Skipped
+    }
 }
 
 fn scan_temporal_mv_stack(
     block: &MvBlockContext,
     temporal: Option<&TemporalMvContext>,
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) {
     let Some(temporal) = temporal.filter(|_| block.ref_frame1.is_none()) else {
@@ -2193,7 +2270,7 @@ fn add_temporal_mv_sample(
     temporal: &TemporalMvContext,
     delta_row: usize,
     delta_col: usize,
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) -> StackInsert {
     let mv_row = block.mi_row.saturating_add(delta_row);

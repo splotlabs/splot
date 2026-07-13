@@ -411,7 +411,15 @@ pub(crate) fn read_warp_extend_syntax(
             block_ctx.ref_frame0,
         ) {
             super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
-                local_warp_estimation(&samples, mv, mi_row, mi_col, n4w, n4h, tile_offset)?
+                local_warp_estimation(
+                    samples.as_slice(),
+                    mv,
+                    mi_row,
+                    mi_col,
+                    n4w,
+                    n4h,
+                    tile_offset,
+                )?
             }
             super::super::find_mv_stack::WarpSampleCollection::List1MvUnretained => {
                 return Err(inter_cap!(

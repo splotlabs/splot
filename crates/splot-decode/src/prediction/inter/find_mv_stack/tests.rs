@@ -618,7 +618,7 @@ fn compound_extra_search_adds_large_block_mixed_candidates() {
         mvs: [Mv { row: -8, col: 0 }, Mv { row: -9, col: 1 }],
         cwp_weight: CWP_EQUAL,
     };
-    let mut entries = vec![
+    let mut entries = FixedStack::from_entries([
         CompoundMvStackEntry {
             candidate: zero,
             weight: 6,
@@ -627,7 +627,7 @@ fn compound_extra_search_adds_large_block_mixed_candidates() {
             candidate: temporal,
             weight: 1,
         },
-    ];
+    ]);
     let mut prune_count = 0;
     let mut block = block_at(0, 0);
     block.bw4 = 16;
@@ -637,6 +637,7 @@ fn compound_extra_search_adds_large_block_mixed_candidates() {
     compound_extra_search(&block, [Mv::ZERO; 2], &mut entries, &mut prune_count);
 
     assert_eq!(entries.len(), 4);
+    let entries = &entries[..];
     assert_eq!(entries[0].candidate, zero);
     assert_eq!(entries[1].candidate, temporal);
     assert_eq!(entries[2].candidate.mvs, [Mv::ZERO, Mv { row: 0, col: 1 }]);
@@ -644,6 +645,130 @@ fn compound_extra_search_adds_large_block_mixed_candidates() {
         entries[3].candidate.mvs,
         [Mv { row: -8, col: 0 }, Mv { row: -9, col: 0 }]
     );
+}
+
+#[test]
+fn single_mv_storage_keeps_the_first_six_candidates() {
+    let mut entries = FixedStack::new();
+    let mut prune_count = 0;
+
+    for col in 0..MAX_REF_MV_STACK_SIZE as i32 {
+        assert_eq!(
+            insert_mv_stack_entry(
+                &mut entries,
+                &mut prune_count,
+                Mv { row: 0, col },
+                1,
+                (-1, col),
+            ),
+            StackInsert::Inserted
+        );
+    }
+    assert_eq!(
+        insert_mv_stack_entry(
+            &mut entries,
+            &mut prune_count,
+            Mv { row: 0, col: 6 },
+            1,
+            (-1, 6),
+        ),
+        StackInsert::Skipped
+    );
+
+    assert_eq!(entries.len(), MAX_REF_MV_STACK_SIZE);
+    for (index, entry) in entries.iter().enumerate() {
+        assert_eq!(entry.mv.col, index as i32);
+        assert_eq!(entry.offsets, (-1, index as i32));
+    }
+}
+
+#[test]
+fn compound_mv_storage_keeps_the_first_six_candidates() {
+    let mut entries = FixedStack::new();
+    let mut prune_count = 0;
+
+    for col in 0..MAX_REF_MV_STACK_SIZE as i32 {
+        let candidate = CompoundMvCandidate {
+            mvs: [Mv { row: 0, col }, Mv { row: 1, col }],
+            cwp_weight: col as i16,
+        };
+        assert_eq!(
+            insert_compound_mv_stack_entry(&mut entries, &mut prune_count, candidate, 1),
+            StackInsert::Inserted
+        );
+    }
+    let overflow = CompoundMvCandidate {
+        mvs: [Mv { row: 0, col: 6 }, Mv { row: 1, col: 6 }],
+        cwp_weight: 6,
+    };
+    assert_eq!(
+        insert_compound_mv_stack_entry(&mut entries, &mut prune_count, overflow, 1),
+        StackInsert::Skipped
+    );
+
+    assert_eq!(entries.len(), MAX_REF_MV_STACK_SIZE);
+    for (index, entry) in entries.iter().enumerate() {
+        assert_eq!(entry.candidate.mvs[0].col, index as i32);
+        assert_eq!(entry.candidate.mvs[1].col, index as i32);
+        assert_eq!(entry.candidate.cwp_weight, index as i16);
+    }
+}
+
+#[test]
+fn warp_sample_storage_keeps_the_first_eight_samples() {
+    let mut grid = NeighbourMvGrid::new(3, 10).unwrap();
+    for col in 0..10 {
+        grid.record_block(
+            0,
+            col,
+            1,
+            1,
+            true,
+            0,
+            None,
+            NeighbourYMode::Other,
+            Mv {
+                row: col as i32,
+                col: -(col as i32),
+            },
+            false,
+            SWITCHABLE_FILTERS,
+            false,
+            BlockPrecisionRecord::default(),
+        );
+    }
+    let block = MvBlockContext {
+        mi_row: 1,
+        mi_col: 0,
+        bw4: 9,
+        bh4: 1,
+        sb_h4: SB_H4_64,
+        ref_frame0: 0,
+        ref_frame1: None,
+        mi_rows: 3,
+        mi_cols: 10,
+    };
+
+    let samples = match find_warp_samples(&grid, &block, 0) {
+        WarpSampleCollection::Samples(samples) => Some(samples),
+        WarpSampleCollection::List1MvUnretained => None,
+    };
+    assert!(
+        samples.is_some(),
+        "single-reference samples retain list-zero motion vectors"
+    );
+    let Some(samples) = samples else {
+        return;
+    };
+
+    assert_eq!(samples.as_slice().len(), LEAST_SQUARES_SAMPLES_MAX);
+    for (col, sample) in samples.as_slice().iter().enumerate() {
+        let source_x = (col as i64 * 4 + 1) * 8;
+        assert_eq!(
+            *sample,
+            [8, source_x, 8 + col as i64, source_x - col as i64]
+        );
+    }
 }
 
 #[test]
@@ -1597,7 +1722,7 @@ fn ref_mv_bank_same_mvs_refresh_preserves_original_cwp_weight() {
     bank.update(0, Some(1), mv0, Some(mv1), 10, false);
     bank.update(0, Some(1), mv0, Some(mv1), CWP_EQUAL, false);
 
-    let mut entries = Vec::new();
+    let mut entries = FixedStack::new();
     let mut prune_count = 0;
     let block = MvBlockContext {
         ref_frame1: Some(1),
