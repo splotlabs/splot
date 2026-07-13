@@ -13,8 +13,24 @@ use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
 use super::{
     CHROMA_PLANES, CHUNK_64_N4, GeneralIntraResidualPlan, IDTX, RectChromaPlan, RectLumaPlan,
-    ResidualPipelineUnsupported, ResidualPlanePlan, ResidualReconstructionPlan,
+    RecycledVec, ResidualPipelineUnsupported, ResidualPlanePlan, ResidualReconstructionPlan,
 };
+
+// AV2 § 9.2 caps a block axis at 64 4x4 units
+// (`docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
+const MAX_RESIDUAL_BLOCK_AXIS_N4: usize = 64;
+const MAX_RESIDUAL_CHUNKS_PER_AXIS: usize = MAX_RESIDUAL_BLOCK_AXIS_N4 / CHUNK_64_N4;
+pub(super) const MAX_RESIDUAL_PLANES: usize =
+    MAX_RESIDUAL_CHUNKS_PER_AXIS * MAX_RESIDUAL_CHUNKS_PER_AXIS * (1 + CHROMA_PLANES.len());
+
+std::thread_local! {
+    static RESIDUAL_PLANE_PLANS: std::cell::Cell<Option<Vec<ResidualPlanePlan>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn take_residual_plane_plans() -> RecycledVec<ResidualPlanePlan> {
+    RecycledVec::take(&RESIDUAL_PLANE_PLANS, MAX_RESIDUAL_PLANES)
+}
 
 impl GeneralIntraResidualPlan {
     pub(crate) fn square(
@@ -26,7 +42,7 @@ impl GeneralIntraResidualPlan {
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
-        let mut planes = Vec::new();
+        let mut planes = take_residual_plane_plans();
         let luma_reconstruction = ResidualReconstructionPlan::LumaSquare {
             plan: luma_plan,
             use_tcq: luma_use_tcq,
@@ -59,7 +75,7 @@ impl GeneralIntraResidualPlan {
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
-        let mut planes = Vec::new();
+        let mut planes = take_residual_plane_plans();
         let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
         let luma_reconstruction = match luma_plan {
             RectLumaPlan::Palette { palette, use_tcq } => {
@@ -168,7 +184,7 @@ impl GeneralIntraResidualPlan {
         lossless_luma_fsc: bool,
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let reconstruction = chroma_reconstruction(chroma_plan);
-        let mut planes = Vec::new();
+        let mut planes = take_residual_plane_plans();
         let chroma_block = block_ctx.plane_block(PlaneId::U);
         let chroma = chroma_plans(
             block_ctx,
@@ -278,6 +294,9 @@ fn push_ordered_planes(
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
+    if block.width4() > MAX_RESIDUAL_BLOCK_AXIS_N4 || block.height4() > MAX_RESIDUAL_BLOCK_AXIS_N4 {
+        return Err(UNSUPPORTED_RESIDUAL_PLANE_CAPACITY);
+    }
     let (sub_x, sub_y) = block_ctx.chroma().subsampling(PlaneId::U);
     let double_chroma_w = sub_x != 0 && width_chunks > 1 && !lossless;
     let double_chroma_h = sub_y != 0 && height_chunks > 1 && !lossless;
@@ -472,6 +491,12 @@ const fn unsupported_tx_size(plane_id: PlaneId) -> ResidualPipelineUnsupported {
 const UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY: ResidualPipelineUnsupported = unsupported(
     "general_intra_large_block_chunk_geometry",
     missing_capability_message!("intra.large_block.chunk_geometry"),
+    crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
+);
+
+const UNSUPPORTED_RESIDUAL_PLANE_CAPACITY: ResidualPipelineUnsupported = unsupported(
+    "general_intra_residual_plane_capacity",
+    missing_capability_message!("intra.residual_plane.capacity"),
     crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
 );
 

@@ -17,10 +17,12 @@ use crate::bitstream::tile_payload::{
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
 use super::transform_units::tx_size_log2;
-use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
+use super::{
+    DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, RecycledVec, ResidualPlanePlan, chroma_pair,
+};
 
 pub(crate) struct ParsedGeneralIntraResidual {
-    planes: Vec<ParsedResidualPlane>,
+    planes: RecycledVec<ParsedResidualPlane>,
 }
 
 pub(super) struct ParsedResidualPlane {
@@ -42,6 +44,11 @@ pub(super) enum ParsedResidualPlaneKind {
 pub(super) struct ParsedTransformUnit {
     pub(super) block: PositionedLumaCoeffBlock,
     pub(super) palette_color_map: Option<Vec<u8>>,
+}
+
+std::thread_local! {
+    static PARSED_RESIDUAL_PLANES: std::cell::Cell<Option<Vec<ParsedResidualPlane>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -101,8 +108,8 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let mut planes = Vec::with_capacity(self.planes.len());
-        for &plane in &self.planes {
+        let mut planes = RecycledVec::take(&PARSED_RESIDUAL_PLANES, self.planes.len());
+        for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
                 let mut parsed = plane.with_deferred_reconstruction().parse(
@@ -414,7 +421,8 @@ impl ParsedGeneralIntraResidual {
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let mut pending_u = None;
         let mut deferred = Vec::new();
-        for plane in self.planes {
+        let mut planes = self.planes;
+        for plane in planes.drain(..) {
             match plane.cctx_role {
                 CctxRole::HoldU => {
                     pending_u = Some(plane);

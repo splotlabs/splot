@@ -523,7 +523,7 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
                         "block_size={block_size} chroma={chroma:?} lossless={lossless}: {error:?}"
                     )
                 });
-                for plane in plan.planes {
+                for plane in plan.planes.iter().copied() {
                     assert_eq!(
                         (TX_WIDTH_LOG2[plane.tx_size], TX_HEIGHT_LOG2[plane.tx_size],),
                         (plane.tx.width_log2() as i32, plane.tx.height_log2() as i32),
@@ -534,6 +534,43 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
             }
         }
     }
+}
+
+#[test]
+fn max_residual_plan_capacity_reuses_storage_after_bound_error() {
+    let plan = |width4, height4| {
+        let block = BlockRect::new(0, 0, width4, height4);
+        let tx = TxShape::from_luma_4x4(width4.min(64), height4.min(64))
+            .expect("bounded transform shape");
+        let ctx = BlockCtx::new(
+            block,
+            tx,
+            width4,
+            height4,
+            BitDepth::Eight,
+            ChromaSampling::Yuv444,
+        );
+        GeneralIntraResidualPlan::rect(
+            ctx,
+            RectLumaPlan::Dc { use_tcq: false },
+            Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+            false,
+            None,
+            false,
+        )
+    };
+
+    let max_plan = plan(64, 64).expect("maximum AV2 block plan");
+    assert_eq!(max_plan.planes.len(), MAX_RESIDUAL_PLANES);
+    let storage = max_plan.planes.as_ptr();
+    drop(max_plan);
+
+    let error = plan(65, 64).expect_err("first out-of-table width must exceed the plan bound");
+    assert_eq!(error.reason_id(), "general_intra_residual_plane_capacity");
+
+    let after_error = plan(64, 64).expect("bound error must leave plan storage reusable");
+    assert_eq!(after_error.planes.len(), MAX_RESIDUAL_PLANES);
+    assert_eq!(after_error.planes.as_ptr(), storage);
 }
 
 #[test]
