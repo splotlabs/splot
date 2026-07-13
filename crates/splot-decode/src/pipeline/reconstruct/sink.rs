@@ -4,9 +4,9 @@
 //! Block reconstruction sinks: DC, palette, and inter-residual entries plus the shared luma write tail.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraDcEdges, IntraRectBlockSize,
-    OutputIndex, PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconSample, apply_intra_ibp_dc_rect,
-    predict_intra_dc_rect_value,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, DpcmDirection, IntraDcEdges,
+    IntraPredictionScratchBuffer, IntraRectBlockSize, OutputIndex, PixelFormat, PlaneId, PlaneRect,
+    PlaneSize, ReconSample, apply_intra_ibp_dc_rect, predict_intra_dc_rect_value,
 };
 
 use crate::Result;
@@ -98,41 +98,29 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_availability_into<T: Rec
         availability.above.then(|| edges.above_samples()).flatten(),
     );
     let dc = predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?;
-    let prediction = if ibp_dc {
-        let mut pred = vec![dc; width * height];
-        apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut pred, width)?;
-        pred
-    } else {
-        vec![dc; width * height]
-    };
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            None,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        dc,
+    )?;
+    if ibp_dc {
+        apply_intra_ibp_dc_rect(bit_depth, block_size, dc_edges, &mut prediction, width)?;
+    }
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -261,7 +249,7 @@ fn noneighbour_sample<T: ReconSample>(value: u16) -> T {
 
 pub(super) fn average_luma_prediction_with<T: ReconSample>(
     prediction: &mut [T],
-    secondary: Vec<T>,
+    secondary: &[T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     for (primary, secondary) in prediction.iter_mut().zip(secondary) {
         let average = (u32::from(primary.to_u16()) + u32::from(secondary.to_u16()) + 1) >> 1;
@@ -272,26 +260,63 @@ pub(super) fn average_luma_prediction_with<T: ReconSample>(
     Ok(())
 }
 
+pub(super) fn build_mrl_luma_prediction<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_size: IntraRectBlockSize,
+    blend_secondary: bool,
+    mut predict: impl FnMut(
+        &CurrentFrameWorkspace<T>,
+        bool,
+        &mut [T],
+    ) -> core::result::Result<(), GeneralIntraResidualError>,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        PlaneId::Y,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    predict(workspace, false, &mut prediction)?;
+    if blend_secondary {
+        let mut secondary = workspace.take_intra_prediction_buffer(
+            IntraPredictionScratchBuffer::Secondary,
+            PlaneId::Y,
+            block_size.sample_count(),
+            T::default(),
+        )?;
+        let result = predict(workspace, true, &mut secondary)
+            .and_then(|()| average_luma_prediction_with(&mut prediction, &secondary));
+        workspace
+            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
+        result?;
+    }
+    Ok(prediction)
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn write_luma_prediction_block<T: ReconSample>(
+pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     prediction: Vec<T>,
+    plane_id: PlaneId,
     x: usize,
     y: usize,
-    log2_width: u32,
-    log2_height: u32,
+    block_size: IntraRectBlockSize,
     qindex: u32,
     use_tcq: bool,
-    bit_depth: BitDepth,
     luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
+    let log2_width = u32::from(block_size.log2_width());
+    let log2_height = u32::from(block_size.log2_height());
+    if block.all_zero {
+        let result = workspace.write_rect_block(plane_id, x, y, block_size, &prediction);
+        workspace
+            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
+        return result.map_err(Into::into);
+    }
+    let reconstructed = if let Some(luma_context) = luma_context {
         reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
             block,
             &prediction,
@@ -301,20 +326,22 @@ pub(super) fn write_luma_prediction_block<T: ReconSample>(
             use_tcq,
             bit_depth,
             luma_context,
-        )?
+        )
     } else {
         reconstruct_general_intra_coeff_block_rect_with_prediction(
             block,
             &prediction,
             qindex,
-            PlaneId::Y,
+            plane_id,
             log2_width,
             log2_height,
             use_tcq,
-            None,
+            dpcm,
             bit_depth,
-        )?
+        )
     };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
+    let out = reconstructed?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
     Ok(())
 }

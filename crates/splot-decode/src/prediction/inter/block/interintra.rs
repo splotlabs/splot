@@ -20,7 +20,7 @@ use super::MI_SIZE;
 use crate::Result;
 use crate::bitstream::tile_payload::TileBlockDecodedState;
 use crate::pipeline::reconstruct::{
-    SmoothIntraPredictionRequest, predict_intra_smooth_over_available_edges,
+    SmoothIntraPredictionRequest, predict_intra_smooth_over_available_edges_into,
 };
 
 macro_rules! inter_diag {
@@ -171,7 +171,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 let y4 = y / MI_SIZE;
                 let w4 = (w / MI_SIZE).max(1);
                 let h4 = (h / MI_SIZE).max(1);
-                samples = predict_intra_smooth_over_available_edges(
+                predict_intra_smooth_over_available_edges_into(
                     workspace,
                     SmoothIntraPredictionRequest {
                         plane_id: plane,
@@ -195,6 +195,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                         ),
                         bit_depth,
                     },
+                    &mut samples,
                 )
                 .map_err(|_| geometry_error())?;
             }

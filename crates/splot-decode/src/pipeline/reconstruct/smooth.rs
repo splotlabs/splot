@@ -4,16 +4,18 @@
 //! Smooth intra prediction entries, edge assembly, and sentinel resolution.
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode,
-    PlaneId, ReconSample, predict_intra_smooth_rect_into,
+    BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize,
+    IntraSmoothEdges, IntraSmoothMode, PlaneId, ReconSample, predict_intra_smooth_rect_into,
 };
 
-use super::sink::{IntraEdgeAvailability, noneighbour_above, noneighbour_left};
+use super::sink::{
+    IntraEdgeAvailability, noneighbour_above, noneighbour_left, write_intra_prediction_block,
+};
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext, SupportedNonDcLumaMode,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
+
+const SMOOTH_EDGE_CAPACITY: usize = 65;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_smooth_rect_block_with_availability_into<
@@ -82,7 +84,13 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let prediction = predict_intra_smooth_over_available_edges(
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        block_size.width() * block_size.height(),
+        T::default(),
+    )?;
+    predict_intra_smooth_over_available_edges_into(
         workspace,
         SmoothIntraPredictionRequest {
             plane_id,
@@ -96,35 +104,22 @@ pub(crate) fn reconstruct_general_intra_smooth_over_available_edges_into<T: Reco
             num4_below_left,
             bit_depth,
         },
+        &mut prediction,
     )?;
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            None,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,10 +136,11 @@ pub(crate) struct SmoothIntraPredictionRequest {
     pub(crate) bit_depth: BitDepth,
 }
 
-pub(crate) fn predict_intra_smooth_over_available_edges<T: ReconSample>(
+pub(crate) fn predict_intra_smooth_over_available_edges_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     request: SmoothIntraPredictionRequest,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    prediction: &mut [T],
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let SmoothIntraPredictionRequest {
         plane_id,
         x,
@@ -209,17 +205,9 @@ pub(crate) fn predict_intra_smooth_over_available_edges<T: ReconSample>(
         bottom_left_sentinel,
         bit_depth,
     );
-    let smooth_edges = IntraSmoothEdges::new(&left, &above);
-    let mut prediction = vec![T::default(); width * height];
-    predict_intra_smooth_rect_into(
-        bit_depth,
-        block_size,
-        mode,
-        smooth_edges,
-        &mut prediction,
-        width,
-    )?;
-    Ok(prediction)
+    let smooth_edges = IntraSmoothEdges::new(&left[..=height], &above[..=width]);
+    predict_intra_smooth_rect_into(bit_depth, block_size, mode, smooth_edges, prediction, width)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -233,7 +221,7 @@ fn build_smooth_edges<T: ReconSample>(
     above_right_sentinel: Option<T>,
     bottom_left_sentinel: Option<T>,
     bit_depth: BitDepth,
-) -> (Vec<T>, Vec<T>) {
+) -> ([T; SMOOTH_EDGE_CAPACITY], [T; SMOOTH_EDGE_CAPACITY]) {
     let left_len = height + 1;
     let above_len = width + 1;
     let left = match (have_left, left_neighbour) {
@@ -242,9 +230,9 @@ fn build_smooth_edges<T: ReconSample>(
             let seed = above_neighbour
                 .and_then(|samples| samples.first().copied())
                 .unwrap_or(noneighbour_left::<T>(bit_depth));
-            vec![seed; left_len]
+            [seed; SMOOTH_EDGE_CAPACITY]
         }
-        _ => vec![noneighbour_left::<T>(bit_depth); left_len],
+        _ => [noneighbour_left::<T>(bit_depth); SMOOTH_EDGE_CAPACITY],
     };
     let mut above = match (have_above, above_neighbour) {
         (true, Some(samples)) => fill_edge_from_neighbour(samples, above_len, bit_depth),
@@ -252,20 +240,16 @@ fn build_smooth_edges<T: ReconSample>(
             let seed = left_neighbour
                 .and_then(|samples| samples.first().copied())
                 .unwrap_or(noneighbour_above::<T>(bit_depth));
-            vec![seed; above_len]
+            [seed; SMOOTH_EDGE_CAPACITY]
         }
-        _ => vec![noneighbour_above::<T>(bit_depth); above_len],
+        _ => [noneighbour_above::<T>(bit_depth); SMOOTH_EDGE_CAPACITY],
     };
-    if let Some(sentinel) = above_right_sentinel
-        && let Some(slot) = above.get_mut(width)
-    {
-        *slot = sentinel;
+    if let Some(sentinel) = above_right_sentinel {
+        above[width] = sentinel;
     }
     let mut left = left;
-    if let Some(sentinel) = bottom_left_sentinel
-        && let Some(slot) = left.get_mut(height)
-    {
-        *slot = sentinel;
+    if let Some(sentinel) = bottom_left_sentinel {
+        left[height] = sentinel;
     }
     (left, above)
 }
@@ -388,15 +372,14 @@ fn fill_edge_from_neighbour<T: ReconSample>(
     samples: &[T],
     edge_len: usize,
     bit_depth: BitDepth,
-) -> Vec<T> {
-    let mut edge = Vec::with_capacity(edge_len);
-    for i in 0..edge_len {
-        let sample = samples
-            .get(i)
+) -> [T; SMOOTH_EDGE_CAPACITY] {
+    let mut edge = [noneighbour_left::<T>(bit_depth); SMOOTH_EDGE_CAPACITY];
+    for (index, slot) in edge[..edge_len].iter_mut().enumerate() {
+        *slot = samples
+            .get(index)
             .or_else(|| samples.last())
             .copied()
             .unwrap_or(noneighbour_left::<T>(bit_depth));
-        edge.push(sample);
     }
     edge
 }

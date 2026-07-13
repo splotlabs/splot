@@ -5,20 +5,20 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraDipEdges, IntraMiddleDirectionalAngleEdges,
-    IntraPaethEdges, IntraRectBlockSize, IntraSmoothEdges, IntraSmoothMode, PlaneId, ReconSample,
-    predict_intra_dip_rect_into, predict_intra_middle_directional_angle_rect_into,
-    predict_intra_paeth_rect_into, predict_intra_smooth_rect_into,
+    IntraPaethEdges, IntraPredictionScratchBuffer, IntraRectBlockSize, IntraSmoothEdges,
+    IntraSmoothMode, PlaneId, ReconSample, predict_intra_dip_rect_into,
+    predict_intra_middle_directional_angle_rect_into, predict_intra_paeth_rect_into,
+    predict_intra_smooth_rect_into,
 };
 
 use super::middle::middle_directional_angle;
 use super::sink::{
     IntraEdgeAvailability, noneighbour_above, noneighbour_corner, noneighbour_left,
-    write_luma_prediction_block,
+    write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
     SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
 };
 
 const MI_SIZE: usize = 4;
@@ -57,7 +57,12 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         availability,
         bit_depth,
     )?;
-    let mut prediction = vec![T::default(); width * height];
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        PlaneId::Y,
+        width * height,
+        T::default(),
+    )?;
     predict_intra_dip_rect_into(
         bit_depth,
         block_size,
@@ -67,18 +72,19 @@ pub(crate) fn reconstruct_general_intra_luma_dip_rect_block_into<T: ReconSample>
         &mut prediction,
         width,
     )?;
-    write_luma_prediction_block(
+    write_intra_prediction_block(
         workspace,
         block,
         prediction,
+        PlaneId::Y,
         x,
         y,
-        log2_width,
-        log2_height,
+        block_size,
         qindex,
         use_tcq,
-        bit_depth,
         Some(luma_context),
+        None,
+        bit_depth,
     )
 }
 
@@ -100,22 +106,30 @@ where
         IntraRectBlockSize,
         usize,
         BitDepth,
-    ) -> core::result::Result<Vec<T>, GeneralIntraResidualError>,
+        &mut [T],
+    ) -> core::result::Result<(), GeneralIntraResidualError>,
 {
     let (side, block_size) = luma_square_prediction_geometry(log2_side)?;
-    let prediction = build_prediction(block_size, side, bit_depth)?;
-    write_luma_prediction_block(
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        PlaneId::Y,
+        side * side,
+        T::default(),
+    )?;
+    build_prediction(block_size, side, bit_depth, &mut prediction)?;
+    write_intra_prediction_block(
         workspace,
         block,
         prediction,
+        PlaneId::Y,
         x,
         y,
-        log2_side,
-        log2_side,
+        block_size,
         qindex,
         use_tcq,
-        bit_depth,
         Some(luma_context),
+        None,
+        bit_depth,
     )
 }
 
@@ -150,8 +164,8 @@ pub(crate) fn reconstruct_general_intra_luma_nondc_first_block_into<T: ReconSamp
         use_tcq,
         luma_context,
         bit_depth,
-        |block_size, side, bit_depth| {
-            predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth)
+        |block_size, side, bit_depth, prediction| {
+            predict_nondc_noneighbour_smooth(mode, block_size, side, bit_depth, prediction)
         },
     )
 }
@@ -161,18 +175,18 @@ fn predict_nondc_noneighbour_smooth<T: ReconSample>(
     block_size: IntraRectBlockSize,
     side: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    prediction: &mut [T],
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let smooth_mode = match mode {
         SupportedNonDcLumaMode::Smooth => IntraSmoothMode::Smooth,
         SupportedNonDcLumaMode::SmoothVertical => IntraSmoothMode::SmoothVertical,
         SupportedNonDcLumaMode::SmoothHorizontal => IntraSmoothMode::SmoothHorizontal,
     };
-    let above = vec![noneighbour_above::<T>(bit_depth); side + 1];
-    let left = vec![noneighbour_left::<T>(bit_depth); side + 1];
-    let edges = IntraSmoothEdges::new(&left, &above);
-    let mut out = vec![T::default(); side * side];
-    predict_intra_smooth_rect_into(bit_depth, block_size, smooth_mode, edges, &mut out, side)?;
-    Ok(out)
+    let above = [noneighbour_above::<T>(bit_depth); 65];
+    let left = [noneighbour_left::<T>(bit_depth); 65];
+    let edges = IntraSmoothEdges::new(&left[..=side], &above[..=side]);
+    predict_intra_smooth_rect_into(bit_depth, block_size, smooth_mode, edges, prediction, side)?;
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -198,29 +212,29 @@ pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: Rec
         use_tcq,
         luma_context,
         bit_depth,
-        |block_size, side, bit_depth| {
-            predict_directional_noneighbour(mode, block_size, side, bit_depth)
+        |block_size, side, bit_depth, prediction| {
+            predict_directional_noneighbour_into(mode, block_size, side, bit_depth, prediction)
         },
     )
 }
 
-pub(crate) fn predict_directional_noneighbour<T: ReconSample>(
+pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
     mode: SupportedDirectionalLumaMode,
     block_size: IntraRectBlockSize,
     side: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    prediction: &mut [T],
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let angle = middle_directional_angle(mode)?;
-    let mut above = vec![noneighbour_above::<T>(bit_depth); side + 1];
-    let mut left = vec![noneighbour_left::<T>(bit_depth); side + 1];
+    let mut above = [noneighbour_above::<T>(bit_depth); 65];
+    let mut left = [noneighbour_left::<T>(bit_depth); 65];
     above[0] = noneighbour_corner::<T>(bit_depth);
     left[0] = noneighbour_corner::<T>(bit_depth);
-    let edges = IntraMiddleDirectionalAngleEdges::both(&left, &above);
-    let mut out = vec![T::default(); side * side];
+    let edges = IntraMiddleDirectionalAngleEdges::both(&left[..=side], &above[..=side]);
     predict_intra_middle_directional_angle_rect_into(
-        bit_depth, block_size, angle, edges, &mut out, side,
+        bit_depth, block_size, angle, edges, prediction, side,
     )?;
-    Ok(out)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -434,7 +448,12 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
         above_samples,
         left_samples,
     )?;
-    let mut prediction = vec![T::default(); width * height];
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
     predict_intra_paeth_rect_into(
         bit_depth,
         block_size,
@@ -442,21 +461,8 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
         &mut prediction,
         width,
     )?;
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            None,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    write_intra_prediction_block(
+        workspace, block, prediction, plane_id, x, y, block_size, qindex, use_tcq, None, None,
+        bit_depth,
+    )
 }

@@ -7,7 +7,8 @@ use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
     IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
     IntraMiddleDirectionalAngleIdifEdges, IntraMiddleDirectionalAngleIdifMrlEdges,
-    IntraRectBlockSize, PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
+    IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId, ReconSample,
+    predict_intra_cardinal_directional_rect_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_idif_mrl_into,
     predict_intra_middle_directional_angle_rect_into,
@@ -15,14 +16,12 @@ use splot_recon::{
 
 use super::one_sided::{OneSidedEdgeFilter, finalize_one_sided_idif_edge};
 use super::sink::{
-    IntraEdgeAvailability, average_luma_prediction_with, noneighbour_above, noneighbour_corner,
-    noneighbour_left,
+    IntraEdgeAvailability, build_mrl_luma_prediction, noneighbour_above, noneighbour_corner,
+    noneighbour_left, write_intra_prediction_block,
 };
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    SupportedDirectionalLumaMode, reconstruct_general_intra_coeff_block_rect_with_prediction,
-    reconstruct_general_intra_coeff_block_with_prediction,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
+    SupportedDirectionalLumaMode,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -89,7 +88,12 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         bit_depth,
     )?;
     let angle = middle_directional_angle(mode)?;
-    let mut prediction = vec![T::default(); side * side];
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        side * side,
+        T::default(),
+    )?;
     if matches!(plane_id, PlaneId::Y) {
         let (left_idif, above_idif) =
             extend_directional_middle_idif_edges(&left, &above, bit_depth);
@@ -111,32 +115,20 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
             side,
         )?;
     }
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_side,
-            log2_side,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_side,
-            use_tcq,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,7 +163,12 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
     {
         return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
     }
-    let mut prediction = vec![T::default(); width * height];
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
 
     if left_samples.is_some() && above_samples.is_some() {
         let above_row = y
@@ -259,34 +256,20 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             )?;
         }
     }
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            dpcm,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -311,84 +294,63 @@ pub(crate) fn reconstruct_general_intra_two_sided_middle_luma_mrl_block_into<T: 
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let mut prediction = predict_two_sided_middle_luma_mrl(
+    let prediction = build_mrl_luma_prediction(
         workspace,
-        p_angle,
+        block_size,
+        secondary_mrl,
+        |workspace, secondary, prediction| {
+            let (mrl_index, above_mrl_index, is_sb_boundary) = if secondary {
+                (0, 0, false)
+            } else {
+                (mrl_index, above_mrl_index, is_sb_boundary)
+            };
+            predict_two_sided_middle_luma_mrl_into(
+                workspace,
+                p_angle,
+                x,
+                y,
+                block_size,
+                mrl_index,
+                above_mrl_index,
+                is_sb_boundary,
+                availability,
+                bit_depth,
+                prediction,
+            )
+        },
+    )?;
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        PlaneId::Y,
         x,
         y,
-        log2_width,
-        log2_height,
-        mrl_index,
-        above_mrl_index,
-        is_sb_boundary,
-        availability,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
         bit_depth,
-    )?;
-    if secondary_mrl {
-        let secondary = predict_two_sided_middle_luma_mrl(
-            workspace,
-            p_angle,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            0,
-            0,
-            false,
-            availability,
-            bit_depth,
-        )?;
-        average_luma_prediction_with(&mut prediction, secondary)?;
-    }
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            PlaneId::Y,
-            log2_width,
-            log2_height,
-            use_tcq,
-            None,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(PlaneId::Y, x, y, block_size, &out)?;
-    Ok(())
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn predict_two_sided_middle_luma_mrl<T: ReconSample>(
+fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     p_angle: u16,
     x: usize,
     y: usize,
-    log2_width: u32,
-    log2_height: u32,
+    block_size: IntraRectBlockSize,
     mrl_index: usize,
     above_mrl_index: usize,
     is_sb_boundary: bool,
     availability: MiddleEdgeAvailability,
     bit_depth: BitDepth,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    let width = 1usize << log2_width;
-    let height = 1usize << log2_height;
-    let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
-    let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
-    let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
+    prediction: &mut [T],
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = block_size.width();
+    let height = block_size.height();
     let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle)?;
     let (above_idif, left_idif) = match (availability.above, availability.left) {
         (true, true) => (
@@ -469,17 +431,16 @@ fn predict_two_sided_middle_luma_mrl<T: ReconSample>(
             )
         }
     };
-    let mut prediction = vec![T::default(); width * height];
     predict_intra_middle_directional_angle_rect_idif_mrl_into(
         bit_depth,
         block_size,
         angle,
         IntraMiddleDirectionalAngleIdifMrlEdges::both(&left_idif, &above_idif),
         mrl_index,
-        &mut prediction,
+        prediction,
         width,
     )?;
-    Ok(prediction)
+    Ok(())
 }
 
 fn build_top_row_left_only_middle_mrl_above_idif_edge<T: ReconSample>(
@@ -719,7 +680,12 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
             }
         }
     };
-    let mut prediction = vec![T::default(); width * height];
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
     predict_intra_cardinal_directional_rect_into(
         bit_depth,
         block_size,
@@ -728,34 +694,20 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
         &mut prediction,
         width,
     )?;
-    let out = if block.all_zero {
-        prediction
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &prediction,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            dpcm,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )
 }
 
 fn build_directional_middle_edges<T: ReconSample>(

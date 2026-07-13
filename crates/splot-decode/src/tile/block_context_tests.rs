@@ -99,7 +99,8 @@ fn large_chroma_smooth_repeats_top_edge_instead_of_decoded_above_right() {
         )
         .expect("write decoded above-right sentinel");
 
-    let prediction = crate::pipeline::reconstruct::predict_intra_smooth_over_available_edges(
+    let mut prediction = vec![0; 64 * 64];
+    crate::pipeline::reconstruct::predict_intra_smooth_over_available_edges_into(
         &workspace,
         crate::pipeline::reconstruct::SmoothIntraPredictionRequest {
             plane_id: PlaneId::U,
@@ -113,6 +114,7 @@ fn large_chroma_smooth_repeats_top_edge_instead_of_decoded_above_right() {
             num4_below_left: neighbours.num_below_left(),
             bit_depth: BitDepth::Ten,
         },
+        &mut prediction,
     )
     .expect("smooth prediction");
 

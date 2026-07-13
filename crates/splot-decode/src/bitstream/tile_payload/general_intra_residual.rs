@@ -2175,21 +2175,6 @@ fn unsupported_transform_tool_residual<T>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_coeff_block_with_prediction<T: ReconSample>(
-    block: &LumaCoeffBlock,
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_side: u32,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    reconstruct_general_intra_coeff_block_rect_with_prediction(
-        block, prediction, qindex, plane_id, log2_side, log2_side, use_tcq, None, bit_depth,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
