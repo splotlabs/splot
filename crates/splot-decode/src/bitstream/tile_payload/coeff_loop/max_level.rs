@@ -109,7 +109,10 @@ pub(crate) fn max_levels_to_quant_pass_inputs(
     Ok(inputs)
 }
 
-fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> CoeffMaxLevel {
+pub(crate) fn derive_coeff_max_level(
+    entry: CoeffScanEntry,
+    config: CoeffMaxLevelConfig,
+) -> CoeffMaxLevel {
     let is_low_frequency = get_lf_limits(entry, config);
     let max_level = if config.is_hidden && entry.scan_index() == 0 {
         NUM_BASE_LEVELS + 1
