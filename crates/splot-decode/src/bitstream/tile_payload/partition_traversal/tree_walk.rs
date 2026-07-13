@@ -297,19 +297,15 @@ where
                             limits,
                         )?;
 
-                        let step = mi_size_state
-                            .with_context_state(|context| {
-                                read_frontier_partition_step(
-                                    call,
-                                    frame,
-                                    tile_bounds,
-                                    context,
-                                    &mut sdp_state,
-                                    work_unit.cdf_mut().tile_cdfs_mut(),
-                                    &mut symbols,
-                                )
-                            })
-                            .map_err(GeneralIntraTreeWalkError::MiSize)??;
+                        let step = read_frontier_partition_step(
+                            call,
+                            frame,
+                            tile_bounds,
+                            mi_size_state.context_state(),
+                            &mut sdp_state,
+                            work_unit.cdf_mut().tile_cdfs_mut(),
+                            &mut symbols,
+                        )?;
                         let call = step.call;
                         let partition = step.partition();
 

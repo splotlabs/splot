@@ -220,7 +220,7 @@ pub(crate) struct SquareSplitContextInput<'a> {
     c: usize,
     avail_u: bool,
     avail_l: bool,
-    mi_sizes: [&'a [&'a [usize]]; DO_SPLIT_PLANE_CONTEXTS],
+    mi_sizes: &'a [Vec<usize>],
 }
 
 impl<'a> SquareSplitContextInput<'a> {
@@ -231,7 +231,7 @@ impl<'a> SquareSplitContextInput<'a> {
         c: usize,
         avail_u: bool,
         avail_l: bool,
-        mi_sizes: [&'a [&'a [usize]]; DO_SPLIT_PLANE_CONTEXTS],
+        mi_sizes: &'a [Vec<usize>],
     ) -> Result<Self, TileCdfError> {
         Ok(Self {
             b_size: BlockSizeIndex::new(b_size, "bSize")?,
@@ -252,7 +252,7 @@ impl<'a> SquareSplitContextInput<'a> {
             let row = checked_grid_coordinate("MiSizes", plane_start, "r", self.r, 1)?;
             grid_log2(
                 "MiSizes",
-                self.mi_sizes[plane_start],
+                self.mi_sizes,
                 plane_start,
                 row,
                 self.c,
@@ -266,7 +266,7 @@ impl<'a> SquareSplitContextInput<'a> {
             let col = checked_grid_coordinate("MiSizes", plane_start, "c", self.c, 1)?;
             grid_log2(
                 "MiSizes",
-                self.mi_sizes[plane_start],
+                self.mi_sizes,
                 plane_start,
                 self.r,
                 col,
@@ -400,7 +400,7 @@ fn checked_grid_coordinate(
 
 fn grid_block_size(
     array: &'static str,
-    grid: &[&[usize]],
+    grid: &[Vec<usize>],
     plane_start: usize,
     row: usize,
     col: usize,
@@ -436,7 +436,7 @@ fn grid_block_size(
 
 fn grid_log2(
     array: &'static str,
-    grid: &[&[usize]],
+    grid: &[Vec<usize>],
     plane_start: usize,
     row: usize,
     col: usize,

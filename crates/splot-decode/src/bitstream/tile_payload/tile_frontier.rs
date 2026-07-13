@@ -70,11 +70,12 @@ pub(crate) fn consume_tile_lr_unit_frontier(
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
     let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
-    let root = mi_size_state.with_context_state(|context| {
-        consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-            work_unit, frame, context, limits,
-        ))
-    })??;
+    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
+        work_unit,
+        frame,
+        mi_size_state.context_state(),
+        limits,
+    ))?;
     Ok(root)
 }
 
@@ -228,11 +229,12 @@ fn plan_tile_partition_frontier<'payload>(
     ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
 
     let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
-    let cursor = mi_size_state.with_context_state(|context| {
-        plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
-            work_unit, frame, context, limits,
-        ))
-    })??;
+    let cursor = plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
+        work_unit,
+        frame,
+        mi_size_state.context_state(),
+        limits,
+    ))?;
     let (plan, symbols) = cursor.into_parts();
     ensure_minimal_root_frontier(&plan, &symbols)?;
     let frontier = plan.frontier();

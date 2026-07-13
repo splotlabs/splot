@@ -228,17 +228,11 @@ fn context_state_view_is_available_after_mutation() {
     state.update_luma_block(0, 0, block(BLOCK_64X64)).unwrap();
     state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
 
-    let mi0_rows: Vec<&[usize]> = state.mi_sizes[0].iter().map(Vec::as_slice).collect();
-    let mi1_rows: Vec<&[usize]> = state.mi_sizes[1].iter().map(Vec::as_slice).collect();
     let expected = TilePartitionContextState::new(
-        [&mi0_rows, &mi1_rows],
+        &state.mi_sizes[0],
         [&state.left_mi_sizes[0], &state.left_mi_sizes[1]],
         [&state.above_mi_sizes[0], &state.above_mi_sizes[1]],
     );
 
-    state
-        .with_context_state(|context| {
-            assert_eq!(context, expected);
-        })
-        .unwrap();
+    assert_eq!(state.context_state(), expected);
 }
