@@ -423,7 +423,7 @@ fn coefficient_ordinary_branch_nonzero_runs_state_context_pass() {
     let CoeffOrdinaryBranch::NonZero(pass) = branch else {
         panic!("expected nonzero branch");
     };
-    let quant_state = pass.quant_pass().quant_state();
+    let quant_state = pass.quant_state();
 
     assert_eq!(dc_sign_ctx_from(&pass), Some(1));
     assert_luma_context_edges(
@@ -653,7 +653,7 @@ fn coefficient_ordinary_pass_with_state_context_reads_dc_before_commit() {
     });
     let (context_state, pass) =
         state_context_pass_for_payload(&payload, base_config, state_context).unwrap();
-    let quant_state = pass.quant_pass().quant_state();
+    let quant_state = pass.quant_state();
 
     assert_eq!(dc_sign_ctx_from(&pass), Some(1));
     assert_luma_context_edges(

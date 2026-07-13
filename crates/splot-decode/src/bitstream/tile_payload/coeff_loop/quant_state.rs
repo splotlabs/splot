@@ -397,7 +397,7 @@ pub(crate) fn apply_nonzero_coeff_quant_state_step(
     entry: CoeffScanEntry,
     sign: CoeffSignRead,
     input: CoeffQuantReadInput,
-) -> Result<CoeffQuantStateWrite, CoeffQuantStateWriteError> {
+) -> Result<(), CoeffQuantStateWriteError> {
     let level = checked_quant_write_level(
         block,
         index,
@@ -409,7 +409,7 @@ pub(crate) fn apply_nonzero_coeff_quant_state_step(
     )?;
     let write = state.apply_entry(index, entry, level, sign.sign(), input)?;
     block.set_quant(write.entry().pos(), write.quant())?;
-    Ok(write)
+    Ok(())
 }
 
 fn checked_mul_add(

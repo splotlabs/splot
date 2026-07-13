@@ -31,9 +31,8 @@ use super::quant_pass::{
 };
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::sign_symbol::{
-    CoeffDcSignSelector, CoeffSignCdfSyntax, CoeffSignRead, CoeffSignReadInput,
-    CoeffSignReadSource, CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_inputs,
-    read_nonzero_coeff_signs,
+    CoeffDcSignSelector, CoeffSignCdfSyntax, CoeffSignReadInput, CoeffSignReadSource,
+    CoeffSignSourceDeriveConfig, derive_nonzero_coeff_sign_inputs, read_nonzero_coeff_signs,
 };
 use super::test_support::{
     seeded_6x6_context_state as seeded_context_state, setup_start_with_input,
@@ -378,40 +377,6 @@ fn derived_sign_inputs_for_first_pass(
     .unwrap()
 }
 
-fn explicit_pass_from_derived(
-    payload: &[u8],
-    scan: &[u16],
-    derived_first_pass: &NonZeroCoeffBaseDerivedLevelPass,
-    config: CoeffBaseDerivedLevelPassConfig,
-    sign_inputs: &[CoeffSignReadInput],
-    lossless: bool,
-) -> NonZeroCoeffOrdinaryPass {
-    let (mut tile, mut symbols, start) = setup_start(payload).unwrap();
-    let first_pass = derived_first_pass.first_pass();
-    apply_nonzero_coeff_ordinary_pass(
-        &mut tile,
-        &mut symbols,
-        CoeffOrdinaryPassInput {
-            start,
-            scan,
-            base_inputs: derived_first_pass.derived_inputs(),
-            sign_inputs,
-            max_level_config: CoeffQuantPassMaxLevelConfig {
-                plane: config.plane,
-                tx_class: config.tx_class,
-            },
-            quant_config: CoeffQuantPassConfig {
-                is_hidden: first_pass.is_hidden(),
-                sum_abs1: first_pass.sum_abs1(),
-                use_tcq: config.use_tcq,
-                lossless,
-                hr_level_avg: 99,
-            },
-        },
-    )
-    .unwrap()
-}
-
 fn after_base_prefix(
     payload: &[u8],
     base_inputs: &[CoeffBaseSymbolReadInput],
@@ -460,7 +425,7 @@ fn ordinary_pass_for_payload(payload: &[u8]) -> Option<NonZeroCoeffOrdinaryPass>
     .ok()
 }
 
-fn batched_sign_then_quant_for_payload(payload: &[u8]) -> Option<(Vec<CoeffSignRead>, Vec<i32>)> {
+fn batched_sign_then_quant_for_payload(payload: &[u8]) -> Option<Vec<i32>> {
     let (mut tile, mut symbols, start) = setup_start(payload)?;
     let walk = walk_nonzero_coeff_scan(&start, &SCAN).ok()?;
     let base_inputs = base_inputs_for(&walk);
@@ -487,15 +452,10 @@ fn batched_sign_then_quant_for_payload(payload: &[u8]) -> Option<(Vec<CoeffSignR
     )
     .ok()?;
 
-    Some((sign_reads, block.quant().to_vec()))
+    Some(block.quant().to_vec())
 }
 
-fn find_order_sensitive_payload() -> (
-    [u8; 12],
-    NonZeroCoeffOrdinaryPass,
-    Vec<CoeffSignRead>,
-    Vec<i32>,
-) {
+fn find_order_sensitive_payload() -> ([u8; 12], NonZeroCoeffOrdinaryPass, Vec<i32>) {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
@@ -503,15 +463,11 @@ fn find_order_sensitive_payload() -> (
                 let Some(interleaved) = ordinary_pass_for_payload(&payload) else {
                     continue;
                 };
-                let Some((batched_signs, batched_quant)) =
-                    batched_sign_then_quant_for_payload(&payload)
-                else {
+                let Some(batched_quant) = batched_sign_then_quant_for_payload(&payload) else {
                     continue;
                 };
-                if interleaved.sign_reads() != batched_signs.as_slice()
-                    || interleaved.block().quant() != batched_quant.as_slice()
-                {
-                    return (payload, interleaved, batched_signs, batched_quant);
+                if interleaved.block().quant() != batched_quant.as_slice() {
+                    return (payload, interleaved, batched_quant);
                 }
             }
         }
@@ -543,38 +499,35 @@ fn coefficient_ordinary_pass_composes_level_sign_and_quant_writes() {
 
     assert_eq!(pass.eob_read().eob().eob(), SCAN.len());
     assert_eq!(pass.walk(), &expected_walk);
-    assert_eq!(pass.base_reads(), expected_reads.as_slice());
-    assert_eq!(pass.sign_reads().len(), expected_reads.len());
-    assert_eq!(pass.quant_pass().read_quants().len(), expected_reads.len());
-    assert_eq!(
-        pass.quant_pass().quant_state().writes().len(),
-        expected_reads.len()
-    );
-    for read in pass.base_reads() {
+    for read in expected_reads {
         let entry = read.entry();
         assert_eq!(
             pass.block().level_at(entry.row(), entry.col()).unwrap(),
             read.level()
         );
     }
-    for write in pass.quant_pass().quant_state().writes() {
-        assert_eq!(
-            pass.block().quant_at(write.entry().pos()).unwrap(),
-            write.quant()
-        );
-    }
     assert!(pass.block().quant().iter().any(|quant| *quant != 0));
+    let expected_cul_level = pass
+        .block()
+        .quant()
+        .iter()
+        .map(|quant| quant.unsigned_abs())
+        .sum::<u32>()
+        .min(4);
+    let expected_dc_category = match pass.block().quant()[0] {
+        ..=-1 => 1,
+        0 => 0,
+        1.. => 2,
+    };
+    assert_eq!(pass.quant_state().cul_level(), expected_cul_level);
+    assert_eq!(pass.quant_state().dc_category(), expected_dc_category);
+    assert_eq!(pass.quant_state().tcq_state(), 0);
 }
 
 #[test]
 fn coefficient_ordinary_pass_interleaves_sign_and_quant_reads() {
-    let (payload, interleaved, batched_signs, batched_quant) = find_order_sensitive_payload();
+    let (payload, interleaved, batched_quant) = find_order_sensitive_payload();
 
-    assert_ne!(
-        interleaved.sign_reads(),
-        batched_signs.as_slice(),
-        "payload unexpectedly matched batch sign order: {payload:?}"
-    );
     assert_ne!(
         interleaved.block().quant(),
         batched_quant.as_slice(),
@@ -652,7 +605,7 @@ fn coefficient_ordinary_pass_stops_after_sign_preflight_failure() {
 }
 
 #[test]
-fn coefficient_ordinary_pass_with_derived_base_matches_explicit_inputs() {
+fn coefficient_ordinary_pass_with_derived_base_preserves_first_pass_results() {
     let config = luma_base_config(false, false);
     let sign_config = luma_sign_config();
     let payload = find_derived_payload(&SCAN, config, |pass| {
@@ -660,14 +613,6 @@ fn coefficient_ordinary_pass_with_derived_base_matches_explicit_inputs() {
     });
     let derived_first_pass = derived_first_pass_for_payload(&payload, &SCAN, config).unwrap();
     let sign_inputs = derived_sign_inputs_for_first_pass(&derived_first_pass, config, sign_config);
-    let explicit = explicit_pass_from_derived(
-        &payload,
-        &SCAN,
-        &derived_first_pass,
-        config,
-        &sign_inputs,
-        false,
-    );
     let (mut tile, mut symbols, start) = setup_start(&payload).unwrap();
     let derived = apply_nonzero_coeff_ordinary_pass_with_derived_base(
         &mut tile,
@@ -682,17 +627,15 @@ fn coefficient_ordinary_pass_with_derived_base_matches_explicit_inputs() {
     )
     .unwrap();
 
-    assert_eq!(derived.eob_read(), explicit.eob_read());
-    assert_eq!(derived.walk(), explicit.walk());
-    assert_eq!(
-        derived.derived_base_inputs(),
-        derived_first_pass.derived_inputs()
-    );
+    assert_eq!(derived.eob_read(), derived_first_pass.eob_read());
+    assert_eq!(derived.walk(), derived_first_pass.walk());
     assert_eq!(derived.derived_sign_inputs(), sign_inputs);
-    assert_eq!(derived.base_reads(), explicit.base_reads());
-    assert_eq!(derived.sign_reads(), explicit.sign_reads());
-    assert_eq!(derived.quant_pass(), explicit.quant_pass());
-    assert_eq!(derived.block(), explicit.block());
+    assert_eq!(
+        derived.base_level_pass().first_pass(),
+        derived_first_pass.first_pass()
+    );
+    assert_eq!(derived.block().level(), derived_first_pass.block().level());
+    assert!(derived.block().quant().iter().any(|quant| *quant != 0));
 }
 
 #[test]
@@ -715,14 +658,18 @@ fn coefficient_ordinary_pass_with_derived_base_feeds_hidden_summary_to_quant() {
         .find(|input| input.entry.scan_index() == 0)
         .copied()
         .unwrap();
-    let dc_write = pass
-        .quant_pass()
-        .quant_state()
-        .writes()
+    let dc_entry = pass
+        .walk()
+        .entries()
         .iter()
-        .find(|write| write.entry().scan_index() == 0)
+        .find(|entry| entry.scan_index() == 0)
         .copied()
         .unwrap();
+    let dc_quant = pass
+        .block()
+        .quant_at(dc_entry.pos())
+        .unwrap()
+        .unsigned_abs();
 
     assert!(first_pass.is_hidden());
     assert!(first_pass.sum_abs1() > 0);
@@ -733,10 +680,8 @@ fn coefficient_ordinary_pass_with_derived_base_feeds_hidden_summary_to_quant() {
             ..
         }
     ));
-    assert_eq!(
-        dc_write.quant().unsigned_abs(),
-        dc_write.read_quant() * 2 + first_pass.sum_abs1()
-    );
+    assert!(dc_quant >= first_pass.sum_abs1());
+    assert_eq!(dc_quant & 1, first_pass.sum_abs1() & 1);
 }
 
 #[test]
@@ -833,7 +778,7 @@ fn coefficient_ordinary_pass_with_context_commit_updates_tile_context_lines() {
         context_commit_config(),
     )
     .unwrap();
-    let quant_state = pass.quant_pass().quant_state();
+    let quant_state = pass.quant_state();
 
     assert_eq!(
         &context_state.above_level(0).unwrap()[1..3],

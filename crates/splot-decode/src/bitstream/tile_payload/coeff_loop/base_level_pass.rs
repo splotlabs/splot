@@ -5,8 +5,6 @@
 //!
 //! Feature tracking: `DECODE-COEFF-BASE-DERIVED-LEVEL-PASS`.
 
-use std::collections::TryReserveError;
-
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::coeff_context::{
@@ -16,8 +14,8 @@ use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::NonZeroCoeffEobSymbolRead;
 use super::base_symbol::{
-    CoeffBaseRangeRead, CoeffBaseSymbolRead, CoeffBaseSymbolReadError, CoeffBaseSymbolReadInput,
-    CoeffBaseSymbolSource, read_coeff_base_symbol,
+    CoeffBaseRangeRead, CoeffBaseSymbolReadError, CoeffBaseSymbolReadInput, CoeffBaseSymbolSource,
+    read_coeff_base_symbol,
 };
 use super::branch::NonZeroCoeffBlockStart;
 use super::max_level::{
@@ -101,8 +99,6 @@ impl CoeffBaseFirstPassSummary {
 pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
     eob_read: NonZeroCoeffEobSymbolRead,
     walk: NonZeroCoeffScanWalk,
-    derived_inputs: Vec<CoeffBaseSymbolReadInput>,
-    base_reads: Vec<CoeffBaseSymbolRead>,
     first_pass: CoeffBaseFirstPassSummary,
     block: TransformCoeffBlockState,
 }
@@ -116,16 +112,6 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     #[must_use]
     pub(crate) const fn walk(&self) -> &NonZeroCoeffScanWalk {
         &self.walk
-    }
-
-    #[must_use]
-    pub(crate) fn derived_inputs(&self) -> &[CoeffBaseSymbolReadInput] {
-        &self.derived_inputs
-    }
-
-    #[must_use]
-    pub(crate) fn base_reads(&self) -> &[CoeffBaseSymbolRead] {
-        &self.base_reads
     }
 
     #[must_use]
@@ -173,8 +159,6 @@ pub(crate) enum CoeffBaseDerivedLevelPassError {
         entry: CoeffScanEntry,
         tcq_state: usize,
     },
-    #[error("coefficient base/level allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
     #[error("coefficient base/level base symbol read failed: {0}")]
     Base(#[from] CoeffBaseSymbolReadError),
     #[error("coefficient base/level state error: {0}")]
@@ -191,27 +175,17 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     let (eob_read, mut block) = start.into_parts();
     preflight_pass(eob_read, &block, &walk, config)?;
 
-    let entries = walk.entries();
-    let mut derived_inputs = Vec::new();
-    let mut base_reads = Vec::new();
-    derived_inputs.try_reserve(entries.len())?;
-    base_reads.try_reserve(entries.len())?;
-
     let mut first_pass = CoeffBaseFirstPassSummary::default();
-    for (index, entry) in entries.iter().copied().enumerate() {
+    for (index, entry) in walk.entries().iter().copied().enumerate() {
         let input = derive_base_symbol_input(index, entry, &block, first_pass, config);
         let read = read_coeff_base_symbol(cdfs, symbols, input)?;
         first_pass.update_after_level(entry, read.level(), config)?;
         block.set_level(entry.row(), entry.col(), read.level())?;
-        derived_inputs.push(input);
-        base_reads.push(read);
     }
 
     Ok(NonZeroCoeffBaseDerivedLevelPass {
         eob_read,
         walk,
-        derived_inputs,
-        base_reads,
         first_pass,
         block,
     })
