@@ -12,7 +12,7 @@ use splot_parallel::prelude::*;
 use splot_recon::math::{clip3, round2_signed};
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId,
-    PlaneRect, ReconSample, loop_restoration_source_sample,
+    ReconSample, loop_restoration_source_sample,
 };
 
 use crate::Result;
@@ -156,10 +156,27 @@ pub(crate) fn apply_frame<T: ReconSample>(
         })?)
     };
 
-    let band_rows: Vec<_> = (0..luma_height).step_by(MI_SIZE).collect();
-    let compute_band = |y: usize| -> Result<(usize, usize, Vec<T>)> {
+    let (luma, _, _) = workspace.as_frame_mut().into_planes();
+    let stride = luma.stride_samples();
+    if stride != luma_width || luma.samples().len() != expected_samples {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
+        ));
+    }
+    let band_len = stride
+        .checked_mul(MI_SIZE)
+        .filter(|&len| len != 0)
+        .ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+    let band_count = luma_height.div_ceil(MI_SIZE);
+    let compute_band = |band_index: usize, band: &mut [T]| -> Result<()> {
+        let y = band_index * MI_SIZE;
         let height = MI_SIZE.min(luma_height - y);
-        let mut band = vec![T::default(); luma_width * height];
         let band_block = GdfBlock {
             x: 0,
             y,
@@ -206,56 +223,40 @@ pub(crate) fn apply_frame<T: ReconSample>(
             )?;
             for row in 0..height {
                 let src = &block[row * width..(row + 1) * width];
-                let dst = &mut band[row * luma_width + x..row * luma_width + x + width];
+                let dst = &mut band[row * stride + x..row * stride + x + width];
                 dst.copy_from_slice(src);
             }
         }
-        Ok((y, height, band))
+        Ok(())
     };
-    let bands = if splot_parallel::on_worker_pool() {
+    let luma_samples = luma.into_samples();
+    if splot_parallel::on_worker_pool() {
         let timer = crate::timing::start();
         let tally = crate::timing::WorkerTally::new();
-        let outputs = band_rows
-            .par_iter()
-            .map(|&y| {
+        let result = luma_samples
+            .par_chunks_mut(band_len)
+            .enumerate()
+            .try_for_each(|(band_index, band)| {
                 tally.note_worker();
-                compute_band(y)
-            })
-            .collect::<Result<Vec<_>>>()?;
+                compute_band(band_index, band)
+            });
         crate::timing::report_detail(
             "gdf_bands",
             timer,
             &format!(
                 "units={} threads={} workers_used={}",
-                band_rows.len(),
+                band_count,
                 splot_parallel::current_pool_width(),
                 tally.workers_used()
             ),
         );
-        outputs
+        result
     } else {
-        band_rows
-            .iter()
-            .map(|&y| compute_band(y))
-            .collect::<Result<Vec<_>>>()?
-    };
-    for (y, height, band) in bands {
-        let rect = PlaneRect::new(0, y, luma_width, height).map_err(|_| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
-            )
-        })?;
-        workspace
-            .write_rect(PlaneId::Y, rect, &band, luma_width)
-            .map_err(|_| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
-                )
-            })?;
+        luma_samples
+            .chunks_mut(band_len)
+            .enumerate()
+            .try_for_each(|(band_index, band)| compute_band(band_index, band))
     }
-    Ok(())
 }
 
 #[derive(Clone, Copy)]
