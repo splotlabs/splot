@@ -21,6 +21,7 @@ mod optflow;
 mod refinemv;
 pub(crate) mod sink;
 pub(crate) use optflow::CompoundMotionGrid;
+use optflow::MotionCell;
 pub(crate) use sink::{BlockReconWindow, WorkspaceSink};
 
 pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =

@@ -100,7 +100,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "refine-MV motion-grid size",
         })?;
-    let mut refined = Vec::with_capacity(cell_count);
+    let mut cells = Vec::with_capacity(cell_count);
     for local_y in (0..block.rect.luma_h).step_by(REFINEMV_UNIT_SIZE) {
         for local_x in (0..block.rect.luma_w).step_by(REFINEMV_UNIT_SIZE) {
             let width = (block.rect.luma_w - local_x).min(REFINEMV_UNIT_SIZE);
@@ -115,13 +115,13 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
             } else {
                 [block.mv0, block.mv1]
             };
-            refined.push(mvs);
+            cells.push(MotionCell::from_refinemv(mvs));
         }
     }
     Ok(CompoundMotionGrid::from_refinemv(
         columns,
         [block.mv0, block.mv1],
-        refined,
+        cells,
     ))
 }
 
