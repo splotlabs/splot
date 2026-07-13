@@ -124,6 +124,79 @@ fn deferred_window_uses_444_chroma_coordinates() {
 }
 
 #[test]
+fn deferred_window_supports_maximum_block() {
+    const SIDE: usize = 128;
+
+    let mut workspace = workspace_with_format(PixelFormat::Yuv444, SIDE, SIDE);
+    let block_rect = rect(0, 0, SIDE, SIDE);
+    let mut window = BlockReconWindow::for_block(&workspace, block_rect).expect("maximum window");
+    let plane_rect = PlaneRect::new(0, 0, SIDE, SIDE).expect("maximum plane rect");
+    for (plane, value) in [(PlaneId::Y, 40), (PlaneId::U, 90), (PlaneId::V, 120)] {
+        WorkspaceSink::Window(&mut window)
+            .write_rect(plane, plane_rect, &vec![value; SIDE * SIDE], SIDE)
+            .expect("maximum plane write");
+    }
+    window
+        .publish(&mut workspace)
+        .expect("publish maximum window");
+
+    let decoded = workspace.freeze().expect("freeze maximum workspace");
+    for (plane, value) in [(PlaneId::Y, 40), (PlaneId::U, 90), (PlaneId::V, 120)] {
+        assert!(
+            visible_samples(&decoded, plane)
+                .iter()
+                .all(|&sample| sample == value)
+        );
+    }
+}
+
+#[test]
+fn deferred_window_rejects_zero_sized_blocks() {
+    let workspace = workspace(8, 8);
+    for block_rect in [rect(0, 0, 0, 8), rect(0, 0, 8, 0)] {
+        assert!(matches!(
+            BlockReconWindow::for_block(&workspace, block_rect),
+            Err(ReconError::ZeroDimension { .. })
+        ));
+    }
+}
+
+#[test]
+fn deferred_window_plane_writes_are_isolated() {
+    let mut workspace = workspace_with_format(PixelFormat::Yuv444, 8, 8);
+    let mut window =
+        BlockReconWindow::for_block(&workspace, rect(0, 0, 8, 8)).expect("plane-isolation window");
+    let written = PlaneRect::new(2, 3, 2, 2).expect("written chroma rect");
+    WorkspaceSink::Window(&mut window)
+        .write_rect(PlaneId::U, written, &[11, 12, 99, 21, 22], 3)
+        .expect("strided chroma write");
+
+    let rows = WorkspaceSink::Window(&mut window)
+        .rect_rows(PlaneId::U, written)
+        .expect("written chroma rows")
+        .map(<[u8]>::to_vec)
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [vec![11, 12], vec![21, 22]]);
+    window
+        .publish(&mut workspace)
+        .expect("publish isolated plane");
+
+    let decoded = workspace.freeze().expect("freeze isolated plane");
+    assert!(
+        visible_samples(&decoded, PlaneId::Y)
+            .iter()
+            .all(|&sample| sample == 0)
+    );
+    assert!(
+        visible_samples(&decoded, PlaneId::V)
+            .iter()
+            .all(|&sample| sample == 0)
+    );
+    assert_eq!(visible_samples(&decoded, PlaneId::U)[3 * 8 + 2], 11);
+    assert_eq!(visible_samples(&decoded, PlaneId::U)[4 * 8 + 3], 22);
+}
+
+#[test]
 fn dispatcher_zero_mv_copies_single_reference_planes() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);
@@ -309,6 +382,60 @@ fn converted_prediction_write_is_fail_atomic() {
         workspace
             .rect_rows(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).expect("full plane"))
             .expect("untouched ten-bit luma rows")
+            .flatten()
+            .all(|&sample| sample == 0)
+    );
+}
+
+#[test]
+fn deferred_converted_prediction_write_is_fail_atomic() {
+    let luma_size = PlaneSize::new(8, 8).expect("luma size");
+    let visible = PlaneRect::new(0, 0, 8, 8).expect("visible rect");
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        luma_size,
+        visible,
+    )
+    .expect("ten-bit frame info");
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(info, 0).expect("ten-bit workspace");
+    let mut window =
+        BlockReconWindow::for_block(&workspace, rect(0, 0, 8, 8)).expect("ten-bit deferred window");
+    let mut samples = vec![900; 64];
+    samples[63] = 1024;
+
+    let err = WorkspaceSink::Window(&mut window)
+        .write_u16_rect(
+            PlaneId::Y,
+            PlaneRect::new(0, 0, 8, 8).expect("full plane"),
+            &samples,
+            8,
+        )
+        .expect_err("out-of-range late sample must reject the whole deferred write");
+    assert!(matches!(
+        err,
+        ReconError::SampleOutOfRange {
+            sample_index: 63,
+            value: 1024,
+            max: 1023,
+            ..
+        }
+    ));
+    assert!(
+        WorkspaceSink::Window(&mut window)
+            .rect_rows(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).expect("full plane"))
+            .expect("untouched deferred rows")
+            .flatten()
+            .all(|&sample| sample == 0)
+    );
+    window
+        .publish(&mut workspace)
+        .expect("publish untouched deferred window");
+    assert!(
+        workspace
+            .rect_rows(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).expect("full plane"))
+            .expect("untouched workspace rows")
             .flatten()
             .all(|&sample| sample == 0)
     );
