@@ -580,8 +580,9 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
     let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];
     let pred1 = [44 * 16, 120 * 16, 80 * 16, 180 * 16];
     let mvs = [Mv::ZERO; 2];
-    let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![mvs]);
-    let multiple = CompoundMotionGrid::from_refinemv(2, mvs, vec![mvs; 2]);
+    let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![MotionCell::from_refinemv(mvs)]);
+    let multiple =
+        CompoundMotionGrid::from_refinemv(2, mvs, vec![MotionCell::from_refinemv(mvs); 2]);
     let scaling = derive_plane_scaling_prescaled(4, 4, 0, 0, 0, 0, 8, 8);
     let blend = CompoundBlend::average_with_implicit_mask(true);
     let run = |motion| {

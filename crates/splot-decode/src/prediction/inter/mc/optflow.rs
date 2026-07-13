@@ -7,12 +7,26 @@ use splot_recon::math::round2_signed;
 use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
 
+#[derive(Clone, Copy, Debug)]
+pub(super) struct MotionCell {
+    base_mvs: [Mv; 2],
+    mvs: [[i32; 2]; 2],
+}
+
+impl MotionCell {
+    pub(super) fn from_refinemv(base_mvs: [Mv; 2]) -> Self {
+        let mvs = core::array::from_fn(|reference| {
+            [base_mvs[reference].row * 2, base_mvs[reference].col * 2]
+        });
+        Self { base_mvs, mvs }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct CompoundMotionGrid {
     unit_size: usize,
     columns: usize,
-    base_mvs: Vec<[Mv; 2]>,
-    mvs: Vec<[[i32; 2]; 2]>,
+    cells: Vec<MotionCell>,
     refinemv_candidates: Option<[Mv; 2]>,
 }
 
@@ -20,19 +34,12 @@ impl CompoundMotionGrid {
     pub(super) fn from_refinemv(
         columns: usize,
         candidates: [Mv; 2],
-        refined: Vec<[Mv; 2]>,
+        cells: Vec<MotionCell>,
     ) -> Self {
-        let mvs = refined
-            .iter()
-            .map(|mvs| {
-                core::array::from_fn(|reference| [mvs[reference].row * 2, mvs[reference].col * 2])
-            })
-            .collect();
         Self {
             unit_size: 16,
             columns,
-            base_mvs: refined,
-            mvs,
+            cells,
             refinemv_candidates: Some(candidates),
         }
     }
@@ -42,30 +49,7 @@ impl CompoundMotionGrid {
     }
 
     pub(super) fn at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<[[i32; 2]; 2]> {
-        Ok(self.cells_at_luma_offset(x, y)?.1)
-    }
-
-    fn cells_at_luma_offset(
-        &self,
-        x: usize,
-        y: usize,
-    ) -> splot_recon::Result<([Mv; 2], [[i32; 2]; 2])> {
-        let index = self.index_at_luma_offset(x, y)?;
-        let base_mvs = self
-            .base_mvs
-            .get(index)
-            .copied()
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "compound base motion-grid lookup",
-            })?;
-        let mvs = self
-            .mvs
-            .get(index)
-            .copied()
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "compound motion-grid lookup",
-            })?;
-        Ok((base_mvs, mvs))
+        Ok(self.cell_at_luma_offset(x, y)?.mvs)
     }
 
     pub(super) const fn refinemv_candidates(&self) -> Option<[Mv; 2]> {
@@ -73,8 +57,8 @@ impl CompoundMotionGrid {
     }
 
     pub(super) fn uniform_mvs(&self) -> Option<[[i32; 2]; 2]> {
-        match self.mvs.as_slice() {
-            [mvs] => Some(*mvs),
+        match self.cells.as_slice() {
+            [cell] => Some(cell.mvs),
             _ => None,
         }
     }
@@ -84,11 +68,11 @@ impl CompoundMotionGrid {
         x: usize,
         y: usize,
     ) -> splot_recon::Result<[Mv; 2]> {
-        let (base_mvs, refined) = self.cells_at_luma_offset(x, y)?;
+        let cell = self.cell_at_luma_offset(x, y)?;
         Ok(core::array::from_fn(|reference| {
-            let base = base_mvs[reference];
-            let row_delta = refined[reference][0] - base.row * 2;
-            let col_delta = refined[reference][1] - base.col * 2;
+            let base = cell.base_mvs[reference];
+            let row_delta = cell.mvs[reference][0] - base.row * 2;
+            let col_delta = cell.mvs[reference][1] - base.col * 2;
             Mv {
                 row: base.row + round2_signed(i64::from(row_delta), 1) as i32,
                 col: base.col + round2_signed(i64::from(col_delta), 1) as i32,
@@ -104,27 +88,16 @@ impl CompoundMotionGrid {
         if self.unit_size != 4 {
             return self.stored_mvs_at_luma_offset(x, y);
         }
-        let (base_mvs, _) = self.cells_at_luma_offset(x, y)?;
+        let base_mvs = self.cell_at_luma_offset(x, y)?.base_mvs;
         let mut delta_sum = [[0i64; 2]; 2];
         for dy in [0, 4] {
             for dx in [0, 4] {
-                let Ok(index) = self.index_at_luma_offset(x + dx, y + dy) else {
+                let Ok(cell) = self.cell_at_luma_offset(x + dx, y + dy) else {
                     continue;
                 };
-                let refined = self.mvs.get(index).ok_or(ReconError::ArithmeticOverflow {
-                    context: "optical-flow temporal motion-grid lookup",
-                })?;
-                let unit_base = self
-                    .base_mvs
-                    .get(index)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "optical-flow temporal base-grid lookup",
-                    })?;
-                for reference in 0..2 {
-                    delta_sum[reference][0] +=
-                        i64::from(refined[reference][0] - unit_base[reference].row * 2);
-                    delta_sum[reference][1] +=
-                        i64::from(refined[reference][1] - unit_base[reference].col * 2);
+                for (reference, sum) in delta_sum.iter_mut().enumerate() {
+                    sum[0] += i64::from(cell.mvs[reference][0] - cell.base_mvs[reference].row * 2);
+                    sum[1] += i64::from(cell.mvs[reference][1] - cell.base_mvs[reference].col * 2);
                 }
             }
         }
@@ -134,7 +107,7 @@ impl CompoundMotionGrid {
         }))
     }
 
-    fn index_at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<usize> {
+    fn cell_at_luma_offset(&self, x: usize, y: usize) -> splot_recon::Result<MotionCell> {
         let column = x / self.unit_size;
         let row = y / self.unit_size;
         if column >= self.columns {
@@ -148,12 +121,12 @@ impl CompoundMotionGrid {
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "compound motion-grid index",
             })?;
-        if index >= self.mvs.len() {
-            return Err(ReconError::ArithmeticOverflow {
+        self.cells
+            .get(index)
+            .copied()
+            .ok_or(ReconError::ArithmeticOverflow {
                 context: "compound motion-grid lookup",
-            });
-        }
-        Ok(index)
+            })
     }
 }
 
@@ -211,8 +184,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow motion-grid size",
         })?;
-    let mut base_cells = vec![None; cell_count];
-    let mut motion_cells = vec![None; cell_count];
+    let mut cells: Option<Vec<Option<MotionCell>>> = None;
     let base_unit = refinemv
         .as_ref()
         .map_or(block.rect.luma_w.max(block.rect.luma_h), |grid| {
@@ -278,6 +250,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             let Some(deltas) = deltas else {
                 return Ok(refinemv);
             };
+            let cells = cells.get_or_insert_with(|| vec![None; cell_count]);
             let local_columns = prediction_rect.luma_w / unit_size;
             for (index, delta) in deltas.into_iter().enumerate() {
                 let local_row = index / local_columns;
@@ -290,12 +263,11 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                     .ok_or(ReconError::ArithmeticOverflow {
                         context: "optical-flow motion-grid index",
                     })?;
-                let cell =
-                    motion_cells
-                        .get_mut(global_index)
-                        .ok_or(ReconError::ArithmeticOverflow {
-                            context: "optical-flow motion-grid write",
-                        })?;
+                let cell = cells
+                    .get_mut(global_index)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "optical-flow motion-grid write",
+                    })?;
                 let mut refined = [[0i32; 2]; 2];
                 for reference in 0..2 {
                     let base = [base_mvs[reference].row, base_mvs[reference].col];
@@ -307,24 +279,15 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                         ) as i32;
                     }
                 }
-                *cell = Some(refined);
-                *base_cells
-                    .get_mut(global_index)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "optical-flow base-grid write",
-                    })? = Some(base_mvs);
+                *cell = Some(MotionCell {
+                    base_mvs,
+                    mvs: refined,
+                });
             }
         }
     }
-    let base_mvs = base_cells
-        .into_iter()
-        .map(|cell| {
-            cell.ok_or(ReconError::ArithmeticOverflow {
-                context: "optical-flow base-grid completeness",
-            })
-        })
-        .collect::<splot_recon::Result<Vec<_>>>()?;
-    let mvs = motion_cells
+    let cells = cells
+        .unwrap_or_default()
         .into_iter()
         .map(|cell| {
             cell.ok_or(ReconError::ArithmeticOverflow {
@@ -335,8 +298,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
     Ok(Some(CompoundMotionGrid {
         unit_size,
         columns,
-        base_mvs,
-        mvs,
+        cells,
         refinemv_candidates: refinemv.and_then(|grid| grid.refinemv_candidates),
     }))
 }
@@ -423,7 +385,9 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
             let height = subblock_h.min(block_h - row);
             let luma_x = col << sub_x;
             let luma_y = row << sub_y;
-            let (base_mvs, mvs) = motion.cells_at_luma_offset(luma_x, luma_y)?;
+            let cell = motion.cell_at_luma_offset(luma_x, luma_y)?;
+            let base_mvs = cell.base_mvs;
+            let mvs = cell.mvs;
             let candidates = motion.refinemv_candidates();
             for (reference, (view, ref_mi_cols, ref_mi_rows, output)) in [
                 (&view0, ref_mi_cols0, ref_mi_rows0, &mut pred0),
@@ -549,8 +513,10 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 8,
             columns: 1,
-            base_mvs: vec![[Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }]],
-            mvs: vec![[[7, -7], [-7, 7]]],
+            cells: vec![MotionCell {
+                base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
+                mvs: [[7, -7], [-7, 7]],
+            }],
             refinemv_candidates: None,
         };
 
@@ -566,8 +532,10 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 8,
             columns: 1,
-            base_mvs: vec![[Mv::ZERO; 2]],
-            mvs: vec![mvs],
+            cells: vec![MotionCell {
+                base_mvs: [Mv::ZERO; 2],
+                mvs,
+            }],
             refinemv_candidates: None,
         };
         assert_eq!(grid.uniform_mvs(), Some(mvs));
@@ -575,8 +543,13 @@ mod tests {
         let multiple = CompoundMotionGrid {
             unit_size: 8,
             columns: 2,
-            base_mvs: vec![[Mv::ZERO; 2]; 2],
-            mvs: vec![mvs; 2],
+            cells: vec![
+                MotionCell {
+                    base_mvs: [Mv::ZERO; 2],
+                    mvs,
+                };
+                2
+            ],
             refinemv_candidates: None,
         };
         assert_eq!(multiple.uniform_mvs(), None);
@@ -587,12 +560,23 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 4,
             columns: 2,
-            base_mvs: vec![[Mv::ZERO; 2]; 4],
-            mvs: vec![
-                [[1, -1], [4, -4]],
-                [[2, -2], [4, -4]],
-                [[3, -3], [4, -4]],
-                [[4, -4], [4, -4]],
+            cells: vec![
+                MotionCell {
+                    base_mvs: [Mv::ZERO; 2],
+                    mvs: [[1, -1], [4, -4]],
+                },
+                MotionCell {
+                    base_mvs: [Mv::ZERO; 2],
+                    mvs: [[2, -2], [4, -4]],
+                },
+                MotionCell {
+                    base_mvs: [Mv::ZERO; 2],
+                    mvs: [[3, -3], [4, -4]],
+                },
+                MotionCell {
+                    base_mvs: [Mv::ZERO; 2],
+                    mvs: [[4, -4], [4, -4]],
+                },
             ],
             refinemv_candidates: None,
         };
@@ -608,8 +592,13 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 4,
             columns: 1,
-            base_mvs: vec![[Mv::ZERO; 2]; 2],
-            mvs: vec![[[4, -4], [0, 0]], [[4, -4], [0, 0]]],
+            cells: vec![
+                MotionCell {
+                    base_mvs: [Mv::ZERO; 2],
+                    mvs: [[4, -4], [0, 0]],
+                };
+                2
+            ],
             refinemv_candidates: None,
         };
 
