@@ -148,6 +148,37 @@ impl GdfState {
         row.checked_mul(self.grid_cols)?.checked_add(col)
     }
 
+    pub(crate) fn merge_tile_from(
+        &mut self,
+        source: &Self,
+        mi_rows: core::ops::Range<usize>,
+        mi_cols: core::ops::Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        let unit_mi = self
+            .block_size
+            .checked_div(4)
+            .filter(|&value| value != 0)
+            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+        let unit_rows = mi_rows.start / unit_mi..mi_rows.end.div_ceil(unit_mi);
+        let unit_cols = mi_cols.start / unit_mi..mi_cols.end.div_ceil(unit_mi);
+        for row in unit_rows {
+            for col in unit_cols.clone() {
+                let target = self
+                    .index(row, col)
+                    .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+                let source_index = source
+                    .index(row, col)
+                    .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+                self.values[target] = source.values[source_index];
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<GdfBlockGrid>> {
         if !self.active {
             return Ok(None);
