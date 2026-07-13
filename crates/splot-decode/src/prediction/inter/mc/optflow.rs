@@ -7,7 +7,7 @@ use splot_recon::math::round2_signed;
 use super::*;
 use crate::prediction::inter::mv_scaling::derive_plane_scaling_prescaled;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct CompoundMotionGrid {
     unit_size: usize,
     columns: usize,
@@ -178,11 +178,11 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, T>,
     block: CompoundMcBlock<'_, T>,
     unit_size: Option<usize>,
-    refinemv: Option<&CompoundMotionGrid>,
+    refinemv: Option<CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
     let Some(distances) = block.optflow_distances else {
-        return Ok(refinemv.cloned());
+        return Ok(refinemv);
     };
     let unit_size = match unit_size {
         Some(unit_size @ (4 | 8)) => unit_size,
@@ -213,19 +213,23 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         })?;
     let mut base_cells = vec![None; cell_count];
     let mut motion_cells = vec![None; cell_count];
-    let base_unit = refinemv.map_or(block.rect.luma_w.max(block.rect.luma_h), |grid| {
-        grid.unit_size()
-    });
+    let base_unit = refinemv
+        .as_ref()
+        .map_or(block.rect.luma_w.max(block.rect.luma_h), |grid| {
+            grid.unit_size()
+        });
     for region_y in (0..block.rect.luma_h).step_by(base_unit) {
         for region_x in (0..block.rect.luma_w).step_by(base_unit) {
             let region_w = (block.rect.luma_w - region_x).min(base_unit);
             let region_h = (block.rect.luma_h - region_y).min(base_unit);
-            let base_mvs = if let Some(grid) = refinemv {
+            let base_mvs = if let Some(grid) = refinemv.as_ref() {
                 grid.stored_mvs_at_luma_offset(region_x, region_y)?
             } else {
                 [block.mv0, block.mv1]
             };
-            let candidates = refinemv.and_then(CompoundMotionGrid::refinemv_candidates);
+            let candidates = refinemv
+                .as_ref()
+                .and_then(CompoundMotionGrid::refinemv_candidates);
             let mut prediction_rect = block.rect;
             prediction_rect.luma_x += region_x;
             prediction_rect.luma_y += region_y;
@@ -252,7 +256,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             if block.optflow_sad_threshold.is_some_and(|threshold| {
                 normalized_sad(&pred0, &pred1, sink.info().bit_depth()) < threshold
             }) {
-                return Ok(refinemv.cloned());
+                return Ok(refinemv);
             }
             let deltas = derive_optflow_mv_deltas(
                 &pred0,
