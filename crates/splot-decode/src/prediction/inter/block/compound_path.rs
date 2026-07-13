@@ -1019,7 +1019,7 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         .mark_inter(),
         tile_offset,
     )?;
-    if deferred.parallel() && super::deferred_recon::deferable_placed_geometry(&placed, frontier) {
+    if super::deferred_recon::deferable_placed_geometry(&placed, frontier) {
         deferred.push(
             placed,
             super::deferred_recon::PendingKind::Compound {
