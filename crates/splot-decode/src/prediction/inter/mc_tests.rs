@@ -319,18 +319,65 @@ fn deferred_compound_prediction_matches_direct_publication() {
     )
     .expect("deferred TIP optical-flow prediction");
     let deferred_mvs = output
+        .metadata
         .stored_mvs_at_origin()
         .expect("deferred stored motion vectors");
     output
         .publish(&mut super::WorkspaceSink::Frame(&mut deferred))
         .expect("publish deferred TIP prediction");
 
+    let mut short = [0u8; 95];
+    let err = predict_compound_average_block_into(
+        &super::WorkspaceSink::Frame(&mut deferred),
+        block.into_compound().expect("compound block"),
+        Some(8),
+        offset,
+        &mut short,
+    )
+    .expect_err("short deferred output must fail");
+    assert!(matches!(
+        err,
+        crate::error::DecodeError::Reconstruction {
+            source: ReconError::BufferLengthMismatch {
+                expected: 96,
+                actual: 95
+            }
+        }
+    ));
+
+    let mut borrowed = workspace(8, 8);
+    let mut arena_chunk = vec![u8::MAX; 103];
+    let metadata = predict_compound_average_block_into(
+        &super::WorkspaceSink::Frame(&mut borrowed),
+        block.into_compound().expect("compound block"),
+        Some(8),
+        offset,
+        &mut arena_chunk,
+    )
+    .expect("borrowed TIP optical-flow prediction");
+    let borrowed_mvs = metadata
+        .stored_mvs_at_origin()
+        .expect("borrowed stored motion vectors");
+    metadata
+        .publish(
+            &arena_chunk,
+            &mut super::WorkspaceSink::Frame(&mut borrowed),
+        )
+        .expect("publish borrowed TIP prediction");
+    assert_eq!(&arena_chunk[96..], &[u8::MAX; 7]);
+
     assert_eq!(deferred_mvs, direct_mvs);
+    assert_eq!(borrowed_mvs, direct_mvs);
     let direct = direct.freeze().expect("freeze direct workspace");
     let deferred = deferred.freeze().expect("freeze deferred workspace");
+    let borrowed = borrowed.freeze().expect("freeze borrowed workspace");
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         assert_eq!(
             visible_samples(&deferred, plane),
+            visible_samples(&direct, plane)
+        );
+        assert_eq!(
+            visible_samples(&borrowed, plane),
             visible_samples(&direct, plane)
         );
     }
@@ -613,7 +660,7 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
     let scaling = derive_plane_scaling_prescaled(4, 4, 0, 0, 0, 0, 8, 8);
     let blend = CompoundBlend::average_with_implicit_mask(true);
     let run = |motion| {
-        let mut output = Vec::new();
+        let mut output = vec![0; pred0.len()];
         blend_compound_average::<u16>(
             &pred0,
             &pred1,
@@ -646,7 +693,7 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
 fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
-    let mut eight = Vec::new();
+    let mut eight = vec![0; pred0.len()];
     blend_compound_average_weighted_samples::<u8>(
         &pred0,
         &pred1,
@@ -655,7 +702,7 @@ fn direct_compound_blend_preserves_sample_storage_width() {
         &mut eight,
     )
     .expect("eight-bit compound blend");
-    let mut wide = Vec::new();
+    let mut wide = vec![0; pred0.len()];
     blend_compound_average_weighted_samples::<u16>(
         &pred0,
         &pred1,
@@ -669,7 +716,7 @@ fn direct_compound_blend_preserves_sample_storage_width() {
         wide
     );
 
-    let mut ten_bit = Vec::new();
+    let mut ten_bit = vec![0; 1];
     blend_compound_average_weighted_samples::<u16>(
         &[900 * 16],
         &[1000 * 16],
