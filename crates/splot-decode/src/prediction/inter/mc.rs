@@ -368,7 +368,9 @@ pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
 }
 
 pub(crate) struct CompoundBlockOutput<T> {
-    planes: Vec<PredictedPlane<T>>,
+    rect: McBlockRect,
+    has_chroma: bool,
+    samples: Vec<T>,
     motion: Option<CompoundMotionGrid>,
 }
 
@@ -384,10 +386,42 @@ impl<T: ReconSample> CompoundBlockOutput<T> {
         self,
         sink: &mut WorkspaceSink<'_, T>,
     ) -> Result<Option<CompoundMotionGrid>> {
-        for plane in self.planes {
-            plane.publish(sink)?;
+        let Self {
+            rect,
+            has_chroma,
+            samples,
+            motion,
+        } = self;
+        let mut sample_start = 0usize;
+        for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+            if plane != PlaneId::Y && !has_chroma {
+                continue;
+            }
+            let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
+            let sample_count =
+                block_w
+                    .checked_mul(block_h)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "compound output plane sample count",
+                    })?;
+            let sample_end =
+                sample_start
+                    .checked_add(sample_count)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "compound output plane sample range",
+                    })?;
+            let plane_samples =
+                samples
+                    .get(sample_start..sample_end)
+                    .ok_or(ReconError::BufferLengthMismatch {
+                        expected: sample_end,
+                        actual: samples.len(),
+                    })?;
+            let plane_rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
+            sink.write_rect(plane, plane_rect, plane_samples, block_w)?;
+            sample_start = sample_end;
         }
-        Ok(self.motion)
+        Ok(motion)
     }
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
@@ -539,13 +573,32 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
     let motion = optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)?;
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(sink, block, motion.as_ref(), offset)?;
-    let mut planes = Vec::with_capacity(YUV420_MC_PLANES.len());
+    let mut sample_capacity = 0usize;
     for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
+        let (_, _, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
+        let plane_samples = block_w
+            .checked_mul(block_h)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "compound output plane sample count",
+            })?;
+        sample_capacity =
+            sample_capacity
+                .checked_add(plane_samples)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "compound output sample count",
+                })?;
+    }
+    let mut samples = Vec::with_capacity(sample_capacity);
+    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+        if plane != PlaneId::Y && !block.has_chroma {
+            continue;
+        }
+        let sample_start = samples.len();
         if plane != PlaneId::Y && block.sub8x8_chroma {
-            planes.push(predict_plane_output(
+            let predicted = predict_plane_output(
                 sink,
                 block.reference0,
                 plane,
@@ -555,9 +608,10 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
                 sub_x,
                 sub_y,
                 offset,
-            )?);
+            )?;
+            samples.extend(predicted.samples);
         } else {
-            planes.push(predict_compound_plane_output(
+            predict_compound_plane_output(
                 sink,
                 block.reference0,
                 block.reference1,
@@ -573,10 +627,26 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
                 luma_diff_weighted_mask.as_deref(),
                 motion.as_ref(),
                 offset,
-            )?);
+                &mut samples,
+            )?;
+        }
+        let (_, _, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
+        let expected = block_w
+            .checked_mul(block_h)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "compound output plane sample count",
+            })?;
+        let actual = samples.len() - sample_start;
+        if actual != expected {
+            return Err(ReconError::BufferLengthMismatch { expected, actual }.into());
         }
     }
-    Ok(CompoundBlockOutput { planes, motion })
+    Ok(CompoundBlockOutput {
+        rect: block.rect,
+        has_chroma: block.has_chroma,
+        samples,
+        motion,
+    })
 }
 
 fn compound_luma_diff_weighted_mask<T: ReconSample>(
@@ -834,7 +904,8 @@ fn predict_compound_plane_output<T: ReconSample>(
     luma_diff_weighted_mask: Option<&[u16]>,
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
-) -> Result<PredictedPlane<T>> {
+    samples: &mut Vec<T>,
+) -> Result<()> {
     let block = CompoundMcBlock {
         reference0,
         reference1,
@@ -857,7 +928,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     let coded_luma_size = sink.info().coded_luma_size();
     let frame_w = coded_luma_size.width() >> sub_x;
     let frame_h = coded_luma_size.height() >> sub_y;
-    let samples = blend_compound_average::<T>(
+    blend_compound_average::<T>(
         &prediction.pred0,
         &prediction.pred1,
         sink.info().bit_depth(),
@@ -876,20 +947,10 @@ fn predict_compound_plane_output<T: ReconSample>(
         luma_diff_weighted_mask,
         sub_x,
         sub_y,
+        samples,
     )?;
 
-    let rect = PlaneRect::new(
-        prediction.plane_x,
-        prediction.plane_y,
-        prediction.block_w,
-        prediction.block_h,
-    )?;
-    Ok(PredictedPlane {
-        plane,
-        rect,
-        samples,
-        stride: prediction.block_w,
-    })
+    Ok(())
 }
 
 struct CompoundPlanePrediction {
@@ -1278,20 +1339,21 @@ fn blend_compound_average_weighted_samples<T: ReconSample>(
     pred1: &[i32],
     bit_depth: splot_recon::BitDepth,
     cwp_weight: i16,
-) -> splot_recon::Result<Vec<T>> {
+    output: &mut Vec<T>,
+) -> splot_recon::Result<()> {
     if pred0.len() != pred1.len() {
         return Err(ReconError::CompoundBlendLengthMismatch {
             left_len: pred0.len(),
             right_len: pred1.len(),
         });
     }
-    let mut blended = Vec::with_capacity(pred0.len());
+    output.reserve(pred0.len());
     for (&left, &right) in pred0.iter().zip(pred1) {
-        blended.push(T::try_from_u16(blend_compound_average_weighted_sample(
+        output.push(T::try_from_u16(blend_compound_average_weighted_sample(
             left, right, bit_depth, cwp_weight,
         ))?);
     }
-    Ok(blended)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1314,7 +1376,8 @@ fn blend_compound_average<T: ReconSample>(
     luma_diff_weighted_mask: Option<&[u16]>,
     sub_x: u32,
     sub_y: u32,
-) -> splot_recon::Result<Vec<T>> {
+    output: &mut Vec<T>,
+) -> splot_recon::Result<()> {
     let CompoundBlend::Average {
         implicit_mask,
         cwp_weight,
@@ -1332,16 +1395,23 @@ fn blend_compound_average<T: ReconSample>(
             luma_diff_weighted_mask,
             sub_x,
             sub_y,
+            output,
         );
     };
     if !implicit_mask {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, cwp_weight);
+        return blend_compound_average_weighted_samples(
+            pred0, pred1, bit_depth, cwp_weight, output,
+        );
     }
     if pred0.len() != pred1.len() {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, cwp_weight);
+        return blend_compound_average_weighted_samples(
+            pred0, pred1, bit_depth, cwp_weight, output,
+        );
     }
     if cwp_weight != CWP_EQUAL {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, cwp_weight);
+        return blend_compound_average_weighted_samples(
+            pred0, pred1, bit_depth, cwp_weight, output,
+        );
     }
 
     let last_x = frame_w as i64 - 1;
@@ -1385,11 +1455,11 @@ fn blend_compound_average<T: ReconSample>(
     if pred0.len() == w.saturating_mul(h)
         && uniform_scaling.is_some_and(|scaling| scaling.into_iter().map(extent).all(onscreen))
     {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL);
+        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
     }
     let max_sample = i64::from(bit_depth.max_sample());
     let shift = 1 + compound_inter_post_round();
-    let mut blended = Vec::with_capacity(w.saturating_mul(h));
+    output.reserve(w.saturating_mul(h));
     for (idx, (&left, &right)) in pred0
         .iter()
         .zip(pred1.iter())
@@ -1429,9 +1499,9 @@ fn blend_compound_average<T: ReconSample>(
             _ => 1,
         };
         let sample = round2(i64::from(mask * left + (2 - mask) * right), shift);
-        blended.push(T::try_from_u16(clip3(0, max_sample, sample) as u16)?);
+        output.push(T::try_from_u16(clip3(0, max_sample, sample) as u16)?);
     }
-    Ok(blended)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1447,17 +1517,18 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     luma_diff_weighted_mask: Option<&[u16]>,
     sub_x: u32,
     sub_y: u32,
-) -> splot_recon::Result<Vec<T>> {
+    output: &mut Vec<T>,
+) -> splot_recon::Result<()> {
     if pred0.len() != pred1.len() {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL);
+        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
     }
     if let CompoundBlend::Wedge { index, sign } = blend {
         return blend_compound_wedge::<T>(
-            pred0, pred1, bit_depth, w, h, luma_w, luma_h, index, sign, sub_x, sub_y,
+            pred0, pred1, bit_depth, w, h, luma_w, luma_h, index, sign, sub_x, sub_y, output,
         );
     }
     let CompoundBlend::DiffWeighted { inverse } = blend else {
-        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL);
+        return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
     };
     let max_sample = i64::from(bit_depth.max_sample());
     let blend_shift = 6 + compound_inter_post_round();
@@ -1466,7 +1537,7 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     } else {
         diff_weighted_mask(pred0, pred1, bit_depth, w, h, inverse)?
     };
-    let mut output = Vec::with_capacity(w.saturating_mul(h));
+    output.reserve(w.saturating_mul(h));
     for ((&left, &right), &mask) in pred0.iter().zip(pred1).zip(&mask).take(w.saturating_mul(h)) {
         let blended = round2(
             i64::from(mask) * i64::from(left) + i64::from(64 - mask) * i64::from(right),
@@ -1474,7 +1545,7 @@ fn blend_compound_diff_weighted<T: ReconSample>(
         );
         output.push(T::try_from_u16(clip3(0, max_sample, blended) as u16)?);
     }
-    Ok(output)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1490,7 +1561,8 @@ fn blend_compound_wedge<T: ReconSample>(
     sign: bool,
     sub_x: u32,
     sub_y: u32,
-) -> splot_recon::Result<Vec<T>> {
+    output: &mut Vec<T>,
+) -> splot_recon::Result<()> {
     if pred0.len() != pred1.len() {
         return Err(ReconError::CompoundBlendLengthMismatch {
             left_len: pred0.len(),
@@ -1499,7 +1571,7 @@ fn blend_compound_wedge<T: ReconSample>(
     }
     let max_sample = i64::from(bit_depth.max_sample());
     let shift = 6 + compound_inter_post_round();
-    let mut out = Vec::with_capacity(w.saturating_mul(h));
+    output.reserve(w.saturating_mul(h));
     for y in 0..h {
         for x in 0..w {
             let idx = y * w + x;
@@ -1518,10 +1590,10 @@ fn blend_compound_wedge<T: ReconSample>(
                     + i64::from(64 - mask) * i64::from(pred1[idx]),
                 shift,
             );
-            out.push(T::try_from_u16(clip3(0, max_sample, blended) as u16)?);
+            output.push(T::try_from_u16(clip3(0, max_sample, blended) as u16)?);
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn diff_weighted_mask(
