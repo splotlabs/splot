@@ -15,14 +15,12 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
-    IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode, PlaneId, ReconSample,
-    predict_intra_cardinal_directional_rect_into,
+    IntraDirectionalAngleEdges, IntraPredictionScratchBuffer, IntraRectBlockSize, IntraSmoothMode,
+    PlaneId, ReconSample, predict_intra_cardinal_directional_rect_into,
 };
 
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, SupportedChromaMode, SupportedDirectionalLumaMode,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
-    reconstruct_general_intra_coeff_block_with_prediction,
 };
 
 use crate::pipeline::reconstruct::*;
@@ -335,22 +333,29 @@ fn reconstruct_general_intra_chroma_directional_first_into<T: ReconSample>(
     let side = 1usize << log2_side;
     let log2 = u8::try_from(log2_side).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2, log2)?;
-    let prediction = predict_directional_noneighbour(mode, block_size, side, bit_depth)?;
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_coeff_block_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_side,
-            false,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        side * side,
+        T::default(),
+    )?;
+    predict_directional_noneighbour_into(mode, block_size, side, bit_depth, &mut prediction)?;
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        x,
+        y,
+        log2_side,
+        log2_side,
+        qindex,
+        false,
+        None,
+        None,
+        bit_depth,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -371,33 +376,37 @@ fn reconstruct_general_intra_chroma_cardinal_horizontal_first_into<T: ReconSampl
     let log2_w = u8::try_from(log2_width).unwrap_or(u8::MAX);
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
-    let left = vec![noneighbour_left::<T>(bit_depth); height];
-    let mut prediction = vec![T::default(); width * height];
+    let left = [noneighbour_left::<T>(bit_depth); 64];
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
     predict_intra_cardinal_directional_rect_into(
         bit_depth,
         block_size,
         IntraCardinalDirection::Horizontal,
-        IntraDirectionalAngleEdges::left(&left),
+        IntraDirectionalAngleEdges::left(&left[..height]),
         &mut prediction,
         width,
     )?;
-    let out = if block.all_zero {
-        prediction
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &prediction,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            false,
-            dpcm,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    write_intra_prediction_block(
+        workspace,
+        block,
+        prediction,
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        x,
+        y,
+        log2_width,
+        log2_height,
+        qindex,
+        false,
+        None,
+        dpcm,
+        bit_depth,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

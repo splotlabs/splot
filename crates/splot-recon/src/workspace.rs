@@ -54,7 +54,19 @@ pub struct CurrentFrameWorkspace<T: ReconSample> {
     y: CurrentFramePlane<T>,
     u: Option<CurrentFramePlane<T>>,
     v: Option<CurrentFramePlane<T>>,
+    intra_prediction_scratch: [Vec<T>; 2],
 }
+
+/// Selects one of the two reusable current-frame intra-prediction buffers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IntraPredictionScratchBuffer {
+    /// Primary prediction storage used by every intra mode.
+    Primary,
+    /// Secondary prediction storage used while blending two predictors.
+    Secondary,
+}
+
+const MAX_INTRA_PREDICTION_SAMPLES: usize = 64 * 64;
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// Creates a workspace from decoded-frame metadata and an initial fill.
@@ -100,7 +112,13 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             ),
         };
 
-        Ok(Self { info, y, u, v })
+        Ok(Self {
+            info,
+            y,
+            u,
+            v,
+            intra_prediction_scratch: [Vec::new(), Vec::new()],
+        })
     }
 
     /// Returns the decoded-frame metadata used to construct the workspace.
@@ -386,6 +404,57 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         let bit_depth = self.info.bit_depth();
         self.plane_mut(plane)?
             .predict_intra_cardinal_directional_rect(rect, size, direction, bit_depth)
+    }
+
+    /// Takes a reusable, initialized intra-prediction buffer from this workspace.
+    ///
+    /// The two named slots let dual-prediction modes hold both inputs at once.
+    /// Callers return storage with [`Self::recycle_intra_prediction_buffer`].
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if `sample_count` exceeds the largest AV2 intra
+    /// block or the buffer cannot reserve enough storage.
+    pub fn take_intra_prediction_buffer(
+        &mut self,
+        slot: IntraPredictionScratchBuffer,
+        plane: PlaneId,
+        sample_count: usize,
+        fill: T,
+    ) -> Result<Vec<T>> {
+        if sample_count > MAX_INTRA_PREDICTION_SAMPLES {
+            return Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
+                sample_count,
+                max_sample_count: MAX_INTRA_PREDICTION_SAMPLES,
+            });
+        }
+        let mut buffer = mem::take(match slot {
+            IntraPredictionScratchBuffer::Primary => &mut self.intra_prediction_scratch[0],
+            IntraPredictionScratchBuffer::Secondary => &mut self.intra_prediction_scratch[1],
+        });
+        buffer.clear();
+        if buffer.capacity() < sample_count {
+            buffer.try_reserve_exact(sample_count).map_err(|_| {
+                ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "intra prediction scratch",
+                }
+            })?;
+        }
+        buffer.resize(sample_count, fill);
+        Ok(buffer)
+    }
+
+    /// Returns an intra-prediction buffer to its reusable workspace slot.
+    pub fn recycle_intra_prediction_buffer(
+        &mut self,
+        slot: IntraPredictionScratchBuffer,
+        mut buffer: Vec<T>,
+    ) {
+        buffer.clear();
+        *match slot {
+            IntraPredictionScratchBuffer::Primary => &mut self.intra_prediction_scratch[0],
+            IntraPredictionScratchBuffer::Secondary => &mut self.intra_prediction_scratch[1],
+        } = buffer;
     }
 
     /// Freezes the workspace into an immutable decoded frame.

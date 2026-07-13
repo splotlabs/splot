@@ -72,7 +72,6 @@ pub(crate) use general_intra_residual::{
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_with_prediction,
     reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
-    reconstruct_general_intra_coeff_block_with_prediction,
     reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
 pub(crate) use input::{

@@ -5,8 +5,8 @@
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, IntraDirectionalAngle, IntraDirectionalAngleEdges,
-    IntraDirectionalAngleIdifEdges, IntraRectBlockSize, PlaneId, ReconSample,
-    apply_ibp_dr_blend_rect, predict_intra_directional_angle_rect_into,
+    IntraDirectionalAngleIdifEdges, IntraPredictionScratchBuffer, IntraRectBlockSize, PlaneId,
+    ReconSample, apply_ibp_dr_blend_rect, predict_intra_directional_angle_rect_into,
     predict_intra_directional_angle_rect_one_sided_idif_into,
 };
 
@@ -14,10 +14,9 @@ use super::one_sided::{
     OneSidedEdgeFilter, build_one_sided_above_idif_edge, build_one_sided_left_idif_edge,
 };
 use super::sink::IntraEdgeAvailability;
+use super::sink::write_intra_prediction_block;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
-    reconstruct_general_intra_coeff_block_rect_with_prediction,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -52,7 +51,12 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
     let log2_h = u8::try_from(log2_height).unwrap_or(u8::MAX);
     let block_size = IntraRectBlockSize::new(log2_w, log2_h)?;
     let zone1 = p_angle < 90;
-    let mut primary = vec![T::default(); width * height];
+    let mut primary = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
     if zone1 {
         let above_idif = build_one_sided_above_idif_edge(
             workspace,
@@ -127,7 +131,12 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
             )?;
         }
     }
-    let mut second = vec![T::default(); width * height];
+    let mut second = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Secondary,
+        plane_id,
+        width * height,
+        T::default(),
+    )?;
     let second_angle = IntraDirectionalAngle::try_from_p_angle(secondary.second_angle)?;
     if zone1 {
         let left_idif = build_one_sided_left_idif_edge(
@@ -202,32 +211,21 @@ pub(crate) fn reconstruct_general_intra_one_sided_ibp_luma_block_into<T: ReconSa
         }
     }
     apply_ibp_dr_blend_rect(block_size, p_angle, &mut primary, &second)?;
-    let out = if block.all_zero {
-        primary
-    } else if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist(
-            block,
-            &primary,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )?
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction(
-            block,
-            &primary,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            None,
-            bit_depth,
-        )?
-    };
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, second);
+    write_intra_prediction_block(
+        workspace,
+        block,
+        primary,
+        IntraPredictionScratchBuffer::Primary,
+        plane_id,
+        x,
+        y,
+        log2_width,
+        log2_height,
+        qindex,
+        use_tcq,
+        luma_context,
+        None,
+        bit_depth,
+    )
 }

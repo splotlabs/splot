@@ -165,6 +165,16 @@ pub enum ReconError {
         /// Short description of the failed allocation.
         context: &'static str,
     },
+    /// An intra-prediction scratch request exceeded the largest supported block.
+    #[error(
+        "intra prediction scratch request {sample_count} exceeds maximum {max_sample_count} samples"
+    )]
+    WorkspaceIntraPredictionScratchTooLarge {
+        /// Requested prediction sample count.
+        sample_count: usize,
+        /// Largest supported prediction sample count.
+        max_sample_count: usize,
+    },
     /// A requested current-frame workspace plane is not present.
     #[error("current-frame workspace plane {} is not present", .plane.name())]
     MissingWorkspacePlane {

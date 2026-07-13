@@ -920,6 +920,63 @@ fn workspace_smooth_rejects_missing_prepared_edges() {
 }
 
 #[test]
+fn workspace_reuses_two_intra_prediction_buffers() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
+    let primary = workspace
+        .take_intra_prediction_buffer(
+            IntraPredictionScratchBuffer::Primary,
+            PlaneId::Y,
+            64 * 64,
+            7,
+        )
+        .unwrap();
+    let primary_ptr = primary.as_ptr();
+    let secondary = workspace
+        .take_intra_prediction_buffer(
+            IntraPredictionScratchBuffer::Secondary,
+            PlaneId::Y,
+            64 * 64,
+            9,
+        )
+        .unwrap();
+    let secondary_ptr = secondary.as_ptr();
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, primary);
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, secondary);
+
+    let primary = workspace
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16, 11)
+        .unwrap();
+    let secondary = workspace
+        .take_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, PlaneId::Y, 16, 13)
+        .unwrap();
+
+    assert_eq!(primary.as_ptr(), primary_ptr);
+    assert_eq!(secondary.as_ptr(), secondary_ptr);
+    assert_eq!(primary, vec![11; 16]);
+    assert_eq!(secondary, vec![13; 16]);
+}
+
+#[test]
+fn workspace_rejects_oversized_intra_prediction_scratch() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
+
+    assert!(matches!(
+        workspace.take_intra_prediction_buffer(
+            IntraPredictionScratchBuffer::Primary,
+            PlaneId::Y,
+            64 * 64 + 1,
+            0,
+        ),
+        Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
+            sample_count: 4097,
+            max_sample_count: 4096,
+        })
+    ));
+}
+
+#[test]
 fn workspace_extracts_edges_and_predicts_square_dc() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 8), 0).unwrap();
