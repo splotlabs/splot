@@ -72,8 +72,15 @@ pub fn derive_optflow_mv_deltas(
     }
     let distances = reduce_distances(distances);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
-    let mut weighted = vec![0i32; expected];
-    let mut difference = vec![0i32; expected];
+    let scratch_len = expected
+        .checked_mul(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "optical-flow scratch sample count",
+        })?;
+    let mut scratch = vec![0i32; scratch_len];
+    let (weighted, scratch) = scratch.split_at_mut(expected);
+    let (difference, scratch) = scratch.split_at_mut(expected);
+    let (gradient_x, gradient_y) = scratch.split_at_mut(expected);
     for index in 0..expected {
         let left = i64::from(pred0[index]);
         let right = i64::from(pred1[index]);
@@ -84,19 +91,12 @@ pub fn derive_optflow_mv_deltas(
         difference[index] = round2_signed(left - right, downshift) as i32;
     }
 
-    let (gradient_x, gradient_y) = gradients(&weighted, width, height);
+    gradients(weighted, width, height, gradient_x, gradient_y);
     let mut deltas = Vec::with_capacity(unit_count);
     for unit_y in (0..height).step_by(unit_size) {
         for unit_x in (0..width).step_by(unit_size) {
             deltas.push(solve_unit(
-                &gradient_x,
-                &gradient_y,
-                &difference,
-                width,
-                unit_x,
-                unit_y,
-                unit_size,
-                distances,
+                gradient_x, gradient_y, difference, width, unit_x, unit_y, unit_size, distances,
             )?);
         }
     }
@@ -126,9 +126,13 @@ fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
     ]
 }
 
-fn gradients(values: &[i32], width: usize, height: usize) -> (Vec<i32>, Vec<i32>) {
-    let mut horizontal = vec![0i32; values.len()];
-    let mut vertical = vec![0i32; values.len()];
+fn gradients(
+    values: &[i32],
+    width: usize,
+    height: usize,
+    horizontal: &mut [i32],
+    vertical: &mut [i32],
+) {
     for row in 0..height {
         for col in 0..width {
             let col_start = (col / GRADIENT_UNIT) * GRADIENT_UNIT;
@@ -158,7 +162,6 @@ fn gradients(values: &[i32], width: usize, height: usize) -> (Vec<i32>, Vec<i32>
             vertical[row * width + col] = round2_signed(i64::from(value), 7) as i32;
         }
     }
-    (horizontal, vertical)
 }
 
 #[allow(clippy::too_many_arguments)]
