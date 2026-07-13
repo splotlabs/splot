@@ -8,13 +8,13 @@ use splot_core::span::ByteOffset;
 use splot_parallel::prelude::*;
 use splot_recon::{
     LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
-    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyParams, PcWienerFilter,
-    PlaneId, PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
-    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
-    WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource,
-    loop_restoration_source_sample, pc_wiener_classify_grid, pc_wiener_filter_block,
-    pc_wiener_filter_set_index, pc_wiener_subclass, wiener_ns_filter_chroma_block,
-    wiener_ns_filter_luma_block_padded,
+    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
+    PcWienerClassifyParams, PcWienerFilter, PcWienerPaddedSource, PlaneId, PlaneRect, ReconError,
+    ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS,
+    WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsLumaFilter,
+    WienerNsLumaPaddedSource, loop_restoration_source_sample, pc_wiener_classify_grid_padded,
+    pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass,
+    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded,
 };
 
 use super::{MI_SIZE, WienerNsLrReconSink};
@@ -320,17 +320,9 @@ impl<T: ReconSample> LrSourceWindow<T> {
                         actual: source_row.len(),
                     },
                 )?;
-                if let Some(&unstorable) = mid_slice.iter().find(|&&value| value > T::MAX_VALUE) {
-                    return Err(match T::try_from_u16(unstorable) {
-                        Err(error) => error,
-                        Ok(_) => OVERFLOW_WINDOW,
-                    });
+                for &value in mid_slice {
+                    samples.push(T::try_from_u16(value)?);
                 }
-                samples.extend(
-                    mid_slice
-                        .iter()
-                        .map(|&value| T::try_from_u16(value).unwrap_or_default()),
-                );
             }
             let right_value = T::try_from_u16(*source_row.get(right.x).ok_or(
                 ReconError::BufferLengthMismatch {
@@ -625,20 +617,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             filter_set_index,
             subclasses: &subclasses,
         };
-        pc_wiener_filter_block(&mut output, &params, |x, y| {
-            let x = block_x
-                .checked_add(x)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener source x",
-                })?;
-            let y = block_y
-                .checked_add(y)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener source y",
-                })?;
-            Ok(window.get_abs(x, y))
-        })
-        .map_err(|_| luma_lr_filter_error(offset))?;
+        let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let (padded, padded_stride) = window
+            .tail_from(
+                block_x.saturating_sub(tap_radius),
+                block_y.saturating_sub(tap_radius),
+            )
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let padded_source =
+            PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
+                .map_err(|_| luma_lr_filter_error(offset))?;
+        pc_wiener_filter_block_padded(&mut output, &params, &padded_source)
+            .map_err(|_| luma_lr_filter_error(offset))?;
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
         Ok((block, output))
     }
@@ -1087,11 +1078,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 tile_end_y,
             };
             let group_cols = group_end - group_start;
-            let classifications = pc_wiener_classify_grid::<T, _, _>(
+            let padded_source = PcWienerClassifyPaddedSource::new(
+                &window.samples,
+                window.stride,
+                window.origin_x,
+                window.origin_y,
+            );
+            let classifications = pc_wiener_classify_grid_padded::<T, _>(
                 &params,
                 group_cols,
                 cell_rows,
-                |x, y| Ok(window.get_abs(x, y)),
+                &padded_source,
                 |lookup| {
                     tx_skip_grid.lookup(
                         crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup),
