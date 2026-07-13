@@ -147,6 +147,34 @@ pub struct PcWienerClassification {
     pub class: u8,
 }
 
+/// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded`].
+///
+/// A padded contiguous buffer covering the classified block extended on every
+/// side. `origin_x` and `origin_y` are the current-plane luma coordinates of
+/// buffer index `0`; a sample at absolute `(x, y)` is
+/// `samples[(y - origin_y) * stride + (x - origin_x)]`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PcWienerClassifyPaddedSource<'a, T> {
+    samples: &'a [T],
+    stride: usize,
+    origin_x: isize,
+    origin_y: isize,
+}
+
+impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
+    /// Wraps a padded source buffer whose index `0` is current-plane luma
+    /// coordinate `(origin_x, origin_y)` and whose rows are `stride` apart.
+    #[must_use]
+    pub fn new(samples: &'a [T], stride: usize, origin_x: isize, origin_y: isize) -> Self {
+        Self {
+            samples,
+            stride,
+            origin_x,
+            origin_y,
+        }
+    }
+}
+
 /// Caller-resolved parameters for AV2 § 7.20.4 PC-Wiener block filtering.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcWienerFilter<'a> {
@@ -249,7 +277,7 @@ pub fn pc_wiener_classify_grid<T, FS, FT>(
     cell_cols: usize,
     cell_rows: usize,
     mut source_sample: FS,
-    mut tx_skip: FT,
+    tx_skip: FT,
 ) -> Result<Vec<PcWienerClassification>>
 where
     T: ReconSample,
@@ -262,6 +290,94 @@ where
         return Ok(Vec::new());
     }
 
+    let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
+    let mut source_cache = Vec::new();
+    source_cache
+        .try_reserve_exact(geo.source_count)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener source-grid allocation",
+        })?;
+    for row in 0..geo.source_height {
+        let y = coordinate_add(
+            geo.source_start_y,
+            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener source-grid row",
+            })?,
+            "PC-Wiener source-grid y",
+        )?;
+        for col in 0..geo.source_width {
+            let x = coordinate_add(
+                geo.source_start_x,
+                isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener source-grid column",
+                })?,
+                "PC-Wiener source-grid x",
+            )?;
+            source_cache.push(source_sample_u16(
+                &mut source_sample,
+                x,
+                y,
+                params.bit_depth,
+            )?);
+        }
+    }
+    classify_grid_from_cache(params, cell_cols, cell_rows, &geo, &source_cache, tx_skip)
+}
+
+/// Row-major grid of four-sample-spaced PC-Wiener cells from a padded
+/// pre-resolved source.
+///
+/// Identical classification math and output as [`pc_wiener_classify_grid`]; the
+/// § 7.20.2 source-sample process is resolved by the caller into `source`
+/// instead of a per-sample callback. The `tx_skip` grid lookup stays a callback.
+/// An up-front fits check proves the whole source region is in range, so the
+/// feature cache is built by pure index addition off the padded-window base.
+///
+/// # Errors
+/// Returns the same typed failures as [`pc_wiener_classify_grid`], plus a typed
+/// [`ReconError`] when the padded source cannot cover the classification region.
+#[inline]
+pub fn pc_wiener_classify_grid_padded<T, FT>(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    source: &PcWienerClassifyPaddedSource<'_, T>,
+    tx_skip: FT,
+) -> Result<Vec<PcWienerClassification>>
+where
+    T: ReconSample,
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
+    validate_sample_type::<T>(params.bit_depth)?;
+    validate_params(params)?;
+    if cell_cols == 0 || cell_rows == 0 {
+        return Ok(Vec::new());
+    }
+    let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
+    let source_cache = build_padded_source_cache(source, &geo, params.bit_depth)?;
+    classify_grid_from_cache(params, cell_cols, cell_rows, &geo, &source_cache, tx_skip)
+}
+
+/// Caller-resolved geometry shared by the callback and padded classify grids.
+struct ClassifyGridGeometry {
+    feature_width: usize,
+    feature_height: usize,
+    feature_start_x: isize,
+    feature_start_y: isize,
+    block_end_plus_two: isize,
+    source_start_x: isize,
+    source_start_y: isize,
+    source_width: usize,
+    source_height: usize,
+    source_count: usize,
+    feature_count: usize,
+}
+
+fn classify_grid_geometry(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+) -> Result<ClassifyGridGeometry> {
     let feature_width = (cell_cols - 1)
         .checked_mul(PC_WIENER_BLOCK_SIZE)
         .and_then(|span| span.checked_add(PC_WIENER_FEATURE_WINDOW_SIDE))
@@ -327,73 +443,138 @@ where
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "PC-Wiener source-grid sample count",
             })?;
+    Ok(ClassifyGridGeometry {
+        feature_width,
+        feature_height,
+        feature_start_x,
+        feature_start_y,
+        block_end_plus_two,
+        source_start_x,
+        source_start_y,
+        source_width,
+        source_height,
+        source_count,
+        feature_count,
+    })
+}
+
+fn build_padded_source_cache<T: ReconSample>(
+    source: &PcWienerClassifyPaddedSource<'_, T>,
+    geo: &ClassifyGridGeometry,
+    bit_depth: BitDepth,
+) -> Result<Vec<u16>> {
+    let region_col = geo
+        .source_start_x
+        .checked_sub(source.origin_x)
+        .and_then(|col| usize::try_from(col).ok())
+        .ok_or(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener padded source column",
+        })?;
+    let region_row = geo
+        .source_start_y
+        .checked_sub(source.origin_y)
+        .and_then(|row| usize::try_from(row).ok())
+        .ok_or(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener padded source row",
+        })?;
+    let row_span =
+        region_col
+            .checked_add(geo.source_width)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener padded source row span",
+            })?;
+    if row_span > source.stride {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener padded source width",
+        });
+    }
+    let required = region_row
+        .checked_add(geo.source_height)
+        .and_then(|rows| rows.checked_sub(1))
+        .and_then(|last_row| last_row.checked_mul(source.stride))
+        .and_then(|prefix| prefix.checked_add(row_span))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener padded source length",
+        })?;
+    if source.samples.len() < required {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: required,
+            actual: source.samples.len(),
+        });
+    }
+    let max_sample = bit_depth.max_sample();
     let mut source_cache = Vec::new();
     source_cache
-        .try_reserve_exact(source_count)
+        .try_reserve_exact(geo.source_count)
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "PC-Wiener source-grid allocation",
         })?;
-    for row in 0..source_height {
-        let y = coordinate_add(
-            source_start_y,
-            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
-                context: "PC-Wiener source-grid row",
-            })?,
-            "PC-Wiener source-grid y",
-        )?;
-        for col in 0..source_width {
-            let x = coordinate_add(
-                source_start_x,
-                isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener source-grid column",
-                })?,
-                "PC-Wiener source-grid x",
-            )?;
-            source_cache.push(source_sample_u16(
-                &mut source_sample,
-                x,
-                y,
-                params.bit_depth,
-            )?);
+    for row in 0..geo.source_height {
+        let base = (region_row + row) * source.stride + region_col;
+        for col in 0..geo.source_width {
+            let value = source.samples[base + col].to_u16();
+            if value > max_sample {
+                return Err(ReconError::PcWienerSourceSampleOutOfRange {
+                    x: geo.source_start_x + col as isize,
+                    y: geo.source_start_y + row as isize,
+                    value,
+                    max: max_sample,
+                });
+            }
+            source_cache.push(value);
         }
     }
+    Ok(source_cache)
+}
+
+fn classify_grid_from_cache<FT>(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    geo: &ClassifyGridGeometry,
+    source_cache: &[u16],
+    mut tx_skip: FT,
+) -> Result<Vec<PcWienerClassification>>
+where
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
     let mut cached = Vec::new();
     cached
-        .try_reserve_exact(feature_count)
+        .try_reserve_exact(geo.feature_count)
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "PC-Wiener feature-grid allocation",
         })?;
-    for row in 0..feature_height {
+    for row in 0..geo.feature_height {
         let y = coordinate_add(
-            feature_start_y,
+            geo.feature_start_y,
             isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
                 context: "PC-Wiener feature-grid row",
             })?,
             "PC-Wiener feature-grid y",
         )?;
-        for col in 0..feature_width {
+        for col in 0..geo.feature_width {
             let x = coordinate_add(
-                feature_start_x,
+                geo.feature_start_x,
                 isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
                     context: "PC-Wiener feature-grid column",
                 })?,
                 "PC-Wiener feature-grid x",
             )?;
-            let x = x.min(block_end_plus_two);
+            let x = x.min(geo.block_end_plus_two);
             let center_col = x
-                .checked_sub(source_start_x)
+                .checked_sub(geo.source_start_x)
                 .and_then(|col| usize::try_from(col).ok())
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "PC-Wiener source-grid center column",
                 })?;
-            let center_index = (row + 1) * source_width + center_col;
+            let center_index = (row + 1) * geo.source_width + center_col;
             let m = i64::from(source_cache[center_index]);
-            let up = i64::from(source_cache[center_index - source_width]);
-            let down = i64::from(source_cache[center_index + source_width]);
-            let upright = i64::from(source_cache[center_index - source_width + 1]);
-            let downleft = i64::from(source_cache[center_index + source_width - 1]);
-            let downright = i64::from(source_cache[center_index + source_width + 1]);
-            let upleft = i64::from(source_cache[center_index - source_width - 1]);
+            let up = i64::from(source_cache[center_index - geo.source_width]);
+            let down = i64::from(source_cache[center_index + geo.source_width]);
+            let upright = i64::from(source_cache[center_index - geo.source_width + 1]);
+            let downleft = i64::from(source_cache[center_index + geo.source_width - 1]);
+            let downright = i64::from(source_cache[center_index + geo.source_width + 1]);
+            let upleft = i64::from(source_cache[center_index - geo.source_width - 1]);
             let values = [
                 0,
                 (up - 2 * m + down).abs(),
@@ -447,7 +628,7 @@ where
             for row in 0..PC_WIENER_FEATURE_WINDOW_SIDE {
                 let start = feature_row
                     .checked_add(row)
-                    .and_then(|row| row.checked_mul(feature_width))
+                    .and_then(|row| row.checked_mul(geo.feature_width))
                     .and_then(|start| start.checked_add(feature_col))
                     .ok_or(ReconError::ArithmeticOverflow {
                         context: "PC-Wiener classification-grid feature index",
@@ -601,49 +782,7 @@ where
     F: FnMut(isize, isize) -> Result<T>,
 {
     validate_sample_type::<T>(params.bit_depth)?;
-    if params.width == 0 || params.height == 0 || params.output_stride < params.width {
-        return Err(ReconError::PcWienerInvalidBounds {
-            field: "PC-Wiener filter geometry",
-        });
-    }
-    let sample_count =
-        params
-            .width
-            .checked_mul(params.height)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "PC-Wiener filter sample count",
-            })?;
-    let output_len = (params.height - 1)
-        .checked_mul(params.output_stride)
-        .and_then(|prefix| prefix.checked_add(params.width))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "PC-Wiener filter output length",
-        })?;
-    if output.len() < output_len {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output_len,
-            actual: output.len(),
-        });
-    }
-    if params.subclasses.len() < sample_count {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: sample_count,
-            actual: params.subclasses.len(),
-        });
-    }
-    let Some(filters) = PC_WIENER_FILTERS.get(params.filter_set_index) else {
-        return Err(ReconError::PcWienerInvalidBounds {
-            field: "PC-Wiener filter set index",
-        });
-    };
-    if params.subclasses[..sample_count]
-        .iter()
-        .any(|&subclass| subclass >= filters.len())
-    {
-        return Err(ReconError::PcWienerInvalidBounds {
-            field: "PC-Wiener filter index",
-        });
-    }
+    let (sample_count, filters) = validate_pc_wiener_filter(output.len(), params)?;
 
     let max_sample = i64::from(params.bit_depth.max_sample());
     let mut filtered = Vec::with_capacity(sample_count);
@@ -679,12 +818,232 @@ where
         }
     }
 
+    write_pc_wiener_block(output, &filtered, params);
+    Ok(())
+}
+
+/// § 7.20.2-pre-resolved source samples for [`pc_wiener_filter_block_padded`].
+///
+/// Row-major samples covering the output block extended by
+/// [`PC_WIENER_FILTER_TAP_RADIUS`] on every side: index `0` is the sample at
+/// block-relative `(-PC_WIENER_FILTER_TAP_RADIUS, -PC_WIENER_FILTER_TAP_RADIUS)`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PcWienerPaddedSource<'a, T> {
+    samples: &'a [T],
+    stride: usize,
+}
+
+impl<'a, T: ReconSample> PcWienerPaddedSource<'a, T> {
+    /// Wraps a padded source buffer for a `width` x `height` output block.
+    ///
+    /// `stride` is the distance in samples between adjacent padded rows.
+    ///
+    /// # Errors
+    /// Returns typed [`ReconError`] values when the stride or length cannot
+    /// cover the block plus the § 7.20.4 filter tap reach.
+    pub fn new(samples: &'a [T], stride: usize, width: usize, height: usize) -> Result<Self> {
+        let padded_width = width.checked_add(2 * PC_WIENER_FILTER_TAP_RADIUS).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "PC-Wiener padded source width",
+            },
+        )?;
+        if stride < padded_width {
+            return Err(ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener padded source stride",
+            });
+        }
+        let required = height
+            .checked_add(2 * PC_WIENER_FILTER_TAP_RADIUS)
+            .and_then(|rows| rows.checked_sub(1))
+            .and_then(|prefix_rows| prefix_rows.checked_mul(stride))
+            .and_then(|prefix| prefix.checked_add(padded_width))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener padded source length",
+            })?;
+        if samples.len() < required {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: required,
+                actual: samples.len(),
+            });
+        }
+        Ok(Self { samples, stride })
+    }
+}
+
+/// Applies the fixed AV2 § 7.20.4 PC-Wiener filter from a padded pre-resolved
+/// source.
+///
+/// Identical filter math and output as [`pc_wiener_filter_block`]; the § 7.20.2
+/// source-sample process is resolved by the caller into `source` instead of a
+/// per-tap callback. The up-front [`PcWienerPaddedSource::new`] fits check
+/// proves every tap read in range, so the tap loop is pure index addition off
+/// each output sample's padded-window base.
+///
+/// # Errors
+/// Returns the same typed [`ReconError`] values as [`pc_wiener_filter_block`],
+/// including source samples outside the active bit-depth range.
+#[inline]
+pub fn pc_wiener_filter_block_padded<T: ReconSample>(
+    output: &mut [T],
+    params: &PcWienerFilter<'_>,
+    source: &PcWienerPaddedSource<'_, T>,
+) -> Result<()> {
+    validate_sample_type::<T>(params.bit_depth)?;
+    let (sample_count, filters) = validate_pc_wiener_filter(output.len(), params)?;
+    PcWienerPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
+
+    let stride = source.stride;
+    let center_offset = padded_filter_offset(stride, 0, 0)?;
+    let mut pos_offsets = [0usize; PC_WIENER_CONFIG.len()];
+    let mut neg_offsets = [0usize; PC_WIENER_CONFIG.len()];
+    for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
+        pos_offsets[i] = padded_filter_offset(stride, dy, dx)?;
+        neg_offsets[i] = padded_filter_offset(stride, -dy, -dx)?;
+    }
+
+    let max_sample = params.bit_depth.max_sample();
+    let mut filtered = Vec::with_capacity(sample_count);
+    for row in 0..params.height {
+        let row_i = isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener filter row",
+        })?;
+        for col in 0..params.width {
+            let col_i = isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener filter column",
+            })?;
+            let window_base = row * stride + col;
+            let index = filtered.len();
+            let coeffs = &filters[params.subclasses[index]];
+            let center = padded_filter_value(
+                source.samples,
+                window_base + center_offset,
+                col_i,
+                row_i,
+                max_sample,
+            )?;
+            let mut sum = (center << PC_WIENER_PREC_BITS) + center * i64::from(coeffs[12]);
+            for (i, &(dy, dx)) in PC_WIENER_CONFIG.iter().enumerate() {
+                let positive = padded_filter_value(
+                    source.samples,
+                    window_base + pos_offsets[i],
+                    col_i + dx,
+                    row_i + dy,
+                    max_sample,
+                )?;
+                let negative = padded_filter_value(
+                    source.samples,
+                    window_base + neg_offsets[i],
+                    col_i - dx,
+                    row_i - dy,
+                    max_sample,
+                )?;
+                sum += (positive + negative) * i64::from(coeffs[i]);
+            }
+            let sample = round2(sum, PC_WIENER_PREC_BITS).clamp(0, i64::from(max_sample));
+            filtered.push(T::try_from_u16(sample as u16)?);
+        }
+    }
+
+    write_pc_wiener_block(output, &filtered, params);
+    Ok(())
+}
+
+fn validate_pc_wiener_filter(
+    output_len: usize,
+    params: &PcWienerFilter<'_>,
+) -> Result<(usize, &'static [[i32; 13]; PC_WIENER_FULL_CLASSES])> {
+    if params.width == 0 || params.height == 0 || params.output_stride < params.width {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter geometry",
+        });
+    }
+    let sample_count =
+        params
+            .width
+            .checked_mul(params.height)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener filter sample count",
+            })?;
+    let output_expected = (params.height - 1)
+        .checked_mul(params.output_stride)
+        .and_then(|prefix| prefix.checked_add(params.width))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener filter output length",
+        })?;
+    if output_len < output_expected {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_expected,
+            actual: output_len,
+        });
+    }
+    if params.subclasses.len() < sample_count {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: sample_count,
+            actual: params.subclasses.len(),
+        });
+    }
+    let Some(filters) = PC_WIENER_FILTERS.get(params.filter_set_index) else {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter set index",
+        });
+    };
+    if params.subclasses[..sample_count]
+        .iter()
+        .any(|&subclass| subclass >= filters.len())
+    {
+        return Err(ReconError::PcWienerInvalidBounds {
+            field: "PC-Wiener filter index",
+        });
+    }
+    Ok((sample_count, filters))
+}
+
+fn write_pc_wiener_block<T: ReconSample>(
+    output: &mut [T],
+    filtered: &[T],
+    params: &PcWienerFilter<'_>,
+) {
     for row in 0..params.height {
         for col in 0..params.width {
             output[row * params.output_stride + col] = filtered[row * params.width + col];
         }
     }
-    Ok(())
+}
+
+fn padded_filter_offset(stride: usize, dy: isize, dx: isize) -> Result<usize> {
+    let radius = PC_WIENER_FILTER_TAP_RADIUS as isize;
+    let row = usize::try_from(dy + radius)
+        .ok()
+        .and_then(|row| row.checked_mul(stride))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener padded tap offset",
+        })?;
+    usize::try_from(dx + radius)
+        .ok()
+        .and_then(|col| row.checked_add(col))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener padded tap offset",
+        })
+}
+
+#[inline]
+fn padded_filter_value<T: ReconSample>(
+    samples: &[T],
+    index: usize,
+    x: isize,
+    y: isize,
+    max_sample: u16,
+) -> Result<i64> {
+    let value = samples[index].to_u16();
+    if value > max_sample {
+        return Err(ReconError::PcWienerSourceSampleOutOfRange {
+            x,
+            y,
+            value,
+            max: max_sample,
+        });
+    }
+    Ok(i64::from(value))
 }
 
 const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
@@ -1277,5 +1636,108 @@ mod tests {
             }
         );
         assert_eq!(output, [7]);
+    }
+
+    #[test]
+    fn padded_and_callback_filters_match_bit_exactly() {
+        let width = 6;
+        let height = 5;
+        let radius = PC_WIENER_FILTER_TAP_RADIUS;
+        let stride = width + 2 * radius + 1;
+        let subclasses: Vec<usize> = (0..width * height).map(|i| i % 5).collect();
+        let source_at =
+            |x: isize, y: isize| -> u16 { ((x * 23 + y * 11 + 400).rem_euclid(1024)) as u16 };
+        let params = PcWienerFilter {
+            width,
+            height,
+            output_stride: width,
+            bit_depth: BitDepth::Ten,
+            filter_set_index: 1,
+            subclasses: &subclasses,
+        };
+
+        let mut callback_output = vec![0u16; width * height];
+        pc_wiener_filter_block(&mut callback_output, &params, |x, y| Ok(source_at(x, y))).unwrap();
+
+        let rows = height + 2 * radius;
+        let mut padded = Vec::with_capacity(stride * rows);
+        for row in 0..rows {
+            for col in 0..stride {
+                padded.push(source_at(
+                    col as isize - radius as isize,
+                    row as isize - radius as isize,
+                ));
+            }
+        }
+        let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+        let mut padded_output = vec![0u16; width * height];
+        pc_wiener_filter_block_padded(&mut padded_output, &params, &source).unwrap();
+
+        assert_eq!(callback_output, padded_output);
+    }
+
+    #[test]
+    fn padded_and_callback_classify_grids_match_bit_exactly() {
+        let mut params = params(BitDepth::Ten);
+        params.x = 40;
+        params.y = 24;
+        params.base_q_idx = 96;
+        let cell_cols = 3;
+        let cell_rows = 4;
+        let source_at =
+            |x: isize, y: isize| -> u16 { ((x * 37 + y * 19 + 512).rem_euclid(1024)) as u16 };
+        let tx_skip = |lookup: PcWienerTxSkipLookup| {
+            Ok(i32::try_from((lookup.row * 3 + lookup.col) & 1).unwrap())
+        };
+
+        let callback = pc_wiener_classify_grid::<u16, _, _>(
+            &params,
+            cell_cols,
+            cell_rows,
+            |x, y| Ok(source_at(x, y)),
+            tx_skip,
+        )
+        .unwrap();
+
+        let radius = PC_WIENER_CLASSIFY_READ_RADIUS as isize;
+        let origin_x = params.x - radius;
+        let origin_y = params.y - radius;
+        let stride = (cell_cols - 1) * PC_WIENER_BLOCK_SIZE
+            + PC_WIENER_FEATURE_WINDOW_SIDE
+            + 4 * PC_WIENER_CLASSIFY_READ_RADIUS;
+        let rows = (cell_rows - 1) * PC_WIENER_BLOCK_SIZE
+            + PC_WIENER_FEATURE_WINDOW_SIDE
+            + 4 * PC_WIENER_CLASSIFY_READ_RADIUS;
+        let mut buffer = Vec::with_capacity(stride * rows);
+        for row in 0..rows {
+            for col in 0..stride {
+                buffer.push(source_at(origin_x + col as isize, origin_y + row as isize));
+            }
+        }
+        let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
+        let padded = pc_wiener_classify_grid_padded::<u16, _>(
+            &params, cell_cols, cell_rows, &source, tx_skip,
+        )
+        .unwrap();
+
+        assert_eq!(callback, padded);
+    }
+
+    #[test]
+    fn classify_padded_source_rejects_origin_past_region() {
+        let mut params = params(BitDepth::Ten);
+        params.x = 40;
+        params.y = 24;
+        let buffer = vec![0u16; 64];
+        let source = PcWienerClassifyPaddedSource::new(&buffer, 8, params.x + 100, params.y + 100);
+        let err = pc_wiener_classify_grid_padded::<u16, _>(
+            &params,
+            2,
+            2,
+            &source,
+            |lookup: PcWienerTxSkipLookup| Ok(i32::from((lookup.row + lookup.col) as u8 & 1)),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ReconError::PcWienerInvalidBounds { .. }));
     }
 }

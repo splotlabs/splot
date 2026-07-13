@@ -130,8 +130,9 @@ pub use optflow::derive_optflow_mv_deltas;
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
-    PcWienerClassification, PcWienerClassifyParams, PcWienerFilter, PcWienerTxSkipLookup,
-    pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_filter_block,
+    PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams, PcWienerFilter,
+    PcWienerPaddedSource, PcWienerTxSkipLookup, pc_wiener_classify, pc_wiener_classify_grid,
+    pc_wiener_classify_grid_padded, pc_wiener_filter_block, pc_wiener_filter_block_padded,
     pc_wiener_filter_set_index, pc_wiener_subclass,
 };
 pub use plane::{Plane, VisibleRows};
