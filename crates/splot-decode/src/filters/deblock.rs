@@ -650,21 +650,19 @@ impl StrengthCache {
         df_delta_q: i32,
         bit_depth: BitDepth,
     ) -> (i32, i32) {
-        let Some(entry) = usize::try_from(qindex)
-            .ok()
-            .and_then(|index| self.entries.get_mut(index))
-        else {
-            return adaptive_strength(
-                deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
-                bit_depth,
-            );
-        };
-        *entry.get_or_insert_with(|| {
+        let calculate = || {
             adaptive_strength(
                 deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
                 bit_depth,
             )
-        })
+        };
+        let Some(entry) = usize::try_from(qindex)
+            .ok()
+            .and_then(|index| self.entries.get_mut(index))
+        else {
+            return calculate();
+        };
+        *entry.get_or_insert_with(calculate)
     }
 }
 
