@@ -31,6 +31,7 @@ use splot_tables::tables::transform_1d::{
     DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
 };
 
+use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, Result};
 
 /// AV2 § 7.15.4.1 Table 7.1 kernel-based 1D inverse transform type.
@@ -64,8 +65,8 @@ pub enum InverseTransform1dType {
 /// Following the spec dispatch exactly: at length 4 only `DCT` and `ADST` have
 /// their own kernel and every other type falls to the `FDST` kernel; at length
 /// 32 the `DCT` kernel is used regardless of type (AV2 defines no other length-32
-/// 1D kernel). The accumulation uses `i64` intermediates, so the matrix multiply
-/// cannot overflow for in-range dequantized inputs, and the final `Clip3` bound
+/// 1D kernel). The accumulation uses `i32`, matching AVM; inputs are clamped to
+/// the § 7.14.4 dequant range before multiplication, and the final `Clip3` bound
 /// keeps every written value inside `i32`.
 ///
 /// # Errors
@@ -93,8 +94,6 @@ pub fn inverse_transform_1d(
         });
     }
 
-    let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
-
     match sz {
         4 => {
             let kernel = match tx_type {
@@ -102,7 +101,7 @@ pub fn inverse_transform_1d(
                 Adst => &ADST_KERNEL4,
                 Fdst | Ddtx | Fddt => &FDST_KERNEL4,
             };
-            kernel_transform(src, kernel, false, shift, lo, hi, out);
+            kernel_transform(src, kernel, false, shift, col_tx, bit_depth, out);
         }
         8 => {
             let (kernel, reversed) = match tx_type {
@@ -112,7 +111,7 @@ pub fn inverse_transform_1d(
                 Ddtx => (&DDTX_KERNEL8, false),
                 Fddt => (&DDTX_KERNEL8, true),
             };
-            kernel_transform(src, kernel, reversed, shift, lo, hi, out);
+            kernel_transform(src, kernel, reversed, shift, col_tx, bit_depth, out);
         }
         16 => {
             let (kernel, reversed) = match tx_type {
@@ -122,9 +121,9 @@ pub fn inverse_transform_1d(
                 Ddtx => (&DDTX_KERNEL16, false),
                 Fddt => (&DDTX_KERNEL16, true),
             };
-            kernel_transform(src, kernel, reversed, shift, lo, hi, out);
+            kernel_transform(src, kernel, reversed, shift, col_tx, bit_depth, out);
         }
-        _ => kernel_transform(src, &DCT_KERNEL32, false, shift, lo, hi, out),
+        _ => kernel_transform(src, &DCT_KERNEL32, false, shift, col_tx, bit_depth, out),
     }
     Ok(())
 }
@@ -133,19 +132,20 @@ pub fn inverse_transform_1d(
 /// butterfly over `src` with a pre-scaling `shift`.
 ///
 /// This is the lossless-block 1D transform. It applies no `Clip3` (the spec
-/// produces the butterfly result directly) and is total: the arithmetic uses
-/// `i64` intermediates and the pre-scale `shift` is clamped below the `i64`
+/// produces the butterfly result directly) and is total: inputs are clamped to
+/// the maximum AV2 dequant range and the pre-scale `shift` is clamped below the `i32`
 /// width, so an out-of-contract `shift` saturates to the arithmetic-shift limit
 /// instead of panicking (spec-conformant callers use shift 0 or 3). The result
 /// is returned as `i32` (lossless residuals are bounded well within `i32`).
 #[allow(clippy::many_single_char_names)]
 #[must_use]
 pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
-    let shift = u32::from(shift).min(i64::BITS - 1);
-    let mut a = i64::from(src[0]) >> shift;
-    let mut c = i64::from(src[1]) >> shift;
-    let mut d = i64::from(src[2]) >> shift;
-    let mut b = i64::from(src[3]) >> shift;
+    let shift = u32::from(shift).min(i32::BITS - 1);
+    let bound = 1 << 17;
+    let mut a = src[0].clamp(-bound, bound - 1) >> shift;
+    let mut c = src[1].clamp(-bound, bound - 1) >> shift;
+    let mut d = src[2].clamp(-bound, bound - 1) >> shift;
+    let mut b = src[3].clamp(-bound, bound - 1) >> shift;
     a += c;
     d -= b;
     let e = (a - d) >> 1;
@@ -153,7 +153,7 @@ pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
     c = e - c;
     a -= b;
     d += c;
-    [a as i32, b as i32, c as i32, d as i32]
+    [a, b, c, d]
 }
 
 /// Applies the AV2 § 7.15.2.3 inverse identity transform to `src`, writing `out`.
@@ -162,7 +162,8 @@ pub fn inverse_walsh_hadamard(src: [i32; 4], shift: u8) -> [i32; 4] {
 /// `colTx`-dependent bound as [`inverse_transform_1d`]. `scale` is the
 /// caller-supplied § 7.15.4.1 `get_identity_scale` value, `shift` the down-shift,
 /// `col_tx` the column-pass flag, and `bit_depth` the active decoded bit depth.
-/// The computation uses `i64` intermediates, so it is total and never panics.
+/// Inputs and the caller-derived scale are clamped to their AV2 ranges before
+/// the `i32` product, so the computation is total and never panics.
 ///
 /// # Errors
 /// Returns [`ReconError::InverseTransformLengthMismatch`] if `out.len()` does not
@@ -182,18 +183,24 @@ pub fn inverse_identity_transform(
         });
     }
     let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
+    let input_bound = transform_input_bound(bit_depth);
+    let scale = scale.clamp(0, 362);
     for (slot, &coeff) in out.iter_mut().zip(src) {
-        let scaled = i64::from(coeff) * i64::from(scale);
-        *slot = round2(scaled, shift).clamp(lo, hi) as i32;
+        let scaled = coeff.clamp(-input_bound, input_bound - 1) * scale;
+        *slot = round2_i32(scaled, u32::from(shift)).clamp(lo, hi);
     }
     Ok(())
 }
 
 /// The AV2 § 7.15.2.1 / § 7.15.2.3 `Clip3` bounds
 /// `[-(1 << (BitDepth + (colTx ? 0 : 7))), (1 << (BitDepth + (colTx ? 0 : 7))) - 1]`.
-fn transform_clip_bounds(col_tx: bool, bit_depth: BitDepth) -> (i64, i64) {
-    let bound: i64 = 1 << (u32::from(bit_depth.bits()) + if col_tx { 0 } else { 7 });
+fn transform_clip_bounds(col_tx: bool, bit_depth: BitDepth) -> (i32, i32) {
+    let bound = 1i32 << (u32::from(bit_depth.bits()) + if col_tx { 0 } else { 7 });
     (-bound, bound - 1)
+}
+
+fn transform_input_bound(bit_depth: BitDepth) -> i32 {
+    1i32 << (u32::from(bit_depth.bits()) + 7)
 }
 
 /// Applies one § 7.15.2.1 kernel matrix multiply: `out[i] = Clip3(lo, hi,
@@ -202,34 +209,36 @@ fn transform_clip_bounds(col_tx: bool, bit_depth: BitDepth) -> (i64, i64) {
 /// dispatch branch).
 ///
 /// The accumulation runs kernel-row-major and skips zero coefficients (adding
-/// zero terms is an identity over the same `i64` sums). `src` and `out` have
+/// zero terms is an identity over the same `i32` sums). `src` and `out` have
 /// length `N` by the caller's dispatch; the `zip`s make the loops total either
-/// way. Every kernel entry has magnitude below `2^7`, so `|acc| <= N * 2^7 *
-/// 2^31 <= 2^43` and the multiply-accumulate cannot overflow `i64`.
+/// way. Every kernel entry has magnitude below `2^7`; after the AV2 input clamp,
+/// `|acc| <= 32 * 2^7 * 2^17 < 2^30`.
 fn kernel_transform<const N: usize>(
     src: &[i32],
     kernel: &[[i32; N]; N],
     reversed: bool,
     shift: u8,
-    lo: i64,
-    hi: i64,
+    col_tx: bool,
+    bit_depth: BitDepth,
     out: &mut [i32],
 ) {
-    let mut acc = [0i64; N];
+    let input_bound = transform_input_bound(bit_depth);
+    let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
+    let mut acc = [0i32; N];
     for (&coeff, kernel_row) in src.iter().zip(kernel.iter()) {
         if coeff == 0 {
             continue;
         }
-        let c = i64::from(coeff);
+        let c = coeff.clamp(-input_bound, input_bound - 1);
         for (slot, &k) in acc.iter_mut().zip(kernel_row.iter()) {
-            *slot += i64::from(k) * c;
+            *slot += k * c;
         }
     }
     if reversed {
         acc.reverse();
     }
     for (slot, &value) in out.iter_mut().zip(acc.iter()) {
-        *slot = round2(value, shift).clamp(lo, hi) as i32;
+        *slot = round2_i32(value, u32::from(shift)).clamp(lo, hi);
     }
 }
 
@@ -244,6 +253,7 @@ fn kernel_transform<const N: usize>(
 /// `|i32::MIN| * |i32::MIN| = 2^62`), so `(value >> (n - 1)) + 1 <= 2^62 + 1`.
 /// A `shift` at or above the `i64` width saturates to the arithmetic-shift
 /// limit instead of shifting out of range.
+#[cfg(test)]
 fn round2(value: i64, shift: u8) -> i64 {
     if shift == 0 {
         return value;
@@ -524,10 +534,15 @@ mod tests {
                     }
                     let got = run(&src, tx_type, shift, col_tx, bit_depth);
                     let (lo, hi) = transform_clip_bounds(col_tx, bit_depth);
+                    let input_bound = transform_input_bound(bit_depth);
+                    let clamped: Vec<i32> = src
+                        .iter()
+                        .map(|&value| value.clamp(-input_bound, input_bound - 1))
+                        .collect();
                     let expected: Vec<i32> = (0..sz)
                         .map(|i| {
-                            let s = reference_kernel_sum(&src, tx_type, sz, i);
-                            round2_reference(s, shift).clamp(lo, hi) as i32
+                            let s = reference_kernel_sum(&clamped, tx_type, sz, i);
+                            round2_reference(s, shift).clamp(i64::from(lo), i64::from(hi)) as i32
                         })
                         .collect();
                     assert_eq!(got, expected, "sz={sz} tx={tx_type:?} shift={shift}");
@@ -610,7 +625,7 @@ mod tests {
     fn identity_is_total_for_extreme_inputs() {
         assert_eq!(
             identity(&[i32::MIN], i32::MIN, 63, false, BitDepth::Ten),
-            [1]
+            [0]
         );
     }
 }

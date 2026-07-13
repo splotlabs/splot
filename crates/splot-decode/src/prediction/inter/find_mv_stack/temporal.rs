@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::math::round2_signed;
+use splot_recon::math::{round2_signed, round2_signed_i32};
 
 use super::{
     Mv, MvBlockContext, NeighbourCell, NeighbourMvGrid, RelativeProbe, TIP_REF_FRAME,
@@ -17,7 +17,7 @@ const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
 const MV_LIMIT: i32 = (1 << 16) - 1;
 const TIP_DIRECTIONS: [(i32, i32); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
-const DIV_MULT: [i64; 32] = [
+const DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
@@ -185,7 +185,7 @@ pub(crate) struct TemporalMotionBlock {
     pub(crate) current_order_hint: u32,
     pub(crate) ref_order_hints: [Option<u32>; 2],
     pub(crate) mvs: [Mv; 2],
-    pub(crate) warp_params: [Option<[i64; 6]>; 2],
+    pub(crate) warp_params: [Option<[i32; 6]>; 2],
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -805,8 +805,8 @@ fn average_tip_motion(
 
 #[doc = "AV2 § 7.10.4 Weight_Div_Mult motion-vector average."]
 fn divide_tip_average(value: i32, count: usize) -> i32 {
-    const WEIGHTS: [i64; 6] = [0, 65_536, 32_768, 21_845, 16_384, 13_107];
-    round2_signed(i64::from(value) * WEIGHTS[count], 16) as i32
+    const WEIGHTS: [i32; 6] = [0, 65_536, 32_768, 21_845, 16_384, 13_107];
+    round2_signed(i64::from(value) * i64::from(WEIGHTS[count]), 16) as i32
 }
 
 fn fill_temporal_sampling_gaps(
@@ -876,9 +876,9 @@ fn fill_temporal_sampling_gap(
     }
     let average = |value: i32| match count {
         1 => value,
-        2 => round2_signed(i64::from(value), 1) as i32,
-        3 => round2_signed(i64::from(value) * 85, 8) as i32,
-        _ => round2_signed(i64::from(value), 2) as i32,
+        2 => round2_signed_i32(value, 1),
+        3 => round2_signed_i32(value * 85, 8),
+        _ => round2_signed_i32(value, 2),
     };
     field.set(
         y8 + dy,
@@ -1063,11 +1063,17 @@ fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Option<Mv> {
     let denominator = denominator.clamp(1, MAX_FRAME_DISTANCE) as usize;
     let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
     let scale = DIV_MULT.get(denominator).copied()?;
-    let bound = (1i64 << 16) - 1;
-    let row = round2_signed(i64::from(mv.row) * i64::from(numerator) * scale, 14)
-        .clamp(-bound, bound) as i32;
-    let col = round2_signed(i64::from(mv.col) * i64::from(numerator) * scale, 14)
-        .clamp(-bound, bound) as i32;
+    let bound = (1 << 16) - 1;
+    let row = round2_signed(
+        i64::from(mv.row) * i64::from(numerator) * i64::from(scale),
+        14,
+    )
+    .clamp(-bound, bound) as i32;
+    let col = round2_signed(
+        i64::from(mv.col) * i64::from(numerator) * i64::from(scale),
+        14,
+    )
+    .clamp(-bound, bound) as i32;
     Some(Mv { row, col })
 }
 

@@ -3,7 +3,7 @@
 
 const PRIMARY_REF_NONE: u8 = 7;
 const PRIMARY_REF_CHOOSE: u8 = 8;
-const INITIAL_QP_DIFF: i64 = 512;
+const INITIAL_QP_DIFF: u32 = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ResolvedCdfLoad {
@@ -130,7 +130,7 @@ pub(crate) fn choose_primary_secondary_ref_frame(
 #[derive(Clone, Copy)]
 struct RankedRef {
     index: u8,
-    qp_diff: i64,
+    qp_diff: u32,
     order_hint: i32,
     ratio: i32,
 }
@@ -159,7 +159,7 @@ impl RankedRef {
         let height = ref_frame_height.get(slot).copied().unwrap_or(0);
         Self {
             index: u8::try_from(index).unwrap_or(PRIMARY_REF_NONE),
-            qp_diff: i64::from(base_q_idx.abs_diff(current_base_q_idx)),
+            qp_diff: base_q_idx.abs_diff(current_base_q_idx),
             order_hint,
             ratio: floor_log2(u64::from(width) * u64::from(height)),
         }

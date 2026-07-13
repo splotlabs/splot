@@ -6,7 +6,8 @@
 //! Feature tracking: `RECON-INTRA-ONE-SIDED-DIRECTIONAL-ANGLE-PREDICTION`,
 //! `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
 
-use crate::intra_dc_math::{clip1, round2, validate_output_shape, validate_sample_type};
+use crate::intra_dc_math::{clip1, round2_u32, validate_output_shape, validate_sample_type};
+use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
 const ANGLE_D45: u16 = 45;
@@ -190,7 +191,7 @@ impl IntraDirectionalAngle {
         let derivative = one_sided_idif_derivative(self);
         let branch = self.branch();
         let max_base = one_sided_max_base(size, mrl_index)?;
-        let mut furthest: i64 = 0;
+        let mut furthest = 0i32;
         for row in 0..size.height() {
             for column in 0..size.width() {
                 let reference =
@@ -902,7 +903,7 @@ struct MiddleDirectionalAngleBranch {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MiddleSampleReference {
     edge: IntraDirectionalAngleEdge,
-    base: i64,
+    base: i32,
     shift: u16,
 }
 
@@ -1159,7 +1160,7 @@ fn validate_middle_idif_index_bounds(
                 IntraDirectionalAngleEdge::Left => left_len,
                 IntraDirectionalAngleEdge::Above => above_len,
             };
-            for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
+            for tap in 0..DR_INTERP_FILTER_TAPS as i32 {
                 let logical =
                     reference
                         .base
@@ -1189,7 +1190,7 @@ fn validate_middle_idif_mrl_index_bounds(
                 IntraDirectionalAngleEdge::Left => left_len,
                 IntraDirectionalAngleEdge::Above => above_len,
             };
-            for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
+            for tap in 0..DR_INTERP_FILTER_TAPS as i32 {
                 let logical =
                     reference
                         .base
@@ -1473,7 +1474,7 @@ fn validate_one_sided_idif_index_bounds(
         for column in 0..size.width() {
             let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
             if reference.base <= max_base {
-                for tap in 0..(DR_INTERP_FILTER_TAPS as i64) {
+                for tap in 0..DR_INTERP_FILTER_TAPS as i32 {
                     let logical = reference.base.checked_add(tap - 1).ok_or(
                         ReconError::ArithmeticOverflow {
                             context: "one-sided directional angle IDIF tap index",
@@ -1491,31 +1492,31 @@ fn validate_one_sided_idif_index_bounds(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct OneSidedReference {
-    base: i64,
+    base: i32,
     shift: u16,
 }
 
 /// The §7.13.2.8 one-sided derivative: `dx = Dr_Intra_Derivative[pAngle]` for the
 /// zone-1 above angle (step 1) or `dy = Dr_Intra_Derivative[270 - pAngle]` for
 /// the zone-3 left angle (step 3). Both are carried in the branch's `derivative`.
-fn one_sided_idif_derivative(angle: IntraDirectionalAngle) -> i64 {
+fn one_sided_idif_derivative(angle: IntraDirectionalAngle) -> i32 {
     match angle.branch() {
         DirectionalAngleBranch::Above { derivative }
-        | DirectionalAngleBranch::Left { derivative } => i64::from(derivative),
+        | DirectionalAngleBranch::Left { derivative } => i32::from(derivative),
     }
 }
 
 /// §7.13.2.8 `maxBaseX = maxBaseY = w + h - 1 + (mrlIndex << 1)`; identical for
 /// the zone-1 above and zone-3 left one-sided projections. `mrl_index == 0` is the
 /// immediate reference line.
-fn one_sided_max_base(size: IntraRectBlockSize, mrl_index: usize) -> Result<i64> {
+fn one_sided_max_base(size: IntraRectBlockSize, mrl_index: usize) -> Result<i32> {
     let max_base = required_edge_len(size)?
         .checked_sub(1)
         .and_then(|v| v.checked_add(mrl_index << 1))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle maxBase",
         })?;
-    i64::try_from(max_base).map_err(|_| ReconError::ArithmeticOverflow {
+    i32::try_from(max_base).map_err(|_| ReconError::ArithmeticOverflow {
         context: "one-sided directional angle maxBase range",
     })
 }
@@ -1530,7 +1531,7 @@ fn one_sided_idif_reference(
     branch: DirectionalAngleBranch,
     row: usize,
     column: usize,
-    derivative: i64,
+    derivative: i32,
     mrl_index: usize,
 ) -> Result<OneSidedReference> {
     let (scaled, offset) = match branch {
@@ -1540,7 +1541,7 @@ fn one_sided_idif_reference(
     let scaled_plus_one = scaled
         .checked_add(1)
         .and_then(|v| v.checked_add(mrl_index))
-        .and_then(|v| i64::try_from(v).ok())
+        .and_then(|v| i32::try_from(v).ok())
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle projection index",
         })?;
@@ -1549,11 +1550,11 @@ fn one_sided_idif_reference(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle derivative product",
         })?;
-    let offset_i64 = i64::try_from(offset).map_err(|_| ReconError::ArithmeticOverflow {
+    let offset_i32 = i32::try_from(offset).map_err(|_| ReconError::ArithmeticOverflow {
         context: "one-sided directional angle offset index",
     })?;
     let base = (idx >> 6)
-        .checked_add(offset_i64)
+        .checked_add(offset_i32)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle base index",
         })?;
@@ -1683,13 +1684,13 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
 /// * Edge[base + t - 1]`, then `Clip1(Round2(s, 7))`. The 4-tap sum is signed
 /// (the filter has negative taps), so `Round2` floors the signed value and
 /// `Clip1` clamps a negative result to `0`.
-fn idif_tap<T: ReconSample>(edge: &[T], base: i64, shift: u16, bit_depth: BitDepth) -> Result<u16> {
+fn idif_tap<T: ReconSample>(edge: &[T], base: i32, shift: u16, bit_depth: BitDepth) -> Result<u16> {
     idif_tap_with_mrl(edge, base, shift, bit_depth, 0)
 }
 
 fn idif_tap_mrl<T: ReconSample>(
     edge: &[T],
-    base: i64,
+    base: i32,
     shift: u16,
     bit_depth: BitDepth,
     mrl_index: usize,
@@ -1699,7 +1700,7 @@ fn idif_tap_mrl<T: ReconSample>(
 
 fn idif_tap_with_mrl<T: ReconSample>(
     edge: &[T],
-    base: i64,
+    base: i32,
     shift: u16,
     bit_depth: BitDepth,
     mrl_index: usize,
@@ -1709,16 +1710,16 @@ fn idif_tap_with_mrl<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle IDIF shift index",
         })?;
-    let mut sum: i64 = 0;
+    let mut sum = 0i32;
     for (tap_index, &tap) in taps.iter().enumerate() {
         let logical =
-            base.checked_add(tap_index as i64 - 1)
+            base.checked_add(tap_index as i32 - 1)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "middle directional angle IDIF tap index",
                 })?;
         let offset = logical_idif_edge_offset_mrl(logical, edge.len(), mrl_index)?;
-        let sample = i64::from(edge[offset].to_u16());
-        let term = i64::from(tap)
+        let sample = i32::from(edge[offset].to_u16());
+        let term = tap
             .checked_mul(sample)
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "middle directional angle IDIF tap product",
@@ -1735,29 +1736,29 @@ fn idif_tap_with_mrl<T: ReconSample>(
 /// AV2 §4 `Clip1(Round2(s, 7))` for a signed IDIF sum: `Round2(x, n) =
 /// ⌊(x + 2^(n-1)) / 2^n⌋` (floor, via arithmetic shift on the signed value),
 /// then clamp to `0..=max_sample`.
-fn idif_round2_clip(sum: i64, bit_depth: BitDepth) -> u16 {
-    let rounded = (sum + (1i64 << (DR_INTERP_FILTER_ROUND - 1))) >> DR_INTERP_FILTER_ROUND;
+fn idif_round2_clip(sum: i32, bit_depth: BitDepth) -> u16 {
+    let rounded = round2_i32(sum, u32::from(DR_INTERP_FILTER_ROUND));
     if rounded <= 0 {
         return 0;
     }
-    let max = i64::from(bit_depth.max_sample());
+    let max = i32::from(bit_depth.max_sample());
     let clamped = rounded.min(max);
     clip1(clamped as u16, bit_depth)
 }
 
-fn logical_idif_edge_sample<T: ReconSample>(samples: &[T], logical_index: i64) -> Result<T> {
+fn logical_idif_edge_sample<T: ReconSample>(samples: &[T], logical_index: i32) -> Result<T> {
     let offset = logical_idif_edge_offset(logical_index, samples.len())?;
     Ok(samples[offset])
 }
 
 /// Maps an IDIF logical edge index (`-2 ..= side + 1`) to a slice offset:
 /// `slice[0]` is logical `-2`, so `offset = logical_index + 2`.
-fn logical_idif_edge_offset(logical_index: i64, len: usize) -> Result<usize> {
+fn logical_idif_edge_offset(logical_index: i32, len: usize) -> Result<usize> {
     logical_idif_edge_offset_mrl(logical_index, len, 0)
 }
 
-fn logical_idif_edge_offset_mrl(logical_index: i64, len: usize, mrl_index: usize) -> Result<usize> {
-    let mrl = i64::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
+fn logical_idif_edge_offset_mrl(logical_index: i32, len: usize, mrl_index: usize) -> Result<usize> {
+    let mrl = i32::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
         context: "middle directional angle IDIF MRL index",
     })?;
     let shifted = logical_index
@@ -1791,18 +1792,32 @@ fn middle_sample_reference_mrl(
     branch: MiddleDirectionalAngleBranch,
     mrl_index: usize,
 ) -> Result<MiddleSampleReference> {
-    let mrl = i64::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
+    let mrl = i32::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
         context: "middle directional angle MRL index",
     })?;
-    let column_scaled = checked_scaled_i64(column, "middle directional angle above index prefix")?;
-    let row_plus_one = checked_usize_plus_one_i64(row, "middle directional angle above row index")?
+    let row = i32::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "middle directional angle row index",
+    })?;
+    let column = i32::try_from(column).map_err(|_| ReconError::ArithmeticOverflow {
+        context: "middle directional angle column index",
+    })?;
+    let column_scaled = column
+        .checked_mul(64)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle above index prefix",
+        })?;
+    let row_plus_one = row
+        .checked_add(1)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle above row index",
+        })?
         .checked_add(mrl)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle above MRL row index",
         })?;
     let above_delta =
         row_plus_one
-            .checked_mul(i64::from(branch.dx))
+            .checked_mul(i32::from(branch.dx))
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "middle directional angle above derivative product",
             })?;
@@ -1822,14 +1837,19 @@ fn middle_sample_reference_mrl(
         });
     }
 
-    let row_scaled = checked_scaled_i64(row, "middle directional angle left index prefix")?;
-    let column_plus_one =
-        checked_usize_plus_one_i64(column, "middle directional angle left column index")?
-            .checked_add(mrl)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "middle directional angle left MRL column index",
-            })?;
-    let left_delta = column_plus_one.checked_mul(i64::from(branch.dy)).ok_or(
+    let row_scaled = row.checked_mul(64).ok_or(ReconError::ArithmeticOverflow {
+        context: "middle directional angle left index prefix",
+    })?;
+    let column_plus_one = column
+        .checked_add(1)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle left column index",
+        })?
+        .checked_add(mrl)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle left MRL column index",
+        })?;
+    let left_delta = column_plus_one.checked_mul(i32::from(branch.dy)).ok_or(
         ReconError::ArithmeticOverflow {
             context: "middle directional angle left derivative product",
         },
@@ -1846,30 +1866,16 @@ fn middle_sample_reference_mrl(
     })
 }
 
-fn checked_scaled_i64(value: usize, context: &'static str) -> Result<i64> {
-    let value = i64::try_from(value).map_err(|_| ReconError::ArithmeticOverflow { context })?;
-    value
-        .checked_mul(64)
-        .ok_or(ReconError::ArithmeticOverflow { context })
-}
-
-fn checked_usize_plus_one_i64(value: usize, context: &'static str) -> Result<i64> {
-    let value = i64::try_from(value).map_err(|_| ReconError::ArithmeticOverflow { context })?;
-    value
-        .checked_add(1)
-        .ok_or(ReconError::ArithmeticOverflow { context })
-}
-
-fn directional_shift(idx: i64) -> u16 {
+fn directional_shift(idx: i32) -> u16 {
     ((idx >> 1) & 0x1f) as u16
 }
 
-fn logical_edge_sample<T: ReconSample>(samples: &[T], logical_index: i64) -> Result<T> {
+fn logical_edge_sample<T: ReconSample>(samples: &[T], logical_index: i32) -> Result<T> {
     let offset = logical_edge_offset(logical_index, samples.len())?;
     Ok(samples[offset])
 }
 
-fn logical_edge_offset(logical_index: i64, len: usize) -> Result<usize> {
+fn logical_edge_offset(logical_index: i32, len: usize) -> Result<usize> {
     let shifted = logical_index
         .checked_add(1)
         .ok_or(ReconError::ArithmeticOverflow {
@@ -1887,9 +1893,9 @@ fn logical_edge_offset(logical_index: i64, len: usize) -> Result<usize> {
 }
 
 fn bilinear<T: ReconSample>(a: T, b: T, shift: u16) -> u16 {
-    let weighted = u64::from(a.to_u16()) * u64::from(INTERP_SCALE - shift)
-        + u64::from(b.to_u16()) * u64::from(shift);
-    round2(weighted, 5)
+    let weighted = u32::from(a.to_u16()) * u32::from(INTERP_SCALE - shift)
+        + u32::from(b.to_u16()) * u32::from(shift);
+    round2_u32(weighted, 5) as u16
 }
 
 /// Number of §7.13.2.18 intra edge filter kernel rows (`INTRA_EDGE_KERNELS`).

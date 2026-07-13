@@ -210,12 +210,12 @@ impl<'a> BitReader<'a> {
         }
 
         let value = self.read_bits(n)?;
-        let sign_mask = 1i64 << (n - 1);
-        let mut signed = i64::from(value);
-        if signed & sign_mask != 0 {
-            signed -= 2 * sign_mask;
-        }
-        Ok(signed as i32)
+        let sign_mask = 1u32 << (n - 1);
+        Ok(if value & sign_mask == 0 {
+            value as i32
+        } else {
+            value.wrapping_sub(sign_mask.wrapping_mul(2)) as i32
+        })
     }
 
     /// Reads an AV2 `uvlc()` descriptor (AV2 v1.0.0 § 4.11.3).
@@ -350,20 +350,19 @@ impl<'a> BitReader<'a> {
         }
 
         let w = u32::BITS - n.leading_zeros();
-        let m = (1u64 << w) - u64::from(n);
-        let v = u64::from(self.read_bits(w - 1)?);
+        let m = if w == u32::BITS {
+            u32::MAX - n + 1
+        } else {
+            (1u32 << w) - n
+        };
+        let v = self.read_bits(w - 1)?;
         let value = if v < m {
             v
         } else {
-            let extra_bit = u64::from(self.read_bit()?);
+            let extra_bit = u32::from(self.read_bit()?);
             (v << 1) - m + extra_bit
         };
-
-        u32::try_from(value).map_err(|_| Error::InvalidNs {
-            offset: self.byte_offset(),
-            bit_offset: self.bit_offset(),
-            message: "decoded value does not fit in u32".to_owned(),
-        })
+        Ok(value)
     }
 
     /// Reads an AV2 `rg(n)` Rice-Golomb descriptor (AV2 v1.0.0 § 4.11.10).
@@ -391,12 +390,19 @@ impl<'a> BitReader<'a> {
         for q in 0u32..32 {
             if self.read_bit()? == 0 {
                 let remainder = self.read_bits(n)?;
-                let value = (u64::from(q) << n) + u64::from(remainder);
-                return u32::try_from(value).map_err(|_| Error::InvalidRg {
+                let overflow = || Error::InvalidRg {
                     offset: start_offset,
                     bit_offset: start_bit_offset,
                     message: "decoded value does not fit in u32".to_owned(),
-                });
+                };
+                let base = if q == 0 {
+                    0
+                } else if n == u32::BITS {
+                    return Err(overflow());
+                } else {
+                    q.checked_mul(1u32 << n).ok_or_else(overflow)?
+                };
+                return base.checked_add(remainder).ok_or_else(overflow);
             }
         }
 

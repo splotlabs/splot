@@ -383,7 +383,7 @@ impl AboveRowScan {
             self.step10 = sb_border_above_col(geometry, 0);
         }
         if bw4 <= MAX_SMVP_AXIS_MI {
-            let raw = i64::try_from(bw4.max(2)).unwrap_or(i64::MAX);
+            let raw = i32::try_from(bw4.max(2)).unwrap_or(i32::MAX);
             self.step12 = sb_border_above_col(geometry, raw);
         }
         self.step14 = sb_border_above_col(geometry, -2);
@@ -446,11 +446,11 @@ fn tile_above_col(geometry: &SpatialScanGeometry, col: Option<usize>) -> Option<
     Some(col)
 }
 
-fn sb_border_above_col(geometry: &SpatialScanGeometry, raw: i64) -> Option<usize> {
+fn sb_border_above_col(geometry: &SpatialScanGeometry, raw: i32) -> Option<usize> {
     if geometry.mi_row == 0 {
         return None;
     }
-    let aligned_base = i64::try_from((geometry.mi_col >> 1) << 1).ok()?;
+    let aligned_base = i32::try_from((geometry.mi_col >> 1) << 1).ok()?;
     let aligned = aligned_base.checked_add(raw)?;
     let col = usize::try_from(aligned).ok()?;
     if col >= geometry.mi_cols {
@@ -480,7 +480,7 @@ fn step8_above_row_column(geometry: &SpatialScanGeometry) -> Option<usize> {
         return None;
     }
     let delta_col = geometry.n4w.saturating_sub(2);
-    sb_border_above_col(geometry, i64::try_from(delta_col).ok()?)
+    sb_border_above_col(geometry, i32::try_from(delta_col).ok()?)
 }
 
 fn push_deduped(
@@ -506,9 +506,9 @@ fn push_scan_col(
     block_base_col: &impl Fn(usize, usize) -> Option<usize>,
     candidates: &mut Vec<WeightedBv>,
 ) {
-    let mut delta_col = -3i64;
+    let mut delta_col = -3i32;
     if geometry.n4w == 1 {
-        delta_col += i64::try_from(geometry.mi_col & 1).unwrap_or(0);
+        delta_col += i32::try_from(geometry.mi_col & 1).unwrap_or(0);
     }
     if let Some(bottom_row) = geometry.mi_row.checked_add(geometry.n4h.saturating_sub(1)) {
         push_scan_col_point(
@@ -538,18 +538,18 @@ fn push_scan_col_point(
     block_base_col: &impl Fn(usize, usize) -> Option<usize>,
     candidates: &mut Vec<WeightedBv>,
     mv_row: usize,
-    delta_col: i64,
+    delta_col: i32,
 ) {
     let Some(mv_other_col) = geometry.mi_col.checked_sub(1) else {
         return;
     };
-    let Some(mv_col_i64) = i64::try_from(geometry.mi_col)
+    let Some(mv_col_i32) = i32::try_from(geometry.mi_col)
         .ok()
         .and_then(|col| col.checked_add(delta_col))
     else {
         return;
     };
-    let Ok(mv_col) = usize::try_from(mv_col_i64) else {
+    let Ok(mv_col) = usize::try_from(mv_col_i32) else {
         return;
     };
     if mv_row >= geometry.mi_rows || mv_col >= geometry.mi_cols {

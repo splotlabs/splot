@@ -140,9 +140,9 @@ pub fn predict_intra_paeth_rect_into<T: ReconSample>(
 }
 
 pub(crate) fn predict_paeth_sample<T: ReconSample>(left: T, above: T, top_left: T) -> T {
-    let left_value = i64::from(left.to_u16());
-    let above_value = i64::from(above.to_u16());
-    let top_left_value = i64::from(top_left.to_u16());
+    let left_value = i32::from(left.to_u16());
+    let above_value = i32::from(above.to_u16());
+    let top_left_value = i32::from(top_left.to_u16());
     let base = above_value + left_value - top_left_value;
 
     let p_left = base.abs_diff(left_value);

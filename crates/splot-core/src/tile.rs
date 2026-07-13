@@ -94,13 +94,15 @@ pub(crate) fn tile_scaling_factors(tier: Tier, level_idx: u8) -> Option<(u32, u3
 /// `tile_log2(blkSize, target)` (AV2 v1.0.0 § 5.18.7.7): the smallest `k` such that
 /// `blkSize << k >= target`.
 ///
-/// The shift is computed in `u64` and `k` is capped at 32 so a degenerate
-/// `blkSize == 0` (which the spec loop would never terminate on) returns a bounded
-/// value instead of looping forever; real call sites always pass `blkSize >= 1`.
+/// `k` is capped at 32 so a degenerate `blkSize == 0` (which the spec loop would
+/// never terminate on) returns a bounded value instead of looping forever; real
+/// call sites always pass `blkSize >= 1`.
 #[must_use]
 pub fn tile_log2(blk_size: u32, target: u32) -> u8 {
     let mut k = 0u32;
-    while k < 32 && (u64::from(blk_size) << k) < u64::from(target) {
+    let mut scaled = blk_size;
+    while k < 32 && scaled < target {
+        scaled = scaled.saturating_mul(2);
         k += 1;
     }
     k as u8
@@ -137,11 +139,11 @@ pub fn uniform_spacing(tile_log2: u8, mis: u32, sb_size: SuperblockSize) -> Tile
         full_sbs - (tile_sb << tile_log2)
     };
 
-    let num_tiles = 1u64 << tile_log2;
+    let num_tiles = 1u32 << tile_log2;
     let mut starts = Vec::new();
     let mut start_sb = 0u32;
     let mut i = 0u32;
-    while u64::from(i) < num_tiles && start_sb < sbs {
+    while i < num_tiles && start_sb < sbs {
         starts.push(start_sb);
         start_sb += tile_sb;
         if i < extra_sbs {

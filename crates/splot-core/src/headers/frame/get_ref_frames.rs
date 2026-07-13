@@ -62,7 +62,7 @@ const DECAY_DIST_CAP: i32 = 6;
 /// `Dist_Score_Lookup[ DECAY_DIST_CAP + 1 ]` (AV2 v1.0.0 § 7.7,
 /// `docs/spec/av2/1.0.0/07-decoding-process.md#s-7-7`): the decay score table indexed by
 /// `Min(tDist, DECAY_DIST_CAP)` in the `maxDisp <= OrderHint` scoring arm.
-const DIST_SCORE_LOOKUP: [i64; (DECAY_DIST_CAP as usize) + 1] = [0, 64, 96, 112, 120, 124, 126];
+const DIST_SCORE_LOOKUP: [i32; (DECAY_DIST_CAP as usize) + 1] = [0, 64, 96, 112, 120, 124, 126];
 
 /// One reference-frame buffer slot's saved state, as § 7.7 reads it (AV2 v1.0.0 § 7.23 sets
 /// each field on the reference-frame update; § 7.7 consumes them).
@@ -155,7 +155,7 @@ struct Ranked {
     /// `ScoresIndex[]`: the reference slot index.
     index: u32,
     /// `ScoresScore[]`: the score (lower is better after the sort).
-    score: i64,
+    score: i32,
     /// `ScoresOrderHint[]`: the mapped display order hint `d`.
     order_hint: i32,
     /// `ScoresDistance[]`: `get_relative_dist(OrderHint, d)`.
@@ -197,11 +197,10 @@ fn valid_ref_frame_size(check_res: bool, frame_w: u32, frame_h: u32, slot: &RefS
     if !check_res {
         return true;
     }
-    let fw = u64::from(frame_w);
-    let fh = u64::from(frame_h);
-    let rw = u64::from(slot.width);
-    let rh = u64::from(slot.height);
-    2 * fw >= rw && 2 * fh >= rh && fw <= 16 * rw && fh <= 16 * rh
+    frame_w >= slot.width.div_ceil(2)
+        && frame_h >= slot.height.div_ceil(2)
+        && frame_w <= slot.width.saturating_mul(16)
+        && frame_h <= slot.height.saturating_mul(16)
 }
 
 /// `get_ref_frames( checkRes )` (AV2 v1.0.0 § 7.7,
@@ -255,18 +254,17 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let slot = &input.slots[i];
         let q = slot.base_q_idx;
         let disp_diff = get_relative_dist(input.order_hint, d);
-        let t_dist =
-            i64::from(disp_diff.abs()) + i64::from(input.obu_mlayer_id) - i64::from(slot.mlayer_id);
-        let mut score: i64 = if max_disp > input.order_hint {
-            (t_dist << DIST_WEIGHT_BITS) + i64::from(q)
+        let t_dist = disp_diff.abs() + i32::from(input.obu_mlayer_id) - i32::from(slot.mlayer_id);
+        let mut score = if max_disp > input.order_hint {
+            (t_dist << DIST_WEIGHT_BITS) + q as i32
         } else {
             // TODO(spec: AV2-7.7-GET-REF-FRAMES): re-validate the tDist < 0 score against a
-            let cap = i64::from(DECAY_DIST_CAP);
+            let cap = DECAY_DIST_CAP;
             let lookup_idx = t_dist.clamp(0, cap) as usize;
-            DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + i64::from(q)
+            DIST_SCORE_LOOKUP[lookup_idx] + (t_dist - cap).max(0) + q as i32
         };
         let area = u64::from(slot.width).saturating_mul(u64::from(slot.height));
-        let ref_ratio = i64::from(floor_log2_u32_from_u64(area));
+        let ref_ratio = floor_log2_u32_from_u64(area) as i32;
         score -= ref_ratio << 5;
 
         if new_score_or_dist(&ranked, d, score, slot.mlayer_id) {
@@ -335,7 +333,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
 
 /// `new_score_or_dist( d, score, mLayer )` (AV2 v1.0.0 § 7.7): `true` when no already-ranked
 /// reference shares the same order hint, score, and modeling layer.
-fn new_score_or_dist(ranked: &[Ranked], d: i32, score: i64, m_layer: u8) -> bool {
+fn new_score_or_dist(ranked: &[Ranked], d: i32, score: i32, m_layer: u8) -> bool {
     !ranked
         .iter()
         .any(|r| r.order_hint == d && r.score == score && r.layer == m_layer)

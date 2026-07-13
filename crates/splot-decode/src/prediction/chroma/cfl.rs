@@ -3,7 +3,7 @@
 
 //! AV2 § 7.13.5/§ 7.13.6 chroma-from-luma reconstruction helpers.
 
-use splot_recon::math::{approx_divide, clip3, resolve_division, round2, round2_signed};
+use splot_recon::math::{approx_divide, resolve_division, round2_i32, round2_signed_i32};
 use splot_recon::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
@@ -18,13 +18,13 @@ use crate::bitstream::tile_payload::{
 };
 
 const MI_SIZE: usize = 4;
-const CFL_FILTERS_420: [[[i64; 3]; 3]; 3] = [
+const CFL_FILTERS_420: [[[i32; 3]; 3]; 3] = [
     [[0, 0, 0], [0, 2, 2], [0, 2, 2]],
     [[0, 0, 0], [1, 2, 1], [1, 2, 1]],
     [[0, 1, 0], [1, 4, 1], [0, 1, 0]],
 ];
 const CFL_ALPHA_SHIFT: u32 = 11;
-const CFL_ALPHA_SCALE: i64 = 32;
+const CFL_ALPHA_SCALE: i32 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 
@@ -190,7 +190,7 @@ fn apply_cfl_prediction<T: ReconSample>(
         sb_mib,
         bit_depth,
     )?;
-    let max = i64::from(bit_depth.max_sample());
+    let max = i32::from(bit_depth.max_sample());
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
         let luma_y = chroma_y.saturating_mul(2);
@@ -207,10 +207,10 @@ fn apply_cfl_prediction<T: ReconSample>(
                 clamp_y,
                 cfl_ds_filter_index,
             )?;
-            let scaled_luma = round2_signed(alpha_q3 * (luma - luma_avg), CFL_ALPHA_SHIFT);
+            let scaled_luma = round2_signed_i32(alpha_q3 * (luma - luma_avg), CFL_ALPHA_SHIFT);
             let index = row * width + col;
-            let dc = i64::from(prediction[index].to_u16());
-            let clipped = clip3(0, max, dc + scaled_luma) as u16;
+            let dc = i32::from(prediction[index].to_u16());
+            let clipped = (dc + scaled_luma).clamp(0, max) as u16;
             prediction[index] = T::try_from_u16(clipped)?;
         }
     }
@@ -228,7 +228,7 @@ fn cfl_alpha_q3<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-) -> core::result::Result<i64, GeneralIntraResidualError> {
+) -> core::result::Result<i32, GeneralIntraResidualError> {
     let alpha_q3 = match cfl_params.index {
         CflIndex::Explicit => {
             let alpha = match plane_id {
@@ -236,7 +236,7 @@ fn cfl_alpha_q3<T: ReconSample>(
                 PlaneId::V => cfl_params.alpha_v,
                 PlaneId::Y => 0,
             };
-            i64::from(alpha) * CFL_ALPHA_SCALE
+            i32::from(alpha) * CFL_ALPHA_SCALE
         }
         CflIndex::DerivedAlpha => derive_cfl_alpha_q3(
             workspace,
@@ -263,7 +263,7 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     height: usize,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-) -> core::result::Result<i64, GeneralIntraResidualError> {
+) -> core::result::Result<i32, GeneralIntraResidualError> {
     let have_above = y > 0;
     let have_left = x > 0;
     let (mut num_above, mut num_left) = if have_above && have_left {
@@ -283,11 +283,11 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     num_above = num_above.min(width);
     num_left = num_left.min(height);
 
-    let mut count = 0i64;
-    let mut sum_x = 0i64;
-    let mut sum_y = 0i64;
-    let mut sum_xy = 0i64;
-    let mut sum_xx = 0i64;
+    let mut count = 0i32;
+    let mut sum_x = 0i32;
+    let mut sum_y = 0i32;
+    let mut sum_xy = 0i32;
+    let mut sum_xx = 0i32;
     if num_above > 0 {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib);
         let step = width.checked_div(num_above).unwrap_or(0).max(1);
@@ -306,7 +306,7 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
                 cfl_ds_filter_index,
             )? >> 3;
             let chroma =
-                i64::from(clamped_chroma_sample(workspace, plane_id, chroma_x, y - 1)?.to_u16());
+                i32::from(clamped_chroma_sample(workspace, plane_id, chroma_x, y - 1)?.to_u16());
             sum_x += luma;
             sum_y += chroma;
             sum_xy += luma * chroma;
@@ -330,7 +330,7 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
                 cfl_ds_filter_index,
             )? >> 3;
             let chroma =
-                i64::from(clamped_chroma_sample(workspace, plane_id, x - 1, chroma_y)?.to_u16());
+                i32::from(clamped_chroma_sample(workspace, plane_id, x - 1, chroma_y)?.to_u16());
             sum_x += luma;
             sum_y += chroma;
             sum_xy += luma * chroma;
@@ -346,7 +346,7 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     if der == 0 || nor == 0 {
         return Ok(0);
     }
-    Ok(i64::from(resolve_division(
+    Ok(i32::from(resolve_division(
         nor,
         der,
         CFL_DERIVED_ALPHA_SHIFT,
@@ -363,11 +363,11 @@ fn cfl_luma_average_q3<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<i64, GeneralIntraResidualError> {
+) -> core::result::Result<i32, GeneralIntraResidualError> {
     let step_w = if width > 32 { 2 } else { 1 };
     let step_h = if height > 32 { 2 } else { 1 };
-    let mut sum = 0u64;
-    let mut count = 0u64;
+    let mut sum = 0u32;
+    let mut count = 0u32;
     if let Some(above_y) = y.checked_sub(1) {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib);
         for col in (0..width).step_by(step_w) {
@@ -382,7 +382,7 @@ fn cfl_luma_average_q3<T: ReconSample>(
                 false,
                 min_luma_ref_y,
                 cfl_ds_filter_index,
-            )? as u64);
+            )? as u32);
             count = count.saturating_add(1);
         }
     }
@@ -398,15 +398,15 @@ fn cfl_luma_average_q3<T: ReconSample>(
                 false,
                 clamp_y,
                 cfl_ds_filter_index,
-            )? as u64);
+            )? as u32);
             count = count.saturating_add(1);
         }
     }
     if count == 0 {
-        return Ok(i64::from(8u16 << (bit_depth.bits() - 1)));
+        return Ok(i32::from(8u16 << (bit_depth.bits() - 1)));
     }
     let max = (8u16 << bit_depth.bits()).saturating_sub(1);
-    Ok(i64::from(approx_divide(sum, count)?.min(max)))
+    Ok(i32::from(approx_divide(sum, count)?.min(max)))
 }
 
 fn cfl_luma_q3<T: ReconSample>(
@@ -416,7 +416,7 @@ fn cfl_luma_q3<T: ReconSample>(
     clamp_x: bool,
     clamp_y: bool,
     cfl_ds_filter_index: u8,
-) -> core::result::Result<i64, GeneralIntraResidualError> {
+) -> core::result::Result<i32, GeneralIntraResidualError> {
     cfl_luma_q3_with_min_y(
         workspace,
         chroma_x,
@@ -485,35 +485,35 @@ fn mhccp_prediction<T: ReconSample>(
         num4_below_left,
     )?;
     let params = derive_mhccp_params(&refs, mh_dir, bit_depth);
-    let max = i64::from(bit_depth.max_sample());
-    let mid = 1i64 << (u32::from(bit_depth.bits()) - 1);
+    let max = i32::from(bit_depth.max_sample());
+    let mid = 1i32 << (u32::from(bit_depth.bits()) - 1);
     let mut prediction = Vec::with_capacity(width.saturating_mul(height));
     for row in 0..height {
         for col in 0..width {
             let center_index = (refs.above + row) * refs.width + refs.left + col;
-            let center = refs.luma[center_index];
+            let center = i32::from(refs.luma[center_index]);
             let linear = match mh_dir {
                 0 => center,
                 1 => {
                     let top_row = refs.above.saturating_add(row).saturating_sub(1);
-                    refs.luma[top_row * refs.width + refs.left + col]
+                    i32::from(refs.luma[top_row * refs.width + refs.left + col])
                 }
                 _ => {
                     let left_col = refs.left.saturating_add(col).saturating_sub(1);
-                    refs.luma[(refs.above + row) * refs.width + left_col]
+                    i32::from(refs.luma[(refs.above + row) * refs.width + left_col])
                 }
             };
             let vector = [
                 linear,
-                round2(center.saturating_mul(center), u32::from(bit_depth.bits())),
+                round2_i32(center.saturating_mul(center), u32::from(bit_depth.bits())),
                 mid,
             ];
-            let mut predicted = 0i64;
+            let mut predicted = 0i32;
             for k in 0..MHCCP_PARAM_COUNT {
                 predicted =
                     predicted.saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
             }
-            prediction.push(T::try_from_u16(clip3(0, max, predicted) as u16)?);
+            prediction.push(T::try_from_u16(predicted.clamp(0, max) as u16)?);
         }
     }
     Ok(prediction)
@@ -583,22 +583,21 @@ fn mhccp_references<T: ReconSample>(
         );
     }
 
-    let mut luma = vec![0i64; ref_width.saturating_mul(ref_height)];
-    let mut chroma = vec![0i64; ref_width.saturating_mul(ref_height)];
+    let mut luma = vec![0u16; ref_width.saturating_mul(ref_height)];
+    let mut chroma = vec![0u16; ref_width.saturating_mul(ref_height)];
     for row in 0..ref_height {
         for col in 0..ref_width {
             let chroma_x = x + col - left;
             let chroma_y = y + row - above;
             if row < above || col < left {
                 let ref_chroma_y = chroma_y.max(min_chroma_ref_y);
-                chroma[row * ref_width + col] = i64::from(
-                    clamped_chroma_sample(workspace, plane_id, chroma_x, ref_chroma_y)?.to_u16(),
-                );
+                chroma[row * ref_width + col] =
+                    clamped_chroma_sample(workspace, plane_id, chroma_x, ref_chroma_y)?.to_u16();
             }
             if mhccp_luma_ref_available(row, col, above, left, width, height) {
                 let clamp_x = col == 0;
                 let clamp_y = row == 0;
-                luma[row * ref_width + col] = cfl_luma_q3_with_min_y(
+                luma[row * ref_width + col] = (cfl_luma_q3_with_min_y(
                     workspace,
                     chroma_x,
                     chroma_y,
@@ -606,7 +605,7 @@ fn mhccp_references<T: ReconSample>(
                     clamp_y,
                     min_luma_ref_y,
                     cfl_ds_filter_index,
-                )? >> 3;
+                )? >> 3) as u16;
             }
         }
     }
@@ -628,13 +627,13 @@ fn cfl_luma_q3_with_min_y<T: ReconSample>(
     clamp_y: bool,
     min_luma_ref_y: Option<isize>,
     cfl_ds_filter_index: u8,
-) -> core::result::Result<i64, GeneralIntraResidualError> {
+) -> core::result::Result<i32, GeneralIntraResidualError> {
     let Some(filter_index) = cfl_filter_index(cfl_ds_filter_index) else {
         return Ok(0);
     };
     let luma_x = (chroma_x.saturating_mul(2)) as isize;
     let luma_y = (chroma_y.saturating_mul(2)) as isize;
-    let mut total = 0i64;
+    let mut total = 0i32;
     for (dy_index, dy) in [-1isize, 0, 1].into_iter().enumerate() {
         for (dx_index, dx) in [-1isize, 0, 1].into_iter().enumerate() {
             let weight = CFL_FILTERS_420[filter_index][dy_index][dx_index];
@@ -646,7 +645,7 @@ fn cfl_luma_q3_with_min_y<T: ReconSample>(
             if let Some(min_y) = min_luma_ref_y {
                 sy = sy.max(min_y);
             }
-            total += weight * i64::from(clamped_luma_sample(workspace, sx, sy)?.to_u16());
+            total += weight * i32::from(clamped_luma_sample(workspace, sx, sy)?.to_u16());
         }
     }
     Ok(total)

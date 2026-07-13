@@ -16,7 +16,7 @@ use super::mv_scaling::{PlaneScaling, derive_plane_scaling, derive_plane_scaling
 use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
 use splot_core::span::ByteOffset;
-use splot_recon::math::{clip3, round2};
+use splot_recon::math::{clip3, round2_i32};
 
 mod optflow;
 mod refinemv;
@@ -53,11 +53,11 @@ fn pack_samples<T: ReconSample>(samples: &[u16]) -> splot_recon::Result<Vec<T>> 
 
 fn clip_and_pack_warp_samples<T: ReconSample, const N: usize>(
     samples: &[i32; N],
-    max_sample: i64,
+    max_sample: i32,
 ) -> splot_recon::Result<[T; N]> {
     let mut packed = [T::default(); N];
     for (dst, &sample) in packed.iter_mut().zip(samples) {
-        let clipped = clip3(0, max_sample, i64::from(sample)) as u16;
+        let clipped = sample.clamp(0, max_sample) as u16;
         *dst = T::try_from_u16(clipped)?;
     }
     Ok(packed)
@@ -186,7 +186,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
     use_refinemv: bool,
     search_refinemv: bool,
     refinemv_switchable: bool,
-    optflow_sad_threshold: Option<u64>,
+    optflow_sad_threshold: Option<u32>,
 }
 
 impl<'a, T: ReconSample> InterBlockParams<'a, T> {
@@ -242,7 +242,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         rect: McBlockRect,
         mv: Mv,
         interp: InterpolationFilter,
-        warp_params: [i64; 6],
+        warp_params: [i32; 6],
     ) -> Self {
         Self {
             rect,
@@ -296,12 +296,12 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         self
     }
 
-    pub(crate) const fn with_optflow_sad_threshold(mut self, threshold: Option<u64>) -> Self {
+    pub(crate) const fn with_optflow_sad_threshold(mut self, threshold: Option<u32>) -> Self {
         self.optflow_sad_threshold = threshold;
         self
     }
 
-    pub(crate) fn with_compound_warp(mut self, models: [Option<[i64; 6]>; 2]) -> Self {
+    pub(crate) fn with_compound_warp(mut self, models: [Option<[i32; 6]>; 2]) -> Self {
         if let InterPrediction::CompoundAverage { warp_params, .. } = &mut self.prediction {
             *warp_params = models;
         }
@@ -349,7 +349,7 @@ enum InterPrediction<'a, T: ReconSample> {
     SingleWarp {
         reference: &'a DecodedFrame<T>,
         mv: Mv,
-        warp_params: [i64; 6],
+        warp_params: [i32; 6],
     },
     CompoundAverage {
         reference0: &'a DecodedFrame<T>,
@@ -358,7 +358,7 @@ enum InterPrediction<'a, T: ReconSample> {
         mv1: Mv,
         blend: CompoundBlend,
         optflow_distances: Option<[i32; 2]>,
-        warp_params: [Option<[i64; 6]>; 2],
+        warp_params: [Option<[i32; 6]>; 2],
     },
 }
 #[derive(Clone, Copy, Debug)]
@@ -371,13 +371,13 @@ pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
     interp: InterpolationFilter,
     blend: CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
-    warp_params: [Option<[i64; 6]>; 2],
+    warp_params: [Option<[i32; 6]>; 2],
     has_chroma: bool,
     sub8x8_chroma: bool,
     use_refinemv: bool,
     search_refinemv: bool,
     refinemv_switchable: bool,
-    optflow_sad_threshold: Option<u64>,
+    optflow_sad_threshold: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -727,7 +727,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
     reference: &DecodedFrame<T>,
     block: InterBlockParams<'_, T>,
     mv: Mv,
-    warp_params: [i64; 6],
+    warp_params: [i32; 6],
     offset: ByteOffset,
 ) -> Result<()> {
     motion_compensate_planes(sink, block.has_chroma, |sink, plane, sub_x, sub_y| {
@@ -793,16 +793,16 @@ fn predict_plane_output<T: ReconSample>(
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
 
     let scaling = derive_plane_scaling(
-        plane_x as i64,
-        plane_y as i64,
-        i64::from(mv.row),
-        i64::from(mv.col),
+        plane_x as i32,
+        plane_y as i32,
+        mv.row,
+        mv.col,
         sub_x,
         sub_y,
         ref_mi_cols,
         ref_mi_rows,
-        block_w as i64,
-        block_h as i64,
+        block_w as i32,
+        block_h as i32,
     );
 
     let params = SubpelPredictParams {
@@ -838,7 +838,7 @@ fn predict_warp_plane<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
-    warp_params: [i64; 6],
+    warp_params: [i32; 6],
     sub_x: u32,
     sub_y: u32,
     offset: ByteOffset,
@@ -862,16 +862,16 @@ fn predict_warp_plane<T: ReconSample>(
                 if write_x >= destination_width || write_y >= destination_height {
                     continue;
                 }
-                let unit_x = (plane_x + (j4 & !1) * 4) as i64;
-                let unit_y = (plane_y + (i4 & !1) * 4) as i64;
+                let unit_x = (plane_x + (j4 & !1) * 4) as i32;
+                let unit_y = (plane_y + (i4 & !1) * 4) as i32;
                 let (first_x, first_y, last_x, last_y) = ext_warp_unit_bounds(
                     rect,
                     plane,
                     warp_params,
                     unit_x,
                     unit_y,
-                    block_w.min(8) as i64,
-                    block_h.min(8) as i64,
+                    block_w.min(8) as i32,
+                    block_h.min(8) as i32,
                     sub_x,
                     sub_y,
                     ref_mi_cols,
@@ -879,8 +879,8 @@ fn predict_warp_plane<T: ReconSample>(
                 );
                 let params = WarpPredictBlockParams {
                     warp_params,
-                    block_x: plane_x as i64,
-                    block_y: plane_y as i64,
+                    block_x: plane_x as i32,
+                    block_y: plane_y as i32,
                     subsampling_x: sub_x as u8,
                     subsampling_y: sub_y as u8,
                     first_x,
@@ -891,7 +891,7 @@ fn predict_warp_plane<T: ReconSample>(
                 };
                 let predicted = ext_warp_predict_unit(&view, &params, i4, j4, false)?;
                 let packed =
-                    clip_and_pack_warp_samples(&predicted, i64::from(bit_depth.max_sample()))?;
+                    clip_and_pack_warp_samples(&predicted, i32::from(bit_depth.max_sample()))?;
                 let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 sink.write_rect(plane, rect, &packed, 4)?;
             }
@@ -908,21 +908,21 @@ fn predict_warp_plane<T: ReconSample>(
             }
             let params = WarpPredictBlockParams {
                 warp_params,
-                block_x: write_x as i64,
-                block_y: write_y as i64,
+                block_x: write_x as i32,
+                block_y: write_y as i32,
                 subsampling_x: sub_x as u8,
                 subsampling_y: sub_y as u8,
                 first_x: 0,
                 first_y: 0,
-                last_x: ref_width as i64 - 1,
-                last_y: ref_height as i64 - 1,
+                last_x: ref_width as i32 - 1,
+                last_y: ref_height as i32 - 1,
                 bit_depth,
             };
             let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
             warp_predict_block_into(&view, &params, false, &mut predicted)?;
             let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
             let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
-            let packed = clip_and_pack_warp_samples(&predicted, i64::from(bit_depth.max_sample()))?;
+            let packed = clip_and_pack_warp_samples(&predicted, i32::from(bit_depth.max_sample()))?;
             let rect = PlaneRect::new(write_x, write_y, write_w, write_h)?;
             sink.write_rect(plane, rect, &packed, WARPED_BLOCK_SIZE)?;
         }
@@ -941,7 +941,7 @@ fn predict_compound_plane_output<T: ReconSample>(
     mv1: Mv,
     interp: InterpolationFilter,
     blend: CompoundBlend,
-    warp_params: [Option<[i64; 6]>; 2],
+    warp_params: [Option<[i32; 6]>; 2],
     sub_x: u32,
     sub_y: u32,
     luma_diff_weighted_mask: Option<&[u16]>,
@@ -1112,28 +1112,28 @@ fn compound_plane_prediction<T: ReconSample>(
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
 
     let scaling0 = derive_plane_scaling(
-        plane_x as i64,
-        plane_y as i64,
-        i64::from(mv0.row),
-        i64::from(mv0.col),
+        plane_x as i32,
+        plane_y as i32,
+        mv0.row,
+        mv0.col,
         sub_x,
         sub_y,
         ref_mi_cols0,
         ref_mi_rows0,
-        block_w as i64,
-        block_h as i64,
+        block_w as i32,
+        block_h as i32,
     );
     let scaling1 = derive_plane_scaling(
-        plane_x as i64,
-        plane_y as i64,
-        i64::from(mv1.row),
-        i64::from(mv1.col),
+        plane_x as i32,
+        plane_y as i32,
+        mv1.row,
+        mv1.col,
         sub_x,
         sub_y,
         ref_mi_cols1,
         ref_mi_rows1,
-        block_w as i64,
-        block_h as i64,
+        block_w as i32,
+        block_h as i32,
     );
 
     let params0 = SubpelPredictParams {
@@ -1241,7 +1241,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
-    warp_params: Option<[i64; 6]>,
+    warp_params: Option<[i32; 6]>,
     mv: Mv,
     interp: InterpolationFilter,
     sub_x: u32,
@@ -1252,16 +1252,16 @@ fn compound_ref_intermediate<T: ReconSample>(
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
     let scaling = derive_plane_scaling(
-        plane_x as i64,
-        plane_y as i64,
-        i64::from(mv.row),
-        i64::from(mv.col),
+        plane_x as i32,
+        plane_y as i32,
+        mv.row,
+        mv.col,
         sub_x,
         sub_y,
         ref_mi_cols,
         ref_mi_rows,
-        block_w as i64,
-        block_h as i64,
+        block_w as i32,
+        block_h as i32,
     );
     let Some(warp_params) = warp_params else {
         let params = SubpelPredictParams {
@@ -1295,10 +1295,10 @@ fn compound_ref_intermediate<T: ReconSample>(
                     rect,
                     plane,
                     warp_params,
-                    (plane_x + (j4 & !1) * 4) as i64,
-                    (plane_y + (i4 & !1) * 4) as i64,
-                    block_w.min(8) as i64,
-                    block_h.min(8) as i64,
+                    (plane_x + (j4 & !1) * 4) as i32,
+                    (plane_y + (i4 & !1) * 4) as i32,
+                    block_w.min(8) as i32,
+                    block_h.min(8) as i32,
                     sub_x,
                     sub_y,
                     ref_mi_cols,
@@ -1306,8 +1306,8 @@ fn compound_ref_intermediate<T: ReconSample>(
                 );
                 let params = WarpPredictBlockParams {
                     warp_params,
-                    block_x: plane_x as i64,
-                    block_y: plane_y as i64,
+                    block_x: plane_x as i32,
+                    block_y: plane_y as i32,
                     subsampling_x: sub_x as u8,
                     subsampling_y: sub_y as u8,
                     first_x,
@@ -1325,14 +1325,14 @@ fn compound_ref_intermediate<T: ReconSample>(
             for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
                 let params = WarpPredictBlockParams {
                     warp_params,
-                    block_x: (plane_x + local_x) as i64,
-                    block_y: (plane_y + local_y) as i64,
+                    block_x: (plane_x + local_x) as i32,
+                    block_y: (plane_y + local_y) as i32,
                     subsampling_x: sub_x as u8,
                     subsampling_y: sub_y as u8,
                     first_x: 0,
                     first_y: 0,
-                    last_x: ref_width as i64 - 1,
-                    last_y: ref_height as i64 - 1,
+                    last_x: ref_width as i32 - 1,
+                    last_y: ref_height as i32 - 1,
                     bit_depth,
                 };
                 let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
@@ -1467,17 +1467,17 @@ fn blend_compound_average<T: ReconSample>(
         );
     }
 
-    let last_x = frame_w as i64 - 1;
-    let last_y = frame_h as i64 - 1;
+    let last_x = frame_w as i32 - 1;
+    let last_y = frame_h as i32 - 1;
     let ref_start_x0 = scaling0.start_x >> 10;
     let ref_start_y0 = scaling0.start_y >> 10;
     let ref_start_x1 = scaling1.start_x >> 10;
     let ref_start_y1 = scaling1.start_y >> 10;
-    let ref_mi_cols = ((frame_w << sub_x).div_ceil(4)) as i64;
-    let ref_mi_rows = ((frame_h << sub_y).div_ceil(4)) as i64;
+    let ref_mi_cols = ((frame_w << sub_x).div_ceil(4)) as i32;
+    let ref_mi_rows = ((frame_h << sub_y).div_ceil(4)) as i32;
     let extent = |scaling: PlaneScaling| {
-        let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i64;
-        let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i64;
+        let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i32;
+        let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i32;
         (
             scaling.start_x >> 10,
             scaling.start_y >> 10,
@@ -1490,10 +1490,10 @@ fn blend_compound_average<T: ReconSample>(
         Some(motion) => motion.uniform_mvs().map(|mvs| {
             core::array::from_fn(|reference| {
                 derive_plane_scaling_prescaled(
-                    plane_x as i64,
-                    plane_y as i64,
-                    i64::from(mvs[reference][0]),
-                    i64::from(mvs[reference][1]),
+                    plane_x as i32,
+                    plane_y as i32,
+                    mvs[reference][0],
+                    mvs[reference][1],
                     sub_x,
                     sub_y,
                     ref_mi_cols,
@@ -1502,13 +1502,13 @@ fn blend_compound_average<T: ReconSample>(
             })
         }),
     };
-    let onscreen = |extent: (i64, i64, i64, i64)| {
+    let onscreen = |extent: (i32, i32, i32, i32)| {
         extent.0 >= 0 && extent.1 >= 0 && extent.2 <= last_x && extent.3 <= last_y
     };
     if uniform_scaling.is_some_and(|scaling| scaling.into_iter().map(extent).all(onscreen)) {
         return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
     }
-    let max_sample = i64::from(bit_depth.max_sample());
+    let max_sample = i32::from(bit_depth.max_sample());
     let shift = 1 + compound_inter_post_round();
     for (idx, (slot, (&left, &right))) in output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
     {
@@ -1518,10 +1518,10 @@ fn blend_compound_average<T: ReconSample>(
             let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
             core::array::from_fn(|reference| {
                 let scaling = derive_plane_scaling_prescaled(
-                    (plane_x + col) as i64,
-                    (plane_y + row) as i64,
-                    i64::from(mvs[reference][0]),
-                    i64::from(mvs[reference][1]),
+                    (plane_x + col) as i32,
+                    (plane_y + row) as i32,
+                    mvs[reference][0],
+                    mvs[reference][1],
                     sub_x,
                     sub_y,
                     ref_mi_cols,
@@ -1531,8 +1531,8 @@ fn blend_compound_average<T: ReconSample>(
             })
         } else {
             [
-                (ref_start_x0 + col as i64, ref_start_y0 + row as i64),
-                (ref_start_x1 + col as i64, ref_start_y1 + row as i64),
+                (ref_start_x0 + col as i32, ref_start_y0 + row as i32),
+                (ref_start_x1 + col as i32, ref_start_y1 + row as i32),
             ]
         };
         let ref0_onscreen =
@@ -1544,8 +1544,8 @@ fn blend_compound_average<T: ReconSample>(
             (false, true) => 0,
             _ => 1,
         };
-        let sample = round2(i64::from(mask * left + (2 - mask) * right), shift);
-        *slot = T::try_from_u16(clip3(0, max_sample, sample) as u16)?;
+        let sample = round2_i32(mask * left + (2 - mask) * right, shift);
+        *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
     }
     Ok(())
 }
@@ -1573,7 +1573,7 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     let CompoundBlend::DiffWeighted { inverse } = blend else {
         return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
     };
-    let max_sample = i64::from(bit_depth.max_sample());
+    let max_sample = i32::from(bit_depth.max_sample());
     let blend_shift = 6 + compound_inter_post_round();
     let mask = if let Some(luma_mask) = luma_diff_weighted_mask {
         subsample_diff_weighted_luma_mask(luma_mask, w, h, sub_x, sub_y)?
@@ -1589,11 +1589,11 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     for (slot, ((&left, &right), &mask)) in
         output.iter_mut().zip(pred0.iter().zip(pred1).zip(&mask))
     {
-        let blended = round2(
-            i64::from(mask) * i64::from(left) + i64::from(64 - mask) * i64::from(right),
+        let blended = round2_i32(
+            i32::from(mask) * left + i32::from(64 - mask) * right,
             blend_shift,
         );
-        *slot = T::try_from_u16(clip3(0, max_sample, blended) as u16)?;
+        *slot = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
     }
     Ok(())
 }
@@ -1613,7 +1613,7 @@ fn blend_compound_wedge<T: ReconSample>(
     sub_y: u32,
     output: &mut [T],
 ) -> splot_recon::Result<()> {
-    let max_sample = i64::from(bit_depth.max_sample());
+    let max_sample = i32::from(bit_depth.max_sample());
     let shift = 6 + compound_inter_post_round();
     for y in 0..h {
         for x in 0..w {
@@ -1628,12 +1628,11 @@ fn blend_compound_wedge<T: ReconSample>(
                 x,
                 y,
             )?;
-            let blended = round2(
-                i64::from(mask) * i64::from(pred0[idx])
-                    + i64::from(64 - mask) * i64::from(pred1[idx]),
+            let blended = round2_i32(
+                i32::from(mask) * pred0[idx] + i32::from(64 - mask) * pred1[idx],
                 shift,
             );
-            output[idx] = T::try_from_u16(clip3(0, max_sample, blended) as u16)?;
+            output[idx] = T::try_from_u16(blended.clamp(0, max_sample) as u16)?;
         }
     }
     Ok(())
@@ -1656,7 +1655,10 @@ fn diff_weighted_mask(
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
     let mut mask = Vec::with_capacity(w.saturating_mul(h));
     for (&left, &right) in pred0.iter().zip(pred1.iter()).take(w.saturating_mul(h)) {
-        let diff = round2(i64::from((left - right).unsigned_abs()), diff_round);
+        let diff = round2_i32(
+            i32::try_from(left.abs_diff(right)).unwrap_or(i32::MAX),
+            diff_round,
+        );
         let base_mask = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
             ReconError::ArithmeticOverflow {
                 context: "diff-weighted compound mask",
@@ -1709,15 +1711,15 @@ fn subsample_diff_weighted_luma_mask(
     let mut out = Vec::with_capacity(w.saturating_mul(h));
     for y in 0..h {
         for x in 0..w {
-            let mut sum = 0i64;
+            let mut sum = 0i32;
             for dy in 0..scale_y {
                 for dx in 0..scale_x {
                     let mask_x = x * scale_x + dx;
                     let mask_y = y * scale_y + dy;
-                    sum += i64::from(luma_mask[mask_y * luma_w + mask_x]);
+                    sum += i32::from(luma_mask[mask_y * luma_w + mask_x]);
                 }
             }
-            let averaged = round2(sum, sub_x + sub_y);
+            let averaged = round2_i32(sum, sub_x + sub_y);
             out.push(
                 u16::try_from(averaged).map_err(|_| ReconError::ArithmeticOverflow {
                     context: "diff-weighted chroma mask average",
@@ -1736,47 +1738,49 @@ const fn compound_inter_post_round() -> u32 {
 fn ext_warp_unit_bounds(
     rect: McBlockRect,
     plane: PlaneId,
-    warp_params: [i64; 6],
-    unit_x: i64,
-    unit_y: i64,
-    bbox_w: i64,
-    bbox_h: i64,
+    warp_params: [i32; 6],
+    unit_x: i32,
+    unit_y: i32,
+    bbox_w: i32,
+    bbox_h: i32,
     sub_x: u32,
     sub_y: u32,
-    ref_mi_cols: i64,
-    ref_mi_rows: i64,
-) -> (i64, i64, i64, i64) {
+    ref_mi_cols: i32,
+    ref_mi_rows: i32,
+) -> (i32, i32, i32, i32) {
     const WARPEDMODEL_PREC_BITS: u32 = 16;
     const MV_BOUND: i64 = 1 << 16;
-    const MV_BORDER: i64 = 128;
+    const MV_BORDER: i32 = 128;
     let src_x = (unit_x + (bbox_w >> 1)) << sub_x;
     let src_y = (unit_y + (bbox_h >> 1)) << sub_y;
-    let dst_x = warp_params[2] * src_x + warp_params[3] * src_y + warp_params[0];
-    let dst_y = warp_params[4] * src_x + warp_params[5] * src_y + warp_params[1];
+    let dst_x = i64::from(warp_params[2]) * i64::from(src_x)
+        + i64::from(warp_params[3]) * i64::from(src_y)
+        + i64::from(warp_params[0]);
+    let dst_y = i64::from(warp_params[4]) * i64::from(src_x)
+        + i64::from(warp_params[5]) * i64::from(src_y)
+        + i64::from(warp_params[1]);
     let mv_row = clip3(
         -MV_BOUND + 1,
         MV_BOUND - 1,
-        (dst_y - (src_y << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
-    );
+        (dst_y - (i64::from(src_y) << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
+    ) as i32;
     let mv_col = clip3(
         -MV_BOUND + 1,
         MV_BOUND - 1,
-        (dst_x - (src_x << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
-    );
+        (dst_x - (i64::from(src_x) << WARPEDMODEL_PREC_BITS)) >> (WARPEDMODEL_PREC_BITS - 3),
+    ) as i32;
     let (luma_x, luma_y, luma_w, luma_h) = rect.plane_luma_rect(plane);
-    let mi_row = (luma_y / 4) as i64;
-    let mi_col = (luma_x / 4) as i64;
-    let bh4 = (luma_h / 4) as i64;
-    let bw4 = (luma_w / 4) as i64;
-    let mv_row = clip3(
+    let mi_row = (luma_y / 4) as i32;
+    let mi_col = (luma_x / 4) as i32;
+    let bh4 = (luma_h / 4) as i32;
+    let bw4 = (luma_w / 4) as i32;
+    let mv_row = mv_row.clamp(
         -(mi_row + bh4) * 32 - MV_BORDER,
         (ref_mi_rows - mi_row) * 32 + MV_BORDER,
-        mv_row,
     );
-    let mv_col = clip3(
+    let mv_col = mv_col.clamp(
         -(mi_col + bw4) * 32 - MV_BORDER,
         (ref_mi_cols - mi_col) * 32 + MV_BORDER,
-        mv_col,
     );
     let scaling = derive_plane_scaling(
         unit_x,
@@ -1790,18 +1794,12 @@ fn ext_warp_unit_bounds(
         bbox_w,
         bbox_h,
     );
-    let first_x = clip3(0, scaling.last_x, (scaling.start_x >> 10) - 3);
-    let first_y = clip3(0, scaling.last_y, (scaling.start_y >> 10) - 3);
-    let last_x = clip3(
-        0,
-        scaling.last_x,
-        ((scaling.start_x + scaling.step_x * (bbox_w - 1)) >> 10) + 4,
-    );
-    let last_y = clip3(
-        0,
-        scaling.last_y,
-        ((scaling.start_y + scaling.step_y * (bbox_h - 1)) >> 10) + 4,
-    );
+    let first_x = ((scaling.start_x >> 10) - 3).clamp(0, scaling.last_x);
+    let first_y = ((scaling.start_y >> 10) - 3).clamp(0, scaling.last_y);
+    let end_x = scaling.start_x + scaling.step_x * (bbox_w - 1);
+    let end_y = scaling.start_y + scaling.step_y * (bbox_h - 1);
+    let last_x = ((end_x >> 10) + 4).clamp(0, scaling.last_x);
+    let last_y = ((end_y >> 10) + 4).clamp(0, scaling.last_y);
     (first_x, first_y, last_x, last_y)
 }
 
@@ -1842,7 +1840,7 @@ pub(crate) fn reference_plane_view<T: ReconSample>(
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     offset: ByteOffset,
-) -> Result<(ReferencePlaneView<'_, T>, i64, i64)> {
+) -> Result<(ReferencePlaneView<'_, T>, i32, i32)> {
     let Some(ref_plane) = reference.plane(plane) else {
         return Err(unsupported_at(
             "inter_reference_missing_plane",
@@ -1874,8 +1872,8 @@ pub(crate) fn reference_plane_view<T: ReconSample>(
         })?;
 
     let luma_visible = reference.y().visible_size();
-    let ref_mi_cols = luma_visible.width().div_ceil(4) as i64;
-    let ref_mi_rows = luma_visible.height().div_ceil(4) as i64;
+    let ref_mi_cols = luma_visible.width().div_ceil(4) as i32;
+    let ref_mi_rows = luma_visible.height().div_ceil(4) as i32;
 
     Ok((view, ref_mi_cols, ref_mi_rows))
 }

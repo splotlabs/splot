@@ -531,7 +531,7 @@ mod tests {
     #[test]
     fn long_term_id_overflow_is_rejected_not_panicked() {
         let (mut core, seq) = valid_core();
-        core.long_term_id = Some(i64::MAX);
+        core.long_term_id = Some(i32::MAX);
         assert_rejected_what(&core, &seq, true, "long_term_id");
     }
 

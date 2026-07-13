@@ -9,7 +9,7 @@ use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_BIAS, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
 };
 use splot_parallel::prelude::*;
-use splot_recon::math::{clip3, round2_signed};
+use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId,
     ReconSample, loop_restoration_source_sample,
@@ -114,8 +114,8 @@ pub(crate) fn apply_frame<T: ReconSample>(
         gdf.gdf_pic_qc_idx,
         offset,
     )?;
-    let pix_scale = i64::from(gdf.gdf_pic_scale_idx.unwrap_or(0)) + 1;
-    let max_sample = i64::from(bit_depth.max_sample());
+    let pix_scale = i32::from(gdf.gdf_pic_scale_idx.unwrap_or(0)) + 1;
+    let max_sample = i32::from(bit_depth.max_sample());
     let expected_samples = luma_width.checked_mul(luma_height).ok_or_else(|| {
         gdf_filter_error(
             offset,
@@ -270,8 +270,8 @@ struct GdfBlock {
     bit_depth: BitDepth,
     qp_idx: usize,
     ref_dst_idx: usize,
-    pix_scale: i64,
-    max_sample: i64,
+    pix_scale: i32,
+    max_sample: i32,
 }
 
 fn compute_block<T: ReconSample>(
@@ -555,7 +555,7 @@ impl<T: ReconSample> GdfSource<T> {
     }
 
     #[cfg(test)]
-    fn get(&self, x: isize, y: isize) -> i64 {
+    fn get(&self, x: isize, y: isize) -> i32 {
         let Some((col, row)) = self.relative_position_signed(x, y) else {
             return 0;
         };
@@ -575,11 +575,11 @@ impl<T: ReconSample> GdfSource<T> {
         Some((col, row))
     }
 
-    fn get_at(&self, col: usize, row: usize) -> i64 {
+    fn get_at(&self, col: usize, row: usize) -> i32 {
         debug_assert!(col < self.stride);
         self.samples
             .get(row * self.stride + col)
-            .map_or(0, |sample| i64::from(sample.to_u16()))
+            .map_or(0, |sample| i32::from(sample.to_u16()))
     }
 }
 
@@ -587,10 +587,10 @@ fn gradients<T: ReconSample>(
     source: &GdfSource<T>,
     block: &GdfBlock,
     source_origin: (usize, usize),
-) -> [[i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS] {
+) -> [[u16; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS] {
     let rows = block.height + 2;
     let cols = block.width + 2;
-    let mut grad = [[0_i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS];
+    let mut grad = [[0_u16; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS];
     for i in 0..rows {
         for j in 0..cols {
             let sample_col = source_origin.0 - 1 + j;
@@ -608,7 +608,7 @@ fn gradients<T: ReconSample>(
                     sample_col.wrapping_add_signed(delta_x),
                     sample_row.wrapping_add_signed(delta_y),
                 );
-                grad[direction][i * cols + j] = (center * 2 - before - after).abs();
+                grad[direction][i * cols + j] = (center * 2 - before - after).unsigned_abs() as u16;
             }
         }
     }
@@ -618,11 +618,11 @@ fn gradients<T: ReconSample>(
 #[derive(Clone, Copy, Default)]
 struct GdfClass {
     index: u8,
-    strength_contribution: [i64; 3],
+    strength_contribution: [i32; 3],
 }
 
 fn classes(
-    grad: &[[i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS],
+    grad: &[[u16; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS],
     block: &GdfBlock,
 ) -> [GdfClass; GDF_CLASS_CAPACITY] {
     let class_cols = block.width >> 1;
@@ -637,7 +637,7 @@ fn classes(
     let mut classes = [GdfClass::default(); GDF_CLASS_CAPACITY];
     for i in (0..class_rows).rev() {
         for j in 0..class_cols {
-            let mut strengths = [0_i64; GDF_DIRECTIONS];
+            let mut strengths = [0_u32; GDF_DIRECTIONS];
             for direction in 0..GDF_DIRECTIONS {
                 strengths[direction] =
                     grad_sum(&grad[direction], block.width + 2, i * 2, j * 2, 4, 4);
@@ -645,13 +645,13 @@ fn classes(
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
             let cls = usize::from(index);
-            let mut strength_contribution = [0_i64; 3];
+            let mut strength_contribution = [0_i32; 3];
             for (direction, strength) in strengths.into_iter().enumerate() {
                 let k = GDF_COORDS.len() + direction;
-                let alpha = i64::from(alpha_table[k][cls]);
-                let comb = (strength >> strength_shift).min(alpha);
+                let alpha = alpha_table[k][cls];
+                let comb = ((strength >> strength_shift) as i32).min(alpha);
                 for (idx, total) in strength_contribution.iter_mut().enumerate() {
-                    *total += comb * i64::from(weight_table[idx][k][cls]);
+                    *total += comb * weight_table[idx][k][cls];
                 }
             }
             classes[i * class_cols + j] = GdfClass {
@@ -680,7 +680,7 @@ fn gdf_sample<T: ReconSample>(
     let mut gdf_idx = class.strength_contribution;
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     for (k, &(dy, dx)) in GDF_COORDS.iter().enumerate() {
-        let alpha = i64::from(alpha_table[k][cls]);
+        let alpha = alpha_table[k][cls];
         let sample3 = source.get_at(
             source_col.wrapping_add_signed(-dx),
             source_row.wrapping_add_signed(-dy),
@@ -689,32 +689,32 @@ fn gdf_sample<T: ReconSample>(
             source_col.wrapping_add_signed(dx),
             source_row.wrapping_add_signed(dy),
         );
-        let above = clip3(-alpha, alpha, (sample3 - sample2) << shift);
-        let below = clip3(-alpha, alpha, (sample4 - sample2) << shift);
-        let comb = clip3(-512, 511, above + below);
+        let above = ((sample3 - sample2) << shift).clamp(-alpha, alpha);
+        let below = ((sample4 - sample2) << shift).clamp(-alpha, alpha);
+        let comb = (above + below).clamp(-512, 511);
         for (idx, total) in gdf_idx.iter_mut().enumerate() {
-            *total += comb * i64::from(weight_table[idx][k][cls]);
+            *total += comb * weight_table[idx][k][cls];
         }
     }
 
     let scale = if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        8_i64
+        8_i32
     } else {
-        5_i64
+        5_i32
     };
     let mut pos = 0_usize;
     for (idx, value) in gdf_idx.iter().enumerate() {
-        let biased = (*value + i64::from(GDF_BIAS[block.ref_dst_idx][block.qp_idx][idx])) * scale;
-        let v = round2_signed(biased, 15);
-        let digit = clip3(-scale, scale - 1, v) + scale;
+        let biased = (*value + GDF_BIAS[block.ref_dst_idx][block.qp_idx][idx]) * scale;
+        let v = round2_signed_i32(biased, 15);
+        let digit = v.clamp(-scale, scale - 1) + scale;
         pos = pos * (scale as usize * 2) + usize::try_from(digit).unwrap_or_default();
     }
     let err = if block.ref_dst_idx == GDF_INTRA_REF_DST {
-        i64::from(GDF_INTRA_ERROR[block.qp_idx][pos])
+        GDF_INTRA_ERROR[block.qp_idx][pos]
     } else {
-        i64::from(GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx][pos])
+        GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx][pos]
     };
-    let residual = round2_signed(
+    let residual = round2_signed_i32(
         err * block.pix_scale,
         12 - u32::from(block.bit_depth.bits()),
     );
@@ -722,23 +722,23 @@ fn gdf_sample<T: ReconSample>(
     let base = base_luma
         .get(base_index)
         .copied()
-        .map(i64::from)
+        .map(i32::from)
         .unwrap_or_default();
-    clip3(0, block.max_sample, base + residual) as u16
+    (base + residual).clamp(0, block.max_sample) as u16
 }
 
 fn grad_sum(
-    grad: &[i64],
+    grad: &[u16],
     stride: usize,
     row: usize,
     col: usize,
     down: usize,
     across: usize,
-) -> i64 {
-    let mut total = 0_i64;
+) -> u32 {
+    let mut total = 0_u32;
     for y in row..row + down {
         for x in col..col + across {
-            total += grad[y * stride + x];
+            total += u32::from(grad[y * stride + x]);
         }
     }
     total
@@ -759,8 +759,8 @@ fn gdf_qp_idx(
         )
     })? - qp_base
         - 24 * (i32::from(bit_depth.bits()) - 8);
-    let qp_bucket = clip3(0, 2, i64::from((qp_diff - 37) / 25));
-    let qc_idx = i64::from(pic_qc_idx.unwrap_or(0));
+    let qp_bucket = ((qp_diff - 37) / 25).clamp(0, 2);
+    let qc_idx = i32::from(pic_qc_idx.unwrap_or(0));
     usize::try_from(qp_bucket + qc_idx).map_err(|_| {
         gdf_filter_error(
             offset,
@@ -812,7 +812,8 @@ fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::D
 mod tests {
     use super::{
         GDF_READ_RADIUS, GdfBlock, GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT,
-        gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist, preserve_lossless_luma_samples,
+        compute_block, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist, grad_sum,
+        gradients, preserve_lossless_luma_samples,
     };
     use crate::filters::deblock::DeblockBlock;
     use crate::filters::lossless::LosslessBlockGrid;
@@ -975,5 +976,56 @@ mod tests {
                 assert_eq!(output[row * 8 + col], expected, "row {row} col {col}");
             }
         }
+    }
+
+    #[test]
+    fn maximum_ten_bit_gradient_and_filter_fit_narrow_state() {
+        let frame_width = 16;
+        let frame_height = 16;
+        let curr: Vec<u16> = (0..frame_width * frame_height)
+            .map(|index| if index & 1 == 0 { 1023 } else { 0 })
+            .collect();
+        let bounds = LoopRestorationSourceBounds {
+            luma_start_x: 0,
+            luma_end_x: frame_width - 1,
+            luma_start_y: 0,
+            luma_end_y: frame_height - 1,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: frame_height - 1,
+            subsampling_x: 0,
+            subsampling_y: 0,
+        };
+        let block = GdfBlock {
+            x: 4,
+            y: 4,
+            width: 4,
+            height: 4,
+            frame_width,
+            frame_height,
+            bit_depth: BitDepth::Ten,
+            qp_idx: 0,
+            ref_dst_idx: 0,
+            pix_scale: 4,
+            max_sample: 1023,
+        };
+        let source_result =
+            GdfSource::<u16>::materialize(&curr, &curr, &bounds, &block, ByteOffset::new(0));
+        assert!(source_result.is_ok());
+        let Ok(source) = source_result else {
+            return;
+        };
+        let Some(origin) = source.relative_position(block.x, block.y) else {
+            return;
+        };
+        let grad = gradients(&source, &block, origin);
+        assert!(grad.iter().flatten().all(|&value| value <= 2046));
+        assert!(
+            grad.iter()
+                .all(|direction| grad_sum(direction, block.width + 2, 0, 0, 4, 4) <= 32_736)
+        );
+
+        let filtered = compute_block::<u16>(&source, &curr, block, ByteOffset::new(0));
+        assert!(filtered.is_ok());
+        assert!(filtered.is_ok_and(|samples| samples.into_iter().all(|sample| sample <= 1023)));
     }
 }

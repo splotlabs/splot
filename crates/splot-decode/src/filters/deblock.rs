@@ -1048,22 +1048,15 @@ const DF_DELTA_SCALE: i32 = 8;
 
 fn deblock_level(qindex: u32, quant_delta: i32, df_delta_q: i32, bit_depth: BitDepth) -> u32 {
     let q_clamped = q_clamped(qindex, quant_delta, bit_depth);
-    let level = i64::from(q_clamped) + i64::from(df_delta_q) * i64::from(DF_DELTA_SCALE);
-    if level <= 0 {
-        0
-    } else if level > i64::from(u32::MAX) {
-        u32::MAX
-    } else {
-        level as u32
-    }
+    q_clamped.saturating_add_signed(df_delta_q.saturating_mul(DF_DELTA_SCALE))
 }
 
 fn q_clamped(qindex: u32, delta: i32, bit_depth: BitDepth) -> u32 {
     if qindex == 0 && delta <= 0 {
         return 0;
     }
-    let max = i64::from(max_quantizer_index(bit_depth));
-    (i64::from(qindex) + i64::from(delta)).clamp(1, max) as u32
+    let adjusted = qindex.saturating_add_signed(delta);
+    adjusted.clamp(1, max_quantizer_index(bit_depth))
 }
 
 fn adaptive_strength(lvl: u32, bit_depth: BitDepth) -> (i32, i32) {

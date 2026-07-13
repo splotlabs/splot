@@ -328,7 +328,7 @@ pub(crate) fn slot_facts(
     order_hint_lsb: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
-    long_term_id: Option<i64>,
+    long_term_id: Option<i32>,
 ) -> Option<SlotFacts> {
     Some(SlotFacts {
         order_hint: order_hint_lsb?,

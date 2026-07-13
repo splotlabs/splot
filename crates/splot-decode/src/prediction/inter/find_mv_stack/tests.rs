@@ -763,10 +763,10 @@ fn warp_sample_storage_keeps_the_first_eight_samples() {
 
     assert_eq!(samples.as_slice().len(), LEAST_SQUARES_SAMPLES_MAX);
     for (col, sample) in samples.as_slice().iter().enumerate() {
-        let source_x = (col as i64 * 4 + 1) * 8;
+        let source_x = (col as i32 * 4 + 1) * 8;
         assert_eq!(
             *sample,
-            [8, source_x, 8 + col as i64, source_x - col as i64]
+            [8, source_x, 8 + col as i32, source_x - col as i32]
         );
     }
 }
@@ -1621,7 +1621,7 @@ fn compound_group_idx_ctx_combines_two_nonzero_neighbours() {
 #[test]
 fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
     let mut grid = empty_grid();
-    let spatial = [-3_i64 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
+    let spatial = [-3_i32 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
     grid.record_warp_block(
         8,
         0,
@@ -1687,7 +1687,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
 #[test]
 fn warp_bank_hit_keeps_the_original_translation_and_evicts_oldest() {
     let mut bank = WarpParamBank::new();
-    let base = |trans: i64, scale: i64| [trans, -trans, 65536 + scale, 0, 0, 65536 - scale];
+    let base = |trans: i32, scale: i32| [trans, -trans, 65536 + scale, 0, 0, 65536 - scale];
     bank.update(0, base(1 << 16, 64));
     bank.update(0, base(2 << 16, 128));
     bank.update(0, base(9 << 16, 64));
@@ -2192,7 +2192,7 @@ fn scan_col_skips_undecoded_far_column() {
 #[test]
 fn scan_col_feeds_warp_stack() {
     let mut grid = empty_grid();
-    let warp_params = [-3_i64 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
+    let warp_params = [-3_i32 << 16, 5 << 16, 65536 + 1024, -192, 448, 65536 - 2048];
     record_two_wide_column(&mut grid, 6, Mv { row: 0, col: 16 });
     grid.record_warp_block(
         8,

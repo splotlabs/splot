@@ -59,6 +59,42 @@ pub const fn round2_signed(value: i64, n: u32) -> i64 {
     (if widened < 0 { -rounded } else { rounded }) as i64
 }
 
+#[inline]
+/// AV2 § 4.8 `Round2` for codec values already proven to fit `i32`.
+pub const fn round2_i32(value: i32, n: u32) -> i32 {
+    if n == 0 {
+        value
+    } else if n >= i32::BITS {
+        0
+    } else {
+        let quotient = value >> n;
+        let remainder = (value as u32) & ((1u32 << n) - 1);
+        quotient + (remainder >= (1u32 << (n - 1))) as i32
+    }
+}
+
+#[inline]
+/// AV2 § 4.8 `Round2Signed` for codec values already proven to fit `i32`.
+pub const fn round2_signed_i32(value: i32, n: u32) -> i32 {
+    if n == 0 {
+        value
+    } else {
+        let magnitude = value.unsigned_abs();
+        let rounded = if n < u32::BITS {
+            (magnitude >> n) + ((magnitude & ((1u32 << n) - 1)) >= (1u32 << (n - 1))) as u32
+        } else if n == u32::BITS && magnitude >= (1u32 << (u32::BITS - 1)) {
+            1
+        } else {
+            0
+        };
+        if value < 0 {
+            -(rounded as i32)
+        } else {
+            rounded as i32
+        }
+    }
+}
+
 /// AV2 § 4.8 `Clip3(low, high, value)` (spec `Clip3(x, y, z)`): `low` when
 /// `value < low`, `high` when `value > high`, else `value`
 /// (`docs/spec/av2/1.0.0/04-conventions.md#s-4-8`, eq. 3).
@@ -79,22 +115,22 @@ pub const fn clip3(low: i64, high: i64, value: i64) -> i64 {
 /// # Errors
 /// Returns [`ReconError`](crate::ReconError) for a zero divisor or arithmetic
 /// overflow.
-pub fn approx_divide(num: u64, den: u64) -> Result<u16> {
+pub fn approx_divide(num: u32, den: u32) -> Result<u16> {
     crate::intra_dc_math::approx_divide(num, den)
 }
 
 /// AV2 `resolve_division(N, D, shift)` used by CfL/MHCCP-style linear
 /// predictors.
-pub fn resolve_division(num: i64, den: i64, shift: u8) -> i16 {
+pub fn resolve_division(num: i32, den: i32, shift: u8) -> i16 {
     crate::intra_dc_math::resolve_division(num, den, shift)
 }
 
 /// AV2 § 4.8 `Clip1` over a block of `Round2(s, InterRound1)` predictor values,
 /// clamping each to `[0, max_sample]` for the single-reference write path.
-pub fn clip1_predicted_samples(values: Vec<i32>, max_sample: i64) -> Vec<u16> {
+pub fn clip1_predicted_samples(values: Vec<i32>, max_sample: i32) -> Vec<u16> {
     values
         .into_iter()
-        .map(|value| clip3(0, max_sample, i64::from(value)) as u16)
+        .map(|value| value.clamp(0, max_sample) as u16)
         .collect()
 }
 
@@ -143,6 +179,27 @@ mod tests {
         assert_eq!(round2_signed(i64::MIN, 1), -(1 << 62)); // -Round2(2^63, 1)
         let _ = round2_signed(i64::MIN, 7);
         let _ = round2_signed(i64::MAX, 7);
+    }
+
+    #[test]
+    fn i32_rounding_is_total_at_type_boundaries() {
+        assert_eq!(round2_i32(i32::MAX, 1), 1 << 30);
+        assert_eq!(round2_i32(i32::MIN, 1), -(1 << 30));
+        assert_eq!(round2_i32(i32::MAX, 32), 0);
+        assert_eq!(round2_signed_i32(i32::MIN, 0), i32::MIN);
+        assert_eq!(round2_signed_i32(i32::MIN, 1), -(1 << 30));
+        assert_eq!(round2_signed_i32(i32::MIN, 32), -1);
+        assert_eq!(round2_signed_i32(i32::MAX, 32), 0);
+        assert_eq!(round2_signed_i32(i32::MIN, 33), 0);
+    }
+
+    #[test]
+    fn approx_divide_is_total_for_large_denominators() -> Result<()> {
+        let denominator = 1 << 23;
+        assert_eq!(approx_divide(1, denominator)?, 0);
+        assert_eq!(approx_divide(denominator - 1, denominator)?, 1);
+        assert_eq!(approx_divide(1, 1 << 24)?, 0);
+        Ok(())
     }
 
     #[test]

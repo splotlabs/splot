@@ -248,10 +248,10 @@ fn identity_scale(log2_size: u32) -> i32 {
 }
 
 /// AV2 § 7.15.4.1 rectangular rescale `Round2( x * 2896, 12 )` (the √2 factor for
-/// transforms whose width/height log2 ratio is odd). Computed in `i64` so the
-/// multiply cannot overflow for in-range dequantized coefficients.
+/// transforms whose width/height log2 ratio is odd). The § 7.14.4 coefficient
+/// bound keeps the `i32` product in range.
 fn round2_2896(x: i32) -> i32 {
-    ((i64::from(x) * 2896 + (1 << 11)) >> 12) as i32
+    (x * 2896 + (1 << 11)) >> 12
 }
 
 #[cfg(test)]

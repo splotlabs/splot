@@ -31,7 +31,7 @@ use crate::{BitDepth, ReconError, ReconSample, Result};
 /// § 7.14.3 reads from `CurrFrame` before adding the residual) and `residual`
 /// holds the signed inverse-transform output.
 ///
-/// The sum uses `i64` intermediates, so it is total and never panics; because
+/// The sum uses saturating `i32` addition, so it is total and never panics; because
 /// `Clip1` bounds the result to `0..=max_sample` for the active bit depth (and
 /// the sample type is validated to represent that depth), every written value
 /// fits the storage type.
@@ -75,9 +75,9 @@ pub fn reconstruct_add_residual<T: ReconSample>(
         }
     }
 
-    let max = i64::from(max_sample);
+    let max = i32::from(max_sample);
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
-        let reconstructed = (i64::from(pred.to_u16()) + i64::from(res)).clamp(0, max);
+        let reconstructed = i32::from(pred.to_u16()).saturating_add(res).clamp(0, max);
         *slot = T::try_from_u16(reconstructed as u16)?;
     }
     Ok(())

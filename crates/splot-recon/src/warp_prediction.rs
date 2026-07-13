@@ -17,8 +17,10 @@ use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
-use crate::intra_dc_math::resolve_divisor;
-use crate::math::{clip3, round2, round2_signed};
+use crate::intra_dc_math::resolve_divisor_32;
+#[cfg(test)]
+use crate::math::round2;
+use crate::math::{round2_i32, round2_signed, round2_signed_i32};
 use crate::subpel_mc::ReferencePlaneView;
 
 /// AV2 § 7.13.3.19 block-warp predictor side length in samples.
@@ -27,19 +29,19 @@ pub const WARPED_BLOCK_SIZE: usize = 8;
 const WARPEDMODEL_PREC_BITS: u32 = 16;
 const WARPEDDIFF_PREC_BITS: u32 = 10;
 const WARP_PARAM_REDUCE_BITS: u32 = 6;
-const WARPEDPIXEL_PREC_SHIFTS: i64 = 1 << 6;
-const WARP_FILTER_CENTER: i64 = 3 * WARPEDPIXEL_PREC_SHIFTS;
+const WARPEDPIXEL_PREC_SHIFTS: i32 = 1 << 6;
+const WARP_FILTER_CENTER: i32 = 3 * WARPEDPIXEL_PREC_SHIFTS;
 const INTER_ROUND0: u32 = 3;
 const INTER_ROUND1_NON_COMPOUND: u32 = 11;
 const INTER_ROUND1_COMPOUND: u32 = 7;
 const WARP_INTERMEDIATE_ROWS: usize = 15;
 const WARP_FILTER_TAPS: usize = 8;
-const WARP_PARAM_CLIP_LOW: i64 = -32_768;
-const WARP_PARAM_CLIP_HIGH: i64 = 32_767 - (1 << (WARP_PARAM_REDUCE_BITS - 1));
-const WARP_SHEAR_LIMIT: i128 = 3i128 << WARPEDMODEL_PREC_BITS;
+const WARP_PARAM_CLIP_LOW: i32 = -32_768;
+const WARP_PARAM_CLIP_HIGH: i32 = 32_767 - (1 << (WARP_PARAM_REDUCE_BITS - 1));
+const WARP_SHEAR_LIMIT: i32 = 3i32 << WARPEDMODEL_PREC_BITS;
 
 /// AV2 `Default_Warp_Params[6]` identity affine model (§ 7.12.2.11 / § 7.13.3.19).
-pub const IDENTITY_WARP_PARAMS: [i64; 6] = [
+pub const IDENTITY_WARP_PARAMS: [i32; 6] = [
     0,
     0,
     1 << WARPEDMODEL_PREC_BITS,
@@ -53,11 +55,11 @@ pub const IDENTITY_WARP_PARAMS: [i64; 6] = [
 pub struct WarpPredictBlockParams {
     /// `warpParams[0..6]`, a six-parameter affine model at
     /// `WARPEDMODEL_PREC_BITS` precision.
-    pub warp_params: [i64; 6],
+    pub warp_params: [i32; 6],
     /// Top-left x coordinate of this 8x8 prediction section in the current plane.
-    pub block_x: i64,
+    pub block_x: i32,
     /// Top-left y coordinate of this 8x8 prediction section in the current plane.
-    pub block_y: i64,
+    pub block_y: i32,
     /// Plane horizontal chroma subsampling (`subX`): `0` for luma, otherwise the
     /// sequence `SubsamplingX` value.
     pub subsampling_x: u8,
@@ -65,13 +67,13 @@ pub struct WarpPredictBlockParams {
     /// sequence `SubsamplingY` value.
     pub subsampling_y: u8,
     /// Inclusive left reference-sampling bound (`firstX`).
-    pub first_x: i64,
+    pub first_x: i32,
     /// Inclusive top reference-sampling bound (`firstY`).
-    pub first_y: i64,
+    pub first_y: i32,
     /// Inclusive right reference-sampling bound (`lastX`).
-    pub last_x: i64,
+    pub last_x: i32,
     /// Inclusive bottom reference-sampling bound (`lastY`).
-    pub last_y: i64,
+    pub last_y: i32,
     /// Active bit depth used by the final § 4.8 `Clip1` clamp.
     pub bit_depth: BitDepth,
 }
@@ -85,7 +87,7 @@ const EXT_WARP_ROUND_BITS: u32 = 10;
 /// Reports whether the § 7.13.3.21 setup-shear process accepts a warp model,
 /// deciding the § 7.13.3.15 `skipPred` fallback to the extended block warp.
 #[must_use]
-pub fn warp_shear_is_valid(warp_params: [i64; 6]) -> bool {
+pub fn warp_shear_is_valid(warp_params: [i32; 6]) -> bool {
     setup_shear(warp_params).is_ok()
 }
 
@@ -117,50 +119,68 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
     validate_params(params)?;
     let sub_x = u32::from(params.subsampling_x);
     let sub_y = u32::from(params.subsampling_y);
-    let src_x = (params.block_x + (j4 as i64) * 4 + 2) << sub_x;
-    let src_y = (params.block_y + (i4 as i64) * 4 + 2) << sub_y;
-    let dst_x =
-        params.warp_params[2] * src_x + params.warp_params[3] * src_y + params.warp_params[0];
-    let dst_y =
-        params.warp_params[4] * src_x + params.warp_params[5] * src_y + params.warp_params[1];
+    let src_x = checked_ext_warp_source(params.block_x, j4, sub_x, "extended-warp source x")?;
+    let src_y = checked_ext_warp_source(params.block_y, i4, sub_y, "extended-warp source y")?;
+    let dst_x = project_coordinate(
+        params.warp_params[2],
+        params.warp_params[3],
+        params.warp_params[0],
+        src_x,
+        src_y,
+        "extended-warp projected x",
+    )?;
+    let dst_y = project_coordinate(
+        params.warp_params[4],
+        params.warp_params[5],
+        params.warp_params[1],
+        src_x,
+        src_y,
+        "extended-warp projected y",
+    )?;
     let x4 = dst_x >> sub_x;
     let y4 = dst_y >> sub_y;
-    let ix4 = x4 >> WARPEDMODEL_PREC_BITS;
-    let sx4 = x4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
-    let iy4 = y4 >> WARPEDMODEL_PREC_BITS;
-    let sy4 = y4 & ((1 << WARPEDMODEL_PREC_BITS) - 1);
-    let phase = |s: i64| -> Result<&'static [i32; EXT_WARP_TAPS]> {
-        let offs = round2(s, EXT_WARP_ROUND_BITS);
+    let ix4 =
+        i32::try_from(x4 >> WARPEDMODEL_PREC_BITS).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "extended-warp projected x",
+        })?;
+    let sx4 = (x4 & ((1 << WARPEDMODEL_PREC_BITS) - 1)) as i32;
+    let iy4 =
+        i32::try_from(y4 >> WARPEDMODEL_PREC_BITS).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "extended-warp projected y",
+        })?;
+    let sy4 = (y4 & ((1 << WARPEDMODEL_PREC_BITS) - 1)) as i32;
+    let phase = |s: i32| -> Result<&'static [i32; EXT_WARP_TAPS]> {
+        let offs = round2_i32(s, EXT_WARP_ROUND_BITS);
         usize::try_from(offs)
             .ok()
             .and_then(|offs| EXT_WARPED_FILTERS.get(offs))
             .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset: offs })
     };
     let taps_x = phase(sx4)?;
-    let fetch = |row: i64, col: i64| -> i64 {
-        let rr = clip3(params.first_y, params.last_y, row);
-        let cc = clip3(params.first_x, params.last_x, col);
+    let fetch = |row: i32, col: i32| -> i32 {
+        let rr = row.clamp(params.first_y, params.last_y);
+        let cc = col.clamp(params.first_x, params.last_x);
         reference.sample(rr as usize, cc as usize)
     };
-    let mut intermediate = [0i64; 9 * 4];
-    for k in -4i64..5 {
-        for l in -2i64..2 {
-            let mut sum = 0i64;
+    let mut intermediate = [0i32; 9 * 4];
+    for k in -4i32..5 {
+        for l in -2i32..2 {
+            let mut sum = 0i32;
             for (m, &tap) in taps_x.iter().enumerate() {
-                sum += i64::from(tap) * fetch(iy4 + k, ix4 + l - 2 + m as i64);
+                sum += tap * fetch(iy4 + k, ix4 + l - 2 + m as i32);
             }
-            intermediate[((k + 4) * 4 + (l + 2)) as usize] = round2(sum, INTER_ROUND0);
+            intermediate[((k + 4) * 4 + (l + 2)) as usize] = round2_i32(sum, INTER_ROUND0);
         }
     }
     let taps_y = phase(sy4)?;
     let mut output = [0i32; 16];
-    for k in -2i64..2 {
-        for l in -2i64..2 {
-            let mut sum = 0i64;
+    for k in -2i32..2 {
+        for l in -2i32..2 {
+            let mut sum = 0i32;
             for (m, &tap) in taps_y.iter().enumerate() {
-                sum += i64::from(tap) * intermediate[((k + m as i64 + 2) * 4 + (l + 2)) as usize];
+                sum += tap * intermediate[((k + m as i32 + 2) * 4 + (l + 2)) as usize];
             }
-            output[((k + 2) * 4 + (l + 2)) as usize] = round2(sum, round1) as i32;
+            output[((k + 2) * 4 + (l + 2)) as usize] = round2_i32(sum, round1);
         }
     }
     Ok(output)
@@ -246,65 +266,77 @@ fn validate_params(params: &WarpPredictBlockParams) -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Shear {
-    alpha: i64,
-    beta: i64,
-    gamma: i64,
-    delta: i64,
+fn checked_ext_warp_source(
+    block: i32,
+    unit: usize,
+    subsampling: u32,
+    context: &'static str,
+) -> Result<i32> {
+    let unit = i32::try_from(unit).map_err(|_| ReconError::ArithmeticOverflow { context })?;
+    block
+        .checked_add(
+            unit.checked_mul(4)
+                .and_then(|value| value.checked_add(2))
+                .ok_or(ReconError::ArithmeticOverflow { context })?,
+        )
+        .and_then(|value| value.checked_mul(1i32 << subsampling))
+        .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
-fn setup_shear(warp_params: [i64; 6]) -> Result<Shear> {
-    let alpha0 = clip3(
-        WARP_PARAM_CLIP_LOW,
-        WARP_PARAM_CLIP_HIGH,
-        warp_params[2]
-            .checked_sub(1 << WARPEDMODEL_PREC_BITS)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "block-warp alpha setup",
-            })?,
-    );
-    let beta0 = clip3(WARP_PARAM_CLIP_LOW, WARP_PARAM_CLIP_HIGH, warp_params[3]);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Shear {
+    alpha: i32,
+    beta: i32,
+    gamma: i32,
+    delta: i32,
+}
+
+fn setup_shear(warp_params: [i32; 6]) -> Result<Shear> {
+    let alpha0 = warp_params[2]
+        .checked_sub(1 << WARPEDMODEL_PREC_BITS)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "block-warp alpha setup",
+        })?
+        .clamp(WARP_PARAM_CLIP_LOW, WARP_PARAM_CLIP_HIGH);
+    let beta0 = warp_params[3].clamp(WARP_PARAM_CLIP_LOW, WARP_PARAM_CLIP_HIGH);
     let (div_shift, div_factor) = resolve_signed_divisor(warp_params[2])?;
-    let v_product = checked_product_to_i64(
-        &[
-            i128::from(warp_params[4]),
-            1i128 << WARPEDMODEL_PREC_BITS,
-            i128::from(div_factor),
-        ],
+    let v_product = warp_product(
+        warp_params[4],
+        1 << WARPEDMODEL_PREC_BITS,
+        div_factor,
         "block-warp gamma setup",
     )?;
-    let gamma0 = clip3(
-        WARP_PARAM_CLIP_LOW,
-        WARP_PARAM_CLIP_HIGH,
-        round2_signed(v_product, div_shift),
-    );
+    let gamma0 = round2_signed(v_product, div_shift).clamp(
+        i64::from(WARP_PARAM_CLIP_LOW),
+        i64::from(WARP_PARAM_CLIP_HIGH),
+    ) as i32;
 
-    let w_product = checked_product_to_i64(
-        &[
-            i128::from(warp_params[3]),
-            i128::from(warp_params[4]),
-            i128::from(div_factor),
-        ],
+    let w_product = warp_product(
+        warp_params[3],
+        warp_params[4],
+        div_factor,
         "block-warp delta setup",
     )?;
     let rounded_w = round2_signed(w_product, div_shift);
-    let delta_input = warp_params[5]
+    let delta_input = i64::from(warp_params[5])
         .checked_sub(rounded_w)
         .and_then(|value| value.checked_sub(1 << WARPEDMODEL_PREC_BITS))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "block-warp delta setup",
         })?;
-    let delta0 = clip3(WARP_PARAM_CLIP_LOW, WARP_PARAM_CLIP_HIGH, delta_input);
+    let delta0 = delta_input.clamp(
+        i64::from(WARP_PARAM_CLIP_LOW),
+        i64::from(WARP_PARAM_CLIP_HIGH),
+    ) as i32;
 
     let shear = Shear {
-        alpha: round2_signed(alpha0, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS,
-        beta: round2_signed(beta0, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS,
-        gamma: round2_signed(gamma0, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS,
-        delta: round2_signed(delta0, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS,
+        alpha: reduce_shear_i32(alpha0),
+        beta: reduce_shear_i32(beta0),
+        gamma: reduce_shear_i32(gamma0),
+        delta: reduce_shear_i32(delta0),
     };
-    if 4 * i128::from(shear.alpha).abs() + 7 * i128::from(shear.beta).abs() >= WARP_SHEAR_LIMIT
-        || 4 * i128::from(shear.gamma).abs() + 4 * i128::from(shear.delta).abs() >= WARP_SHEAR_LIMIT
+    if 4 * shear.alpha.abs() + 7 * shear.beta.abs() >= WARP_SHEAR_LIMIT
+        || 4 * shear.gamma.abs() + 4 * shear.delta.abs() >= WARP_SHEAR_LIMIT
     {
         return Err(ReconError::WarpInvalidShear {
             alpha: shear.alpha,
@@ -316,27 +348,31 @@ fn setup_shear(warp_params: [i64; 6]) -> Result<Shear> {
     Ok(shear)
 }
 
-fn resolve_signed_divisor(d: i64) -> Result<(u32, i64)> {
+fn reduce_shear_i32(value: i32) -> i32 {
+    round2_signed_i32(value, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS
+}
+
+fn resolve_signed_divisor(d: i32) -> Result<(u32, i32)> {
     if d == 0 {
         return Err(ReconError::ArithmeticOverflow {
             context: "block-warp divisor resolution",
         });
     }
-    let (shift, factor) = resolve_divisor(d.unsigned_abs())?;
+    let (shift, factor) = resolve_divisor_32(d.unsigned_abs())?;
     let factor = if d < 0 {
-        -i64::from(factor)
+        -i32::from(factor)
     } else {
-        i64::from(factor)
+        i32::from(factor)
     };
     Ok((u32::from(shift), factor))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProjectedCenter {
-    x4_int: i64,
-    y4_int: i64,
-    sx4: i64,
-    sy4: i64,
+    x4_int: i32,
+    y4_int: i32,
+    sx4: i32,
+    sy4: i32,
 }
 
 fn project_section_center(params: &WarpPredictBlockParams) -> Result<ProjectedCenter> {
@@ -360,36 +396,48 @@ fn project_section_center(params: &WarpPredictBlockParams) -> Result<ProjectedCe
         params.subsampling_y,
         "block-warp source y",
     )?;
-    let dst_x = checked_sum_to_i64(
-        &[
-            checked_mul_i128(params.warp_params[2], src_x, "block-warp projected x")?,
-            checked_mul_i128(params.warp_params[3], src_y, "block-warp projected x")?,
-            i128::from(params.warp_params[0]),
-        ],
+    let dst_x = project_coordinate(
+        params.warp_params[2],
+        params.warp_params[3],
+        params.warp_params[0],
+        src_x,
+        src_y,
         "block-warp projected x",
     )?;
-    let dst_y = checked_sum_to_i64(
-        &[
-            checked_mul_i128(params.warp_params[4], src_x, "block-warp projected y")?,
-            checked_mul_i128(params.warp_params[5], src_y, "block-warp projected y")?,
-            i128::from(params.warp_params[1]),
-        ],
+    let dst_y = project_coordinate(
+        params.warp_params[4],
+        params.warp_params[5],
+        params.warp_params[1],
+        src_x,
+        src_y,
         "block-warp projected y",
     )?;
     let x4 = dst_x >> params.subsampling_x;
     let y4 = dst_y >> params.subsampling_y;
     let mask = (1 << WARPEDMODEL_PREC_BITS) - 1;
     Ok(ProjectedCenter {
-        x4_int: x4 >> WARPEDMODEL_PREC_BITS,
-        y4_int: y4 >> WARPEDMODEL_PREC_BITS,
-        sx4: x4 & mask,
-        sy4: y4 & mask,
+        x4_int: i32::try_from(x4 >> WARPEDMODEL_PREC_BITS).map_err(|_| {
+            ReconError::ArithmeticOverflow {
+                context: "block-warp projected x",
+            }
+        })?,
+        y4_int: i32::try_from(y4 >> WARPEDMODEL_PREC_BITS).map_err(|_| {
+            ReconError::ArithmeticOverflow {
+                context: "block-warp projected y",
+            }
+        })?,
+        sx4: i32::try_from(x4 & mask).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "block-warp horizontal phase",
+        })?,
+        sy4: i32::try_from(y4 & mask).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "block-warp vertical phase",
+        })?,
     })
 }
 
-fn checked_shift_left(value: i64, shift: u8, context: &'static str) -> Result<i64> {
+fn checked_shift_left(value: i32, shift: u8, context: &'static str) -> Result<i32> {
     value
-        .checked_mul(1i64 << shift)
+        .checked_mul(1i32 << shift)
         .ok_or(ReconError::ArithmeticOverflow { context })
 }
 
@@ -400,33 +448,26 @@ fn build_intermediate<T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut [i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
 ) -> Result<()> {
-    for i1 in -7..8 {
-        for i2 in -4..4 {
+    for i1 in -7i32..8 {
+        for i2 in -4i32..4 {
             let sx = projected
                 .sx4
-                .checked_add(shear.alpha * i64::from(i2))
-                .and_then(|value| value.checked_add(shear.beta * i64::from(i1)))
+                .checked_add(shear.alpha * i2)
+                .and_then(|value| value.checked_add(shear.beta * i1))
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "block-warp horizontal phase",
                 })?;
             let taps = warped_filter_row(sx)?;
-            let ref_row = clip3(
-                params.first_y,
-                params.last_y,
-                projected.y4_int + i64::from(i1),
-            );
-            let mut sum = 0i64;
+            let ref_row = (projected.y4_int + i1).clamp(params.first_y, params.last_y);
+            let mut sum = 0i32;
             for (i3, &tap) in taps.iter().enumerate() {
-                let ref_col = clip3(
-                    params.first_x,
-                    params.last_x,
-                    projected.x4_int + i64::from(i2) - 3 + i3 as i64,
-                );
-                sum += i64::from(tap) * reference.sample(ref_row as usize, ref_col as usize);
+                let ref_col =
+                    (projected.x4_int + i2 - 3 + i3 as i32).clamp(params.first_x, params.last_x);
+                sum += tap * reference.sample(ref_row as usize, ref_col as usize);
             }
             let row = (i1 + 7) as usize;
             let col = (i2 + 4) as usize;
-            intermediate[row * WARPED_BLOCK_SIZE + col] = round2(sum, INTER_ROUND0) as i32;
+            intermediate[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, INTER_ROUND0);
         }
     }
     Ok(())
@@ -439,32 +480,32 @@ fn build_output(
     round1: u32,
     output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
 ) -> Result<()> {
-    for i1 in -4..4 {
-        for i2 in -4..4 {
+    for i1 in -4i32..4 {
+        for i2 in -4i32..4 {
             let sy = projected
                 .sy4
-                .checked_add(shear.gamma * i64::from(i2))
-                .and_then(|value| value.checked_add(shear.delta * i64::from(i1)))
+                .checked_add(shear.gamma * i2)
+                .and_then(|value| value.checked_add(shear.delta * i1))
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "block-warp vertical phase",
                 })?;
             let taps = warped_filter_row(sy)?;
-            let mut sum = 0i64;
+            let mut sum = 0i32;
             for (i3, &tap) in taps.iter().enumerate() {
                 let row = (i1 + i3 as i32 + 4) as usize;
                 let col = (i2 + 4) as usize;
-                sum += i64::from(tap) * i64::from(intermediate[row * WARPED_BLOCK_SIZE + col]);
+                sum += tap * intermediate[row * WARPED_BLOCK_SIZE + col];
             }
             let row = (i1 + 4) as usize;
             let col = (i2 + 4) as usize;
-            output[row * WARPED_BLOCK_SIZE + col] = round2(sum, round1) as i32;
+            output[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, round1);
         }
     }
     Ok(())
 }
 
-fn warped_filter_row(phase: i64) -> Result<&'static [i32; WARP_FILTER_TAPS]> {
-    let offset = round2(phase, WARPEDDIFF_PREC_BITS)
+fn warped_filter_row(phase: i32) -> Result<&'static [i32; WARP_FILTER_TAPS]> {
+    let offset = round2_i32(phase, WARPEDDIFF_PREC_BITS)
         .checked_add(WARP_FILTER_CENTER)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "block-warp filter offset",
@@ -476,29 +517,22 @@ fn warped_filter_row(phase: i64) -> Result<&'static [i32; WARP_FILTER_TAPS]> {
         .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset })
 }
 
-fn checked_mul_i128(left: i64, right: i64, context: &'static str) -> Result<i128> {
-    i128::from(left)
-        .checked_mul(i128::from(right))
-        .ok_or(ReconError::ArithmeticOverflow { context })
+fn project_coordinate(
+    coefficient_x: i32,
+    coefficient_y: i32,
+    translation: i32,
+    src_x: i32,
+    src_y: i32,
+    context: &'static str,
+) -> Result<i64> {
+    let projected = i128::from(coefficient_x) * i128::from(src_x)
+        + i128::from(coefficient_y) * i128::from(src_y)
+        + i128::from(translation);
+    i64::try_from(projected).map_err(|_| ReconError::ArithmeticOverflow { context })
 }
 
-fn checked_sum_to_i64(values: &[i128], context: &'static str) -> Result<i64> {
-    let mut sum = 0i128;
-    for &value in values {
-        sum = sum
-            .checked_add(value)
-            .ok_or(ReconError::ArithmeticOverflow { context })?;
-    }
-    i64::try_from(sum).map_err(|_| ReconError::ArithmeticOverflow { context })
-}
-
-fn checked_product_to_i64(values: &[i128], context: &'static str) -> Result<i64> {
-    let mut product = 1i128;
-    for &value in values {
-        product = product
-            .checked_mul(value)
-            .ok_or(ReconError::ArithmeticOverflow { context })?;
-    }
+fn warp_product(left: i32, middle: i32, right: i32, context: &'static str) -> Result<i64> {
+    let product = i128::from(left) * i128::from(middle) * i128::from(right);
     i64::try_from(product).map_err(|_| ReconError::ArithmeticOverflow { context })
 }
 
@@ -518,10 +552,10 @@ mod tests {
     }
 
     fn default_params(
-        block_x: i64,
-        block_y: i64,
-        ref_w: i64,
-        ref_h: i64,
+        block_x: i32,
+        block_y: i32,
+        ref_w: i32,
+        ref_h: i32,
     ) -> WarpPredictBlockParams {
         WarpPredictBlockParams {
             warp_params: IDENTITY_WARP_PARAMS,
@@ -543,7 +577,7 @@ mod tests {
         ref_h: usize,
         params: &WarpPredictBlockParams,
     ) -> Vec<u16> {
-        let clip = |lo: i64, hi: i64, value: i64| value.max(lo).min(hi);
+        let clip = |lo: i32, hi: i32, value: i32| value.max(lo).min(hi);
         let round = |value: i64, shift: u32| {
             if shift == 0 {
                 value
@@ -551,31 +585,28 @@ mod tests {
                 (value + (1 << (shift - 1))) >> shift
             }
         };
-        let fetch = |row: i64, col: i64| {
-            let row = clip(0, ref_h as i64 - 1, row) as usize;
-            let col = clip(0, ref_w as i64 - 1, col) as usize;
+        let fetch = |row: i32, col: i32| {
+            let row = clip(0, ref_h as i32 - 1, row) as usize;
+            let col = clip(0, ref_w as i32 - 1, col) as usize;
             i64::from(samples[row * ref_w + col])
         };
 
         let shear = setup_shear(params.warp_params).unwrap();
         let projected = project_section_center(params).unwrap();
         let mut intermediate = [0i64; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-        for i1 in -7..8 {
-            for i2 in -4..4 {
-                let sx = projected.sx4 + shear.alpha * i64::from(i2) + shear.beta * i64::from(i1);
-                let offset = (round(sx, WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER) as usize;
+        for i1 in -7i32..8 {
+            for i2 in -4i32..4 {
+                let sx = projected.sx4 + shear.alpha * i2 + shear.beta * i1;
+                let offset = (round(i64::from(sx), WARPEDDIFF_PREC_BITS)
+                    + i64::from(WARP_FILTER_CENTER)) as usize;
                 let taps = &WARPED_FILTERS[offset];
                 let mut sum = 0i64;
                 for (i3, &tap) in taps.iter().enumerate() {
-                    let rr = clip(
-                        params.first_y,
-                        params.last_y,
-                        projected.y4_int + i64::from(i1),
-                    );
+                    let rr = clip(params.first_y, params.last_y, projected.y4_int + i1);
                     let cc = clip(
                         params.first_x,
                         params.last_x,
-                        projected.x4_int + i64::from(i2) - 3 + i3 as i64,
+                        projected.x4_int + i2 - 3 + i3 as i32,
                     );
                     sum += i64::from(tap) * fetch(rr, cc);
                 }
@@ -586,10 +617,11 @@ mod tests {
 
         let max_sample = i64::from(params.bit_depth.max_sample());
         let mut out = vec![0u16; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
-        for i1 in -4..4 {
-            for i2 in -4..4 {
-                let sy = projected.sy4 + shear.gamma * i64::from(i2) + shear.delta * i64::from(i1);
-                let offset = (round(sy, WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER) as usize;
+        for i1 in -4i32..4 {
+            for i2 in -4i32..4 {
+                let sy = projected.sy4 + shear.gamma * i2 + shear.delta * i1;
+                let offset = (round(i64::from(sy), WARPEDDIFF_PREC_BITS)
+                    + i64::from(WARP_FILTER_CENTER)) as usize;
                 let taps = &WARPED_FILTERS[offset];
                 let mut sum = 0i64;
                 for (i3, &tap) in taps.iter().enumerate() {
@@ -599,7 +631,7 @@ mod tests {
                 }
                 let pred = round2(sum, INTER_ROUND1_NON_COMPOUND);
                 out[(i1 + 4) as usize * WARPED_BLOCK_SIZE + (i2 + 4) as usize] =
-                    clip(0, max_sample, pred) as u16;
+                    pred.clamp(0, max_sample) as u16;
             }
         }
         out
@@ -620,11 +652,11 @@ mod tests {
         let ref_h = 16usize;
         let samples = vec![77u16; ref_w * ref_h];
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let params = default_params(4, 4, ref_w as i64, ref_h as i64);
+        let params = default_params(4, 4, ref_w as i32, ref_h as i32);
 
         let out = crate::math::clip1_predicted_samples(
             warp_predict_block(&view, &params, false).unwrap(),
-            i64::from(params.bit_depth.max_sample()),
+            i32::from(params.bit_depth.max_sample()),
         );
         assert_eq!(out, vec![77u16; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE]);
     }
@@ -634,7 +666,7 @@ mod tests {
         let (ref_w, ref_h) = (16usize, 16usize);
         let samples = vec![77u16; ref_w * ref_h];
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let params = default_params(4, 4, ref_w as i64, ref_h as i64);
+        let params = default_params(4, 4, ref_w as i32, ref_h as i32);
 
         let out = warp_predict_block(&view, &params, true).unwrap();
         assert_eq!(out, vec![16 * 77i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE]);
@@ -645,7 +677,7 @@ mod tests {
         let (ref_w, ref_h) = (32usize, 32usize);
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(10, 9, ref_w as i64, ref_h as i64);
+        let mut params = default_params(10, 9, ref_w as i32, ref_h as i32);
         params.warp_params = [
             1 << WARPEDMODEL_PREC_BITS,
             -(2 << WARPEDMODEL_PREC_BITS),
@@ -660,11 +692,12 @@ mod tests {
         let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
         build_intermediate(&view, &params, &shear, &projected, &mut intermediate).unwrap();
         let mut want = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
-        for i1 in -4..4 {
-            for i2 in -4..4 {
-                let sy = projected.sy4 + shear.gamma * i64::from(i2) + shear.delta * i64::from(i1);
-                let taps = &WARPED_FILTERS
-                    [(round2(sy, WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER) as usize];
+        for i1 in -4i32..4 {
+            for i2 in -4i32..4 {
+                let sy = projected.sy4 + shear.gamma * i2 + shear.delta * i1;
+                let taps = &WARPED_FILTERS[(round2(i64::from(sy), WARPEDDIFF_PREC_BITS)
+                    + i64::from(WARP_FILTER_CENTER))
+                    as usize];
                 let mut sum = 0i64;
                 for (i3, &tap) in taps.iter().enumerate() {
                     let row = (i1 + i3 as i32 + 4) as usize;
@@ -685,7 +718,7 @@ mod tests {
         let (ref_w, ref_h) = (32usize, 32usize);
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(10, 9, ref_w as i64, ref_h as i64);
+        let mut params = default_params(10, 9, ref_w as i32, ref_h as i32);
         params.warp_params = [
             1 << WARPEDMODEL_PREC_BITS,
             -(2 << WARPEDMODEL_PREC_BITS),
@@ -708,7 +741,7 @@ mod tests {
         let (ref_w, ref_h) = (32usize, 32usize);
         let samples = vec![77u16; ref_w * ref_h];
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let params = default_params(8, 12, ref_w as i64, ref_h as i64);
+        let params = default_params(8, 12, ref_w as i32, ref_h as i32);
         let out = ext_warp_predict_unit(&view, &params, 0, 0, true).unwrap();
         assert_eq!(out, [16 * 77i32; 16]);
     }
@@ -719,13 +752,13 @@ mod tests {
         let ref_h = 24usize;
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(6, 5, ref_w as i64, ref_h as i64);
+        let mut params = default_params(6, 5, ref_w as i32, ref_h as i32);
         params.warp_params[0] = 2 << WARPEDMODEL_PREC_BITS;
         params.warp_params[1] = 3 << WARPEDMODEL_PREC_BITS;
 
         let out = crate::math::clip1_predicted_samples(
             warp_predict_block(&view, &params, false).unwrap(),
-            i64::from(params.bit_depth.max_sample()),
+            i32::from(params.bit_depth.max_sample()),
         );
         let want = reference_warp_8x8(&samples, ref_w, ref_h, &params);
         assert_eq!(out, want);
@@ -737,7 +770,7 @@ mod tests {
         let ref_h = 32usize;
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(10, 9, ref_w as i64, ref_h as i64);
+        let mut params = default_params(10, 9, ref_w as i32, ref_h as i32);
         params.warp_params = [
             1 << WARPEDMODEL_PREC_BITS,
             -(2 << WARPEDMODEL_PREC_BITS),
@@ -749,7 +782,7 @@ mod tests {
 
         let out = crate::math::clip1_predicted_samples(
             warp_predict_block(&view, &params, false).unwrap(),
-            i64::from(params.bit_depth.max_sample()),
+            i32::from(params.bit_depth.max_sample()),
         );
         let want = reference_warp_8x8(&samples, ref_w, ref_h, &params);
         assert_eq!(out, want);
@@ -762,13 +795,13 @@ mod tests {
         let ref_h = 12usize;
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(0, 0, ref_w as i64, ref_h as i64);
+        let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
         params.warp_params[0] = -(2 << WARPEDMODEL_PREC_BITS);
         params.warp_params[1] = -(1 << WARPEDMODEL_PREC_BITS);
 
         let out = crate::math::clip1_predicted_samples(
             warp_predict_block(&view, &params, false).unwrap(),
-            i64::from(params.bit_depth.max_sample()),
+            i32::from(params.bit_depth.max_sample()),
         );
         let want = reference_warp_8x8(&samples, ref_w, ref_h, &params);
         assert_eq!(out, want);
@@ -817,13 +850,13 @@ mod tests {
         let (ref_w, ref_h) = (32usize, 32usize);
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let params = default_params(8, 12, ref_w as i64, ref_h as i64);
+        let params = default_params(8, 12, ref_w as i32, ref_h as i32);
         for (i4, j4) in [(0usize, 0usize), (1, 1)] {
             let out = crate::math::clip1_predicted_samples(
                 ext_warp_predict_unit(&view, &params, i4, j4, false)
                     .unwrap()
                     .into(),
-                i64::from(params.bit_depth.max_sample()),
+                i32::from(params.bit_depth.max_sample()),
             );
             for r in 0..4 {
                 for c in 0..4 {
@@ -839,14 +872,14 @@ mod tests {
         let (ref_w, ref_h) = (32usize, 32usize);
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(8, 12, ref_w as i64, ref_h as i64);
+        let mut params = default_params(8, 12, ref_w as i32, ref_h as i32);
         params.warp_params[0] = 3 << WARPEDMODEL_PREC_BITS;
         params.warp_params[1] = 2 << WARPEDMODEL_PREC_BITS;
         let out = crate::math::clip1_predicted_samples(
             ext_warp_predict_unit(&view, &params, 0, 1, false)
                 .unwrap()
                 .into(),
-            i64::from(params.bit_depth.max_sample()),
+            i32::from(params.bit_depth.max_sample()),
         );
         for r in 0..4 {
             for c in 0..4 {

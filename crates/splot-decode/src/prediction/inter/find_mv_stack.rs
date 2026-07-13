@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::DrlReorder;
-use splot_recon::math::round2_signed;
+use splot_recon::math::{round2_signed, round2_signed_i32};
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
 use super::{Mv, mc::CWP_EQUAL};
@@ -71,7 +71,7 @@ impl<T, const N: usize> core::ops::DerefMut for FixedStack<T, N> {
 
 pub(crate) const TIP_REF_FRAME: i8 = 7;
 
-pub(crate) const DEFAULT_WARP_PARAMS: [i64; 6] = [
+pub(crate) const DEFAULT_WARP_PARAMS: [i32; 6] = [
     0,
     0,
     1 << WARPEDMODEL_PREC_BITS,
@@ -130,7 +130,7 @@ struct NeighbourCell {
     masked_compound: bool,
     cwp_weight: i16,
     motion_mode: MotionMode,
-    warp_params: Option<[i64; 6]>,
+    warp_params: Option<[i32; 6]>,
     sub_mv: Mv,
     sub_mv1: Mv,
     base_r: usize,
@@ -281,7 +281,7 @@ impl NeighbourMvGrid {
         interp_filter: u8,
         use_amvd: bool,
         motion_mode: MotionMode,
-        warp_params: [i64; 6],
+        warp_params: [i32; 6],
         precision: BlockPrecisionRecord,
     ) {
         self.record_block_with_warp(
@@ -320,7 +320,7 @@ impl NeighbourMvGrid {
         interp_filter: u8,
         use_amvd: bool,
         motion_mode: MotionMode,
-        warp_params: Option<[i64; 6]>,
+        warp_params: Option<[i32; 6]>,
         tip_size_16x16: bool,
         precision: BlockPrecisionRecord,
     ) {
@@ -424,7 +424,7 @@ impl NeighbourMvGrid {
         cwp_weight: i16,
         skip_mode: bool,
         precision: BlockPrecisionRecord,
-        warp_params: [Option<[i64; 6]>; 2],
+        warp_params: [Option<[i32; 6]>; 2],
     ) {
         let cell = NeighbourCell {
             is_inter: true,
@@ -1135,7 +1135,7 @@ impl MvStack {
         self.entry(idx).map_or((0, 0), |entry| entry.1)
     }
 
-    pub(crate) fn warp_candidate(&self, idx: usize) -> [i64; 6] {
+    pub(crate) fn warp_candidate(&self, idx: usize) -> [i32; 6] {
         self.warp
             .slots
             .get(idx)
@@ -1146,22 +1146,16 @@ impl MvStack {
     pub(crate) fn warp_predicted_mv(&self, idx: usize, precision: u8) -> Mv {
         let params = self.warp_candidate(idx);
         let block = &self.block;
-        let x = block.mi_col as i64 * 4 + (block.bw4 as i64 * 4) / 2 - 1;
-        let y = block.mi_row as i64 * 4 + (block.bh4 as i64 * 4) / 2 - 1;
-        let one = 1i64 << WARPEDMODEL_PREC_BITS;
-        let xc = (params[2] - one) * x + params[3] * y + params[0];
-        let yc = params[4] * x + (params[5] - one) * y + params[1];
-        let (row, col) = if precision == super::read_mv::MV_PRECISION_EIGHTH_PEL {
-            (
-                round2_signed(yc, WARPEDMODEL_PREC_BITS - 3),
-                round2_signed(xc, WARPEDMODEL_PREC_BITS - 3),
-            )
+        let x = block.mi_col as i32 * 4 + (block.bw4 as i32 * 4) / 2 - 1;
+        let y = block.mi_row as i32 * 4 + (block.bh4 as i32 * 4) / 2 - 1;
+        let (row, col) = projected_warp_mv(params, x, y);
+        let (shift, scale) = if precision == super::read_mv::MV_PRECISION_EIGHTH_PEL {
+            (WARPEDMODEL_PREC_BITS - 3, 1)
         } else {
-            (
-                round2_signed(yc, WARPEDMODEL_PREC_BITS - 2) * 2,
-                round2_signed(xc, WARPEDMODEL_PREC_BITS - 2) * 2,
-            )
+            (WARPEDMODEL_PREC_BITS - 2, 2)
         };
+        let row = round2_signed(row, shift) * scale;
+        let col = round2_signed(col, shift) * scale;
         let mv = clip_and_clamp_projected_mv(block, row, col);
         if precision < super::read_mv::MV_PRECISION_HALF_PEL {
             super::read_mv::lower_mv_precision(precision, mv)
@@ -1208,7 +1202,7 @@ impl CompoundMvStack {
 }
 
 pub(crate) enum ExtendWarpNeighbour {
-    Params([i64; 6]),
+    Params([i32; 6]),
     List1MvUnretained,
     Missing,
 }
@@ -1239,17 +1233,22 @@ pub(crate) fn extend_warp_neighbour_params(
         return ExtendWarpNeighbour::List1MvUnretained;
     };
     let mut params = splot_recon::IDENTITY_WARP_PARAMS;
-    params[0] = i64::from(mv.col) << (WARPEDMODEL_PREC_BITS - 3);
-    params[1] = i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3);
+    let [Some(translation_x), Some(translation_y)] =
+        [mv.col, mv.row].map(|value| value.checked_shl(WARPEDMODEL_PREC_BITS - 3))
+    else {
+        return ExtendWarpNeighbour::Missing;
+    };
+    params[0] = translation_x;
+    params[1] = translation_y;
     ExtendWarpNeighbour::Params(params)
 }
 
 const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
 
-pub(crate) struct WarpSamples(FixedStack<[i64; 4], LEAST_SQUARES_SAMPLES_MAX>);
+pub(crate) struct WarpSamples(FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX>);
 
 impl WarpSamples {
-    pub(crate) fn as_slice(&self) -> &[[i64; 4]] {
+    pub(crate) fn as_slice(&self) -> &[[i32; 4]] {
         &self.0
     }
 }
@@ -1276,7 +1275,7 @@ pub(crate) fn find_warp_samples(
     let mi_rows = block.mi_rows as i32;
     let mi_cols = block.mi_cols as i32;
     let mut missing_list1 = false;
-    let mut add_sample = |samples: &mut FixedStack<[i64; 4], LEAST_SQUARES_SAMPLES_MAX>,
+    let mut add_sample = |samples: &mut FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX>,
                           delta_row: i32,
                           delta_col: i32| {
         if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
@@ -1297,14 +1296,10 @@ pub(crate) fn find_warp_samples(
                 missing_list1 = true;
                 continue;
             };
-            let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i64 - 1;
-            let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i64 - 1;
-            let _ = samples.try_push([
-                mid_y * 8,
-                mid_x * 8,
-                mid_y * 8 + i64::from(mv.row),
-                mid_x * 8 + i64::from(mv.col),
-            ]);
+            let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i32 - 1;
+            let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i32 - 1;
+            let _ =
+                samples.try_push([mid_y * 8, mid_x * 8, mid_y * 8 + mv.row, mid_x * 8 + mv.col]);
         }
     };
     let above_sample_stored = |delta_col: i32| -> bool {
@@ -2296,8 +2291,8 @@ fn generate_points_from_corners(
 ) {
     let bw4 = block.bw4 as i32;
     let bh4 = block.bh4 as i32;
-    let mut pts = [[0i64; 2]; 3];
-    let mut mvs = [[0i64; 2]; 3];
+    let mut pts = [[0i32; 2]; 3];
+    let mut mvs = [[0i32; 2]; 3];
     let mut found = 0usize;
     for (delta_row, delta_col, adjust_col) in
         [(-1, -1, iter), (-1, bw4 - 1, iter), (bh4 - 1, -1, 0)]
@@ -2313,8 +2308,8 @@ fn generate_points_from_corners(
     let mut all_mvs_same = true;
     for n in 0..3 {
         for c in 0..2 {
-            ref_pts[n][c] =
-                (pts[n][c] << WARPEDMODEL_PREC_BITS) + (mvs[n][c] << GM_TRANS_ONLY_PREC_DIFF);
+            ref_pts[n][c] = (i64::from(pts[n][c]) << WARPEDMODEL_PREC_BITS)
+                + (i64::from(mvs[n][c]) << GM_TRANS_ONLY_PREC_DIFF);
             if mvs[n][c] != mvs[0][c] {
                 all_mvs_same = false;
             }
@@ -2327,17 +2322,24 @@ fn generate_points_from_corners(
     let height_log2 = (block.bh4 as u32 * 4).trailing_zeros();
     let y0 = pts[0][0];
     let x0 = pts[0][1];
-    let mut wmmat = [0i64; 6];
-    wmmat[2] = (ref_pts[1][1] - ref_pts[0][1]) >> width_log2;
-    wmmat[4] = (ref_pts[1][0] - ref_pts[0][0]) >> width_log2;
-    wmmat[3] = (ref_pts[2][1] - ref_pts[0][1]) >> height_log2;
-    wmmat[5] = (ref_pts[2][0] - ref_pts[0][0]) >> height_log2;
-    let wmmat0 = ref_pts[0][1] - wmmat[2] * x0 - wmmat[3] * y0;
-    let wmmat1 = ref_pts[0][0] - wmmat[4] * x0 - wmmat[5] * y0;
+    let raw_params = [
+        (ref_pts[1][1] - ref_pts[0][1]) >> width_log2,
+        (ref_pts[2][1] - ref_pts[0][1]) >> height_log2,
+        (ref_pts[1][0] - ref_pts[0][0]) >> width_log2,
+        (ref_pts[2][0] - ref_pts[0][0]) >> height_log2,
+    ];
+    let [Ok(wmmat2), Ok(wmmat3), Ok(wmmat4), Ok(wmmat5)] = raw_params.map(i32::try_from) else {
+        return;
+    };
+    let mut wmmat = [0, 0, wmmat2, wmmat3, wmmat4, wmmat5];
+    let wmmat0 =
+        ref_pts[0][1] - i64::from(wmmat[2]) * i64::from(x0) - i64::from(wmmat[3]) * i64::from(y0);
+    let wmmat1 =
+        ref_pts[0][0] - i64::from(wmmat[4]) * i64::from(x0) - i64::from(wmmat[5]) * i64::from(y0);
     reduce_warp_model(&mut wmmat);
     let high = WARPEDMODEL_TRANS_CLAMP - (1 << WARP_PARAM_REDUCE_BITS);
-    wmmat[0] = wmmat0.clamp(-WARPEDMODEL_TRANS_CLAMP, high);
-    wmmat[1] = wmmat1.clamp(-WARPEDMODEL_TRANS_CLAMP, high);
+    wmmat[0] = wmmat0.clamp(-i64::from(WARPEDMODEL_TRANS_CLAMP), i64::from(high)) as i32;
+    wmmat[1] = wmmat1.clamp(-i64::from(WARPEDMODEL_TRANS_CLAMP), i64::from(high)) as i32;
     warp.insert(wmmat);
 }
 
@@ -2348,8 +2350,8 @@ fn warp_corner(
     delta_row: i32,
     delta_col: i32,
     adjust_col: i32,
-    pts: &mut [[i64; 2]; 3],
-    mvs: &mut [[i64; 2]; 3],
+    pts: &mut [[i32; 2]; 3],
+    mvs: &mut [[i32; 2]; 3],
     found: &mut usize,
 ) {
     let mv_row = block.mi_row as i32 + delta_row;
@@ -2393,15 +2395,15 @@ fn warp_corner(
         } else {
             cell.sub_mv1
         };
-        pts[*found] = [i64::from(mv_row + 1) * 4, i64::from(mv_col + 1) * 4];
-        mvs[*found] = [i64::from(corner_mv.row), i64::from(corner_mv.col)];
+        pts[*found] = [(mv_row + 1) * 4, (mv_col + 1) * 4];
+        mvs[*found] = [corner_mv.row, corner_mv.col];
         *found += 1;
         return;
     }
 }
 
 pub(crate) fn warp_sub_mv_at(
-    params: [i64; 6],
+    params: [i32; 6],
     block_r: usize,
     block_c: usize,
     rr: usize,
@@ -2409,44 +2411,44 @@ pub(crate) fn warp_sub_mv_at(
 ) -> Mv {
     let i8 = (rr.saturating_sub(block_r)) >> 1;
     let j8 = (cc.saturating_sub(block_c)) >> 1;
-    let src_x = (block_c * 4 + j8 * 8 + 4) as i64;
-    let src_y = (block_r * 4 + i8 * 8 + 4) as i64;
-    let dst_x = params[2] * src_x + params[3] * src_y + params[0];
-    let dst_y = params[4] * src_x + params[5] * src_y + params[1];
-    let bound = (1i64 << 16) - 1;
+    let src_x = (block_c * 4 + j8 * 8 + 4) as i32;
+    let src_y = (block_r * 4 + i8 * 8 + 4) as i32;
+    let (row, col) = projected_warp_mv(params, src_x, src_y);
+    let bound = (1 << 16) - 1;
     Mv {
-        row: round2_signed(
-            dst_y - (src_y << WARPEDMODEL_PREC_BITS),
-            WARPEDMODEL_PREC_BITS - 3,
-        )
-        .clamp(-bound, bound) as i32,
-        col: round2_signed(
-            dst_x - (src_x << WARPEDMODEL_PREC_BITS),
-            WARPEDMODEL_PREC_BITS - 3,
-        )
-        .clamp(-bound, bound) as i32,
+        row: round2_signed(row, WARPEDMODEL_PREC_BITS - 3).clamp(-bound, bound) as i32,
+        col: round2_signed(col, WARPEDMODEL_PREC_BITS - 3).clamp(-bound, bound) as i32,
     }
 }
 
+fn projected_warp_mv(params: [i32; 6], x: i32, y: i32) -> (i64, i64) {
+    let x = i64::from(x);
+    let y = i64::from(y);
+    let one = 1i64 << WARPEDMODEL_PREC_BITS;
+    (
+        i64::from(params[4]) * x + (i64::from(params[5]) - one) * y + i64::from(params[1]),
+        (i64::from(params[2]) - one) * x + i64::from(params[3]) * y + i64::from(params[0]),
+    )
+}
+
 fn warp_motion_vector_at(
-    params: [i64; 6],
+    params: [i32; 6],
     block: &MvBlockContext,
     pos_row: i32,
     pos_col: i32,
 ) -> Mv {
-    let y = i64::from(pos_row) * 4;
-    let x = i64::from(pos_col) * 4;
-    let xc = (params[2] * x + params[3] * y + params[0]) - (x << WARPEDMODEL_PREC_BITS);
-    let yc = (params[4] * x + params[5] * y + params[1]) - (y << WARPEDMODEL_PREC_BITS);
+    let y = pos_row * 4;
+    let x = pos_col * 4;
+    let (row, col) = projected_warp_mv(params, x, y);
     clip_and_clamp_projected_mv(
         block,
-        round2_signed(yc, WARPEDMODEL_PREC_BITS - 3),
-        round2_signed(xc, WARPEDMODEL_PREC_BITS - 3),
+        round2_signed(row, WARPEDMODEL_PREC_BITS - 3),
+        round2_signed(col, WARPEDMODEL_PREC_BITS - 3),
     )
 }
 
 fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv {
-    let bound = (1i64 << 16) - 1;
+    let bound = (1 << 16) - 1;
     let row = row.clamp(-bound, bound);
     let col = col.clamp(-bound, bound);
     clamp_mv(
@@ -2458,19 +2460,19 @@ fn clip_and_clamp_projected_mv(block: &MvBlockContext, row: i64, col: i64) -> Mv
     )
 }
 
-pub(crate) fn reduce_warp_model(params: &mut [i64; 6]) {
-    let max_value = (1i64 << (WARPEDMODEL_PREC_BITS - 1)) - (1i64 << WARP_PARAM_REDUCE_BITS);
+pub(crate) fn reduce_warp_model(params: &mut [i32; 6]) {
+    let max_value = (1i32 << (WARPEDMODEL_PREC_BITS - 1)) - (1i32 << WARP_PARAM_REDUCE_BITS);
     let min_value = -max_value;
     for (index, param) in params.iter_mut().enumerate().skip(2) {
         let offset = if index == 2 || index == 5 {
-            1i64 << WARPEDMODEL_PREC_BITS
+            1i32 << WARPEDMODEL_PREC_BITS
         } else {
             0
         };
         let original = *param - offset;
         let clamped = original.clamp(min_value, max_value);
         *param =
-            (round2_signed(clamped, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS) + offset;
+            (round2_signed_i32(clamped, WARP_PARAM_REDUCE_BITS) << WARP_PARAM_REDUCE_BITS) + offset;
     }
 }
 

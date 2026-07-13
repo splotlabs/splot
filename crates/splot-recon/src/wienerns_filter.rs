@@ -14,7 +14,7 @@
 //! Feature tracking: `RECON-WIENERNS-FILTER-PRIMITIVE`.
 
 use crate::intra_dc_math::validate_sample_type;
-use crate::math::round2;
+use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
@@ -268,7 +268,7 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
     }
 
     let mut filtered = Vec::with_capacity(sample_count);
-    let mut acc = vec![0i64; params.width];
+    let mut acc = vec![0i32; params.width];
     for r in 0..params.height {
         let window_in_range = clean_rows
             .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
@@ -335,12 +335,12 @@ fn padded_row<T: ReconSample>(
 
 /// Filters one output row whose full tap window is known in range, as
 /// row-slice arithmetic: taps outer, samples inner, over per-subclass
-/// segments. The i64 accumulation adds the same § 7.20.3 tap terms in config
+/// segments. The i32 accumulation adds the same § 7.20.3 tap terms in config
 /// order, so the result is bit-identical to the per-sample path.
 #[inline]
 fn filter_padded_luma_row_in_range<T: ReconSample>(
     filtered: &mut Vec<T>,
-    acc: &mut [i64],
+    acc: &mut [i32],
     samples: &[T],
     stride: usize,
     r: usize,
@@ -399,7 +399,7 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
 #[inline]
 fn filter_padded_luma_segment<T: ReconSample>(
     filtered: &mut Vec<T>,
-    acc: &mut [i64],
+    acc: &mut [i32],
     rows: &[&[T]; 2 * WIENER_NS_LUMA_TAP_RADIUS + 1],
     center: &[T],
     c0: usize,
@@ -419,24 +419,24 @@ fn filter_padded_luma_segment<T: ReconSample>(
         .get(c0..c0 + len)
         .ok_or_else(|| luma_segment_error(params.width))?;
     for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a = i64::from(m.to_u16()) << WIENER_NS_PREC_BITS;
+        *a = i32::from(m.to_u16()) << WIENER_NS_PREC_BITS;
     }
-    let mut sum_coeff = 0i64;
+    let mut sum_coeff = 0i32;
     for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y_PAIRS {
-        let coeff = i64::from(coeffs[coeff_index]);
+        let coeff = i32::from(coeffs[coeff_index]);
         sum_coeff += coeff;
         let plus = tap_segment(rows, c0, len, dy, dx, params.width)?;
         let minus = tap_segment(rows, c0, len, -dy, -dx, params.width)?;
         for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
-            *a += coeff * (i64::from(tp.to_u16()) + i64::from(tm.to_u16()));
+            *a += coeff * (i32::from(tp.to_u16()) + i32::from(tm.to_u16()));
         }
     }
     let center_scale = 2 * sum_coeff;
     for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a -= center_scale * i64::from(m.to_u16());
+        *a -= center_scale * i32::from(m.to_u16());
     }
     for &s in seg.iter() {
-        let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+        let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
         filtered.push(T::try_from_u16(value as u16)?);
     }
     Ok(())
@@ -492,7 +492,7 @@ fn filter_padded_luma_row_validated<T: ReconSample>(
             r as isize,
             max_sample,
         )?;
-        let mut s = i64::from(m) << WIENER_NS_PREC_BITS;
+        let mut s = i32::from(m) << WIENER_NS_PREC_BITS;
         for (&offset, &(dy, dx, coeff_index)) in tap_offsets.iter().zip(&WIENER_NS_CONFIG_Y) {
             let tap = validated_padded_sample(
                 samples,
@@ -501,10 +501,10 @@ fn filter_padded_luma_row_validated<T: ReconSample>(
                 r as isize + dy,
                 max_sample,
             )?;
-            let diff = i64::from(tap) - i64::from(m);
-            s += diff * i64::from(coeffs[coeff_index]);
+            let diff = i32::from(tap) - i32::from(m);
+            s += diff * i32::from(coeffs[coeff_index]);
         }
-        let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+        let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
         filtered.push(T::try_from_u16(value as u16)?);
     }
     Ok(())
@@ -627,13 +627,13 @@ where
     let y = r as isize;
     let m = validated_source_sample(source_sample, x, y, max_sample)?;
 
-    let mut s = i64::from(m) << WIENER_NS_PREC_BITS;
+    let mut s = i32::from(m) << WIENER_NS_PREC_BITS;
     for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
         let tap = validated_source_sample(source_sample, x + dx, y + dy, max_sample)?;
-        let diff = i64::from(tap) - i64::from(m);
-        s += diff * i64::from(coeffs[coeff_index]);
+        let diff = i32::from(tap) - i32::from(m);
+        s += diff * i32::from(coeffs[coeff_index]);
     }
-    let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
+    let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
     T::try_from_u16(value as u16)
 }
 

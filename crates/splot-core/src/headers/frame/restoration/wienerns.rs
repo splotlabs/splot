@@ -195,13 +195,13 @@ pub(super) fn parse_frame_wiener_ns_filter(
             if !merged[c] {
                 let tap_subset = usize::from(subset.unwrap_or(0));
                 if WIENER_NS_TAPS_PRESENT[plane_index][tap_subset][j] {
-                    let min = i64::from(WIENER_NS_TAPS_MIN[plane_index][j]);
+                    let min = i32::from(WIENER_NS_TAPS_MIN[plane_index][j]);
                     let k = u32::from(WIENER_NS_TAPS_K[plane_index][j]);
                     value = decode_signed_subexp_with_ref(
                         reader,
                         min,
-                        min + (1i64 << k),
-                        i64::from(value),
+                        min + (1i32 << k),
+                        i32::from(value),
                         k.saturating_sub(3),
                     )? as i16;
                 } else {
@@ -284,9 +284,9 @@ fn read_match_indices(
             let ref_index = base + (n >> 1);
             let decoded = decode_signed_subexp_with_ref(
                 reader,
-                base as i64,
-                (base + n) as i64,
-                ref_index as i64,
+                base as i32,
+                (base + n) as i32,
+                ref_index as i32,
                 4,
             )?;
             usize::try_from(decoded).unwrap_or(base)

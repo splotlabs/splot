@@ -81,39 +81,53 @@ pub(crate) fn read_warp_newmv_motion_mode_syntax(
     Ok(MotionMode::DeltaWarp)
 }
 
-const fn warp_round2(value: i64, n: u32) -> i64 {
-    if n == 0 {
-        return value;
-    }
-    (value + (1i64 << (n - 1))) >> n
+fn warp_round2(value: i64, n: u32, tile_offset: ByteOffset) -> Result<i32> {
+    let rounded = if n == 0 {
+        value
+    } else {
+        (value + (1i64 << (n - 1))) >> n
+    };
+    i32::try_from(rounded).map_err(|_| warp_model_error(tile_offset))
 }
 
-const LS_MV_MAX: i64 = 256;
+const LS_MV_MAX: i32 = 256;
 
-const fn ls_product(a: i64, b: i64) -> i64 {
+const fn ls_product(a: i32, b: i32) -> i32 {
     ((a * b) >> 2) + (a + b)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn local_warp_estimation(
-    samples: &[[i64; 4]],
+    samples: &[[i32; 4]],
     mv: Mv,
     mi_row: usize,
     mi_col: usize,
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<[i64; 6]> {
+) -> Result<[i32; 6]> {
     let geometry_error = || warp_model_error(tile_offset);
-    let mid_y = i64::try_from(mi_row * 4 + n4h * 2).map_err(|_| geometry_error())? - 1;
-    let mid_x = i64::try_from(mi_col * 4 + n4w * 2).map_err(|_| geometry_error())? - 1;
+    let mid_y = i32::try_from(
+        n4h.checked_mul(2)
+            .and_then(|half| mi_row.checked_mul(4)?.checked_add(half))
+            .ok_or_else(geometry_error)?,
+    )
+    .map_err(|_| geometry_error())?
+        - 1;
+    let mid_x = i32::try_from(
+        n4w.checked_mul(2)
+            .and_then(|half| mi_col.checked_mul(4)?.checked_add(half))
+            .ok_or_else(geometry_error)?,
+    )
+    .map_err(|_| geometry_error())?
+        - 1;
     let suy = mid_y * 8;
     let sux = mid_x * 8;
-    let duy = suy + i64::from(mv.row);
-    let dux = sux + i64::from(mv.col);
-    let mut a = [[0i64; 2]; 2];
-    let mut bx = [0i64; 2];
-    let mut by = [0i64; 2];
+    let duy = suy + mv.row;
+    let dux = sux + mv.col;
+    let mut a = [[0i32; 2]; 2];
+    let mut bx = [0i32; 2];
+    let mut by = [0i32; 2];
     for sample in samples {
         let sy = sample[0] - suy;
         let sx = sample[1] - sux;
@@ -129,8 +143,7 @@ pub(super) fn local_warp_estimation(
             by[1] += ls_product(sy, dy) + 8;
         }
     }
-    let det = i128::from(a[0][0]) * i128::from(a[1][1]) - i128::from(a[0][1]) * i128::from(a[0][1]);
-    let det = i64::try_from(det).map_err(|_| geometry_error())?;
+    let det = i64::from(a[0][0]) * i64::from(a[1][1]) - i64::from(a[0][1]) * i64::from(a[0][1]);
     let mut params = IDENTITY_WARP_PARAMS;
     if det == 0 {
         set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
@@ -139,18 +152,20 @@ pub(super) fn local_warp_estimation(
     let (raw_shift, factor) =
         splot_recon::resolve_divisor(det.unsigned_abs()).map_err(|_| geometry_error())?;
     let div_factor = if det < 0 {
-        -i64::from(factor)
+        -i32::from(factor)
     } else {
-        i64::from(factor)
+        i32::from(factor)
     };
-    let mut div_shift = i64::from(raw_shift) - i64::from(WARPEDMODEL_PREC_BITS);
+    let mut div_shift = i32::from(raw_shift) - WARPEDMODEL_PREC_BITS as i32;
     let mut div_factor = div_factor;
     if div_shift < 0 {
-        div_factor <<= -div_shift;
+        div_factor = div_factor
+            .checked_shl((-div_shift) as u32)
+            .ok_or_else(geometry_error)?;
         div_shift = 0;
     }
     let shift = u32::try_from(div_shift).map_err(|_| geometry_error())?;
-    let diag = |v: i64| -> i64 {
+    let diag = |v: i64| -> i32 {
         let product = i128::from(v) * i128::from(div_factor);
         let magnitude = product.unsigned_abs();
         let rounded = if shift == 0 {
@@ -163,12 +178,14 @@ pub(super) fn local_warp_estimation(
         } else {
             i128::try_from(rounded).unwrap_or(i128::MAX)
         };
-        i64::try_from(signed.clamp(i128::from(i32::MIN), i128::from(i32::MAX))).unwrap_or_default()
+        signed.clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32
     };
-    params[2] = diag(a[1][1] * bx[0] - a[0][1] * bx[1]);
-    params[3] = diag(-a[0][1] * bx[0] + a[0][0] * bx[1]);
-    params[4] = diag(a[1][1] * by[0] - a[0][1] * by[1]);
-    params[5] = diag(-a[0][1] * by[0] + a[0][0] * by[1]);
+    params[2] = diag(i64::from(a[1][1]) * i64::from(bx[0]) - i64::from(a[0][1]) * i64::from(bx[1]));
+    params[3] =
+        diag(-i64::from(a[0][1]) * i64::from(bx[0]) + i64::from(a[0][0]) * i64::from(bx[1]));
+    params[4] = diag(i64::from(a[1][1]) * i64::from(by[0]) - i64::from(a[0][1]) * i64::from(by[1]));
+    params[5] =
+        diag(-i64::from(a[0][1]) * i64::from(by[0]) + i64::from(a[0][0]) * i64::from(by[1]));
     reduce_warp_model(&mut params);
     set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
     Ok(params)
@@ -187,7 +204,7 @@ fn extend_warp_estimation(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<[i64; 6]> {
+) -> Result<[i32; 6]> {
     let Some((delta_row, delta_col)) = extend_warp_base_position(
         mv_grid,
         block_ctx,
@@ -223,12 +240,24 @@ fn extend_warp_estimation(
         }
     };
     let geometry_error = || warp_model_error(tile_offset);
-    let mid_y = i64::try_from(mi_row * 4 + n4h * 2).map_err(|_| geometry_error())? - 1;
-    let mid_x = i64::try_from(mi_col * 4 + n4w * 2).map_err(|_| geometry_error())? - 1;
-    let proj_mid_x =
-        (mid_x << WARPEDMODEL_PREC_BITS) + (i64::from(mv.col) << (WARPEDMODEL_PREC_BITS - 3));
-    let proj_mid_y =
-        (mid_y << WARPEDMODEL_PREC_BITS) + (i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3));
+    let mid_y = i32::try_from(
+        n4h.checked_mul(2)
+            .and_then(|half| mi_row.checked_mul(4)?.checked_add(half))
+            .ok_or_else(geometry_error)?,
+    )
+    .map_err(|_| geometry_error())?
+        - 1;
+    let mid_x = i32::try_from(
+        n4w.checked_mul(2)
+            .and_then(|half| mi_col.checked_mul(4)?.checked_add(half))
+            .ok_or_else(geometry_error)?,
+    )
+    .map_err(|_| geometry_error())?
+        - 1;
+    let proj_mid_x = (i64::from(mid_x) << WARPEDMODEL_PREC_BITS)
+        + (i64::from(mv.col) << (WARPEDMODEL_PREC_BITS - 3));
+    let proj_mid_y = (i64::from(mid_y) << WARPEDMODEL_PREC_BITS)
+        + (i64::from(mv.row) << (WARPEDMODEL_PREC_BITS - 3));
     let mut extended = IDENTITY_WARP_PARAMS;
     extended[0] = 0;
     extended[1] = 0;
@@ -237,22 +266,34 @@ fn extend_warp_estimation(
         extended[2] = params[2];
         extended[4] = params[4];
         let above_x = mid_x;
-        let above_y = i64::try_from(mi_row * 4).map_err(|_| geometry_error())? - 1;
-        let proj_above_x = params[2] * above_x + params[3] * above_y + params[0];
-        let proj_above_y = params[4] * above_x + params[5] * above_y + params[1];
+        let above_y = i32::try_from(mi_row.checked_mul(4).ok_or_else(geometry_error)?)
+            .map_err(|_| geometry_error())?
+            - 1;
+        let proj_above_x = i64::from(params[2]) * i64::from(above_x)
+            + i64::from(params[3]) * i64::from(above_y)
+            + i64::from(params[0]);
+        let proj_above_y = i64::from(params[4]) * i64::from(above_x)
+            + i64::from(params[5]) * i64::from(above_y)
+            + i64::from(params[1]);
         let shift = n4h.trailing_zeros() + MI_SIZE_LOG2 - 1;
-        extended[3] = warp_round2(proj_mid_x - proj_above_x, shift);
-        extended[5] = warp_round2(proj_mid_y - proj_above_y, shift);
+        extended[3] = warp_round2(proj_mid_x - proj_above_x, shift, tile_offset)?;
+        extended[5] = warp_round2(proj_mid_y - proj_above_y, shift, tile_offset)?;
     } else {
         extended[3] = params[3];
         extended[5] = params[5];
-        let left_x = i64::try_from(mi_col * 4).map_err(|_| geometry_error())? - 1;
+        let left_x = i32::try_from(mi_col.checked_mul(4).ok_or_else(geometry_error)?)
+            .map_err(|_| geometry_error())?
+            - 1;
         let left_y = mid_y;
-        let proj_left_x = params[2] * left_x + params[3] * left_y + params[0];
-        let proj_left_y = params[4] * left_x + params[5] * left_y + params[1];
+        let proj_left_x = i64::from(params[2]) * i64::from(left_x)
+            + i64::from(params[3]) * i64::from(left_y)
+            + i64::from(params[0]);
+        let proj_left_y = i64::from(params[4]) * i64::from(left_x)
+            + i64::from(params[5]) * i64::from(left_y)
+            + i64::from(params[1]);
         let shift = n4w.trailing_zeros() + MI_SIZE_LOG2 - 1;
-        extended[2] = warp_round2(proj_mid_x - proj_left_x, shift);
-        extended[4] = warp_round2(proj_mid_y - proj_left_y, shift);
+        extended[2] = warp_round2(proj_mid_x - proj_left_x, shift, tile_offset)?;
+        extended[4] = warp_round2(proj_mid_y - proj_left_y, shift, tile_offset)?;
     }
     reduce_warp_model(&mut extended);
     set_warp_translation(&mut extended, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
@@ -279,7 +320,7 @@ pub(super) fn extend_warp_base_position(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ParsedWarpNewmv {
     pub(crate) mv: Mv,
-    pub(crate) warp_params: [i64; 6],
+    pub(crate) warp_params: [i32; 6],
     pub(crate) ref_mv_idx: usize,
     pub(crate) ref_warp_idx: usize,
     pub(crate) precision_idx: u8,
@@ -862,7 +903,7 @@ fn read_warp_delta_syntax(
     n4h: usize,
     stack: &super::super::find_mv_stack::MvStack,
     tile_offset: ByteOffset,
-) -> Result<([i64; 6], u8)> {
+) -> Result<([i32; 6], u8)> {
     let mut params = stack.warp_candidate(ref_warp_idx);
     let use_six_param = sequence
         .inter
@@ -912,7 +953,7 @@ fn read_warp_delta_param(
     index: usize,
     high_precision: bool,
     tile_offset: ByteOffset,
-) -> Result<i64> {
+) -> Result<i32> {
     let index_type = match index {
         2 | 5 => 0,
         3 | 4 => 1,
@@ -946,7 +987,7 @@ fn read_warp_delta_param(
             .checked_add(high)
             .ok_or_else(|| warp_model_error(tile_offset))?;
     }
-    let mut signed = i64::from(value);
+    let mut signed = i32::from(value);
     if signed != 0 {
         let sign = cdfs
             .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamSign, symbols)
@@ -971,7 +1012,7 @@ fn read_warp_delta_param(
 }
 
 fn set_warp_translation(
-    params: &mut [i64; 6],
+    params: &mut [i32; 6],
     mv: Mv,
     mi_row: usize,
     mi_col: usize,
@@ -998,13 +1039,13 @@ fn set_warp_translation(
         - (center_x as i128 * i128::from(params[4])
             + center_y as i128 * (i128::from(params[5]) - one));
     let high = WARPEDMODEL_TRANS_CLAMP - (1 << WARP_PARAM_REDUCE_BITS);
-    params[0] = clamp_i128_to_i64(wmmat0, -WARPEDMODEL_TRANS_CLAMP, high);
-    params[1] = clamp_i128_to_i64(wmmat1, -WARPEDMODEL_TRANS_CLAMP, high);
+    params[0] = clamp_i128_to_i32(wmmat0, -WARPEDMODEL_TRANS_CLAMP, high);
+    params[1] = clamp_i128_to_i32(wmmat1, -WARPEDMODEL_TRANS_CLAMP, high);
     Ok(())
 }
 
-fn clamp_i128_to_i64(value: i128, low: i64, high: i64) -> i64 {
-    value.clamp(i128::from(low), i128::from(high)) as i64
+fn clamp_i128_to_i32(value: i128, low: i32, high: i32) -> i32 {
+    value.clamp(i128::from(low), i128::from(high)) as i32
 }
 
 fn warp_model_error(tile_offset: ByteOffset) -> crate::error::DecodeError {

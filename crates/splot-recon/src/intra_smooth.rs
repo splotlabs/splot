@@ -6,9 +6,10 @@
 //! Feature tracking: `RECON-INTRA-SMOOTH-PREDICTION`.
 
 use crate::intra_dc_math::{validate_output_shape, validate_sample_type};
+use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
 
-const BLEND_WEIGHT_MAX: i64 = 32;
+const BLEND_WEIGHT_MAX: i32 = 32;
 
 /// Smooth intra prediction mode.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -172,14 +173,14 @@ pub(crate) fn predict_smooth_sample_values<T: ReconSample>(
     samples: SmoothSampleEdges<T>,
     position: SmoothSamplePosition,
 ) -> Result<T> {
-    let top = i64::from(samples.top.to_u16());
-    let left = i64::from(samples.left.to_u16());
-    let top_right = i64::from(samples.top_right.to_u16());
-    let bottom_left = i64::from(samples.bottom_left.to_u16());
-    let scale = round2_i64(
-        i64::from(size.log2_width()) + i64::from(size.log2_height()) - 4,
+    let top = i32::from(samples.top.to_u16());
+    let left = i32::from(samples.left.to_u16());
+    let top_right = i32::from(samples.top_right.to_u16());
+    let bottom_left = i32::from(samples.bottom_left.to_u16());
+    let scale = round2_i32(
+        i32::from(size.log2_width()) + i32::from(size.log2_height()) - 4,
         2,
-    )?;
+    );
     let scale = u8::try_from(scale).map_err(|_| ReconError::ArithmeticOverflow {
         context: "smooth intra prediction scale",
     })?;
@@ -201,67 +202,67 @@ pub(crate) fn predict_smooth_sample_values<T: ReconSample>(
             >> scale;
     let s_top = BLEND_WEIGHT_MAX >> core::cmp::min(6usize, top_weight_shift);
     let s_left = BLEND_WEIGHT_MAX >> core::cmp::min(6usize, left_weight_shift);
-    let h_factor = i64::try_from(size.width() - 1 - position.column).map_err(|_| {
+    let h_factor = i32::try_from(size.width() - 1 - position.column).map_err(|_| {
         ReconError::ArithmeticOverflow {
             context: "smooth intra prediction horizontal factor",
         }
     })?;
-    let v_factor = i64::try_from(size.height() - 1 - position.row).map_err(|_| {
+    let v_factor = i32::try_from(size.height() - 1 - position.row).map_err(|_| {
         ReconError::ArithmeticOverflow {
             context: "smooth intra prediction vertical factor",
         }
     })?;
 
     let pred_h = top_right
-        + round2_i64(
+        + round2_i32(
             (left - top_right)
                 .checked_mul(h_factor)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "smooth intra prediction horizontal product",
                 })?,
-            size.log2_width(),
-        )?;
+            u32::from(size.log2_width()),
+        );
     let pred_v = bottom_left
-        + round2_i64(
+        + round2_i32(
             (top - bottom_left)
                 .checked_mul(v_factor)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "smooth intra prediction vertical product",
                 })?,
-            size.log2_height(),
-        )?;
+            u32::from(size.log2_height()),
+        );
     let pred_h2 = pred_h
-        + round2_i64(
+        + round2_i32(
             (left - pred_h)
                 .checked_mul(s_left)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "smooth intra prediction horizontal blend product",
                 })?,
             6,
-        )?;
+        );
     let pred_v2 = pred_v
-        + round2_i64(
+        + round2_i32(
             (top - pred_v)
                 .checked_mul(s_top)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "smooth intra prediction vertical blend product",
                 })?,
             6,
-        )?;
+        );
     let predicted = match mode {
         IntraSmoothMode::SmoothHorizontal => pred_h2,
         IntraSmoothMode::SmoothVertical => pred_v2,
-        IntraSmoothMode::Smooth => round2_i64(
+        IntraSmoothMode::Smooth => round2_i32(
             pred_v2
                 .checked_add(pred_h2)
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "smooth intra prediction combined sample",
                 })?,
             1,
-        )?,
+        ),
     };
 
-    let max = i64::from(bit_depth.max_sample());
+    let max = i32::from(bit_depth.max_sample());
     if predicted < 0 || predicted > max {
         return Err(ReconError::IntraSmoothPredictionOutOfRange {
             row: position.row,
@@ -345,28 +346,6 @@ fn validate_sample<T: ReconSample>(
     } else {
         Ok(())
     }
-}
-
-fn round2_i64(value: i64, shift: u8) -> Result<i64> {
-    if shift == 0 {
-        return Ok(value);
-    }
-    let rounding =
-        1i64.checked_shl(u32::from(shift - 1))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "smooth intra prediction Round2 offset",
-            })?;
-    let divisor = 1i64
-        .checked_shl(u32::from(shift))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "smooth intra prediction Round2 divisor",
-        })?;
-    value
-        .checked_add(rounding)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "smooth intra prediction Round2 input",
-        })
-        .map(|rounded| rounded.div_euclid(divisor))
 }
 
 #[cfg(test)]

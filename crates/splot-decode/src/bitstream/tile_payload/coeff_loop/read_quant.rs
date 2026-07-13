@@ -186,33 +186,22 @@ impl CoeffReadQuantState {
                 return Err(quant_overflow(index, "coeff_rem literal width"));
             }
             let length = checked_add(index, prefix, k, "golomb length + k")?;
-            let q_base = checked_shl_u64(index, u64::from(q), m, "q << m")?;
-            let length_base = checked_shl_u64(index, 1, length, "1 << length")?;
-            let k_base = checked_shl_u64(index, 1, k, "1 << k")?;
+            let q_base = checked_shl(index, q, m, "q << m")?;
+            let length_base = checked_shl(index, 1, length, "1 << length")?;
+            let k_base = checked_shl(index, 1, k, "1 << k")?;
             (
                 length,
-                checked_u32(
+                checked_add(
                     index,
-                    checked_add_u64(
-                        index,
-                        q_base,
-                        length_base
-                            .checked_sub(k_base)
-                            .ok_or(quant_overflow(index, "1 << length - 1 << k"))?,
-                        "extended xBase",
-                    )?,
-                    "u64 xBase to u32",
+                    q_base,
+                    length_base
+                        .checked_sub(k_base)
+                        .ok_or(quant_overflow(index, "1 << length - 1 << k"))?,
+                    "extended xBase",
                 )?,
             )
         } else {
-            (
-                m,
-                checked_u32(
-                    index,
-                    checked_shl_u64(index, u64::from(q), m, "q << m")?,
-                    "u64 xBase to u32",
-                )?,
-            )
+            (m, checked_shl(index, q, m, "q << m")?)
         };
 
         if length > MAX_COEFF_REM_BITS {
@@ -220,38 +209,16 @@ impl CoeffReadQuantState {
         }
         let coeff_rem =
             read_bypass_symbol(symbols, index, length, "coeff_rem", BypassSyntax::Literal)?;
-        let x = checked_u32(
-            index,
-            checked_add_u64(
-                index,
-                u64::from(x_base),
-                u64::from(coeff_rem),
-                "xBase + coeff_rem",
-            )?,
-            "u64 x to u32",
-        )?;
+        let x = checked_add(index, x_base, coeff_rem, "xBase + coeff_rem")?;
 
-        let shifted_x = checked_shl_u64(index, u64::from(x), lvl_shift, "x << lvlShift")?;
-        let next_hr = checked_u32(
+        let shifted_x = checked_shl(index, x, lvl_shift, "x << lvlShift")?;
+        let next_hr = checked_add(
             index,
-            checked_add_u64(
-                index,
-                shifted_x,
-                u64::from(self.hr_level_avg),
-                "x << lvlShift + hrLevelAvg",
-            )? >> 1,
-            "u64 hrLevelAvg to u32",
-        )?;
-        let quant_add = checked_u32(
-            index,
-            checked_shl_u64(
-                index,
-                u64::from(x),
-                u32::from(self.allow_tcq),
-                "x << allowTcq",
-            )?,
-            "u64 quant extension to u32",
-        )?;
+            shifted_x,
+            self.hr_level_avg,
+            "x << lvlShift + hrLevelAvg",
+        )? >> 1;
+        let quant_add = checked_shl(index, x, u32::from(self.allow_tcq), "x << allowTcq")?;
         let quant = input
             .level
             .checked_add(quant_add)
@@ -341,32 +308,15 @@ fn checked_add(
     lhs.checked_add(rhs).ok_or(quant_overflow(index, operation))
 }
 
-fn checked_shl_u64(
+fn checked_shl(
     index: usize,
-    value: u64,
+    value: u32,
     shift: u32,
     operation: &'static str,
-) -> Result<u64, CoeffReadQuantError> {
+) -> Result<u32, CoeffReadQuantError> {
     value
         .checked_shl(shift)
         .ok_or(quant_overflow(index, operation))
-}
-
-fn checked_add_u64(
-    index: usize,
-    lhs: u64,
-    rhs: u64,
-    operation: &'static str,
-) -> Result<u64, CoeffReadQuantError> {
-    lhs.checked_add(rhs).ok_or(quant_overflow(index, operation))
-}
-
-fn checked_u32(
-    index: usize,
-    value: u64,
-    operation: &'static str,
-) -> Result<u32, CoeffReadQuantError> {
-    u32::try_from(value).map_err(|_| quant_overflow(index, operation))
 }
 
 fn quant_overflow(index: usize, operation: &'static str) -> CoeffReadQuantError {

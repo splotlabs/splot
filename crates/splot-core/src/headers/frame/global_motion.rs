@@ -103,11 +103,11 @@ const GM_ABS_TRANS_BITS: u32 = 14;
 
 /// `GM_ALPHA_MAX = (1 << GM_ABS_ALPHA_BITS) - 1` (AV2 v1.0.0 § 3): the `mx` bound for
 /// `idx >= 2` (mirror :7992).
-const GM_ALPHA_MAX: i64 = (1i64 << GM_ABS_ALPHA_BITS) - 1;
+const GM_ALPHA_MAX: i32 = (1i32 << GM_ABS_ALPHA_BITS) - 1;
 
 /// `GM_TRANS_MAX = (1 << GM_ABS_TRANS_BITS) - 1` (AV2 v1.0.0 § 3): the `mx` bound for
 /// `idx < 2` (mirror :7998).
-const GM_TRANS_MAX: i64 = (1i64 << GM_ABS_TRANS_BITS) - 1;
+const GM_TRANS_MAX: i32 = (1i32 << GM_ABS_TRANS_BITS) - 1;
 
 /// The fixed subexp parameter `k = 3` used by every `read_global_param()` call (mirror
 /// :8012, `decode_signed_subexp_with_ref( -mx, mx + 1, r, 3 )`).
@@ -130,7 +130,7 @@ pub(crate) const REFS_PER_FRAME: usize = 7;
 /// `Default_Warp_Params[6]` (AV2 v1.0.0 § 7, mirror :4702): the identity warp model. Index
 /// `i % 3 == 2` (the diagonal scale terms 2 and 5) is `1 << WARPEDMODEL_PREC_BITS`; every
 /// other term is `0` (mirror :7784-7786 derives the same identity initialiser).
-const DEFAULT_WARP_PARAMS: [i64; 6] = [
+const DEFAULT_WARP_PARAMS: [i32; 6] = [
     0,
     0,
     1 << WARPEDMODEL_PREC_BITS,
@@ -238,7 +238,7 @@ pub struct GlobalMotionRef {
     pub gm_type: GmType,
     /// `gm_params[ ref ][ 0..6 ]` (the six warp coefficients at `WARPEDMODEL_PREC_BITS`
     /// fractional precision). The identity initialiser until the reference signals a warp.
-    pub gm_params: [i64; 6],
+    pub gm_params: [i32; 6],
 }
 
 impl GlobalMotionRef {
@@ -360,8 +360,8 @@ pub fn parse_global_motion_params(
 pub fn read_global_param(
     reader: &mut BitReader<'_>,
     idx: usize,
-    prev_gm_param: i64,
-) -> Result<i64> {
+    prev_gm_param: i32,
+) -> Result<i32> {
     let (prec_bits, mx) = if idx < 2 {
         (GM_TRANS_PREC_BITS, GM_TRANS_MAX)
     } else {
@@ -369,12 +369,12 @@ pub fn read_global_param(
     };
     let prec_diff = WARPEDMODEL_PREC_BITS - prec_bits;
     let is_scale_term = (idx % 3) == 2;
-    let round: i64 = if is_scale_term {
-        1i64 << WARPEDMODEL_PREC_BITS
+    let round = if is_scale_term {
+        1i32 << WARPEDMODEL_PREC_BITS
     } else {
         0
     };
-    let sub: i64 = if is_scale_term { 1i64 << prec_bits } else { 0 };
+    let sub = if is_scale_term { 1i32 << prec_bits } else { 0 };
     let r = (prev_gm_param >> prec_diff) - sub;
     let decoded = decode_signed_subexp_with_ref(reader, -mx, mx + 1, r, GLOBAL_PARAM_K)?;
     Ok((decoded << prec_diff) + round)
@@ -387,11 +387,11 @@ pub fn read_global_param(
 /// Propagates a truncated subexp read or a degenerate `ns(0)`.
 pub fn decode_signed_subexp_with_ref(
     reader: &mut BitReader<'_>,
-    low: i64,
-    high: i64,
-    r: i64,
+    low: i32,
+    high: i32,
+    r: i32,
     k: u32,
-) -> Result<i64> {
+) -> Result<i32> {
     let x = decode_unsigned_subexp_with_ref(
         reader,
         high.saturating_sub(low),
@@ -408,12 +408,13 @@ pub fn decode_signed_subexp_with_ref(
 /// Propagates a truncated subexp read or a degenerate `ns(0)`.
 pub fn decode_unsigned_subexp_with_ref(
     reader: &mut BitReader<'_>,
-    mx: i64,
-    r: i64,
+    mx: i32,
+    r: i32,
     k: u32,
-) -> Result<i64> {
+) -> Result<i32> {
     let v = decode_subexp(reader, mx, k)?;
-    if i128::from(r) * 2 <= i128::from(mx) {
+    let r = r.clamp(0, mx.saturating_sub(1));
+    if r <= mx / 2 {
         Ok(inverse_recenter(r, v))
     } else {
         let mirrored = inverse_recenter(mx.wrapping_sub(1).wrapping_sub(r), v);
@@ -423,7 +424,7 @@ pub fn decode_unsigned_subexp_with_ref(
 
 /// `decode_subexp( numSyms, k )` (AV2 v1.0.0 § 5.18.9.5, mirror :8076-8122).
 ///
-/// The growth variables (`mk`, `a`, the `f(b2)` width) are computed in `u64` so a
+/// The growth variables (`mk`, `a`, the `f(b2)` width) are computed in `u32` so a
 /// constructed input that forces `subexp_more_bits == 1` repeatedly cannot overflow the
 /// `1 << b2` shift before the `numSyms <= mk + 3*a` guard terminates the loop. For the spec
 /// callers `numSyms = 2*mx + 1 <= 32767`, so `b2` stays small; the widening only hardens the
@@ -436,44 +437,45 @@ pub fn decode_unsigned_subexp_with_ref(
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) if the code is
 /// truncated, or [`Error::InvalidNs`](crate::error::Error::InvalidNs) for a degenerate
 /// `ns(0)` range.
-pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i64, k: u32) -> Result<i64> {
-    let num_syms_u: u64 = u64::try_from(num_syms).unwrap_or(0);
+pub fn decode_subexp(reader: &mut BitReader<'_>, num_syms: i32, k: u32) -> Result<i32> {
+    let num_syms_u = u32::try_from(num_syms).unwrap_or(0);
     let mut i: u32 = 0;
-    let mut mk: u64 = 0;
+    let mut mk = 0u32;
     loop {
         let b2: u32 = if i == 0 {
             k
         } else {
             k.saturating_add(i).saturating_sub(1)
         };
-        let a: u64 = 1u64 << b2.min(63);
+        let a = 1u32 << b2.min(31);
         let three_a = a.saturating_mul(3);
         let bound = mk.saturating_add(three_a);
         if num_syms_u <= bound {
             let n = num_syms_u - mk;
-            let n_u32 = u32::try_from(n).unwrap_or(u32::MAX);
-            let final_bits = u64::from(reader.read_ns(n_u32)?);
-            return i64::try_from(final_bits + mk).map_err(|_| invalid_subexp_value(reader));
+            let final_bits = reader.read_ns(n)?;
+            return i32::try_from(final_bits.saturating_add(mk))
+                .map_err(|_| invalid_subexp_value(reader));
         }
         let more_bits = reader.read_flag()?;
         if more_bits {
             i = i.saturating_add(1);
             mk = mk.saturating_add(a);
         } else {
-            let bits = u64::from(reader.read_f(b2)?);
-            return i64::try_from(bits + mk).map_err(|_| invalid_subexp_value(reader));
+            let bits = reader.read_f(b2)?;
+            return i32::try_from(bits.saturating_add(mk))
+                .map_err(|_| invalid_subexp_value(reader));
         }
     }
 }
 
 /// `inverse_recenter( r, v )` (AV2 v1.0.0 § 5.18.9.6, mirror :8134-8142).
 ///
-/// All branches are computed in `i64` so the `2 * r` / `r - ((v + 1) >> 1)` arithmetic never
-/// overflows or wraps for the bounded warp `r` (and stays panic-free for arbitrary `i64`
+/// All branches use wrapping `i32` operations so the bounded warp arithmetic is exact and
+/// stays panic-free for arbitrary `i32`
 /// inputs from the proptest, using `wrapping_*` only where the spec's unbounded integers
 /// would otherwise be modeled — here the warp ranges keep every value well inside i64).
 #[must_use]
-pub fn inverse_recenter(r: i64, v: i64) -> i64 {
+pub fn inverse_recenter(r: i32, v: i32) -> i32 {
     if v > r.wrapping_mul(2) {
         v
     } else if v & 1 != 0 {
@@ -483,7 +485,7 @@ pub fn inverse_recenter(r: i64, v: i64) -> i64 {
     }
 }
 
-/// Builds the structured error for a subexp value that does not fit in `i64` (unreachable
+/// Builds the structured error for a subexp value that does not fit in `i32` (unreachable
 /// for spec inputs; defends the standalone helper against constructed inputs).
 fn invalid_subexp_value(reader: &BitReader<'_>) -> crate::error::Error {
     crate::error::Error::InvalidNs {
@@ -622,7 +624,7 @@ mod tests {
         let data = bits.into_bytes();
         let mut r = reader(&data);
         assert_eq!(
-            read_global_param(&mut r, 2, 1i64 << WARPEDMODEL_PREC_BITS).unwrap(),
+            read_global_param(&mut r, 2, 1i32 << WARPEDMODEL_PREC_BITS).unwrap(),
             65536
         );
         assert_eq!(r.consumed_bits(), 4);
@@ -663,15 +665,15 @@ mod tests {
     #[test]
     fn signed_subexp_extreme_bounds_do_not_panic() {
         let mut r = reader(&[0x00, 0x00, 0x00, 0x00]);
-        let _ = decode_signed_subexp_with_ref(&mut r, i64::MIN, i64::MAX, 0, 1);
+        let _ = decode_signed_subexp_with_ref(&mut r, i32::MIN, i32::MAX, 0, 1);
     }
 
     #[test]
     fn unsigned_subexp_extreme_recenter_does_not_panic() {
         let mut r = reader(&[0x00, 0x00, 0x00, 0x00]);
-        let _ = decode_unsigned_subexp_with_ref(&mut r, i64::MAX, i64::MAX - 1, 1);
+        let _ = decode_unsigned_subexp_with_ref(&mut r, i32::MAX, i32::MAX - 1, 1);
         let mut r2 = reader(&[0x00, 0x00, 0x00, 0x00]);
-        let _ = decode_unsigned_subexp_with_ref(&mut r2, 8, i64::MIN, 1);
+        let _ = decode_unsigned_subexp_with_ref(&mut r2, 8, i32::MIN, 1);
     }
 
     #[test]
@@ -838,7 +840,7 @@ mod proptests {
         #[test]
         fn decode_subexp_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..64),
-            num_syms in any::<i64>(),
+            num_syms in any::<i32>(),
             k in 0u32..=40,
         ) {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
@@ -851,9 +853,9 @@ mod proptests {
         #[test]
         fn decode_signed_subexp_with_ref_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..64),
-            low in -100_000i64..100_000,
-            span in 1i64..200_000,
-            r in -200_000i64..200_000,
+            low in -100_000i32..100_000,
+            span in 1i32..200_000,
+            r in -200_000i32..200_000,
             k in 0u32..=20,
         ) {
             let high = low + span;
@@ -869,12 +871,12 @@ mod proptests {
             prev in any::<i32>(),
         ) {
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = read_global_param(&mut reader, idx, i64::from(prev));
+            let _ = read_global_param(&mut reader, idx, prev);
         }
 
         /// inverse_recenter must never panic over arbitrary i64 r / v.
         #[test]
-        fn inverse_recenter_never_panics(r in any::<i64>(), v in any::<i64>()) {
+        fn inverse_recenter_never_panics(r in any::<i32>(), v in any::<i32>()) {
             let _ = inverse_recenter(r, v);
         }
 

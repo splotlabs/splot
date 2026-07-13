@@ -667,8 +667,8 @@ fn parse_inter_reference_region(
         } else {
             break;
         };
-        let active_slot_bound = u64::from(seq.num_ref_frames).min(NUM_REF_FRAMES as u64);
-        if u64::from(idx) >= active_slot_bound {
+        let active_slot_bound = seq.num_ref_frames.min(NUM_REF_FRAMES as u32);
+        if idx >= active_slot_bound {
             control.has_invalid_ref_frame_idx = true;
         }
         ref_frame_idx.push(idx);

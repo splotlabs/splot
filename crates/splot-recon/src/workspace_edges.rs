@@ -97,9 +97,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         &self,
         rect: PlaneRect,
         edge: IntraDcEdge,
-    ) -> Result<Option<u64>> {
-        self.fold_dc_edge_samples(rect, edge, 1, 0_u64, |sum, _, sample| {
-            sum.checked_add(u64::from(sample.to_u16()))
+    ) -> Result<Option<u32>> {
+        self.fold_dc_edge_samples(rect, edge, 1, 0_u32, |sum, _, sample| {
+            sum.checked_add(u32::from(sample.to_u16()))
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: dc_sum_context(edge),
                 })
@@ -118,7 +118,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             step,
             DcEdgeSum { sum: 0, count: 0 },
             |sampled, _, sample| {
-                let sum = sampled.sum.checked_add(u64::from(sample.to_u16())).ok_or(
+                let sum = sampled.sum.checked_add(u32::from(sample.to_u16())).ok_or(
                     ReconError::ArithmeticOverflow {
                         context: dc_sampled_sum_context(edge),
                     },

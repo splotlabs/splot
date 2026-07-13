@@ -69,6 +69,20 @@ pub enum ReconError {
         /// Predictor height in samples.
         height: usize,
     },
+    /// An optical-flow predictor sample exceeded the active bit-depth range.
+    #[error(
+        "optical-flow predictor {predictor} sample {sample_index} value {value} exceeds maximum {max}"
+    )]
+    OptflowPredictorSampleOutOfRange {
+        /// Zero-based predictor index.
+        predictor: u8,
+        /// Zero-based sample index within the predictor.
+        sample_index: usize,
+        /// Observed sample value.
+        value: u16,
+        /// Maximum sample value allowed by the active bit depth.
+        max: u16,
+    },
     /// A visible rectangle fell outside the storage rectangle.
     #[error("visible rectangle x={} y={} width={} height={} is outside storage {}x{}", .rect.x(), .rect.y(), .rect.width(), .rect.height(), .storage.width(), .storage.height())]
     VisibleRectOutOfBounds {
@@ -384,11 +398,11 @@ pub enum ReconError {
         /// Column of the predicted sample.
         column: usize,
         /// Predicted sample value.
-        value: i64,
+        value: i32,
         /// Minimum allowed sample value.
-        min: i64,
+        min: i32,
         /// Maximum sample value allowed by the active bit depth.
-        max: i64,
+        max: i32,
     },
     /// A DIP mode index was outside the generated AV2 table range.
     #[error("unsupported DIP intra prediction mode {mode}; expected 0 through {max}")]
@@ -928,9 +942,9 @@ pub enum ReconError {
     )]
     SubpelNegativeStep {
         /// Supplied horizontal step (`stepX`).
-        step_x: i64,
+        step_x: i32,
         /// Supplied vertical step (`stepY`).
-        step_y: i64,
+        step_y: i32,
     },
     /// A § 7.13.3.18 sub-pel vertical-pass intermediate row index reached past
     /// the derived `intermediateHeight`.
@@ -970,32 +984,32 @@ pub enum ReconError {
     #[error("invalid block-warp reference bounds x={first_x}..{last_x}, y={first_y}..{last_y}")]
     WarpReferenceBoundsInvalid {
         /// Inclusive left reference bound (`firstX`).
-        first_x: i64,
+        first_x: i32,
         /// Inclusive top reference bound (`firstY`).
-        first_y: i64,
+        first_y: i32,
         /// Inclusive right reference bound (`lastX`).
-        last_x: i64,
+        last_x: i32,
         /// Inclusive bottom reference bound (`lastY`).
-        last_y: i64,
+        last_y: i32,
     },
     /// The § 7.13.3.21 setup-shear process rejected the supplied warp model.
     #[error("invalid block-warp shear: alpha {alpha}, beta {beta}, gamma {gamma}, delta {delta}")]
     WarpInvalidShear {
         /// Reduced horizontal scale delta (`alpha`).
-        alpha: i64,
+        alpha: i32,
         /// Reduced horizontal shear (`beta`).
-        beta: i64,
+        beta: i32,
         /// Reduced vertical shear (`gamma`).
-        gamma: i64,
+        gamma: i32,
         /// Reduced vertical scale delta (`delta`).
-        delta: i64,
+        delta: i32,
     },
     /// A derived § 7.13.3.19 `Warped_Filters` row index was outside the
     /// generated § 9.5 table.
     #[error("block-warp filter offset {offset} is outside the generated Warped_Filters table")]
     WarpFilterOffsetOutOfRange {
         /// Derived filter row index (`offs`).
-        offset: i64,
+        offset: i32,
     },
 }
 

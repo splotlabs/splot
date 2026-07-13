@@ -39,7 +39,7 @@ pub(super) enum PendingKind {
     Single,
     Compound {
         syntax: CompoundBlockSyntax,
-        warp_params: [Option<[i64; 6]>; 2],
+        warp_params: [Option<[i32; 6]>; 2],
         mi_row: usize,
         mi_col: usize,
         use_refinemv: bool,
@@ -60,7 +60,7 @@ struct PendingBlock {
 struct CompoundOutput {
     grid: Option<CompoundMotionGrid>,
     syntax: CompoundBlockSyntax,
-    warp_params: [Option<[i64; 6]>; 2],
+    warp_params: [Option<[i32; 6]>; 2],
     mi_row: usize,
     mi_col: usize,
 }

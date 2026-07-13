@@ -252,9 +252,9 @@ fn read_shell_diff(
         },
         tile_offset,
     )?;
-    let mut shell_class = raw_shell_class as i64;
+    let mut shell_class = i32::from(raw_shell_class);
     if shell_set != 0 {
-        shell_class += i64::from((11 + precision) >> 1);
+        shell_class += i32::from((11 + precision) >> 1);
         if precision == MV_PRECISION_EIGHTH_PEL && raw_shell_class == 7 {
             let last_two = read_symbol(
                 cdfs,
@@ -262,17 +262,18 @@ fn read_shell_diff(
                 MvCdfSelector::JointShellLastTwo { mv_ctx },
                 tile_offset,
             )?;
-            shell_class += i64::from(last_two);
+            shell_class += i32::from(last_two);
         }
     }
 
     let shell_class_offset =
         read_shell_class_offset(cdfs, symbols, shell_class, tile_offset, config)?;
 
-    let shell_class_base_index: i64 = if shell_class == 0 {
+    let shell_class_base_index = if shell_class == 0 {
         0
     } else {
-        1 << shell_class
+        1i32.checked_shl(shell_class as u32)
+            .ok_or_else(|| mv_overflow(tile_offset))?
     };
     let shell_index = shell_class_base_index + shell_class_offset;
 
@@ -290,8 +291,6 @@ fn read_shell_diff(
     let diff_col = diff_col
         .checked_shl(shift)
         .ok_or_else(|| mv_overflow(tile_offset))?;
-    let diff_row = i32::try_from(diff_row).map_err(|_| mv_overflow(tile_offset))?;
-    let diff_col = i32::try_from(diff_col).map_err(|_| mv_overflow(tile_offset))?;
     Ok((diff_row, diff_col))
 }
 
@@ -321,10 +320,10 @@ fn amvd_index_to_mvd(index: usize, tile_offset: ByteOffset) -> Result<i32> {
 fn read_shell_class_offset(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    shell_class: i64,
+    shell_class: i32,
     tile_offset: ByteOffset,
     config: MvReadConfig,
-) -> Result<i64> {
+) -> Result<i32> {
     let mv_ctx = config.mv_ctx;
     if shell_class < 2 {
         let offset = read_symbol(
@@ -336,13 +335,13 @@ fn read_shell_class_offset(
             },
             tile_offset,
         )?;
-        return Ok(i64::from(offset));
+        return Ok(i32::from(offset));
     }
     if shell_class == 2 {
-        let mut shell_class_offset: i64 = 0;
+        let mut shell_class_offset = 0i32;
         for i in 0..3 {
             if i == 0 {
-                shell_class_offset = i64::from(read_symbol(
+                shell_class_offset = i32::from(read_symbol(
                     cdfs,
                     symbols,
                     MvCdfSelector::ShellOffsetClass2 { mv_ctx },
@@ -350,15 +349,15 @@ fn read_shell_class_offset(
                 )?);
             } else {
                 let high = read_bypass_bit(symbols, tile_offset)?;
-                shell_class_offset = i64::from(high) + i as i64;
+                shell_class_offset = i32::from(high) + i;
             }
-            if shell_class_offset == i as i64 {
+            if shell_class_offset == i {
                 break;
             }
         }
         return Ok(shell_class_offset);
     }
-    let mut shell_class_offset: i64 = 0;
+    let mut shell_class_offset = 0i32;
     for i in 0..shell_class {
         let bit = read_symbol(
             cdfs,
@@ -369,7 +368,9 @@ fn read_shell_class_offset(
             },
             tile_offset,
         )?;
-        shell_class_offset |= i64::from(bit) << i;
+        shell_class_offset |= i32::from(bit)
+            .checked_shl(i as u32)
+            .ok_or_else(|| mv_overflow(tile_offset))?;
     }
     Ok(shell_class_offset)
 }
@@ -377,16 +378,16 @@ fn read_shell_class_offset(
 fn read_col_split(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    shell_index: i64,
-    shell_class: i64,
+    shell_index: i32,
+    shell_class: i32,
     tile_offset: ByteOffset,
     config: MvReadConfig,
-) -> Result<i64> {
+) -> Result<i32> {
     let mv_ctx = config.mv_ctx;
-    let mut col: i64 = 0;
+    let mut col = 0i32;
     let maximum_pair_index = shell_index >> 1;
     if maximum_pair_index > 0 {
-        let max_idx_bits = maximum_pair_index.min(MAX_COL_TRUNCATED_UNARY_VAL as i64);
+        let max_idx_bits = maximum_pair_index.min(MAX_COL_TRUNCATED_UNARY_VAL as i32);
         for i in 0..max_idx_bits {
             let greater = read_symbol(
                 cdfs,
@@ -397,17 +398,17 @@ fn read_col_split(
                 },
                 tile_offset,
             )?;
-            col = i + i64::from(greater);
+            col = i + i32::from(greater);
             if greater == 0 {
                 break;
             }
         }
-        if maximum_pair_index > MAX_COL_TRUNCATED_UNARY_VAL as i64
-            && col == MAX_COL_TRUNCATED_UNARY_VAL as i64
+        if maximum_pair_index > MAX_COL_TRUNCATED_UNARY_VAL as i32
+            && col == MAX_COL_TRUNCATED_UNARY_VAL as i32
         {
             let n = maximum_pair_index - 1;
             let remainder = read_ns(symbols, n, tile_offset)?;
-            col = remainder + MAX_COL_TRUNCATED_UNARY_VAL as i64;
+            col = remainder + MAX_COL_TRUNCATED_UNARY_VAL as i32;
         }
     }
 
@@ -445,21 +446,21 @@ fn validate_config(config: MvReadConfig, tile_offset: ByteOffset) -> Result<()> 
     }
 }
 
-fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i64, tile_offset: ByteOffset) -> Result<i64> {
+fn read_ns(symbols: &mut SymbolDecoder<'_>, n: i32, tile_offset: ByteOffset) -> Result<i32> {
     if n <= 1 {
         return Ok(0);
     }
-    let n_u = u64::try_from(n).map_err(|_| mv_overflow(tile_offset))?;
+    let n_u = u32::try_from(n).map_err(|_| mv_overflow(tile_offset))?;
     let floor_log2 = n_u.ilog2();
     let w = floor_log2 + 1;
     let v = read_literal(symbols, w - 1, tile_offset)?;
-    let m = (1u64 << w) - n_u;
-    if u64::from(v) < m {
-        return Ok(i64::from(v));
+    let m = (1u32 << w) - n_u;
+    if v < m {
+        return i32::try_from(v).map_err(|_| mv_overflow(tile_offset));
     }
     let extra = read_bypass_bit(symbols, tile_offset)?;
-    let result = (u64::from(v) << 1) - m + u64::from(extra);
-    i64::try_from(result).map_err(|_| mv_overflow(tile_offset))
+    let result = (v << 1) - m + u32::from(extra);
+    i32::try_from(result).map_err(|_| mv_overflow(tile_offset))
 }
 
 fn read_symbol(

@@ -541,7 +541,7 @@ fn parse_metadata_group_unit(
     let muh_header_size = header_byte >> 1;
     let muh_cancel_flag = (header_byte & 0x01) != 0;
 
-    let mut header_remaining = i64::from(muh_header_size);
+    let mut header_remaining = i32::from(muh_header_size);
     let mut muh_payload_size = None;
     let mut muh_layer_idc = None;
     let mut muh_persistence_idc = None;
@@ -553,7 +553,7 @@ fn parse_metadata_group_unit(
     if !muh_cancel_flag {
         let (payload_size, payload_size_bytes) = read_leb128_bytes(reader)?;
         muh_payload_size = Some(payload_size);
-        header_remaining -= i64::from(payload_size_bytes);
+        header_remaining -= i32::from(payload_size_bytes);
 
         let layer_idc = reader.read_bits_u8(3)?;
         muh_persistence_idc = Some(reader.read_bits_u8(3)?);

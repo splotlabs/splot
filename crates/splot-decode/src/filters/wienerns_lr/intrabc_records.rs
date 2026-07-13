@@ -195,8 +195,8 @@ pub(crate) struct IntrabcPredictionGeometry {
     pub(crate) fractional: bool,
     pub(crate) source: PlaneRect,
     pub(crate) target: PlaneRect,
-    pub(crate) ref_mi_cols: i64,
-    pub(crate) ref_mi_rows: i64,
+    pub(crate) ref_mi_cols: i32,
+    pub(crate) ref_mi_rows: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -211,8 +211,8 @@ struct IntrabcInfoSyntax {
 struct IntrabcLumaPredictionDomain {
     storage: PlaneSize,
     tile_bounds: PlaneRect,
-    ref_mi_cols: i64,
-    ref_mi_rows: i64,
+    ref_mi_cols: i32,
+    ref_mi_rows: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1073,16 +1073,16 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         ));
     }
     let scaling = derive_plane_scaling(
-        checked_i64_from_usize(block.x, tile_offset)?,
-        checked_i64_from_usize(block.y, tile_offset)?,
-        i64::from(info.block_mv.row),
-        i64::from(info.block_mv.col),
+        checked_i32_from_usize(block.x, tile_offset)?,
+        checked_i32_from_usize(block.y, tile_offset)?,
+        info.block_mv.row,
+        info.block_mv.col,
         0,
         0,
         domain.ref_mi_cols,
         domain.ref_mi_rows,
-        checked_i64_from_usize(block.width, tile_offset)?,
-        checked_i64_from_usize(block.height, tile_offset)?,
+        checked_i32_from_usize(block.width, tile_offset)?,
+        checked_i32_from_usize(block.height, tile_offset)?,
     );
     Ok(IntrabcPredictionGeometry {
         scaling,
@@ -1182,8 +1182,8 @@ fn intrabc_luma_prediction_domain(
     Ok(IntrabcLumaPredictionDomain {
         storage,
         tile_bounds,
-        ref_mi_cols: i64::from(mi_cols),
-        ref_mi_rows: i64::from(mi_rows),
+        ref_mi_cols: mi_cols as i32,
+        ref_mi_rows: mi_rows as i32,
     })
 }
 
@@ -1242,8 +1242,8 @@ fn checked_mi_u32_to_luma(mi: u32, tile_offset: ByteOffset) -> Result<usize> {
     )
 }
 
-fn checked_i64_from_usize(value: usize, tile_offset: ByteOffset) -> Result<i64> {
-    i64::try_from(value).map_err(|_| intrabc_geometry_error(tile_offset))
+fn checked_i32_from_usize(value: usize, tile_offset: ByteOffset) -> Result<i32> {
+    i32::try_from(value).map_err(|_| intrabc_geometry_error(tile_offset))
 }
 
 fn rect_is_within_rect(rect: PlaneRect, bounds: PlaneRect) -> bool {
@@ -1274,13 +1274,13 @@ fn intrabc_luma_source_envelope(
     let right_border = usize::from(block_mv.col & 7 != 0);
     let delta_row = block_mv.row >> 3;
     let delta_col = block_mv.col >> 3;
-    let source_x = i64::try_from(target.x())
+    let source_x = i32::try_from(target.x())
         .ok()
-        .and_then(|value| value.checked_add(i64::from(delta_col)))
+        .and_then(|value| value.checked_add(delta_col))
         .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
-    let source_y = i64::try_from(target.y())
+    let source_y = i32::try_from(target.y())
         .ok()
-        .and_then(|value| value.checked_add(i64::from(delta_row)))
+        .and_then(|value| value.checked_add(delta_row))
         .ok_or_else(|| intrabc_geometry_error(tile_offset))?;
     if source_x < 0 || source_y < 0 {
         return Err(wienerns_lr_selectable_transform_record_error_reason(

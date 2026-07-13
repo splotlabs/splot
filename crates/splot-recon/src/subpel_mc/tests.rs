@@ -20,10 +20,10 @@ fn full_pel_params(
     interp: InterpolationFilter,
     w: usize,
     h: usize,
-    rx: i64,
-    ry: i64,
-    ref_w: i64,
-    ref_h: i64,
+    rx: i32,
+    ry: i32,
+    ref_w: i32,
+    ref_h: i32,
 ) -> SubpelPredictParams {
     SubpelPredictParams {
         interp,
@@ -67,9 +67,10 @@ fn reference_subpel(
     let last_y = params.last_y;
     let max_sample = i64::from(params.bit_depth.max_sample());
 
-    let intermediate_height = ((((h as i64 - 1) * y_step + (1 << 10) - 1) >> 10) + 8) as usize;
+    let intermediate_height =
+        ((((h as i64 - 1) * i64::from(y_step) + (1 << 10) - 1) >> 10) + 8) as usize;
 
-    let clip3 = |lo: i64, hi: i64, v: i64| -> i64 {
+    let clip3 = |lo: i32, hi: i32, v: i32| -> i32 {
         if v < lo {
             lo
         } else if v > hi {
@@ -79,9 +80,9 @@ fn reference_subpel(
         }
     };
     let round2 = |v: i64, n: u32| -> i64 { if n == 0 { v } else { (v + (1 << (n - 1))) >> n } };
-    let fetch = |row: i64, col: i64| -> i64 {
-        let row = clip3(0, ref_h as i64 - 1, row) as usize;
-        let col = clip3(0, ref_w as i64 - 1, col) as usize;
+    let fetch = |row: i32, col: i32| -> i64 {
+        let row = clip3(0, ref_h as i32 - 1, row) as usize;
+        let col = clip3(0, ref_w as i32 - 1, col) as usize;
         i64::from(samples[row * ref_w + col])
     };
 
@@ -101,13 +102,13 @@ fn reference_subpel(
     let mut intermediate = vec![0i64; intermediate_height * w];
     for r in 0..intermediate_height {
         for c in 0..w {
-            let p = x + x_step * c as i64;
+            let p = x + x_step * c as i32;
             let mut s = 0i64;
             for t in 0..8 {
                 let phase = ((p >> 6) & 15) as usize;
                 let tap = i64::from(SUBPEL_FILTERS[h_filter][phase][t]);
-                let rr = clip3(first_y, last_y, (y >> 10) + r as i64 - 3);
-                let cc = clip3(first_x, last_x, (p >> 10) + t as i64 - 3);
+                let rr = clip3(first_y, last_y, (y >> 10) + r as i32 - 3);
+                let cc = clip3(first_x, last_x, (p >> 10) + t as i32 - 3);
                 s += tap * fetch(rr, cc);
             }
             intermediate[r * w + c] = round2(s, 3);
@@ -130,16 +131,16 @@ fn reference_subpel(
     let mut out = vec![0u16; w * h];
     for r in 0..h {
         for c in 0..w {
-            let p = (y & 1023) + y_step * r as i64;
+            let p = (y & 1023) + y_step * r as i32;
             let mut s = 0i64;
             for t in 0..8 {
                 let phase = ((p >> 6) & 15) as usize;
                 let tap = i64::from(SUBPEL_FILTERS[v_filter][phase][t]);
-                let row = ((p >> 10) + t as i64) as usize;
+                let row = ((p >> 10) + t as i32) as usize;
                 s += tap * intermediate[row * w + c];
             }
             let pred = round2(s, 11);
-            out[r * w + c] = clip3(0, max_sample, pred) as u16;
+            out[r * w + c] = pred.clamp(0, max_sample) as u16;
         }
     }
     out
@@ -187,8 +188,8 @@ fn full_pel_zero_fraction_is_exact_copy() {
         h,
         2,
         3,
-        ref_w as i64,
-        ref_h as i64,
+        ref_w as i32,
+        ref_h as i32,
     );
     let out = subpel_predict_block(&view, &params).unwrap();
 
@@ -217,8 +218,8 @@ fn full_pel_flat_reference_returns_flat() {
         step_y: 1 << SCALE_SUBPEL_BITS,
         first_x: 0,
         first_y: 0,
-        last_x: ref_w as i64 - 1,
-        last_y: ref_h as i64 - 1,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 - 1,
         bit_depth: BitDepth::Eight,
     };
     let out = subpel_predict_block(&view, &params).unwrap();
@@ -251,8 +252,8 @@ fn half_pel_horizontal_worked_example() {
         step_y: 1 << SCALE_SUBPEL_BITS,
         first_x: 0,
         first_y: 0,
-        last_x: ref_w as i64 - 1,
-        last_y: ref_h as i64 - 1,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 - 1,
         bit_depth: BitDepth::Eight,
     };
     let out = subpel_predict_block(&view, &params).unwrap();
@@ -290,8 +291,8 @@ fn half_pel_vertical_with_horizontal_zero_phase_matches_reference() {
         step_y: 1 << SCALE_SUBPEL_BITS,
         first_x: 0,
         first_y: 0,
-        last_x: ref_w as i64 - 1,
-        last_y: ref_h as i64 - 1,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 - 1,
         bit_depth: BitDepth::Eight,
     };
 
@@ -319,8 +320,8 @@ fn reference_border_extension_clips() {
         step_y: 1 << SCALE_SUBPEL_BITS,
         first_x: 0,
         first_y: 0,
-        last_x: ref_w as i64 - 1,
-        last_y: ref_h as i64 - 1,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 - 1,
         bit_depth: BitDepth::Eight,
     };
     let out = subpel_predict_block(&view, &params).unwrap();
@@ -359,12 +360,12 @@ fn matches_independent_reference_over_many_cases() {
         let h = dims[(next() % dims.len() as u32) as usize];
         let interp = filters[(next() % filters.len() as u32) as usize];
 
-        let max_base_x = (ref_w - w - 4) as i64;
-        let max_base_y = (ref_h - h - 4) as i64;
-        let base_x = 4 + (next() as i64 % (max_base_x - 3));
-        let base_y = 4 + (next() as i64 % (max_base_y - 3));
-        let phase_x = (next() % 16) as i64;
-        let phase_y = (next() % 16) as i64;
+        let max_base_x = (ref_w - w - 4) as i32;
+        let max_base_y = (ref_h - h - 4) as i32;
+        let base_x = 4 + (next() as i32 % (max_base_x - 3));
+        let base_y = 4 + (next() as i32 % (max_base_y - 3));
+        let phase_x = (next() % 16) as i32;
+        let phase_y = (next() % 16) as i32;
 
         let params = SubpelPredictParams {
             interp,
@@ -376,8 +377,8 @@ fn matches_independent_reference_over_many_cases() {
             step_y: 1 << SCALE_SUBPEL_BITS,
             first_x: 0,
             first_y: 0,
-            last_x: ref_w as i64 - 1,
-            last_y: ref_h as i64 - 1,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
             bit_depth: BitDepth::Eight,
         };
         let out = subpel_predict_block(&view, &params).unwrap();
@@ -420,10 +421,10 @@ fn edge_positions_match_independent_reference() {
         let h = dims[(next() % dims.len() as u32) as usize];
         let interp = filters[(next() % filters.len() as u32) as usize];
 
-        let base_x = (next() as i64 % (ref_w as i64 + 12)) - 6;
-        let base_y = (next() as i64 % (ref_h as i64 + 12)) - 6;
-        let phase_x = (next() % 16) as i64;
-        let phase_y = (next() % 16) as i64;
+        let base_x = (next() as i32 % (ref_w as i32 + 12)) - 6;
+        let base_y = (next() as i32 % (ref_h as i32 + 12)) - 6;
+        let phase_x = (next() % 16) as i32;
+        let phase_y = (next() % 16) as i32;
 
         let params = SubpelPredictParams {
             interp,
@@ -435,8 +436,8 @@ fn edge_positions_match_independent_reference() {
             step_y: 1 << SCALE_SUBPEL_BITS,
             first_x: 0,
             first_y: 0,
-            last_x: ref_w as i64 - 1,
-            last_y: ref_h as i64 - 1,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
             bit_depth: BitDepth::Eight,
         };
         let out = subpel_predict_block(&view, &params).unwrap();
@@ -471,7 +472,7 @@ fn scaled_steps_match_independent_reference() {
         InterpolationFilter::Bilinear,
     ];
     let dims = [4usize, 8, 16];
-    let steps = [1024i64, 1280, 1536, 2048, 3072];
+    let steps = [1024i32, 1280, 1536, 2048];
 
     for case in 0..3000 {
         let samples: Vec<u16> = (0..(ref_w * ref_h))
@@ -486,10 +487,10 @@ fn scaled_steps_match_independent_reference() {
         let step_x = steps[(next() % steps.len() as u32) as usize];
         let step_y = steps[(next() % steps.len() as u32) as usize];
 
-        let base_x = (next() as i64 % (ref_w as i64 + 8)) - 4;
-        let base_y = (next() as i64 % (ref_h as i64 + 8)) - 4;
-        let phase_x = (next() % 16) as i64;
-        let phase_y = (next() % 16) as i64;
+        let base_x = (next() as i32 % (ref_w as i32 + 8)) - 4;
+        let base_y = (next() as i32 % (ref_h as i32 + 8)) - 4;
+        let phase_x = (next() % 16) as i32;
+        let phase_y = (next() % 16) as i32;
 
         let params = SubpelPredictParams {
             interp,
@@ -501,8 +502,8 @@ fn scaled_steps_match_independent_reference() {
             step_y,
             first_x: 0,
             first_y: 0,
-            last_x: ref_w as i64 - 1,
-            last_y: ref_h as i64 - 1,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
             bit_depth: BitDepth::Ten,
         };
         let out = subpel_predict_block(&view, &params).unwrap();
@@ -532,7 +533,7 @@ fn zero_phase_copy_matches_independent_reference() {
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
 
     for (base_x, base_y, w, h) in [
-        (-5i64, -5i64, 8usize, 8usize),
+        (-5i32, -5i32, 8usize, 8usize),
         (0, 0, 4, 16),
         (9, 7, 16, 8),
         (20, 21, 8, 8),
@@ -547,8 +548,8 @@ fn zero_phase_copy_matches_independent_reference() {
             step_y: 1 << SCALE_SUBPEL_BITS,
             first_x: 0,
             first_y: 0,
-            last_x: ref_w as i64 - 1,
-            last_y: ref_h as i64 - 1,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
             bit_depth: BitDepth::Ten,
         };
         let out = subpel_predict_block(&view, &params).unwrap();
@@ -581,7 +582,7 @@ fn strided_view_matches_contiguous_view() {
     let flat = ReferencePlaneView::new(&contiguous, ref_w, ref_h).unwrap();
     let view = ReferencePlaneView::from_strided(&strided, stride, ref_w, ref_h).unwrap();
 
-    for (base_x, base_y, phase) in [(-4i64, -4i64, 5i64), (3, 2, 0), (10, 6, 9), (14, 10, 15)] {
+    for (base_x, base_y, phase) in [(-4i32, -4i32, 5i32), (3, 2, 0), (10, 6, 9), (14, 10, 15)] {
         let params = SubpelPredictParams {
             interp: InterpolationFilter::EightTapSharp,
             w: 8,
@@ -592,8 +593,8 @@ fn strided_view_matches_contiguous_view() {
             step_y: 1 << SCALE_SUBPEL_BITS,
             first_x: 0,
             first_y: 0,
-            last_x: ref_w as i64 - 1,
-            last_y: ref_h as i64 - 1,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
             bit_depth: BitDepth::Ten,
         };
         assert_eq!(
@@ -620,8 +621,8 @@ fn ten_bit_clip_uses_full_range() {
             4,
             3,
             3,
-            ref_w as i64,
-            ref_h as i64,
+            ref_w as i32,
+            ref_h as i32,
         )
     };
     let out = subpel_predict_block(&view, &params).unwrap();
@@ -645,8 +646,8 @@ fn single_prediction_into_rejects_short_output_without_writes() {
         4,
         2,
         2,
-        ref_w as i64,
-        ref_h as i64,
+        ref_w as i32,
+        ref_h as i32,
     );
     let sentinel = u16::MAX;
     let mut output = vec![sentinel; params.w * params.h - 1];
@@ -673,8 +674,8 @@ fn compound_intermediate_keeps_unclipped_prescaled_predictor() {
         4,
         2,
         2,
-        ref_w as i64,
-        ref_h as i64,
+        ref_w as i32,
+        ref_h as i32,
     );
 
     let intermediate = subpel_predict_block_compound_intermediate(&view, &params).unwrap();
@@ -710,8 +711,8 @@ fn compound_intermediate_into_matches_owned_copy_and_filtered() {
         4,
         3,
         4,
-        ref_w as i64,
-        ref_h as i64,
+        ref_w as i32,
+        ref_h as i32,
     );
     let filtered = SubpelPredictParams {
         start_x: (3 << SCALE_SUBPEL_BITS) + (5 << 6),
@@ -758,8 +759,8 @@ fn compound_intermediate_into_rejects_invalid_destination_without_writes() {
         4,
         2,
         2,
-        ref_w as i64,
-        ref_h as i64,
+        ref_w as i32,
+        ref_h as i32,
     );
     let sentinel = -12345;
 
@@ -852,8 +853,8 @@ fn small_block_uses_four_tap_filter() {
         step_y: 1 << SCALE_SUBPEL_BITS,
         first_x: 0,
         first_y: 0,
-        last_x: ref_w as i64 - 1,
-        last_y: ref_h as i64 - 1,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 - 1,
         bit_depth: BitDepth::Eight,
     };
     let out = subpel_predict_block(&view, &params).unwrap();
@@ -904,13 +905,13 @@ fn rejects_overflowing_step_without_panic() {
     let samples = build_ref(vec![0u16; 16], 4, 4);
     let view = ReferencePlaneView::new(&samples, 4, 4).unwrap();
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
-    params.step_y = i64::MAX;
+    params.step_y = i32::MAX;
     assert!(matches!(
         subpel_predict_block(&view, &params),
         Err(ReconError::ArithmeticOverflow { .. })
     ));
     let mut params = full_pel_params(InterpolationFilter::EightTap, 4, 4, 0, 0, 4, 4);
-    params.step_x = i64::MAX;
+    params.step_x = i32::MAX;
     assert!(matches!(
         subpel_predict_block(&view, &params),
         Err(ReconError::ArithmeticOverflow { .. })

@@ -425,7 +425,7 @@ pub struct FrameHeaderCore {
     /// when the frame type was not derived or the read did not reach this point. The § 7.23
     /// reference frame update process stores this as `RefLongTermId[i]` for the refreshed
     /// slots (mirror :14113), so a KEY frame's value becomes the long-term id of those slots.
-    pub long_term_id: Option<i64>,
+    pub long_term_id: Option<i32>,
     /// `ref_long_term_id[0..num_key_ref_frames]` (AV2 § 5.18.2, mirror :4243-4253), the
     /// long-term ids a RAS / OLK frame lists. Empty when not a RAS / OLK frame, when
     /// `long_term_frame_id_bits == 0`, or when `num_key_ref_frames == 0`. AV2 § 6.17.2
@@ -568,11 +568,11 @@ fn get_disp_order_hint(
     }
 
     let half_window = 1u32.checked_shl(order_hint_bits - 1)?;
-    let offset = i64::from(max_disp) - i64::from(half_window) - i64::from(order_hint_lsbs);
-    if offset < 0 {
+    let threshold = half_window.checked_add(order_hint_lsbs)?;
+    if max_disp < threshold {
         return Some(order_hint_lsbs);
     }
-    let wraps = u32::try_from(offset).ok()? >> order_hint_bits;
+    let wraps = (max_disp - threshold) >> order_hint_bits;
     order_hint_lsbs.checked_add((wraps + 1).checked_shl(order_hint_bits)?)
 }
 
@@ -774,7 +774,7 @@ pub(crate) fn parse_core_body(
     core.long_term_id = Some(-1);
     if frame_type == FrameType::Key {
         let long_term_id_plus_1 = reader.read_f(seq.long_term_frame_id_bits)?;
-        core.long_term_id = Some(i64::from(long_term_id_plus_1) - 1);
+        core.long_term_id = Some(i32::try_from(long_term_id_plus_1).unwrap_or(i32::MAX) - 1);
     }
     if (obu_type == ObuType::RasFrame || obu_type == ObuType::OpenLoopKey)
         && seq.long_term_frame_id_bits != 0

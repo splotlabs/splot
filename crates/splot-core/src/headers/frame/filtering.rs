@@ -255,7 +255,7 @@ pub fn parse_deblocking_filter_params(
             max: 32,
         });
     }
-    let half = 1i64 << (df_par_bits - 1);
+    let half = 1u32 << (df_par_bits - 1);
 
     let mut df_delta_q_present = [false; 4];
     let mut df_delta_q = [0i32; 4];
@@ -263,8 +263,8 @@ pub fn parse_deblocking_filter_params(
         if apply_deblocking_filter[i] {
             df_delta_q_present[i] = reader.read_flag()?;
             if df_delta_q_present[i] {
-                let raw = i64::from(reader.read_bits(df_par_bits)?);
-                df_delta_q[i] = (raw - half) as i32;
+                let raw = reader.read_bits(df_par_bits)?;
+                df_delta_q[i] = raw.wrapping_sub(half) as i32;
             } else {
                 df_delta_q[i] = if i == 1 { df_delta_q[0] } else { 0 };
             }

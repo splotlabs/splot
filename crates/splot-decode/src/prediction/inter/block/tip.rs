@@ -80,7 +80,7 @@ fn tip_refinemv_references_allowed(
     let Some(frame_size) = frame_size else {
         return false;
     };
-    let no_scale = 1_u64 << 14;
+    let no_scale = 1_u32 << 14;
     references.into_iter().all(|(ref_frame, _)| {
         usize::try_from(ref_frame)
             .ok()
@@ -90,9 +90,10 @@ fn tip_refinemv_references_allowed(
                 let scale = |reference: &[u32], current: u32| {
                     current != 0
                         && reference.get(slot).is_some_and(|&dimension| {
-                            ((u64::from(dimension) << 14) + u64::from(current / 2))
-                                / u64::from(current)
-                                == no_scale
+                            dimension
+                                .checked_mul(no_scale)
+                                .and_then(|scaled| scaled.checked_add(current / 2))
+                                .is_some_and(|scaled| scaled / current == no_scale)
                         })
                 };
                 ref_order_hint

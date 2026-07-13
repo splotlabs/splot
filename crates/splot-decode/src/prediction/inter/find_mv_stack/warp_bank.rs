@@ -13,7 +13,7 @@ const MAX_WARP_SB_HITS: u32 = 64;
 const WARP_BANK_REFS: usize = 7;
 
 pub(crate) struct WarpParamBank {
-    entries: [[[i64; 6]; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
+    entries: [[[i32; 6]; WARP_PARAM_BANK_SIZE]; WARP_BANK_REFS],
     sizes: [usize; WARP_BANK_REFS],
     starts: [usize; WARP_BANK_REFS],
     sb_hits: u32,
@@ -58,7 +58,7 @@ impl WarpParamBank {
         });
     }
 
-    pub(crate) fn update(&mut self, ref_frame0: i8, params: [i64; 6]) {
+    pub(crate) fn update(&mut self, ref_frame0: i8, params: [i32; 6]) {
         if self.sb_hits >= MAX_WARP_SB_HITS {
             return;
         }
@@ -96,7 +96,7 @@ impl WarpParamBank {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WarpParamStack {
-    pub(super) slots: [[i64; 6]; MAX_WARP_REF_CANDIDATES],
+    pub(super) slots: [[i32; 6]; MAX_WARP_REF_CANDIDATES],
     pub(super) num_found: usize,
 }
 
@@ -108,7 +108,7 @@ impl WarpParamStack {
         }
     }
 
-    pub(super) fn insert(&mut self, params: [i64; 6]) {
+    pub(super) fn insert(&mut self, params: [i32; 6]) {
         if self.num_found < MAX_WARP_REF_CANDIDATES {
             self.slots[self.num_found] = params;
             self.num_found += 1;

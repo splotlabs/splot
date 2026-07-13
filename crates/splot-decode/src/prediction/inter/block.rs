@@ -72,7 +72,7 @@ const MI_SIZE_LOG2: u32 = 2;
 pub(crate) const WARP_PARAM_REDUCE_BITS: u32 = 6;
 const WARP_TRANS_INTEGER_BITS: u32 = 12;
 const WARP_DELTA_STEP_BITS: u32 = 10;
-pub(crate) const WARPEDMODEL_TRANS_CLAMP: i64 =
+pub(crate) const WARPEDMODEL_TRANS_CLAMP: i32 =
     1 << (WARPEDMODEL_PREC_BITS + WARP_TRANS_INTEGER_BITS - 1);
 #[doc = "AV2 § 9.2 `Size_Group[BLOCK_SIZES]`."]
 const SIZE_GROUP_LOOKUP: [usize; 29] = [
@@ -561,16 +561,16 @@ fn read_segment_id(
         .read_block_symbol_trace(TileCdfSelector::SegmentId { ctx, ext }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    let coded = i64::from(raw) + if ext { 8 } else { 0 };
+    let coded = i32::from(raw) + if ext { 8 } else { 0 };
     let segment_id = neg_deinterleave(
         coded,
-        i64::from(pred),
-        i64::from(seg.last_active_seg_id) + 1,
+        i32::from(pred),
+        i32::from(seg.last_active_seg_id) + 1,
     );
     validate_segment_id(segment_id, seg.last_active_seg_id, tile_offset)
 }
 
-fn validate_segment_id(segment_id: i64, last_active: u8, tile_offset: ByteOffset) -> Result<u8> {
+fn validate_segment_id(segment_id: i32, last_active: u8, tile_offset: ByteOffset) -> Result<u8> {
     u8::try_from(segment_id)
         .ok()
         .filter(|&id| id <= last_active)
@@ -2083,16 +2083,16 @@ fn reconstruct_intrabc_predictor<T: ReconSample>(
             continue;
         }
         let scaling = super::mv_scaling::derive_plane_scaling(
-            cx as i64,
-            cy as i64,
-            i64::from(info.block_mv.row),
-            i64::from(info.block_mv.col),
+            cx as i32,
+            cy as i32,
+            info.block_mv.row,
+            info.block_mv.col,
             sub_x,
             sub_y,
             chroma_prediction.ref_mi_cols,
             chroma_prediction.ref_mi_rows,
-            cw as i64,
-            ch as i64,
+            cw as i32,
+            ch as i32,
         );
         let target = splot_recon::PlaneRect::new(cx, cy, cw, ch).map_err(|_| {
             inter_cap!(

@@ -691,7 +691,7 @@ fn compound_local_warp_models(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<[Option<[i64; 6]>; 2]> {
+) -> Result<[Option<[i32; 6]>; 2]> {
     let ref_frame1 = block_ctx.ref_frame1.ok_or_else(|| {
         compound_missing!(
             "compound_local_warp_missing_ref_frame1",
@@ -736,7 +736,7 @@ fn compound_ref_warp_model(
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
-) -> Result<Option<[i64; 6]>> {
+) -> Result<Option<[i32; 6]>> {
     match super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref) {
         super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
             if samples.as_slice().is_empty() {
@@ -816,7 +816,7 @@ pub(super) struct ResolvedCompoundBlock {
     pub(super) use_refinemv: bool,
     pub(super) refinemv_switchable: bool,
     /// Per-list § 7.13.3.23 LOCALWARP models (`[None, None]` when translational).
-    pub(super) warp_params: [Option<[i64; 6]>; 2],
+    pub(super) warp_params: [Option<[i32; 6]>; 2],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1109,7 +1109,7 @@ pub(super) fn record_compound_temporal_motion<T: ReconSample>(
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
     compound: super::super::compound::CompoundBlockSyntax,
-    warp_params: [Option<[i64; 6]>; 2],
+    warp_params: [Option<[i32; 6]>; 2],
     motion_grid: Option<&mc::CompoundMotionGrid>,
     mi_row: usize,
     mi_col: usize,
@@ -1122,7 +1122,7 @@ pub(super) fn record_compound_temporal_motion<T: ReconSample>(
             let mvs = if let Some(grid) = motion_grid {
                 grid.temporal_mvs_at_luma_offset(x, y)?
             } else {
-                let unit_mv = |params: Option<[i64; 6]>, block_mv: Mv| {
+                let unit_mv = |params: Option<[i32; 6]>, block_mv: Mv| {
                     params.map_or(block_mv, |params| {
                         super::super::find_mv_stack::warp_sub_mv_at(
                             params,
