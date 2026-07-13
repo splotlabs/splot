@@ -477,6 +477,36 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
     subpel_predict_block_internal(reference, params, INTER_ROUND1_COMPOUND)
 }
 
+/// Writes one AV2 § 7.13.3.18 compound intermediate predictor into caller-owned
+/// strided storage.
+///
+/// `output` starts at the prediction's top-left sample. The function writes
+/// `params.w` samples in each of `params.h` rows and leaves row padding and any
+/// trailing storage unchanged.
+///
+/// # Errors
+///
+/// Returns the same errors as [`subpel_predict_block`],
+/// [`ReconError::StrideTooSmall`] when `output_stride < params.w`, and
+/// [`ReconError::BufferLengthMismatch`] when `output` cannot hold the strided
+/// prediction rectangle.
+pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [i32],
+    output_stride: usize,
+) -> Result<()> {
+    let intermediate_height = validate_subpel_params(params)?;
+    subpel_predict_block_internal_into_validated(
+        reference,
+        params,
+        INTER_ROUND1_COMPOUND,
+        intermediate_height,
+        output,
+        output_stride,
+    )
+}
+
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
 /// COMPOUND_AVERAGE and the supplied `cwpWeight`, then applies the final § 4.8
 /// `Clip1`.
@@ -547,14 +577,15 @@ const fn compound_inter_post_round() -> u32 {
 /// InterRound1))` — `Round2(128 * v, 3) == 16 * v` and `Round2(2048 * v, 11)
 /// == v` / `Round2(2048 * v, 7) == 16 * v` hold exactly for every `v >= 0`
 /// because each partial product is a multiple of the rounding divisor.
-fn subpel_copy_block<T: ReconSample>(
+fn subpel_copy_block_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     shift_up: u32,
-) -> Vec<i32> {
+    output: &mut [i32],
+    output_stride: usize,
+) {
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
-    let mut output = Vec::with_capacity(params.w * params.h);
     let direct_x = usize::try_from(x0).ok().filter(|&x| {
         x >= usize::try_from(params.first_x.max(0)).unwrap_or(usize::MAX)
             && x.checked_add(params.w).is_some_and(|end| {
@@ -564,20 +595,23 @@ fn subpel_copy_block<T: ReconSample>(
     });
     for r in 0..params.h {
         let row = clip3(params.first_y, params.last_y, y0 + r as i64) as usize;
+        let output = &mut output[r * output_stride..][..params.w];
         if let Some(x) = direct_x {
             let row = row.min(reference.height - 1);
             let start = row * reference.stride + x;
-            for sample in &reference.samples[start..start + params.w] {
-                output.push(i32::from(sample.to_u16()) << shift_up);
+            for (out, sample) in output
+                .iter_mut()
+                .zip(&reference.samples[start..start + params.w])
+            {
+                *out = i32::from(sample.to_u16()) << shift_up;
             }
         } else {
-            for c in 0..params.w {
+            for (c, out) in output.iter_mut().enumerate() {
                 let col = clip3(params.first_x, params.last_x, x0 + c as i64) as usize;
-                output.push((reference.sample(row, col) as i32) << shift_up);
+                *out = (reference.sample(row, col) as i32) << shift_up;
             }
         }
     }
-    output
 }
 
 std::thread_local! {
@@ -610,19 +644,33 @@ fn subpel_predict_block_internal<T: ReconSample>(
     params: &SubpelPredictParams,
     inter_round1: u32,
 ) -> Result<Vec<i32>> {
+    let intermediate_height = validate_subpel_params(params)?;
+    let output_len = params
+        .w
+        .checked_mul(params.h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "subpel output sample count",
+        })?;
+    let mut output = vec![0; output_len];
+    subpel_predict_block_internal_into_validated(
+        reference,
+        params,
+        inter_round1,
+        intermediate_height,
+        &mut output,
+        params.w,
+    )?;
+    Ok(output)
+}
+
+fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     let SubpelPredictParams {
-        interp,
         w,
         h,
         start_x,
-        start_y,
         step_x,
         step_y,
-        first_x,
-        first_y,
-        last_x,
-        last_y,
-        bit_depth: _,
+        ..
     } = *params;
 
     if w == 0 {
@@ -662,16 +710,64 @@ fn subpel_predict_block_internal<T: ReconSample>(
             context: "subpel horizontal coordinate",
         })?;
 
+    Ok(intermediate_height)
+}
+
+fn subpel_predict_block_internal_into_validated<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    inter_round1: u32,
+    intermediate_height: usize,
+    output: &mut [i32],
+    output_stride: usize,
+) -> Result<()> {
+    let SubpelPredictParams {
+        interp,
+        w,
+        h,
+        start_x,
+        start_y,
+        step_x,
+        step_y,
+        first_x,
+        first_y,
+        last_x,
+        last_y,
+        bit_depth: _,
+    } = *params;
+
+    if output_stride < w {
+        return Err(ReconError::StrideTooSmall {
+            stride_samples: output_stride,
+            storage_width: w,
+        });
+    }
+    let output_len = (h - 1)
+        .checked_mul(output_stride)
+        .and_then(|len| len.checked_add(w))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "strided subpel output sample count",
+        })?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+
     if step_x == 1 << SCALE_SUBPEL_BITS
         && step_y == 1 << SCALE_SUBPEL_BITS
         && (start_x >> 6) & SUBPEL_MASK == 0
         && (start_y >> 6) & SUBPEL_MASK == 0
     {
-        return Ok(subpel_copy_block(
+        subpel_copy_block_into(
             reference,
             params,
             2 * FILTER_BITS - (INTER_ROUND0 + inter_round1),
-        ));
+            output,
+            output_stride,
+        );
+        return Ok(());
     }
 
     let h_filter = interp.pass_index(w as u32);
@@ -688,6 +784,15 @@ fn subpel_predict_block_internal<T: ReconSample>(
     for r in 0..h {
         let p = (start_y & 1023) + step_y * r as i64;
         let base = (p >> SCALE_SUBPEL_BITS) as usize;
+        if base
+            .checked_add(NUM_TAPS)
+            .is_none_or(|end| end > intermediate_height)
+        {
+            return Err(ReconError::SubpelIntermediateOutOfRange {
+                base,
+                intermediate_height,
+            });
+        }
         let phase = ((p >> 6) & SUBPEL_MASK) as usize;
         let (lo, hi) = if phase == 0 {
             (base + 3, base + 4)
@@ -767,22 +872,16 @@ fn subpel_predict_block_internal<T: ReconSample>(
 
         let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
 
-        let mut output = vec![0i32; w * h];
         let mut acc = [0i64; MAX_BLOCK_DIM];
         for r in 0..h {
             let p = (start_y & 1023) + step_y * r as i64;
             let phase = ((p >> 6) & SUBPEL_MASK) as usize;
             let taps = &v_filter_rows[phase];
             let base = (p >> SCALE_SUBPEL_BITS) as usize;
-            if base + NUM_TAPS > intermediate_height {
-                return Err(ReconError::SubpelIntermediateOutOfRange {
-                    base,
-                    intermediate_height,
-                });
-            }
+            let output = &mut output[r * output_stride..][..w];
             if phase == 0 {
                 let center = &intermediate[(base + 3) * w..(base + 4) * w];
-                for (out, &value) in output[r * w..(r + 1) * w].iter_mut().zip(center) {
+                for (out, &value) in output.iter_mut().zip(center) {
                     *out = round2(i64::from(value) << FILTER_BITS, inter_round1) as i32;
                 }
                 continue;
@@ -799,12 +898,12 @@ fn subpel_predict_block_internal<T: ReconSample>(
                     *a += tap * i64::from(v);
                 }
             }
-            for (out, &s) in output[r * w..(r + 1) * w].iter_mut().zip(acc.iter()) {
+            for (out, &s) in output.iter_mut().zip(acc.iter()) {
                 *out = round2(s, inter_round1) as i32;
             }
         }
 
-        Ok(output)
+        Ok(())
     })
 }
 

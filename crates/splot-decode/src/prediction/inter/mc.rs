@@ -7,8 +7,8 @@ use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconError,
     ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
     WarpPredictBlockParams, blend_compound_average_equal, blend_compound_average_weighted,
-    subpel_predict_block, subpel_predict_block_compound_intermediate, warp_predict_block,
-    wedge_mask_plane_sample,
+    subpel_predict_block, subpel_predict_block_compound_intermediate,
+    subpel_predict_block_compound_intermediate_into, warp_predict_block, wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling, derive_plane_scaling_prescaled};
