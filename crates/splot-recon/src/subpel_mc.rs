@@ -665,8 +665,27 @@ fn subpel_predict_block_internal<T: ReconSample>(
         && x0 - 3 >= first_x.max(0)
         && x0 + w as i64 + 3 <= last_x.min(reference.width as i64 - 1);
 
+    let v_filter = interp.pass_index(h as u32);
+    let mut read_lo = intermediate_height;
+    let mut read_hi = 0usize;
+    for r in 0..h {
+        let p = (start_y & 1023) + step_y * r as i64;
+        let base = (p >> SCALE_SUBPEL_BITS) as usize;
+        let phase = ((p >> 6) & SUBPEL_MASK) as usize;
+        let (lo, hi) = if phase == 0 {
+            (base + 3, base + 4)
+        } else {
+            let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter as usize][phase];
+            (base + tap_start, base + tap_end)
+        };
+        read_lo = read_lo.min(lo);
+        read_hi = read_hi.max(hi);
+    }
+    read_hi = read_hi.min(intermediate_height);
+    read_lo = read_lo.min(read_hi);
+
     let mut intermediate = vec![0i32; intermediate_height * w];
-    for r in 0..intermediate_height {
+    for r in read_lo..read_hi {
         let ref_row = clip3(
             first_y,
             last_y,
@@ -723,7 +742,6 @@ fn subpel_predict_block_internal<T: ReconSample>(
         }
     }
 
-    let v_filter = interp.pass_index(h as u32);
     let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
 
     let mut output = vec![0i32; w * h];
