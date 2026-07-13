@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::derive_optflow_mv_deltas;
 use splot_recon::math::round2_signed_i32;
+use splot_recon::{OptflowScratch, derive_optflow_mv_deltas_into};
 
 use super::*;
 
@@ -13,6 +13,17 @@ pub(super) struct MotionCell {
 }
 
 impl MotionCell {
+    fn uninitialized(base_mvs: [Mv; 2]) -> Self {
+        Self {
+            base_mvs,
+            mvs: [[i32::MIN; 2]; 2],
+        }
+    }
+
+    fn is_initialized(&self) -> bool {
+        self.mvs[0][0] != i32::MIN
+    }
+
     pub(super) fn from_refinemv(base_mvs: [Mv; 2]) -> Self {
         let mvs = core::array::from_fn(|reference| {
             [base_mvs[reference].row * 2, base_mvs[reference].col * 2]
@@ -27,10 +38,38 @@ enum MotionCells {
     Heap(Vec<MotionCell>),
 }
 
+std::thread_local! {
+    static OPTFLOW_SCRATCH: std::cell::Cell<Option<OptflowScratch>> =
+        const { std::cell::Cell::new(None) };
+    static OPTFLOW_MOTION_CELLS: std::cell::Cell<Option<Vec<MotionCell>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
+    OPTFLOW_MOTION_CELLS.with(|slot| {
+        let mut cells = slot.take().unwrap_or_default();
+        cells.resize(len, value);
+        cells
+    })
+}
+
+fn recycle_motion_cells(mut cells: Vec<MotionCell>) {
+    cells.clear();
+    OPTFLOW_MOTION_CELLS.with(|slot| {
+        let cells = match slot.take() {
+            Some(cached) if cached.capacity() > cells.capacity() => cached,
+            _ => cells,
+        };
+        slot.set(Some(cells));
+    });
+}
+
 impl MotionCells {
     fn from_vec(cells: Vec<MotionCell>) -> Self {
         if let [cell] = cells.as_slice() {
-            return Self::Inline(*cell);
+            let cell = *cell;
+            recycle_motion_cells(cells);
+            return Self::Inline(cell);
         }
         Self::Heap(cells)
     }
@@ -39,6 +78,14 @@ impl MotionCells {
         match self {
             Self::Inline(cell) => core::slice::from_ref(cell),
             Self::Heap(cells) => cells,
+        }
+    }
+}
+
+impl Drop for MotionCells {
+    fn drop(&mut self) {
+        if let Self::Heap(cells) = self {
+            recycle_motion_cells(core::mem::take(cells));
         }
     }
 }
@@ -215,7 +262,8 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow motion-grid size",
         })?;
-    let mut cells: Option<Vec<Option<MotionCell>>> = None;
+    let mut cells: Option<Vec<MotionCell>> = None;
+    let mut written_cells = 0usize;
     let base_unit = refinemv
         .as_ref()
         .map_or(block.rect.luma_w.max(block.rect.luma_h), |grid| {
@@ -238,7 +286,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             prediction_rect.luma_y += region_y;
             prediction_rect.luma_w = round_up(region_w)?;
             prediction_rect.luma_h = round_up(region_h)?;
-            let deltas = super::with_initial_luma_predictions(
+            let refined = super::with_initial_luma_predictions(
                 prediction_rect.luma_w,
                 prediction_rect.luma_h,
                 |pred0, pred1| {
@@ -265,65 +313,89 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
                     if block.optflow_sad_threshold.is_some_and(|threshold| {
                         normalized_sad(pred0, pred1, sink.info().bit_depth()) < threshold
                     }) {
-                        return Ok(None);
+                        return Ok(false);
                     }
-                    Ok(Some(derive_optflow_mv_deltas(
-                        pred0,
-                        pred1,
-                        prediction_rect.luma_w,
-                        prediction_rect.luma_h,
-                        unit_size,
-                        sink.info().bit_depth(),
-                        distances,
-                    )?))
+                    OPTFLOW_SCRATCH.with(|slot| {
+                        let mut scratch = slot.take().unwrap_or_default();
+                        let result = (|| {
+                            let deltas = derive_optflow_mv_deltas_into(
+                                pred0,
+                                pred1,
+                                prediction_rect.luma_w,
+                                prediction_rect.luma_h,
+                                unit_size,
+                                sink.info().bit_depth(),
+                                distances,
+                                &mut scratch,
+                            )?;
+                            let cells = cells.get_or_insert_with(|| {
+                                take_motion_cells(
+                                    cell_count,
+                                    MotionCell::uninitialized([block.mv0, block.mv1]),
+                                )
+                            });
+                            let local_columns = prediction_rect.luma_w / unit_size;
+                            for (index, delta) in deltas.iter().copied().enumerate() {
+                                let local_row = index / local_columns;
+                                let local_col = index % local_columns;
+                                let global_row = region_y / unit_size + local_row;
+                                let global_col = region_x / unit_size + local_col;
+                                let global_index = global_row
+                                    .checked_mul(columns)
+                                    .and_then(|row| row.checked_add(global_col))
+                                    .ok_or(ReconError::ArithmeticOverflow {
+                                        context: "optical-flow motion-grid index",
+                                    })?;
+                                let cell = cells.get_mut(global_index).ok_or(
+                                    ReconError::ArithmeticOverflow {
+                                        context: "optical-flow motion-grid write",
+                                    },
+                                )?;
+                                let mut refined = [[0i32; 2]; 2];
+                                for reference in 0..2 {
+                                    let base = [base_mvs[reference].row, base_mvs[reference].col];
+                                    for component in 0..2 {
+                                        refined[reference][component] = (base[component] * 2
+                                            + delta[reference][component])
+                                            .clamp(-(1 << 17), (1 << 17) - 1);
+                                    }
+                                }
+                                *cell = MotionCell {
+                                    base_mvs,
+                                    mvs: refined,
+                                };
+                                written_cells = written_cells.checked_add(1).ok_or(
+                                    ReconError::ArithmeticOverflow {
+                                        context: "optical-flow motion-grid completeness",
+                                    },
+                                )?;
+                            }
+                            Ok(true)
+                        })();
+                        slot.set(Some(scratch));
+                        result
+                    })
                 },
             )?;
-            let Some(deltas) = deltas else {
-                return Ok(refinemv);
-            };
-            let cells = cells.get_or_insert_with(|| vec![None; cell_count]);
-            let local_columns = prediction_rect.luma_w / unit_size;
-            for (index, delta) in deltas.into_iter().enumerate() {
-                let local_row = index / local_columns;
-                let local_col = index % local_columns;
-                let global_row = region_y / unit_size + local_row;
-                let global_col = region_x / unit_size + local_col;
-                let global_index = global_row
-                    .checked_mul(columns)
-                    .and_then(|row| row.checked_add(global_col))
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "optical-flow motion-grid index",
-                    })?;
-                let cell = cells
-                    .get_mut(global_index)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "optical-flow motion-grid write",
-                    })?;
-                let mut refined = [[0i32; 2]; 2];
-                for reference in 0..2 {
-                    let base = [base_mvs[reference].row, base_mvs[reference].col];
-                    for component in 0..2 {
-                        refined[reference][component] = (base[component] * 2
-                            + delta[reference][component])
-                            .clamp(-(1 << 17), (1 << 17) - 1);
-                    }
+            if !refined {
+                if let Some(cells) = cells.take() {
+                    recycle_motion_cells(cells);
                 }
-                *cell = Some(MotionCell {
-                    base_mvs,
-                    mvs: refined,
-                });
+                return Ok(refinemv);
             }
         }
     }
-    let cells = cells
-        .unwrap_or_default()
-        .into_iter()
-        .map(|cell| {
-            cell.ok_or(ReconError::ArithmeticOverflow {
-                context: "optical-flow motion-grid completeness",
-            })
-        })
-        .collect::<splot_recon::Result<Vec<_>>>()?;
+    if written_cells != cell_count
+        || cells
+            .as_deref()
+            .is_some_and(|cells| cells.iter().any(|cell| !cell.is_initialized()))
+    {
+        return Err(ReconError::ArithmeticOverflow {
+            context: "optical-flow motion-grid completeness",
+        }
+        .into());
+    }
+    let cells = cells.unwrap_or_default();
     Ok(Some(CompoundMotionGrid {
         unit_size,
         columns,

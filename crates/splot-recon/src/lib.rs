@@ -126,7 +126,7 @@ pub use loop_restoration::{
     LoopRestorationSourceSampleValue, loop_restoration_source_sample,
     loop_restoration_source_sample_value,
 };
-pub use optflow::derive_optflow_mv_deltas;
+pub use optflow::{OptflowScratch, derive_optflow_mv_deltas, derive_optflow_mv_deltas_into};
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
