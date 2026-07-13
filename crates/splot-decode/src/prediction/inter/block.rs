@@ -151,7 +151,7 @@ pub(crate) struct InterFilterInputs {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_blocks<T: ReconSample>(
+pub(crate) fn decode_inter_blocks<T: DeferredReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -517,7 +517,7 @@ fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn decode_block<T: ReconSample>(
+fn decode_block<T: DeferredReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &DecodeBlockFrontier,
@@ -553,7 +553,7 @@ fn decode_block<T: ReconSample>(
     palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
     block_decoded: &mut TileBlockDecodedState,
-    deferred: &mut deferred_recon::DeferredInterRecon,
+    deferred: &mut deferred_recon::DeferredInterRecon<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -2032,6 +2032,7 @@ mod tile;
 pub(super) mod tip;
 mod warp;
 
+pub(crate) use self::deferred_recon::DeferredReconSample;
 use self::filter_records::record_inter_deblock_geometry;
 use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;

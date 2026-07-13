@@ -96,7 +96,7 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_frame<T: ReconSample>(
+pub(crate) fn decode_inter_frame<T: DeferredReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -1601,7 +1601,7 @@ pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
 mod single_ref;
 
-pub(crate) use block::decode_inter_blocks;
+pub(crate) use block::{DeferredReconSample, decode_inter_blocks};
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::TemporalMotionField;
 

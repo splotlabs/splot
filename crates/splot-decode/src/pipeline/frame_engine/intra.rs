@@ -14,9 +14,7 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{
-    BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample, ReferenceFrameStore,
-};
+use splot_recon::{BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReferenceFrameStore};
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope, FrameQuantizerDeltasScope};
 use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
@@ -25,12 +23,12 @@ use crate::pipeline::{
     unsupported_at,
 };
 use crate::prediction::inter::{
-    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
+    DeferredReconSample, InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_intra_frame<T: ReconSample>(
+pub(crate) fn decode_intra_frame<T: DeferredReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],

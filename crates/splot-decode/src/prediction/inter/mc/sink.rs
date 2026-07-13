@@ -41,14 +41,23 @@ const PLANE_IDS: [PlaneId; 3] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 const SUBPEL_ROW_CAPACITY: usize = 128;
 
 impl<T: ReconSample> BlockReconWindow<T> {
+    #[cfg(test)]
+    pub(crate) fn for_block(
+        workspace: &CurrentFrameWorkspace<T>,
+        rect: McBlockRect,
+    ) -> splot_recon::Result<Self> {
+        Self::for_block_with_storage(workspace, rect, &mut Vec::new())
+    }
+
     /// Builds a window covering the block's per-plane rects, clamped to the
     /// workspace storage the way in-frame reads are.
     ///
     /// # Errors
     /// Returns the geometry error when a clamped plane rect is empty.
-    pub(crate) fn for_block(
+    pub(crate) fn for_block_with_storage(
         workspace: &CurrentFrameWorkspace<T>,
         rect: McBlockRect,
+        samples: &mut Vec<T>,
     ) -> splot_recon::Result<Self> {
         let info = workspace.info();
         let mut planes = [None, None, None];
@@ -78,10 +87,12 @@ impl<T: ReconSample> BlockReconWindow<T> {
             });
             sample_count = end;
         }
+        samples.clear();
+        samples.resize(sample_count, T::default());
         Ok(Self {
             info,
             planes,
-            samples: vec![T::default(); sample_count],
+            samples: core::mem::take(samples),
         })
     }
 
@@ -107,6 +118,10 @@ impl<T: ReconSample> BlockReconWindow<T> {
             workspace.write_rect(plane, window_plane.rect, samples, window_plane.rect.width())?;
         }
         Ok(())
+    }
+
+    pub(crate) fn into_samples(self) -> Vec<T> {
+        self.samples
     }
 }
 
