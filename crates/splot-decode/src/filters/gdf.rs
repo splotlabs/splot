@@ -278,7 +278,7 @@ fn compute_block<T: ReconSample>(
     base_luma: &[u16],
     block: GdfBlock,
     offset: ByteOffset,
-) -> Result<Vec<T>> {
+) -> Result<[T; MI_SIZE * MI_SIZE]> {
     let source_origin = source.relative_position(block.x, block.y).ok_or_else(|| {
         gdf_filter_error(
             offset,
@@ -288,7 +288,7 @@ fn compute_block<T: ReconSample>(
     debug_assert!(source_origin.0 >= GDF_READ_RADIUS && source_origin.1 >= GDF_READ_RADIUS);
     let grad = gradients(source, &block, source_origin);
     let classes = classes(&grad, &block);
-    let mut output = Vec::with_capacity(block.width * block.height);
+    let mut output = [T::default(); MI_SIZE * MI_SIZE];
     for row in 0..block.height {
         for col in 0..block.width {
             let class = &classes[(row >> 1) * (block.width >> 1) + (col >> 1)];
@@ -301,12 +301,12 @@ fn compute_block<T: ReconSample>(
                 (source_origin.0 + col, source_origin.1 + row),
                 class,
             );
-            output.push(T::try_from_u16(sample).map_err(|_| {
+            output[row * block.width + col] = T::try_from_u16(sample).map_err(|_| {
                 gdf_filter_error(
                     offset,
                     "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
                 )
-            })?);
+            })?;
         }
     }
     Ok(output)
