@@ -128,6 +128,19 @@ fn transform_block_recycler_is_thread_local() {
 }
 
 #[test]
+fn transform_block_recycler_tolerates_reentrant_recycle() {
+    clear_transform_coeff_buffers();
+    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |outer| {
+        recycle_buffer(&mut outer.levels, vec![0]);
+        with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |inner| {
+            recycle_buffer(&mut inner.levels, vec![0]);
+        });
+        assert_eq!(outer.levels.len(), 1);
+    });
+    assert_eq!(transform_coeff_buffer_counts(), (1, 0));
+}
+
+#[test]
 fn transform_block_recycler_has_a_retention_limit() {
     clear_transform_coeff_buffers();
     for _ in 0..=MAX_RETAINED_COEFF_BUFFERS {

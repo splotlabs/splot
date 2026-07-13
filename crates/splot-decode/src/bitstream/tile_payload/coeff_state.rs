@@ -12,6 +12,7 @@ use std::collections::TryReserveError;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::PlaneId;
 
+use crate::support::reusable_scratch::with_reusable_scratch;
 use crate::tile::block_context::ChromaSampling;
 
 const PLANE_COUNT: usize = 3;
@@ -28,17 +29,11 @@ struct TransformCoeffBufferRecycler {
 }
 
 thread_local! {
-    static TRANSFORM_COEFF_BUFFERS: core::cell::Cell<Option<TransformCoeffBufferRecycler>> =
-        const { core::cell::Cell::new(None) };
-}
-
-fn with_transform_coeff_buffers<R>(f: impl FnOnce(&mut TransformCoeffBufferRecycler) -> R) -> R {
-    TRANSFORM_COEFF_BUFFERS.with(|slot| {
-        let mut buffers = slot.take().unwrap_or_default();
-        let result = f(&mut buffers);
-        slot.set(Some(buffers));
-        result
-    })
+    static TRANSFORM_COEFF_BUFFERS: core::cell::RefCell<TransformCoeffBufferRecycler> =
+        const { core::cell::RefCell::new(TransformCoeffBufferRecycler {
+            levels: Vec::new(),
+            signed: Vec::new(),
+        }) };
 }
 
 fn take_zeroed_buffer<T: Default + Copy>(
@@ -64,7 +59,9 @@ fn recycle_buffer<T>(buffers: &mut Vec<Vec<T>>, mut buffer: Vec<T>) {
 }
 
 pub(crate) fn recycle_coeff_quant(buffer: Vec<i32>) {
-    with_transform_coeff_buffers(|buffers| recycle_buffer(&mut buffers.signed, buffer));
+    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+        recycle_buffer(&mut buffers.signed, buffer);
+    });
 }
 
 impl Drop for super::general_intra_residual::LumaCoeffBlock {
@@ -95,7 +92,7 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
-        let (level, quant) = with_transform_coeff_buffers(|buffers| {
+        let (level, quant) = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
             let level = take_zeroed_buffer(&mut buffers.levels, allocation.coeff_count)?;
             let quant = match take_zeroed_buffer(&mut buffers.signed, allocation.coeff_count) {
                 Ok(quant) => quant,
@@ -117,7 +114,7 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
         if self.quant_sign.is_empty() {
-            self.quant_sign = with_transform_coeff_buffers(|buffers| {
+            self.quant_sign = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
                 take_zeroed_buffer(&mut buffers.signed, self.level.len())
             })?;
         }
@@ -233,7 +230,7 @@ impl Drop for TransformCoeffBlockState {
         let level = core::mem::take(&mut self.level);
         let quant_sign = core::mem::take(&mut self.quant_sign);
         let quant = core::mem::take(&mut self.quant);
-        with_transform_coeff_buffers(|buffers| {
+        with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
             recycle_buffer(&mut buffers.levels, level);
             recycle_buffer(&mut buffers.signed, quant_sign);
             recycle_buffer(&mut buffers.signed, quant);
@@ -243,12 +240,15 @@ impl Drop for TransformCoeffBlockState {
 
 #[cfg(test)]
 fn clear_transform_coeff_buffers() {
-    TRANSFORM_COEFF_BUFFERS.with(|slot| slot.set(None));
+    TRANSFORM_COEFF_BUFFERS
+        .with(|slot| *slot.borrow_mut() = TransformCoeffBufferRecycler::default());
 }
 
 #[cfg(test)]
 fn transform_coeff_buffer_counts() -> (usize, usize) {
-    with_transform_coeff_buffers(|buffers| (buffers.levels.len(), buffers.signed.len()))
+    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+        (buffers.levels.len(), buffers.signed.len())
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

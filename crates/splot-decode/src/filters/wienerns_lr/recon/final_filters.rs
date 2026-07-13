@@ -26,19 +26,11 @@ use crate::bitstream::tile_payload::{
 use crate::filters::cdef::CdefSkipGrid;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::filters::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
+use crate::support::reusable_scratch::with_reusable_scratch;
 
 thread_local! {
-    static PC_WIENER_CLASSIFY_SCRATCH: std::cell::Cell<Option<PcWienerClassifyScratch>> =
-        const { std::cell::Cell::new(None) };
-}
-
-fn with_pc_wiener_classify_scratch<R>(f: impl FnOnce(&mut PcWienerClassifyScratch) -> R) -> R {
-    PC_WIENER_CLASSIFY_SCRATCH.with(|slot| {
-        let mut scratch = slot.take().unwrap_or_default();
-        let result = f(&mut scratch);
-        slot.set(Some(scratch));
-        result
-    })
+    static PC_WIENER_CLASSIFY_SCRATCH: std::cell::RefCell<PcWienerClassifyScratch> =
+        std::cell::RefCell::new(PcWienerClassifyScratch::default());
 }
 
 fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
@@ -1099,7 +1091,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 window.origin_x,
                 window.origin_y,
             );
-            with_pc_wiener_classify_scratch(|scratch| {
+            with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
                 let classifications = pc_wiener_classify_grid_padded_into::<T, _>(
                     &params,
                     group_cols,
