@@ -98,7 +98,11 @@ pub(crate) fn decode_frames_from_plan(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_impl(bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
+    let runtime_parse_timer = crate::timing::start();
+    let mut parsed = parse_bounded_bitstream(bytes, options.limits())?;
+    crate::timing::report("runtime_reparse", runtime_parse_timer);
+    parsed.discard_runtime_noops();
+    decode_frames_from_plan_impl(&parsed, bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
 }
 
 pub(crate) fn decode_frames_from_prepared(
@@ -107,7 +111,7 @@ pub(crate) fn decode_frames_from_prepared(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_parsed_impl(parsed, bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
+    decode_frames_from_plan_impl(parsed, bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
 }
 
 pub(crate) fn emit_frames_from_prepared(
@@ -117,7 +121,7 @@ pub(crate) fn emit_frames_from_prepared(
     plan: &DecodeStreamPlan,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
-    decode_frames_from_parsed_impl(parsed, bytes, options, plan, |_| Ok(()), false, emit).map(drop)
+    decode_frames_from_plan_impl(parsed, bytes, options, plan, |_| Ok(()), false, emit).map(drop)
 }
 
 fn reclaim_unowned_frames(
@@ -476,34 +480,10 @@ pub(crate) fn decode_frames_from_prepared_with_ivf_preflight(
     plan: &DecodeStreamPlan,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_parsed_impl(parsed, bytes, options, plan, preflight, true, |_| Ok(()))
+    decode_frames_from_plan_impl(parsed, bytes, options, plan, preflight, true, |_| Ok(()))
 }
 
-#[cfg(test)]
 fn decode_frames_from_plan_impl(
-    bytes: &[u8],
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
-    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
-    retain_decoded_frames: bool,
-    emit: impl FnMut(&PipelineFrame) -> Result<()>,
-) -> Result<Vec<PipelineFrame>> {
-    let runtime_parse_timer = crate::timing::start();
-    let mut parsed = parse_bounded_bitstream(bytes, options.limits())?;
-    crate::timing::report("runtime_reparse", runtime_parse_timer);
-    parsed.discard_runtime_noops();
-    decode_frames_from_parsed_impl(
-        &parsed,
-        bytes,
-        options,
-        plan,
-        preflight,
-        retain_decoded_frames,
-        emit,
-    )
-}
-
-fn decode_frames_from_parsed_impl(
     parsed: &FlatParsedBitstream<'_>,
     bytes: &[u8],
     options: &DecodeOptions,

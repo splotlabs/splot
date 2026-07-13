@@ -7,7 +7,7 @@
 
 use core::ops::Range;
 
-use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope};
+use splot_core::annexb::{AnnexBObuCursor, ObuEnvelope, PartialParse};
 use splot_core::ivf::{
     IvfError, IvfFrame, IvfFrameCursor, IvfFrameRead, IvfHeader, IvfWarning, is_ivf,
     parse_ivf_header,
@@ -63,7 +63,7 @@ impl<'a> PreparedByteStream<'a> {
 
 #[derive(Debug)]
 pub(crate) enum FlatParsedBitstream<'a> {
-    AnnexB(FlatAnnexB<'a>),
+    AnnexB(PartialParse<'a>),
     Ivf(FlatParsedIvfBitstream<'a>),
 }
 
@@ -83,12 +83,6 @@ impl FlatParsedBitstream<'_> {
             Self::Ivf(ivf) => ivf.discard_runtime_noops(),
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) struct FlatAnnexB<'a> {
-    pub(crate) obus: Vec<ObuEnvelope<'a>>,
-    pub(crate) error: Option<splot_core::Error>,
 }
 
 #[derive(Debug)]
@@ -151,7 +145,7 @@ pub(crate) fn parse_bounded_bitstream(
         &mut first_unsupported,
         &mut obus,
     )?;
-    Ok(FlatParsedBitstream::AnnexB(FlatAnnexB { obus, error }))
+    Ok(FlatParsedBitstream::AnnexB(PartialParse { obus, error }))
 }
 
 fn parse_bounded_annex_b_at<'a>(

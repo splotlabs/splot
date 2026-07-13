@@ -16,7 +16,7 @@ use splot_core::types::{
     EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId,
 };
 
-use crate::bitstream::byte_stream::{FlatParsedBitstream, FlatParsedIvfBitstream};
+use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeOptions, UNSUPPORTED_FEATURE_RULE_ID};
 
@@ -596,7 +596,15 @@ pub(crate) fn plan_flat_stream(
             push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
         }
         FlatParsedBitstream::Ivf(ivf) => {
-            push_flat_ivf(&mut builder, ivf)?;
+            push_ivf(
+                &mut builder,
+                ivf.header,
+                &ivf.warnings,
+                ivf.error.as_ref(),
+                ivf.frames
+                    .iter()
+                    .map(|frame| (frame.frame, ivf.frame_obus(frame), frame.error.as_ref())),
+            )?;
         }
     }
     Ok(builder.finish())
@@ -616,18 +624,6 @@ fn push_annex_b(
         builder.push_obu(obu, DecodeObuSourceKind::AnnexB, None)?;
     }
     Ok(())
-}
-
-fn push_flat_ivf(builder: &mut PlanBuilder, ivf: &FlatParsedIvfBitstream<'_>) -> Result<()> {
-    push_ivf(
-        builder,
-        ivf.header,
-        &ivf.warnings,
-        ivf.error.as_ref(),
-        ivf.frames
-            .iter()
-            .map(|frame| (frame.frame, ivf.frame_obus(frame), frame.error.as_ref())),
-    )
 }
 
 fn push_ivf<'a: 'b, 'b>(
