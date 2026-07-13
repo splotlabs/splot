@@ -236,7 +236,8 @@ where
 ///
 /// `params.x` and `params.y` identify the first cell. All cells must share the
 /// supplied block, stripe, and tile bounds. The implementation evaluates each
-/// overlapping feature point once, then reuses it across the 6x6 windows.
+/// source sample and overlapping feature point once, then reuses them across
+/// the 6x6 windows.
 ///
 /// # Errors
 ///
@@ -281,6 +282,81 @@ where
             })?;
     let feature_start_x = coordinate_add(params.x, -PC_WIENER_LEAD, "PC-Wiener grid x")?;
     let feature_start_y = coordinate_add(params.y, -PC_WIENER_LEAD, "PC-Wiener grid y")?;
+    let feature_last_x = coordinate_add(
+        feature_start_x,
+        isize::try_from(feature_width - 1).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener feature-grid last column",
+        })?,
+        "PC-Wiener feature-grid last x",
+    )?;
+    let block_end_plus_two = usize_to_isize(
+        params
+            .block_end_x
+            .checked_add(2)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener block end plus two",
+            })?,
+        "PC-Wiener block end plus two",
+    )?;
+    let source_start_x = coordinate_add(
+        feature_start_x.min(block_end_plus_two),
+        -1,
+        "PC-Wiener source-grid start x",
+    )?;
+    let source_last_x = coordinate_add(
+        feature_last_x.min(block_end_plus_two),
+        1,
+        "PC-Wiener source-grid last x",
+    )?;
+    let source_width = source_last_x
+        .checked_sub(source_start_x)
+        .and_then(|span| usize::try_from(span).ok())
+        .and_then(|span| span.checked_add(1))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener source-grid width",
+        })?;
+    let source_start_y = coordinate_add(feature_start_y, -1, "PC-Wiener source-grid start y")?;
+    let source_height = feature_height
+        .checked_add(2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener source-grid height",
+        })?;
+    let source_count =
+        source_width
+            .checked_mul(source_height)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "PC-Wiener source-grid sample count",
+            })?;
+    let mut source_cache = Vec::new();
+    source_cache
+        .try_reserve_exact(source_count)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener source-grid allocation",
+        })?;
+    for row in 0..source_height {
+        let y = coordinate_add(
+            source_start_y,
+            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener source-grid row",
+            })?,
+            "PC-Wiener source-grid y",
+        )?;
+        for col in 0..source_width {
+            let x = coordinate_add(
+                source_start_x,
+                isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener source-grid column",
+                })?,
+                "PC-Wiener source-grid x",
+            )?;
+            source_cache.push(source_sample_u16(
+                &mut source_sample,
+                x,
+                y,
+                params.bit_depth,
+            )?);
+        }
+    }
     let mut cached = Vec::new();
     cached
         .try_reserve_exact(feature_count)
@@ -303,8 +379,28 @@ where
                 })?,
                 "PC-Wiener feature-grid x",
             )?;
-            let feature = pc_wiener_features(params, x, y, &mut source_sample)?;
-            let lookup = tx_skip_lookup(params, feature.x, y)?;
+            let x = x.min(block_end_plus_two);
+            let center_col = x
+                .checked_sub(source_start_x)
+                .and_then(|col| usize::try_from(col).ok())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener source-grid center column",
+                })?;
+            let center_index = (row + 1) * source_width + center_col;
+            let m = i64::from(source_cache[center_index]);
+            let up = i64::from(source_cache[center_index - source_width]);
+            let down = i64::from(source_cache[center_index + source_width]);
+            let upright = i64::from(source_cache[center_index - source_width + 1]);
+            let downleft = i64::from(source_cache[center_index + source_width - 1]);
+            let downright = i64::from(source_cache[center_index + source_width + 1]);
+            let upleft = i64::from(source_cache[center_index - source_width - 1]);
+            let values = [
+                0,
+                (up - 2 * m + down).abs(),
+                (upright - 2 * m + downleft).abs(),
+                (upleft - 2 * m + downright).abs(),
+            ];
+            let lookup = tx_skip_lookup(params, x, y)?;
             let skip = tx_skip(lookup)?;
             if !(0..=1).contains(&skip) {
                 return Err(ReconError::PcWienerInvalidTxSkip {
@@ -316,7 +412,7 @@ where
                 });
             }
             cached.push(CachedPcWienerFeature {
-                values: feature.values,
+                values,
                 tx_skip: i64::from(skip),
             });
         }
@@ -692,12 +788,31 @@ where
     T: ReconSample,
     F: FnMut(isize, isize) -> Result<T>,
 {
+    Ok(i64::from(source_sample_u16(
+        source_sample,
+        x,
+        y,
+        bit_depth,
+    )?))
+}
+
+#[inline]
+fn source_sample_u16<T, F>(
+    source_sample: &mut F,
+    x: isize,
+    y: isize,
+    bit_depth: BitDepth,
+) -> Result<u16>
+where
+    T: ReconSample,
+    F: FnMut(isize, isize) -> Result<T>,
+{
     let value = source_sample(x, y)?.to_u16();
     let max = bit_depth.max_sample();
     if value > max {
         return Err(ReconError::PcWienerSourceSampleOutOfRange { x, y, value, max });
     }
-    Ok(i64::from(value))
+    Ok(value)
 }
 
 #[inline]
@@ -974,7 +1089,8 @@ mod tests {
         }
 
         assert_eq!(grid, scalar);
-        assert!(grid_source_calls < scalar_source_calls);
+        assert_eq!(grid_source_calls, 240);
+        assert!(grid_source_calls * 7 < scalar_source_calls);
     }
 
     #[test]
