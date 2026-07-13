@@ -242,48 +242,12 @@ pub(crate) struct TipReferencePair {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct TipMotionField {
-    field: ProjectedTemporalMotionField,
-    references: TipReferencePair,
-}
-
-impl TipMotionField {
-    fn candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> [Mv; 2] {
-        let y8 = y8.min(self.field.height8.saturating_sub(1));
-        let x8 = x8.min(self.field.width8.saturating_sub(1));
-        let cell = self.field.cell(y8, x8).unwrap_or_default();
-        let projected = if cell.valid {
-            [
-                project_mv(
-                    cell.mv,
-                    self.references.past_offset,
-                    self.references.ref_offset,
-                )
-                .unwrap_or(Mv::ZERO),
-                project_mv(
-                    cell.mv,
-                    self.references.future_offset,
-                    self.references.ref_offset,
-                )
-                .unwrap_or(Mv::ZERO),
-            ]
-        } else {
-            [Mv::ZERO; 2]
-        };
-        projected.map(|mv| Mv {
-            row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
-            col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
-        })
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
     field: ProjectedTemporalMotionField,
     trajectories: Option<Vec<TrajectoryMotionField>>,
-    tip: Option<TipMotionField>,
+    tip: Option<TipReferencePair>,
 }
 
 #[derive(Clone, Copy)]
@@ -345,9 +309,9 @@ impl TemporalMvContext {
         Some(Self {
             current_order_hint: 0,
             ref_order_hints: Vec::new(),
-            field: field.clone(),
+            field,
             trajectories: None,
-            tip: Some(TipMotionField { field, references }),
+            tip: Some(references),
         })
     }
 
@@ -496,8 +460,8 @@ impl TemporalMvContext {
             average_tip_motion(&mut field, projection_step, tmvp_unit_size8);
         }
         fill_temporal_sampling_gaps(&mut field, projection_step, tmvp_unit_size8);
-        self.field = field.clone();
-        self.tip = Some(TipMotionField { field, references });
+        self.field = field;
+        self.tip = Some(references);
         true
     }
 
@@ -521,11 +485,28 @@ impl TemporalMvContext {
     }
 
     pub(crate) fn tip_references(&self) -> Option<TipReferencePair> {
-        Some(self.tip.as_ref()?.references)
+        self.tip
     }
 
     pub(crate) fn tip_candidate(&self, y8: usize, x8: usize, base_mv: Mv) -> Option<[Mv; 2]> {
-        Some(self.tip.as_ref()?.candidate(y8, x8, base_mv))
+        let references = self.tip?;
+        let y8 = y8.min(self.field.height8.saturating_sub(1));
+        let x8 = x8.min(self.field.width8.saturating_sub(1));
+        let cell = self.field.cell(y8, x8).unwrap_or_default();
+        let projected = if cell.valid {
+            [
+                project_mv(cell.mv, references.past_offset, references.ref_offset)
+                    .unwrap_or(Mv::ZERO),
+                project_mv(cell.mv, references.future_offset, references.ref_offset)
+                    .unwrap_or(Mv::ZERO),
+            ]
+        } else {
+            [Mv::ZERO; 2]
+        };
+        Some(projected.map(|mv| Mv {
+            row: (mv.row + base_mv.row).clamp(-MV_LIMIT, MV_LIMIT),
+            col: (mv.col + base_mv.col).clamp(-MV_LIMIT, MV_LIMIT),
+        }))
     }
 
     pub(super) fn tip_spatial_mvs(
@@ -1487,7 +1468,6 @@ mod tests {
 
         assert!(context.prepare_tip(2, 2, false));
         assert_eq!(context.tip_references(), context.tip_reference_pair());
-        assert_eq!(context.field, context.tip.as_ref().unwrap().field);
         let expected = [Mv { row: 5, col: -6 }, Mv { row: -3, col: 10 }];
         for y8 in 0..2 {
             for x8 in 0..2 {
@@ -1533,7 +1513,7 @@ mod tests {
         context.field.set(0, 14, Mv { row: 18, col: -36 }, 9, true);
 
         assert!(context.prepare_tip(2, 16, true));
-        let cell = context.tip.as_ref().unwrap().field.cell(0, 11).unwrap();
+        let cell = context.field.cell(0, 11).unwrap();
         assert_eq!(
             cell,
             ProjectedTemporalMotionCell {
