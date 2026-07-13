@@ -10,6 +10,13 @@ const MAX_LS_BITS: u32 = 26;
 const MV_REFINE_PREC_BITS: i32 = 4;
 const MV_DELTA_LIMIT: i32 = 1 << MV_REFINE_PREC_BITS;
 
+/// Reusable working storage for optical-flow motion-vector derivation.
+#[derive(Debug, Default)]
+pub struct OptflowScratch {
+    samples: Vec<i16>,
+    deltas: Vec<[[i32; 2]; 2]>,
+}
+
 /// Derives the AV2 § 7.13.3.9 optical-flow motion-vector deltas for each
 /// `unit_size` square in a pair of clipped, row-major luma predictors.
 ///
@@ -33,6 +40,41 @@ pub fn derive_optflow_mv_deltas(
     bit_depth: BitDepth,
     distances: [i32; 2],
 ) -> Result<Vec<[[i32; 2]; 2]>> {
+    let mut scratch = OptflowScratch::default();
+    derive_optflow_mv_deltas_into(
+        pred0,
+        pred1,
+        width,
+        height,
+        unit_size,
+        bit_depth,
+        distances,
+        &mut scratch,
+    )?;
+    Ok(core::mem::take(&mut scratch.deltas))
+}
+
+/// Derives AV2 § 7.13.3.9 optical-flow deltas into reusable buffers.
+///
+/// `scratch` retains its allocations between calls. The returned slice contains
+/// exactly one entry per `unit_size` square. Its internal output is cleared
+/// before validation and remains empty on error.
+///
+/// # Errors
+///
+/// Returns the same errors as [`derive_optflow_mv_deltas`].
+#[allow(clippy::too_many_arguments)]
+pub fn derive_optflow_mv_deltas_into<'a>(
+    pred0: &[u16],
+    pred1: &[u16],
+    width: usize,
+    height: usize,
+    unit_size: usize,
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    scratch: &'a mut OptflowScratch,
+) -> Result<&'a [[[i32; 2]; 2]]> {
+    scratch.deltas.clear();
     if width == 0 {
         return Err(ReconError::ZeroDimension {
             field: "optical-flow predictor width",
@@ -69,7 +111,8 @@ pub fn derive_optflow_mv_deltas(
 
     let unit_count = (width / unit_size) * (height / unit_size);
     if distances.contains(&0) {
-        return Ok(vec![[[0; 2]; 2]; unit_count]);
+        scratch.deltas.resize(unit_count, [[0; 2]; 2]);
+        return Ok(&scratch.deltas);
     }
     let distances = reduce_distances(distances);
     let downshift = u32::from(bit_depth.bits().saturating_sub(8));
@@ -78,10 +121,10 @@ pub fn derive_optflow_mv_deltas(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "optical-flow scratch sample count",
         })?;
-    let mut scratch = vec![0i16; scratch_len];
-    let (weighted, scratch) = scratch.split_at_mut(expected);
-    let (difference, scratch) = scratch.split_at_mut(expected);
-    let (gradient_x, gradient_y) = scratch.split_at_mut(expected);
+    scratch.samples.resize(scratch_len, 0);
+    let (weighted, scratch_samples) = scratch.samples.split_at_mut(expected);
+    let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
+    let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
     let max_sample = bit_depth.max_sample();
     for index in 0..expected {
         let left = pred0[index];
@@ -104,15 +147,22 @@ pub fn derive_optflow_mv_deltas(
     }
 
     gradients(weighted, width, height, gradient_x, gradient_y);
-    let mut deltas = Vec::with_capacity(unit_count);
+    scratch.deltas.reserve(unit_count);
     for unit_y in (0..height).step_by(unit_size) {
         for unit_x in (0..width).step_by(unit_size) {
-            deltas.push(solve_unit(
+            let delta = match solve_unit(
                 gradient_x, gradient_y, difference, width, unit_x, unit_y, unit_size, distances,
-            )?);
+            ) {
+                Ok(delta) => delta,
+                Err(error) => {
+                    scratch.deltas.clear();
+                    return Err(error);
+                }
+            };
+            scratch.deltas.push(delta);
         }
     }
-    Ok(deltas)
+    Ok(&scratch.deltas)
 }
 
 fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
@@ -308,6 +358,68 @@ mod tests {
                 .len(),
             4,
         );
+    }
+
+    #[test]
+    fn into_reuses_scratch_and_delta_allocations() {
+        let predictor = vec![80; 8 * 8];
+        let mut scratch = OptflowScratch::default();
+        derive_optflow_mv_deltas_into(
+            &predictor,
+            &predictor,
+            8,
+            8,
+            4,
+            BitDepth::Eight,
+            [1, -2],
+            &mut scratch,
+        )
+        .unwrap();
+        let samples_ptr = scratch.samples.as_ptr();
+        let deltas_ptr = scratch.deltas.as_ptr();
+
+        derive_optflow_mv_deltas_into(
+            &predictor,
+            &predictor,
+            8,
+            8,
+            4,
+            BitDepth::Eight,
+            [1, -2],
+            &mut scratch,
+        )
+        .unwrap();
+
+        assert_eq!(scratch.samples.as_ptr(), samples_ptr);
+        assert_eq!(scratch.deltas.as_ptr(), deltas_ptr);
+        assert_eq!(scratch.deltas, vec![[[0; 2]; 2]; 4]);
+    }
+
+    #[test]
+    fn into_clears_deltas_when_validation_fails() {
+        let predictor = vec![80; 8 * 8];
+        let mut scratch = OptflowScratch {
+            samples: Vec::new(),
+            deltas: vec![[[1; 2]; 2]],
+        };
+
+        assert!(matches!(
+            derive_optflow_mv_deltas_into(
+                &predictor[..63],
+                &predictor,
+                8,
+                8,
+                8,
+                BitDepth::Eight,
+                [1, -1],
+                &mut scratch,
+            ),
+            Err(ReconError::BufferLengthMismatch {
+                expected: 64,
+                actual: 63,
+            })
+        ));
+        assert!(scratch.deltas.is_empty());
     }
 
     #[test]
