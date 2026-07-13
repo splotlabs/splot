@@ -41,6 +41,14 @@ impl<T: ReconSample> PredictedPlane<T> {
     }
 }
 
+fn pack_samples<T: ReconSample>(samples: &[u16]) -> splot_recon::Result<Vec<T>> {
+    let mut packed = Vec::with_capacity(samples.len());
+    for &sample in samples {
+        packed.push(T::try_from_u16(sample)?);
+    }
+    Ok(packed)
+}
+
 pub(super) const fn optflow_unit_size(luma_w: usize, luma_h: usize) -> usize {
     if luma_w <= 8 && luma_h <= 8 { 4 } else { 8 }
 }
@@ -691,10 +699,7 @@ fn predict_plane_output<T: ReconSample>(
     };
     let predicted = subpel_predict_block(&view, &params)?;
 
-    let packed: Vec<T> = predicted
-        .iter()
-        .map(|&v| T::try_from_u16(v))
-        .collect::<splot_recon::Result<Vec<T>>>()?;
+    let packed = pack_samples(&predicted)?;
 
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok(PredictedPlane {
@@ -766,10 +771,7 @@ fn predict_warp_plane<T: ReconSample>(
                     splot_recon::ext_warp_predict_unit(&view, &params, i4, j4, false)?,
                     i64::from(bit_depth.max_sample()),
                 );
-                let packed: Vec<T> = predicted
-                    .iter()
-                    .map(|&v| T::try_from_u16(v))
-                    .collect::<splot_recon::Result<Vec<T>>>()?;
+                let packed = pack_samples(&predicted)?;
                 let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 sink.write_rect(plane, rect, &packed, 4)?;
             }
@@ -876,10 +878,7 @@ fn predict_compound_plane_output<T: ReconSample>(
         sub_y,
     )?;
 
-    let packed: Vec<T> = blended
-        .iter()
-        .map(|&v| T::try_from_u16(v))
-        .collect::<splot_recon::Result<Vec<T>>>()?;
+    let packed = pack_samples(&blended)?;
     let rect = PlaneRect::new(
         prediction.plane_x,
         prediction.plane_y,
@@ -1648,10 +1647,7 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
         workspace.info().bit_depth(),
     );
     let predicted = subpel_predict_block(&view, &params)?;
-    let packed: Vec<T> = predicted
-        .iter()
-        .map(|&v| T::try_from_u16(v))
-        .collect::<splot_recon::Result<Vec<T>>>()?;
+    let packed = pack_samples(&predicted)?;
     workspace.write_rect(plane, target, &packed, target.width())?;
     Ok(())
 }
