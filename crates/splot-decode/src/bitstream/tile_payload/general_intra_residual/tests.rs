@@ -125,6 +125,137 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
 }
 
 #[test]
+fn reconstruct_into_reuses_rectangular_u16_output_storage() {
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 0,
+        quant: vec![0; 32],
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: DCT_DCT,
+        use_tcq: false,
+        lossless: false,
+    };
+    let prediction = vec![301u16; 32];
+    let mut out = Vec::with_capacity(32);
+    out.push(7);
+    let allocation = out.as_ptr();
+
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        &block,
+        &prediction,
+        &mut out,
+        80,
+        PlaneId::Y,
+        2,
+        3,
+        false,
+        None,
+        BitDepth::Ten,
+    )
+    .unwrap();
+
+    assert_eq!(out, prediction);
+    assert_eq!(out.as_ptr(), allocation);
+}
+
+#[test]
+fn reconstruct_into_supports_maximum_u8_transform_geometry() {
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 0,
+        quant: vec![0; 32 * 32],
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: DCT_DCT,
+        use_tcq: false,
+        lossless: false,
+    };
+    let prediction = vec![128u8; 64 * 64];
+    let mut out = Vec::with_capacity(64 * 64);
+    let allocation = out.as_ptr();
+
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        &block,
+        &prediction,
+        &mut out,
+        64,
+        PlaneId::Y,
+        6,
+        6,
+        false,
+        None,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    assert_eq!(out, prediction);
+    assert_eq!(out.as_ptr(), allocation);
+}
+
+#[test]
+fn reconstruct_into_keeps_output_on_truncated_inputs() {
+    let prediction = vec![128u8; 16];
+    let invalid_quant = LumaCoeffBlock {
+        all_zero: false,
+        eob: 0,
+        quant: vec![0; 15],
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: DCT_DCT,
+        use_tcq: false,
+        lossless: false,
+    };
+    let mut out = vec![91u8; 7];
+
+    let quant_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        &invalid_quant,
+        &prediction,
+        &mut out,
+        64,
+        PlaneId::Y,
+        2,
+        2,
+        false,
+        None,
+        BitDepth::Eight,
+    );
+    assert!(matches!(
+        quant_result,
+        Err(GeneralIntraResidualError::QuantLength {
+            expected: 16,
+            actual: 15,
+        })
+    ));
+    assert_eq!(out, vec![91; 7]);
+
+    let valid_quant = LumaCoeffBlock {
+        quant: vec![0; 16],
+        ..invalid_quant
+    };
+    let prediction_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        &valid_quant,
+        &prediction[..15],
+        &mut out,
+        64,
+        PlaneId::Y,
+        2,
+        2,
+        false,
+        None,
+        BitDepth::Eight,
+    );
+    assert!(matches!(
+        prediction_result,
+        Err(GeneralIntraResidualError::PredictionLength {
+            expected: 16,
+            actual: 15,
+        })
+    ));
+    assert_eq!(out, vec![91; 7]);
+}
+
+#[test]
 fn txb_skip_tx_size_ctx_matches_spec_formula_for_square_sizes() {
     for (tx_size, expected) in [(0, 0), (1, 1), (2, 2), (3, 3), (TX_64X64, 4)] {
         assert_eq!(txb_skip_tx_size_ctx(tx_size), expected);

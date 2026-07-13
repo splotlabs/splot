@@ -4,7 +4,7 @@
 //! Shared transform-block reconstruction setup.
 
 use splot_recon::{
-    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId,
+    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, ReconSample,
     SecondaryInverseTransform, ac_quantizer, dc_quantizer, dequantize_block, tx_class,
 };
 
@@ -88,6 +88,76 @@ pub(super) fn resolve_secondary_inverse_transform(
         transpose,
         bit_depth,
     }))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T: ReconSample>(
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    out: &mut Vec<T>,
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_width: u32,
+    log2_height: u32,
+    use_tcq: bool,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+) -> Result<(), GeneralIntraResidualError> {
+    super::reconstruct_general_intra_block_rect_with_prediction_core(
+        &block.quant,
+        prediction,
+        out,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
+        use_tcq && block.use_tcq,
+        false,
+        block.lossless,
+        None,
+        dpcm,
+        bit_depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_luma_block_rect_with_prediction_and_ist_into<
+    T: ReconSample,
+>(
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    out: &mut Vec<T>,
+    qindex: u32,
+    log2_width: u32,
+    log2_height: u32,
+    use_tcq: bool,
+    bit_depth: BitDepth,
+    luma_context: LumaTransformTypeContext,
+) -> Result<(), GeneralIntraResidualError> {
+    let secondary = resolve_secondary_inverse_transform(
+        block,
+        log2_width,
+        log2_height,
+        bit_depth,
+        Some(luma_context),
+    )?;
+    super::reconstruct_general_intra_block_rect_with_prediction_core(
+        &block.quant,
+        prediction,
+        out,
+        qindex,
+        PlaneId::Y,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
+        use_tcq && block.use_tcq,
+        false,
+        block.lossless,
+        secondary.as_ref(),
+        luma_context.dpcm,
+        bit_depth,
+    )
 }
 
 fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {
