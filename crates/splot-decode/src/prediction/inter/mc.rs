@@ -4,10 +4,10 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PixelFormat, PlaneId, PlaneRect,
-    ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
-    WarpPredictBlockParams, blend_compound_average_weighted_sample, ext_warp_predict_unit,
-    subpel_predict_block, subpel_predict_block_compound_intermediate,
+    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, PixelFormat,
+    PlaneId, PlaneRect, ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams,
+    WARPED_BLOCK_SIZE, WarpPredictBlockParams, blend_compound_average_weighted_sample,
+    ext_warp_predict_unit, subpel_predict_block, subpel_predict_block_compound_intermediate,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
     warp_predict_block_into, wedge_mask_plane_sample,
 };
@@ -36,18 +36,20 @@ pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32)
 }
 pub(crate) const CWP_EQUAL: i16 = 8;
 
-struct PredictedPlane<T> {
-    plane: PlaneId,
-    rect: PlaneRect,
-    samples: Vec<T>,
-    stride: usize,
-}
-
-impl<T: ReconSample> PredictedPlane<T> {
-    fn publish(self, sink: &mut WorkspaceSink<'_, T>) -> Result<()> {
-        sink.write_rect(self.plane, self.rect, &self.samples, self.stride)?;
-        Ok(())
+fn copy_u16_samples<T: ReconSample>(samples: &[u16], output: &mut [T]) -> splot_recon::Result<()> {
+    if samples.len() != output.len() {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output.len(),
+            actual: samples.len(),
+        });
     }
+    for &sample in samples {
+        T::try_from_u16(sample)?;
+    }
+    for (output, &sample) in output.iter_mut().zip(samples) {
+        *output = T::try_from_u16(sample)?;
+    }
+    Ok(())
 }
 
 fn pack_samples<T: ReconSample>(samples: &[u16]) -> splot_recon::Result<Vec<T>> {
@@ -641,8 +643,8 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
         let (plane_samples, remaining_samples) = samples.split_at_mut(plane_sample_count);
         samples = remaining_samples;
         if plane != PlaneId::Y && block.sub8x8_chroma {
-            let predicted = predict_plane_output(
-                sink,
+            with_plane_prediction(
+                sink.info(),
                 block.reference0,
                 plane,
                 block.rect,
@@ -651,15 +653,11 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
                 sub_x,
                 sub_y,
                 offset,
+                |_, predicted, _| {
+                    copy_u16_samples(predicted, plane_samples)?;
+                    Ok(())
+                },
             )?;
-            if predicted.samples.len() != plane_samples.len() {
-                return Err(ReconError::BufferLengthMismatch {
-                    expected: plane_samples.len(),
-                    actual: predicted.samples.len(),
-                }
-                .into());
-            }
-            plane_samples.copy_from_slice(&predicted.samples);
         } else {
             predict_compound_plane_output(
                 sink,
@@ -783,15 +781,26 @@ fn predict_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    predict_plane_output(
-        sink, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
-    )?
-    .publish(sink)
+    with_plane_prediction(
+        sink.info(),
+        reference,
+        plane,
+        rect,
+        mv,
+        interp,
+        sub_x,
+        sub_y,
+        offset,
+        |rect, predicted, stride| {
+            sink.write_u16_rect(plane, rect, predicted, stride)?;
+            Ok(())
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn predict_plane_output<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+fn with_plane_prediction<T: ReconSample>(
+    info: DecodedFrameInfo,
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
@@ -800,12 +809,13 @@ fn predict_plane_output<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     offset: ByteOffset,
-) -> Result<PredictedPlane<T>> {
+    consume: impl FnOnce(PlaneRect, &[u16], usize) -> Result<()>,
+) -> Result<()> {
     let (view, _, _) = reference_plane_view(reference, plane, offset)?;
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let reference_size = reference.info().coded_luma_size();
-    let frame_size = sink.info().coded_luma_size();
+    let frame_size = info.coded_luma_size();
 
     let scaling = derive_plane_scaling(
         plane_x as i32,
@@ -832,18 +842,23 @@ fn predict_plane_output<T: ReconSample>(
         first_y: scaling.first_y,
         last_x: scaling.last_x,
         last_y: scaling.last_y,
-        bit_depth: sink.info().bit_depth(),
+        bit_depth: info.bit_depth(),
     };
-    let predicted = subpel_predict_block(&view, &params)?;
-
-    let packed = pack_samples(&predicted)?;
-
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
-    Ok(PredictedPlane {
-        plane,
-        rect,
-        samples: packed,
-        stride: block_w,
+    let len = block_w
+        .checked_mul(block_h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "single-reference prediction sample count",
+        })?;
+    SUBPEL_PREDICTION_BUFFER.with(|slot| {
+        let mut predicted = slot.take().unwrap_or_default();
+        predicted.resize(len, 0);
+        let result: Result<()> = (|| {
+            subpel_predict_block_into(&view, &params, &mut predicted)?;
+            consume(rect, &predicted, block_w)
+        })();
+        slot.set(Some(predicted));
+        result
     })
 }
 
@@ -1048,6 +1063,8 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static INITIAL_LUMA_PREDICTIONS: std::cell::Cell<Option<Vec<u16>>> =
         const { std::cell::Cell::new(None) };
+    static SUBPEL_PREDICTION_BUFFER: std::cell::Cell<Option<Vec<u16>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
@@ -1202,10 +1219,13 @@ fn compound_plane_prediction<T: ReconSample>(
         last_y: scaling1.last_y,
         bit_depth: sink.info().bit_depth(),
     };
-    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0)?;
-    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1)?;
-
-    Ok(CompoundPlanePrediction {
+    let sample_count = block_w
+        .checked_mul(block_h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "compound prediction sample count",
+        })?;
+    let [pred0, pred1] = take_compound_prediction_buffers(sample_count);
+    let mut prediction = CompoundPlanePrediction {
         pred0,
         pred1,
         plane_x,
@@ -1214,8 +1234,21 @@ fn compound_plane_prediction<T: ReconSample>(
         block_h,
         scaling0,
         scaling1,
-        recycle_buffers: false,
-    })
+        recycle_buffers: true,
+    };
+    subpel_predict_block_compound_intermediate_into(
+        &view0,
+        &params0,
+        &mut prediction.pred0,
+        block_w,
+    )?;
+    subpel_predict_block_compound_intermediate_into(
+        &view1,
+        &params1,
+        &mut prediction.pred1,
+        block_w,
+    )?;
+    Ok(prediction)
 }
 
 /// AV2 § 7.13.3.14 compound LOCALWARP plane prediction: warp each list with its
