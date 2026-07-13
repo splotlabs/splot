@@ -148,7 +148,7 @@ pub(crate) fn coalesced_lr_source_rows_all(
         true
     });
 
-    blocks.sort_unstable_by_key(|block| (block.plane, block.vertical_merge_key(), block.y));
+    blocks.sort_unstable_by_key(|block| (block.vertical_merge_key(), block.y));
     blocks.dedup_by(|next, rectangle| {
         let Some(height) = rectangle.merged_height_with(next) else {
             return false;
