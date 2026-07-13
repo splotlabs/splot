@@ -1940,28 +1940,31 @@ pub fn apply_intra_edge_filter<T: ReconSample>(
             context: "intra edge filter size exceeds edge length",
         });
     }
-    let Some(filt) = usize::from(strength).checked_sub(1) else {
-        return Ok(());
-    };
-    let Some(kernel) = INTRA_EDGE_KERNEL.get(filt) else {
+    let Some(kernel) = INTRA_EDGE_KERNEL.get(usize::from(strength - 1)) else {
         return Err(ReconError::ArithmeticOverflow {
             context: "intra edge filter strength out of range",
         });
     };
-    let original: Vec<u16> = edge[..sz].iter().map(|s| s.to_u16()).collect();
     let last = sz - 1;
-    for (i, slot) in edge.iter_mut().enumerate().take(sz).skip(1) {
-        let mut s: i32 = 0;
-        for (j, &tap) in kernel.iter().enumerate() {
-            let raw = i as i64 - 2 + j as i64;
-            let k = raw.clamp(0, last as i64) as usize;
-            s += tap * i32::from(original[k]);
-        }
+    let [tap_m2, tap_m1, tap_0, tap_p1, tap_p2] = *kernel;
+    let mut two_back = edge[0].to_u16();
+    let mut one_back = two_back;
+    for i in 1..sz {
+        let current = edge[i].to_u16();
+        let one_ahead = edge[i.saturating_add(1).min(last)].to_u16();
+        let two_ahead = edge[i.saturating_add(2).min(last)].to_u16();
+        let s = tap_m2 * i32::from(two_back)
+            + tap_m1 * i32::from(one_back)
+            + tap_0 * i32::from(current)
+            + tap_p1 * i32::from(one_ahead)
+            + tap_p2 * i32::from(two_ahead);
         let value = (s + 8) >> 4;
         let value = u16::try_from(value).map_err(|_| ReconError::ArithmeticOverflow {
             context: "intra edge filter output out of range",
         })?;
-        *slot = T::try_from_u16(value)?;
+        edge[i] = T::try_from_u16(value)?;
+        two_back = one_back;
+        one_back = current;
     }
     Ok(())
 }

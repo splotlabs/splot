@@ -951,12 +951,46 @@ fn middle_directional_angle_prediction_validates_output_shape() {
     assert_eq!(short_output, [9u8; 15]);
 }
 
-#[test]
-fn intra_edge_filter_strength_zero_is_a_no_op() {
-    let mut edge = [10u16, 200, 30, 180, 50, 160, 70, 140];
-    let original = edge;
-    apply_intra_edge_filter(&mut edge, 8, 0).unwrap();
-    assert_eq!(edge, original, "strength 0 must leave the edge unchanged");
+fn owned_intra_edge_filter_reference(edge: &[u16], sz: usize, strength: u8) -> Vec<u16> {
+    let original = edge[..sz].to_vec(); // splot-copy-ok: test oracle source snapshot
+    let mut filtered = edge.to_vec(); // splot-copy-ok: test oracle expected output
+    let last = sz - 1;
+    let kernel = INTRA_EDGE_KERNEL[usize::from(strength - 1)];
+    for (i, output) in filtered.iter_mut().take(sz).enumerate().skip(1) {
+        let weighted = kernel
+            .iter()
+            .enumerate()
+            .map(|(j, &tap)| {
+                let source = i.saturating_add(j).saturating_sub(2).min(last);
+                tap * i32::from(original[source])
+            })
+            .sum::<i32>();
+        *output = ((weighted + 8) >> 4) as u16;
+    }
+    filtered
+}
+
+fn assert_intra_edge_filter_matches_owned_reference<T: ReconSample>(
+    edge: Vec<T>,
+    sz: usize,
+    strength: u8,
+) {
+    let source = edge
+        .iter()
+        .map(|sample| sample.to_u16())
+        .collect::<Vec<_>>();
+    let expected = owned_intra_edge_filter_reference(&source, sz, strength);
+    let mut actual = edge;
+    apply_intra_edge_filter(&mut actual, sz, strength).unwrap();
+    assert_eq!(
+        actual
+            .iter()
+            .map(|sample| sample.to_u16())
+            .collect::<Vec<_>>(),
+        expected,
+        "sz={sz}, strength={strength}, sample_type={}",
+        T::TYPE_NAME
+    );
 }
 
 #[test]
@@ -977,9 +1011,67 @@ fn intra_edge_filter_kernels_match_spec_verbatim() {
 }
 
 #[test]
-fn intra_edge_filter_rejects_size_beyond_edge() {
-    let mut edge = [1u16, 2, 3, 4];
-    assert!(apply_intra_edge_filter(&mut edge, 5, 1).is_err());
+fn intra_edge_filter_matches_owned_reference_for_all_sizes_and_strengths() {
+    for sz in 1..=129 {
+        for strength in 1..=3 {
+            let wide = (0..sz + 3)
+                .map(|i| ((i * 40_503 + sz * 7_919) ^ (i << 7)) as u16)
+                .collect::<Vec<_>>();
+            let narrow = wide.iter().map(|&sample| sample as u8).collect();
+            assert_intra_edge_filter_matches_owned_reference(wide, sz, strength);
+            assert_intra_edge_filter_matches_owned_reference(narrow, sz, strength);
+
+            let last = sz - 1;
+            for position in [
+                0,
+                1.min(last),
+                2.min(last),
+                last / 2,
+                last.saturating_sub(2),
+                last.saturating_sub(1),
+                last,
+            ] {
+                let mut impulse = vec![0u16; sz + 3];
+                impulse[position] = u16::MAX;
+                impulse[sz..].fill(0x5a5a);
+                assert_intra_edge_filter_matches_owned_reference(impulse, sz, strength);
+            }
+        }
+    }
+}
+
+#[test]
+fn intra_edge_filter_preserves_noop_and_error_ordering() {
+    let mut edge = [10u16, 20];
+    assert_eq!(apply_intra_edge_filter(&mut edge, 3, 0), Ok(()));
+    assert_eq!(edge, [10, 20]);
+
+    assert_eq!(apply_intra_edge_filter(&mut edge, 0, u8::MAX), Ok(()));
+    assert_eq!(edge, [10, 20]);
+
+    let err = apply_intra_edge_filter(&mut edge, 3, u8::MAX).unwrap_err();
+    assert_eq!(
+        err,
+        ReconError::ArithmeticOverflow {
+            context: "intra edge filter size exceeds edge length"
+        }
+    );
+    assert_eq!(edge, [10, 20]);
+
+    let mut single = [9u8];
+    let err = apply_intra_edge_filter(&mut single, 1, 4).unwrap_err();
+    assert_eq!(
+        err,
+        ReconError::ArithmeticOverflow {
+            context: "intra edge filter strength out of range"
+        }
+    );
+    assert_eq!(single, [9]);
+
+    for strength in 1..=3 {
+        apply_intra_edge_filter(&mut single, 1, strength).unwrap();
+        assert_eq!(single, [9]);
+    }
 }
 
 #[test]
