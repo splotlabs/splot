@@ -42,8 +42,9 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
-use super::coeff_state::CoeffContextUpdate;
-use super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
+use super::coeff_state::{
+    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, recycle_coeff_quant,
+};
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 mod cctx;
@@ -501,6 +502,12 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) plane_tx_type: usize,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
+}
+
+impl Drop for LumaCoeffBlock {
+    fn drop(&mut self) {
+        recycle_coeff_quant(core::mem::take(&mut self.quant));
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1342,7 +1349,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         return Ok(LumaCoeffBlock {
             all_zero: false,
             eob: pass.eob_read().eob().eob(),
-            quant: pass.block().quant().to_vec(),
+            quant: pass.into_block().into_quant(),
             intra_ist: metadata.intra_ist,
             cctx_type: metadata.cctx_type,
             plane_tx_type,
