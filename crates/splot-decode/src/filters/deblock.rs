@@ -155,16 +155,19 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     }
 
     let grid = build_mi_grid(blocks, mi_rows, mi_cols)?;
-    let mut chroma_grids = [grid.clone(), grid.clone()];
-    overlay_mi_grid(&mut chroma_grids[0], chroma_blocks[0], mi_rows, mi_cols);
-    overlay_mi_grid(&mut chroma_grids[1], chroma_blocks[1], mi_rows, mi_cols);
-
     let pixel_format = workspace.info().pixel_format();
     for plane in 0..3 {
-        let plane_grid = if plane == 0 {
-            &grid
-        } else {
-            &chroma_grids[plane - 1]
+        if plane != 0 && !filter.apply_deblocking_filter[plane + 1] {
+            continue;
+        }
+        let chroma_grid = (plane != 0).then(|| {
+            let mut chroma_grid = grid.clone();
+            overlay_mi_grid(&mut chroma_grid, chroma_blocks[plane - 1], mi_rows, mi_cols);
+            chroma_grid
+        });
+        let plane_grid = match chroma_grid.as_ref() {
+            Some(chroma_grid) => chroma_grid,
+            None => &grid,
         };
         for pass in 0..2usize {
             let Some(plane_pass) =
