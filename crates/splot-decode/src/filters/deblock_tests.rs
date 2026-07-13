@@ -970,11 +970,6 @@ fn banded_parallel_pass_matches_serial_output() {
     for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
         splat_asymmetric(&mut serial, plane, 1023);
     }
-    let mut parallel = yuv420_workspace_10bit(128, 64, 512);
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        splat_asymmetric(&mut parallel, plane, 1023);
-    }
-
     let run = |ws: &mut CurrentFrameWorkspace<u16>| {
         deblock_general_intra_frame(
             ws,
@@ -989,18 +984,24 @@ fn banded_parallel_pass_matches_serial_output() {
         .unwrap();
     };
     run(&mut serial);
-    let pool = WorkerPool::new(ThreadCount::Fixed(4.try_into().unwrap())).unwrap();
-    assert!(pool.install(|| {
-        let active = splot_parallel::on_multiworker_pool();
-        run(&mut parallel);
-        active
-    }));
+    for threads in [1, 4] {
+        let mut parallel = yuv420_workspace_10bit(128, 64, 512);
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            splat_asymmetric(&mut parallel, plane, 1023);
+        }
+        let pool = WorkerPool::new(ThreadCount::Fixed(threads.try_into().unwrap())).unwrap();
+        assert!(pool.install(|| {
+            let active = splot_parallel::on_worker_pool();
+            run(&mut parallel);
+            active
+        }));
 
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        assert_eq!(
-            serial.samples(plane).unwrap(),
-            parallel.samples(plane).unwrap(),
-            "banded parallel pass 0 must match the serial pass for {plane:?}"
-        );
+        for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+            assert_eq!(
+                serial.samples(plane).unwrap(),
+                parallel.samples(plane).unwrap(),
+                "banded pass with {threads} worker(s) must match serial for {plane:?}"
+            );
+        }
     }
 }
