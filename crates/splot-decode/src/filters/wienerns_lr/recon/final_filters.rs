@@ -9,10 +9,11 @@ use splot_parallel::prelude::*;
 use splot_recon::{
     LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
     PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
-    PcWienerClassifyParams, PcWienerFilter, PcWienerPaddedSource, PlaneId, PlaneRect, ReconError,
-    ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS,
-    WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WienerNsChromaFilter, WienerNsLumaFilter,
-    WienerNsLumaPaddedSource, loop_restoration_source_sample, pc_wiener_classify_grid_padded,
+    PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
+    PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
+    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
+    WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource,
+    loop_restoration_source_sample, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass,
     wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded,
 };
@@ -25,6 +26,20 @@ use crate::bitstream::tile_payload::{
 use crate::filters::cdef::CdefSkipGrid;
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::filters::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
+
+thread_local! {
+    static PC_WIENER_CLASSIFY_SCRATCH: std::cell::Cell<Option<PcWienerClassifyScratch>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn with_pc_wiener_classify_scratch<R>(f: impl FnOnce(&mut PcWienerClassifyScratch) -> R) -> R {
+    PC_WIENER_CLASSIFY_SCRATCH.with(|slot| {
+        let mut scratch = slot.take().unwrap_or_default();
+        let result = f(&mut scratch);
+        slot.set(Some(scratch));
+        result
+    })
+}
 
 fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
     wienerns_lr_selectable_transform_record_error_reason(
@@ -1084,33 +1099,37 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 window.origin_x,
                 window.origin_y,
             );
-            let classifications = pc_wiener_classify_grid_padded::<T, _>(
-                &params,
-                group_cols,
-                cell_rows,
-                &padded_source,
-                |lookup| {
-                    tx_skip_grid.lookup(
-                        crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup),
-                    )
-                },
-            )
-            .map_err(|_| luma_lr_filter_error(offset))?;
-            for (index, classification) in classifications.into_iter().enumerate() {
-                let cell_row = index / group_cols;
-                let cell_col = group_start + index % group_cols;
-                let cell_index = cell_row
-                    .checked_mul(cell_cols)
-                    .and_then(|start| start.checked_add(cell_col))
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
-                let subclass =
-                    pc_wiener_subclass(num_classes, filter_set_index, classification.class)
-                        .map_err(|_| luma_lr_filter_error(offset))?;
-                let Some(slot) = cell_subclasses.get_mut(cell_index) else {
-                    return Err(luma_lr_filter_error(offset));
-                };
-                *slot = subclass;
-            }
+            with_pc_wiener_classify_scratch(|scratch| {
+                let classifications = pc_wiener_classify_grid_padded_into::<T, _>(
+                    &params,
+                    group_cols,
+                    cell_rows,
+                    &padded_source,
+                    |lookup| {
+                        tx_skip_grid.lookup(
+                            crate::filters::wienerns_lr::wienerns_lr_tx_skip_lookup_from_pc(lookup),
+                        )
+                    },
+                    scratch,
+                )
+                .map_err(|_| luma_lr_filter_error(offset))?;
+                for (index, classification) in classifications.iter().enumerate() {
+                    let cell_row = index / group_cols;
+                    let cell_col = group_start + index % group_cols;
+                    let cell_index = cell_row
+                        .checked_mul(cell_cols)
+                        .and_then(|start| start.checked_add(cell_col))
+                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    let subclass =
+                        pc_wiener_subclass(num_classes, filter_set_index, classification.class)
+                            .map_err(|_| luma_lr_filter_error(offset))?;
+                    let Some(slot) = cell_subclasses.get_mut(cell_index) else {
+                        return Err(luma_lr_filter_error(offset));
+                    };
+                    *slot = subclass;
+                }
+                Ok(())
+            })?;
             group_start = group_end;
         }
 

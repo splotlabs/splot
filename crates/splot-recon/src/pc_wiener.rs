@@ -147,6 +147,14 @@ pub struct PcWienerClassification {
     pub class: u8,
 }
 
+/// Reusable working storage for padded PC-Wiener grid classification.
+#[derive(Debug, Default)]
+pub struct PcWienerClassifyScratch {
+    source_cache: Vec<u16>,
+    features: Vec<CachedPcWienerFeature>,
+    classifications: Vec<PcWienerClassification>,
+}
+
 /// § 7.20.2-pre-resolved source samples for [`pc_wiener_classify_grid_padded`].
 ///
 /// A padded contiguous buffer covering the classified block extended on every
@@ -322,7 +330,19 @@ where
             )?);
         }
     }
-    classify_grid_from_cache(params, cell_cols, cell_rows, &geo, &source_cache, tx_skip)
+    let mut features = Vec::new();
+    let mut classifications = Vec::new();
+    classify_grid_from_cache(
+        params,
+        cell_cols,
+        cell_rows,
+        &geo,
+        &source_cache,
+        &mut features,
+        &mut classifications,
+        tx_skip,
+    )?;
+    Ok(classifications)
 }
 
 /// Row-major grid of four-sample-spaced PC-Wiener cells from a padded
@@ -349,14 +369,65 @@ where
     T: ReconSample,
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
+    let mut scratch = PcWienerClassifyScratch::default();
+    pc_wiener_classify_grid_padded_into(
+        params,
+        cell_cols,
+        cell_rows,
+        source,
+        tx_skip,
+        &mut scratch,
+    )?;
+    Ok(core::mem::take(&mut scratch.classifications))
+}
+
+/// Classifies a padded PC-Wiener grid into reusable buffers.
+///
+/// `scratch` retains its allocations between calls. The returned slice contains
+/// exactly `cell_cols * cell_rows` row-major classifications. Its internal
+/// output is cleared before validation and remains empty on error.
+///
+/// # Errors
+///
+/// Returns the same errors as [`pc_wiener_classify_grid_padded`].
+#[inline]
+pub fn pc_wiener_classify_grid_padded_into<'a, T, FT>(
+    params: &PcWienerClassifyParams,
+    cell_cols: usize,
+    cell_rows: usize,
+    source: &PcWienerClassifyPaddedSource<'_, T>,
+    tx_skip: FT,
+    scratch: &'a mut PcWienerClassifyScratch,
+) -> Result<&'a [PcWienerClassification]>
+where
+    T: ReconSample,
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
+    scratch.source_cache.clear();
+    scratch.features.clear();
+    scratch.classifications.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     validate_params(params)?;
     if cell_cols == 0 || cell_rows == 0 {
-        return Ok(Vec::new());
+        return Ok(&scratch.classifications);
     }
     let geo = classify_grid_geometry(params, cell_cols, cell_rows)?;
-    let source_cache = build_padded_source_cache(source, &geo, params.bit_depth)?;
-    classify_grid_from_cache(params, cell_cols, cell_rows, &geo, &source_cache, tx_skip)
+    build_padded_source_cache_into(source, &geo, params.bit_depth, &mut scratch.source_cache)?;
+    let result = classify_grid_from_cache(
+        params,
+        cell_cols,
+        cell_rows,
+        &geo,
+        &scratch.source_cache,
+        &mut scratch.features,
+        &mut scratch.classifications,
+        tx_skip,
+    );
+    if let Err(error) = result {
+        scratch.classifications.clear();
+        return Err(error);
+    }
+    Ok(&scratch.classifications)
 }
 
 /// Caller-resolved geometry shared by the callback and padded classify grids.
@@ -459,11 +530,12 @@ fn classify_grid_geometry(
     })
 }
 
-fn build_padded_source_cache<T: ReconSample>(
+fn build_padded_source_cache_into<T: ReconSample>(
     source: &PcWienerClassifyPaddedSource<'_, T>,
     geo: &ClassifyGridGeometry,
     bit_depth: BitDepth,
-) -> Result<Vec<u16>> {
+    source_cache: &mut Vec<u16>,
+) -> Result<()> {
     let region_col = geo
         .source_start_x
         .checked_sub(source.origin_x)
@@ -504,7 +576,6 @@ fn build_padded_source_cache<T: ReconSample>(
         });
     }
     let max_sample = bit_depth.max_sample();
-    let mut source_cache = Vec::new();
     source_cache
         .try_reserve_exact(geo.source_count)
         .map_err(|_| ReconError::ArithmeticOverflow {
@@ -525,21 +596,23 @@ fn build_padded_source_cache<T: ReconSample>(
             source_cache.push(value);
         }
     }
-    Ok(source_cache)
+    Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn classify_grid_from_cache<FT>(
     params: &PcWienerClassifyParams,
     cell_cols: usize,
     cell_rows: usize,
     geo: &ClassifyGridGeometry,
     source_cache: &[u16],
+    cached: &mut Vec<CachedPcWienerFeature>,
+    classifications: &mut Vec<PcWienerClassification>,
     mut tx_skip: FT,
-) -> Result<Vec<PcWienerClassification>>
+) -> Result<()>
 where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
-    let mut cached = Vec::new();
     cached
         .try_reserve_exact(geo.feature_count)
         .map_err(|_| ReconError::ArithmeticOverflow {
@@ -605,7 +678,6 @@ where
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener classification-grid cell count",
         })?;
-    let mut classifications = Vec::new();
     classifications
         .try_reserve_exact(cell_count)
         .map_err(|_| ReconError::ArithmeticOverflow {
@@ -666,7 +738,7 @@ where
             )?);
         }
     }
-    Ok(classifications)
+    Ok(())
 }
 
 fn finish_pc_wiener_classification(
@@ -1706,41 +1778,169 @@ mod tests {
         let cell_rows = 4;
         let source_at =
             |x: isize, y: isize| -> u16 { ((x * 37 + y * 19 + 512).rem_euclid(1024)) as u16 };
-        let tx_skip = |lookup: PcWienerTxSkipLookup| {
-            Ok(i32::try_from((lookup.row * 3 + lookup.col) & 1).unwrap())
-        };
 
         let callback = pc_wiener_classify_grid::<u16, _, _>(
             &params,
             cell_cols,
             cell_rows,
             |x, y| Ok(source_at(x, y)),
-            tx_skip,
+            alternating_tx_skip,
         )
         .unwrap();
 
-        let radius = PC_WIENER_CLASSIFY_READ_RADIUS as isize;
-        let origin_x = params.x - radius;
-        let origin_y = params.y - radius;
-        let stride = (cell_cols - 1) * PC_WIENER_BLOCK_SIZE
-            + PC_WIENER_FEATURE_WINDOW_SIDE
-            + 4 * PC_WIENER_CLASSIFY_READ_RADIUS;
-        let rows = (cell_rows - 1) * PC_WIENER_BLOCK_SIZE
-            + PC_WIENER_FEATURE_WINDOW_SIDE
-            + 4 * PC_WIENER_CLASSIFY_READ_RADIUS;
-        let mut buffer = Vec::with_capacity(stride * rows);
-        for row in 0..rows {
-            for col in 0..stride {
-                buffer.push(source_at(origin_x + col as isize, origin_y + row as isize));
-            }
-        }
+        let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
         let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
         let padded = pc_wiener_classify_grid_padded::<u16, _>(
-            &params, cell_cols, cell_rows, &source, tx_skip,
+            &params,
+            cell_cols,
+            cell_rows,
+            &source,
+            alternating_tx_skip,
+        )
+        .unwrap();
+        let mut scratch = PcWienerClassifyScratch::default();
+        let reused = pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            cell_cols,
+            cell_rows,
+            &source,
+            alternating_tx_skip,
+            &mut scratch,
         )
         .unwrap();
 
         assert_eq!(callback, padded);
+        assert_eq!(padded, reused);
+    }
+
+    fn padded_classify_fixture(params: &PcWienerClassifyParams) -> (Vec<u16>, usize, isize, isize) {
+        let origin_x = params.x - PC_WIENER_CLASSIFY_READ_RADIUS as isize;
+        let origin_y = params.y - PC_WIENER_CLASSIFY_READ_RADIUS as isize;
+        let stride = 64;
+        let rows = 64;
+        let mut buffer = Vec::with_capacity(stride * rows);
+        for row in 0..rows {
+            for col in 0..stride {
+                let x = origin_x + col as isize;
+                let y = origin_y + row as isize;
+                buffer.push(((x * 37 + y * 19 + 512).rem_euclid(1024)) as u16);
+            }
+        }
+        (buffer, stride, origin_x, origin_y)
+    }
+
+    fn alternating_tx_skip(lookup: PcWienerTxSkipLookup) -> Result<i32> {
+        i32::try_from((lookup.row * 3 + lookup.col) & 1).map_err(|_| {
+            ReconError::ArithmeticOverflow {
+                context: "test PC-Wiener tx-skip",
+            }
+        })
+    }
+
+    #[test]
+    fn padded_into_reuses_capacity_from_large_to_small_grid() {
+        let mut params = params(BitDepth::Ten);
+        params.x = 40;
+        params.y = 24;
+        let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
+        let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
+        let mut scratch = PcWienerClassifyScratch::default();
+        let large_output_ptr = pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            8,
+            8,
+            &source,
+            alternating_tx_skip,
+            &mut scratch,
+        )
+        .unwrap()
+        .as_ptr();
+        let source_ptr = scratch.source_cache.as_ptr();
+        let feature_ptr = scratch.features.as_ptr();
+        let capacities = (
+            scratch.source_cache.capacity(),
+            scratch.features.capacity(),
+            scratch.classifications.capacity(),
+        );
+
+        let small_output_ptr = pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            1,
+            1,
+            &source,
+            alternating_tx_skip,
+            &mut scratch,
+        )
+        .unwrap()
+        .as_ptr();
+
+        assert_eq!(scratch.source_cache.as_ptr(), source_ptr);
+        assert_eq!(scratch.features.as_ptr(), feature_ptr);
+        assert_eq!(small_output_ptr, large_output_ptr);
+        assert_eq!(
+            (
+                scratch.source_cache.capacity(),
+                scratch.features.capacity(),
+                scratch.classifications.capacity(),
+            ),
+            capacities
+        );
+    }
+
+    #[test]
+    fn padded_into_clears_output_after_error_and_empty_grid() {
+        let mut params = params(BitDepth::Ten);
+        params.x = 40;
+        params.y = 24;
+        let (buffer, stride, origin_x, origin_y) = padded_classify_fixture(&params);
+        let source = PcWienerClassifyPaddedSource::new(&buffer, stride, origin_x, origin_y);
+        let mut scratch = PcWienerClassifyScratch::default();
+        pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            3,
+            3,
+            &source,
+            alternating_tx_skip,
+            &mut scratch,
+        )
+        .unwrap();
+
+        let error = pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            2,
+            2,
+            &source,
+            |_| Ok(2),
+            &mut scratch,
+        )
+        .unwrap_err();
+        assert!(matches!(error, ReconError::PcWienerInvalidTxSkip { .. }));
+        assert!(scratch.classifications.is_empty());
+
+        let recovered = pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            1,
+            1,
+            &source,
+            alternating_tx_skip,
+            &mut scratch,
+        )
+        .unwrap();
+        assert_eq!(recovered.len(), 1);
+        let capacity = scratch.classifications.capacity();
+
+        let empty = pc_wiener_classify_grid_padded_into::<u16, _>(
+            &params,
+            0,
+            3,
+            &source,
+            alternating_tx_skip,
+            &mut scratch,
+        )
+        .unwrap();
+
+        assert!(empty.is_empty());
+        assert_eq!(scratch.classifications.capacity(), capacity);
     }
 
     #[test]
