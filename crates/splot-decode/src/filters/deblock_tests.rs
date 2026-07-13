@@ -485,6 +485,48 @@ fn assert_gather_and_apply_match_accessor_reference<T: ReconSample + core::fmt::
         });
         reference_apply(&mut reference, plane, perp, params);
     }
+
+    let batched_params = [
+        params,
+        DeblockSampleFilter {
+            max_width_neg: 2,
+            max_width_pos: 4,
+            prev_lossless: true,
+            ..params
+        },
+        DeblockSampleFilter {
+            max_width_neg: 4,
+            max_width_pos: 2,
+            curr_lossless: true,
+            ..params
+        },
+        DeblockSampleFilter {
+            prev_lossless: true,
+            curr_lossless: true,
+            ..params
+        },
+    ];
+    for params in batched_params {
+        for &(x, y, dx, dy, lanes) in &[
+            (16usize, 4usize, 1usize, 0usize, MI_SIZE),
+            (4, 11, 0, 1, MI_SIZE),
+            (16, 12, 1, 0, 2),
+            (20, 11, 0, 1, 3),
+        ] {
+            let perp = PerpLine::new(x, y, dx, dy);
+            with_plane_ctx(&mut direct, plane, |ctx| {
+                apply_edge_samples(ctx, perp, lanes, params).unwrap();
+            });
+            for lane in 0..lanes {
+                reference_apply(
+                    &mut reference,
+                    plane,
+                    PerpLine::new(x + dy * lane, y + dx * lane, dx, dy),
+                    params,
+                );
+            }
+        }
+    }
     assert_eq!(
         direct.samples(plane).unwrap(),
         reference.samples(plane).unwrap(),
