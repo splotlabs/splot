@@ -21,8 +21,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// caller-owned.
     ///
     /// # Errors
-    /// Returns [`crate::ReconError`] when the plane is absent, the target square is out
-    /// of bounds, or edge scratch allocation fails.
+    /// Returns [`crate::ReconError`] when the plane is absent or the target square is out
+    /// of bounds.
     pub fn intra_dc_edges_for_square(
         &self,
         plane: PlaneId,
@@ -39,8 +39,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// caller-owned.
     ///
     /// # Errors
-    /// Returns [`crate::ReconError`] when the plane is absent, the target rectangle is
-    /// out of bounds, or edge scratch allocation fails.
+    /// Returns [`crate::ReconError`] when the plane is absent or the target rectangle is
+    /// out of bounds.
     pub fn intra_dc_edges_for_rect(
         &self,
         plane: PlaneId,
@@ -123,7 +123,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ///
     /// # Errors
     /// Returns [`crate::ReconError`] for invalid target geometry, absent planes,
-    /// invalid prediction inputs, or edge scratch allocation failure.
+    /// or invalid prediction inputs.
     pub fn predict_intra_ibp_dc_rect(
         &mut self,
         plane: PlaneId,

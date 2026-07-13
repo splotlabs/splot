@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::bitstream::tile_payload::SupportedChromaMode;
+use crate::bitstream::tile_payload::{GeneralIntraResidualError, SupportedChromaMode};
 
 impl IntraEdgeAvailability {
     const fn all() -> Self {
@@ -425,6 +425,87 @@ fn zone1_above_edge_does_not_read_corner_across_tile_boundary() {
     .unwrap();
 
     assert_eq!(&edge[..4], &[28, 28, 28, 29]);
+}
+
+#[test]
+fn one_sided_edge_holds_maximum_u8_mrl3_geometry_inline() {
+    let ws =
+        new_general_intra_workspace::<u8>(140, 70, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
+
+    let edge = build_one_sided_above_idif_edge(
+        &ws,
+        PlaneId::Y,
+        1,
+        4,
+        64,
+        64,
+        32,
+        3,
+        3,
+        IntraEdgeAvailability::all(),
+        BitDepth::Eight,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    assert_eq!(edge.len(), 138);
+    assert_eq!(edge[0], edge[1]);
+    assert_eq!(edge[136], edge[135]);
+    assert_eq!(edge[137], edge[135]);
+}
+
+#[test]
+fn one_sided_edge_holds_maximum_u16_mrl3_fallback_inline() {
+    let ws =
+        new_general_intra_workspace::<u16>(4, 4, BitDepth::Ten, PixelFormat::Monochrome).unwrap();
+
+    let edge = build_one_sided_left_idif_edge(
+        &ws,
+        PlaneId::Y,
+        0,
+        0,
+        64,
+        64,
+        0,
+        false,
+        3,
+        0,
+        false,
+        BitDepth::Ten,
+        OneSidedEdgeFilter::default(),
+    )
+    .unwrap();
+
+    assert_eq!(edge.len(), 138);
+    assert_eq!(edge[1], 512);
+    assert!(edge[2..].iter().all(|&sample| sample == 513));
+}
+
+#[test]
+fn one_sided_edge_rejects_oversize_geometry_without_panicking() {
+    let ws =
+        new_general_intra_workspace::<u8>(4, 4, BitDepth::Eight, PixelFormat::Monochrome).unwrap();
+
+    assert!(matches!(
+        build_one_sided_above_idif_edge(
+            &ws,
+            PlaneId::Y,
+            0,
+            0,
+            usize::MAX,
+            1,
+            0,
+            0,
+            0,
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            BitDepth::Eight,
+            OneSidedEdgeFilter::default(),
+        ),
+        Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)
+    ));
 }
 
 #[test]
