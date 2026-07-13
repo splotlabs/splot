@@ -625,13 +625,7 @@ fn subpel_copy_block_into<T: ReconSample, O>(
 ) {
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
-    let direct_x = usize::try_from(x0).ok().filter(|&x| {
-        x >= usize::try_from(params.first_x.max(0)).unwrap_or(usize::MAX)
-            && x.checked_add(params.w).is_some_and(|end| {
-                end <= reference.width
-                    && i32::try_from(end - 1).is_ok_and(|last| last <= params.last_x)
-            })
-    });
+    let direct_x = subpel_direct_copy_x(reference, params);
     for r in 0..params.h {
         let row = (y0 + r as i32).clamp(params.first_y, params.last_y) as usize;
         let output = &mut output[r * output_stride..][..params.w];
@@ -649,6 +643,131 @@ fn subpel_copy_block_into<T: ReconSample, O>(
                 let col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
                 *out = finish(reference.sample(row, col) << shift_up);
             }
+        }
+    }
+}
+
+fn subpel_direct_copy_x<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+) -> Option<usize> {
+    usize::try_from(params.start_x >> SCALE_SUBPEL_BITS)
+        .ok()
+        .filter(|&x| {
+            x >= usize::try_from(params.first_x.max(0)).unwrap_or(usize::MAX)
+                && x.checked_add(params.w).is_some_and(|end| {
+                    end <= reference.width
+                        && i32::try_from(end - 1).is_ok_and(|last| last <= params.last_x)
+                })
+        })
+}
+
+fn subpel_horizontal_window_x<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+) -> Option<usize> {
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    (x0 - 3 >= params.first_x.max(0)
+        && x0 + params.w as i32 + 3 <= params.last_x.min(reference.width as i32 - 1))
+    .then(|| (x0 - 3) as usize)
+}
+
+fn subpel_horizontal_only_into<T: ReconSample, O>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    inter_round1: u32,
+    output: &mut [O],
+    output_stride: usize,
+    finish: &mut impl FnMut(i32) -> O,
+) {
+    let h_filter = params.interp.pass_index(params.w as u32) as usize;
+    let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
+    let taps = &SUBPEL_FILTERS[h_filter][phase];
+    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter][phase];
+    let taps = &taps[tap_start..tap_end];
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let x_window_start = subpel_horizontal_window_x(reference, params);
+
+    for r in 0..params.h {
+        let ref_row = ((params.start_y >> SCALE_SUBPEL_BITS) + r as i32)
+            .clamp(params.first_y, params.last_y) as usize;
+        let ref_row = ref_row.min(reference.height - 1);
+        let row_out = &mut output[r * output_stride..][..params.w];
+        if let Some(window_start) = x_window_start {
+            let row_base = ref_row * reference.stride + window_start;
+            let window = &reference.samples[row_base..row_base + params.w + NUM_TAPS - 1];
+            for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
+                let samples = &win[tap_start..tap_start + taps.len()];
+                let mut sum = 0i32;
+                for (&tap, &sample) in taps.iter().zip(samples) {
+                    sum += tap * i32::from(sample.to_u16());
+                }
+                let horizontal = round2_i32(sum, INTER_ROUND0);
+                *out = finish(round2_i32(horizontal << FILTER_BITS, inter_round1));
+            }
+            continue;
+        }
+        for (c, out) in row_out.iter_mut().enumerate() {
+            let mut sum = 0i32;
+            for (tap_offset, &tap) in taps.iter().enumerate() {
+                let t = tap_start + tap_offset;
+                let ref_col =
+                    (x0 + c as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
+                sum += tap * reference.sample(ref_row, ref_col);
+            }
+            let horizontal = round2_i32(sum, INTER_ROUND0);
+            *out = finish(round2_i32(horizontal << FILTER_BITS, inter_round1));
+        }
+    }
+}
+
+fn subpel_vertical_only_into<T: ReconSample, O>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    inter_round1: u32,
+    output: &mut [O],
+    output_stride: usize,
+    finish: &mut impl FnMut(i32) -> O,
+) {
+    let v_filter = params.interp.pass_index(params.h as u32) as usize;
+    let phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
+    let taps = &SUBPEL_FILTERS[v_filter][phase];
+    let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter][phase];
+    let taps = &taps[tap_start..tap_end];
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let direct_x = subpel_direct_copy_x(reference, params);
+    let mut acc = [0i32; MAX_BLOCK_DIM];
+
+    for r in 0..params.h {
+        let acc = &mut acc[..params.w];
+        acc.fill(0);
+        for (tap_offset, &tap) in taps.iter().enumerate() {
+            let t = tap_start + tap_offset;
+            let ref_row =
+                (y0 + r as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
+            let ref_row = ref_row.min(reference.height - 1);
+            if let Some(x) = direct_x {
+                let start = ref_row * reference.stride + x;
+                for (sum, sample) in acc
+                    .iter_mut()
+                    .zip(&reference.samples[start..start + params.w])
+                {
+                    *sum += tap * i32::from(sample.to_u16());
+                }
+            } else {
+                for (c, sum) in acc.iter_mut().enumerate() {
+                    let ref_col = (x0 + c as i32).clamp(params.first_x, params.last_x) as usize;
+                    *sum += tap * reference.sample(ref_row, ref_col);
+                }
+            }
+        }
+        let row_out = &mut output[r * output_stride..][..params.w];
+        for (out, &sum) in row_out.iter_mut().zip(acc.iter()) {
+            *out = finish(round2_i32(
+                sum << (FILTER_BITS - INTER_ROUND0),
+                inter_round1,
+            ));
         }
     }
 }
@@ -803,29 +922,49 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
         bit_depth: _,
     } = *params;
 
-    if step_x == 1 << SCALE_SUBPEL_BITS
-        && step_y == 1 << SCALE_SUBPEL_BITS
-        && (start_x >> 6) & SUBPEL_MASK == 0
-        && (start_y >> 6) & SUBPEL_MASK == 0
-    {
-        subpel_copy_block_into(
-            reference,
-            params,
-            2 * FILTER_BITS - (INTER_ROUND0 + inter_round1),
-            output,
-            output_stride,
-            &mut finish,
-        );
-        return Ok(());
+    if step_x == 1 << SCALE_SUBPEL_BITS && step_y == 1 << SCALE_SUBPEL_BITS {
+        let h_phase = (start_x >> 6) & SUBPEL_MASK;
+        let v_phase = (start_y >> 6) & SUBPEL_MASK;
+        match (h_phase == 0, v_phase == 0) {
+            (true, true) => subpel_copy_block_into(
+                reference,
+                params,
+                2 * FILTER_BITS - (INTER_ROUND0 + inter_round1),
+                output,
+                output_stride,
+                &mut finish,
+            ),
+            (false, true) => subpel_horizontal_only_into(
+                reference,
+                params,
+                inter_round1,
+                output,
+                output_stride,
+                &mut finish,
+            ),
+            (true, false) => subpel_vertical_only_into(
+                reference,
+                params,
+                inter_round1,
+                output,
+                output_stride,
+                &mut finish,
+            ),
+            (false, false) => {}
+        }
+        if h_phase == 0 || v_phase == 0 {
+            return Ok(());
+        }
     }
 
     let h_filter = interp.pass_index(w as u32);
     let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
 
-    let x0 = start_x >> SCALE_SUBPEL_BITS;
-    let x_window_direct = step_x == 1 << SCALE_SUBPEL_BITS
-        && x0 - 3 >= first_x.max(0)
-        && x0 + w as i32 + 3 <= last_x.min(reference.width as i32 - 1);
+    let x_window_start = if step_x == 1 << SCALE_SUBPEL_BITS {
+        subpel_horizontal_window_x(reference, params)
+    } else {
+        None
+    };
 
     let v_filter = interp.pass_index(h as u32);
     let mut read_lo = intermediate_height;
@@ -865,12 +1004,10 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
         for r in read_lo..read_hi {
             let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
             let ref_row = (ref_row as usize).min(reference.height - 1);
-            let window = x_window_direct
-                .then(|| {
-                    let row_base = ref_row * reference.stride + (x0 - 3) as usize;
-                    reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
-                })
-                .flatten();
+            let window = x_window_start.and_then(|window_start| {
+                let row_base = ref_row * reference.stride + window_start;
+                reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
+            });
             if let Some(window) = window {
                 let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
                 let row_out = &mut intermediate[r * w..(r + 1) * w];
