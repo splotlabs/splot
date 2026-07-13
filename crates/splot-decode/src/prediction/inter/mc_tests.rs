@@ -182,6 +182,139 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
 }
 
 #[test]
+fn dispatcher_clips_single_prediction_at_frame_edge() {
+    let reference = patterned_frame(8, 8);
+    let mut workspace = workspace(8, 8);
+
+    motion_compensate_inter_block_into(
+        &mut WorkspaceSink::Frame(&mut workspace),
+        InterBlockParams::single(
+            &reference,
+            rect(4, 4, 8, 8),
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+        ),
+        ByteOffset::new(0),
+    )
+    .expect("edge-clipped single-reference dispatcher");
+
+    let decoded = workspace.freeze().expect("freeze edge-clipped workspace");
+    for (plane, width, start) in [(PlaneId::Y, 8, 4), (PlaneId::U, 4, 2), (PlaneId::V, 4, 2)] {
+        let reference_samples = visible_samples(&reference, plane);
+        let mut expected = vec![0; reference_samples.len()];
+        for y in start..width {
+            for x in start..width {
+                expected[y * width + x] = reference_samples[y * width + x];
+            }
+        }
+        assert_eq!(visible_samples(&decoded, plane), expected);
+    }
+}
+
+#[test]
+fn deferred_window_rejects_edge_overhang_without_partial_write() {
+    let reference = patterned_frame(8, 8);
+    let mut workspace = workspace(8, 8);
+    let block_rect = rect(4, 4, 8, 8);
+    let mut window = BlockReconWindow::for_block(&workspace, block_rect).expect("edge window");
+
+    let err = motion_compensate_inter_block_into(
+        &mut WorkspaceSink::Window(&mut window),
+        InterBlockParams::single(
+            &reference,
+            block_rect,
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+        ),
+        ByteOffset::new(0),
+    )
+    .expect_err("overhanging deferred prediction must be retried inline");
+    assert!(matches!(
+        err,
+        crate::error::DecodeError::Reconstruction {
+            source: ReconError::WorkspaceRectOutOfBounds { .. }
+        }
+    ));
+    window
+        .publish(&mut workspace)
+        .expect("publish untouched edge window");
+    let decoded = workspace.freeze().expect("freeze untouched workspace");
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert!(
+            visible_samples(&decoded, plane)
+                .iter()
+                .all(|&sample| sample == 0)
+        );
+    }
+}
+
+#[test]
+fn converted_prediction_write_is_fail_atomic() {
+    let mut workspace = workspace(8, 8);
+    let mut samples = vec![7; 64];
+    samples[63] = 256;
+
+    let err = WorkspaceSink::Frame(&mut workspace)
+        .write_u16_rect(
+            PlaneId::Y,
+            PlaneRect::new(0, 0, 8, 8).expect("full plane"),
+            &samples,
+            8,
+        )
+        .expect_err("unrepresentable late sample must reject the whole write");
+    assert!(matches!(
+        err,
+        ReconError::SampleValueUnsupportedStorage { value: 256, .. }
+    ));
+    assert!(
+        workspace
+            .rect_rows(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).expect("full plane"))
+            .expect("untouched luma rows")
+            .flatten()
+            .all(|&sample| sample == 0)
+    );
+
+    let luma_size = PlaneSize::new(8, 8).expect("luma size");
+    let visible = PlaneRect::new(0, 0, 8, 8).expect("visible rect");
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        luma_size,
+        visible,
+    )
+    .expect("ten-bit frame info");
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(info, 0).expect("ten-bit workspace");
+    let mut samples = vec![900; 64];
+    samples[63] = 1024;
+
+    let err = WorkspaceSink::Frame(&mut workspace)
+        .write_u16_rect(
+            PlaneId::Y,
+            PlaneRect::new(0, 0, 8, 8).expect("full plane"),
+            &samples,
+            8,
+        )
+        .expect_err("out-of-range late sample must reject the whole write");
+    assert!(matches!(
+        err,
+        ReconError::SampleOutOfRange {
+            sample_index: 63,
+            value: 1024,
+            max: 1023,
+            ..
+        }
+    ));
+    assert!(
+        workspace
+            .rect_rows(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).expect("full plane"))
+            .expect("untouched ten-bit luma rows")
+            .flatten()
+            .all(|&sample| sample == 0)
+    );
+}
+
+#[test]
 fn dispatcher_blends_compound_average_planes() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
