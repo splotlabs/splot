@@ -247,8 +247,17 @@ impl<T: ReconSample> WorkspaceSink<'_, T> {
                 actual: samples.len(),
             });
         }
-        for &sample in samples {
+        let max = self.info().bit_depth().max_sample();
+        for (sample_index, &sample) in samples.iter().enumerate() {
             T::try_from_u16(sample)?;
+            if sample > max {
+                return Err(ReconError::SampleOutOfRange {
+                    plane,
+                    sample_index,
+                    value: sample,
+                    max,
+                });
+            }
         }
 
         let mut row_samples = [T::default(); SUBPEL_ROW_CAPACITY];

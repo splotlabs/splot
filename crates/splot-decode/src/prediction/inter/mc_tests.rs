@@ -273,6 +273,45 @@ fn converted_prediction_write_is_fail_atomic() {
             .flatten()
             .all(|&sample| sample == 0)
     );
+
+    let luma_size = PlaneSize::new(8, 8).expect("luma size");
+    let visible = PlaneRect::new(0, 0, 8, 8).expect("visible rect");
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        luma_size,
+        visible,
+    )
+    .expect("ten-bit frame info");
+    let mut workspace = CurrentFrameWorkspace::<u16>::new(info, 0).expect("ten-bit workspace");
+    let mut samples = vec![900; 64];
+    samples[63] = 1024;
+
+    let err = WorkspaceSink::Frame(&mut workspace)
+        .write_u16_rect(
+            PlaneId::Y,
+            PlaneRect::new(0, 0, 8, 8).expect("full plane"),
+            &samples,
+            8,
+        )
+        .expect_err("out-of-range late sample must reject the whole write");
+    assert!(matches!(
+        err,
+        ReconError::SampleOutOfRange {
+            sample_index: 63,
+            value: 1024,
+            max: 1023,
+            ..
+        }
+    ));
+    assert!(
+        workspace
+            .rect_rows(PlaneId::Y, PlaneRect::new(0, 0, 8, 8).expect("full plane"))
+            .expect("untouched ten-bit luma rows")
+            .flatten()
+            .all(|&sample| sample == 0)
+    );
 }
 
 #[test]
