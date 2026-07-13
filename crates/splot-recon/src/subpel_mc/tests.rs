@@ -448,6 +448,72 @@ fn edge_positions_match_independent_reference() {
     }
 }
 
+/// Scaled steps (`stepX`/`stepY != 1 << SCALE_SUBPEL_BITS`) make the vertical
+/// pass skip intermediate rows between output rows, so the restricted horizontal
+/// pass must still match the full-range reference for every phase — including the
+/// integer-vertical (`phase == 0`) rows whose bases jump past unread rows.
+#[test]
+fn scaled_steps_match_independent_reference() {
+    let ref_w = 32usize;
+    let ref_h = 32usize;
+    let mut state: u64 = 0x2b7e_1516_28ae_d2a6;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as u32
+    };
+
+    let filters = [
+        InterpolationFilter::EightTap,
+        InterpolationFilter::EightTapSmooth,
+        InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
+    ];
+    let dims = [4usize, 8, 16];
+    let steps = [1024i64, 1280, 1536, 2048, 3072];
+
+    for case in 0..3000 {
+        let samples: Vec<u16> = (0..(ref_w * ref_h))
+            .map(|_| (next() % 1024) as u16)
+            .collect();
+        let samples = build_ref(samples, ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+        let w = dims[(next() % dims.len() as u32) as usize];
+        let h = dims[(next() % dims.len() as u32) as usize];
+        let interp = filters[(next() % filters.len() as u32) as usize];
+        let step_x = steps[(next() % steps.len() as u32) as usize];
+        let step_y = steps[(next() % steps.len() as u32) as usize];
+
+        let base_x = (next() as i64 % (ref_w as i64 + 8)) - 4;
+        let base_y = (next() as i64 % (ref_h as i64 + 8)) - 4;
+        let phase_x = (next() % 16) as i64;
+        let phase_y = (next() % 16) as i64;
+
+        let params = SubpelPredictParams {
+            interp,
+            w,
+            h,
+            start_x: (base_x << SCALE_SUBPEL_BITS) + (phase_x << 6),
+            start_y: (base_y << SCALE_SUBPEL_BITS) + (phase_y << 6),
+            step_x,
+            step_y,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i64 - 1,
+            last_y: ref_h as i64 - 1,
+            bit_depth: BitDepth::Ten,
+        };
+        let out = subpel_predict_block(&view, &params).unwrap();
+        let want = reference_subpel(&samples, ref_w, ref_h, &params);
+        assert_eq!(
+            out, want,
+            "case {case} w={w} h={h} sx={step_x} sy={step_y} bx={base_x} by={base_y} px={phase_x} py={phase_y}"
+        );
+    }
+}
+
 #[test]
 fn zero_phase_copy_matches_independent_reference() {
     let ref_w = 24usize;
