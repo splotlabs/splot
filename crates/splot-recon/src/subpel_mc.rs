@@ -447,12 +447,10 @@ pub fn subpel_predict_block<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<u16>> {
-    let output = subpel_predict_block_internal(reference, params, INTER_ROUND1_NON_COMPOUND)?;
     let max_sample = i64::from(params.bit_depth.max_sample());
-    Ok(output
-        .into_iter()
-        .map(|pred| clip3(0, max_sample, i64::from(pred)) as u16)
-        .collect())
+    subpel_predict_block_internal(reference, params, INTER_ROUND1_NON_COMPOUND, |pred| {
+        clip3(0, max_sample, i64::from(pred)) as u16
+    })
 }
 
 /// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for one
@@ -474,7 +472,7 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
 ) -> Result<Vec<i32>> {
-    subpel_predict_block_internal(reference, params, INTER_ROUND1_COMPOUND)
+    subpel_predict_block_internal(reference, params, INTER_ROUND1_COMPOUND, |pred| pred)
 }
 
 /// Writes one AV2 § 7.13.3.18 compound intermediate predictor into caller-owned
@@ -504,6 +502,7 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
         intermediate_height,
         output,
         output_stride,
+        |pred| pred,
     )
 }
 
@@ -586,12 +585,13 @@ const fn compound_inter_post_round() -> u32 {
 /// InterRound1))` — `Round2(128 * v, 3) == 16 * v` and `Round2(2048 * v, 11)
 /// == v` / `Round2(2048 * v, 7) == 16 * v` hold exactly for every `v >= 0`
 /// because each partial product is a multiple of the rounding divisor.
-fn subpel_copy_block_into<T: ReconSample>(
+fn subpel_copy_block_into<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     shift_up: u32,
-    output: &mut [i32],
+    output: &mut [O],
     output_stride: usize,
+    mut finish: impl FnMut(i32) -> O,
 ) {
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
@@ -612,12 +612,12 @@ fn subpel_copy_block_into<T: ReconSample>(
                 .iter_mut()
                 .zip(&reference.samples[start..start + params.w])
             {
-                *out = i32::from(sample.to_u16()) << shift_up;
+                *out = finish(i32::from(sample.to_u16()) << shift_up);
             }
         } else {
             for (c, out) in output.iter_mut().enumerate() {
                 let col = clip3(params.first_x, params.last_x, x0 + c as i64) as usize;
-                *out = (reference.sample(row, col) as i32) << shift_up;
+                *out = finish((reference.sample(row, col) as i32) << shift_up);
             }
         }
     }
@@ -648,11 +648,12 @@ fn with_subpel_intermediate<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R
 /// per-sample additions in the same ascending-tap order as the general
 /// per-column fallback, which remains for scaled or clipped blocks. A zero
 /// phase on either axis uses that filter row's pure center tap directly.
-fn subpel_predict_block_internal<T: ReconSample>(
+fn subpel_predict_block_internal<T: ReconSample, O: Clone + Default>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
-) -> Result<Vec<i32>> {
+    finish: impl FnMut(i32) -> O,
+) -> Result<Vec<O>> {
     let intermediate_height = validate_subpel_params(params)?;
     let output_len = params
         .w
@@ -660,7 +661,7 @@ fn subpel_predict_block_internal<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "subpel output sample count",
         })?;
-    let mut output = vec![0; output_len];
+    let mut output = vec![O::default(); output_len];
     subpel_predict_block_internal_into_validated(
         reference,
         params,
@@ -668,6 +669,7 @@ fn subpel_predict_block_internal<T: ReconSample>(
         intermediate_height,
         &mut output,
         params.w,
+        finish,
     )?;
     Ok(output)
 }
@@ -722,14 +724,34 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     Ok(intermediate_height)
 }
 
-fn subpel_predict_block_internal_into_validated<T: ReconSample>(
+fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
     intermediate_height: usize,
-    output: &mut [i32],
+    output: &mut [O],
     output_stride: usize,
+    mut finish: impl FnMut(i32) -> O,
 ) -> Result<()> {
+    if output_stride < params.w {
+        return Err(ReconError::StrideTooSmall {
+            stride_samples: output_stride,
+            storage_width: params.w,
+        });
+    }
+    let output_len = (params.h - 1)
+        .checked_mul(output_stride)
+        .and_then(|len| len.checked_add(params.w))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "strided subpel output sample count",
+        })?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+
     let SubpelPredictParams {
         interp,
         w,
@@ -745,25 +767,6 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample>(
         bit_depth: _,
     } = *params;
 
-    if output_stride < w {
-        return Err(ReconError::StrideTooSmall {
-            stride_samples: output_stride,
-            storage_width: w,
-        });
-    }
-    let output_len = (h - 1)
-        .checked_mul(output_stride)
-        .and_then(|len| len.checked_add(w))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "strided subpel output sample count",
-        })?;
-    if output.len() < output_len {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output_len,
-            actual: output.len(),
-        });
-    }
-
     if step_x == 1 << SCALE_SUBPEL_BITS
         && step_y == 1 << SCALE_SUBPEL_BITS
         && (start_x >> 6) & SUBPEL_MASK == 0
@@ -775,6 +778,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample>(
             2 * FILTER_BITS - (INTER_ROUND0 + inter_round1),
             output,
             output_stride,
+            &mut finish,
         );
         return Ok(());
     }
@@ -891,7 +895,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample>(
             if phase == 0 {
                 let center = &intermediate[(base + 3) * w..(base + 4) * w];
                 for (out, &value) in output.iter_mut().zip(center) {
-                    *out = round2(i64::from(value) << FILTER_BITS, inter_round1) as i32;
+                    *out = finish(round2(i64::from(value) << FILTER_BITS, inter_round1) as i32);
                 }
                 continue;
             }
@@ -908,7 +912,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample>(
                 }
             }
             for (out, &s) in output.iter_mut().zip(acc.iter()) {
-                *out = round2(s, inter_round1) as i32;
+                *out = finish(round2(s, inter_round1) as i32);
             }
         }
 

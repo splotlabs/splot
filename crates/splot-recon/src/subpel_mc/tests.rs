@@ -608,7 +608,7 @@ fn strided_view_matches_contiguous_view() {
 fn ten_bit_clip_uses_full_range() {
     let ref_w = 12usize;
     let ref_h = 12usize;
-    let samples = build_ref(vec![1000u16; ref_w * ref_h], ref_w, ref_h);
+    let samples = build_ref(vec![1200u16; ref_w * ref_h], ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         bit_depth: BitDepth::Ten,
@@ -623,7 +623,7 @@ fn ten_bit_clip_uses_full_range() {
         )
     };
     let out = subpel_predict_block(&view, &params).unwrap();
-    assert!(out.iter().all(|&s| s == 1000), "10-bit flat: {out:?}");
+    assert!(out.iter().all(|&s| s == 1023), "10-bit clip: {out:?}");
 }
 
 #[test]
