@@ -35,6 +35,7 @@ pub(crate) struct BlockReconWindow<T: ReconSample> {
 }
 
 const PLANE_IDS: [PlaneId; 3] = [PlaneId::Y, PlaneId::U, PlaneId::V];
+const SUBPEL_ROW_CAPACITY: usize = 128;
 
 impl<T: ReconSample> BlockReconWindow<T> {
     /// Builds a window covering the block's per-plane rects, clamped to the
@@ -195,6 +196,89 @@ impl<T: ReconSample> WorkspaceSink<'_, T> {
                 Ok(())
             }
         }
+    }
+
+    pub(super) fn write_u16_rect(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[u16],
+        row_stride_samples: usize,
+    ) -> splot_recon::Result<()> {
+        let write_rect = match self {
+            Self::Frame(workspace) => {
+                let storage = workspace.plane(plane)?.storage_size();
+                if rect.x() >= storage.width() || rect.y() >= storage.height() {
+                    return Err(ReconError::WorkspaceRectOutOfBounds {
+                        plane,
+                        storage,
+                        rect,
+                    });
+                }
+                PlaneRect::new(
+                    rect.x(),
+                    rect.y(),
+                    rect.width().min(storage.width() - rect.x()),
+                    rect.height().min(storage.height() - rect.y()),
+                )?
+            }
+            Self::Window(window) => {
+                window.plane(plane)?.checked_offsets(plane, rect)?;
+                rect
+            }
+        };
+        if row_stride_samples < write_rect.width() {
+            return Err(ReconError::WorkspaceWriteStrideTooSmall {
+                plane,
+                stride_samples: row_stride_samples,
+                width: write_rect.width(),
+            });
+        }
+        let expected = (write_rect.height() - 1)
+            .checked_mul(row_stride_samples)
+            .and_then(|offset| offset.checked_add(write_rect.width()))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "subpel prediction source sample span",
+            })?;
+        if samples.len() < expected {
+            return Err(ReconError::WorkspaceWriteLengthMismatch {
+                plane,
+                expected,
+                actual: samples.len(),
+            });
+        }
+        for &sample in samples {
+            T::try_from_u16(sample)?;
+        }
+
+        let mut row_samples = [T::default(); SUBPEL_ROW_CAPACITY];
+        let row_samples =
+            row_samples
+                .get_mut(..write_rect.width())
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: write_rect.width(),
+                    actual: SUBPEL_ROW_CAPACITY,
+                })?;
+        for row in 0..write_rect.height() {
+            let source_start =
+                row.checked_mul(row_stride_samples)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "subpel prediction source row offset",
+                    })?;
+            let source = samples
+                .get(source_start..source_start + write_rect.width())
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected,
+                    actual: samples.len(),
+                })?;
+            for (output, &sample) in row_samples.iter_mut().zip(source) {
+                *output = T::try_from_u16(sample)?;
+            }
+            let row_rect =
+                PlaneRect::new(write_rect.x(), write_rect.y() + row, write_rect.width(), 1)?;
+            self.write_rect(plane, row_rect, row_samples, write_rect.width())?;
+        }
+        Ok(())
     }
 
     pub(crate) fn write_rect_block(
