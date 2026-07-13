@@ -9,6 +9,7 @@ use core::num::NonZeroUsize;
 
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
 
+use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::Result;
 use crate::hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport,
@@ -18,12 +19,13 @@ use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn decode_hash_report_from_plan(
     bytes: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
     let mut report_frames = Vec::new();
-    crate::pipeline::emit_frames_from_plan(bytes, options, plan, |output| {
+    crate::pipeline::emit_frames_from_prepared(bytes, parsed, options, plan, |output| {
         let report_frame = match &output.frame {
             PipelineDecodedFrame::Eight(frame) => {
                 let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();

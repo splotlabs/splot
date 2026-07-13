@@ -11,6 +11,7 @@ use splot_recon::{
     Y4mFrameRate, Y4mStreamHeader, Y4mWriter,
 };
 
+use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
@@ -22,12 +23,14 @@ const MINIMAL_Y4M_LUMA_HEIGHT: usize = 64;
 
 pub(crate) fn encode_y4m_stream_from_plan(
     bytes: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
     let limits = options.limits();
-    let outputs = crate::pipeline::decode_frames_from_plan_with_ivf_preflight(
+    let outputs = crate::pipeline::decode_frames_from_prepared_with_ivf_preflight(
         bytes,
+        parsed,
         options,
         plan,
         |header| {

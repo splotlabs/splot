@@ -11,11 +11,12 @@ use splot_core::annexb::ObuEnvelope;
 use splot_core::ivf::{IvfError, IvfWarning};
 use splot_core::obu::ObuHeader;
 use splot_core::span::ByteOffset;
-use splot_core::stream::{BitstreamFormat, ParsedBitstream, ParsedIvfFrame};
+use splot_core::stream::{BitstreamFormat, ParsedBitstream};
 use splot_core::types::{
     EmbeddedLayerId, ExtendedLayerId, GLOBAL_XLAYER_ID, ObuType, TemporalLayerId,
 };
 
+use crate::bitstream::byte_stream::{FlatParsedBitstream, FlatParsedIvfBitstream};
 use crate::error::{DecodeError, Result};
 use crate::{DecodeLimitName, DecodeOptions, UNSUPPORTED_FEATURE_RULE_ID};
 
@@ -559,84 +560,137 @@ pub(crate) fn plan_stream(
     let limits = options.limits();
     limits.ensure(DecodeLimitName::MaxInputBytes, input.input_len_bytes)?;
 
-    let selected_layer = DecodeLayerSelection::base();
-    let mut builder = PlanBuilder {
-        format: input.parsed.format(),
-        selected_layer,
-        input_len_bytes: input.input_len_bytes,
-        limits,
-        obus: Vec::new(),
-        traversed_obu_count: 0,
-        frame_candidate_count: 0,
-        source_warnings: Vec::new(),
-    };
+    let mut builder = PlanBuilder::new(input.parsed.format(), input.input_len_bytes, limits);
 
     match input.parsed {
         ParsedBitstream::AnnexB(partial) => {
-            if let Some(error) = &partial.error {
-                return Err(DecodeError::MalformedSource {
-                    issue: issue_from_core_error(
-                        DecodeSourceIssueKind::AnnexBParseError,
-                        None,
-                        error,
-                    ),
-                });
-            }
-            for obu in &partial.obus {
-                builder.push_obu(*obu, DecodeObuSourceKind::AnnexB, None)?;
-            }
+            push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
         }
         ParsedBitstream::Ivf(ivf) => {
-            for warning in &ivf.warnings {
-                builder
-                    .source_warnings
-                    .push(issue_from_ivf_warning(warning));
-            }
-            if let Some(error) = &ivf.error {
-                return Err(DecodeError::MalformedSource {
-                    issue: issue_from_ivf_error(error),
-                });
-            }
-            if let Some(header) = ivf.header
-                && header.fourcc != *b"AV02"
-            {
-                return Err(DecodeError::MalformedSource {
-                    issue: issue_from_unsupported_ivf_codec(header.fourcc),
-                });
-            }
-            let mut first_unsupported = None;
-            for (frame_record_index, frame) in ivf.frames.iter().enumerate() {
-                builder.limits.ensure(
-                    DecodeLimitName::MaxIvfFrameRecords,
-                    frame_record_index as u64 + 1,
-                )?;
-                if let Some(error) = &frame.error {
-                    return Err(DecodeError::MalformedSource {
-                        issue: issue_from_core_error(
-                            DecodeSourceIssueKind::IvfFramePayloadError,
-                            Some(frame.frame.index),
-                            error,
-                        ),
-                    });
-                }
-
-                let context = Some(ivf_frame_context(frame));
-                for obu in &frame.obus {
-                    builder.push_obu_or_first_unsupported(
-                        *obu,
-                        DecodeObuSourceKind::Ivf,
-                        context,
-                        &mut first_unsupported,
-                    )?;
-                }
-            }
-            if let Some(unsupported) = first_unsupported {
-                return Err(DecodeError::UnsupportedStructure { unsupported });
-            }
+            push_ivf(
+                &mut builder,
+                ivf.header,
+                &ivf.warnings,
+                ivf.error.as_ref(),
+                ivf.frames
+                    .iter()
+                    .map(|frame| (frame.frame, frame.obus.as_slice(), frame.error.as_ref())),
+            )?;
         }
     }
 
     Ok(builder.finish())
+}
+
+pub(crate) fn plan_flat_stream(
+    input: &FlatParsedBitstream<'_>,
+    input_len_bytes: u64,
+    options: &DecodeOptions,
+) -> Result<DecodeStreamPlan> {
+    let limits = options.limits();
+    limits.ensure(DecodeLimitName::MaxInputBytes, input_len_bytes)?;
+    let mut builder = PlanBuilder::new(input.format(), input_len_bytes, limits);
+
+    match input {
+        FlatParsedBitstream::AnnexB(partial) => {
+            push_annex_b(&mut builder, &partial.obus, partial.error.as_ref())?;
+        }
+        FlatParsedBitstream::Ivf(ivf) => {
+            push_flat_ivf(&mut builder, ivf)?;
+        }
+    }
+    Ok(builder.finish())
+}
+
+fn push_annex_b(
+    builder: &mut PlanBuilder,
+    obus: &[ObuEnvelope<'_>],
+    error: Option<&splot_core::Error>,
+) -> Result<()> {
+    if let Some(error) = error {
+        return Err(DecodeError::MalformedSource {
+            issue: issue_from_core_error(DecodeSourceIssueKind::AnnexBParseError, None, error),
+        });
+    }
+    for &obu in obus {
+        builder.push_obu(obu, DecodeObuSourceKind::AnnexB, None)?;
+    }
+    Ok(())
+}
+
+fn push_flat_ivf(builder: &mut PlanBuilder, ivf: &FlatParsedIvfBitstream<'_>) -> Result<()> {
+    push_ivf(
+        builder,
+        ivf.header,
+        &ivf.warnings,
+        ivf.error.as_ref(),
+        ivf.frames
+            .iter()
+            .map(|frame| (frame.frame, ivf.frame_obus(frame), frame.error.as_ref())),
+    )
+}
+
+fn push_ivf<'a: 'b, 'b>(
+    builder: &mut PlanBuilder,
+    header: Option<splot_core::ivf::IvfHeader>,
+    warnings: &[IvfWarning],
+    error: Option<&IvfError>,
+    frames: impl Iterator<
+        Item = (
+            splot_core::ivf::IvfFrame<'a>,
+            &'b [ObuEnvelope<'a>],
+            Option<&'b splot_core::Error>,
+        ),
+    >,
+) -> Result<()> {
+    for warning in warnings {
+        builder
+            .source_warnings
+            .push(issue_from_ivf_warning(warning));
+    }
+    if let Some(error) = error {
+        return Err(DecodeError::MalformedSource {
+            issue: issue_from_ivf_error(error),
+        });
+    }
+    if let Some(header) = header
+        && header.fourcc != *b"AV02"
+    {
+        return Err(DecodeError::MalformedSource {
+            issue: issue_from_unsupported_ivf_codec(header.fourcc),
+        });
+    }
+
+    let mut first_unsupported = None;
+    for (frame_record_index, (frame, obus, error)) in frames.enumerate() {
+        builder.limits.ensure(
+            DecodeLimitName::MaxIvfFrameRecords,
+            frame_record_index as u64 + 1,
+        )?;
+        if let Some(error) = error {
+            return Err(DecodeError::MalformedSource {
+                issue: issue_from_core_error(
+                    DecodeSourceIssueKind::IvfFramePayloadError,
+                    Some(frame.index),
+                    error,
+                ),
+            });
+        }
+
+        let context = Some(ivf_frame_context(frame));
+        for &obu in obus {
+            builder.push_obu_or_first_unsupported(
+                obu,
+                DecodeObuSourceKind::Ivf,
+                context,
+                &mut first_unsupported,
+            )?;
+        }
+    }
+    if let Some(unsupported) = first_unsupported {
+        return Err(DecodeError::UnsupportedStructure { unsupported });
+    }
+    Ok(())
 }
 
 struct PlanBuilder {
@@ -651,6 +705,19 @@ struct PlanBuilder {
 }
 
 impl PlanBuilder {
+    fn new(format: BitstreamFormat, input_len_bytes: u64, limits: crate::DecodeLimits) -> Self {
+        Self {
+            format,
+            selected_layer: DecodeLayerSelection::base(),
+            input_len_bytes,
+            limits,
+            obus: Vec::new(),
+            traversed_obu_count: 0,
+            frame_candidate_count: 0,
+            source_warnings: Vec::new(),
+        }
+    }
+
     fn push_obu(
         &mut self,
         envelope: ObuEnvelope<'_>,
@@ -924,13 +991,13 @@ fn issue_from_ivf_source(
     }
 }
 
-fn ivf_frame_context(frame: &ParsedIvfFrame<'_>) -> DecodeIvfFrameContext {
+fn ivf_frame_context(frame: splot_core::ivf::IvfFrame<'_>) -> DecodeIvfFrameContext {
     DecodeIvfFrameContext {
-        frame_index: frame.frame.index,
-        frame_header_offset: frame.frame.header_offset,
-        frame_payload_offset: frame.frame.payload_offset,
-        frame_payload_size: frame.frame.size,
-        pts: frame.frame.pts,
+        frame_index: frame.index,
+        frame_header_offset: frame.header_offset,
+        frame_payload_offset: frame.payload_offset,
+        frame_payload_size: frame.size,
+        pts: frame.pts,
     }
 }
 

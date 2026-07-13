@@ -10,7 +10,7 @@ use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
-use crate::bitstream::byte_stream::plan_byte_stream;
+use crate::bitstream::byte_stream::{plan_byte_stream, prepare_byte_stream};
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::runtime::DecodeRuntimeConfig;
@@ -77,10 +77,10 @@ impl DecodeContext {
 
     /// Decodes the supported envelope and returns a deterministic hash report.
     ///
-    /// Runs [`Self::plan_bytes`] first so malformed sources, resource-limit
-    /// failures, layer selection, and planner-level unsupported structures stay
-    /// transactional. The supported decode envelope is tracked in
-    /// `docs/DECODER-SUPPORT-MATRIX.toml`.
+    /// Runs the same bounded byte planning as [`Self::plan_bytes`] first so
+    /// malformed sources, resource-limit failures, layer selection, and
+    /// planner-level unsupported structures stay transactional. The supported
+    /// decode envelope is tracked in `docs/DECODER-SUPPORT-MATRIX.toml`.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
@@ -92,14 +92,15 @@ impl DecodeContext {
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
         let plan_started = crate::timing::start();
-        let plan = self.plan_bytes(bytes, options)?;
+        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
         crate::timing::report("plan", plan_started);
         let runtime_started = crate::timing::start();
         let report = self.pool.install(|| {
             crate::output::hash::decode_hash_report_from_plan(
                 bytes,
+                prepared.parsed(),
                 &options,
-                &plan,
+                prepared.plan(),
                 self.threads(),
             )
         });
@@ -109,7 +110,7 @@ impl DecodeContext {
 
     /// Decodes the supported envelope and writes complete raw sample bytes.
     ///
-    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]).
+    /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).
     /// The complete raw byte stream is buffered and checked against
     /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
     ///
@@ -125,11 +126,16 @@ impl DecodeContext {
         mut writer: W,
     ) -> Result<()> {
         let plan_started = crate::timing::start();
-        let plan = self.plan_bytes(bytes, options)?;
+        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
         crate::timing::report("plan", plan_started);
-        let raw = self
-            .pool
-            .install(|| crate::output::raw::encode_raw_stream_from_plan(bytes, &options, &plan))?;
+        let raw = self.pool.install(|| {
+            crate::output::raw::encode_raw_stream_from_plan(
+                bytes,
+                prepared.parsed(),
+                &options,
+                prepared.plan(),
+            )
+        })?;
         std::io::Write::write_all(&mut writer, &raw).map_err(|source| {
             DecodeOutputError::io(DecodeOutputOperation::WriteRawStream, source)
         })?;
@@ -138,7 +144,7 @@ impl DecodeContext {
 
     /// Decodes the supported envelope and writes a complete Y4M stream.
     ///
-    /// Runs [`Self::plan_bytes`] first (see [`Self::decode_hash_report_bytes`]).
+    /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).
     /// The complete Y4M stream is buffered and checked against
     /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
     ///
@@ -153,10 +159,15 @@ impl DecodeContext {
         options: DecodeOptions,
         mut writer: W,
     ) -> Result<()> {
-        let plan = self.plan_bytes(bytes, options)?;
-        let y4m = self
-            .pool
-            .install(|| crate::output::y4m::encode_y4m_stream_from_plan(bytes, &options, &plan))?;
+        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
+        let y4m = self.pool.install(|| {
+            crate::output::y4m::encode_y4m_stream_from_plan(
+                bytes,
+                prepared.parsed(),
+                &options,
+                prepared.plan(),
+            )
+        })?;
         std::io::Write::write_all(&mut writer, &y4m).map_err(|source| {
             DecodeOutputError::io(DecodeOutputOperation::WriteY4mStream, source)
         })?;

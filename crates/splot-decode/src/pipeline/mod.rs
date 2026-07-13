@@ -12,13 +12,17 @@ use splot_core::headers::tile_group::{
 };
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
-use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+#[cfg(test)]
+use splot_core::stream::ParsedBitstream;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 use splot_recon::{BitDepth, SharedFrame};
 
+use crate::bitstream::byte_stream::FlatParsedBitstream;
+#[cfg(test)]
+use crate::bitstream::byte_stream::parse_bounded_bitstream;
 use crate::bitstream::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
@@ -57,13 +61,12 @@ pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 
+#[cfg(test)]
 fn discard_runtime_noops(parsed: &mut ParsedBitstream<'_>) {
     match parsed {
-        ParsedBitstream::AnnexB(partial) => {
-            partial
-                .obus
-                .retain(|obu| !obu.header.obu_type.is_reserved());
-        }
+        ParsedBitstream::AnnexB(partial) => partial
+            .obus
+            .retain(|obu| !obu.header.obu_type.is_reserved()),
         ParsedBitstream::Ivf(ivf) => {
             for frame in &mut ivf.frames {
                 frame.obus.retain(|obu| !obu.header.obu_type.is_reserved());
@@ -89,21 +92,32 @@ pub(crate) fn decode_frame_from_plan(
     }
     Ok(frames.swap_remove(0))
 }
+#[cfg(test)]
 pub(crate) fn decode_frames_from_plan(
     bytes: &[u8],
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_with_ivf_preflight(bytes, options, plan, |_| Ok(()))
+    decode_frames_from_plan_impl(bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
 }
 
-pub(crate) fn emit_frames_from_plan(
+pub(crate) fn decode_frames_from_prepared(
     bytes: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+) -> Result<Vec<PipelineFrame>> {
+    decode_frames_from_parsed_impl(parsed, bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
+}
+
+pub(crate) fn emit_frames_from_prepared(
+    bytes: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<()> {
-    decode_frames_from_plan_impl(bytes, options, plan, |_| Ok(()), false, emit).map(drop)
+    decode_frames_from_parsed_impl(parsed, bytes, options, plan, |_| Ok(()), false, emit).map(drop)
 }
 
 fn reclaim_unowned_frames(
@@ -455,16 +469,42 @@ fn decode_key_frame_with_effects(
     })
 }
 
-pub(crate) fn decode_frames_from_plan_with_ivf_preflight(
+pub(crate) fn decode_frames_from_prepared_with_ivf_preflight(
     bytes: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_impl(bytes, options, plan, preflight, true, |_| Ok(()))
+    decode_frames_from_parsed_impl(parsed, bytes, options, plan, preflight, true, |_| Ok(()))
 }
 
+#[cfg(test)]
 fn decode_frames_from_plan_impl(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
+    retain_decoded_frames: bool,
+    emit: impl FnMut(&PipelineFrame) -> Result<()>,
+) -> Result<Vec<PipelineFrame>> {
+    let runtime_parse_timer = crate::timing::start();
+    let mut parsed = parse_bounded_bitstream(bytes, options.limits())?;
+    crate::timing::report("runtime_reparse", runtime_parse_timer);
+    parsed.discard_runtime_noops();
+    decode_frames_from_parsed_impl(
+        &parsed,
+        bytes,
+        options,
+        plan,
+        preflight,
+        retain_decoded_frames,
+        emit,
+    )
+}
+
+fn decode_frames_from_parsed_impl(
+    parsed: &FlatParsedBitstream<'_>,
     bytes: &[u8],
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
@@ -472,11 +512,7 @@ fn decode_frames_from_plan_impl(
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<Vec<PipelineFrame>> {
-    let runtime_parse_timer = crate::timing::start();
-    let mut parsed = parse_bitstream_partial(bytes);
-    crate::timing::report("runtime_reparse", runtime_parse_timer);
-    discard_runtime_noops(&mut parsed);
-    let stream = require_runtime_stream(&parsed)?;
+    let stream = require_runtime_stream(parsed)?;
     if matches!(stream, RuntimeStream::Ivf { ivf, .. } if ivf.frames.is_empty())
         && plan.obu_count() == 0
         && plan.frame_candidate_count() == 0

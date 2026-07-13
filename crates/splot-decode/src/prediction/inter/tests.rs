@@ -291,8 +291,13 @@ fn decode_inter_frame_after_quantization_mutation_inner(
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
+    let prepared = crate::bitstream::byte_stream::prepare_byte_stream(bytes, &options)?;
+    let crate::bitstream::byte_stream::FlatParsedBitstream::Ivf(runtime_ivf) = prepared.parsed()
+    else {
+        panic!("inter fixture is IVF");
+    };
     let (prefix, inter_envelope) = crate::pipeline::following_inter_envelope(
-        &parsed,
+        runtime_ivf,
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
@@ -375,8 +380,13 @@ pub(super) fn parse_inter_core_for_validation(
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
+    let prepared = crate::bitstream::byte_stream::prepare_byte_stream(bytes, &options)?;
+    let crate::bitstream::byte_stream::FlatParsedBitstream::Ivf(runtime_ivf) = prepared.parsed()
+    else {
+        panic!("inter fixture is IVF");
+    };
     let (prefix, inter_envelope) = crate::pipeline::following_inter_envelope(
-        &parsed,
+        runtime_ivf,
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
