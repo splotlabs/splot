@@ -78,6 +78,33 @@ fn dispatcher_blends_compound_average_planes() {
 }
 
 #[test]
+fn dispatcher_blends_compound_average_with_odd_chroma_extents() {
+    let reference0 = flat_frame(9, 11, 40, 90, 120);
+    let reference1 = flat_frame(9, 11, 80, 110, 140);
+    let mut workspace = workspace(9, 11);
+
+    motion_compensate_inter_block_into(
+        &mut super::WorkspaceSink::Frame(&mut workspace),
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(0, 0, 9, 11),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+            CompoundBlend::default(),
+        ),
+        ByteOffset::new(0),
+    )
+    .expect("odd compound dispatcher");
+
+    let decoded = workspace.freeze().expect("freeze odd compound workspace");
+    assert_eq!(visible_samples(&decoded, PlaneId::Y), vec![60; 9 * 11]);
+    assert_eq!(visible_samples(&decoded, PlaneId::U), vec![100; 5 * 6]);
+    assert_eq!(visible_samples(&decoded, PlaneId::V), vec![130; 5 * 6]);
+}
+
+#[test]
 fn dispatcher_sub8x8_chroma_uses_only_the_first_reference() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
@@ -586,6 +613,7 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
     let scaling = derive_plane_scaling_prescaled(4, 4, 0, 0, 0, 0, 8, 8);
     let blend = CompoundBlend::average_with_implicit_mask(true);
     let run = |motion| {
+        let mut output = Vec::new();
         blend_compound_average::<u16>(
             &pred0,
             &pred1,
@@ -605,8 +633,10 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
             None,
             0,
             0,
+            &mut output,
         )
-        .expect("implicit-mask blend")
+        .expect("implicit-mask blend");
+        output
     };
 
     assert_eq!(run(&uniform), run(&multiple));
@@ -616,27 +646,39 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
 fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
-    let eight =
-        blend_compound_average_weighted_samples::<u8>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL)
-            .expect("eight-bit compound blend");
-    let wide =
-        blend_compound_average_weighted_samples::<u16>(&pred0, &pred1, BitDepth::Eight, CWP_EQUAL)
-            .expect("wide eight-bit compound blend");
+    let mut eight = Vec::new();
+    blend_compound_average_weighted_samples::<u8>(
+        &pred0,
+        &pred1,
+        BitDepth::Eight,
+        CWP_EQUAL,
+        &mut eight,
+    )
+    .expect("eight-bit compound blend");
+    let mut wide = Vec::new();
+    blend_compound_average_weighted_samples::<u16>(
+        &pred0,
+        &pred1,
+        BitDepth::Eight,
+        CWP_EQUAL,
+        &mut wide,
+    )
+    .expect("wide eight-bit compound blend");
     assert_eq!(
         eight.iter().copied().map(u16::from).collect::<Vec<_>>(),
         wide
     );
 
-    assert_eq!(
-        blend_compound_average_weighted_samples::<u16>(
-            &[900 * 16],
-            &[1000 * 16],
-            BitDepth::Ten,
-            CWP_EQUAL,
-        )
-        .expect("ten-bit compound blend"),
-        [950]
-    );
+    let mut ten_bit = Vec::new();
+    blend_compound_average_weighted_samples::<u16>(
+        &[900 * 16],
+        &[1000 * 16],
+        BitDepth::Ten,
+        CWP_EQUAL,
+        &mut ten_bit,
+    )
+    .expect("ten-bit compound blend");
+    assert_eq!(ten_bit, [950]);
 }
 
 #[test]
