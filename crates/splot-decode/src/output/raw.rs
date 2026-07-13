@@ -7,6 +7,7 @@
 
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
+use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
@@ -14,11 +15,12 @@ use crate::{DecodeOptions, DecodeStreamPlan};
 
 pub(crate) fn encode_raw_stream_from_plan(
     bitstream: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
 ) -> Result<Vec<u8>> {
     let decode_started = crate::timing::start();
-    let outputs = crate::pipeline::decode_frames_from_plan(bitstream, options, plan)?;
+    let outputs = crate::pipeline::decode_frames_from_prepared(bitstream, parsed, options, plan)?;
     crate::timing::report("runtime_decode", decode_started);
     let serialize_started = crate::timing::start();
     let mut bytes = Vec::new();

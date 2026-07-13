@@ -5,6 +5,28 @@
 
 use super::*;
 use crate::DecodeUnsupportedReason;
+use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
+
+#[test]
+fn prepared_ivf_keeps_obus_in_one_flat_arena() {
+    let mut bytes = Vec::new();
+    write_ivf_header(&mut bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 2)).unwrap();
+    write_ivf_frame(&mut bytes, 0, &[0x01, 0x08, 0x01, 0x04]).unwrap();
+    write_ivf_frame(&mut bytes, 1, &[0x01, 0x10]).unwrap();
+
+    let prepared = prepare_byte_stream(&bytes, &DecodeOptions::default()).unwrap();
+    assert!(matches!(prepared.parsed(), FlatParsedBitstream::Ivf(_)));
+    let FlatParsedBitstream::Ivf(ivf) = prepared.parsed() else {
+        return;
+    };
+
+    assert_eq!(prepared.plan().obu_count(), 3);
+    assert_eq!(ivf.obus.len(), 3);
+    assert_eq!(ivf.frames[0].obus, 0..2);
+    assert_eq!(ivf.frames[1].obus, 2..3);
+    assert_eq!(ivf.frame_obus(&ivf.frames[0]).len(), 2);
+    assert_eq!(ivf.frame_obus(&ivf.frames[1]).len(), 1);
+}
 
 #[test]
 fn raw_obu_limit_is_checked_before_parsing_next_obu() {
