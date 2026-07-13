@@ -11,6 +11,8 @@
 //! access outside the window is an error, which the deferred scheduler treats
 //! as "re-run this block inline against the frame workspace".
 
+use core::ops::Range;
+
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrameInfo, IntraRectBlockSize, PlaneId, PlaneRect, PlaneSize,
     ReconError, ReconSample, WorkspaceRectRows,
@@ -20,10 +22,10 @@ use super::{McBlockRect, mc_planes};
 use crate::Result;
 
 #[derive(Debug)]
-struct WindowPlane<T: ReconSample> {
+struct WindowPlane {
     rect: PlaneRect,
     storage: PlaneSize,
-    buf: Vec<T>,
+    range: Range<usize>,
     written: bool,
 }
 
@@ -31,7 +33,8 @@ struct WindowPlane<T: ReconSample> {
 #[derive(Debug)]
 pub(crate) struct BlockReconWindow<T: ReconSample> {
     info: DecodedFrameInfo,
-    planes: [Option<WindowPlane<T>>; 3],
+    planes: [Option<WindowPlane>; 3],
+    samples: Vec<T>,
 }
 
 const PLANE_IDS: [PlaneId; 3] = [PlaneId::Y, PlaneId::U, PlaneId::V];
@@ -49,6 +52,7 @@ impl<T: ReconSample> BlockReconWindow<T> {
     ) -> splot_recon::Result<Self> {
         let info = workspace.info();
         let mut planes = [None, None, None];
+        let mut sample_count = 0usize;
         for (plane, sub_x, sub_y) in mc_planes(info.pixel_format()) {
             let Ok(workspace_plane) = workspace.plane(plane) else {
                 continue;
@@ -58,25 +62,32 @@ impl<T: ReconSample> BlockReconWindow<T> {
             let w = w.min(storage.width().saturating_sub(x));
             let h = h.min(storage.height().saturating_sub(y));
             let plane_rect = PlaneRect::new(x, y, w, h)?;
+            let plane_sample_count = w.checked_mul(h).ok_or(ReconError::ArithmeticOverflow {
+                context: "block reconstruction window plane sample count",
+            })?;
+            let end = sample_count.checked_add(plane_sample_count).ok_or(
+                ReconError::ArithmeticOverflow {
+                    context: "block reconstruction window sample count",
+                },
+            )?;
             planes[plane.index()] = Some(WindowPlane {
                 rect: plane_rect,
                 storage,
-                buf: vec![T::default(); w * h],
+                range: sample_count..end,
                 written: false,
             });
+            sample_count = end;
         }
-        Ok(Self { info, planes })
+        Ok(Self {
+            info,
+            planes,
+            samples: vec![T::default(); sample_count],
+        })
     }
 
-    fn plane(&self, plane: PlaneId) -> splot_recon::Result<&WindowPlane<T>> {
+    fn plane(&self, plane: PlaneId) -> splot_recon::Result<&WindowPlane> {
         self.planes[plane.index()]
             .as_ref()
-            .ok_or(ReconError::MissingWorkspacePlane { plane })
-    }
-
-    fn plane_mut(&mut self, plane: PlaneId) -> splot_recon::Result<&mut WindowPlane<T>> {
-        self.planes[plane.index()]
-            .as_mut()
             .ok_or(ReconError::MissingWorkspacePlane { plane })
     }
 
@@ -86,33 +97,72 @@ impl<T: ReconSample> BlockReconWindow<T> {
     /// Propagates workspace write errors.
     pub(crate) fn publish(&self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
         for plane in PLANE_IDS {
-            let Some(window_plane) = &self.planes[plane.index()] else {
+            let Some(window_plane) = self.planes[plane.index()].as_ref() else {
                 continue;
             };
             if !window_plane.written {
                 continue;
             }
-            workspace.write_rect(
-                plane,
-                window_plane.rect,
-                &window_plane.buf,
-                window_plane.rect.width(),
-            )?;
+            let samples = window_plane.samples(&self.samples)?;
+            workspace.write_rect(plane, window_plane.rect, samples, window_plane.rect.width())?;
         }
         Ok(())
     }
 }
 
-impl<T: ReconSample> WindowPlane<T> {
+impl WindowPlane {
+    fn samples<'a, T>(&self, samples: &'a [T]) -> splot_recon::Result<&'a [T]> {
+        samples
+            .get(self.range.clone())
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: self.range.end,
+                actual: samples.len(),
+            })
+    }
+
+    fn samples_mut<'a, T>(&self, samples: &'a mut [T]) -> splot_recon::Result<&'a mut [T]> {
+        let actual = samples.len();
+        samples
+            .get_mut(self.range.clone())
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: self.range.end,
+                actual,
+            })
+    }
+
     fn checked_offsets(
         &self,
         plane: PlaneId,
         rect: PlaneRect,
     ) -> splot_recon::Result<(usize, usize)> {
+        let rect_right =
+            rect.x()
+                .checked_add(rect.width())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "block reconstruction window rectangle right edge",
+                })?;
+        let rect_bottom =
+            rect.y()
+                .checked_add(rect.height())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "block reconstruction window rectangle bottom edge",
+                })?;
+        let window_right =
+            self.rect
+                .x()
+                .checked_add(self.rect.width())
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "block reconstruction window right edge",
+                })?;
+        let window_bottom = self.rect.y().checked_add(self.rect.height()).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "block reconstruction window bottom edge",
+            },
+        )?;
         let in_window = rect.x() >= self.rect.x()
             && rect.y() >= self.rect.y()
-            && rect.x() + rect.width() <= self.rect.x() + self.rect.width()
-            && rect.y() + rect.height() <= self.rect.y() + self.rect.height();
+            && rect_right <= window_right
+            && rect_bottom <= window_bottom;
         if !in_window {
             return Err(ReconError::WorkspaceRectOutOfBounds {
                 plane,
@@ -161,7 +211,7 @@ impl<T: ReconSample> WorkspaceSink<'_, T> {
             }
             Self::Window(window) => {
                 let max = window.info.bit_depth().max_sample();
-                let target = window.plane_mut(plane)?;
+                let target = window.plane(plane)?;
                 let (x0, y0) = target.checked_offsets(plane, rect)?;
                 if row_stride_samples < rect.width() {
                     return Err(ReconError::WorkspaceWriteStrideTooSmall {
@@ -171,26 +221,42 @@ impl<T: ReconSample> WorkspaceSink<'_, T> {
                     });
                 }
                 let window_stride = target.rect.width();
+                let expected = (rect.height() - 1)
+                    .checked_mul(row_stride_samples)
+                    .and_then(|offset| offset.checked_add(rect.width()))
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "block reconstruction window source sample span",
+                    })?;
+                if samples.len() < expected {
+                    return Err(ReconError::BufferLengthMismatch {
+                        expected,
+                        actual: samples.len(),
+                    });
+                }
                 for row in 0..rect.height() {
-                    let source = samples
-                        .get(row * row_stride_samples..)
-                        .and_then(|tail| tail.get(..rect.width()))
-                        .ok_or(ReconError::BufferLengthMismatch {
-                            expected: (rect.height() - 1) * row_stride_samples + rect.width(),
-                            actual: samples.len(),
-                        })?;
+                    let source_start = row * row_stride_samples;
+                    let source = &samples[source_start..source_start + rect.width()];
                     for (column, &value) in source.iter().enumerate() {
-                        if value.to_u16() > max {
+                        let value = value.to_u16();
+                        if value > max {
                             return Err(ReconError::SampleOutOfRange {
                                 plane,
-                                sample_index: column,
-                                value: value.to_u16(),
+                                sample_index: source_start + column,
+                                value,
                                 max,
                             });
                         }
                     }
+                }
+                let target = window.planes[plane.index()]
+                    .as_mut()
+                    .ok_or(ReconError::MissingWorkspacePlane { plane })?;
+                let target_samples = target.samples_mut(&mut window.samples)?;
+                for row in 0..rect.height() {
+                    let source_start = row * row_stride_samples;
+                    let source = &samples[source_start..source_start + rect.width()];
                     let start = (y0 + row) * window_stride + x0;
-                    target.buf[start..start + rect.width()].copy_from_slice(source);
+                    target_samples[start..start + rect.width()].copy_from_slice(source);
                 }
                 target.written = true;
                 Ok(())
@@ -323,9 +389,10 @@ impl<T: ReconSample> WorkspaceSink<'_, T> {
             Self::Frame(workspace) => Ok(SinkRectRows::Frame(workspace.rect_rows(plane, rect)?)),
             Self::Window(window) => {
                 let source = window.plane(plane)?;
+                let samples = source.samples(&window.samples)?;
                 let (x0, y0) = source.checked_offsets(plane, rect)?;
                 Ok(SinkRectRows::Window {
-                    buf: &source.buf,
+                    buf: samples,
                     stride: source.rect.width(),
                     start: y0 * source.rect.width() + x0,
                     width: rect.width(),
