@@ -220,10 +220,12 @@ pub(crate) struct SquareSplitContextInput<'a> {
     c: usize,
     avail_u: bool,
     avail_l: bool,
-    mi_sizes: &'a [Vec<usize>],
+    mi_sizes: &'a [usize],
+    mi_size_stride: usize,
 }
 
 impl<'a> SquareSplitContextInput<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         b_size: usize,
         plane_start: usize,
@@ -231,7 +233,8 @@ impl<'a> SquareSplitContextInput<'a> {
         c: usize,
         avail_u: bool,
         avail_l: bool,
-        mi_sizes: &'a [Vec<usize>],
+        mi_sizes: &'a [usize],
+        mi_size_stride: usize,
     ) -> Result<Self, TileCdfError> {
         Ok(Self {
             b_size: BlockSizeIndex::new(b_size, "bSize")?,
@@ -241,6 +244,7 @@ impl<'a> SquareSplitContextInput<'a> {
             avail_u,
             avail_l,
             mi_sizes,
+            mi_size_stride,
         })
     }
 
@@ -251,8 +255,8 @@ impl<'a> SquareSplitContextInput<'a> {
         let above = if self.avail_u {
             let row = checked_grid_coordinate("MiSizes", plane_start, "r", self.r, 1)?;
             grid_log2(
-                "MiSizes",
                 self.mi_sizes,
+                self.mi_size_stride,
                 plane_start,
                 row,
                 self.c,
@@ -265,8 +269,8 @@ impl<'a> SquareSplitContextInput<'a> {
         let left = if self.avail_l {
             let col = checked_grid_coordinate("MiSizes", plane_start, "c", self.c, 1)?;
             grid_log2(
-                "MiSizes",
                 self.mi_sizes,
+                self.mi_size_stride,
                 plane_start,
                 self.r,
                 col,
@@ -400,28 +404,31 @@ fn checked_grid_coordinate(
 
 fn grid_block_size(
     array: &'static str,
-    grid: &[Vec<usize>],
+    grid: &[usize],
+    stride: usize,
     plane_start: usize,
     row: usize,
     col: usize,
 ) -> Result<BlockSizeIndex, TileCdfError> {
-    let row_cells = grid
-        .get(row)
-        .ok_or(TileCdfError::PartitionGridRowOutOfRange {
+    let rows = grid.len().checked_div(stride).unwrap_or_default();
+    if row >= rows {
+        return Err(TileCdfError::PartitionGridRowOutOfRange {
             array,
             plane_start,
             row,
-            rows: grid.len(),
-        })?;
-    let block_size = *row_cells
-        .get(col)
-        .ok_or(TileCdfError::PartitionGridColumnOutOfRange {
+            rows,
+        });
+    }
+    if col >= stride {
+        return Err(TileCdfError::PartitionGridColumnOutOfRange {
             array,
             plane_start,
             row,
             col,
-            cols: row_cells.len(),
-        })?;
+            cols: stride,
+        });
+    }
+    let block_size = grid[row * stride + col];
     BlockSizeIndex::new(block_size, array).map_err(|_| {
         TileCdfError::PartitionGridBlockSizeOutOfRange {
             array,
@@ -435,15 +442,15 @@ fn grid_block_size(
 }
 
 fn grid_log2(
-    array: &'static str,
-    grid: &[Vec<usize>],
+    grid: &[usize],
+    stride: usize,
     plane_start: usize,
     row: usize,
     col: usize,
     table_name: &'static str,
     table: &'static [i32],
 ) -> Result<usize, TileCdfError> {
-    let block_size = grid_block_size(array, grid, plane_start, row, col)?;
+    let block_size = grid_block_size("MiSizes", grid, stride, plane_start, row, col)?;
     conversion_table_value(table_name, table, block_size)
 }
 

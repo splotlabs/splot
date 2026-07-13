@@ -479,6 +479,7 @@ pub(super) fn read_frontier_partition_decision(
         avail_u,
         avail_l,
         context.mi_sizes,
+        context.mi_size_stride,
     )?;
     let decision_input =
         facts.read_partition_decision_input(true, partition_context, square_context);

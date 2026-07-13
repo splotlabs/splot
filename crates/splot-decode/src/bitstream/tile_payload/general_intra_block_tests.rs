@@ -38,9 +38,9 @@ fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
 fn symbols_at_block_start<'payload>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
 ) -> SymbolDecoder<'payload> {
-    let rows: Vec<Vec<usize>> = (0..16).map(|_| vec![BLOCK_256X256; 16]).collect();
+    let rows = vec![BLOCK_256X256; 16 * 16];
     let edge = [CLEAR_PARTITION_CONTEXT; 16];
-    let context = TilePartitionContextState::new(&rows, [&edge, &edge], [&edge, &edge]);
+    let context = TilePartitionContextState::new(&rows, 16, [&edge, &edge], [&edge, &edge]);
     let frame = TilePartitionFrameFacts::new(
         16,
         16,

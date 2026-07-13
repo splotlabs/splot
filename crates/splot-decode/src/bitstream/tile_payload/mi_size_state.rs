@@ -24,18 +24,16 @@ const PARTITION_CONTEXT_LEFT: [usize; 29] = [
     60, 56, 63, 48, 62,
 ];
 
-type MiSizeRow = Vec<usize>;
-type MiSizeGrid = Vec<MiSizeRow>;
-type PlaneGrids = [MiSizeGrid; PLANE_COUNT];
-type PlaneLines = [MiSizeRow; PLANE_COUNT];
+type PlaneBuffers = [Vec<usize>; PLANE_COUNT];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
     mi_rows: usize,
     mi_cols: usize,
-    mi_sizes: PlaneGrids,
-    left_mi_sizes: PlaneLines,
-    above_mi_sizes: PlaneLines,
+    mi_sizes: PlaneBuffers,
+    mi_size_stride: usize,
+    left_mi_sizes: PlaneBuffers,
+    above_mi_sizes: PlaneBuffers,
 }
 
 impl TileMiSizeState {
@@ -83,9 +81,10 @@ impl TileMiSizeState {
         Ok(Self {
             mi_rows,
             mi_cols,
-            mi_sizes: filled_grids(allocation.padded_rows, allocation.padded_cols)?,
-            left_mi_sizes: filled_lines(allocation.padded_rows)?,
-            above_mi_sizes: filled_lines(allocation.padded_cols)?,
+            mi_sizes: filled_planes(allocation.padded_grid_cells, BLOCK_256X256_INDEX)?,
+            mi_size_stride: allocation.padded_cols,
+            left_mi_sizes: filled_planes(allocation.padded_rows, CLEAR_PARTITION_CONTEXT)?,
+            above_mi_sizes: filled_planes(allocation.padded_cols, CLEAR_PARTITION_CONTEXT)?,
         })
     }
 
@@ -116,6 +115,7 @@ impl TileMiSizeState {
     pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
         TilePartitionContextState::new(
             self.mi_sizes[LUMA_PLANE].as_slice(),
+            self.mi_size_stride,
             [
                 self.left_mi_sizes[LUMA_PLANE].as_slice(),
                 self.left_mi_sizes[CHROMA_PLANE].as_slice(),
@@ -140,7 +140,8 @@ impl TileMiSizeState {
         let left_partition_context = partition_context_left(mi_size_index)?;
         let cols = region.col_range();
         for row in region.row_range() {
-            self.mi_sizes[plane][row][cols.clone()].fill(mi_size_index);
+            let row_start = row * self.mi_size_stride;
+            self.mi_sizes[plane][row_start + cols.start..row_start + cols.end].fill(mi_size_index);
             self.left_mi_sizes[plane][row] = left_partition_context;
         }
         self.above_mi_sizes[plane][cols].fill(above_partition_context);
@@ -180,8 +181,8 @@ impl TileMiSizeState {
             });
         }
         let plane_grid = &self.mi_sizes[plane];
-        let rows = plane_grid.len();
-        let cols = plane_grid.first().map_or(0, Vec::len);
+        let rows = plane_grid.len() / self.mi_size_stride;
+        let cols = self.mi_size_stride;
         if row_end > rows || col_end > cols {
             return Err(TileMiSizeStateError::BlockOutOfBounds {
                 plane,
@@ -364,32 +365,15 @@ fn checked_mul_usize(
         })
 }
 
-fn filled_grids(rows: usize, cols: usize) -> Result<PlaneGrids, TileMiSizeStateError> {
-    Ok([filled_grid(rows, cols)?, filled_grid(rows, cols)?])
+fn filled_planes(len: usize, value: usize) -> Result<PlaneBuffers, TileMiSizeStateError> {
+    Ok([filled_buffer(len, value)?, filled_buffer(len, value)?])
 }
 
-fn filled_grid(rows: usize, cols: usize) -> Result<MiSizeGrid, TileMiSizeStateError> {
-    let mut grid = Vec::new();
-    grid.try_reserve_exact(rows)?;
-    for _ in 0..rows {
-        grid.push(filled_row(cols, BLOCK_256X256_INDEX)?);
-    }
-    Ok(grid)
-}
-
-fn filled_lines(len: usize) -> Result<PlaneLines, TileMiSizeStateError> {
-    Ok([filled_line(len)?, filled_line(len)?])
-}
-
-fn filled_line(len: usize) -> Result<MiSizeRow, TileMiSizeStateError> {
-    filled_row(len, CLEAR_PARTITION_CONTEXT)
-}
-
-fn filled_row(len: usize, value: usize) -> Result<MiSizeRow, TileMiSizeStateError> {
-    let mut line = Vec::new();
-    line.try_reserve_exact(len)?;
-    line.resize(len, value);
-    Ok(line)
+fn filled_buffer(len: usize, value: usize) -> Result<Vec<usize>, TileMiSizeStateError> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(len)?;
+    buffer.resize(len, value);
+    Ok(buffer)
 }
 
 fn partition_context_above(mi_size_index: usize) -> Result<usize, TileMiSizeStateError> {
