@@ -41,20 +41,21 @@ fn full_pel_params(
     }
 }
 
-/// An independent in-test re-trace of the AV2 § 7.13.3.18 single-reference
-/// (non-compound) two-pass convolution, used as the property-test oracle. The
+/// An independent in-test re-trace of the AV2 § 7.13.3.18 two-pass
+/// convolution, used as the property-test oracle. The
 /// explicit `for t in 0..8` tap loops mirror the spec pseudocode index variable.
 #[allow(
     clippy::too_many_arguments,
     clippy::needless_range_loop,
     clippy::many_single_char_names
 )]
-fn reference_subpel(
+fn reference_subpel_values(
     samples: &[u16],
     ref_w: usize,
     ref_h: usize,
     params: &SubpelPredictParams,
-) -> Vec<u16> {
+    inter_round1: u32,
+) -> Vec<i64> {
     let w = params.w;
     let h = params.h;
     let x = params.start_x;
@@ -65,8 +66,6 @@ fn reference_subpel(
     let first_y = params.first_y;
     let last_x = params.last_x;
     let last_y = params.last_y;
-    let max_sample = i64::from(params.bit_depth.max_sample());
-
     let intermediate_height =
         ((((h as i64 - 1) * i64::from(y_step) + (1 << 10) - 1) >> 10) + 8) as usize;
 
@@ -128,7 +127,7 @@ fn reference_subpel(
             InterpolationFilter::Bilinear => 3,
         };
     }
-    let mut out = vec![0u16; w * h];
+    let mut out = vec![0i64; w * h];
     for r in 0..h {
         for c in 0..w {
             let p = (y & 1023) + y_step * r as i32;
@@ -139,11 +138,35 @@ fn reference_subpel(
                 let row = ((p >> 10) + t as i32) as usize;
                 s += tap * intermediate[row * w + c];
             }
-            let pred = round2(s, 11);
-            out[r * w + c] = pred.clamp(0, max_sample) as u16;
+            out[r * w + c] = round2(s, inter_round1);
         }
     }
     out
+}
+
+fn reference_subpel(
+    samples: &[u16],
+    ref_w: usize,
+    ref_h: usize,
+    params: &SubpelPredictParams,
+) -> Vec<u16> {
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    reference_subpel_values(samples, ref_w, ref_h, params, INTER_ROUND1_NON_COMPOUND)
+        .into_iter()
+        .map(|sample| sample.clamp(0, max_sample) as u16)
+        .collect()
+}
+
+fn reference_subpel_compound(
+    samples: &[u16],
+    ref_w: usize,
+    ref_h: usize,
+    params: &SubpelPredictParams,
+) -> Vec<i32> {
+    reference_subpel_values(samples, ref_w, ref_h, params, INTER_ROUND1_COMPOUND)
+        .into_iter()
+        .map(|sample| sample as i32)
+        .collect()
 }
 
 #[test]
@@ -744,6 +767,75 @@ fn compound_intermediate_into_matches_owned_copy_and_filtered() {
                 .iter()
                 .all(|&sample| sample == sentinel)
         );
+    }
+}
+
+#[test]
+fn one_axis_compound_intermediates_match_independent_reference() {
+    let ref_w = 24usize;
+    let ref_h = 24usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 73 + (index / ref_w) * 211) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let filters = [
+        InterpolationFilter::EightTap,
+        InterpolationFilter::EightTapSmooth,
+        InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
+    ];
+
+    for interp in filters {
+        for (w, h) in [(4, 8), (8, 4), (5, 7)] {
+            for phase in [1, 8, 15] {
+                for vertical_only in [false, true] {
+                    let params = SubpelPredictParams {
+                        interp,
+                        w,
+                        h,
+                        start_x: (7 << SCALE_SUBPEL_BITS)
+                            + if vertical_only { 0 } else { phase << 6 },
+                        start_y: (6 << SCALE_SUBPEL_BITS)
+                            + if vertical_only { phase << 6 } else { 0 },
+                        step_x: 1 << SCALE_SUBPEL_BITS,
+                        step_y: 1 << SCALE_SUBPEL_BITS,
+                        first_x: 0,
+                        first_y: 0,
+                        last_x: ref_w as i32 - 1,
+                        last_y: ref_h as i32 - 1,
+                        bit_depth: BitDepth::Ten,
+                    };
+                    let expected = reference_subpel_compound(&samples, ref_w, ref_h, &params);
+                    let stride = w + 3;
+                    let sentinel = i32::MIN;
+                    let mut output = vec![sentinel; stride * h];
+                    subpel_predict_block_compound_intermediate_into(
+                        &view,
+                        &params,
+                        &mut output,
+                        stride,
+                    )
+                    .unwrap();
+
+                    for row in 0..h {
+                        assert_eq!(
+                            &output[row * stride..row * stride + w],
+                            &expected[row * w..(row + 1) * w],
+                            "{interp:?} {w}x{h} phase={phase} vertical={vertical_only}"
+                        );
+                        assert!(
+                            output[row * stride + w..(row + 1) * stride]
+                                .iter()
+                                .all(|&sample| sample == sentinel)
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
