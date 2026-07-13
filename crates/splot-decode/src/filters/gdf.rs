@@ -22,6 +22,8 @@ const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
 const GDF_TEST_STRIPE_SIZE: usize = 64;
 const GDF_DIRECTIONS: usize = 4;
+const GDF_GRADIENT_CAPACITY: usize = (MI_SIZE + 2) * (MI_SIZE + 2);
+const GDF_CLASS_CAPACITY: usize = (MI_SIZE / 2) * (MI_SIZE / 2);
 const GDF_COORDS: [(isize, isize); 18] = [
     (6, 0),
     (5, 0),
@@ -551,10 +553,10 @@ impl<T: ReconSample> GdfSource<T> {
 fn gradients<T: ReconSample>(
     source: &GdfSource<T>,
     block: &GdfBlock,
-) -> [Vec<i64>; GDF_DIRECTIONS] {
+) -> [[i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS] {
     let rows = block.height + 2;
     let cols = block.width + 2;
-    let mut grad = std::array::from_fn(|_| vec![0_i64; rows * cols]);
+    let mut grad = [[0_i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS];
     for i in 0..rows {
         for j in 0..cols {
             let sample_x = block.x as isize - 1 + j as isize;
@@ -578,7 +580,10 @@ struct GdfClass {
     strength_contribution: [i64; 3],
 }
 
-fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], block: &GdfBlock) -> Vec<GdfClass> {
+fn classes(
+    grad: &[[i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS],
+    block: &GdfBlock,
+) -> [GdfClass; GDF_CLASS_CAPACITY] {
     let class_cols = block.width >> 1;
     let class_rows = block.height >> 1;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
@@ -588,7 +593,7 @@ fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], block: &GdfBlock) -> Vec<GdfClass>
     } else {
         4
     };
-    let mut classes = vec![GdfClass::default(); class_cols * class_rows];
+    let mut classes = [GdfClass::default(); GDF_CLASS_CAPACITY];
     for i in (0..class_rows).rev() {
         for j in 0..class_cols {
             let mut strengths = [0_i64; GDF_DIRECTIONS];
