@@ -5,7 +5,6 @@
 //!
 //! Feature tracking: `DECODE-TILE-MI-SIZE-STATE-BOUNDARY`.
 
-use std::array;
 use std::collections::TryReserveError;
 
 use super::partition_size::{BlockSize, PartitionSizeError};
@@ -114,16 +113,18 @@ impl TileMiSizeState {
         self.update_plane_block(CHROMA_PLANE, chroma_mi_row, chroma_mi_col, chroma_mi_size)
     }
 
-    pub(crate) fn with_context_state<R>(
-        &self,
-        f: impl for<'ctx> FnOnce(TilePartitionContextState<'ctx>) -> R,
-    ) -> Result<R, TileMiSizeStateError> {
-        let mi_rows = plane_row_slices(&self.mi_sizes)?;
-        Ok(f(TilePartitionContextState::new(
-            array::from_fn(|plane| mi_rows[plane].as_slice()),
-            array::from_fn(|plane| self.left_mi_sizes[plane].as_slice()),
-            array::from_fn(|plane| self.above_mi_sizes[plane].as_slice()),
-        )))
+    pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
+        TilePartitionContextState::new(
+            self.mi_sizes[LUMA_PLANE].as_slice(),
+            [
+                self.left_mi_sizes[LUMA_PLANE].as_slice(),
+                self.left_mi_sizes[CHROMA_PLANE].as_slice(),
+            ],
+            [
+                self.above_mi_sizes[LUMA_PLANE].as_slice(),
+                self.above_mi_sizes[CHROMA_PLANE].as_slice(),
+            ],
+        )
     }
 
     fn update_plane_block(
@@ -419,24 +420,6 @@ fn partition_context_value(
             max_exclusive: values.len(),
         },
     )
-}
-
-fn plane_row_slices(
-    grids: &[MiSizeGrid; PLANE_COUNT],
-) -> Result<[Vec<&[usize]>; PLANE_COUNT], TileMiSizeStateError> {
-    Ok([
-        row_slices(&grids[LUMA_PLANE])?,
-        row_slices(&grids[CHROMA_PLANE])?,
-    ])
-}
-
-fn row_slices(grid: &[MiSizeRow]) -> Result<Vec<&[usize]>, TileMiSizeStateError> {
-    let mut rows = Vec::new();
-    rows.try_reserve_exact(grid.len())?;
-    for row in grid {
-        rows.push(row.as_slice());
-    }
-    Ok(rows)
 }
 
 #[cfg(test)]

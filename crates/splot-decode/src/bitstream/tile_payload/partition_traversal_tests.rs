@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use core::ops::Range;
+use std::sync::LazyLock;
 
 use super::super::cdf::{
     FrameCdfSubset, TileCdfPolicyInput, TileCdfSelector, TileCdfWorkUnitBoundary,
@@ -33,12 +34,12 @@ const PARTITION_CONTEXT_4X4: usize = 63;
 static ROW_4X4: [usize; 64] = [BLOCK_4X4; 64];
 static ROW_16X16: [usize; 64] = [BLOCK_16X16; 64];
 static ROW_CONTEXT_4X4: [usize; 64] = [PARTITION_CONTEXT_4X4; 64];
-static GRID0: [&[usize]; 2] = [&ROW_4X4, &ROW_16X16];
-static GRID1: [&[usize]; 2] = [&ROW_4X4, &ROW_16X16];
+static GRID: LazyLock<Vec<Vec<usize>>> =
+    LazyLock::new(|| vec![ROW_4X4.to_vec(), ROW_16X16.to_vec()]);
 
 fn context() -> TilePartitionContextState<'static> {
     TilePartitionContextState::new(
-        [&GRID0, &GRID1],
+        GRID.as_slice(),
         [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
         [&ROW_CONTEXT_4X4, &ROW_CONTEXT_4X4],
     )
@@ -574,13 +575,9 @@ fn non_origin_tile_start_availability_uses_tile_bounds() {
 
 #[test]
 fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
-    static EMPTY_GRID: [&[usize]; 0] = [];
     static LONG_ROW: [usize; 256] = [PARTITION_CONTEXT_4X4; 256];
-    let sparse_context = TilePartitionContextState::new(
-        [&EMPTY_GRID, &EMPTY_GRID],
-        [&LONG_ROW, &LONG_ROW],
-        [&LONG_ROW, &LONG_ROW],
-    );
+    let sparse_context =
+        TilePartitionContextState::new(&[], [&LONG_ROW, &LONG_ROW], [&LONG_ROW, &LONG_ROW]);
     let work_unit = make_work_unit_at(
         &[0xFF, 0x00, 0x80],
         CdfUpdateMode::Enabled,
@@ -758,12 +755,7 @@ fn inter_extended_sdp_mixed_child_consumes_region_type() {
 #[test]
 fn failed_context_read_does_not_commit_cdf_mutation() {
     static EMPTY: [usize; 0] = [];
-    static EMPTY_GRID: [&[usize]; 0] = [];
-    let bad_context = TilePartitionContextState::new(
-        [&EMPTY_GRID, &EMPTY_GRID],
-        [&EMPTY, &EMPTY],
-        [&EMPTY, &EMPTY],
-    );
+    let bad_context = TilePartitionContextState::new(&[], [&EMPTY, &EMPTY], [&EMPTY, &EMPTY]);
     let mut work_unit = make_work_unit(&[0x00, 0x80], CdfUpdateMode::Enabled);
     let before = work_unit.cdf().tile_cdfs().clone();
 
