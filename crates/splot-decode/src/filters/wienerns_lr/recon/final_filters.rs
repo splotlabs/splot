@@ -129,68 +129,38 @@ fn coalesced_lr_source_rows(
     lr_source_blocks: &[WienerNsLrSourceBlock],
     plane_index: usize,
 ) -> Vec<WienerNsLrSourceBlock> {
-    let mut rows: Vec<Vec<&WienerNsLrSourceBlock>> = Vec::new();
-    for block in lr_source_blocks
-        .iter()
-        .filter(|block| block.plane == plane_index)
-    {
-        if rows.len() <= block.y {
-            rows.resize_with(block.y + 1, Vec::new);
-        }
-        rows[block.y].push(block);
-    }
-    coalesce_bucketed_lr_rows(rows)
+    let (blocks, [y_end, u_end]) = coalesced_lr_source_rows_all(lr_source_blocks.to_vec());
+    let starts = [0, y_end, u_end];
+    let ends = [y_end, u_end, blocks.len()];
+    blocks[starts[plane_index]..ends[plane_index]].to_vec()
 }
 
 pub(crate) fn coalesced_lr_source_rows_all(
-    lr_source_blocks: &[WienerNsLrSourceBlock],
-) -> [Vec<WienerNsLrSourceBlock>; 3] {
-    let mut rows: [Vec<Vec<&WienerNsLrSourceBlock>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    for block in lr_source_blocks {
-        let Some(plane_rows) = rows.get_mut(block.plane) else {
-            continue;
+    mut blocks: Vec<WienerNsLrSourceBlock>,
+) -> (Vec<WienerNsLrSourceBlock>, [usize; 2]) {
+    blocks.retain(|block| block.plane < 3);
+    blocks.sort_unstable_by_key(|block| (block.plane, block.y, block.x));
+    blocks.dedup_by(|next, run| {
+        let Some(width) = run.merged_width_with(next) else {
+            return false;
         };
-        if plane_rows.len() <= block.y {
-            plane_rows.resize_with(block.y + 1, Vec::new);
-        }
-        plane_rows[block.y].push(block);
-    }
-    rows.map(coalesce_bucketed_lr_rows)
-}
+        run.width = width;
+        true
+    });
 
-fn coalesce_bucketed_lr_rows(
-    mut rows: Vec<Vec<&WienerNsLrSourceBlock>>,
-) -> Vec<WienerNsLrSourceBlock> {
-    let mut runs: Vec<WienerNsLrSourceBlock> = Vec::new();
-    for row in &mut rows {
-        row.sort_unstable_by_key(|block| block.x);
-        for block in row.iter().copied() {
-            if let Some(run) = runs.last_mut()
-                && let Some(width) = run.merged_width_with(block)
-            {
-                run.width = width;
-                continue;
-            }
-            runs.push(*block);
-        }
-    }
-    coalesce_vertical_lr_runs(runs)
-}
+    blocks.sort_unstable_by_key(|block| (block.vertical_merge_key(), block.y));
+    blocks.dedup_by(|next, rectangle| {
+        let Some(height) = rectangle.merged_height_with(next) else {
+            return false;
+        };
+        rectangle.height = height;
+        true
+    });
+    blocks.sort_unstable_by_key(|block| (block.plane, block.y, block.x));
 
-fn coalesce_vertical_lr_runs(mut runs: Vec<WienerNsLrSourceBlock>) -> Vec<WienerNsLrSourceBlock> {
-    runs.sort_unstable_by_key(|block| (block.vertical_merge_key(), block.y));
-    let mut rectangles: Vec<WienerNsLrSourceBlock> = Vec::with_capacity(runs.len());
-    for run in runs {
-        if let Some(rectangle) = rectangles.last_mut()
-            && let Some(height) = rectangle.merged_height_with(&run)
-        {
-            rectangle.height = height;
-            continue;
-        }
-        rectangles.push(run);
-    }
-    rectangles.sort_unstable_by_key(|block| (block.y, block.x));
-    rectangles
+    let y_end = blocks.partition_point(|block| block.plane < 1);
+    let u_end = blocks.partition_point(|block| block.plane < 2);
+    (blocks, [y_end, u_end])
 }
 
 fn clipped_lr_source_block(

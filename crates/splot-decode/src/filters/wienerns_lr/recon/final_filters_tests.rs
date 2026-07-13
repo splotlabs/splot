@@ -213,3 +213,70 @@ fn does_not_merge_rows_across_source_boundaries() {
     assert_eq!(runs[0].height, 4);
     assert_eq!(runs[1].height, 4);
 }
+
+#[test]
+fn coalesces_all_planes_in_place_and_returns_ordered_partitions() {
+    let blocks = vec![
+        block(2, 4, 0),
+        block(0, 4, 4),
+        block(1, 0, 0),
+        block(0, 0, 0),
+        block(2, 0, 0),
+        block(0, 4, 0),
+        block(0, 0, 4),
+    ];
+    let allocation = blocks.as_ptr();
+    let capacity = blocks.capacity();
+
+    let (runs, plane_ends) = coalesced_lr_source_rows_all(blocks);
+
+    assert_eq!(runs.as_ptr(), allocation);
+    assert_eq!(runs.capacity(), capacity);
+    assert_eq!(plane_ends, [1, 2]);
+    assert_eq!(runs.len(), 3);
+    assert_eq!(
+        runs.iter()
+            .map(|run| (run.plane, run.x, run.y, run.width, run.height))
+            .collect::<Vec<_>>(),
+        vec![(0, 0, 0, 8, 8), (1, 0, 0, 4, 4), (2, 0, 0, 8, 4)]
+    );
+}
+
+#[test]
+fn empty_and_out_of_range_planes_produce_empty_partitions() {
+    let (runs, plane_ends) = coalesced_lr_source_rows_all(Vec::new());
+    assert!(runs.is_empty());
+    assert_eq!(plane_ends, [0, 0]);
+
+    let (runs, plane_ends) =
+        coalesced_lr_source_rows_all(vec![block(3, 0, 0), block(usize::MAX, 4, 0)]);
+    assert!(runs.is_empty());
+    assert_eq!(plane_ends, [0, 0]);
+}
+
+#[test]
+fn checked_extent_boundaries_do_not_merge() {
+    let mut first = block(0, 0, 0);
+    first.width = usize::MAX;
+    let second = block(0, usize::MAX, 0);
+
+    let runs = coalesced_lr_source_rows(&[first, second], 0);
+
+    assert_eq!(runs, vec![first, second]);
+}
+
+#[test]
+fn keeps_tile_unit_and_stripe_domains_separate() {
+    let first = block(0, 0, 0);
+    let mut unit = block(0, 4, 0);
+    unit.unit_row = 1;
+    let mut tile = block(0, 4, 0);
+    tile.tile_mi_col_end = 8;
+    let mut stripe = block(0, 4, 0);
+    stripe.luma_stripe_start_y = 1;
+
+    for next in [unit, tile, stripe] {
+        let runs = coalesced_lr_source_rows(&[first, next], 0);
+        assert_eq!(runs, vec![first, next]);
+    }
+}
