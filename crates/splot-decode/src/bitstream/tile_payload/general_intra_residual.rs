@@ -42,9 +42,7 @@ use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
 };
-use super::coeff_state::{
-    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, recycle_coeff_quant,
-};
+use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 use super::{DecodeTileWorkUnit, TileCdfSubset, TileCoeffFrameFacts};
 
 mod cctx;
@@ -502,12 +500,6 @@ pub(crate) struct LumaCoeffBlock {
     pub(crate) plane_tx_type: usize,
     pub(crate) use_tcq: bool,
     pub(crate) lossless: bool,
-}
-
-impl Drop for LumaCoeffBlock {
-    fn drop(&mut self) {
-        recycle_coeff_quant(core::mem::take(&mut self.quant));
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

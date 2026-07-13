@@ -67,6 +67,12 @@ pub(crate) fn recycle_coeff_quant(buffer: Vec<i32>) {
     with_transform_coeff_buffers(|buffers| recycle_buffer(&mut buffers.signed, buffer));
 }
 
+impl Drop for super::general_intra_residual::LumaCoeffBlock {
+    fn drop(&mut self) {
+        recycle_coeff_quant(core::mem::take(&mut self.quant));
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
     width: usize,
