@@ -154,7 +154,7 @@ impl ResidualPlanePlan {
         }
     }
 
-    fn plane_neighbours(
+    pub(super) fn plane_neighbours(
         self,
         block_ctx: BlockCtx,
         block_decoded: &TileBlockDecodedState,
