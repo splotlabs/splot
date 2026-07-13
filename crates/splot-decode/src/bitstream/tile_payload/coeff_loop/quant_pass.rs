@@ -53,16 +53,6 @@ pub(crate) struct NonZeroCoeffQuantPass {
 }
 
 impl NonZeroCoeffQuantPass {
-    pub(crate) fn from_interleaved_parts(
-        read_quants: Vec<CoeffReadQuant>,
-        quant_state: NonZeroCoeffQuantState,
-    ) -> Self {
-        Self {
-            read_quants,
-            quant_state,
-        }
-    }
-
     #[must_use]
     pub(crate) fn read_quants(&self) -> &[CoeffReadQuant] {
         &self.read_quants

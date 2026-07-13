@@ -10,7 +10,6 @@ use super::base_level_pass::{
     CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError,
     NonZeroCoeffBaseDerivedLevelPass, apply_nonzero_coeff_base_derived_level_pass,
 };
-use super::base_symbol::{CoeffBaseRangeRead, CoeffBaseSymbolSource};
 use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
 use super::quant_state::next_tcq_state;
@@ -117,73 +116,83 @@ fn find_payload(
     panic!("no coefficient base/level payload found");
 }
 
-fn base_tcq_ctx(input: &super::base_symbol::CoeffBaseSymbolReadInput) -> Option<usize> {
-    match input.base {
-        CoeffBaseSymbolSource::Base {
-            selector:
-                CoeffCdfSelector::Base { tcq_ctx, .. } | CoeffCdfSelector::BaseLf { tcq_ctx, .. },
-        } => Some(tcq_ctx),
-        _ => None,
-    }
+fn base_lf_rows(tile: &TileCdfSubset, first_ctx: usize, tcq_ctx: usize) -> Vec<Vec<i32>> {
+    (first_ctx..)
+        .map_while(|ctx| {
+            tile.row(TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
+                coeff_cdf_q_ctx: 0,
+                tx_size: 0,
+                ctx,
+                tcq_ctx,
+            }))
+            .ok()
+            .map(<[i32]>::to_vec)
+        })
+        .collect()
 }
 
-fn base_selector(input: &super::base_symbol::CoeffBaseSymbolReadInput) -> Option<CoeffCdfSelector> {
-    match input.base {
-        CoeffBaseSymbolSource::Base { selector } => Some(selector),
-        CoeffBaseSymbolSource::BaseEob { .. } => None,
-    }
+fn base_lf_row_changed(
+    tile: &TileCdfSubset,
+    rows_before: &[Vec<i32>],
+    first_ctx: usize,
+    tcq_ctx: usize,
+) -> bool {
+    rows_before.iter().enumerate().any(|(offset, before)| {
+        tile.row(TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
+            coeff_cdf_q_ctx: 0,
+            tx_size: 0,
+            ctx: first_ctx + offset,
+            tcq_ctx,
+        }))
+        .is_ok_and(|row| row != before.as_slice())
+    })
+}
+
+fn uses_tcq_context_one(pass: &NonZeroCoeffBaseDerivedLevelPass) -> bool {
+    let mut tcq_state = 0usize;
+    pass.walk().entries().iter().any(|entry| {
+        let uses_context_one = (tcq_state >> 1) & 1 == 1;
+        let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
+        tcq_state = next_tcq_state(tcq_state, level).unwrap();
+        uses_context_one
+    })
 }
 
 #[test]
 fn coefficient_base_level_pass_derives_later_contexts_from_written_levels() {
-    let payload = find_payload(0, &SCAN, luma_config(false, false), |_| true);
-    let pass = run_pass(&payload, 0, &SCAN, luma_config(false, false)).unwrap();
-    let first = pass.base_reads()[0];
-    let second_input = pass.derived_inputs()[1];
+    let config = luma_config(false, false);
+    let payload = find_payload(0, &SCAN, config, |_| true);
+    let (mut tile, mut symbols, start, walk) = setup_start(&payload, 0, &SCAN).unwrap();
+    let rows_before = base_lf_rows(&tile, 10, 0);
+    let pass =
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+            .unwrap();
 
     assert_eq!(pass.eob_read().eob().eob(), SCAN.len());
     assert_eq!(pass.walk().entries().len(), SCAN.len());
-    assert_eq!(
-        pass.block()
-            .level_at(first.entry().row(), first.entry().col())
-            .unwrap(),
-        first.level()
-    );
-    assert!(matches!(
-        pass.derived_inputs()[0].base,
-        CoeffBaseSymbolSource::BaseEob {
-            selector: CoeffCdfSelector::BaseLfEob { ctx: 1, .. }
-        }
-    ));
-    assert!(matches!(
-        second_input.base,
-        CoeffBaseSymbolSource::Base {
-            selector: CoeffCdfSelector::BaseLf { ctx, tcq_ctx: 0, .. }
-        } if ctx > 9
-    ));
+    assert!(base_lf_row_changed(&tile, &rows_before, 10, 0));
 }
 
 #[test]
 fn coefficient_base_level_pass_tracks_first_pass_tcq_state_for_selectors() {
     let config = luma_config(false, true);
-    let payload = find_payload(0, &SCAN, config, |pass| {
-        pass.derived_inputs()
-            .iter()
-            .filter_map(base_tcq_ctx)
-            .any(|tcq_ctx| tcq_ctx == 1)
-    });
-    let pass = run_pass(&payload, 0, &SCAN, config).unwrap();
-    let expected_tcq_state = pass.base_reads().iter().fold(0usize, |tcq_state, read| {
-        next_tcq_state(tcq_state, read.level()).unwrap()
-    });
+    let payload = find_payload(0, &SCAN, config, uses_tcq_context_one);
+    let (mut tile, mut symbols, start, walk) = setup_start(&payload, 0, &SCAN).unwrap();
+    let rows_before = base_lf_rows(&tile, 0, 1);
+    let pass =
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+            .unwrap();
+    let expected_tcq_state = pass
+        .walk()
+        .entries()
+        .iter()
+        .fold(0usize, |tcq_state, entry| {
+            let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
+            next_tcq_state(tcq_state, level).unwrap()
+        });
 
     assert_eq!(pass.first_pass().tcq_state(), expected_tcq_state);
-    assert!(
-        pass.derived_inputs()
-            .iter()
-            .filter_map(base_tcq_ctx)
-            .any(|tcq_ctx| tcq_ctx == 1)
-    );
+    assert!(base_lf_row_changed(&tile, &rows_before, 0, 1));
 }
 
 #[test]
@@ -195,15 +204,16 @@ fn coefficient_base_level_pass_tracks_parity_hiding_summary_before_dc() {
     let pass = run_pass(&payload, 0, &SCAN, config).unwrap();
     let mut expected_sum_abs1 = 0u32;
     let mut expected_num_nonzero = 0usize;
-    for read in pass
-        .base_reads()
+    for entry in pass
+        .walk()
+        .entries()
         .iter()
-        .copied()
-        .filter(|read| read.entry().scan_index() > 0)
+        .filter(|entry| entry.scan_index() > 0)
     {
-        let clipped = read.level().min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
+        let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
+        let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
         expected_sum_abs1 ^= clipped & 1;
-        if read.level() != 0 {
+        if level != 0 {
             expected_num_nonzero += 1;
         }
     }
@@ -217,12 +227,7 @@ fn coefficient_base_level_pass_tracks_parity_hiding_summary_before_dc() {
 fn coefficient_base_level_pass_consumes_parity_hidden_base_row() {
     let config = luma_config(true, false);
     let payload = find_payload(0, &DC_LAST_HIDDEN_SCAN, config, |pass| {
-        pass.first_pass().is_hidden()
-            && pass.first_pass().num_nonzero() >= 4
-            && matches!(
-                pass.derived_inputs().last().and_then(base_selector),
-                Some(CoeffCdfSelector::BasePh { .. })
-            )
+        pass.first_pass().is_hidden() && pass.first_pass().num_nonzero() >= 4
     });
     let (mut tile, mut symbols, start, walk) =
         setup_start(&payload, 0, &DC_LAST_HIDDEN_SCAN).unwrap();
@@ -239,58 +244,45 @@ fn coefficient_base_level_pass_consumes_parity_hidden_base_row() {
     let pass =
         apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
             .unwrap();
-    let final_read = pass.base_reads().last().copied().unwrap();
-    let final_selector = pass
-        .derived_inputs()
-        .last()
-        .and_then(base_selector)
-        .unwrap();
+    let final_entry = pass.walk().entries().last().copied().unwrap();
 
     assert_eq!(pass.eob_read().eob().eob(), DC_LAST_HIDDEN_SCAN.len());
     assert!(pass.first_pass().is_hidden());
-    assert_eq!(final_read.entry().scan_index(), 0);
-    assert!(matches!(
-        final_selector,
-        CoeffCdfSelector::BasePh {
+    assert_eq!(final_entry.scan_index(), 0);
+    assert!((0..5).any(|ctx| {
+        tile.row(TileCdfSelector::Coeff(CoeffCdfSelector::BasePh {
             coeff_cdf_q_ctx: 0,
-            ctx: 0..=4,
-        }
-    ));
-    let CoeffCdfSelector::BasePh { ctx, .. } = final_selector else {
-        unreachable!("selector checked above");
-    };
-    assert_ne!(
-        tile.row(TileCdfSelector::Coeff(final_selector)).unwrap(),
-        ph_rows_before[ctx].as_slice()
-    );
-    assert_eq!(
-        pass.block()
-            .level_at(final_read.entry().row(), final_read.entry().col())
-            .unwrap(),
-        final_read.level()
-    );
+            ctx,
+        }))
+        .is_ok_and(|row| row != ph_rows_before[ctx].as_slice())
+    }));
 }
 
 #[test]
 fn coefficient_base_level_pass_disables_chroma_low_frequency_base_range() {
     let config = chroma_config();
     let payload = find_payload(1, &DC_FIRST_SCAN, config, |pass| {
-        pass.base_reads()[0].level() > 4 && pass.base_reads()[0].base_range_symbol().is_none()
+        let entry = pass.walk().entries()[0];
+        pass.block()
+            .level_at(entry.row(), entry.col())
+            .is_ok_and(|level| level > 4)
     });
-    let pass = run_pass(&payload, 1, &DC_FIRST_SCAN, config).unwrap();
+    let (mut tile, mut symbols, start, walk) = setup_start(&payload, 1, &DC_FIRST_SCAN).unwrap();
+    let symbol_count_before = symbols.symbol_count();
+    let pass =
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+            .unwrap();
+    let first_entry = pass.walk().entries()[0];
 
-    assert!(matches!(
-        pass.derived_inputs()[0].base,
-        CoeffBaseSymbolSource::BaseEob {
-            selector: CoeffCdfSelector::BaseLfEobUv { .. }
-        }
-    ));
-    assert!(matches!(
-        pass.derived_inputs()[0].base_range,
-        CoeffBaseRangeRead::Disabled
-    ));
-    assert!(pass.base_reads()[0].level() > 4);
-    assert_eq!(pass.base_reads()[0].base_range_symbol(), None);
+    assert!(
+        pass.block()
+            .level_at(first_entry.row(), first_entry.col())
+            .is_ok_and(|level| level > 4)
+    );
+    assert_eq!(
+        symbols.symbol_count() - symbol_count_before,
+        DC_FIRST_SCAN.len() as u64
+    );
 }
 
 #[test]
