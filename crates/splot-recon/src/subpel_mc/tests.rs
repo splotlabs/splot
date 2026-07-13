@@ -777,6 +777,14 @@ fn compound_weighted_average_blend_applies_cwp_weight() {
         blend_compound_average_weighted(&left[..1], &right[..1], BitDepth::Eight, -4).unwrap(),
         [50]
     );
+    assert_eq!(
+        blend_compound_average_weighted_sample(900 * 16, 1000 * 16, BitDepth::Ten, 8,),
+        950
+    );
+    assert_eq!(
+        blend_compound_average_weighted_sample(-100, 10_000, BitDepth::Eight, 16),
+        0
+    );
 }
 
 #[test]
