@@ -2045,14 +2045,17 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
         lossless: false,
     };
 
-    let want = reconstruct_general_intra_coeff_block_rect_with_prediction(
+    let mut want = Vec::new();
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         &block,
         &paeth_pred,
+        &mut want,
         149,
         PlaneId::Y,
         3,
         4,
         true,
+        None,
         None,
         BitDepth::Eight,
     )

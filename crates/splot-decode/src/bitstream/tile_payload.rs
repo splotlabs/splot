@@ -62,8 +62,6 @@ pub(crate) use general_intra_block::{
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
     read_general_intra_palette_y_mode, read_lossless_luma_tx_size, read_lossless_tx_size,
 };
-#[cfg(test)]
-pub(crate) use general_intra_residual::reconstruct_general_intra_coeff_block_rect_with_prediction;
 pub(crate) use general_intra_residual::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, FrameQmScope, FrameQmSegmentScope,
     FrameQuantizerDeltasScope, FrameQuantizerSnapshot, FrameUserQmLevel, FrameUserQmLevels,
@@ -74,7 +72,6 @@ pub(crate) use general_intra_residual::{
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist_into,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,

@@ -10,8 +10,8 @@ use splot_recon::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraRectBlockSize, PixelFormat, PlaneId, ReconSample,
-    predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
+    BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize, PixelFormat,
+    PlaneId, ReconSample, predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
 };
 
 use crate::bitstream::tile_payload::{
@@ -53,7 +53,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
     let mut out = workspace.take_intra_prediction_buffer(
-        splot_recon::IntraPredictionScratchBuffer::Primary,
+        IntraPredictionScratchBuffer::Primary,
         plane_id,
         block_size.sample_count(),
         T::default(),
@@ -81,8 +81,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
             .write_rect_block(plane_id, x, y, block_size, &out)
             .map_err(Into::into)
     });
-    workspace
-        .recycle_intra_prediction_buffer(splot_recon::IntraPredictionScratchBuffer::Primary, out);
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, out);
     result
 }
 
@@ -124,32 +123,24 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
     let mut u_out = workspace.take_intra_prediction_buffer(
-        splot_recon::IntraPredictionScratchBuffer::Primary,
+        IntraPredictionScratchBuffer::Primary,
         PlaneId::U,
         block_size.sample_count(),
         T::default(),
     )?;
     let mut v_out = match workspace.take_intra_prediction_buffer(
-        splot_recon::IntraPredictionScratchBuffer::Secondary,
+        IntraPredictionScratchBuffer::Secondary,
         PlaneId::V,
         block_size.sample_count(),
         T::default(),
     ) {
         Ok(out) => out,
         Err(source) => {
-            workspace.recycle_intra_prediction_buffer(
-                splot_recon::IntraPredictionScratchBuffer::Primary,
-                u_out,
-            );
+            workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, u_out);
             return Err(source.into());
         }
     };
-    let run = |(plane_id, block, neighbours, out): (
-        PlaneId,
-        &LumaCoeffBlock,
-        (usize, usize),
-        &mut Vec<T>,
-    )| {
+    let run = |plane_id, block, (num4_above_right, num4_below_left), out: &mut Vec<T>| {
         reconstruct_general_intra_chroma_cfl_block(
             workspace,
             block,
@@ -163,14 +154,14 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             cfl_params,
             cfl_ds_filter_index,
             sb_mib,
-            neighbours.0,
-            neighbours.1,
+            num4_above_right,
+            num4_below_left,
             bit_depth,
             luma_ac.as_deref(),
         )
     };
-    let result = run((PlaneId::U, u_block, u_neighbours, &mut u_out))
-        .and_then(|()| run((PlaneId::V, v_block, v_neighbours, &mut v_out)))
+    let result = run(PlaneId::U, u_block, u_neighbours, &mut u_out)
+        .and_then(|()| run(PlaneId::V, v_block, v_neighbours, &mut v_out))
         .and_then(|()| {
             workspace
                 .write_rect_block(PlaneId::U, x, y, block_size, &u_out)
@@ -181,12 +172,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
                 .write_rect_block(PlaneId::V, x, y, block_size, &v_out)
                 .map_err(Into::into)
         });
-    workspace
-        .recycle_intra_prediction_buffer(splot_recon::IntraPredictionScratchBuffer::Primary, u_out);
-    workspace.recycle_intra_prediction_buffer(
-        splot_recon::IntraPredictionScratchBuffer::Secondary,
-        v_out,
-    );
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, u_out);
+    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, v_out);
     result
 }
 
@@ -254,6 +241,7 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
             log2_width,
             log2_height,
             false,
+            None,
             None,
             bit_depth,
         )

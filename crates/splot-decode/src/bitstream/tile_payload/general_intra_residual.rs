@@ -59,11 +59,8 @@ use luma_transform_partition::MAX_LUMA_TRANSFORM_PARTITION_UNITS;
 pub(crate) use luma_transform_partition::{
     LumaTransformPartitionContext, LumaTransformPartitionUnits,
 };
+pub(crate) use reconstruct::reconstruct_general_intra_coeff_block_rect_with_prediction_into;
 use reconstruct::{reconstruct_block_setup, resolve_secondary_inverse_transform};
-pub(crate) use reconstruct::{
-    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist_into,
-};
 
 const TX_4X4: usize = 0;
 const TX_64X64: usize = 4;
@@ -2199,34 +2196,6 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSampl
         false,
         bit_depth,
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction<T: ReconSample>(
-    block: &LumaCoeffBlock,
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
-    use_tcq: bool,
-    dpcm: Option<DpcmDirection>,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let mut out = Vec::new();
-    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-        block,
-        prediction,
-        &mut out,
-        qindex,
-        plane_id,
-        log2_width,
-        log2_height,
-        use_tcq,
-        dpcm,
-        bit_depth,
-    )?;
-    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]

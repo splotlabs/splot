@@ -14,7 +14,6 @@ use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
     reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_general_intra_luma_block_rect_with_prediction_and_ist_into,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -171,16 +170,18 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
         block_size.sample_count(),
         T::default(),
     )?;
-    let result = reconstruct_general_intra_luma_block_rect_with_prediction_and_ist_into(
+    let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         block,
         &prediction,
         &mut out,
         qindex,
+        PlaneId::Y,
         log2_width,
         log2_height,
         use_tcq,
+        Some(luma_context),
+        None,
         bit_depth,
-        luma_context,
     )
     .and_then(|()| {
         workspace
@@ -342,32 +343,19 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
             return Err(source.into());
         }
     };
-    let reconstructed = if let Some(luma_context) = luma_context {
-        reconstruct_general_intra_luma_block_rect_with_prediction_and_ist_into(
-            block,
-            &prediction,
-            &mut out,
-            qindex,
-            log2_width,
-            log2_height,
-            use_tcq,
-            bit_depth,
-            luma_context,
-        )
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-            block,
-            &prediction,
-            &mut out,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            use_tcq,
-            dpcm,
-            bit_depth,
-        )
-    };
+    let reconstructed = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        block,
+        &prediction,
+        &mut out,
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
     let result = reconstructed.and_then(|()| {
         workspace

@@ -151,6 +151,7 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
         3,
         false,
         None,
+        None,
         BitDepth::Ten,
     )
     .unwrap();
@@ -185,6 +186,7 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
         6,
         false,
         None,
+        None,
         BitDepth::Eight,
     )
     .unwrap();
@@ -218,6 +220,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
         2,
         false,
         None,
+        None,
         BitDepth::Eight,
     );
     assert!(matches!(
@@ -242,6 +245,7 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
         2,
         2,
         false,
+        None,
         None,
         BitDepth::Eight,
     );
@@ -1545,14 +1549,17 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
         38u8, 40, 42, 43, 40, 41, 42, 43, 41, 41, 42, 42, 42, 42, 42, 42,
     ];
 
-    let fsc = reconstruct_general_intra_coeff_block_rect_with_prediction(
+    let mut fsc = Vec::new();
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         &block,
         &prediction,
+        &mut fsc,
         78,
         PlaneId::Y,
         2,
         2,
         true,
+        None,
         None,
         BitDepth::Eight,
     )
@@ -1567,14 +1574,17 @@ fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
 
     let mut ordinary_tcq = block;
     ordinary_tcq.use_tcq = true;
-    let ordinary = reconstruct_general_intra_coeff_block_rect_with_prediction(
+    let mut ordinary = Vec::new();
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         &ordinary_tcq,
         &prediction,
+        &mut ordinary,
         78,
         PlaneId::Y,
         2,
         2,
         true,
+        None,
         None,
         BitDepth::Eight,
     )
