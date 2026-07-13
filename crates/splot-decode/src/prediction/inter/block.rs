@@ -1830,7 +1830,9 @@ fn decode_block<T: DeferredReconSample>(
         }
         flush_pending!();
         let coded = workspace.info().coded_luma_size();
-        let records = tip::reconstruct(
+        let mut tip_scratch = deferred.take_tip_scratch();
+        tip::reconstruct(
+            &mut tip_scratch,
             &mut mc::WorkspaceSink::Frame(workspace),
             &placed,
             temporal_context,
@@ -1851,8 +1853,9 @@ fn decode_block<T: DeferredReconSample>(
             coded.height().div_ceil(4),
             coded.width().div_ceil(4),
             core.display_order_hint().unwrap_or(0),
-            &records,
+            tip_scratch.records(),
         );
+        deferred.recycle_tip_scratch(tip_scratch);
         return Ok(non_intra_leaf_mode(frontier));
     }
     if deferable {

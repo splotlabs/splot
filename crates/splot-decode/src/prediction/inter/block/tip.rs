@@ -10,14 +10,35 @@ use splot_recon::{DecodedFrame, PixelFormat, ReconError};
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
 
-struct TipUnit<'a, T: ReconSample> {
-    params: mc::InterBlockParams<'a, T>,
+#[derive(Debug)]
+struct TipUnit {
+    placed: PlacedInterBlock,
+    rect: mc::McBlockRect,
     mvs: [Mv; 2],
-    luma_x: usize,
-    luma_y: usize,
-    luma_w: usize,
-    luma_h: usize,
     metadata: Option<mc::CompoundBlockMetadata>,
+}
+
+#[derive(Debug)]
+pub(super) struct TipReconstructScratch<T: ReconSample> {
+    units: Vec<TipUnit>,
+    output_samples: Vec<T>,
+    records: Vec<TipTemporalRecord>,
+}
+
+impl<T: ReconSample> Default for TipReconstructScratch<T> {
+    fn default() -> Self {
+        Self {
+            units: Vec::new(),
+            output_samples: Vec::new(),
+            records: Vec::new(),
+        }
+    }
+}
+
+impl<T: ReconSample> TipReconstructScratch<T> {
+    pub(super) fn records(&self) -> &[TipTemporalRecord] {
+        &self.records
+    }
 }
 
 const fn tip_uses_two_references(weight: i16) -> bool {
@@ -161,12 +182,40 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn compute_parallel_outputs<T: ReconSample>(
+fn resolve_tip_unit_params<'a, T: ReconSample>(
+    unit: &TipUnit,
+    ref_frame_idx: &[u32],
+    reference: &'a InterReferenceState<'a, T>,
+    use_refinemv: bool,
+    search_refinemv: bool,
+    use_optflow: bool,
+    output: bool,
+    tile_offset: ByteOffset,
+) -> Result<mc::InterBlockParams<'a, T>> {
+    Ok(super::super::resolve_inter_block_params(
+        ref_frame_idx,
+        reference,
+        &unit.placed,
+        unit.rect,
+        tile_offset,
+    )?
+    .with_refinemv(use_refinemv)
+    .with_refinemv_search(search_refinemv)
+    .with_optflow_sad_threshold(use_optflow.then_some(if output { 15 } else { 6 })))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_parallel_outputs<'a, T: ReconSample>(
     sink: &mc::WorkspaceSink<'_, T>,
-    units: &mut [TipUnit<'_, T>],
+    units: &mut [TipUnit],
     output_samples: &mut [T],
     output_stride: usize,
+    ref_frame_idx: &[u32],
+    reference: &'a InterReferenceState<'a, T>,
+    use_refinemv: bool,
+    search_refinemv: bool,
     use_optflow: bool,
+    output: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
     if output_stride == 0 {
@@ -193,10 +242,18 @@ fn compute_parallel_outputs<T: ReconSample>(
         .par_chunks_mut(output_stride)
         .zip(units.par_iter_mut())
         .try_for_each(|(samples, unit)| {
-            let compound = unit
-                .params
-                .into_compound()
-                .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+            let compound = resolve_tip_unit_params(
+                unit,
+                ref_frame_idx,
+                reference,
+                use_refinemv,
+                search_refinemv,
+                use_optflow,
+                output,
+                tile_offset,
+            )?
+            .into_compound()
+            .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
             let metadata = mc::predict_compound_average_block_into(
                 sink,
                 compound,
@@ -394,6 +451,7 @@ pub(super) fn apply_tip_temporal_records<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct<T: ReconSample>(
+    scratch: &mut TipReconstructScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, T>,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
@@ -406,7 +464,7 @@ pub(super) fn reconstruct<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<Vec<TipTemporalRecord>> {
+) -> Result<()> {
     let references = temporal
         .tip_references()
         .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
@@ -506,8 +564,10 @@ pub(super) fn reconstruct<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "TIP prediction unit count",
         })?;
-    let mut units = Vec::new();
-    units.try_reserve_exact(unit_count).map_err(|_| {
+    scratch.units.clear();
+    scratch.output_samples.clear();
+    scratch.records.clear();
+    scratch.units.try_reserve_exact(unit_count).map_err(|_| {
         inter_cap!(
             "inter_tip_unit_allocation",
             tile_offset,
@@ -574,56 +634,57 @@ pub(super) fn reconstruct<T: ReconSample>(
                 chroma_luma_w: unit.chroma_luma_w,
                 chroma_luma_h: unit.chroma_luma_h,
             };
-            let params = super::super::resolve_inter_block_params(
-                ref_frame_idx,
-                reference,
-                &unit,
+            scratch.units.push(TipUnit {
+                placed: unit,
                 rect,
-                tile_offset,
-            )?
-            .with_refinemv(use_refinemv)
-            .with_refinemv_search(search_refinemv)
-            .with_optflow_sad_threshold(use_optflow.then_some(if output { 15 } else { 6 }));
-            units.push(TipUnit {
-                params,
                 mvs,
-                luma_x,
-                luma_y,
-                luma_w,
-                luma_h,
                 metadata: None,
             });
         }
     }
     let parallel_output = two_references && splot_parallel::on_worker_pool();
+    if !parallel_output {
+        for unit in &scratch.units {
+            resolve_tip_unit_params(
+                unit,
+                ref_frame_idx,
+                reference,
+                use_refinemv,
+                search_refinemv,
+                use_optflow,
+                output,
+                tile_offset,
+            )?;
+        }
+    }
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))
         .sum::<usize>();
-    let mut output_samples = if parallel_output {
-        let arena_len =
-            units
-                .len()
-                .checked_mul(output_stride)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "TIP compound output arena length",
-                })?;
-        vec![T::default(); arena_len]
-    } else {
-        Vec::new()
-    };
+    if parallel_output {
+        let arena_len = scratch.units.len().checked_mul(output_stride).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "TIP compound output arena length",
+            },
+        )?;
+        scratch.output_samples.resize(arena_len, T::default());
+    }
     if parallel_output {
         compute_parallel_outputs(
             sink,
-            &mut units,
-            &mut output_samples,
+            &mut scratch.units,
+            &mut scratch.output_samples,
             output_stride,
+            ref_frame_idx,
+            reference,
+            use_refinemv,
+            search_refinemv,
             use_optflow,
+            output,
             tile_offset,
         )?;
     }
-    let mut records = Vec::new();
-    records.try_reserve_exact(unit_count).map_err(|_| {
+    scratch.records.try_reserve_exact(unit_count).map_err(|_| {
         inter_cap!(
             "inter_tip_temporal_record_allocation",
             tile_offset,
@@ -631,8 +692,8 @@ pub(super) fn reconstruct<T: ReconSample>(
             "7.22"
         )
     })?;
-    let mut output_chunks = output_samples.chunks_exact(output_stride);
-    for unit in units {
+    let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
+    for unit in scratch.units.drain(..) {
         let stored_mvs = if let Some(metadata) = unit.metadata {
             let samples = output_chunks
                 .next()
@@ -643,22 +704,37 @@ pub(super) fn reconstruct<T: ReconSample>(
             metadata.publish(samples, sink)?;
             unit.mvs
         } else if use_optflow {
-            mc::motion_compensate_inter_block_with_optflow_mvs_into(
-                sink,
-                unit.params,
-                8,
+            let params = resolve_tip_unit_params(
+                &unit,
+                ref_frame_idx,
+                reference,
+                use_refinemv,
+                search_refinemv,
+                use_optflow,
+                output,
                 tile_offset,
-            )?
-            .unwrap_or(unit.mvs)
+            )?;
+            mc::motion_compensate_inter_block_with_optflow_mvs_into(sink, params, 8, tile_offset)?
+                .unwrap_or(unit.mvs)
         } else {
-            mc::motion_compensate_inter_block_into(sink, unit.params, tile_offset)?;
+            let params = resolve_tip_unit_params(
+                &unit,
+                ref_frame_idx,
+                reference,
+                use_refinemv,
+                search_refinemv,
+                use_optflow,
+                output,
+                tile_offset,
+            )?;
+            mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
             unit.mvs
         };
-        records.push(TipTemporalRecord {
-            mi_row: unit.luma_y / 4,
-            mi_col: unit.luma_x / 4,
-            n4w: unit.luma_w.div_ceil(4),
-            n4h: unit.luma_h.div_ceil(4),
+        scratch.records.push(TipTemporalRecord {
+            mi_row: unit.placed.luma_y / 4,
+            mi_col: unit.placed.luma_x / 4,
+            n4w: unit.placed.luma_w.div_ceil(4),
+            n4h: unit.placed.luma_h.div_ceil(4),
             ref_frame0: references.past_ref,
             ref_frame1: two_references.then_some(references.future_ref),
             mvs: stored_mvs,
@@ -676,7 +752,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             tile_offset,
         )?;
     }
-    Ok(records)
+    Ok(())
 }
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
@@ -775,7 +851,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    let records = reconstruct(
+    let mut scratch = TipReconstructScratch::default();
+    reconstruct(
+        &mut scratch,
         &mut mc::WorkspaceSink::Frame(&mut workspace),
         &placed,
         &temporal,
@@ -797,7 +875,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         coded.height().div_ceil(4),
         coded.width().div_ceil(4),
         core.display_order_hint().unwrap_or(0),
-        &records,
+        scratch.records(),
     );
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
@@ -838,13 +916,15 @@ mod tests {
         tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
         tip_uses_two_references, tmvp_unit_size8,
     };
-    use crate::prediction::inter::{Mv, mc};
+    use crate::prediction::inter::{
+        BawpSyntax, InterBlock, InterReferenceState, Mv, PlacedInterBlock, mc,
+    };
     use splot_core::headers::frame::{FrameSize, FrameType};
     use splot_core::span::ByteOffset;
     use splot_parallel::{ThreadCount, WorkerPool};
     use splot_recon::{
         BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-        PixelFormat, PlaneRect, PlaneSize,
+        PixelFormat, PlaneRect, PlaneSize, ReferenceFrameStore, ReferenceSlot,
     };
 
     #[test]
@@ -858,20 +938,39 @@ mod tests {
     #[test]
     fn tip_parallel_output_error_precedes_publication() -> Result<(), Box<dyn std::error::Error>> {
         let reference = tip_workspace()?.freeze()?;
+        let mut store = ReferenceFrameStore::with_capacity(1)?;
+        store.put(ReferenceSlot::new(0)?, &reference)?;
+        let reference_state = InterReferenceState::empty(&store);
         let mut workspace = tip_workspace()?;
-        let params = mc::InterBlockParams::single(
-            &reference,
-            mc::McBlockRect::from_luma_rect(0, 0, 8, 8),
-            Mv::ZERO,
-            InterpolationFilter::EightTap,
-        );
         let mut units = [TipUnit {
-            params,
+            placed: PlacedInterBlock {
+                luma_x: 0,
+                luma_y: 0,
+                luma_w: 8,
+                luma_h: 8,
+                chroma_luma_x: 0,
+                chroma_luma_y: 0,
+                chroma_luma_w: 8,
+                chroma_luma_h: 8,
+                predict_chroma: true,
+                sub8x8_chroma: false,
+                interintra_chroma: false,
+                block: InterBlock {
+                    ref_frame0: 0,
+                    ref_frame1: None,
+                    mv: Mv::ZERO,
+                    mv1: Mv::ZERO,
+                    interp: super::ReconInterpolationFilter::EightTap,
+                    warp_params: [None, None],
+                    bawp: BawpSyntax::default(),
+                    interintra: None,
+                    compound_blend: mc::CompoundBlend::default(),
+                    optflow_distances: None,
+                    residual: None,
+                },
+            },
+            rect: mc::McBlockRect::from_luma_rect(0, 0, 8, 8),
             mvs: [Mv::ZERO; 2],
-            luma_x: 0,
-            luma_y: 0,
-            luma_w: 8,
-            luma_h: 8,
             metadata: None,
         }];
         let mut output = [7u8; 96];
@@ -884,6 +983,11 @@ mod tests {
                     &mut units,
                     &mut output,
                     96,
+                    &[0],
+                    &reference_state,
+                    false,
+                    false,
+                    false,
                     false,
                     ByteOffset::new(0),
                 )
