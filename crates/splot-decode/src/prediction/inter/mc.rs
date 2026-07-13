@@ -535,8 +535,7 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
         .use_refinemv
         .then(|| refinemv::compound_default_refinemv_motion_grid(sink, block, offset))
         .transpose()?;
-    let motion =
-        optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv.as_ref(), offset)?;
+    let motion = optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)?;
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(sink, block, motion.as_ref(), offset)?;
     let mut planes = Vec::with_capacity(YUV420_MC_PLANES.len());

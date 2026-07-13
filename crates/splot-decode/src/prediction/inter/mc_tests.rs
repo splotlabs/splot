@@ -340,6 +340,39 @@ fn tip_optflow_skips_low_sad_predictors() {
 }
 
 #[test]
+fn optflow_sad_gate_preserves_refinemv_motion_grid() {
+    let reference0 = flat_frame(8, 8, 55, 128, 128);
+    let reference1 = flat_frame(8, 8, 55, 128, 128);
+    let mut workspace = workspace(8, 8);
+    let grid = motion_compensate_inter_block_with_motion_grid_into(
+        &mut super::WorkspaceSink::Frame(&mut workspace),
+        InterBlockParams::compound_average(
+            &reference0,
+            &reference1,
+            rect(0, 0, 8, 8),
+            Mv::ZERO,
+            Mv::ZERO,
+            InterpolationFilter::Bilinear,
+            CompoundBlend::default(),
+        )
+        .with_refinemv(true)
+        .with_refinemv_search(false)
+        .with_optflow_distances(Some([1, -1]))
+        .with_optflow_sad_threshold(Some(1)),
+        None,
+        ByteOffset::new(0),
+    )
+    .expect("refine-MV optical-flow SAD gate")
+    .expect("preserved refine-MV motion grid");
+
+    assert_eq!(
+        grid.temporal_mvs_at_luma_offset(0, 0)
+            .expect("stored refine-MVs"),
+        [Mv::ZERO; 2]
+    );
+}
+
+#[test]
 fn dispatcher_returns_default_refinemv_motion_grid() {
     let width = 32;
     let height = 32;
