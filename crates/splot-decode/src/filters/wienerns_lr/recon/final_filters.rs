@@ -12,10 +12,10 @@ use splot_recon::{
     PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
     PlaneRect, ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
     WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
-    WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource,
+    WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     loop_restoration_source_sample, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass,
-    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded,
+    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded_into,
 };
 
 use super::{MI_SIZE, WienerNsLrReconSink};
@@ -31,6 +31,27 @@ use crate::support::reusable_scratch::with_reusable_scratch;
 thread_local! {
     static PC_WIENER_CLASSIFY_SCRATCH: std::cell::RefCell<PcWienerClassifyScratch> =
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
+    static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
+
+fn with_wiener_ns_luma_scratch<T: ReconSample, R>(
+    sample_count: usize,
+    f: impl FnOnce(&mut WienerNsLumaScratch<T>) -> R,
+) -> R {
+    WIENER_NS_LUMA_SCRATCH.with(|slot| {
+        let mut scratch = slot
+            .take()
+            .and_then(|scratch| scratch.downcast::<WienerNsLumaScratch<T>>().ok())
+            .unwrap_or_default();
+        let result = f(&mut scratch);
+        if sample_count <= MAX_RETAINED_WIENER_NS_LUMA_SAMPLES {
+            slot.set(Some(scratch));
+        }
+        result
+    })
 }
 
 fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
@@ -918,8 +939,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let padded_source =
             WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
                 .map_err(|_| luma_lr_filter_error(offset))?;
-        wiener_ns_filter_luma_block_padded(&mut output, &params, &padded_source)
-            .map_err(|_| luma_lr_filter_error(offset))?;
+        with_wiener_ns_luma_scratch(sample_count, |scratch| {
+            wiener_ns_filter_luma_block_padded_into(&mut output, &params, &padded_source, scratch)
+        })
+        .map_err(|_| luma_lr_filter_error(offset))?;
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
         Ok((block, output))
     }
