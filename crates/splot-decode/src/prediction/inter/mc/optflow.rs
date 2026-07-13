@@ -23,14 +23,45 @@ impl MotionCell {
 }
 
 #[derive(Debug)]
+enum MotionCells {
+    Inline(MotionCell),
+    Heap(Vec<MotionCell>),
+}
+
+impl MotionCells {
+    fn from_vec(cells: Vec<MotionCell>) -> Self {
+        if let [cell] = cells.as_slice() {
+            return Self::Inline(*cell);
+        }
+        Self::Heap(cells)
+    }
+
+    fn as_slice(&self) -> &[MotionCell] {
+        match self {
+            Self::Inline(cell) => core::slice::from_ref(cell),
+            Self::Heap(cells) => cells,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct CompoundMotionGrid {
     unit_size: usize,
     columns: usize,
-    cells: Vec<MotionCell>,
+    cells: MotionCells,
     refinemv_candidates: Option<[Mv; 2]>,
 }
 
 impl CompoundMotionGrid {
+    pub(super) fn from_single_refinemv(candidates: [Mv; 2], cell: MotionCell) -> Self {
+        Self {
+            unit_size: 16,
+            columns: 1,
+            cells: MotionCells::Inline(cell),
+            refinemv_candidates: Some(candidates),
+        }
+    }
+
     pub(super) fn from_refinemv(
         columns: usize,
         candidates: [Mv; 2],
@@ -39,7 +70,7 @@ impl CompoundMotionGrid {
         Self {
             unit_size: 16,
             columns,
-            cells,
+            cells: MotionCells::from_vec(cells),
             refinemv_candidates: Some(candidates),
         }
     }
@@ -122,6 +153,7 @@ impl CompoundMotionGrid {
                 context: "compound motion-grid index",
             })?;
         self.cells
+            .as_slice()
             .get(index)
             .copied()
             .ok_or(ReconError::ArithmeticOverflow {
@@ -298,7 +330,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
     Ok(Some(CompoundMotionGrid {
         unit_size,
         columns,
-        cells,
+        cells: MotionCells::from_vec(cells),
         refinemv_candidates: refinemv.and_then(|grid| grid.refinemv_candidates),
     }))
 }
@@ -513,10 +545,10 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 8,
             columns: 1,
-            cells: vec![MotionCell {
+            cells: MotionCells::Inline(MotionCell {
                 base_mvs: [Mv { row: 5, col: -5 }, Mv { row: -5, col: 5 }],
                 mvs: [[7, -7], [-7, 7]],
-            }],
+            }),
             refinemv_candidates: None,
         };
 
@@ -529,29 +561,29 @@ mod tests {
     #[test]
     fn uniform_mvs_requires_exactly_one_motion_cell() {
         let mvs = [[3, -5], [-7, 9]];
-        let grid = CompoundMotionGrid {
-            unit_size: 8,
-            columns: 1,
-            cells: vec![MotionCell {
-                base_mvs: [Mv::ZERO; 2],
+        let candidates = [Mv::ZERO; 2];
+        let grid = CompoundMotionGrid::from_single_refinemv(
+            candidates,
+            MotionCell {
+                base_mvs: candidates,
                 mvs,
-            }],
-            refinemv_candidates: None,
-        };
+            },
+        );
+        assert!(matches!(&grid.cells, MotionCells::Inline(_)));
         assert_eq!(grid.uniform_mvs(), Some(mvs));
 
-        let multiple = CompoundMotionGrid {
-            unit_size: 8,
-            columns: 2,
-            cells: vec![
+        let multiple = CompoundMotionGrid::from_refinemv(
+            2,
+            candidates,
+            vec![
                 MotionCell {
-                    base_mvs: [Mv::ZERO; 2],
+                    base_mvs: candidates,
                     mvs,
                 };
                 2
             ],
-            refinemv_candidates: None,
-        };
+        );
+        assert!(matches!(&multiple.cells, MotionCells::Heap(_)));
         assert_eq!(multiple.uniform_mvs(), None);
     }
 
@@ -560,7 +592,7 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 4,
             columns: 2,
-            cells: vec![
+            cells: MotionCells::Heap(vec![
                 MotionCell {
                     base_mvs: [Mv::ZERO; 2],
                     mvs: [[1, -1], [4, -4]],
@@ -577,7 +609,7 @@ mod tests {
                     base_mvs: [Mv::ZERO; 2],
                     mvs: [[4, -4], [4, -4]],
                 },
-            ],
+            ]),
             refinemv_candidates: None,
         };
 
@@ -592,13 +624,13 @@ mod tests {
         let grid = CompoundMotionGrid {
             unit_size: 4,
             columns: 1,
-            cells: vec![
+            cells: MotionCells::Heap(vec![
                 MotionCell {
                     base_mvs: [Mv::ZERO; 2],
                     mvs: [[4, -4], [0, 0]],
                 };
                 2
-            ],
+            ]),
             refinemv_candidates: None,
         };
 
