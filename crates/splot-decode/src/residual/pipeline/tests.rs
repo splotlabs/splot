@@ -538,38 +538,41 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
 
 #[test]
 fn lossless_v_handoff_uses_final_u_unit_flag() {
-    let mut coeffs = empty_luma_coeffs();
-    coeffs.all_zero = false;
-
-    let final_u_zero = ResidualPlaneExecution {
-        coeffs: coeffs.clone(),
-        last_unit_nonzero: Some(false),
+    let plane = GeneralIntraResidualPlan::square(
+        ctx(BlockRect::new(0, 0, 4, 4), BitDepth::Eight),
+        IntraLumaPlan::Dc,
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+        false,
+        false,
+        None,
+        true,
+    )
+    .expect("lossless plan")
+    .plane_plan(PlaneId::U)
+    .expect("chroma U plane");
+    let unit = |all_zero| {
+        let mut coeffs = empty_luma_coeffs();
+        coeffs.all_zero = all_zero;
+        ParsedTransformUnit {
+            plan: plane,
+            block: PositionedLumaCoeffBlock {
+                x: plane.x,
+                y: plane.y,
+                tx_size: plane.tx_size,
+                middle: false,
+                coeffs,
+            },
+            palette_color_map: None,
+        }
     };
-    assert!(
-        !final_u_zero
-            .last_unit_nonzero
-            .unwrap_or(!final_u_zero.coeffs.all_zero)
-    );
-
-    let final_u_nonzero = ResidualPlaneExecution {
-        coeffs: coeffs.clone(),
-        last_unit_nonzero: Some(true),
+    let parsed = |units| ParsedResidualPlane {
+        plane,
+        kind: ParsedResidualPlaneKind::Lossless(units),
+        cctx_role: CctxRole::None,
     };
-    assert!(
-        final_u_nonzero
-            .last_unit_nonzero
-            .unwrap_or(!final_u_nonzero.coeffs.all_zero)
-    );
 
-    let whole_u_nonzero = ResidualPlaneExecution {
-        coeffs,
-        last_unit_nonzero: None,
-    };
-    assert!(
-        whole_u_nonzero
-            .last_unit_nonzero
-            .unwrap_or(!whole_u_nonzero.coeffs.all_zero)
-    );
+    assert!(!parsed(vec![unit(false), unit(true)]).u_nonzero());
+    assert!(parsed(vec![unit(true), unit(false)]).u_nonzero());
 }
 
 fn assert_large_chroma_order(plan: &GeneralIntraResidualPlan, defer: bool) {
