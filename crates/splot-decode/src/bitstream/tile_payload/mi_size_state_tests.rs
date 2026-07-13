@@ -21,7 +21,7 @@ fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
 
 impl TileMiSizeState {
     fn mi_size_at(&self, plane: usize, row: usize, col: usize) -> usize {
-        self.mi_sizes[plane][row][col]
+        self.mi_sizes[plane][row * self.mi_size_stride + col]
     }
 
     fn left_mi_size_at(&self, plane: usize, row: usize) -> usize {
@@ -48,8 +48,8 @@ fn initializes_luma_and_chroma_with_clear_context_sentinel() {
             assert_eq!(state.above_mi_size_at(plane, col), CLEAR_PARTITION_CONTEXT);
         }
     }
-    assert_eq!(state.mi_sizes[0].len(), 16);
-    assert_eq!(state.mi_sizes[0][0].len(), 16);
+    assert_eq!(state.mi_sizes[0].len(), 16 * 16);
+    assert_eq!(state.mi_size_stride, 16);
     assert_eq!(state.left_mi_sizes[0].len(), 16);
     assert_eq!(state.above_mi_sizes[0].len(), 16);
 }
@@ -62,6 +62,20 @@ fn allocation_accounting_includes_superblock_padding_and_neighbor_lines() {
     assert_eq!(allocation.padded_cols(), 32);
     assert_eq!(allocation.padded_grid_cells(), 1024);
     assert_eq!(allocation.entry_count(), 2 * (1024 + 32 + 32));
+}
+
+#[test]
+fn non_square_padded_grid_uses_padded_columns_as_stride() {
+    let mut state = new_state(18, 33);
+
+    assert_eq!(state.mi_size_stride, 48);
+    assert_eq!(state.mi_sizes[0].len(), 32 * 48);
+
+    state.update_luma_block(16, 32, block(BLOCK_64X64)).unwrap();
+
+    assert_eq!(state.mi_size_at(0, 16, 32), BLOCK_64X64);
+    assert_eq!(state.mi_size_at(0, 17, 32), BLOCK_64X64);
+    assert_eq!(state.mi_size_at(0, 17, 0), BLOCK_256X256);
 }
 
 #[test]
@@ -230,6 +244,7 @@ fn context_state_view_is_available_after_mutation() {
 
     let expected = TilePartitionContextState::new(
         &state.mi_sizes[0],
+        state.mi_size_stride,
         [&state.left_mi_sizes[0], &state.left_mi_sizes[1]],
         [&state.above_mi_sizes[0], &state.above_mi_sizes[1]],
     );

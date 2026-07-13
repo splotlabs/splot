@@ -266,7 +266,7 @@ fn coordinate_arithmetic_overflow_is_typed() {
 fn partition_decision_facts_collect_implied_allowed_and_rect_type() {
     static LEFT: [usize; 4] = [BLOCK_4X4; 4];
     static ABOVE: [usize; 4] = [BLOCK_4X4; 4];
-    let grid = vec![vec![BLOCK_4X4; 4]; 4];
+    let grid = vec![BLOCK_4X4; 16];
 
     let facts = partition_decision_facts(input(BLOCK_4X8)).unwrap();
     assert_eq!(facts.implied_partition(), None);
@@ -275,7 +275,7 @@ fn partition_decision_facts_collect_implied_allowed_and_rect_type() {
     let decision_input = facts.read_partition_decision_input(
         true,
         PartitionContextInput::new(BLOCK_4X8, 0, 0, 0, [&LEFT, &LEFT], [&ABOVE, &ABOVE]).unwrap(),
-        SquareSplitContextInput::new(BLOCK_4X8, 0, 0, 0, false, false, &grid).unwrap(),
+        SquareSplitContextInput::new(BLOCK_4X8, 0, 0, 0, false, false, &grid, 4).unwrap(),
     );
 
     assert_eq!(decision_input, decision_input);

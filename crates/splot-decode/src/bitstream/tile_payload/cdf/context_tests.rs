@@ -56,24 +56,24 @@ fn left_partition_context(block_size: usize) -> usize {
 fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
     let row0 = [BLOCK_256X256, BLOCK_4X4];
     let row1 = [BLOCK_4X4, BLOCK_256X256];
-    let mi_sizes = vec![row0.to_vec(), row1.to_vec()];
+    let mi_sizes = [row0, row1].concat();
 
     assert_eq!(
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, true, &mi_sizes)
+        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, true, &mi_sizes, 2)
             .unwrap()
             .do_square_split_selector()
             .unwrap(),
         do_square(0, 3)
     );
     assert_eq!(
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &mi_sizes)
+        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &mi_sizes, 2)
             .unwrap()
             .do_square_split_selector()
             .unwrap(),
         do_square(0, 1)
     );
     assert_eq!(
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, false, true, &mi_sizes)
+        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, false, true, &mi_sizes, 2)
             .unwrap()
             .do_square_split_selector()
             .unwrap(),
@@ -82,7 +82,7 @@ fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
 
     let empty_mi_sizes = Vec::new();
     assert_eq!(
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &empty_mi_sizes,)
+        SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &empty_mi_sizes, 0)
             .unwrap()
             .do_square_split_selector()
             .unwrap(),
@@ -94,17 +94,17 @@ fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
 fn derives_square_split_block_256_bonus_contexts() {
     let row0 = [BLOCK_256X256, BLOCK_4X4];
     let row1 = [BLOCK_4X4, BLOCK_256X256];
-    let mi_sizes = vec![row0.to_vec(), row1.to_vec()];
+    let mi_sizes = [row0, row1].concat();
 
     assert_eq!(
-        SquareSplitContextInput::new(BLOCK_256X256, 0, 1, 1, false, false, &mi_sizes)
+        SquareSplitContextInput::new(BLOCK_256X256, 0, 1, 1, false, false, &mi_sizes, 2)
             .unwrap()
             .do_square_split_selector()
             .unwrap(),
         do_square(0, 4)
     );
     assert_eq!(
-        SquareSplitContextInput::new(BLOCK_256X256, 0, 1, 1, true, true, &mi_sizes)
+        SquareSplitContextInput::new(BLOCK_256X256, 0, 1, 1, true, true, &mi_sizes, 2)
             .unwrap()
             .do_square_split_selector()
             .unwrap(),
@@ -144,7 +144,7 @@ fn chroma_sdp_do_split_reads_plane_one_cdf_and_neighbor_array() {
 
     let empty_mi_sizes = Vec::new();
     assert!(matches!(
-        SquareSplitContextInput::new(BLOCK_16X16, 1, 0, 0, false, false, &empty_mi_sizes)
+        SquareSplitContextInput::new(BLOCK_16X16, 1, 0, 0, false, false, &empty_mi_sizes, 0)
             .unwrap()
             .do_square_split_selector(),
         Err(TileCdfError::SelectorOutOfRange {
@@ -252,7 +252,7 @@ fn rejects_invalid_context_inputs_before_table_use() {
 #[test]
 fn rejects_square_split_invalid_inputs_before_grid_table_use() {
     let empty_mi_sizes = Vec::new();
-    let err = SquareSplitContextInput::new(BLOCK_SIZES, 0, 0, 0, false, false, &empty_mi_sizes)
+    let err = SquareSplitContextInput::new(BLOCK_SIZES, 0, 0, 0, false, false, &empty_mi_sizes, 0)
         .unwrap_err();
     assert_eq!(
         err,
@@ -263,7 +263,7 @@ fn rejects_square_split_invalid_inputs_before_grid_table_use() {
         }
     );
 
-    let err = SquareSplitContextInput::new(BLOCK_16X16, 1, 0, 0, false, false, &empty_mi_sizes)
+    let err = SquareSplitContextInput::new(BLOCK_16X16, 1, 0, 0, false, false, &empty_mi_sizes, 0)
         .unwrap()
         .do_square_split_selector()
         .unwrap_err();
@@ -277,7 +277,7 @@ fn rejects_square_split_invalid_inputs_before_grid_table_use() {
         }
     );
 
-    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, true, false, &empty_mi_sizes)
+    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, true, false, &empty_mi_sizes, 0)
         .unwrap()
         .do_square_split_selector()
         .unwrap_err();
@@ -292,7 +292,7 @@ fn rejects_square_split_invalid_inputs_before_grid_table_use() {
         }
     );
 
-    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, true, &empty_mi_sizes)
+    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, true, &empty_mi_sizes, 0)
         .unwrap()
         .do_square_split_selector()
         .unwrap_err();
@@ -312,8 +312,8 @@ fn rejects_square_split_invalid_inputs_before_grid_table_use() {
 fn rejects_square_split_missing_grid_cells_and_invalid_block_sizes() {
     let empty_grid = Vec::new();
     let one_cell_row = [BLOCK_4X4];
-    let one_cell_grid = vec![one_cell_row.to_vec()];
-    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 0, true, false, &empty_grid)
+    let one_cell_grid = one_cell_row.to_vec();
+    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 0, true, false, &empty_grid, 0)
         .unwrap()
         .do_square_split_selector()
         .unwrap_err();
@@ -327,7 +327,7 @@ fn rejects_square_split_missing_grid_cells_and_invalid_block_sizes() {
         }
     );
 
-    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &one_cell_grid)
+    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &one_cell_grid, 1)
         .unwrap()
         .do_square_split_selector()
         .unwrap_err();
@@ -344,8 +344,8 @@ fn rejects_square_split_missing_grid_cells_and_invalid_block_sizes() {
 
     let invalid_row = [BLOCK_4X4, BLOCK_SIZES];
     let row1 = [BLOCK_4X4, BLOCK_4X4];
-    let invalid_grid = vec![invalid_row.to_vec(), row1.to_vec()];
-    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &invalid_grid)
+    let invalid_grid = [invalid_row, row1].concat();
+    let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &invalid_grid, 2)
         .unwrap()
         .do_square_split_selector()
         .unwrap_err();
@@ -415,7 +415,7 @@ fn derived_selectors_index_generated_default_rows() {
     let above1 = [above_partition_context(BLOCK_256X256); 8];
     let square_row0 = [BLOCK_256X256, BLOCK_4X4];
     let square_row1 = [BLOCK_4X4, BLOCK_256X256];
-    let mi_sizes = vec![square_row0.to_vec(), square_row1.to_vec()];
+    let mi_sizes = [square_row0, square_row1].concat();
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
 
@@ -431,7 +431,7 @@ fn derived_selectors_index_generated_default_rows() {
         DEFAULT_RECT_TYPE_CDF[0][3].as_slice()
     );
     let square_input =
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, true, &mi_sizes).unwrap();
+        SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, true, &mi_sizes, 2).unwrap();
     assert_eq!(
         tile.row(square_input.do_square_split_selector().unwrap())
             .unwrap(),

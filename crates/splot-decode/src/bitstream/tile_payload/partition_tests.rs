@@ -3,8 +3,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::sync::LazyLock;
-
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
 
@@ -32,9 +30,8 @@ fn partition_context() -> PartitionContextInput<'static> {
 }
 
 fn square_context() -> SquareSplitContextInput<'static> {
-    static GRID: LazyLock<Vec<Vec<usize>>> =
-        LazyLock::new(|| vec![vec![BLOCK_4X4; 2], vec![BLOCK_4X4; 2]]);
-    SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, GRID.as_slice()).unwrap()
+    static GRID: [usize; 4] = [BLOCK_4X4; 4];
+    SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &GRID, 2).unwrap()
 }
 
 fn input(
@@ -375,7 +372,7 @@ fn impossible_final_table_result_is_rejected() {
 #[test]
 fn cdf_selector_error_fails_before_symbol_consumption() {
     static EMPTY: [usize; 0] = [];
-    let grid = vec![vec![BLOCK_4X4; 2], vec![BLOCK_4X4; 2]];
+    let grid = vec![BLOCK_4X4; 4];
     let input = ReadPartitionDecisionInput::new(
         allowed(&[PartitionType::None, PartitionType::Horz]),
         None,
@@ -383,7 +380,7 @@ fn cdf_selector_error_fails_before_symbol_consumption() {
         Some(RectPartitionType::Horz),
         PartitionContextInput::new(BLOCK_32X32, 0, 1, 0, [&EMPTY, &EMPTY], [&EMPTY, &EMPTY])
             .unwrap(),
-        SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &grid).unwrap(),
+        SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &grid, 2).unwrap(),
     );
     let mut cdfs = cdfs();
     let before = cdfs.clone();
