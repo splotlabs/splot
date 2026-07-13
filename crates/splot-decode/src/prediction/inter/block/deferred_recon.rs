@@ -77,21 +77,13 @@ type JobResult<T> = Result<(BlockReconWindow<T>, JobOutput)>;
 #[derive(Debug)]
 pub(super) struct DeferredInterRecon {
     pending: Vec<PendingBlock>,
-    parallel: bool,
 }
 
 impl DeferredInterRecon {
     pub(super) fn new() -> Self {
         Self {
             pending: Vec::new(),
-            parallel: splot_parallel::on_multiworker_pool(),
         }
-    }
-
-    /// Whether blocks should be queued at all; single-worker runs keep the
-    /// ordered inline path and never pay for windows.
-    pub(super) const fn parallel(&self) -> bool {
-        self.parallel
     }
 
     pub(super) fn push(
@@ -303,7 +295,7 @@ pub(super) fn flush_deferred<T: ReconSample>(
         residual_use_ddt,
         bit_depth,
     };
-    let mut results: Vec<Option<JobResult<T>>> = if deferred.parallel && pending.len() > 1 {
+    let mut results: Vec<Option<JobResult<T>>> = if pending.len() > 1 {
         let frame: &CurrentFrameWorkspace<T> = workspace;
         pending
             .par_iter()

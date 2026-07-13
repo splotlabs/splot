@@ -1537,8 +1537,7 @@ fn decode_block<T: ReconSample>(
             optflow_distances: None,
             residual,
         });
-        if deferred.parallel()
-            && placed.block.interintra.is_none()
+        if placed.block.interintra.is_none()
             && !placed.block.bawp.enabled
             && deferred_recon::deferable_placed_geometry(&placed, frontier)
         {
@@ -1927,7 +1926,7 @@ fn decode_block<T: ReconSample>(
         && !placed.block.bawp.enabled
         && deferred_recon::deferable_placed_geometry(&placed, frontier);
     if tip_ref {
-        if deferred.parallel() && deferable {
+        if deferable {
             deferred.push(
                 placed,
                 deferred_recon::PendingKind::Tip,
@@ -1963,7 +1962,7 @@ fn decode_block<T: ReconSample>(
         );
         return Ok(non_intra_leaf_mode(frontier));
     }
-    if deferred.parallel() && deferable {
+    if deferable {
         deferred.push(
             placed,
             deferred_recon::PendingKind::Single,
