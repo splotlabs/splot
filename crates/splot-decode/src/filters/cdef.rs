@@ -606,7 +606,7 @@ fn compute_cdef_filter_plane<T: ReconSample>(
         let mut out = [0u16; 64];
         cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
         for (dst, &filtered) in filtered_block.iter_mut().zip(&out).take(w * h) {
-            *dst = storage_sample::<T>(i32::from(filtered), ctx.max_sample)?;
+            *dst = T::try_from_u16(filtered).map_err(|_| CdefError::Workspace)?;
         }
     } else {
         let offsets = CdefTapOffsets::for_direction(ctx.dir);
