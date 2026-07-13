@@ -303,34 +303,85 @@ pub fn cdef_filter_block_interior(
         }
     }
 
-    for i in 0..h {
-        for j in 0..w {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
-            let center = i32::from(pad[center_index]);
-            let mut sum = 0i32;
-            let mut max = center;
-            let mut min = center;
-            for k in 0..2 {
-                for sign_index in 0..2 {
-                    let p =
-                        i32::from(pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])]);
-                    sum += pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
-                    max = max.max(p);
-                    min = min.min(p);
-                    for dir_off_index in 0..2 {
-                        let s = i32::from(
-                            pad[center_index
-                                .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
+    if filter.pri_str != 0 && filter.sec_str != 0 {
+        for i in 0..h {
+            for j in 0..w {
+                let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
+                let center = i32::from(pad[center_index]);
+                let mut sum = 0i32;
+                let mut max = center;
+                let mut min = center;
+                for k in 0..2 {
+                    for sign_index in 0..2 {
+                        let p = i32::from(
+                            pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])],
                         );
                         sum +=
-                            sec_taps[k] * constrain_with_adj(s - center, filter.sec_str, sec_adj);
-                        max = max.max(s);
-                        min = min.min(s);
+                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                        max = max.max(p);
+                        min = min.min(p);
+                        for dir_off_index in 0..2 {
+                            let s = i32::from(
+                                pad[center_index
+                                    .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
+                            );
+                            sum += sec_taps[k]
+                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                            max = max.max(s);
+                            min = min.min(s);
+                        }
                     }
                 }
+                let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
+                out[i * w + j] = rounded.clamp(min, max) as u16;
             }
-            let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
-            out[i * w + j] = rounded.clamp(min, max) as u16;
+        }
+    // Either tap family alone has total weight 12, so its rounded result cannot
+    // leave the neighbour range and the min/max clamp is redundant.
+    } else if filter.pri_str != 0 {
+        for i in 0..h {
+            for j in 0..w {
+                let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
+                let center = i32::from(pad[center_index]);
+                let mut sum = 0i32;
+                for k in 0..2 {
+                    for sign_index in 0..2 {
+                        let p = i32::from(
+                            pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])],
+                        );
+                        sum +=
+                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                    }
+                }
+                out[i * w + j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+            }
+        }
+    } else if filter.sec_str != 0 {
+        for i in 0..h {
+            for j in 0..w {
+                let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
+                let center = i32::from(pad[center_index]);
+                let mut sum = 0i32;
+                for k in 0..2 {
+                    for sign_index in 0..2 {
+                        for dir_off_index in 0..2 {
+                            let s = i32::from(
+                                pad[center_index
+                                    .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
+                            );
+                            sum += sec_taps[k]
+                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                        }
+                    }
+                }
+                out[i * w + j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+            }
+        }
+    } else {
+        for i in 0..h {
+            for j in 0..w {
+                out[i * w + j] = pad[(i + 2) * CDEF_PADDED_SIDE + (j + 2)];
+            }
         }
     }
 }
