@@ -49,7 +49,9 @@ fn annex_b_tile_group_obu() -> Vec<u8> {
 fn annex_b_tile_group_obu_with_payload(payload: &[u8]) -> Vec<u8> {
     let size = u8::try_from(payload.len() + 1).unwrap();
     let mut bytes = vec![size, OBU_CLOSED_LOOP_KEY_HEADER];
-    bytes.extend_from_slice(payload);
+    let mut payload = payload.to_vec();
+    payload[0] |= 0x80;
+    bytes.extend_from_slice(&payload);
     bytes
 }
 
@@ -567,17 +569,31 @@ fn derived_boundary_enforces_tile_count_and_payload_limits() {
 fn derived_boundary_rejects_unsupported_position_and_frame_paths() {
     let bytes = annex_b_tile_group_obu();
     let ctx = single_thread_context();
+    for (position, is_first, is_last) in [
+        (TileGroupPositionFacts::new(false, true), false, true),
+        (TileGroupPositionFacts::new(true, false), true, false),
+    ] {
+        let error = derive_tile_payload_plan(
+            &ctx,
+            &bytes,
+            annex_b_envelope(&bytes),
+            position,
+            base_candidate_facts(false),
+            DecodeLimits::unlimited(),
+        )
+        .unwrap_err();
+        assert_malformed_error(
+            &error,
+            FrameCandidateTileMalformed::TileGroupPositionMismatch {
+                is_first,
+                is_last,
+                tg_start: 0,
+                tg_end: 0,
+                num_tiles: 1,
+            },
+        );
+    }
     let cases = [
-        (
-            TileGroupPositionFacts::new(false, true),
-            base_candidate_facts(false),
-            FrameCandidateTileUnsupportedReason::NonFirstTileGroup,
-        ),
-        (
-            TileGroupPositionFacts::new(true, false),
-            base_candidate_facts(false),
-            FrameCandidateTileUnsupportedReason::NonLastTileGroup,
-        ),
         (
             base_position(),
             non_frame_candidate_facts(),
@@ -586,7 +602,7 @@ fn derived_boundary_rejects_unsupported_position_and_frame_paths() {
         (
             base_position(),
             bridge_candidate_facts(),
-            FrameCandidateTileUnsupportedReason::BridgeFrame,
+            FrameCandidateTileUnsupportedReason::CandidateNotFrame,
         ),
     ];
 

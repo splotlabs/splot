@@ -24,16 +24,7 @@ fn one_tile_grid() -> TileGridFacts<'static> {
 }
 
 fn base_frame() -> TileFrameFacts {
-    TileFrameFacts::new(
-        ObuType::ClosedLoopKey,
-        true,
-        true,
-        true,
-        false,
-        TileBruPath::NotUsed,
-        42,
-        false,
-    )
+    TileFrameFacts::new(ObuType::ClosedLoopKey, true, true, 42, false)
 }
 
 fn one_tile_framing(payload: &[u8]) -> TileGroupFraming {
@@ -421,141 +412,42 @@ fn frame_tile_count_limit_uses_grid_not_current_group_len() {
 }
 
 #[test]
-fn bridge_frame_keeps_bridge_specific_unsupported_reason() {
-    let payload = [0x80];
-    let framing = one_tile_framing(&payload);
-    let frame = TileFrameFacts::new(
-        ObuType::BridgeFrame,
-        false,
-        true,
-        true,
-        true,
-        TileBruPath::NotUsed,
-        0,
-        false,
-    );
-    let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
-    let error = plan_tile_payload_boundary(&input).unwrap_err();
-    let unsupported = unsupported(&error);
-
-    assert_eq!(
-        unsupported.reason(),
-        TilePayloadUnsupportedReason::BridgeTile
-    );
-    assert_eq!(unsupported.spec_section(), "5.20.1");
-}
-
-#[test]
-fn unsupported_minimal_tier_gates_are_structured() {
+fn minimal_tier_admission_and_rejections_are_structured() {
     let ctx = DecodeContext::new(DecodeRuntimeConfig::new(splot_parallel::ThreadCount::from(
         1,
     )))
     .unwrap();
     ctx.pool()
-        .install(unsupported_minimal_tier_gates_are_structured_inner);
+        .install(minimal_tier_admission_and_rejections_are_structured_inner);
 }
 
-fn unsupported_minimal_tier_gates_are_structured_inner() {
+fn minimal_tier_admission_and_rejections_are_structured_inner() {
     let payload = [0x80];
     let framing = one_tile_framing(&payload);
+    let open_loop_key = TileFrameFacts::new(ObuType::OpenLoopKey, true, true, 0, false);
+    let input = input_with_frame(&payload, &framing, open_loop_key, DecodeLimits::unlimited());
+    let plan = plan_tile_payload_boundary(&input).unwrap();
+    assert_eq!(plan.source(), base_source());
+    assert_eq!(plan.work_units().len(), 1);
+    assert_eq!(plan.work_units()[0].tile_num(), 0);
+    assert_eq!(plan.work_units()[0].tile_bytes(), &payload);
+    assert_eq!(plan.work_units()[0].current_q_index_at_entry(), 0);
+    assert_eq!(
+        plan.unsupported().reason(),
+        TilePayloadUnsupportedReason::DecodeTileSyntax
+    );
+    assert!(plan.frame_end().reaches_last_tile_group());
+
     let cases = vec![
         (
-            TileFrameFacts::new(
-                ObuType::OpenLoopKey,
-                true,
-                true,
-                true,
-                false,
-                TileBruPath::NotUsed,
-                0,
-                false,
-            ),
+            TileFrameFacts::new(ObuType::Padding, true, true, 0, false),
             TilePayloadUnsupportedReason::NonClosedLoopKey,
             "7.1",
         ),
         (
-            TileFrameFacts::new(
-                ObuType::ClosedLoopKey,
-                false,
-                true,
-                true,
-                false,
-                TileBruPath::NotUsed,
-                0,
-                false,
-            ),
+            TileFrameFacts::new(ObuType::ClosedLoopKey, false, true, 0, false),
             TilePayloadUnsupportedReason::NonIntraFrame,
             "7.1",
-        ),
-        (
-            TileFrameFacts::new(
-                ObuType::ClosedLoopKey,
-                true,
-                false,
-                true,
-                false,
-                TileBruPath::NotUsed,
-                0,
-                false,
-            ),
-            TilePayloadUnsupportedReason::MissingCompleteIntraFirstTileGroup,
-            "5.20.1",
-        ),
-        (
-            TileFrameFacts::new(
-                ObuType::ClosedLoopKey,
-                true,
-                true,
-                false,
-                false,
-                TileBruPath::NotUsed,
-                0,
-                false,
-            ),
-            TilePayloadUnsupportedReason::MultipleTileGroups,
-            "5.20.1",
-        ),
-        (
-            TileFrameFacts::new(
-                ObuType::ClosedLoopKey,
-                true,
-                true,
-                true,
-                true,
-                TileBruPath::NotUsed,
-                0,
-                false,
-            ),
-            TilePayloadUnsupportedReason::BridgeTile,
-            "5.20.1",
-        ),
-        (
-            TileFrameFacts::new(
-                ObuType::ClosedLoopKey,
-                true,
-                true,
-                true,
-                false,
-                TileBruPath::Active,
-                0,
-                false,
-            ),
-            TilePayloadUnsupportedReason::BruTileActivity,
-            "5.20.1",
-        ),
-        (
-            TileFrameFacts::new(
-                ObuType::ClosedLoopKey,
-                true,
-                true,
-                true,
-                false,
-                TileBruPath::Inactive,
-                0,
-                false,
-            ),
-            TilePayloadUnsupportedReason::BruTileActivity,
-            "5.20.1",
         ),
     ];
 

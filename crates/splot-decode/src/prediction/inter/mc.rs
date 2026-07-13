@@ -4,15 +4,15 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconError,
-    ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
+    CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PixelFormat, PlaneId, PlaneRect,
+    ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
     WarpPredictBlockParams, blend_compound_average_weighted_sample, ext_warp_predict_unit,
     subpel_predict_block, subpel_predict_block_compound_intermediate,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
     warp_predict_block_into, wedge_mask_plane_sample,
 };
 
-use super::mv_scaling::{PlaneScaling, derive_plane_scaling, derive_plane_scaling_prescaled};
+use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
 use super::{Mv, SPEC_MC, unsupported_at};
 use crate::Result;
 use splot_core::span::ByteOffset;
@@ -25,8 +25,15 @@ pub(crate) use optflow::CompoundMotionGrid;
 use optflow::MotionCell;
 pub(crate) use sink::{BlockReconWindow, WorkspaceSink};
 
-pub(crate) const YUV420_MC_PLANES: [(PlaneId, u32, u32); 3] =
-    [(PlaneId::Y, 0, 0), (PlaneId::U, 1, 1), (PlaneId::V, 1, 1)];
+pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
+    let sub_x = pixel_format.subsampling_x() as u32;
+    let sub_y = pixel_format.subsampling_y() as u32;
+    [
+        (PlaneId::Y, 0, 0),
+        (PlaneId::U, sub_x, sub_y),
+        (PlaneId::V, sub_x, sub_y),
+    ]
+}
 pub(crate) const CWP_EQUAL: i16 = 8;
 
 struct PredictedPlane<T> {
@@ -401,7 +408,7 @@ impl CompoundBlockMetadata {
         sink: &mut WorkspaceSink<'_, T>,
     ) -> Result<()> {
         let mut sample_start = 0usize;
-        for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+        for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
             if plane != PlaneId::Y && !self.has_chroma {
                 continue;
             }
@@ -565,7 +572,7 @@ fn motion_compensate_planes<T: ReconSample>(
     has_chroma: bool,
     mut predict: impl FnMut(&mut WorkspaceSink<'_, T>, PlaneId, u32, u32) -> Result<()>,
 ) -> Result<()> {
-    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+    for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
         if plane != PlaneId::Y && !has_chroma {
             continue;
         }
@@ -589,7 +596,8 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<CompoundBlockOutput<T>> {
-    let sample_count = compound_output_sample_count(block.rect, block.has_chroma)?;
+    let sample_count =
+        compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
     let mut samples = vec![T::default(); sample_count];
     let metadata =
         predict_compound_average_block_into(sink, block, optflow_unit_size, offset, &mut samples)?;
@@ -603,7 +611,8 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
     offset: ByteOffset,
     samples: &mut [T],
 ) -> Result<CompoundBlockMetadata> {
-    let sample_count = compound_output_sample_count(block.rect, block.has_chroma)?;
+    let sample_count =
+        compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
     let available_samples = samples.len();
     let mut samples = samples
         .get_mut(..sample_count)
@@ -618,7 +627,7 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
     let motion = optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)?;
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(sink, block, motion.as_ref(), offset)?;
-    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+    for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
@@ -679,9 +688,13 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
     })
 }
 
-fn compound_output_sample_count(rect: McBlockRect, has_chroma: bool) -> Result<usize> {
+fn compound_output_sample_count(
+    rect: McBlockRect,
+    has_chroma: bool,
+    pixel_format: PixelFormat,
+) -> Result<usize> {
     let mut sample_count = 0usize;
-    for (plane, sub_x, sub_y) in YUV420_MC_PLANES {
+    for (plane, sub_x, sub_y) in mc_planes(pixel_format) {
         if plane != PlaneId::Y && !has_chroma {
             continue;
         }
@@ -788,9 +801,11 @@ fn predict_plane_output<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<PredictedPlane<T>> {
-    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
+    let (view, _, _) = reference_plane_view(reference, plane, offset)?;
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
+    let reference_size = reference.info().coded_luma_size();
+    let frame_size = sink.info().coded_luma_size();
 
     let scaling = derive_plane_scaling(
         plane_x as i32,
@@ -799,10 +814,10 @@ fn predict_plane_output<T: ReconSample>(
         mv.col,
         sub_x,
         sub_y,
-        ref_mi_cols,
-        ref_mi_rows,
-        block_w as i32,
-        block_h as i32,
+        reference_size.width() as i32,
+        reference_size.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
     );
 
     let params = SubpelPredictParams {
@@ -851,9 +866,24 @@ fn predict_warp_plane<T: ReconSample>(
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
+    let reference_size = reference.info().coded_luma_size();
+    let frame_size = sink.info().coded_luma_size();
+    let scaling = derive_plane_scaling(
+        plane_x as i32,
+        plane_y as i32,
+        0,
+        0,
+        sub_x,
+        sub_y,
+        reference_size.width() as i32,
+        reference_size.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
+    );
     let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
         || block_w < WARPED_BLOCK_SIZE
-        || block_h < WARPED_BLOCK_SIZE;
+        || block_h < WARPED_BLOCK_SIZE
+        || scaling.is_scaled();
     if skip_pred {
         for i4 in 0..block_h.div_euclid(4) {
             for j4 in 0..block_w.div_euclid(4) {
@@ -876,6 +906,7 @@ fn predict_warp_plane<T: ReconSample>(
                     sub_y,
                     ref_mi_cols,
                     ref_mi_rows,
+                    scaling,
                 );
                 let params = WarpPredictBlockParams {
                     warp_params,
@@ -883,6 +914,8 @@ fn predict_warp_plane<T: ReconSample>(
                     block_y: plane_y as i32,
                     subsampling_x: sub_x as u8,
                     subsampling_y: sub_y as u8,
+                    reference_scale_x: scaling.scale_x,
+                    reference_scale_y: scaling.scale_y,
                     first_x,
                     first_y,
                     last_x,
@@ -912,6 +945,8 @@ fn predict_warp_plane<T: ReconSample>(
                 block_y: write_y as i32,
                 subsampling_x: sub_x as u8,
                 subsampling_y: sub_y as u8,
+                reference_scale_x: scaling.scale_x,
+                reference_scale_y: scaling.scale_y,
                 first_x: 0,
                 first_y: 0,
                 last_x: ref_width as i32 - 1,
@@ -969,8 +1004,8 @@ fn predict_compound_plane_output<T: ReconSample>(
     let prediction =
         compound_plane_prediction_for_block(sink, block, plane, sub_x, sub_y, motion, offset)?;
     let coded_luma_size = sink.info().coded_luma_size();
-    let frame_w = coded_luma_size.width() >> sub_x;
-    let frame_h = coded_luma_size.height() >> sub_y;
+    let frame_w = (coded_luma_size.width().div_ceil(4) * 4) >> sub_x;
+    let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
     blend_compound_average::<T>(
         &prediction.pred0,
         &prediction.pred1,
@@ -1106,10 +1141,13 @@ fn compound_plane_prediction<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<CompoundPlanePrediction> {
-    let (view0, ref_mi_cols0, ref_mi_rows0) = reference_plane_view(reference0, plane, offset)?;
-    let (view1, ref_mi_cols1, ref_mi_rows1) = reference_plane_view(reference1, plane, offset)?;
+    let (view0, _, _) = reference_plane_view(reference0, plane, offset)?;
+    let (view1, _, _) = reference_plane_view(reference1, plane, offset)?;
 
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
+    let reference_size0 = reference0.info().coded_luma_size();
+    let reference_size1 = reference1.info().coded_luma_size();
+    let frame_size = sink.info().coded_luma_size();
 
     let scaling0 = derive_plane_scaling(
         plane_x as i32,
@@ -1118,10 +1156,10 @@ fn compound_plane_prediction<T: ReconSample>(
         mv0.col,
         sub_x,
         sub_y,
-        ref_mi_cols0,
-        ref_mi_rows0,
-        block_w as i32,
-        block_h as i32,
+        reference_size0.width() as i32,
+        reference_size0.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
     );
     let scaling1 = derive_plane_scaling(
         plane_x as i32,
@@ -1130,10 +1168,10 @@ fn compound_plane_prediction<T: ReconSample>(
         mv1.col,
         sub_x,
         sub_y,
-        ref_mi_cols1,
-        ref_mi_rows1,
-        block_w as i32,
-        block_h as i32,
+        reference_size1.width() as i32,
+        reference_size1.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
     );
 
     let params0 = SubpelPredictParams {
@@ -1251,6 +1289,8 @@ fn compound_ref_intermediate<T: ReconSample>(
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
+    let reference_size = reference.info().coded_luma_size();
+    let frame_size = sink.info().coded_luma_size();
     let scaling = derive_plane_scaling(
         plane_x as i32,
         plane_y as i32,
@@ -1258,10 +1298,10 @@ fn compound_ref_intermediate<T: ReconSample>(
         mv.col,
         sub_x,
         sub_y,
-        ref_mi_cols,
-        ref_mi_rows,
-        block_w as i32,
-        block_h as i32,
+        reference_size.width() as i32,
+        reference_size.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
     );
     let Some(warp_params) = warp_params else {
         let params = SubpelPredictParams {
@@ -1287,7 +1327,8 @@ fn compound_ref_intermediate<T: ReconSample>(
     let mut samples = vec![0i32; block_w.saturating_mul(block_h)];
     let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
         || block_w < WARPED_BLOCK_SIZE
-        || block_h < WARPED_BLOCK_SIZE;
+        || block_h < WARPED_BLOCK_SIZE
+        || scaling.is_scaled();
     if skip_pred {
         for i4 in 0..block_h.div_euclid(4) {
             for j4 in 0..block_w.div_euclid(4) {
@@ -1303,6 +1344,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     sub_y,
                     ref_mi_cols,
                     ref_mi_rows,
+                    scaling,
                 );
                 let params = WarpPredictBlockParams {
                     warp_params,
@@ -1310,6 +1352,8 @@ fn compound_ref_intermediate<T: ReconSample>(
                     block_y: plane_y as i32,
                     subsampling_x: sub_x as u8,
                     subsampling_y: sub_y as u8,
+                    reference_scale_x: scaling.scale_x,
+                    reference_scale_y: scaling.scale_y,
                     first_x,
                     first_y,
                     last_x,
@@ -1329,6 +1373,8 @@ fn compound_ref_intermediate<T: ReconSample>(
                     block_y: (plane_y + local_y) as i32,
                     subsampling_x: sub_x as u8,
                     subsampling_y: sub_y as u8,
+                    reference_scale_x: scaling.scale_x,
+                    reference_scale_y: scaling.scale_y,
                     first_x: 0,
                     first_y: 0,
                     last_x: ref_width as i32 - 1,
@@ -1466,6 +1512,11 @@ fn blend_compound_average<T: ReconSample>(
             pred0, pred1, bit_depth, cwp_weight, output,
         );
     }
+    if scaling0.is_scaled() || scaling1.is_scaled() {
+        return blend_compound_average_weighted_samples(
+            pred0, pred1, bit_depth, cwp_weight, output,
+        );
+    }
 
     let last_x = frame_w as i32 - 1;
     let last_y = frame_h as i32 - 1;
@@ -1473,8 +1524,7 @@ fn blend_compound_average<T: ReconSample>(
     let ref_start_y0 = scaling0.start_y >> 10;
     let ref_start_x1 = scaling1.start_x >> 10;
     let ref_start_y1 = scaling1.start_y >> 10;
-    let ref_mi_cols = ((frame_w << sub_x).div_ceil(4)) as i32;
-    let ref_mi_rows = ((frame_h << sub_y).div_ceil(4)) as i32;
+    let scaling_templates = [scaling0, scaling1];
     let extent = |scaling: PlaneScaling| {
         let end_x = scaling.start_x + scaling.step_x * w.saturating_sub(1) as i32;
         let end_y = scaling.start_y + scaling.step_y * h.saturating_sub(1) as i32;
@@ -1489,15 +1539,13 @@ fn blend_compound_average<T: ReconSample>(
         None => Some([scaling0, scaling1]),
         Some(motion) => motion.uniform_mvs().map(|mvs| {
             core::array::from_fn(|reference| {
-                derive_plane_scaling_prescaled(
+                scaling_templates[reference].with_prescaled_mv(
                     plane_x as i32,
                     plane_y as i32,
                     mvs[reference][0],
                     mvs[reference][1],
                     sub_x,
                     sub_y,
-                    ref_mi_cols,
-                    ref_mi_rows,
                 )
             })
         }),
@@ -1517,15 +1565,13 @@ fn blend_compound_average<T: ReconSample>(
         let starts = if let Some(motion) = motion {
             let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
             core::array::from_fn(|reference| {
-                let scaling = derive_plane_scaling_prescaled(
+                let scaling = scaling_templates[reference].with_prescaled_mv(
                     (plane_x + col) as i32,
                     (plane_y + row) as i32,
                     mvs[reference][0],
                     mvs[reference][1],
                     sub_x,
                     sub_y,
-                    ref_mi_cols,
-                    ref_mi_rows,
                 );
                 (scaling.start_x >> 10, scaling.start_y >> 10)
             })
@@ -1747,6 +1793,7 @@ fn ext_warp_unit_bounds(
     sub_y: u32,
     ref_mi_cols: i32,
     ref_mi_rows: i32,
+    scaling: PlaneScaling,
 ) -> (i32, i32, i32, i32) {
     const WARPEDMODEL_PREC_BITS: u32 = 16;
     const MV_BOUND: i64 = 1 << 16;
@@ -1782,18 +1829,7 @@ fn ext_warp_unit_bounds(
         -(mi_col + bw4) * 32 - MV_BORDER,
         (ref_mi_cols - mi_col) * 32 + MV_BORDER,
     );
-    let scaling = derive_plane_scaling(
-        unit_x,
-        unit_y,
-        mv_row,
-        mv_col,
-        sub_x,
-        sub_y,
-        ref_mi_cols,
-        ref_mi_rows,
-        bbox_w,
-        bbox_h,
-    );
+    let scaling = scaling.with_mv(unit_x, unit_y, mv_row, mv_col, sub_x, sub_y);
     let first_x = ((scaling.start_x >> 10) - 3).clamp(0, scaling.last_x);
     let first_y = ((scaling.start_y >> 10) - 3).clamp(0, scaling.last_y);
     let end_x = scaling.start_x + scaling.step_x * (bbox_w - 1);

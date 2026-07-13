@@ -124,13 +124,53 @@ fn inter_bawp_applies_large_luma_block() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn inter_bawp_uses_full_resolution_444_chroma_geometry() -> TestResult {
+    let mut workspace = workspace_with_format(16, 16, 40, PixelFormat::Yuv444)?;
+    let reference = frame_with_format(
+        16,
+        16,
+        vec![20; 16 * 16],
+        vec![20; 16 * 16],
+        vec![20; 16 * 16],
+        PixelFormat::Yuv444,
+    )?;
+
+    apply_bawp(
+        &mut workspace,
+        &reference,
+        &placed_luma_block(4, 4, 8, 8),
+        BawpSyntax {
+            enabled: true,
+            chroma: true,
+            ..BawpSyntax::default()
+        },
+        Mv::ZERO,
+        splot_core::span::ByteOffset::new(0),
+    )?;
+
+    assert_eq!(workspace.reconstructed_sample(PlaneId::U, 4, 4)?, 60);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::V, 4, 4)?, 60);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::U, 2, 2)?, 40);
+    Ok(())
+}
+
 fn workspace(width: usize, height: usize, fill: u8) -> TestResult<CurrentFrameWorkspace<u8>> {
+    workspace_with_format(width, height, fill, PixelFormat::Yuv420)
+}
+
+fn workspace_with_format(
+    width: usize,
+    height: usize,
+    fill: u8,
+    pixel_format: PixelFormat,
+) -> TestResult<CurrentFrameWorkspace<u8>> {
     let luma_size = PlaneSize::new(width, height)?;
     let visible = PlaneRect::new(0, 0, width, height)?;
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
-        PixelFormat::Yuv420,
+        pixel_format,
         luma_size,
         visible,
     )?;
@@ -144,16 +184,27 @@ fn frame(
     u: Vec<u8>,
     v: Vec<u8>,
 ) -> TestResult<DecodedFrame<u8>> {
+    frame_with_format(width, height, y, u, v, PixelFormat::Yuv420)
+}
+
+fn frame_with_format(
+    width: usize,
+    height: usize,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    pixel_format: PixelFormat,
+) -> TestResult<DecodedFrame<u8>> {
     let luma_size = PlaneSize::new(width, height)?;
     let luma_rect = PlaneRect::new(0, 0, width, height)?;
-    let chroma_width = width / 2;
-    let chroma_height = height / 2;
+    let chroma_width = width.div_ceil(1 << pixel_format.subsampling_x());
+    let chroma_height = height.div_ceil(1 << pixel_format.subsampling_y());
     let chroma_size = PlaneSize::new(chroma_width, chroma_height)?;
     let chroma_rect = PlaneRect::new(0, 0, chroma_width, chroma_height)?;
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
         BitDepth::Eight,
-        PixelFormat::Yuv420,
+        pixel_format,
         luma_size,
         luma_rect,
     )?;

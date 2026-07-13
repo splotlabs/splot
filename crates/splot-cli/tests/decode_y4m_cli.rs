@@ -10,7 +10,7 @@ use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod common;
-use common::read_dir_names;
+use common::{empty_avmenc_ivf, read_dir_names};
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -231,6 +231,40 @@ fn decode_explicit_y4m_success_for_minimal_fixture() {
     assert!(out.stdout.is_empty(), "stdout was not empty");
     assert!(out.stderr.is_empty(), "stderr was not empty");
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_y4m());
+}
+
+#[test]
+fn decode_empty_ivf_reports_typed_frame_set_error_without_touching_output() {
+    let input = temp_input("ivf", &empty_avmenc_ivf());
+    let output = temp_output("y4m");
+    let original_output = b"empty IVF must not replace typed output";
+    std::fs::write(&output, original_output).expect("write temporary output sentinel");
+
+    let out = splot(&[
+        "decode",
+        "--json",
+        "--output-format",
+        "y4m",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["rule_id"], "decode/output-error");
+    assert_eq!(json["detail_kind"], "output_error");
+    assert_eq!(json["output_format"], "y4m");
+    assert_eq!(json["output_operation"], "serialize_y4m");
+    assert_eq!(json["output_source_kind"], "frame_set");
+    assert!(
+        json["output_source_message"]
+            .as_str()
+            .unwrap()
+            .contains("at least one decoded frame")
+    );
+    assert_eq!(std::fs::read(&output).unwrap(), original_output);
 }
 
 #[test]

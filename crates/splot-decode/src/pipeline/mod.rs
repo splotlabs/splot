@@ -4,18 +4,20 @@
 //! Decode pipeline orchestration for the supported decode runtime.
 
 use splot_core::annexb::ObuEnvelope;
+use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize, FrameType, TxMode};
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::tile_group::{
+    FrameHeaderCopyOutcome, RecordedFrameHeaderBits, parse_frame_header_copy,
+};
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
-#[cfg(test)]
-use splot_core::stream::ParsedBitstream;
-use splot_core::stream::parse_bitstream_partial;
+use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
-use splot_recon::BitDepth;
 #[cfg(test)]
 use splot_recon::DecodedFrame;
+use splot_recon::{BitDepth, SharedFrame};
 
 use crate::bitstream::tile_payload::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
@@ -29,6 +31,7 @@ use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget}
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
+pub(crate) mod output_effects;
 mod output_schedule;
 mod stream_schedule;
 
@@ -37,9 +40,11 @@ pub(crate) use frame_lifecycle::incomplete_intra_header_error;
 use frame_lifecycle::*;
 pub(crate) use frame_lifecycle::{
     ActiveFilmGrain, PipelineDecodedFrame, PipelineFrame, PipelineFrameRate, deblock_quant_deltas,
-    effective_allow_screen_content_tools, ensure_runtime_storage_bit_depth,
-    frame_ref_update_from_core, parse_frame_core, parse_sequence,
+    derive_visible_luma_rect, effective_allow_screen_content_tools,
+    ensure_runtime_storage_bit_depth, frame_ref_update_from_core, parse_frame_core,
+    parse_frame_core_with_reference, parse_sequence,
 };
+use output_effects::{FrameOutputEffects, OutputEffectState};
 use output_schedule::*;
 pub(crate) use stream_schedule::following_inter_envelope;
 #[cfg(test)]
@@ -51,6 +56,22 @@ const SPEC_SECTION: &str = "7.1";
 pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
+
+fn discard_runtime_noops(parsed: &mut ParsedBitstream<'_>) {
+    match parsed {
+        ParsedBitstream::AnnexB(partial) => {
+            partial
+                .obus
+                .retain(|obu| !obu.header.obu_type.is_reserved());
+        }
+        ParsedBitstream::Ivf(ivf) => {
+            for frame in &mut ivf.frames {
+                frame.obus.retain(|obu| !obu.header.obu_type.is_reserved());
+            }
+            ivf.frames.retain(|frame| frame.frame.size != 0);
+        }
+    }
+}
 
 #[cfg(test)]
 pub(crate) fn decode_frame_from_plan(
@@ -114,6 +135,225 @@ fn reclaim_unowned_frames(
     }
     Ok(())
 }
+
+fn parse_key_core_with_effects(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    effects: &OutputEffectState,
+) -> Result<FrameHeaderCore> {
+    let activation = parse_frame_core(envelope, sequence)?;
+    if activation.cur_mfh_id.is_zero() {
+        return Ok(activation);
+    }
+    let record = resolve_mfh_record(envelope, sequence, effects, activation.cur_mfh_id)?;
+    parse_frame_core_with_mfh(envelope, sequence, Some(record))
+}
+
+fn parse_olk_core_with_effects(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &inter::InterReferenceState<'_, impl splot_recon::ReconSample>,
+    effects: &OutputEffectState,
+    first_picture_in_tu: bool,
+) -> Result<FrameHeaderCore> {
+    let activation = parse_frame_core_with_reference(
+        envelope,
+        sequence,
+        None,
+        first_picture_in_tu,
+        &reference.header_view(),
+    )?;
+    if activation.cur_mfh_id.is_zero() {
+        return Ok(activation);
+    }
+    let record = resolve_mfh_record(envelope, sequence, effects, activation.cur_mfh_id)?;
+    parse_frame_core_with_reference(
+        envelope,
+        sequence,
+        Some(record),
+        first_picture_in_tu,
+        &reference.header_view(),
+    )
+}
+
+#[derive(Default)]
+struct InBandLongTermPrelude {
+    frames: Vec<InBandLongTermFrame>,
+}
+
+struct InBandLongTermFrame {
+    obu_type: ObuType,
+    long_term_id: u32,
+    hidden: bool,
+    frame_index: usize,
+}
+
+impl InBandLongTermPrelude {
+    fn begin_frame(&mut self, first_picture_in_tu: bool) {
+        if first_picture_in_tu {
+            self.frames.clear();
+        }
+    }
+
+    fn validate_required(
+        &self,
+        core: &FrameHeaderCore,
+        reference: &reference_buffer::RuntimeReferenceBuffer,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        self.validate_required_with(&core.ref_long_term_ids, offset, |id, frame_index| {
+            reference.retains_hidden_long_term_reference(id, frame_index)
+        })
+    }
+
+    fn validate_required_with(
+        &self,
+        required_ids: &[u32],
+        offset: ByteOffset,
+        mut is_retained: impl FnMut(u32, usize) -> bool,
+    ) -> Result<()> {
+        if required_ids.is_empty() {
+            return Ok(());
+        }
+        for &id in required_ids {
+            if !self.frames.iter().any(|frame| frame.long_term_id == id) {
+                return Err(unsupported_feature_at(
+                    "random_access_long_term_reference_missing",
+                    offset,
+                    "each ref_long_term_id must name a preceding in-band key frame in the random-access temporal unit",
+                    "7.3.9.1",
+                ));
+            }
+            if self
+                .frames
+                .iter()
+                .any(|frame| frame.long_term_id == id && !frame.hidden)
+            {
+                return Err(unsupported_feature_at(
+                    "random_access_long_term_reference_visible",
+                    offset,
+                    "in-band long-term reference key frames must disable immediate and implicit output",
+                    "7.3.9.1",
+                ));
+            }
+            if !self.frames.iter().any(|frame| {
+                frame.long_term_id == id && frame.hidden && is_retained(id, frame.frame_index)
+            }) {
+                return Err(unsupported_feature_at(
+                    "random_access_long_term_reference_slot_unavailable",
+                    offset,
+                    "an in-band long-term reference must remain in the same valid reference slot used by sequential decoding",
+                    "7.3.9.1",
+                ));
+            }
+        }
+        let mut saw_olk = false;
+        for frame in self
+            .frames
+            .iter()
+            .filter(|frame| required_ids.contains(&frame.long_term_id))
+        {
+            if frame.obu_type == ObuType::OpenLoopKey {
+                saw_olk = true;
+            } else if frame.obu_type == ObuType::ClosedLoopKey && saw_olk {
+                return Err(unsupported_feature_at(
+                    "random_access_long_term_reference_order",
+                    offset,
+                    "in-band long-term CLK references must precede all in-band long-term OLK references",
+                    "7.3.9.1",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn note_frame(&mut self, core: &FrameHeaderCore, frame_index: usize) {
+        if !matches!(core.obu_type, ObuType::ClosedLoopKey | ObuType::OpenLoopKey) {
+            return;
+        }
+        let Some(long_term_id) = core.long_term_id.and_then(|id| u32::try_from(id).ok()) else {
+            return;
+        };
+        self.frames.push(InBandLongTermFrame {
+            obu_type: core.obu_type,
+            long_term_id,
+            hidden: core.immediate_output_frame == Some(false)
+                && core.implicit_output_frame == Some(false),
+            frame_index,
+        });
+    }
+}
+
+fn resolve_mfh_record<'a>(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    effects: &'a OutputEffectState,
+    mfh_id: splot_core::hls::MfhId,
+) -> Result<&'a splot_core::hls::MultiFrameHeaderRecord> {
+    let record = effects.mfh_record(mfh_id).ok_or_else(|| {
+        unsupported_feature_at(
+            "multi_frame_header_unavailable",
+            envelope.offset,
+            "frame references a multi-frame header that is not available in-band",
+            "7.3.8.7",
+        )
+    })?;
+    if record.mfh_seq_header_id != sequence.general.seq_header_id {
+        return Err(unsupported_feature_at(
+            "multi_frame_header_sequence_mismatch",
+            envelope.offset,
+            "referenced multi-frame header resolves to a different sequence header",
+            "7.3.8.7",
+        ));
+    }
+    if !sequence
+        .general
+        .mlayer_dependency_map
+        .depends_on(envelope.header.embedded_layer_id, record.mfh_mlayer_id)
+        || !sequence.general.tlayer_dependency_map.depends_on(
+            envelope.header.embedded_layer_id,
+            envelope.header.temporal_layer_id,
+            record.mfh_tlayer_id,
+        )
+    {
+        return Err(unsupported_feature_at(
+            "multi_frame_header_layer_dependency",
+            envelope.offset,
+            "referenced multi-frame header violates the active layer dependency maps",
+            "7.3.8.7",
+        ));
+    }
+    Ok(record)
+}
+
+fn parse_inter_core_with_effects(
+    envelope: ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    reference: &inter::InterReferenceState<'_, impl splot_recon::ReconSample>,
+    effects: &OutputEffectState,
+    first_picture_in_tu: bool,
+) -> Result<FrameHeaderCore> {
+    let activation =
+        inter::parse_inter_frame_activation(envelope, sequence, reference, first_picture_in_tu)?;
+    let record = if activation.cur_mfh_id.is_zero() {
+        None
+    } else {
+        Some(resolve_mfh_record(
+            envelope,
+            sequence,
+            effects,
+            activation.cur_mfh_id,
+        )?)
+    };
+    inter::parse_validated_inter_frame_core_with_mfh(
+        envelope,
+        sequence,
+        reference,
+        first_picture_in_tu,
+        record,
+    )
+}
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_key_frame(
     bytes: &[u8],
@@ -126,6 +366,36 @@ pub(crate) fn decode_key_frame(
     display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
+    decode_key_frame_with_effects(
+        bytes,
+        options,
+        plan,
+        candidate,
+        frame_envelope,
+        core,
+        sequence,
+        frame_rate,
+        display_grain,
+        None,
+        FrameOutputEffects::empty(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_key_frame_with_effects(
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    frame_envelope: ObuEnvelope<'_>,
+    core: FrameHeaderCore,
+    sequence: &SequenceHeader,
+    frame_rate: PipelineFrameRate,
+    display_grain: Option<ActiveFilmGrain>,
+    user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
+    output_effects: FrameOutputEffects,
+) -> Result<PipelineFrame> {
+    let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let (frame, frame_cdfs, ccso_params, ccso_grid, motion_field) =
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
@@ -142,7 +412,7 @@ pub(crate) fn decode_key_frame(
                         BitDepth::Eight,
                     )?;
                 (
-                    PipelineDecodedFrame::Eight(frame),
+                    PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
                     frame_cdfs,
                     core.ccso_params,
                     ccso_grid,
@@ -163,7 +433,7 @@ pub(crate) fn decode_key_frame(
                         BitDepth::Ten,
                     )?;
                 (
-                    PipelineDecodedFrame::Ten(frame),
+                    PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
                     frame_cdfs,
                     core.ccso_params,
                     ccso_grid,
@@ -171,9 +441,11 @@ pub(crate) fn decode_key_frame(
                 )
             }
         };
+    let frame_rate = output_effects.frame_rate(frame_rate);
     Ok(PipelineFrame {
         frame,
         display_grain,
+        output_effects,
         frame_cdfs,
         motion_field,
         ccso_params,
@@ -200,11 +472,18 @@ fn decode_frames_from_plan_impl(
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<Vec<PipelineFrame>> {
-    ensure_multiframe_plan_shape(plan)?;
     let runtime_parse_timer = crate::timing::start();
-    let parsed = parse_bitstream_partial(bytes);
+    let mut parsed = parse_bitstream_partial(bytes);
     crate::timing::report("runtime_reparse", runtime_parse_timer);
+    discard_runtime_noops(&mut parsed);
     let stream = require_runtime_stream(&parsed)?;
+    if matches!(stream, RuntimeStream::Ivf { ivf, .. } if ivf.frames.is_empty())
+        && plan.obu_count() == 0
+        && plan.frame_candidate_count() == 0
+    {
+        return Ok(Vec::new());
+    }
+    ensure_multiframe_plan_shape(plan)?;
     preflight(stream.ivf_header())?;
     let frame_rate = stream.frame_rate();
 
@@ -212,24 +491,15 @@ fn decode_frames_from_plan_impl(
     let ([_td_envelope, sequence_envelope, key_envelope], leading_frame_unit_len) =
         require_leading_frame_unit(leading_obus)?;
 
-    let sequence = parse_sequence(sequence_envelope)?;
+    let mut sequence = parse_sequence(sequence_envelope)?;
     validate_sequence(&sequence, sequence_envelope.offset)?;
     let mut film_grain_slots = FilmGrainSlots::new();
-    film_grain_slots.update_from_obus(leading_film_grain_obus(leading_obus)?)?;
+    let leading_prefix = leading_prefix_obus(leading_obus)?;
+    film_grain_slots.update_from_obus(leading_prefix)?;
+    let mut output_effect_state = OutputEffectState::new();
+    output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
-    let key_core = parse_frame_core(key_envelope, &sequence)?;
-    ensure_intra_header_complete(&key_core, key_envelope.offset)?;
-    let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
-    let mut candidates = plan.frame_candidates_all();
-    let key_candidate = candidates.next().ok_or_else(|| {
-        unsupported(
-            "missing_frame_candidate",
-            None,
-            "decode runtime requires one selected key frame candidate",
-        )
-    })?;
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
-
     let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
         unsupported(
             "missing_sequence_inter_config",
@@ -241,6 +511,99 @@ fn decode_frames_from_plan_impl(
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
     let mut frames = Vec::new();
     let mut scheduler = OutputScheduler::new(num_ref_frames);
+    let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
+    in_band_long_term_prelude.begin_frame(true);
+    let key_core = match key_envelope.header.obu_type {
+        ObuType::ClosedLoopKey => {
+            parse_key_core_with_effects(key_envelope, &sequence, &output_effect_state)?
+        }
+        ObuType::OpenLoopKey => match sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => {
+                let (store, meta) = reference.build_store_eight(&frames)?;
+                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                parse_olk_core_with_effects(
+                    key_envelope,
+                    &sequence,
+                    &state,
+                    &output_effect_state,
+                    true,
+                )?
+            }
+            BitDepthIdc::Ten => {
+                let (store, meta) = reference.build_store_ten(&frames)?;
+                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                parse_olk_core_with_effects(
+                    key_envelope,
+                    &sequence,
+                    &state,
+                    &output_effect_state,
+                    true,
+                )?
+            }
+        },
+        ObuType::RasFrame => match sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => {
+                let (store, meta) = reference.build_store_eight(&frames)?;
+                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let activation =
+                    inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
+                in_band_long_term_prelude.validate_required(
+                    &activation,
+                    &reference,
+                    key_envelope.offset,
+                )?;
+                parse_inter_core_with_effects(
+                    key_envelope,
+                    &sequence,
+                    &state,
+                    &output_effect_state,
+                    true,
+                )?
+            }
+            BitDepthIdc::Ten => {
+                let (store, meta) = reference.build_store_ten(&frames)?;
+                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let activation =
+                    inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
+                in_band_long_term_prelude.validate_required(
+                    &activation,
+                    &reference,
+                    key_envelope.offset,
+                )?;
+                parse_inter_core_with_effects(
+                    key_envelope,
+                    &sequence,
+                    &state,
+                    &output_effect_state,
+                    true,
+                )?
+            }
+        },
+        _ => {
+            return Err(unsupported_at(
+                "missing_random_access_frame",
+                key_envelope.offset,
+                "decode runtime requires a closed-loop key, open-loop key, or RAS random-access frame",
+            ));
+        }
+    };
+    if key_envelope.header.obu_type != ObuType::RasFrame {
+        ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+    }
+    in_band_long_term_prelude.validate_required(&key_core, &reference, key_envelope.offset)?;
+    let key_user_qm =
+        output_effect_state.prepare_frame(key_envelope, &key_core, &sequence, true)?;
+    let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
+    let mut candidates = plan.frame_candidates_all();
+    let key_candidate = candidates.next().ok_or_else(|| {
+        unsupported(
+            "missing_frame_candidate",
+            None,
+            "decode runtime requires one selected key frame candidate",
+        )
+    })?;
+    output_effect_state.observe_suffix(frame_suffix_obus(stream, key_candidate)?)?;
+    let key_output_effects = output_effect_state.finish_frame();
     let mut retained_frame_bytes = 0;
     let mut output_frame_bytes = 0;
     let mut next_unvalidated_following_ivf_record = 1;
@@ -252,16 +615,90 @@ fn decode_frames_from_plan_impl(
         &sequence,
         key_envelope.offset,
     )?;
-    let key_frame = decode_key_frame(
-        bytes,
-        options,
-        plan,
-        key_candidate,
-        key_envelope,
-        &sequence,
-        frame_rate,
-        key_display_grain,
-    )?;
+    let key_frame = if key_envelope.header.obu_type == ObuType::RasFrame {
+        match sequence.general.bit_depth_idc {
+            BitDepthIdc::Eight => {
+                let (store, meta) = reference.build_store_eight(&frames)?;
+                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let _user_qm_scope =
+                    crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
+                let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                    frame_engine::intra::build_frame_qm_levels(&key_core),
+                );
+                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
+                    frame_engine::decode_frame::<u8>(
+                        plan,
+                        key_candidate,
+                        bytes,
+                        key_envelope,
+                        key_core.clone(),
+                        &sequence,
+                        options,
+                        &frame_engine::FrameSetup::Inter(&state),
+                        BitDepth::Eight,
+                    )?;
+                let rate = key_output_effects.frame_rate(frame_rate);
+                PipelineFrame {
+                    frame: PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
+                    display_grain: key_display_grain,
+                    output_effects: key_output_effects,
+                    frame_cdfs,
+                    motion_field,
+                    ccso_params: core.ccso_params,
+                    ccso_grid,
+                    frame_rate_numerator: rate.numerator,
+                    frame_rate_denominator: rate.denominator,
+                }
+            }
+            BitDepthIdc::Ten => {
+                let (store, meta) = reference.build_store_ten(&frames)?;
+                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let _user_qm_scope =
+                    crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
+                let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                    frame_engine::intra::build_frame_qm_levels(&key_core),
+                );
+                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
+                    frame_engine::decode_frame::<u16>(
+                        plan,
+                        key_candidate,
+                        bytes,
+                        key_envelope,
+                        key_core.clone(),
+                        &sequence,
+                        options,
+                        &frame_engine::FrameSetup::Inter(&state),
+                        BitDepth::Ten,
+                    )?;
+                let rate = key_output_effects.frame_rate(frame_rate);
+                PipelineFrame {
+                    frame: PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
+                    display_grain: key_display_grain,
+                    output_effects: key_output_effects,
+                    frame_cdfs,
+                    motion_field,
+                    ccso_params: core.ccso_params,
+                    ccso_grid,
+                    frame_rate_numerator: rate.numerator,
+                    frame_rate_denominator: rate.denominator,
+                }
+            }
+        }
+    } else {
+        decode_key_frame_with_effects(
+            bytes,
+            options,
+            plan,
+            key_candidate,
+            key_envelope,
+            key_core.clone(),
+            &sequence,
+            frame_rate,
+            key_display_grain,
+            key_user_qm,
+            key_output_effects,
+        )?
+    };
     retained_frame_bytes =
         ensure_retained_frame_byte_limits(options.limits(), retained_frame_bytes, &key_frame)?;
     let key_update = frame_ref_update_from_core(
@@ -271,7 +708,9 @@ fn decode_frames_from_plan_impl(
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),
+        key_envelope.header.embedded_layer_id,
     )?;
+    let key_saved_grain = key_frame.display_grain.clone();
     frames.push(Some(key_frame));
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
@@ -293,6 +732,22 @@ fn decode_frames_from_plan_impl(
         &mut emit,
     )?;
     reference.update(0, &key_update);
+    reference
+        .save_grain_for_refreshed_slots(key_update.refresh_frame_flags, key_saved_grain.as_ref());
+    reference.note_frame(
+        key_envelope.header.obu_type,
+        true,
+        &key_update,
+        &key_core.ref_long_term_ids,
+    );
+    in_band_long_term_prelude.note_frame(&key_core, 0);
+    scheduler.note_frame(
+        key_envelope.header.obu_type,
+        true,
+        key_hint,
+        key_immediate,
+        key_implicit,
+    );
     if key_immediate && !scheduler.already_emitted(0) {
         let emitted = scheduler.on_immediate(0, key_hint);
         output_frame_bytes = charge_emitted_outputs(
@@ -321,10 +776,11 @@ fn decode_frames_from_plan_impl(
         };
     }
 
+    let mut decoding_initial_tu = true;
     for next_candidate in candidates {
         match next_candidate.obu_type() {
-            ObuType::RegularTileGroup | ObuType::RegularTip => {
-                let (inter_film_grain_obus, inter_envelope) = match stream {
+            ObuType::LeadingSef | ObuType::RegularSef => {
+                let (sef_prefix_obus, sef_envelope) = match stream {
                     RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
                         obus,
                         next_candidate,
@@ -336,7 +792,248 @@ fn decode_frames_from_plan_impl(
                         &mut next_unvalidated_following_ivf_record,
                     )?,
                 };
-                film_grain_slots.update_from_obus(inter_film_grain_obus)?;
+                output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
+                film_grain_slots.update_from_obus(sef_prefix_obus)?;
+                let first_picture_in_tu = sef_prefix_obus
+                    .iter()
+                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
+                if first_picture_in_tu {
+                    decoding_initial_tu = false;
+                }
+                in_band_long_term_prelude.begin_frame(first_picture_in_tu);
+                let flushed =
+                    scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                output_frame_bytes = charge_emitted_outputs(
+                    options,
+                    &frames,
+                    &scheduler,
+                    &flushed,
+                    output_frame_bytes,
+                    retain_decoded_frames,
+                    &mut emit,
+                )?;
+                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                    break;
+                }
+                reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                let sef_core = match sequence.general.bit_depth_idc {
+                    BitDepthIdc::Eight => {
+                        let (store, meta) = reference.build_store_eight(&frames)?;
+                        let state = inter::InterReferenceState::from_metadata(&store, meta);
+                        parse_inter_core_with_effects(
+                            sef_envelope,
+                            &sequence,
+                            &state,
+                            &output_effect_state,
+                            first_picture_in_tu,
+                        )?
+                    }
+                    BitDepthIdc::Ten => {
+                        let (store, meta) = reference.build_store_ten(&frames)?;
+                        let state = inter::InterReferenceState::from_metadata(&store, meta);
+                        parse_inter_core_with_effects(
+                            sef_envelope,
+                            &sequence,
+                            &state,
+                            &output_effect_state,
+                            first_picture_in_tu,
+                        )?
+                    }
+                };
+                let next_output_frame_count = checked_add(
+                    DecodeLimitName::MaxOutputFrames,
+                    scheduler.emitted.len() as u64,
+                    1,
+                )?;
+                ensure_output_frame_count_limit(options.limits(), next_output_frame_count)?;
+                let _ = output_effect_state.prepare_frame(
+                    sef_envelope,
+                    &sef_core,
+                    &sequence,
+                    first_picture_in_tu,
+                )?;
+                let display_grain =
+                    film_grain_slots.active_for_core(&sef_core, sef_envelope.offset)?;
+                output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
+                let output_effects = output_effect_state.finish_frame();
+                let output_rate = output_effects.frame_rate(frame_rate);
+                let slot = sef_core.frame_to_show_map_idx.ok_or_else(|| {
+                    unsupported_at(
+                        "sef_missing_frame_to_show_map_idx",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires frame_to_show_map_idx",
+                    )
+                })?;
+                let source_index = reference.frame_index_for_slot(slot)?;
+                if sef_core.derive_sef_order_hint == Some(true) {
+                    reference
+                        .mark_sef_derive_output(slot, scheduler.already_emitted(source_index))?;
+                    reference.save_grain_for_slot(slot, display_grain.clone())?;
+                }
+                reference.note_show_existing();
+                let source = frames
+                    .get(source_index)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        unsupported_at(
+                            "sef_reference_frame_unavailable",
+                            sef_envelope.offset,
+                            "show-existing-frame output requires its retained decoded frame",
+                        )
+                    })?;
+                let sef_frame = PipelineFrame {
+                    frame: source.share_decoded_frame(),
+                    display_grain,
+                    output_effects,
+                    frame_cdfs: source.frame_cdfs.clone(),
+                    motion_field: source.motion_field.clone(),
+                    ccso_params: source.ccso_params.clone(),
+                    ccso_grid: source.ccso_grid.clone(),
+                    frame_rate_numerator: output_rate.numerator,
+                    frame_rate_denominator: output_rate.denominator,
+                };
+                let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
+                    options.limits(),
+                    retained_frame_bytes,
+                    &sef_frame,
+                )?;
+                let frame_index = frames.len();
+                frames.push(Some(sef_frame));
+                retained_frame_bytes = next_retained_frame_bytes;
+                let ordering = sef_core.display_order_hint().ok_or_else(|| {
+                    unsupported_at(
+                        "sef_missing_display_order_hint",
+                        sef_envelope.offset,
+                        "show-existing-frame output requires a derived display order hint",
+                    )
+                })?;
+                scheduler.note_frame(
+                    next_candidate.obu_type(),
+                    first_picture_in_tu,
+                    ordering,
+                    true,
+                    false,
+                );
+                let emitted = scheduler.on_immediate(frame_index, ordering);
+                output_frame_bytes = charge_emitted_outputs(
+                    options,
+                    &frames,
+                    &scheduler,
+                    &emitted,
+                    output_frame_bytes,
+                    retain_decoded_frames,
+                    &mut emit,
+                )?;
+                if !retain_decoded_frames {
+                    reclaim_unowned_frames(
+                        &mut frames,
+                        &reference,
+                        &scheduler,
+                        &mut retained_frame_bytes,
+                    )?;
+                }
+                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                    break;
+                }
+            }
+            ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup
+            | ObuType::Switch
+            | ObuType::RasFrame
+            | ObuType::LeadingTip
+            | ObuType::RegularTip
+            | ObuType::BridgeFrame => {
+                let (inter_prefix_obus, inter_envelope) = match stream {
+                    RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
+                        obus,
+                        next_candidate,
+                        &mut next_unvalidated_following_annexb_obu,
+                    )?,
+                    RuntimeStream::Ivf { ivf, .. } => following_inter_envelope(
+                        ivf,
+                        next_candidate,
+                        &mut next_unvalidated_following_ivf_record,
+                    )?,
+                };
+                output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
+                film_grain_slots.update_from_obus(inter_prefix_obus)?;
+                let first_picture_in_tu = inter_prefix_obus
+                    .iter()
+                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
+                if first_picture_in_tu {
+                    decoding_initial_tu = false;
+                }
+                in_band_long_term_prelude.begin_frame(first_picture_in_tu);
+                let flushed =
+                    scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                output_frame_bytes = charge_emitted_outputs(
+                    options,
+                    &frames,
+                    &scheduler,
+                    &flushed,
+                    output_frame_bytes,
+                    retain_decoded_frames,
+                    &mut emit,
+                )?;
+                if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                    break;
+                }
+                reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                if matches!(
+                    next_candidate.obu_type(),
+                    ObuType::Switch | ObuType::RasFrame
+                ) {
+                    let activation = match sequence.general.bit_depth_idc {
+                        BitDepthIdc::Eight => {
+                            let (store, meta) = reference.build_store_eight(&frames)?;
+                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            inter::parse_inter_frame_activation(
+                                inter_envelope,
+                                &sequence,
+                                &state,
+                                first_picture_in_tu,
+                            )?
+                        }
+                        BitDepthIdc::Ten => {
+                            let (store, meta) = reference.build_store_ten(&frames)?;
+                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            inter::parse_inter_frame_activation(
+                                inter_envelope,
+                                &sequence,
+                                &state,
+                                first_picture_in_tu,
+                            )?
+                        }
+                    };
+                    if next_candidate.obu_type() == ObuType::RasFrame && decoding_initial_tu {
+                        in_band_long_term_prelude.validate_required(
+                            &activation,
+                            &reference,
+                            inter_envelope.offset,
+                        )?;
+                    }
+                    let restricted = activation.restricted_prediction_switch;
+                    if restricted == Some(true) {
+                        let presence = sequence.general.mlayer_dependency_map.presence_map();
+                        let slots = reference.restrict_references_for_switch(
+                            inter_envelope.header.embedded_layer_id,
+                            &presence,
+                        );
+                        let emitted = scheduler.restrict_slots(&slots);
+                        output_frame_bytes = charge_emitted_outputs(
+                            options,
+                            &frames,
+                            &scheduler,
+                            &emitted,
+                            output_frame_bytes,
+                            retain_decoded_frames,
+                            &mut emit,
+                        )?;
+                        if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                            break;
+                        }
+                    }
+                }
                 let inter_frame_timer = crate::timing::start();
                 let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
                     .general
@@ -345,10 +1042,18 @@ fn decode_frames_from_plan_impl(
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
                         let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
-                        let inter_core = inter::parse_validated_inter_frame_core(
+                        let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
                             &inter_state,
+                            &output_effect_state,
+                            first_picture_in_tu,
+                        )?;
+                        let user_qm = output_effect_state.prepare_frame(
+                            inter_envelope,
+                            &inter_core,
+                            &sequence,
+                            first_picture_in_tu,
                         )?;
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
@@ -368,6 +1073,11 @@ fn decode_frames_from_plan_impl(
                             &sequence,
                             inter_envelope.offset,
                         )?;
+                        let _user_qm_scope =
+                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                            frame_engine::intra::build_frame_qm_levels(&inter_core),
+                        );
                         let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                             frame_engine::decode_frame(
                                 plan,
@@ -381,7 +1091,7 @@ fn decode_frames_from_plan_impl(
                                 BitDepth::Eight,
                             )?;
                         (
-                            PipelineDecodedFrame::Eight(frame),
+                            PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
                             inter_core,
                             frame_cdfs,
                             ccso_grid,
@@ -391,10 +1101,18 @@ fn decode_frames_from_plan_impl(
                     BitDepthIdc::Ten => {
                         let (store, meta) = reference.build_store_ten(&frames)?;
                         let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
-                        let inter_core = inter::parse_validated_inter_frame_core(
+                        let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
                             &inter_state,
+                            &output_effect_state,
+                            first_picture_in_tu,
+                        )?;
+                        let user_qm = output_effect_state.prepare_frame(
+                            inter_envelope,
+                            &inter_core,
+                            &sequence,
+                            first_picture_in_tu,
                         )?;
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
@@ -414,6 +1132,11 @@ fn decode_frames_from_plan_impl(
                             &sequence,
                             inter_envelope.offset,
                         )?;
+                        let _user_qm_scope =
+                            crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
+                        let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
+                            frame_engine::intra::build_frame_qm_levels(&inter_core),
+                        );
                         let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                             frame_engine::decode_frame(
                                 plan,
@@ -427,7 +1150,7 @@ fn decode_frames_from_plan_impl(
                                 BitDepth::Ten,
                             )?;
                         (
-                            PipelineDecodedFrame::Ten(frame),
+                            PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
                             inter_core,
                             frame_cdfs,
                             ccso_grid,
@@ -438,15 +1161,19 @@ fn decode_frames_from_plan_impl(
                 crate::timing::report("inter_frame_decode", inter_frame_timer);
                 let inter_display_grain =
                     film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
+                output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
+                let inter_output_effects = output_effect_state.finish_frame();
+                let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
                 let inter_frame = PipelineFrame {
                     frame: inter_frame,
                     display_grain: inter_display_grain,
+                    output_effects: inter_output_effects,
                     frame_cdfs,
                     motion_field,
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
-                    frame_rate_numerator: frame_rate.numerator,
-                    frame_rate_denominator: frame_rate.denominator,
+                    frame_rate_numerator: inter_frame_rate.numerator,
+                    frame_rate_denominator: inter_frame_rate.denominator,
                 };
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
                     options.limits(),
@@ -461,7 +1188,9 @@ fn decode_frames_from_plan_impl(
                     inter_frame.ccso_params.clone(),
                     inter_frame.ccso_grid.clone(),
                     inter_frame.motion_field.clone(),
+                    inter_envelope.header.embedded_layer_id,
                 )?;
+                let inter_saved_grain = inter_frame.display_grain.clone();
                 frames.push(Some(inter_frame));
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
@@ -486,6 +1215,23 @@ fn decode_frames_from_plan_impl(
                     &mut emit,
                 )?;
                 reference.update(frame_index, &inter_update);
+                reference.save_grain_for_refreshed_slots(
+                    inter_update.refresh_frame_flags,
+                    inter_saved_grain.as_ref(),
+                );
+                reference.note_frame(
+                    next_candidate.obu_type(),
+                    first_picture_in_tu,
+                    &inter_update,
+                    &inter_core.ref_long_term_ids,
+                );
+                scheduler.note_frame(
+                    next_candidate.obu_type(),
+                    first_picture_in_tu,
+                    inter_hint,
+                    inter_immediate,
+                    inter_implicit,
+                );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, inter_hint);
                     output_frame_bytes = charge_emitted_outputs(
@@ -510,48 +1256,193 @@ fn decode_frames_from_plan_impl(
                     break;
                 }
             }
-            ObuType::ClosedLoopKey => {
-                let (key_sequence_envelope, key_film_grain_obus, key_envelope) = match stream {
-                    RuntimeStream::AnnexB { obus } => following_annexb_key_frame_unit(
-                        obus,
-                        next_candidate,
-                        &mut next_unvalidated_following_annexb_obu,
-                    )?,
-                    RuntimeStream::Ivf { ivf, .. } => following_key_frame_unit(
-                        ivf,
-                        next_candidate,
-                        &mut next_unvalidated_following_ivf_record,
-                    )?,
+            ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
+                let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
+                let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
+                {
+                    let (sequence_envelope, prefix, frame) = match stream {
+                        RuntimeStream::AnnexB { obus } => following_annexb_key_frame_unit(
+                            obus,
+                            next_candidate,
+                            &mut next_unvalidated_following_annexb_obu,
+                        )?,
+                        RuntimeStream::Ivf { ivf, .. } => following_key_frame_unit(
+                            ivf,
+                            next_candidate,
+                            &mut next_unvalidated_following_ivf_record,
+                        )?,
+                    };
+                    (Some(sequence_envelope), prefix, frame)
+                } else {
+                    let (prefix, frame) = match stream {
+                        RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
+                            obus,
+                            next_candidate,
+                            &mut next_unvalidated_following_annexb_obu,
+                        )?,
+                        RuntimeStream::Ivf { ivf, .. } => following_inter_envelope(
+                            ivf,
+                            next_candidate,
+                            &mut next_unvalidated_following_ivf_record,
+                        )?,
+                    };
+                    let sequence_envelope = prefix
+                        .iter()
+                        .rev()
+                        .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)
+                        .copied();
+                    (sequence_envelope, prefix, frame)
                 };
-                let key_sequence = parse_sequence(key_sequence_envelope)?;
-                validate_sequence(&key_sequence, key_sequence_envelope.offset)?;
-                film_grain_slots.update_from_obus(key_film_grain_obus)?;
-                ensure_repeated_key_sequence_compatible(
-                    &sequence,
-                    &key_sequence,
-                    key_sequence_envelope.offset,
-                )?;
-                let key_core = parse_frame_core(key_envelope, &key_sequence)?;
+                let (key_sequence, key_sequence_offset) =
+                    if let Some(envelope) = key_sequence_envelope {
+                        let parsed = parse_sequence(envelope)?;
+                        validate_sequence(&parsed, envelope.offset)?;
+                        (parsed, envelope.offset)
+                    } else {
+                        (sequence.clone(), key_envelope.offset)
+                    };
+                ensure_runtime_storage_bit_depth(&key_sequence, key_sequence_offset)?;
+                let key_num_ref_frames = usize::from(
+                    key_sequence
+                        .inter
+                        .as_ref()
+                        .ok_or_else(|| {
+                            unsupported_at(
+                                "missing_sequence_inter_config",
+                                key_sequence_offset,
+                                "multi-frame decode requires the active sequence inter config (NumRefFrames)",
+                            )
+                        })?
+                        .num_ref_frames,
+                );
+                if !starts_new_sequence && key_num_ref_frames != reference.len() {
+                    return Err(unsupported_at(
+                        "olk_reference_buffer_size_change",
+                        key_envelope.offset,
+                        "open-loop-key sequence activation changed NumRefFrames inside the active coded video sequence",
+                    ));
+                }
+                let first_picture_in_tu = key_prefix_obus
+                    .iter()
+                    .any(|obu| obu.header.obu_type == ObuType::TemporalDelimiter);
+                if first_picture_in_tu {
+                    decoding_initial_tu = false;
+                }
+                in_band_long_term_prelude.begin_frame(first_picture_in_tu);
+                if !starts_new_sequence {
+                    let flushed =
+                        scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                    output_frame_bytes = charge_emitted_outputs(
+                        options,
+                        &frames,
+                        &scheduler,
+                        &flushed,
+                        output_frame_bytes,
+                        retain_decoded_frames,
+                        &mut emit,
+                    )?;
+                    if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                        break;
+                    }
+                    reference.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
+                }
+                output_effect_state.observe_prefix(key_prefix_obus, &key_sequence)?;
+                film_grain_slots.update_from_obus(key_prefix_obus)?;
+                let key_core = if starts_new_sequence {
+                    parse_key_core_with_effects(key_envelope, &key_sequence, &output_effect_state)?
+                } else {
+                    match key_sequence.general.bit_depth_idc {
+                        BitDepthIdc::Eight => {
+                            let (store, meta) = reference.build_store_eight(&frames)?;
+                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            parse_olk_core_with_effects(
+                                key_envelope,
+                                &key_sequence,
+                                &state,
+                                &output_effect_state,
+                                first_picture_in_tu,
+                            )?
+                        }
+                        BitDepthIdc::Ten => {
+                            let (store, meta) = reference.build_store_ten(&frames)?;
+                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            parse_olk_core_with_effects(
+                                key_envelope,
+                                &key_sequence,
+                                &state,
+                                &output_effect_state,
+                                first_picture_in_tu,
+                            )?
+                        }
+                    }
+                };
+                if decoding_initial_tu {
+                    in_band_long_term_prelude.validate_required(
+                        &key_core,
+                        &reference,
+                        key_envelope.offset,
+                    )?;
+                }
                 ensure_intra_header_complete(&key_core, key_envelope.offset)?;
+                let key_user_qm = output_effect_state.prepare_frame(
+                    key_envelope,
+                    &key_core,
+                    &key_sequence,
+                    first_picture_in_tu,
+                )?;
                 let key_display_grain =
                     film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
+
+                if starts_new_sequence {
+                    let key_reference =
+                        reference_buffer::RuntimeReferenceBuffer::new(key_num_ref_frames)?;
+                    let flushed = scheduler.start_new_sequence(key_num_ref_frames);
+                    output_frame_bytes = charge_emitted_outputs(
+                        options,
+                        &frames,
+                        &scheduler,
+                        &flushed,
+                        output_frame_bytes,
+                        retain_decoded_frames,
+                        &mut emit,
+                    )?;
+                    reference = key_reference;
+                    if !retain_decoded_frames {
+                        reclaim_unowned_frames(
+                            &mut frames,
+                            &reference,
+                            &scheduler,
+                            &mut retained_frame_bytes,
+                        )?;
+                    }
+                    if output_frame_limit_reached(options, scheduler.emitted.len()) {
+                        break;
+                    }
+                }
+
+                sequence = key_sequence;
+                output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
+                let key_output_effects = output_effect_state.finish_frame();
                 ensure_retained_frame_byte_limits_for_core(
                     options.limits(),
                     retained_frame_bytes,
                     &key_core,
-                    &key_sequence,
+                    &sequence,
                     key_envelope.offset,
                 )?;
                 let key_frame_timer = crate::timing::start();
-                let key_frame = decode_key_frame(
+                let key_frame = decode_key_frame_with_effects(
                     bytes,
                     options,
                     plan,
                     next_candidate,
                     key_envelope,
-                    &key_sequence,
+                    key_core.clone(),
+                    &sequence,
                     frame_rate,
                     key_display_grain,
+                    key_user_qm,
+                    key_output_effects,
                 )?;
                 crate::timing::report("key_frame_decode", key_frame_timer);
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
@@ -567,7 +1458,9 @@ fn decode_frames_from_plan_impl(
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
                     key_frame.motion_field.clone(),
+                    key_envelope.header.embedded_layer_id,
                 )?;
+                let key_saved_grain = key_frame.display_grain.clone();
                 frames.push(Some(key_frame));
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
@@ -590,6 +1483,24 @@ fn decode_frames_from_plan_impl(
                     &mut emit,
                 )?;
                 reference.update(frame_index, &key_update);
+                reference.save_grain_for_refreshed_slots(
+                    key_update.refresh_frame_flags,
+                    key_saved_grain.as_ref(),
+                );
+                reference.note_frame(
+                    next_candidate.obu_type(),
+                    first_picture_in_tu,
+                    &key_update,
+                    &key_core.ref_long_term_ids,
+                );
+                in_band_long_term_prelude.note_frame(&key_core, frame_index);
+                scheduler.note_frame(
+                    next_candidate.obu_type(),
+                    first_picture_in_tu,
+                    key_hint,
+                    key_immediate,
+                    key_implicit,
+                );
                 if key_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, key_hint);
                     output_frame_bytes = charge_emitted_outputs(
@@ -665,6 +1576,15 @@ pub(crate) mod reconstruct;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod general_intra_d135_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod general_intra_d157_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod general_intra_horizontal_tests;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod general_intra_lossless_d113_tests;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -697,7 +1617,7 @@ fn derive_tile_plan_with<'a>(
     core: &'a FrameHeaderCore,
     options: &DecodeOptions,
     kind: TileFactsKind,
-    initial_cdfs: Option<FrameCdfSubset>,
+    initial_cdfs: Option<&FrameCdfSubset>,
 ) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
@@ -713,21 +1633,188 @@ fn derive_tile_plan_with<'a>(
     }
     .map_err(decode_tile_boundary_error)?;
     let cdf = FrameCandidateCdfFacts::new(tq.enable_avg_cdf, tq.avg_cdf_type != 0);
-    let mut input = FrameCandidateTileBoundaryInput::new(
-        plan,
-        candidate,
-        bytes,
-        envelope,
-        TileGroupPositionFacts::new(true, true),
-        facts,
-        cdf,
-        options.limits(),
-    );
-    if let Some(cdfs) = initial_cdfs {
-        input = input.with_initial_cdfs(cdfs);
+    let candidates = frame_tile_group_candidates(plan, candidate);
+    let recorded_header = record_frame_header(envelope, core)?;
+    let group_count = candidates.len();
+    let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> = None;
+    for (group_index, group_candidate) in candidates.into_iter().enumerate() {
+        let group_envelope = if group_index == 0 {
+            envelope
+        } else {
+            planned_envelope(bytes, group_candidate)?
+        };
+        let group_facts = if group_index == 0 {
+            facts
+        } else {
+            facts.with_tile_group_structure_start_bits(continuation_structure_start_bits(
+                group_envelope,
+                &recorded_header,
+            )?)
+        };
+        let mut input = FrameCandidateTileBoundaryInput::new(
+            plan,
+            group_candidate,
+            bytes,
+            group_envelope,
+            TileGroupPositionFacts::new(group_index == 0, group_index + 1 == group_count),
+            group_facts,
+            cdf,
+            options.limits(),
+        );
+        if let Some(cdfs) = initial_cdfs {
+            input = input.with_initial_cdfs(cdfs.clone());
+        }
+        let group_plan = crate::bitstream::tile_payload::plan_derived_tile_payload_boundary(&input)
+            .map_err(decode_tile_boundary_error)?;
+        if let Some(plan) = merged.as_mut() {
+            plan.append_continuation(group_plan)
+                .map_err(FrameCandidateTileBoundaryError::from)
+                .map_err(decode_tile_boundary_error)?;
+        } else {
+            merged = Some(group_plan);
+        }
     }
-    crate::bitstream::tile_payload::plan_derived_tile_payload_boundary(&input)
-        .map_err(decode_tile_boundary_error)
+    merged.ok_or_else(|| {
+        unsupported_at(
+            "missing_tile_group",
+            envelope.offset,
+            "decode runtime requires at least one tile group for a coded frame",
+        )
+    })
+}
+
+fn frame_tile_group_candidates<'a>(
+    plan: &'a DecodeStreamPlan,
+    candidate: &'a DecodePlannedObu,
+) -> Vec<&'a DecodePlannedObu> {
+    let mut groups = vec![candidate];
+    for planned in plan.obus().skip(candidate.index() as usize + 1) {
+        if planned.ivf_frame() != candidate.ivf_frame() {
+            break;
+        }
+        if planned.obu_type() == ObuType::Padding {
+            continue;
+        }
+        if planned.role().is_frame_continuation()
+            && planned.obu_type() == candidate.obu_type()
+            && planned.header().temporal_layer_id == candidate.header().temporal_layer_id
+            && planned.header().embedded_layer_id == candidate.header().embedded_layer_id
+            && planned.header().extended_layer_id == candidate.header().extended_layer_id
+        {
+            groups.push(planned);
+            continue;
+        }
+        break;
+    }
+    groups
+}
+
+fn planned_envelope<'a>(bytes: &'a [u8], planned: &DecodePlannedObu) -> Result<ObuEnvelope<'a>> {
+    let start = usize::try_from(planned.offset().get()).map_err(|_| {
+        unsupported_at(
+            "source_range_out_of_bounds",
+            planned.offset(),
+            "planned tile-group offset is outside the decode input",
+        )
+    })?;
+    let payload_start = start
+        .checked_add(usize::from(planned.header().header_size_bytes))
+        .ok_or_else(|| {
+            unsupported_at(
+                "source_range_out_of_bounds",
+                planned.offset(),
+                "planned tile-group payload offset overflowed",
+            )
+        })?;
+    let end = start.checked_add(planned.size() as usize).ok_or_else(|| {
+        unsupported_at(
+            "source_range_out_of_bounds",
+            planned.offset(),
+            "planned tile-group end offset overflowed",
+        )
+    })?;
+    let payload = bytes.get(payload_start..end).ok_or_else(|| {
+        unsupported_at(
+            "source_range_out_of_bounds",
+            planned.offset(),
+            "planned tile-group payload is outside the decode input",
+        )
+    })?;
+    Ok(ObuEnvelope {
+        offset: planned.offset(),
+        size: planned.size(),
+        header: planned.header(),
+        payload,
+    })
+}
+
+fn record_frame_header(
+    envelope: ObuEnvelope<'_>,
+    core: &FrameHeaderCore,
+) -> Result<RecordedFrameHeaderBits> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    if reader.read_bit().ok() != Some(1) {
+        return Err(unsupported_at(
+            "missing_first_tile_group",
+            envelope.offset,
+            "coded frame must begin with is_first_tile_group equal to 1",
+        ));
+    }
+    RecordedFrameHeaderBits::record(&mut reader, core.consumed_bits).map_err(|_| {
+        unsupported_at(
+            "frame_header_copy_source_truncated",
+            envelope.offset,
+            "first tile-group frame header could not be recorded for continuation validation",
+        )
+    })
+}
+
+fn continuation_structure_start_bits(
+    envelope: ObuEnvelope<'_>,
+    recorded: &RecordedFrameHeaderBits,
+) -> Result<u64> {
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    if reader.read_bit().ok() != Some(0) {
+        return Err(unsupported_at(
+            "unexpected_first_tile_group",
+            envelope.offset,
+            "tile-group continuation must set is_first_tile_group to 0",
+        ));
+    }
+    let frame_header_present = reader.read_bit().map_err(|_| {
+        unsupported_at(
+            "tile_group_prefix_parse",
+            envelope.offset,
+            "tile-group continuation ends before frame_header_present_flag",
+        )
+    })? != 0;
+    if frame_header_present {
+        match parse_frame_header_copy(&mut reader, recorded) {
+            FrameHeaderCopyOutcome::Matches => {}
+            FrameHeaderCopyOutcome::Mismatch { .. } => {
+                return Err(unsupported_at(
+                    "frame_header_copy_mismatch",
+                    envelope.offset,
+                    "tile-group continuation frame_header_copy differs from the first group",
+                ));
+            }
+            FrameHeaderCopyOutcome::Truncated { .. } => {
+                return Err(unsupported_at(
+                    "frame_header_copy_truncated",
+                    envelope.offset,
+                    "tile-group continuation ends inside frame_header_copy",
+                ));
+            }
+            _ => {
+                return Err(unsupported_at(
+                    "frame_header_copy_invalid",
+                    envelope.offset,
+                    "tile-group continuation frame_header_copy is invalid",
+                ));
+            }
+        }
+    }
+    Ok(reader.consumed_bits())
 }
 
 pub(crate) fn derive_tile_plan<'a>(
@@ -760,7 +1847,7 @@ pub(crate) fn derive_inter_tile_plan<'a>(
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
     options: &DecodeOptions,
-    initial_cdfs: FrameCdfSubset,
+    initial_cdfs: &FrameCdfSubset,
 ) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
     derive_tile_plan_with(
         plan,
@@ -838,6 +1925,9 @@ fn malformed_tile_boundary_reason(
         }
         crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupRangeInvalid { .. } => {
             "tile_group_range_invalid"
+        }
+        crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupPositionMismatch { .. } => {
+            "tile_group_position_mismatch"
         }
     }
 }

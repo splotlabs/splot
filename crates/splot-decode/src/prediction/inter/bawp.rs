@@ -92,7 +92,7 @@ pub(crate) fn apply_bawp<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let mut luma_alpha = 1i16 << SHIFT;
-    for (plane, sub_x, sub_y) in super::mc::YUV420_MC_PLANES {
+    for (plane, sub_x, sub_y) in super::mc::mc_planes(workspace.info().pixel_format()) {
         if plane != PlaneId::Y && !bawp.chroma {
             break;
         }

@@ -25,3 +25,9 @@ pub fn read_dir_names(path: &Path) -> Vec<String> {
     entries.sort();
     entries
 }
+
+/// Returns the header-only IVF emitted by AVM when no input frames are encoded.
+pub fn empty_avmenc_ivf() -> Vec<u8> {
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-empty-avmenc-64x64.ivf")
+        .to_vec()
+}

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::DrlReorder;
+pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
 use splot_recon::math::{round2_signed, round2_signed_i32};
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
@@ -12,7 +13,7 @@ pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 pub(crate) const MAX_WARP_REF_CANDIDATES: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FixedStack<T, const N: usize> {
+pub(crate) struct FixedStack<T, const N: usize> {
     entries: [T; N],
     len: usize,
 }
@@ -71,15 +72,6 @@ impl<T, const N: usize> core::ops::DerefMut for FixedStack<T, N> {
 
 pub(crate) const TIP_REF_FRAME: i8 = 7;
 
-pub(crate) const DEFAULT_WARP_PARAMS: [i32; 6] = [
-    0,
-    0,
-    1 << WARPEDMODEL_PREC_BITS,
-    0,
-    0,
-    1 << WARPEDMODEL_PREC_BITS,
-];
-
 const GM_TRANS_ONLY_PREC_DIFF: u32 = WARPEDMODEL_PREC_BITS - 3;
 
 const MV_BORDER: i32 = 128;
@@ -122,7 +114,7 @@ struct NeighbourCell {
     newmv_for_list0: bool,
     newmv_for_list1: bool,
     mv: Mv,
-    mv1: Option<Mv>,
+    mv1: Mv,
     skip_mode: bool,
     skip: bool,
     interp_filter: u8,
@@ -155,7 +147,7 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     newmv_for_list0: false,
     newmv_for_list1: false,
     mv: Mv::ZERO,
-    mv1: None,
+    mv1: Mv::ZERO,
     skip_mode: false,
     skip: false,
     interp_filter: SWITCHABLE_FILTERS,
@@ -268,6 +260,42 @@ impl NeighbourMvGrid {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_global_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        warp_params: [i32; 6],
+        precision: BlockPrecisionRecord,
+    ) {
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            ref_frame0,
+            None,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            MotionMode::Simple,
+            Some(warp_params),
+            false,
+            precision,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_warp_block(
         &mut self,
         r: usize,
@@ -332,7 +360,7 @@ impl NeighbourMvGrid {
             newmv_for_list0: matches!(y_mode, NeighbourYMode::NewMv),
             newmv_for_list1: false,
             mv,
-            mv1: None,
+            mv1: Mv::ZERO,
             skip_mode: false,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
@@ -438,7 +466,7 @@ impl NeighbourMvGrid {
             newmv_for_list0: list0_is_newmv,
             newmv_for_list1: list1_is_newmv,
             mv: mv0,
-            mv1: Some(mv1),
+            mv1,
             skip_mode,
             skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
@@ -1119,7 +1147,6 @@ fn collect_neighbour_context_cells(
 pub(crate) struct MvStack {
     stack: FixedStack<(Mv, (i32, i32)), MAX_REF_MV_STACK_SIZE>,
     warp: WarpParamStack,
-    block: MvBlockContext,
 }
 
 impl MvStack {
@@ -1142,26 +1169,25 @@ impl MvStack {
             .copied()
             .unwrap_or(DEFAULT_WARP_PARAMS)
     }
+}
 
-    pub(crate) fn warp_predicted_mv(&self, idx: usize, precision: u8) -> Mv {
-        let params = self.warp_candidate(idx);
-        let block = &self.block;
-        let x = block.mi_col as i32 * 4 + (block.bw4 as i32 * 4) / 2 - 1;
-        let y = block.mi_row as i32 * 4 + (block.bh4 as i32 * 4) / 2 - 1;
-        let (row, col) = projected_warp_mv(params, x, y);
-        let (shift, scale) = if precision == super::read_mv::MV_PRECISION_EIGHTH_PEL {
-            (WARPEDMODEL_PREC_BITS - 3, 1)
-        } else {
-            (WARPEDMODEL_PREC_BITS - 2, 2)
-        };
-        let row = round2_signed(row, shift) * scale;
-        let col = round2_signed(col, shift) * scale;
-        let mv = clip_and_clamp_projected_mv(block, row, col);
-        if precision < super::read_mv::MV_PRECISION_HALF_PEL {
-            super::read_mv::lower_mv_precision(precision, mv)
-        } else {
-            mv
-        }
+/// AV2 § 7.12.2.2 `get_warp_motion_vector()` for a block center.
+pub(crate) fn warp_predicted_mv(params: [i32; 6], block: &MvBlockContext, precision: u8) -> Mv {
+    let x = block.mi_col as i32 * 4 + (block.bw4 as i32 * 4) / 2 - 1;
+    let y = block.mi_row as i32 * 4 + (block.bh4 as i32 * 4) / 2 - 1;
+    let (row, col) = projected_warp_mv(params, x, y);
+    let (shift, scale) = if precision == super::read_mv::MV_PRECISION_EIGHTH_PEL {
+        (WARPEDMODEL_PREC_BITS - 3, 1)
+    } else {
+        (WARPEDMODEL_PREC_BITS - 2, 2)
+    };
+    let row = round2_signed(row, shift) * scale;
+    let col = round2_signed(col, shift) * scale;
+    let mv = clip_and_clamp_projected_mv(block, row, col);
+    if precision < super::read_mv::MV_PRECISION_HALF_PEL {
+        super::read_mv::lower_mv_precision(precision, mv)
+    } else {
+        mv
     }
 }
 
@@ -1201,72 +1227,46 @@ impl CompoundMvStack {
     }
 }
 
-pub(crate) enum ExtendWarpNeighbour {
-    Params([i32; 6]),
-    List1MvUnretained,
-    Missing,
-}
-
 pub(crate) fn extend_warp_neighbour_params(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     delta_row: i32,
     delta_col: i32,
-) -> ExtendWarpNeighbour {
-    let Some(cell) = grid.get(
+) -> Option<[i32; 6]> {
+    let cell = grid.get(
         block.mi_row as i32 + delta_row,
         block.mi_col as i32 + delta_col,
-    ) else {
-        return ExtendWarpNeighbour::Missing;
-    };
+    )?;
     if cell.is_warp()
         && let Some(params) = cell.warp_params
     {
-        return ExtendWarpNeighbour::Params(params);
+        return Some(params);
     }
-    let neighbour_mv = if cell.ref_frame0 == block.ref_frame0 {
-        Some(cell.mv)
-    } else {
+    let mv = if cell.ref_frame0 == block.ref_frame0 {
+        cell.mv
+    } else if cell.ref_frame1 == Some(block.ref_frame0) {
         cell.mv1
-    };
-    let Some(mv) = neighbour_mv else {
-        return ExtendWarpNeighbour::List1MvUnretained;
+    } else {
+        return None;
     };
     let mut params = splot_recon::IDENTITY_WARP_PARAMS;
     let [Some(translation_x), Some(translation_y)] =
         [mv.col, mv.row].map(|value| value.checked_shl(WARPEDMODEL_PREC_BITS - 3))
     else {
-        return ExtendWarpNeighbour::Missing;
+        return None;
     };
     params[0] = translation_x;
     params[1] = translation_y;
-    ExtendWarpNeighbour::Params(params)
+    Some(params)
 }
 
 const LEAST_SQUARES_SAMPLES_MAX: usize = 8;
-
-pub(crate) struct WarpSamples(FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX>);
-
-impl WarpSamples {
-    pub(crate) fn as_slice(&self) -> &[[i32; 4]] {
-        &self.0
-    }
-}
-
-#[allow(
-    clippy::large_enum_variant,
-    reason = "warp samples intentionally stay stack allocated"
-)]
-pub(crate) enum WarpSampleCollection {
-    Samples(WarpSamples),
-    List1MvUnretained,
-}
 
 pub(crate) fn find_warp_samples(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     target_ref: i8,
-) -> WarpSampleCollection {
+) -> FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX> {
     let mut samples = FixedStack::new();
     let mi_row = block.mi_row as i32;
     let mi_col = block.mi_col as i32;
@@ -1274,10 +1274,9 @@ pub(crate) fn find_warp_samples(
     let h4 = block.bh4 as i32;
     let mi_rows = block.mi_rows as i32;
     let mi_cols = block.mi_cols as i32;
-    let mut missing_list1 = false;
-    let mut add_sample = |samples: &mut FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX>,
-                          delta_row: i32,
-                          delta_col: i32| {
+    let add_sample = |samples: &mut FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX>,
+                      delta_row: i32,
+                      delta_col: i32| {
         if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
             return;
         }
@@ -1285,17 +1284,13 @@ pub(crate) fn find_warp_samples(
             return;
         };
         let lists = [
-            (cell.ref_frame0 == target_ref && cell.is_inter).then_some(Some(cell.mv)),
+            (cell.ref_frame0 == target_ref && cell.is_inter).then_some(cell.mv),
             (cell.ref_frame1 == Some(target_ref)).then_some(cell.mv1),
         ];
-        for list_mv in lists.into_iter().flatten() {
+        for mv in lists.into_iter().flatten() {
             if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
                 return;
             }
-            let Some(mv) = list_mv else {
-                missing_list1 = true;
-                continue;
-            };
             let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i32 - 1;
             let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i32 - 1;
             let _ =
@@ -1365,10 +1360,7 @@ pub(crate) fn find_warp_samples(
     if do_top_right && w4 <= 16 && above_sample_stored(w4) {
         add_sample(&mut samples, -1, w4);
     }
-    if missing_list1 {
-        return WarpSampleCollection::List1MvUnretained;
-    }
-    WarpSampleCollection::Samples(WarpSamples(samples))
+    samples
 }
 
 const REF_MV_BANK_SIZE: usize = 4;
@@ -1463,7 +1455,7 @@ impl RefMvBank {
                 cell.ref_frame0,
                 cell.ref_frame1,
                 cell.mv,
-                cell.mv1,
+                cell.ref_frame1.map(|_| cell.mv1),
                 cell.cwp_weight,
                 false,
             );
@@ -1743,6 +1735,7 @@ pub(crate) fn find_mv_stack(
         grid,
         block,
         global_mv,
+        DEFAULT_WARP_PARAMS,
         bank,
         warp_bank,
         derive_wrl,
@@ -1758,6 +1751,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     global_mv: Mv,
+    global_warp_params: [i32; 6],
     bank: Option<(&RefMvBank, usize)>,
     warp_bank: &WarpParamBank,
     derive_wrl: bool,
@@ -1841,7 +1835,8 @@ pub(crate) fn find_mv_stack_with_temporal(
     extra_search(block, global_mv, &mut entries, &mut prune_count);
     if let Some(warp) = warp.as_mut() {
         warp_bank.fill(block.ref_frame0, warp);
-        for _ in 0..3 {
+        warp.insert(global_warp_params);
+        for _ in 0..2 {
             warp.insert(DEFAULT_WARP_PARAMS);
         }
     }
@@ -1855,7 +1850,6 @@ pub(crate) fn find_mv_stack_with_temporal(
     MvStack {
         stack,
         warp: warp.unwrap_or_else(WarpParamStack::new),
-        block: *block,
     }
 }
 

@@ -87,6 +87,8 @@ fn run_deblock(
         mi_rows,
         mi_cols,
         filter,
+        None,
+        false,
         DeblockQuantDeltas::ZERO,
         BitDepth::Eight,
     )
@@ -95,13 +97,13 @@ fn run_deblock(
 
 #[test]
 fn tip_filter_widths_follow_unit_and_chroma_superblock_edges() {
-    assert_eq!(tip_filter_widths(0, 8, false, 8, 0), (3, 3));
-    assert_eq!(tip_filter_widths(0, 16, true, 64, 0), (6, 6));
-    assert_eq!(tip_filter_widths(1, 4, true, 32, 1), (1, 1));
-    assert_eq!(tip_filter_widths(1, 8, true, 32, 1), (2, 3));
-    assert_eq!(tip_filter_widths(1, 8, true, 24, 1), (3, 3));
-    assert_eq!(tip_filter_widths(0, 32, false, 32, 0), (8, 8));
-    assert_eq!(tip_filter_widths(1, 32, true, 32, 1), (2, 4));
+    assert_eq!(deblock_filter_max_width(8, false, false), (3, 3));
+    assert_eq!(deblock_filter_max_width(16, false, true), (6, 6));
+    assert_eq!(deblock_filter_max_width(4, true, true), (1, 1));
+    assert_eq!(deblock_filter_max_width(8, true, true), (2, 3));
+    assert_eq!(deblock_filter_max_width(8, true, false), (3, 3));
+    assert_eq!(deblock_filter_max_width(32, false, false), (8, 8));
+    assert_eq!(deblock_filter_max_width(32, true, true), (2, 4));
 }
 
 #[test]
@@ -137,6 +139,8 @@ fn tip_deblocking_smooths_prediction_unit_boundaries() {
         16,
         QuantizationParams::inferred_tip(100, 0, 0),
         0,
+        None,
+        false,
         BitDepth::Eight,
     )
     .unwrap();
@@ -146,6 +150,99 @@ fn tip_deblocking_smooths_prediction_unit_boundaries() {
         ws.reconstructed_sample(PlaneId::Y, 16, 8).unwrap(),
         "TIP prediction-unit boundary must be filtered",
     );
+}
+
+#[test]
+fn tip_tile_edges_map_subsampled_plane_coordinates_to_luma_mi() {
+    let col_starts = [0, 16, 32];
+    let row_starts = [0, 8, 16];
+    assert!(tip_tile_edge(Some(&col_starts), 64, 0));
+    assert!(tip_tile_edge(Some(&col_starts), 32, 1));
+    assert!(tip_tile_edge(Some(&row_starts), 32, 0));
+    assert!(tip_tile_edge(Some(&row_starts), 16, 1));
+    assert!(!tip_tile_edge(Some(&col_starts), 16, 0));
+    assert!(!tip_tile_edge(None, 64, 0));
+}
+
+#[test]
+fn tip_deblocking_obeys_cross_tile_filtering_flag() {
+    let col_starts = [0, 16, 32];
+    let row_starts = [0, 8, 16];
+    let run = |disable_loopfilters_across_tiles| {
+        let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+            128,
+            64,
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+        )
+        .unwrap();
+        fill_rect(&mut workspace, PlaneId::Y, 0..64, 0..64, 100);
+        fill_rect(&mut workspace, PlaneId::Y, 64..128, 0..64, 108);
+        deblock_tip_frame(
+            &mut workspace,
+            16,
+            QuantizationParams::inferred_tip(100, 0, 0),
+            0,
+            Some((&col_starts, &row_starts)),
+            disable_loopfilters_across_tiles,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        workspace
+    };
+
+    let disabled = run(true);
+    assert_eq!(disabled.reconstructed_sample(PlaneId::Y, 63, 8), Ok(100));
+    assert_eq!(disabled.reconstructed_sample(PlaneId::Y, 64, 8), Ok(108));
+
+    let enabled = run(false);
+    assert_smoothed_step(
+        enabled.reconstructed_sample(PlaneId::Y, 63, 8).unwrap(),
+        enabled.reconstructed_sample(PlaneId::Y, 64, 8).unwrap(),
+        "TIP tile edge filters when cross-tile loop filtering is enabled",
+    );
+}
+
+#[test]
+fn tip_deblocking_handles_yuv422_and_yuv444_chroma_geometry() {
+    for (pixel_format, chroma_width, boundary) in
+        [(PixelFormat::Yuv422, 16, 8), (PixelFormat::Yuv444, 32, 16)]
+    {
+        let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+            32,
+            32,
+            BitDepth::Eight,
+            pixel_format,
+        )
+        .unwrap();
+        fill_rect(&mut workspace, PlaneId::U, 0..boundary, 0..32, 100);
+        fill_rect(
+            &mut workspace,
+            PlaneId::U,
+            boundary..chroma_width,
+            0..32,
+            108,
+        );
+        deblock_tip_frame(
+            &mut workspace,
+            16,
+            QuantizationParams::inferred_tip(100, 0, 0),
+            0,
+            None,
+            false,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        assert_smoothed_step(
+            workspace
+                .reconstructed_sample(PlaneId::U, boundary - 1, 8)
+                .unwrap(),
+            workspace
+                .reconstructed_sample(PlaneId::U, boundary, 8)
+                .unwrap(),
+            "TIP deblocking must use the coded chroma plane geometry",
+        );
+    }
 }
 
 fn edge_test_grid(curr_skip: bool) -> MiGrid {
@@ -489,6 +586,8 @@ fn empty_apply_pattern_is_a_no_op() {
         16,
         16,
         filter([false; 4]),
+        None,
+        false,
         DeblockQuantDeltas::ZERO,
         BitDepth::Eight,
     )
@@ -769,7 +868,9 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 quant_delta: 0,
                 bit_depth: BitDepth::Eight,
                 allow_df_sub_pu: false,
+                tile_edge: false,
             },
+            false,
             &mut StrengthCache::default(),
         )
         .unwrap();
@@ -802,7 +903,9 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 quant_delta: 0,
                 bit_depth: BitDepth::Eight,
                 allow_df_sub_pu: false,
+                tile_edge: false,
             },
+            false,
             &mut StrengthCache::default(),
         )
         .unwrap();
@@ -811,6 +914,48 @@ fn skip_suppresses_internal_tx_edge_filtering() {
         coded.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
         coded.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
         "coded internal edge still filters",
+    );
+}
+
+#[test]
+fn tile_boundary_filtering_obeys_sequence_flag() {
+    let run = |disable_loopfilters_across_tiles| {
+        let mut workspace = yuv420_workspace(64, 16, 100);
+        fill_rect(&mut workspace, PlaneId::Y, 20..64, 0..16, 108);
+        with_plane_ctx(&mut workspace, PlaneId::Y, |ctx| {
+            deblock_filter_edge(
+                ctx,
+                &edge_test_grid(false),
+                EdgeContext {
+                    plane: 0,
+                    pass: 0,
+                    row: 0,
+                    col: 5,
+                    plane_sub_x: 0,
+                    plane_sub_y: 0,
+                    df_delta_q: 0,
+                    quant_delta: 0,
+                    bit_depth: BitDepth::Eight,
+                    allow_df_sub_pu: false,
+                    tile_edge: true,
+                },
+                disable_loopfilters_across_tiles,
+                &mut StrengthCache::default(),
+            )
+            .unwrap();
+        });
+        workspace
+    };
+
+    let disabled = run(true);
+    assert_eq!(disabled.reconstructed_sample(PlaneId::Y, 19, 0), Ok(100));
+    assert_eq!(disabled.reconstructed_sample(PlaneId::Y, 20, 0), Ok(108));
+
+    let enabled = run(false);
+    assert_smoothed_step(
+        enabled.reconstructed_sample(PlaneId::Y, 19, 0).unwrap(),
+        enabled.reconstructed_sample(PlaneId::Y, 20, 0).unwrap(),
+        "tile edge filters when cross-tile loop filtering is enabled",
     );
 }
 
@@ -841,7 +986,9 @@ fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
                     quant_delta: 0,
                     bit_depth: BitDepth::Eight,
                     allow_df_sub_pu,
+                    tile_edge: false,
                 },
+                false,
                 &mut StrengthCache::default(),
             )
             .unwrap();
@@ -978,6 +1125,8 @@ fn banded_parallel_pass_matches_serial_output() {
             mi_rows,
             mi_cols,
             filter([true, true, true, true]),
+            None,
+            false,
             DeblockQuantDeltas::ZERO,
             BitDepth::Ten,
         )

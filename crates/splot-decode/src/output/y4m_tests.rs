@@ -7,7 +7,7 @@ use std::io;
 
 use splot_parallel::ThreadCount;
 
-use crate::test_support::{MINIMAL_FIXTURE, minimal_fixture_with_timebase};
+use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
 use crate::{
     DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError, DecodeLimitName,
     DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig, OUTPUT_ERROR_RULE_ID,
@@ -41,6 +41,30 @@ fn minimal_fixture_decodes_to_exact_y4m_bytes() {
         .unwrap();
 
     assert_eq!(bytes, expected_minimal_y4m());
+}
+
+#[test]
+fn empty_ivf_y4m_fails_with_typed_empty_frame_set_error() {
+    let input = empty_avmenc_ivf();
+    let options = DecodeOptions::new(
+        DecodeLimits::default()
+            .with_max_output_frames(DecodeLimitThreshold::Max(0))
+            .with_max_output_bytes(DecodeLimitThreshold::Max(0)),
+    );
+    let mut bytes = Vec::new();
+
+    let error = context(ThreadCount::from(1usize))
+        .decode_y4m_bytes(&input, options, &mut bytes)
+        .unwrap_err();
+
+    assert!(bytes.is_empty());
+    assert!(matches!(
+        error,
+        DecodeError::Output { ref source }
+            if source.operation() == crate::DecodeOutputOperation::SerializeY4m
+                && source.source_kind() == "frame_set"
+                && source.source_message().contains("at least one decoded frame")
+    ));
 }
 
 #[test]

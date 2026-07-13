@@ -22,9 +22,9 @@ use splot_core::types::ObuType;
 
 use super::cdf::{FrameCdfSubset, TileCdfPolicyInput};
 use super::{
-    DecodeTilePayloadPlan, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
-    TileFrameFacts, TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput,
-    TilePayloadSource, plan_tile_payload_boundary,
+    DecodeTilePayloadPlan, TileCoeffFrameFacts, TileCoeffFrameFactsInput, TileFrameFacts,
+    TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput, TilePayloadSource,
+    plan_tile_payload_boundary,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
@@ -142,7 +142,7 @@ impl<'a> FrameCandidateTileFacts<'a> {
         }
         if core.is_bridge {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
-                reason: FrameCandidateTileUnsupportedReason::BridgeFrame,
+                reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
             });
         }
         let tile_info = core
@@ -239,7 +239,6 @@ impl<'a> FrameCandidateTileFacts<'a> {
         }
     }
 
-    #[cfg(test)]
     pub(crate) const fn with_tile_group_structure_start_bits(mut self, bits: u64) -> Self {
         self.tile_group_structure_start_bits = bits;
         self
@@ -385,6 +384,13 @@ pub(crate) enum FrameCandidateTileMalformed {
         tg_start: u32,
         tg_end: u32,
     },
+    TileGroupPositionMismatch {
+        is_first: bool,
+        is_last: bool,
+        tg_start: u32,
+        tg_end: u32,
+        num_tiles: u64,
+    },
 }
 
 impl fmt::Display for FrameCandidateTileMalformed {
@@ -418,6 +424,16 @@ impl fmt::Display for FrameCandidateTileMalformed {
             Self::TileGroupRangeInvalid { tg_start, tg_end } => {
                 write!(f, "invalid tile-group range {tg_start}..={tg_end}")
             }
+            Self::TileGroupPositionMismatch {
+                is_first,
+                is_last,
+                tg_start,
+                tg_end,
+                num_tiles,
+            } => write!(
+                f,
+                "tile-group position first={is_first} last={is_last} does not match range {tg_start}..={tg_end} of {num_tiles} tiles"
+            ),
         }
     }
 }
@@ -425,24 +441,16 @@ impl fmt::Display for FrameCandidateTileMalformed {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameCandidateTileUnsupportedReason {
     CandidateNotFrame,
-    NonFirstTileGroup,
-    NonLastTileGroup,
     IncompleteFrameHeader,
     NonIntraFrame,
-    BridgeFrame,
-    NonSingleTileGroup,
 }
 
 impl fmt::Display for FrameCandidateTileUnsupportedReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::CandidateNotFrame => "candidate_not_frame",
-            Self::NonFirstTileGroup => "non_first_tile_group",
-            Self::NonLastTileGroup => "non_last_tile_group",
             Self::IncompleteFrameHeader => "incomplete_frame_header",
             Self::NonIntraFrame => "non_intra_frame",
-            Self::BridgeFrame => "bridge_frame",
-            Self::NonSingleTileGroup => "non_single_tile_group",
         })
     }
 }
@@ -461,7 +469,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         u64::from(input.facts.tile_cols),
         u64::from(input.facts.tile_rows),
     )?;
-    validate_supported_position(input.candidate, input.position, input.facts)?;
+    validate_supported_frame(input.candidate, input.facts)?;
 
     let structure = derive_tile_group_structure(input.envelope, input.facts)?;
     let (payload, payload_base) = tile_group_payload_region(input.envelope, structure)?;
@@ -470,11 +478,21 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         .limits
         .ensure(DecodeLimitName::MaxTileCount, group_tile_count)?;
     let total_tiles = u64::from(input.facts.tile_cols) * u64::from(input.facts.tile_rows);
-    if total_tiles == 0 || structure.tg_start != 0 || u64::from(structure.tg_end) + 1 != total_tiles
+    let range_is_first = structure.tg_start == 0;
+    let range_is_last = u64::from(structure.tg_end).checked_add(1) == Some(total_tiles);
+    if total_tiles == 0
+        || input.position.is_first_tile_group != range_is_first
+        || input.position.is_last_tile_group != range_is_last
     {
-        return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::NonSingleTileGroup,
-        });
+        return Err(FrameCandidateTileBoundaryError::Malformed(
+            FrameCandidateTileMalformed::TileGroupPositionMismatch {
+                is_first: input.position.is_first_tile_group,
+                is_last: input.position.is_last_tile_group,
+                tg_start: structure.tg_start,
+                tg_end: structure.tg_end,
+                num_tiles: total_tiles,
+            },
+        ));
     }
 
     let tile_size_bytes = input.facts.tile_size_bytes.unwrap_or(1);
@@ -495,10 +513,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     let mut frame = TileFrameFacts::new(
         input.facts.obu_type,
         input.facts.frame_is_intra,
-        input.position.is_first_tile_group,
         input.position.is_last_tile_group,
-        input.facts.is_bridge,
-        TileBruPath::NotUsed,
         input.facts.base_q_idx,
         input.facts.disable_cdf_update,
     )
@@ -542,7 +557,7 @@ fn validate_candidate(
             FrameCandidateTileMalformed::CandidateNotInPlan,
         ));
     }
-    if !candidate.role().is_frame_candidate() {
+    if !candidate.role().is_frame_candidate() && !candidate.role().is_frame_continuation() {
         return Err(FrameCandidateTileBoundaryError::Unsupported {
             reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
         });
@@ -661,28 +676,24 @@ fn mismatch<T>(field: &'static str) -> Result<T, FrameCandidateTileBoundaryError
     ))
 }
 
-fn validate_supported_position(
+fn validate_supported_frame(
     candidate: &DecodePlannedObu,
-    position: TileGroupPositionFacts,
     facts: FrameCandidateTileFacts<'_>,
 ) -> Result<(), FrameCandidateTileBoundaryError> {
-    if !position.is_first_tile_group {
-        return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::NonFirstTileGroup,
-        });
-    }
-    if !position.is_last_tile_group {
-        return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::NonLastTileGroup,
-        });
-    }
     if facts.is_bridge {
         return Err(FrameCandidateTileBoundaryError::Unsupported {
-            reason: FrameCandidateTileUnsupportedReason::BridgeFrame,
+            reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,
         });
     }
     match (facts.frame_is_intra, candidate.obu_type()) {
-        (true, ObuType::ClosedLoopKey) | (false, ObuType::RegularTileGroup) => {}
+        (true, ObuType::ClosedLoopKey | ObuType::OpenLoopKey)
+        | (
+            false,
+            ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup
+            | ObuType::Switch
+            | ObuType::RasFrame,
+        ) => {}
         _ => {
             return Err(FrameCandidateTileBoundaryError::Unsupported {
                 reason: FrameCandidateTileUnsupportedReason::CandidateNotFrame,

@@ -378,21 +378,17 @@ pub struct GdfGeometry<'a> {
     pub mi_row_starts: &'a [u32],
 }
 
-/// Whether the `gdf_per_block` bit is coded in `gdf_params()` (AV2 v1.0.0 § 5.18.7.9,
+/// Derives `GdfBlkSize` from `gdf_params()` (AV2 v1.0.0 § 5.18.7.9,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-9`).
 ///
-/// Returns `true` when the frame exceeds `gdfBlkSize` in either dimension, or when
-/// loop-filtering across tiles is disabled in a multi-tile frame; otherwise the bit is
-/// inferred `0` and `false` is returned. Encapsulates the full `gdfBlkSize` derivation
-/// (the `Max(Block_Width[SbSize], GDF_MIN_SIZE)` default, the `gdf_unit_matches_sb_size`
-/// override, and the `Block64x64` tile-start alignment scan) so the parser
-/// ([`parse_gdf_params`]) and the writer
-/// (`crate::write::frame_filters::write_gdf_params`) share one source of truth and never
-/// drift. `gdf_frame_enable` must already be `1` for this gate to be consulted.
-pub(crate) fn gdf_per_block_is_coded(filter: CoreSeqFilterView, geometry: GdfGeometry<'_>) -> bool {
+/// This is the shared source of truth for frame-header parsing/writing and tile-payload
+/// `read_gdf()` state. It includes the `Max(Block_Width[SbSize], GDF_MIN_SIZE)` default,
+/// the `gdf_unit_matches_sb_size` override, and the `Block64x64` tile-start alignment scan.
+#[must_use]
+pub fn gdf_block_size(gdf_unit_matches_sb_size: bool, geometry: GdfGeometry<'_>) -> u32 {
     let sb_block_width = block_width(geometry.sb_size);
     let mut gdf_blk_size = sb_block_width.max(GDF_MIN_SIZE);
-    if filter.gdf_unit_matches_sb_size {
+    if gdf_unit_matches_sb_size {
         gdf_blk_size = sb_block_width;
     } else if geometry.sb_size == SuperblockSize::Block64x64 {
         let mut a = 0u32;
@@ -414,6 +410,18 @@ pub(crate) fn gdf_per_block_is_coded(filter: CoreSeqFilterView, geometry: GdfGeo
             gdf_blk_size = 64;
         }
     }
+    gdf_blk_size
+}
+
+/// Whether the `gdf_per_block` bit is coded in `gdf_params()` (AV2 v1.0.0 § 5.18.7.9,
+/// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-9`).
+///
+/// Returns `true` when the frame exceeds `gdfBlkSize` in either dimension, or when
+/// loop-filtering across tiles is disabled in a multi-tile frame; otherwise the bit is
+/// inferred `0` and `false` is returned. `gdf_frame_enable` must already be `1` for this
+/// gate to be consulted.
+pub(crate) fn gdf_per_block_is_coded(filter: CoreSeqFilterView, geometry: GdfGeometry<'_>) -> bool {
+    let gdf_blk_size = gdf_block_size(filter.gdf_unit_matches_sb_size, geometry);
 
     let frame_exceeds_block = geometry.mi_cols.saturating_mul(MI_SIZE) > gdf_blk_size
         || geometry.mi_rows.saturating_mul(MI_SIZE) > gdf_blk_size;

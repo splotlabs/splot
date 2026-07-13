@@ -41,45 +41,23 @@
 //! }
 //! ```
 //!
-//! ## Honest stops (the cross-frame boundary)
+//! ## Cross-frame state
 //!
-//! Two § 5.18.9.1 derivations consume per-slot facts of the *referenced* frame that this
-//! phase does not model — they are recorded as [`GlobalMotionStop`] coverage stops, never
-//! truncations, with every fact parsed before the stop preserved:
-//!
-//! - **`our_ref != NumTotalRefs` base-warp load** (mirror :7826-7846): the
-//!   `RefNumTotalRefs[ refIdx ] > 0` test, the `their_ref ns(RefNumTotalRefs[refIdx])`
-//!   read, and the `SavedGmParams` / `SavedOrderHints` loads need `RefNumTotalRefs` and the
-//!   per-slot saved warp state of `ref_frame_idx[ our_ref ]`, which are facts of a
-//!   previously decoded frame the model does not carry. Because the very next read
-//!   (`their_ref`) has a *width* (`ns(RefNumTotalRefs[refIdx])`) set by that unmodeled
-//!   count, the parse stops at [`GlobalMotionStop::RefNumTotalRefsUnmodeled`] rather than
-//!   guess. When `our_ref == NumTotalRefs` this whole arm is skipped (baseParams stay the
-//!   identity default), so the parse continues.
-//! - **per-reference loop gate** (mirror :7853-7857): each reference reads warp bits only
-//!   when `dist != 0 && OrderHints[ ref ] != RESTRICTED_OH`, and both `OrderHint` and
-//!   `OrderHints[ ref ]` are cross-frame order-hint state. The *presence* of the first
-//!   per-reference bit therefore depends on unmodeled state, so the parse stops at
-//!   [`GlobalMotionStop::OrderHintsUnmodeled`] at the loop boundary.
-//!
-//! The reachable production depth is thus `use_global_motion` and the `our_ref` base
-//! selection. The per-reference warp decode and its subexp chain are fully implemented and
-//! unit-tested here against hand-computed vectors; they become production-reachable once the
-//! § 7.23 cross-frame `OrderHints` / `RefNumTotalRefs` / `SavedGmParams` state is threaded
-//! (named residuals on `AV2-5.18.9-GLOBAL-MOTION`).
+//! The decoder threads § 7.23 `RefNumTotalRefs`, `SavedOrderHints`, `SavedGmParams`, and
+//! current/reference order hints through [`GlobalMotionReferenceState`], so the production
+//! path parses every reference model. Callers that intentionally do not model a reference
+//! buffer may omit that view; they retain the historical [`GlobalMotionStop`] coverage
+//! boundary without guessing bit presence or widths.
 //!
 //! ## § 6.17.9 conformance
 //!
-//! Both § 6.17.9.1 conformance clauses — `OrderHints[ our_ref ] != RESTRICTED_OH` when
-//! `our_ref != NumTotalRefs`, and `SavedOrderHints[ refIdx ][ their_ref ] != RESTRICTED_OH`
-//! — read the same cross-frame order-hint state the honest stops gate on, so neither is
-//! locally decidable; both are named residuals, not diagnostics. The arithmetic-only
-//! § 6.17.9.3-.5 notes (the decode ranges) are encoded as the chain's typed behavior and
-//! its tests, not as diagnostics.
+//! Both § 6.17.9.1 restricted-order-hint clauses are typed errors when the reference view is
+//! present. The arithmetic § 6.17.9.3-.5 ranges are encoded by the subexp chain and tests.
 
 use crate::bitio::BitReader;
-use crate::error::Result;
+use crate::error::{GlobalMotionErrorKind, Result};
 
+use super::get_ref_frames::{RESTRICTED_OH, get_relative_dist};
 use super::info::FrameType;
 
 /// `WARPEDMODEL_PREC_BITS` (AV2 v1.0.0 § 3): internal precision of warped motion models.
@@ -126,6 +104,28 @@ const AFFINE: u8 = 2;
 /// (mirror :7778). Every reference is initialised to the identity warp before the inter
 /// arm overwrites the active `0..NumTotalRefs` entries.
 pub(crate) const REFS_PER_FRAME: usize = 7;
+
+/// One frame's § 7.23 `SavedGmParams[slot]` table.
+pub type SavedGlobalMotionParams = [[i32; 6]; REFS_PER_FRAME];
+
+/// One frame's § 7.23 `SavedOrderHints[slot]` table. `u32::MAX` represents
+/// `RESTRICTED_OH`, matching the rest of the frame-header reference-state API.
+pub type SavedGlobalMotionOrderHints = [u32; REFS_PER_FRAME];
+
+/// Cross-frame § 7.23 state consumed by the inter `global_motion_params()` arm.
+#[derive(Debug, Clone, Copy)]
+pub struct GlobalMotionReferenceState<'a> {
+    /// Current decoded `OrderHint`.
+    pub order_hint: u32,
+    /// `RefOrderHint[slot]`; `u32::MAX` represents `RESTRICTED_OH`.
+    pub ref_order_hint: &'a [u32],
+    /// `RefNumTotalRefs[slot]`.
+    pub ref_num_total_refs: &'a [u32],
+    /// `SavedOrderHints[slot]`.
+    pub saved_order_hints: &'a [SavedGlobalMotionOrderHints],
+    /// `SavedGmParams[slot]`.
+    pub saved_gm_params: &'a [SavedGlobalMotionParams],
+}
 
 /// `Default_Warp_Params[6]` (AV2 v1.0.0 § 7, mirror :4702): the identity warp model. Index
 /// `i % 3 == 2` (the diagonal scale terms 2 and 5) is `1 << WARPEDMODEL_PREC_BITS`; every
@@ -273,6 +273,9 @@ pub struct GlobalMotionInput<'a> {
     /// `ref_frame_idx[ 0..NumTotalRefs ]` (the inter control region's reference map): the
     /// base-warp arm reads `ref_frame_idx[ our_ref ]` (mirror :7828).
     pub ref_frame_idx: &'a [u32],
+    /// Cross-frame state needed once `use_global_motion == 1`. `None` preserves an honest
+    /// coverage stop for inspectors that do not model the § 7.23 reference buffer.
+    pub reference_state: Option<GlobalMotionReferenceState<'a>>,
 }
 
 /// Parses the § 5.18.9.1 `global_motion_params()` inter arm
@@ -291,7 +294,7 @@ pub fn parse_global_motion_params(
     reader: &mut BitReader<'_>,
     input: &GlobalMotionInput<'_>,
 ) -> Result<GlobalMotionParams> {
-    let references = [GlobalMotionRef::identity(); REFS_PER_FRAME];
+    let mut references = [GlobalMotionRef::identity(); REFS_PER_FRAME];
 
     if input.frame_is_intra || !input.enable_global_motion {
         return Ok(GlobalMotionParams {
@@ -319,16 +322,15 @@ pub fn parse_global_motion_params(
         reader.read_ns(n)?
     };
 
-    if our_ref != input.num_total_refs {
-        return Ok(GlobalMotionParams {
-            use_global_motion: true,
-            our_ref: Some(our_ref),
-            stop: Some(GlobalMotionStop::RefNumTotalRefsUnmodeled),
-            references,
-        });
+    let count = usize::try_from(input.num_total_refs).unwrap_or(usize::MAX);
+    if count > REFS_PER_FRAME || input.ref_frame_idx.len() < count {
+        return Err(invalid_global_motion(
+            reader,
+            GlobalMotionErrorKind::ReferenceCountOutOfRange,
+        ));
     }
 
-    if input.num_total_refs == 0 {
+    if count == 0 {
         return Ok(GlobalMotionParams {
             use_global_motion: true,
             our_ref: Some(our_ref),
@@ -336,12 +338,241 @@ pub fn parse_global_motion_params(
             references,
         });
     }
+
+    let Some(state) = input.reference_state else {
+        return Ok(GlobalMotionParams {
+            use_global_motion: true,
+            our_ref: Some(our_ref),
+            stop: Some(if our_ref == input.num_total_refs {
+                GlobalMotionStop::OrderHintsUnmodeled
+            } else {
+                GlobalMotionStop::RefNumTotalRefsUnmodeled
+            }),
+            references,
+        });
+    };
+
+    let mut base_params = DEFAULT_WARP_PARAMS;
+    let mut base_distance = 1;
+
+    if our_ref != input.num_total_refs {
+        let our_ref = usize::try_from(our_ref).map_err(|_| {
+            invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
+        })?;
+        let ref_idx = mapped_reference_slot(reader, input.ref_frame_idx, our_ref, state)?;
+        let our_hint = reference_order_hint(reader, ref_idx, state)?;
+        if our_hint == RESTRICTED_OH {
+            return Err(invalid_global_motion(
+                reader,
+                GlobalMotionErrorKind::OurReferenceRestricted,
+            ));
+        }
+        let saved_count = *state.ref_num_total_refs.get(ref_idx).ok_or_else(|| {
+            invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+        })?;
+        if usize::try_from(saved_count).unwrap_or(usize::MAX) > REFS_PER_FRAME {
+            return Err(invalid_global_motion(
+                reader,
+                GlobalMotionErrorKind::ReferenceCountOutOfRange,
+            ));
+        }
+        if saved_count > 0 {
+            let their_ref = reader.read_ns(saved_count)? as usize;
+            let saved_params = state.saved_gm_params.get(ref_idx).ok_or_else(|| {
+                invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+            })?;
+            let saved_hints = state.saved_order_hints.get(ref_idx).ok_or_else(|| {
+                invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+            })?;
+            base_params = *saved_params.get(their_ref).ok_or_else(|| {
+                invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
+            })?;
+            let saved_hint = order_hint_to_spec(
+                reader,
+                *saved_hints.get(their_ref).ok_or_else(|| {
+                    invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
+                })?,
+            )?;
+            if saved_hint == RESTRICTED_OH {
+                return Err(invalid_global_motion(
+                    reader,
+                    GlobalMotionErrorKind::SavedReferenceRestricted,
+                ));
+            }
+            base_distance = get_relative_dist(our_hint, saved_hint);
+        }
+    }
+
+    let current_order_hint = order_hint_to_spec(reader, state.order_hint)?;
+    for (reference, &slot) in references
+        .iter_mut()
+        .zip(input.ref_frame_idx.iter())
+        .take(count)
+    {
+        let slot = usize::try_from(slot).map_err(|_| {
+            invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+        })?;
+        let order_hint = reference_order_hint(reader, slot, state)?;
+        let dist = get_relative_dist(current_order_hint, order_hint);
+        if dist == 0 || order_hint == RESTRICTED_OH {
+            continue;
+        }
+
+        let previous = scale_warp_model(base_params, base_distance, dist);
+        let gm_type = if !reader.read_flag()? {
+            GmType::Identity
+        } else if reader.read_flag()? {
+            GmType::RotZoom
+        } else {
+            GmType::Affine
+        };
+        reference.gm_type = gm_type;
+        if gm_type == GmType::Identity {
+            continue;
+        }
+
+        reference.gm_params[2] = read_global_param(reader, 2, previous[2])?;
+        reference.gm_params[3] = read_global_param(reader, 3, previous[3])?;
+        if gm_type == GmType::Affine {
+            reference.gm_params[4] = read_global_param(reader, 4, previous[4])?;
+            reference.gm_params[5] = read_global_param(reader, 5, previous[5])?;
+        } else {
+            reference.gm_params[4] = -reference.gm_params[3];
+            reference.gm_params[5] = reference.gm_params[2];
+        }
+        reference.gm_params[0] = read_global_param(reader, 0, previous[0])?;
+        reference.gm_params[1] = read_global_param(reader, 1, previous[1])?;
+    }
+
     Ok(GlobalMotionParams {
         use_global_motion: true,
         our_ref: Some(our_ref),
-        stop: Some(GlobalMotionStop::OrderHintsUnmodeled),
+        stop: None,
         references,
     })
+}
+
+fn mapped_reference_slot(
+    reader: &BitReader<'_>,
+    ref_frame_idx: &[u32],
+    logical_ref: usize,
+    state: GlobalMotionReferenceState<'_>,
+) -> Result<usize> {
+    let slot = *ref_frame_idx.get(logical_ref).ok_or_else(|| {
+        invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceCountOutOfRange)
+    })?;
+    let slot = usize::try_from(slot).map_err(|_| {
+        invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+    })?;
+    if slot >= state.ref_order_hint.len() {
+        return Err(invalid_global_motion(
+            reader,
+            GlobalMotionErrorKind::ReferenceSlotOutOfRange,
+        ));
+    }
+    Ok(slot)
+}
+
+fn reference_order_hint(
+    reader: &BitReader<'_>,
+    slot: usize,
+    state: GlobalMotionReferenceState<'_>,
+) -> Result<i32> {
+    let raw = *state.ref_order_hint.get(slot).ok_or_else(|| {
+        invalid_global_motion(reader, GlobalMotionErrorKind::ReferenceSlotOutOfRange)
+    })?;
+    order_hint_to_spec(reader, raw)
+}
+
+fn order_hint_to_spec(reader: &BitReader<'_>, raw: u32) -> Result<i32> {
+    if raw == u32::MAX {
+        Ok(RESTRICTED_OH)
+    } else {
+        i32::try_from(raw)
+            .map_err(|_| invalid_global_motion(reader, GlobalMotionErrorKind::OrderHintOutOfRange))
+    }
+}
+
+/// `scale_warp_model()` from AV2 § 5.18.9.1.
+#[must_use]
+pub fn scale_warp_model(
+    base_params: [i32; 6],
+    mut base_distance: i32,
+    mut distance: i32,
+) -> [i32; 6] {
+    if base_distance == 0 {
+        return DEFAULT_WARP_PARAMS;
+    }
+    if base_distance < 0 {
+        base_distance = -base_distance;
+        distance = -distance;
+    }
+    let (div_shift, div_factor) = resolve_positive_divisor(base_distance as u32);
+    let mut params = DEFAULT_WARP_PARAMS;
+    for index in 0..6 {
+        let center = DEFAULT_WARP_PARAMS[index];
+        let input = (i64::from(base_params[index]) - i64::from(center))
+            .clamp(-(1 << 22) + 1, (1 << 22) - 1);
+        let scaled = round2_signed(input * div_factor, div_shift);
+        let shift = if index < 2 {
+            WARPEDMODEL_PREC_BITS - GM_TRANS_PREC_BITS
+        } else {
+            WARPEDMODEL_PREC_BITS - GM_ALPHA_PREC_BITS
+        };
+        let limit = if index < 2 {
+            GM_TRANS_MAX
+        } else {
+            GM_ALPHA_MAX
+        };
+        let output = round2_signed(scaled * i64::from(distance), shift)
+            .clamp(-i64::from(limit), i64::from(limit))
+            << shift;
+        params[index] = center + output as i32;
+    }
+    params
+}
+
+fn resolve_positive_divisor(denominator: u32) -> (u32, i64) {
+    let n = denominator.ilog2();
+    let excess = u64::from(denominator) - (1u64 << n);
+    let index = if n > 7 {
+        round2_unsigned(excess, n - 7)
+    } else {
+        excess << (7 - n)
+    };
+    let divisor = 128 + index;
+    let factor = (65_536 + divisor / 2) / divisor;
+    (n + 9, factor as i64)
+}
+
+const fn round2_unsigned(value: u64, shift: u32) -> u64 {
+    if shift == 0 {
+        value
+    } else {
+        (value + (1u64 << (shift - 1))) >> shift
+    }
+}
+
+fn round2_signed(value: i64, shift: u32) -> i64 {
+    let value = i128::from(value);
+    let magnitude = if value < 0 { -value } else { value };
+    let rounded = if shift == 0 {
+        magnitude
+    } else {
+        (magnitude + (1i128 << (shift - 1))) >> shift
+    };
+    (if value < 0 { -rounded } else { rounded }) as i64
+}
+
+fn invalid_global_motion(
+    reader: &BitReader<'_>,
+    kind: GlobalMotionErrorKind,
+) -> crate::error::Error {
+    crate::error::Error::InvalidGlobalMotion {
+        offset: reader.byte_offset(),
+        bit_offset: reader.bit_offset(),
+        kind,
+    }
 }
 
 /// Reads `read_global_param( ref, idx )` (AV2 v1.0.0 § 5.18.9.2, mirror :7988-8014) for one
@@ -646,7 +877,171 @@ mod tests {
             enable_global_motion: true,
             num_total_refs: u32::try_from(ref_frame_idx.len()).unwrap(),
             ref_frame_idx,
+            reference_state: None,
         }
+    }
+
+    fn parse_with_single_reference(bits: &str) -> Result<GlobalMotionParams> {
+        let ref_order_hint = [1];
+        let ref_num_total_refs = [0];
+        let saved_order_hints = [[0; REFS_PER_FRAME]];
+        let saved_gm_params = [[GlobalMotionRef::identity().gm_params; REFS_PER_FRAME]];
+        let mut coded = Bits::default();
+        coded.raw(bits);
+        let data = coded.into_bytes();
+        let mut r = reader(&data);
+        parse_global_motion_params(
+            &mut r,
+            &GlobalMotionInput {
+                frame_is_intra: false,
+                frame_type: FrameType::Inter,
+                enable_global_motion: true,
+                num_total_refs: 1,
+                ref_frame_idx: &[0],
+                reference_state: Some(GlobalMotionReferenceState {
+                    order_hint: 2,
+                    ref_order_hint: &ref_order_hint,
+                    ref_num_total_refs: &ref_num_total_refs,
+                    saved_order_hints: &saved_order_hints,
+                    saved_gm_params: &saved_gm_params,
+                }),
+            },
+        )
+    }
+
+    #[test]
+    fn complete_state_parses_identity_rotzoom_and_affine_models() {
+        let identity = parse_with_single_reference("110").unwrap();
+        assert_eq!(identity.stop, None);
+        assert_eq!(identity.references[0].gm_type, GmType::Identity);
+
+        let rotzoom = parse_with_single_reference("11110000000000000000").unwrap();
+        assert_eq!(rotzoom.references[0].gm_type, GmType::RotZoom);
+        assert_eq!(rotzoom.references[0].gm_params, DEFAULT_WARP_PARAMS);
+
+        let affine = parse_with_single_reference("1110000000000000000000000000").unwrap();
+        assert_eq!(affine.references[0].gm_type, GmType::Affine);
+        assert_eq!(affine.references[0].gm_params, DEFAULT_WARP_PARAMS);
+    }
+
+    #[test]
+    fn complete_state_reports_eof_inside_global_model() {
+        assert!(matches!(
+            parse_with_single_reference("1111"),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn complete_state_rejects_restricted_base_reference() {
+        let ref_order_hint = [u32::MAX];
+        let ref_num_total_refs = [0];
+        let saved_order_hints = [[0; REFS_PER_FRAME]];
+        let saved_gm_params = [[GlobalMotionRef::identity().gm_params; REFS_PER_FRAME]];
+        let mut r = reader(&[0b1000_0000]);
+        let error = parse_global_motion_params(
+            &mut r,
+            &GlobalMotionInput {
+                frame_is_intra: false,
+                frame_type: FrameType::Inter,
+                enable_global_motion: true,
+                num_total_refs: 1,
+                ref_frame_idx: &[0],
+                reference_state: Some(GlobalMotionReferenceState {
+                    order_hint: 2,
+                    ref_order_hint: &ref_order_hint,
+                    ref_num_total_refs: &ref_num_total_refs,
+                    saved_order_hints: &saved_order_hints,
+                    saved_gm_params: &saved_gm_params,
+                }),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidGlobalMotion {
+                kind: GlobalMotionErrorKind::OurReferenceRestricted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn complete_state_uses_saved_model_as_cross_frame_predictor() {
+        let saved = [131_072, 65_536, 65_600, 256, -256, 65_600];
+        let ref_order_hint = [1];
+        let ref_num_total_refs = [1];
+        let saved_order_hints = [[0; REFS_PER_FRAME]];
+        let mut saved_gm_params = [[GlobalMotionRef::identity().gm_params; REFS_PER_FRAME]];
+        saved_gm_params[0][0] = saved;
+        let mut coded = Bits::default();
+        coded.raw("10110000000000000000");
+        let data = coded.into_bytes();
+        let mut r = reader(&data);
+        let parsed = parse_global_motion_params(
+            &mut r,
+            &GlobalMotionInput {
+                frame_is_intra: false,
+                frame_type: FrameType::Inter,
+                enable_global_motion: true,
+                num_total_refs: 1,
+                ref_frame_idx: &[0],
+                reference_state: Some(GlobalMotionReferenceState {
+                    order_hint: 2,
+                    ref_order_hint: &ref_order_hint,
+                    ref_num_total_refs: &ref_num_total_refs,
+                    saved_order_hints: &saved_order_hints,
+                    saved_gm_params: &saved_gm_params,
+                }),
+            },
+        )
+        .unwrap();
+        assert_eq!(parsed.our_ref, Some(0));
+        assert_eq!(parsed.references[0].gm_type, GmType::RotZoom);
+        assert_eq!(parsed.references[0].gm_params, saved);
+    }
+
+    #[test]
+    fn complete_state_rejects_restricted_saved_reference() {
+        let ref_order_hint = [1];
+        let ref_num_total_refs = [1];
+        let mut saved_order_hints = [[0; REFS_PER_FRAME]];
+        saved_order_hints[0][0] = u32::MAX;
+        let saved_gm_params = [[GlobalMotionRef::identity().gm_params; REFS_PER_FRAME]];
+        let mut r = reader(&[0b1000_0000]);
+        let error = parse_global_motion_params(
+            &mut r,
+            &GlobalMotionInput {
+                frame_is_intra: false,
+                frame_type: FrameType::Inter,
+                enable_global_motion: true,
+                num_total_refs: 1,
+                ref_frame_idx: &[0],
+                reference_state: Some(GlobalMotionReferenceState {
+                    order_hint: 2,
+                    ref_order_hint: &ref_order_hint,
+                    ref_num_total_refs: &ref_num_total_refs,
+                    saved_order_hints: &saved_order_hints,
+                    saved_gm_params: &saved_gm_params,
+                }),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::InvalidGlobalMotion {
+                kind: GlobalMotionErrorKind::SavedReferenceRestricted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn scale_warp_model_preserves_identity() {
+        assert_eq!(
+            scale_warp_model(DEFAULT_WARP_PARAMS, 3, -7),
+            DEFAULT_WARP_PARAMS
+        );
     }
 
     #[test]
@@ -899,6 +1294,7 @@ mod proptests {
                 enable_global_motion,
                 num_total_refs: ref_count as u32,
                 ref_frame_idx: &ref_frame_idx,
+                reference_state: None,
             };
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
             let _ = parse_global_motion_params(&mut reader, &input);

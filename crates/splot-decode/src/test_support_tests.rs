@@ -28,6 +28,11 @@ pub(crate) fn minimal_fixture_with_timebase(numerator: u32, denominator: u32) ->
     bytes
 }
 
+/// Returns the header-only IVF emitted by AVM when no input frames are encoded.
+pub(crate) fn empty_avmenc_ivf() -> Vec<u8> {
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-empty-avmenc-64x64.ivf").to_vec()
+}
+
 pub(crate) fn yuv420_workspace_with<T: ReconSample>(
     bit_depth: BitDepth,
     width: usize,

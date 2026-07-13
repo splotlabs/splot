@@ -7,7 +7,7 @@ use super::*;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
 use splot_recon::{
     BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
-    PlaneRect, PlaneSize,
+    PlaneRect, PlaneSize, SharedFrame,
 };
 
 fn key_update() -> FrameRefUpdate {
@@ -25,12 +25,17 @@ fn key_update() -> FrameRefUpdate {
         is_key_or_switch: true,
         is_inter: false,
         adapted: false,
+        num_total_refs: 0,
+        saved_order_hints: [0; 7],
+        saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [1, 0, 0],
         lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
         frame_cdfs: FrameCdfSubset::from_defaults(),
         ccso_params: None,
         ccso_grid: None,
         motion_field: TemporalMotionField::empty(),
+        long_term_id: None,
+        embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
 }
 
@@ -49,17 +54,36 @@ fn inter_update(adapted: bool) -> FrameRefUpdate {
         is_key_or_switch: false,
         is_inter: true,
         adapted,
+        num_total_refs: 1,
+        saved_order_hints: [0; 7],
+        saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0, 0, 0],
         lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
         frame_cdfs: FrameCdfSubset::from_defaults(),
         ccso_params: None,
         ccso_grid: None,
         motion_field: TemporalMotionField::empty(),
+        long_term_id: None,
+        embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
 }
 
 fn valid_count(buf: &RuntimeReferenceBuffer) -> usize {
     buf.slots.iter().filter(|s| s.valid).count()
+}
+
+#[test]
+fn bridge_overwrite_marks_every_refreshed_slot_valid() {
+    let mut update = key_update();
+    update.refresh_frame_flags = (1 << 2) | (1 << 5);
+    update.is_key_or_switch = false;
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+
+    buf.update(0, &update);
+
+    assert!(buf.slots[2].valid);
+    assert!(buf.slots[5].valid);
+    assert_eq!(valid_count(&buf), 2);
 }
 
 fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
@@ -79,8 +103,9 @@ fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
 
 fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
     PipelineFrame {
-        frame: PipelineDecodedFrame::Eight(decoded_frame(width, height)),
+        frame: PipelineDecodedFrame::Eight(SharedFrame::new(decoded_frame(width, height))),
         display_grain: None,
+        output_effects: crate::pipeline::output_effects::FrameOutputEffects::empty(),
         frame_cdfs: FrameCdfSubset::from_defaults(),
         motion_field: TemporalMotionField::empty(),
         ccso_params: None,
@@ -127,6 +152,61 @@ fn inter_refresh_adds_a_second_valid_slot() {
 }
 
 #[test]
+fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut old = key_update();
+    old.refresh_frame_flags = 1;
+    buf.update(0, &old);
+
+    let mut long_term = key_update();
+    long_term.refresh_frame_flags = 1 << 3;
+    long_term.long_term_id = Some(7);
+    buf.update(1, &long_term);
+
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.update(2, &olk);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[7]);
+
+    let mut leading = inter_update(false);
+    leading.refresh_frame_flags = 1 << 2;
+    buf.update(3, &leading);
+    buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+
+    assert!(!buf.slots[0].valid);
+    assert!(buf.slots[1].valid);
+    assert!(!buf.slots[2].valid);
+    assert!(buf.slots[3].valid);
+}
+
+#[test]
+fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    let mut olk = key_update();
+    olk.refresh_frame_flags = 1 << 1;
+    buf.update(0, &olk);
+    buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[]);
+
+    let mut co_vcl = inter_update(false);
+    co_vcl.refresh_frame_flags = 1 << 4;
+    buf.update(1, &co_vcl);
+    buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl, &[]);
+
+    let mut leading = inter_update(false);
+    leading.refresh_frame_flags = 1 << 2;
+    buf.update(2, &leading);
+    buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
+
+    buf.prepare_for_frame(ObuType::RegularTileGroup, true);
+
+    assert!(buf.slots[1].valid);
+    assert!(!buf.slots[2].valid);
+    assert!(buf.slots[4].valid);
+}
+
+#[test]
 fn reference_refresh_preserves_full_and_lsb_order_hints() {
     let mut update = inter_update(false);
     update.order_hint = 136;
@@ -142,6 +222,26 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
     assert_eq!(metadata.ref_order_hint[1], 136);
     assert_eq!(metadata.ref_order_hint_lsbs[1], 8);
     assert!(metadata.ref_implicit_output_frame[1]);
+}
+
+#[test]
+fn reference_refresh_preserves_global_motion_predictor_state() {
+    let mut update = inter_update(false);
+    update.num_total_refs = 2;
+    update.saved_order_hints[..2].copy_from_slice(&[7, 11]);
+    update.saved_gm_params[0] = [131_072, 65_536, 65_600, 256, -128, 65_728];
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    buf.update(1, &update);
+
+    let frames = vec![Some(pipeline_frame(64, 64)), Some(pipeline_frame(64, 64))];
+    let metadata = buf.build_store_eight(&frames).unwrap().1;
+    assert_eq!(metadata.ref_num_total_refs[1], 2);
+    assert_eq!(metadata.saved_global_motion_order_hints[1][..2], [7, 11]);
+    assert_eq!(
+        metadata.saved_global_motion_params[1][0],
+        [131_072, 65_536, 65_600, 256, -128, 65_728]
+    );
 }
 
 #[test]
@@ -254,4 +354,51 @@ fn valid_slot_with_mismatched_frame_size_is_reference_state_error() {
             },
         }
     ));
+}
+
+#[test]
+fn sef_derive_requires_a_hidden_not_previously_shown_reference() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    assert!(matches!(
+        buf.mark_sef_derive_output(0, false),
+        Err(crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ShowExistingFrameIneligible { slot: 0 }
+        })
+    ));
+
+    let mut hidden = inter_update(false);
+    hidden.refresh_frame_flags = 1 << 1;
+    hidden.implicit_output_frame = false;
+    hidden.immediate_output_frame = false;
+    buf.update(1, &hidden);
+    buf.mark_sef_derive_output(1, false).unwrap();
+    assert!(matches!(
+        buf.mark_sef_derive_output(1, false),
+        Err(crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ShowExistingFrameIneligible { slot: 1 }
+        })
+    ));
+}
+
+#[test]
+fn show_existing_advances_the_reference_frame_counter() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    buf.note_show_existing();
+    let update = inter_update(false);
+    buf.update(1, &update);
+    assert_eq!(buf.slots[1].counter, 2);
+}
+
+#[test]
+fn restricted_switch_marks_dependency_layer_order_hints() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    let current = splot_core::types::EmbeddedLayerId::from_bits(0);
+    let presence =
+        splot_core::headers::sequence::MLayerDependencyMap::default_for(current).presence_map();
+    let restricted = buf.restrict_references_for_switch(current, &presence);
+    assert_eq!(restricted, (0..8).collect::<Vec<_>>());
+    assert!(buf.slots.iter().all(|slot| slot.order_hint == u32::MAX));
 }

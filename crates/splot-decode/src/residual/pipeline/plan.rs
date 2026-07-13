@@ -169,7 +169,15 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
         let reconstruction = chroma_reconstruction(chroma_plan);
         let mut planes = Vec::new();
-        let chroma = chroma_plans(block_ctx, reconstruction, false, false)?;
+        let chroma_block = block_ctx.plane_block(PlaneId::U);
+        let chroma = chroma_plans(
+            block_ctx,
+            reconstruction,
+            chroma_block.width4(),
+            chroma_block.height4(),
+            false,
+            false,
+        )?;
         planes.extend(if lossless_luma_fsc {
             chroma.map(|plane| plane.with_reconstruction_tx_type(IDTX))
         } else {
@@ -276,6 +284,7 @@ fn push_ordered_planes(
     let defer_chroma_reconstruction = chroma_reconstruction
         .is_some_and(chroma_depends_on_complete_luma)
         && (width_chunks > 1 || height_chunks > 1);
+    let chroma_block = block_ctx.plane_block(PlaneId::U);
 
     for start_chunk_y in (0..height_chunks).step_by(2) {
         for start_chunk_x in (0..width_chunks).step_by(2) {
@@ -297,22 +306,18 @@ fn push_ordered_planes(
                     {
                         let chunk_width = if double_chroma_w { 2 } else { 1 };
                         let chunk_height = if double_chroma_h { 2 } else { 1 };
-                        let chroma_ctx = if (lossless || (sub_x == 0 && sub_y == 0))
-                            && !block_ctx.has_chroma_ref()
-                        {
-                            residual_chunk_ctx(
-                                block_ctx,
-                                chunk_x,
-                                chunk_y,
-                                chunk_width,
-                                chunk_height,
-                            )?
-                        } else {
-                            block_ctx
-                        };
+                        let chroma_ctx = residual_chunk_ctx(
+                            block_ctx,
+                            chunk_x,
+                            chunk_y,
+                            chunk_width,
+                            chunk_height,
+                        )?;
                         planes.extend(chroma_plans(
                             chroma_ctx,
                             reconstruction,
+                            chroma_block.width4(),
+                            chroma_block.height4(),
                             luma_fsc_mode,
                             defer_chroma_reconstruction,
                         )?);
@@ -336,6 +341,36 @@ fn residual_chunk_ctx(
     chunk_height: usize,
 ) -> core::result::Result<BlockCtx, ResidualPipelineUnsupported> {
     let block = block_ctx.block();
+    let (block, tx) = residual_chunk_geometry(block, chunk_x, chunk_y, chunk_width, chunk_height)?;
+    let mut chunk_ctx = BlockCtx::new(
+        block,
+        tx,
+        block_ctx.frame_mi_cols(),
+        block_ctx.frame_mi_rows(),
+        block_ctx.bit_depth(),
+        block_ctx.chroma(),
+    )
+    .with_tile_bounds_from(block_ctx);
+    if let Some((chroma_ref, chroma_tx)) = block_ctx.chroma_ref() {
+        let (chroma_ref, chroma_tx) = if chroma_ref.width4() == block_ctx.block().width4()
+            && chroma_ref.height4() == block_ctx.block().height4()
+        {
+            residual_chunk_geometry(chroma_ref, chunk_x, chunk_y, chunk_width, chunk_height)?
+        } else {
+            (chroma_ref, chroma_tx)
+        };
+        chunk_ctx = chunk_ctx.with_chroma_ref(chroma_ref, chroma_tx);
+    }
+    Ok(chunk_ctx)
+}
+
+fn residual_chunk_geometry(
+    block: BlockRect,
+    chunk_x: usize,
+    chunk_y: usize,
+    chunk_width: usize,
+    chunk_height: usize,
+) -> core::result::Result<(BlockRect, TxShape), ResidualPipelineUnsupported> {
     let offset_x4 = chunk_x
         .checked_mul(CHUNK_64_N4)
         .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
@@ -362,31 +397,24 @@ fn residual_chunk_ctx(
         .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
     let tx =
         TxShape::from_luma_4x4(width4, height4).ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
-    Ok(BlockCtx::new(
-        BlockRect::new(row4, col4, width4, height4),
-        tx,
-        block_ctx.frame_mi_cols(),
-        block_ctx.frame_mi_rows(),
-        block_ctx.bit_depth(),
-        block_ctx.chroma(),
-    )
-    .with_tile_bounds_from(block_ctx))
+    Ok((BlockRect::new(row4, col4, width4, height4), tx))
 }
 
 fn chroma_plans(
     block_ctx: BlockCtx,
     reconstruction: ResidualReconstructionPlan,
+    residual_width4: usize,
+    residual_height4: usize,
     txb_skip_fsc_mode: bool,
     defer_reconstruction: bool,
 ) -> core::result::Result<[ResidualPlanePlan; 2], ResidualPipelineUnsupported> {
     let [u, v] = CHROMA_PLANES.map(|plane_id| {
-        let block = block_ctx.plane_block(plane_id);
         let plan = ResidualPlanePlan::new(
             block_ctx,
             plane_id,
             reconstruction,
-            block.width4(),
-            block.height4(),
+            residual_width4,
+            residual_height4,
             false,
             txb_skip_fsc_mode,
             None,

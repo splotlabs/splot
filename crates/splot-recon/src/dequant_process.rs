@@ -21,10 +21,11 @@
 //! [`ac_quantizer`](crate::ac_quantizer) value, optionally passed through
 //! `qm_weighted_quantizer`) and `dq_denom` (the § 7.14.4 `shift` derivation,
 //! including the `allow_tcq` adjustment). The `useQm` / `useUserQm` / `segLvl`
-//! gating, the user-defined `UserQm` matrices, the `shift` / `useFsc`
-//! derivation, and the adjusted-size handling beyond the `Min(32, ·)` block are
-//! out of scope (caller-resolved or future rows); the block helper covers the
-//! path where every AC coefficient shares one quantizer.
+//! gating, the `shift` / `useFsc` derivation, and the adjusted-size handling
+//! beyond the `Min(32, ·)` block are caller-resolved. User-defined `UserQm`
+//! planes are carried by [`QmDequant`] when `useUserQm` is true.
+
+use std::sync::Arc;
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
 
@@ -69,7 +70,7 @@ pub fn dequant_coefficient(quant_coeff: i32, q2: u32, dq_denom: u32, bit_depth: 
 /// `Min(32, Tx_Width[txSz])` / `Min(32, Tx_Height[txSz])`, each 4, 8, 16, or 32.
 /// `dc_quant` / `ac_quant` are the § 7.14.2 DC/AC quantizers and `dq_denom` is
 /// `1 << shift`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DequantBlockParams {
     /// DC quantizer for the `(0, 0)` coefficient (`get_dc_quant`).
     pub dc_quant: u32,
@@ -106,7 +107,7 @@ pub struct QmFrameLevels {
 /// § 7.14.4 built-in quantization-matrix selection for a transform block, resolved
 /// by the caller from `segLvl`, `plane`, and `txSz`. Applied per coefficient by
 /// [`dequantize_block`] via [`quantization_matrix_weight`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QmDequant {
     /// `segLvl` quantization-matrix level (`< NUM_CUSTOM_QMS`).
     pub seg_level: usize,
@@ -114,6 +115,20 @@ pub struct QmDequant {
     pub plane_is_chroma: bool,
     /// Caller-resolved `Qm_Offset[txSz]` (from `splot_tables` `QM_OFFSET`).
     pub qm_offset: usize,
+    /// § 7.14.4 `UserQm[segLvl][t][plane]`, selected by the caller for transform
+    /// shape `t`. `None` selects the generated default quantizer matrix.
+    pub user: Option<QmUserPlane>,
+}
+
+/// One immutable user-defined quantizer-matrix plane used by § 7.14.4.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QmUserPlane {
+    /// Fundamental matrix width (8 for every AV2 fundamental QM transform).
+    pub width: usize,
+    /// Fundamental matrix height (8 for square, 4 for wide, 8 for tall).
+    pub height: usize,
+    /// Row-major non-zero weights.
+    pub values: Arc<[u8]>,
 }
 
 /// AV2 § 7.14.4 dequantization over a `tx_width * tx_height` row-major transform
@@ -150,17 +165,21 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
             } else {
                 params.ac_quant
             };
-            let q2 = match params.qm {
+            let q2 = match params.qm.as_ref() {
                 Some(qm) => {
-                    let m = quantization_matrix_weight(&QmWeightIndex {
-                        seg_level: qm.seg_level,
-                        plane_is_chroma: qm.plane_is_chroma,
-                        qm_offset: qm.qm_offset,
-                        row: i,
-                        col: j,
-                        tx_width,
-                        tx_height,
-                    })?;
+                    let m = if let Some(user) = &qm.user {
+                        user_quantization_matrix_weight(user, i, j, tx_width, tx_height)?
+                    } else {
+                        quantization_matrix_weight(&QmWeightIndex {
+                            seg_level: qm.seg_level,
+                            plane_is_chroma: qm.plane_is_chroma,
+                            qm_offset: qm.qm_offset,
+                            row: i,
+                            col: j,
+                            tx_width,
+                            tx_height,
+                        })?
+                    };
                     qm_weighted_quantizer(base_q, m)
                 }
                 None => base_q,
@@ -169,6 +188,45 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
         }
     }
     Ok(())
+}
+
+fn user_quantization_matrix_weight(
+    user: &QmUserPlane,
+    row: usize,
+    col: usize,
+    tx_width: usize,
+    tx_height: usize,
+) -> Result<i32> {
+    let (user_row, user_col) = if tx_width == tx_height {
+        (
+            row.saturating_mul(8) / tx_height,
+            col.saturating_mul(8) / tx_width,
+        )
+    } else {
+        (row, col)
+    };
+    let position = user_row
+        .checked_mul(user.width)
+        .and_then(|base| base.checked_add(user_col))
+        .ok_or(ReconError::InvalidQuantizerMatrixIndex {
+            seg_level: 0,
+            qm_offset: 0,
+            position: usize::MAX,
+        })?;
+    if user_row >= user.height || user_col >= user.width {
+        return Err(ReconError::InvalidQuantizerMatrixIndex {
+            seg_level: 0,
+            qm_offset: 0,
+            position,
+        });
+    }
+    user.values.get(position).copied().map(i32::from).ok_or(
+        ReconError::InvalidQuantizerMatrixIndex {
+            seg_level: 0,
+            qm_offset: 0,
+            position,
+        },
+    )
 }
 
 /// Caller-resolved indices for the § 7.14.4 built-in quantization-matrix weight
@@ -351,6 +409,7 @@ mod tests {
                 seg_level: 0,
                 plane_is_chroma: false,
                 qm_offset: QM_OFFSET[0] as usize,
+                user: None,
             }),
         };
         dequantize_block(&params, &quant, &mut out).unwrap();

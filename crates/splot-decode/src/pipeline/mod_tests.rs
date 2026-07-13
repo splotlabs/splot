@@ -2,7 +2,21 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::test_support::empty_avmenc_ivf;
+use crate::{DecodeContext, DecodeRuntimeConfig};
+use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::stream::parse_bitstream_partial;
+use splot_parallel::ThreadCount;
+
+const MULTIPLE_TILE_GROUP_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-2tile-2group-intra-128x64-q80.ivf"
+);
+const DEFAULT_QM_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-qm-intra-64x64.ivf");
+const OUTPUT_EFFECT_CI_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-output-ci-2frame-64x64.ivf");
+const DEFAULT_QM_AVM_DIGEST: &str =
+    "a3a64b8df33017ea9c6c54b94bc54f6694e7ccb5e00edade7d00208de09a14b4";
 
 const OBU_SEQUENCE_HEADER: u8 = 0x04;
 const OBU_TEMPORAL_DELIMITER: u8 = 0x08;
@@ -11,6 +25,7 @@ const OBU_REGULAR_TILE_GROUP: u8 = 0x1C;
 const OBU_REGULAR_TIP: u8 = 0x38;
 const OBU_OPERATING_POINT_SET: u8 = 0x48;
 const OBU_FILM_GRAIN: u8 = 0x5C;
+const OBU_RESERVED_26: u8 = 0x68;
 
 fn obu(header: u8) -> [u8; 2] {
     [0x01, header]
@@ -24,6 +39,308 @@ fn annexb_obus(bytes: &[u8]) -> Vec<ObuEnvelope<'_>> {
     };
     assert!(parsed.error.is_none());
     parsed.obus
+}
+
+fn recorded_header(byte: u8, bit_len: u64) -> splot_core::Result<RecordedFrameHeaderBits> {
+    let bytes = [byte];
+    let mut reader = BitReader::new(&bytes, ByteOffset::new(0));
+    RecordedFrameHeaderBits::record(&mut reader, bit_len)
+}
+
+fn long_term_frame(
+    obu_type: ObuType,
+    long_term_id: u32,
+    hidden: bool,
+    frame_index: usize,
+) -> InBandLongTermFrame {
+    InBandLongTermFrame {
+        obu_type,
+        long_term_id,
+        hidden,
+        frame_index,
+    }
+}
+
+fn unsupported_reason<T>(result: Result<T>) -> Option<&'static str> {
+    match result {
+        Err(DecodeError::UnsupportedFeature { unsupported }) => Some(unsupported.reason()),
+        _ => None,
+    }
+}
+
+#[test]
+fn every_output_adapter_rejects_invalid_frame_effects_in_the_shared_pipeline() {
+    let mut bytes = OUTPUT_EFFECT_CI_FIXTURE.to_vec();
+    let payload_offset = match parse_bitstream_partial(&bytes) {
+        ParsedBitstream::Ivf(ivf) => ivf
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.obus)
+            .find(|obu| obu.header.obu_type == ObuType::ContentInterpretation)
+            .and_then(|obu| usize::try_from(obu.payload_offset().get()).ok()),
+        ParsedBitstream::AnnexB(_) => None,
+    };
+    assert!(payload_offset.is_some());
+    let Some(payload_offset) = payload_offset else {
+        return;
+    };
+    bytes[payload_offset] |= 0b01;
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)));
+    assert!(context.is_ok());
+    let Ok(context) = context else {
+        return;
+    };
+
+    let results = [
+        (
+            "hash",
+            context
+                .decode_hash_report_bytes(&bytes, DecodeOptions::default())
+                .map(drop),
+        ),
+        (
+            "raw",
+            context.decode_raw_bytes(&bytes, DecodeOptions::default(), Vec::new()),
+        ),
+        (
+            "y4m",
+            context.decode_y4m_bytes(&bytes, DecodeOptions::default(), Vec::new()),
+        ),
+    ];
+
+    for (adapter, result) in results {
+        assert_eq!(
+            unsupported_reason(result),
+            Some("content_interpretation_reserved_bits"),
+            "{adapter} output bypassed the shared effect validation"
+        );
+    }
+}
+
+#[test]
+fn in_band_long_term_prelude_accepts_hidden_clk_then_olk_in_sequential_slots() {
+    let prelude = InBandLongTermPrelude {
+        frames: vec![
+            long_term_frame(ObuType::ClosedLoopKey, 3, true, 4),
+            long_term_frame(ObuType::OpenLoopKey, 7, true, 6),
+        ],
+    };
+
+    let result = prelude.validate_required_with(&[3, 7], ByteOffset::new(20), |id, index| {
+        (id, index) == (3, 4) || (id, index) == (7, 6)
+    });
+
+    assert!(result.is_ok());
+}
+
+#[test]
+fn in_band_long_term_prelude_rejects_missing_or_visible_reference() {
+    let missing = InBandLongTermPrelude::default().validate_required_with(
+        &[3],
+        ByteOffset::new(20),
+        |_, _| true,
+    );
+    assert_eq!(
+        unsupported_reason(missing),
+        Some("random_access_long_term_reference_missing")
+    );
+
+    let visible = InBandLongTermPrelude {
+        frames: vec![long_term_frame(ObuType::ClosedLoopKey, 3, false, 4)],
+    }
+    .validate_required_with(&[3], ByteOffset::new(20), |_, _| true);
+    assert_eq!(
+        unsupported_reason(visible),
+        Some("random_access_long_term_reference_visible")
+    );
+}
+
+#[test]
+fn in_band_long_term_prelude_rejects_overwritten_slot_and_clk_after_olk() {
+    let overwritten = InBandLongTermPrelude {
+        frames: vec![long_term_frame(ObuType::ClosedLoopKey, 3, true, 4)],
+    }
+    .validate_required_with(&[3], ByteOffset::new(20), |_, _| false);
+    assert_eq!(
+        unsupported_reason(overwritten),
+        Some("random_access_long_term_reference_slot_unavailable")
+    );
+
+    let wrong_order = InBandLongTermPrelude {
+        frames: vec![
+            long_term_frame(ObuType::OpenLoopKey, 7, true, 6),
+            long_term_frame(ObuType::ClosedLoopKey, 3, true, 4),
+        ],
+    }
+    .validate_required_with(&[3, 7], ByteOffset::new(20), |_, _| true);
+    assert_eq!(
+        unsupported_reason(wrong_order),
+        Some("random_access_long_term_reference_order")
+    );
+}
+
+#[test]
+fn in_band_long_term_prelude_does_not_cross_temporal_unit_boundary() {
+    let mut prelude = InBandLongTermPrelude {
+        frames: vec![long_term_frame(ObuType::ClosedLoopKey, 3, true, 4)],
+    };
+
+    prelude.begin_frame(true);
+
+    let result = prelude.validate_required_with(&[3], ByteOffset::new(20), |_, _| true);
+    assert_eq!(
+        unsupported_reason(result),
+        Some("random_access_long_term_reference_missing")
+    );
+}
+
+#[test]
+fn continuation_prefix_locates_structure_with_and_without_header_copy() {
+    let recorded = recorded_header(0xa0, 4);
+    assert!(recorded.is_ok());
+    let Ok(recorded) = recorded else {
+        return;
+    };
+    let no_copy = [0x02, OBU_CLOSED_LOOP_KEY, 0x00];
+    let no_copy_envelope = annexb_obus(&no_copy)[0];
+    assert!(matches!(
+        continuation_structure_start_bits(no_copy_envelope, &recorded),
+        Ok(2)
+    ));
+
+    let matching_copy = [0x02, OBU_CLOSED_LOOP_KEY, 0x68];
+    let matching_copy_envelope = annexb_obus(&matching_copy)[0];
+    assert!(matches!(
+        continuation_structure_start_bits(matching_copy_envelope, &recorded),
+        Ok(6)
+    ));
+}
+
+#[test]
+fn continuation_prefix_rejects_mismatch_and_eof_in_header_copy() {
+    let one_bit_header = recorded_header(0x80, 1);
+    assert!(one_bit_header.is_ok());
+    let Ok(one_bit_header) = one_bit_header else {
+        return;
+    };
+    let mismatch = [0x02, OBU_CLOSED_LOOP_KEY, 0x40];
+    let mismatch_envelope = annexb_obus(&mismatch)[0];
+    assert!(continuation_structure_start_bits(mismatch_envelope, &one_bit_header).is_err());
+
+    let byte_header = recorded_header(0x80, 8);
+    assert!(byte_header.is_ok());
+    let Ok(byte_header) = byte_header else {
+        return;
+    };
+    let truncated = [0x02, OBU_CLOSED_LOOP_KEY, 0x60];
+    let truncated_envelope = annexb_obus(&truncated)[0];
+    assert!(continuation_structure_start_bits(truncated_envelope, &byte_header).is_err());
+}
+
+#[test]
+fn multiple_tile_groups_decode_bit_exact() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let options = DecodeOptions::default();
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
+    let plan = context.plan_bytes(MULTIPLE_TILE_GROUP_FIXTURE, options)?;
+    assert_eq!(plan.frame_candidate_count(), 1);
+    let decoded = context
+        .pool()
+        .install(|| decode_frame_from_plan(MULTIPLE_TILE_GROUP_FIXTURE, &options, &plan))?;
+    let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+        return Err("fixture decoded as 10-bit".into());
+    };
+    assert_eq!(frame.y().samples().len(), 128 * 64);
+    assert!(frame.y().samples().iter().all(|&sample| sample == 126));
+    assert!(matches!(
+        frame.u(),
+        Some(plane) if plane.samples().iter().all(|&sample| sample == 128)
+    ));
+    assert!(matches!(
+        frame.v(),
+        Some(plane) if plane.samples().iter().all(|&sample| sample == 128)
+    ));
+    Ok(())
+}
+
+#[test]
+fn absent_user_qm_data_uses_built_in_matrix() -> std::result::Result<(), Box<dyn std::error::Error>>
+{
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
+    let report = context.decode_hash_report_bytes(DEFAULT_QM_FIXTURE, DecodeOptions::default())?;
+
+    assert_eq!(report.frames.len(), 1);
+    assert_eq!(report.frames[0].hashes[0].digest_hex, DEFAULT_QM_AVM_DIGEST);
+    Ok(())
+}
+
+#[test]
+fn empty_ivf_decodes_to_empty_frame_set() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let bytes = empty_avmenc_ivf();
+    let options = DecodeOptions::default();
+    let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))?;
+    let plan = context.plan_bytes(&bytes, options)?;
+
+    assert_eq!(plan.obu_count(), 0);
+    assert_eq!(plan.frame_candidate_count(), 0);
+    let frames = context
+        .pool()
+        .install(|| decode_frames_from_plan(&bytes, &options, &plan))?;
+    assert!(frames.is_empty());
+    Ok(())
+}
+
+#[test]
+fn runtime_reparse_discards_reserved_obus_from_annex_b_and_ivf() {
+    let reserved_0 = [0x02, 0x00, 0x80];
+    let reserved_26 = [0x02, OBU_RESERVED_26, 0x80];
+    let payload = [
+        reserved_0.as_slice(),
+        obu(OBU_TEMPORAL_DELIMITER).as_slice(),
+        reserved_26.as_slice(),
+        obu(OBU_SEQUENCE_HEADER).as_slice(),
+        obu(OBU_CLOSED_LOOP_KEY).as_slice(),
+    ]
+    .concat();
+
+    let mut annex_b = parse_bitstream_partial(&payload);
+    discard_runtime_noops(&mut annex_b);
+    assert!(matches!(annex_b, ParsedBitstream::AnnexB(_)));
+    let ParsedBitstream::AnnexB(annex_b) = annex_b else {
+        return;
+    };
+    assert_eq!(annex_b.obus.len(), 3);
+    assert!(
+        annex_b
+            .obus
+            .iter()
+            .all(|obu| !obu.header.obu_type.is_reserved())
+    );
+
+    let mut ivf_bytes = Vec::new();
+    let header_result =
+        write_ivf_header(&mut ivf_bytes, &IvfHeader::new(*b"AV02", 16, 16, 24, 1, 1));
+    assert!(header_result.is_ok());
+    if header_result.is_err() {
+        return;
+    }
+    let frame_result = write_ivf_frame(&mut ivf_bytes, 0, &payload);
+    assert!(frame_result.is_ok());
+    if frame_result.is_err() {
+        return;
+    }
+    let mut ivf = parse_bitstream_partial(&ivf_bytes);
+    discard_runtime_noops(&mut ivf);
+    assert!(matches!(ivf, ParsedBitstream::Ivf(_)));
+    let ParsedBitstream::Ivf(ivf) = ivf else {
+        return;
+    };
+    assert_eq!(ivf.frames[0].obus.len(), 3);
+    assert!(
+        ivf.frames[0]
+            .obus
+            .iter()
+            .all(|obu| !obu.header.obu_type.is_reserved())
+    );
 }
 
 #[test]

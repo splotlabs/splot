@@ -191,6 +191,42 @@ impl fmt::Display for PaddingErrorKind {
     }
 }
 
+/// Locally decidable violations of AV2 § 6.17.9 global-motion state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalMotionErrorKind {
+    /// `NumTotalRefs` exceeds `REFS_PER_FRAME` or the supplied map length.
+    ReferenceCountOutOfRange,
+    /// A logical reference maps outside the modeled reference-frame buffer.
+    ReferenceSlotOutOfRange,
+    /// `our_ref != NumTotalRefs` selected a restricted reference (§ 6.17.9.1).
+    OurReferenceRestricted,
+    /// The selected saved `their_ref` is restricted (§ 6.17.9.1).
+    SavedReferenceRestricted,
+    /// An order hint does not fit the signed AV2 derivation domain.
+    OrderHintOutOfRange,
+}
+
+impl fmt::Display for GlobalMotionErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::ReferenceCountOutOfRange => {
+                "global-motion reference count must fit REFS_PER_FRAME and ref_frame_idx"
+            }
+            Self::ReferenceSlotOutOfRange => {
+                "global-motion reference slot must exist in the modeled reference state"
+            }
+            Self::OurReferenceRestricted => "OrderHints[our_ref] must not equal RESTRICTED_OH",
+            Self::SavedReferenceRestricted => {
+                "SavedOrderHints[refIdx][their_ref] must not equal RESTRICTED_OH"
+            }
+            Self::OrderHintOutOfRange => {
+                "global-motion order hints must fit the AV2 signed derivation domain"
+            }
+        };
+        f.write_str(message)
+    }
+}
+
 /// Specific caller-supplied CDF row violations for AV2 § 8.2.6 symbol decoding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolCdfErrorKind {
@@ -510,6 +546,17 @@ pub enum Error {
         bit_offset: BitOffset,
         /// Specific sequence-header violation.
         kind: SequenceHeaderErrorKind,
+    },
+
+    /// `global_motion_params()` violated AV2 § 6.17.9.
+    #[error("invalid global_motion_params() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidGlobalMotion {
+        /// Offset of the offending syntax element or derived state.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidGlobalMotion::offset`].
+        bit_offset: BitOffset,
+        /// Specific global-motion violation.
+        kind: GlobalMotionErrorKind,
     },
 
     /// A declared OBU size was structurally invalid (for example, zero).

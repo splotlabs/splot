@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
+use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
 use splot_recon::{BitDepth, DpcmDirection};
 
 impl GeneralIntraResidualPlan {
@@ -296,6 +297,18 @@ fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
     .expect("cfl rect plan");
 
     assert_large_chroma_order(&plan, true);
+
+    let chroma = plan.plane_plan(PlaneId::U).expect("cfl chroma plane");
+    let unit = chroma
+        .transform_unit_plan(&PositionedLumaCoeffBlock {
+            x: chroma.x,
+            y: chroma.y,
+            tx_size: TX_4X4,
+            middle: false,
+            coeffs: empty_luma_coeffs(),
+        })
+        .expect("cfl transform unit");
+    assert_eq!(unit.reconstruction, chroma.reconstruction);
 }
 
 #[test]
@@ -429,6 +442,98 @@ fn lossless_large_chroma_follows_each_residual_chunk() {
             (PlaneId::V, 32, 0),
         ]
     );
+}
+
+#[test]
+fn oversized_explicit_chroma_ref_is_chunked_in_spec_read_order() {
+    let block = BlockRect::new(8, 12, 32, 16);
+    let tx = TxShape::from_luma_4x4(block.width4(), block.height4()).expect("block shape");
+    let ctx = BlockCtx::new(block, tx, 64, 64, BitDepth::Eight, ChromaSampling::Yuv444)
+        .with_chroma_ref(block, tx);
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: false },
+        Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+        false,
+        None,
+        false,
+    )
+    .expect("oversized 4:4:4 residual plan");
+
+    assert_eq!(
+        plan.planes
+            .iter()
+            .map(|plane| (
+                plane.plane_id,
+                plane.x,
+                plane.y,
+                plane.tx.width4(),
+                plane.tx.height4(),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (PlaneId::Y, 48, 32, 16, 16),
+            (PlaneId::U, 48, 32, 16, 16),
+            (PlaneId::V, 48, 32, 16, 16),
+            (PlaneId::Y, 112, 32, 16, 16),
+            (PlaneId::U, 112, 32, 16, 16),
+            (PlaneId::V, 112, 32, 16, 16),
+        ]
+    );
+    assert!(
+        plan.planes
+            .iter()
+            .filter(|plane| plane.plane_id != PlaneId::Y)
+            .all(|plane| {
+                !plane.tx_fills_residual_block()
+                    && (plane.residual_width4, plane.residual_height4) == (32, 16)
+            })
+    );
+}
+
+#[test]
+fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
+    for (block_size, (&width4, &height4)) in NUM_4X4_BLOCKS_WIDE
+        .iter()
+        .zip(&NUM_4X4_BLOCKS_HIGH)
+        .enumerate()
+    {
+        let width4 = usize::try_from(width4).expect("positive block width");
+        let height4 = usize::try_from(height4).expect("positive block height");
+        let block = BlockRect::new(0, 0, width4, height4);
+        let tx = TxShape::from_luma_4x4(width4, height4).expect("AV2 block shape");
+        for chroma in [
+            ChromaSampling::Yuv420,
+            ChromaSampling::Yuv422,
+            ChromaSampling::Yuv444,
+        ] {
+            for lossless in [false, true] {
+                let ctx = BlockCtx::new(block, tx, width4, height4, BitDepth::Eight, chroma)
+                    .with_chroma_ref(block, tx);
+                let plan = GeneralIntraResidualPlan::rect(
+                    ctx,
+                    RectLumaPlan::Dc { use_tcq: false },
+                    Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
+                    false,
+                    None,
+                    lossless,
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "block_size={block_size} chroma={chroma:?} lossless={lossless}: {error:?}"
+                    )
+                });
+                for plane in plan.planes {
+                    assert_eq!(
+                        (TX_WIDTH_LOG2[plane.tx_size], TX_HEIGHT_LOG2[plane.tx_size],),
+                        (plane.tx.width_log2() as i32, plane.tx.height_log2() as i32),
+                        "block_size={block_size} chroma={chroma:?} lossless={lossless} plane={:?}",
+                        plane.plane_id,
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]
@@ -585,12 +690,15 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
 }
 
 #[test]
-fn directional_first_middle_partition_handoff_stays_lossless_only() {
+fn directional_first_partition_handoff_uses_each_transform_units_edges() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
     for mode in [
+        SupportedDirectionalLumaMode::D45,
+        SupportedDirectionalLumaMode::D67,
         SupportedDirectionalLumaMode::D113,
         SupportedDirectionalLumaMode::D135,
         SupportedDirectionalLumaMode::D157,
+        SupportedDirectionalLumaMode::D203,
     ] {
         let plan = GeneralIntraResidualPlan::square(
             block_ctx,
@@ -601,53 +709,131 @@ fn directional_first_middle_partition_handoff_stays_lossless_only() {
             None,
             false,
         )
-        .expect("middle directional square plan");
+        .expect("directional square plan");
         let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
-        let non_origin = PositionedLumaCoeffBlock {
+        let interior = PositionedLumaCoeffBlock {
             x: 4,
-            y: 0,
+            y: 4,
             tx_size: TX_4X4,
             middle: false,
             coeffs: empty_luma_coeffs(),
         };
-
-        let error = plane
-            .transform_unit_plan(&non_origin)
-            .expect_err("non-lossless partitioned units must fail closed");
-        assert!(matches!(
-            error,
-            GeneralIntraResidualError::UnsupportedTransformPartition {
-                reason: "general_intra_partitioned_interior_edge_prediction"
+        let p_angle = crate::prediction::intra::directional_mode_p_angle(mode);
+        let reconstruction = if p_angle < 90 {
+            ResidualReconstructionPlan::LumaRectOneSidedAbove {
+                p_angle,
+                use_tcq: false,
             }
-        ));
-
-        let mut lossless_coeffs = empty_luma_coeffs();
-        lossless_coeffs.lossless = true;
-        let lossless_unit = PositionedLumaCoeffBlock {
-            coeffs: lossless_coeffs,
-            ..non_origin
+        } else if p_angle > 180 {
+            ResidualReconstructionPlan::LumaRectOneSidedLeft {
+                p_angle,
+                use_tcq: false,
+            }
+        } else {
+            ResidualReconstructionPlan::LumaRectMiddle {
+                p_angle,
+                use_tcq: false,
+            }
         };
         assert_eq!(
             plane
-                .transform_unit_plan(&lossless_unit)
-                .expect("lossless partitioned unit"),
+                .transform_unit_plan(&interior)
+                .expect("partitioned directional transform unit"),
             ResidualPlanePlan {
                 x: 4,
-                y: 0,
+                y: 4,
                 tx_size: TX_4X4,
                 tx: TxShape::from_luma_4x4(1, 1).expect("4x4 tx shape"),
                 residual_width4: 1,
                 residual_height4: 1,
                 zero_corners: false,
-                reconstruction: ResidualReconstructionPlan::LumaRectMiddle {
-                    p_angle: crate::prediction::intra::directional_mode_p_angle(mode),
-                    use_tcq: false,
-                },
-                block_ctx: ctx(BlockRect::new(0, 1, 1, 1), BitDepth::Eight),
+                reconstruction,
+                block_ctx: ctx(BlockRect::new(1, 1, 1, 1), BitDepth::Eight),
                 ..plane
             },
         );
+
+        let origin = PositionedLumaCoeffBlock {
+            x: 0,
+            y: 0,
+            ..interior
+        };
+        assert_eq!(
+            plane
+                .transform_unit_plan(&origin)
+                .expect("origin transform unit")
+                .reconstruction,
+            reconstruction,
+        );
     }
+}
+
+#[test]
+fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
+    let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
+    let plan = GeneralIntraResidualPlan::square(
+        block_ctx,
+        IntraLumaPlan::NonDcFirst {
+            mode: SupportedNonDcLumaMode::Smooth,
+        },
+        None,
+        false,
+        false,
+        None,
+        false,
+    )
+    .expect("smooth square plan");
+    let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
+    let unit = plane
+        .transform_unit_plan(&PositionedLumaCoeffBlock {
+            x: 0,
+            y: 0,
+            tx_size: TX_4X4,
+            middle: false,
+            coeffs: empty_luma_coeffs(),
+        })
+        .expect("origin transform unit");
+
+    assert_eq!(
+        unit.reconstruction,
+        ResidualReconstructionPlan::LumaRectSmooth {
+            mode: SupportedNonDcLumaMode::Smooth,
+            use_tcq: false,
+        }
+    );
+}
+
+#[test]
+fn directional_first_partition_handoff_rejects_invalid_transform_geometry() {
+    let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
+    let plan = GeneralIntraResidualPlan::square(
+        block_ctx,
+        IntraLumaPlan::DirectionalFirst {
+            mode: SupportedDirectionalLumaMode::D135,
+        },
+        None,
+        false,
+        false,
+        None,
+        false,
+    )
+    .expect("directional square plan");
+    let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
+    let invalid = PositionedLumaCoeffBlock {
+        x: 4,
+        y: 4,
+        tx_size: usize::MAX,
+        middle: false,
+        coeffs: empty_luma_coeffs(),
+    };
+
+    assert!(matches!(
+        plane.transform_unit_plan(&invalid),
+        Err(GeneralIntraResidualError::TransformPartitionGeometry {
+            table: "Tx_Width_Log2",
+            index: usize::MAX,
+        })
+    ));
 }
 
 #[test]

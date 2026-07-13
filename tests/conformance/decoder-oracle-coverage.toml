@@ -39,12 +39,56 @@ fixtureable = true
 spec_sections = ["5.10", "6.10", "7.3.8.5"]
 
 [[capability]]
+id = "obu.buffer_removal_timing"
+name = "Buffer removal timing OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.12", "6.11"]
+notes = "Covered by an AVMenc fixture produced with the decoder-model BRT control enabled."
+
+[[capability]]
+id = "obu.content_interpretation"
+name = "Content interpretation OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.15", "6.14", "7.3.8.10", "7.3.8.11"]
+
+[[capability]]
+id = "obu.metadata_group"
+name = "Metadata group OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.17.3", "6.16"]
+
+[[capability]]
+id = "obu.metadata_short"
+name = "Metadata short OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.17.2", "6.16"]
+
+[[capability]]
+id = "obu.multi_frame_header"
+name = "Multi-frame header OBU"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.7", "6.7", "7.3.8.7"]
+
+[[capability]]
 id = "obu.quantizer_matrix"
 name = "Quantizer matrix OBU (in-band QM)"
 category = "obu"
-fixtureable = false
+fixtureable = true
 spec_sections = ["5.13", "6.12", "7.3.8.9"]
-notes = "AVM --enable-qm references an external-HLS QM level with no in-band QM OBU."
+notes = "Covered by an AVMenc fixture using the AV2E_SET_USER_DEFINED_QMATRIX encoder control."
+
+[[capability]]
+id = "obu.reserved"
+name = "Reserved OBU ignore semantics"
+category = "obu"
+fixtureable = true
+spec_sections = ["5.3", "6.2.2"]
+notes = "AVM does not emit reserved OBUs directly. The fixture is a deterministic structured derivative of an AVM-encoded project-owned stream: conformant non-zero-payload reserved OBUs are inserted without changing the original OBU bytes."
 
 [[capability]]
 id = "obu.sequence_header"
@@ -118,11 +162,18 @@ fixtureable = true
 spec_sections = ["6.4.1", "6.4.5"]
 
 [[capability]]
+id = "seq.crop_window"
+name = "Sequence crop window and visible output"
+category = "sequence"
+fixtureable = true
+spec_sections = ["5.4.1", "6.4.1", "5.18.4.4", "6.17.4.4", "7.21.2"]
+
+[[capability]]
 id = "seq.layers.multi_or_operating_point"
 name = "Multi-layer / operating-point selection"
 category = "sequence"
 fixtureable = true
-spec_sections = ["5.10", "5.8", "6.10", "7.3.8.5"]
+spec_sections = ["5.4.1", "5.8", "5.10", "6.2.2", "6.4.1", "6.10", "7.3.8.5"]
 
 [[capability]]
 id = "seq.layers.single"
@@ -130,6 +181,13 @@ name = "Single-layer / single operating point"
 category = "sequence"
 fixtureable = true
 spec_sections = ["6.2.2", "7.3.8.6"]
+
+[[capability]]
+id = "frame.bridge"
+name = "Bridge frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "5.18.4.2", "6.17.2", "6.17.4.2"]
 
 [[capability]]
 id = "frame.inter"
@@ -146,11 +204,40 @@ fixtureable = true
 spec_sections = ["7.4.3", "5.18.2"]
 
 [[capability]]
+id = "frame.key_open_loop"
+name = "Open-loop key frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "7.4.4"]
+
+[[capability]]
+id = "frame.leading"
+name = "Leading frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.2.1", "7.3.6", "7.3.7", "7.4.4"]
+
+[[capability]]
 id = "frame.multi_frame"
 name = "Multi-frame temporal sequence"
 category = "frame"
 fixtureable = true
 spec_sections = ["7.3.7", "5.18.2"]
+
+[[capability]]
+id = "frame.random_access_switch"
+name = "Random-access switch frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "6.17.2", "7.3.9", "7.4.5"]
+
+[[capability]]
+id = "frame.long_term_reference"
+name = "In-band long-term key reference"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "6.17.2", "7.3.9.1", "7.4.5"]
+notes = "Covered by a fixture-only AVM encoder patch that hides a generated long-term CLK while preserving encoder accounting, followed by a byte-preserving composition of complete AVMenc TD, sequence-header, hidden-CLK, and RAS OBUs into one initial temporal unit."
 
 [[capability]]
 id = "frame.reference_refresh"
@@ -174,11 +261,25 @@ fixtureable = true
 spec_sections = ["7.21.3", "7.21.4", "7.21.6"]
 
 [[capability]]
+id = "frame.switch"
+name = "Switch frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "6.17.2", "7.3.8.9", "7.23"]
+
+[[capability]]
 id = "tile.multiple"
 name = "Multiple tiles per frame"
 category = "tile"
 fixtureable = true
 spec_sections = ["5.18.7.2", "5.18.7.3", "6.17.7.2"]
+
+[[capability]]
+id = "tile.multiple_groups"
+name = "Multiple tile-group OBUs per coded frame"
+category = "tile"
+fixtureable = true
+spec_sections = ["5.19", "5.20.1"]
 
 [[capability]]
 id = "tile.single"
@@ -216,8 +317,29 @@ fixtureable = true
 spec_sections = ["5.20.3.1", "5.20.3.2", "6.19.3"]
 
 [[capability]]
+id = "intra.cardinal_vertical_chroma"
+name = "Cardinal vertical chroma prediction over synthesized no-neighbour edges"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.3", "7.13.2.1", "7.13.2.7"]
+
+[[capability]]
+id = "intra.cardinal_horizontal_chroma"
+name = "Cardinal horizontal chroma prediction over synthesized no-neighbour edges"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.3", "7.13.2.1", "7.13.2.8"]
+
+[[capability]]
 id = "intra.cfl"
 name = "Chroma-from-luma (CfL) intra prediction"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.5.6", "5.20.7.32", "7.13.5"]
+
+[[capability]]
+id = "intra.cfl.non420"
+name = "CfL prediction for 4:2:2 and 4:4:4 chroma"
 category = "intra"
 fixtureable = true
 spec_sections = ["5.20.5.6", "5.20.7.32", "7.13.5"]
@@ -243,6 +365,13 @@ name = "Directional angle intra prediction (D45..D203, IDIF)"
 category = "intra"
 fixtureable = true
 spec_sections = ["7.13.2.7", "7.13.2.8", "9.2"]
+
+[[capability]]
+id = "intra.ibp"
+name = "Intra bi-prediction (IBP)"
+category = "intra"
+fixtureable = true
+spec_sections = ["7.13.2.7", "7.13.2.9"]
 
 [[capability]]
 id = "intra.dpcm_y"
@@ -286,6 +415,13 @@ name = "Per-transform-unit intra prediction (tx split)"
 category = "intra"
 fixtureable = true
 spec_sections = ["5.20.7.24"]
+
+[[capability]]
+id = "intra.oversized_chroma_chunks"
+name = "Oversized rectangular chroma residual chunking"
+category = "intra"
+fixtureable = true
+spec_sections = ["5.20.7.23", "5.20.7.25", "5.20.7.27", "8.3.2"]
 
 [[capability]]
 id = "intra.smooth"
@@ -372,6 +508,20 @@ fixtureable = true
 spec_sections = ["5.20.7.6", "5.20.7.12", "7.13.3.18"]
 
 [[capability]]
+id = "inter.non420_chroma"
+name = "Inter prediction for 4:2:2 and 4:4:4 chroma"
+category = "inter"
+fixtureable = true
+spec_sections = ["6.4.1", "7.13.3.18"]
+
+[[capability]]
+id = "inter.reference_scaling"
+name = "Reference-size scaling in inter prediction"
+category = "inter"
+fixtureable = true
+spec_sections = ["5.20.7.12", "5.20.7.14", "5.20.7.17", "7.13.3.14", "7.13.3.17", "7.13.3.18", "7.13.3.20"]
+
+[[capability]]
 id = "inter.subpel_mc"
 name = "Sub-pel motion compensation (interp filter)"
 category = "inter"
@@ -382,16 +532,31 @@ spec_sections = ["5.20.7.20", "7.13.3.16", "7.13.3.18"]
 id = "inter.tip"
 name = "Temporal interpolated prediction (TIP)"
 category = "inter"
-fixtureable = false
-spec_sections = ["7.10", "7.13.3.2"]
-notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
+fixtureable = true
+spec_sections = ["7.9.1", "7.9.3", "7.10.6", "7.13.3.2", "7.16", "7.22"]
+notes = "Covered by AVMenc streams with regular and leading TIP output, natural multi-tile monochrome prediction, 4:2:2 and 4:4:4 chroma, and active sample-changing multi-tile deblocking."
 
 [[capability]]
 id = "inter.warp"
 name = "Warped / global motion prediction"
 category = "inter"
 fixtureable = true
-spec_sections = ["5.20.7.7", "7.13.3.19", "7.13.3.23"]
+spec_sections = ["5.18.9.1", "5.20.7.7", "7.12.2.1", "7.12.2.2", "7.13.3.1", "7.13.3.19", "7.13.3.23"]
+notes = "The translation, ROTZOOM, and AFFINE global-motion fixtures signal non-identity frame models and select GLOBALMV; local-warp coverage is recorded by separate fixtures and tests."
+
+[[capability]]
+id = "inter.warp.extend_list1"
+name = "Extend-warp neighbour using a compound block's list-1 MV"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.13.3.24"]
+
+[[capability]]
+id = "inter.warp.sample_list1"
+name = "Local-warp sample using a compound block's list-1 MV"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.12.3.1", "7.12.3.2", "7.13.3.23"]
 
 [[capability]]
 id = "transform.cctx"
@@ -493,6 +658,14 @@ fixtureable = true
 spec_sections = ["5.18.2", "6.17.6.1", "7.14.2"]
 
 [[capability]]
+id = "quant.frame_delta_q"
+name = "Frame-level plane and DC/AC quantizer deltas"
+category = "quant"
+fixtureable = true
+spec_sections = ["5.18.6.1", "6.17.6.1", "7.14.2"]
+notes = "Covered by syn-2frame-flatstep-inter-y-dc-delta1-64x64-q80, emitted by an isolated AVM encoder patch because stock AVM hardcodes the normative frame deltas to zero."
+
+[[capability]]
 id = "quant.delta_q"
 name = "Per-block delta-Q"
 category = "quant"
@@ -514,6 +687,14 @@ name = "Quantizer matrix weighting (using_qmatrix)"
 category = "quant"
 fixtureable = true
 spec_sections = ["5.18.6.2", "6.17.6.2", "7.14.4", "9.4"]
+
+[[capability]]
+id = "quant.qm_user"
+name = "User-defined quantizer matrix weighting"
+category = "quant"
+fixtureable = true
+spec_sections = ["5.4.11", "5.13", "6.12", "7.14.4"]
+notes = "Covered by an AVMenc fixture with in-band level-6 user matrices and 8x8 transform geometry."
 
 [[capability]]
 id = "loop.ccso"
@@ -550,6 +731,20 @@ name = "Guided detail filter (GDF)"
 category = "loop_filter"
 fixtureable = true
 spec_sections = ["7.20.5", "5.18.7.9", "5.20.10.3"]
+
+[[capability]]
+id = "loop.gdf_per_block"
+name = "Per-block guided detail filter selection"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["5.20.10.3", "6.19.9.3", "7.20.5", "8.3.2"]
+
+[[capability]]
+id = "loop.gdf_multitile"
+name = "Guided detail filter across multiple tiles"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["6.4.10", "7.20.1", "7.20.2", "7.20.5"]
 
 [[capability]]
 id = "loop.loop_restoration"
@@ -606,6 +801,20 @@ notes = "avmenc CICP/HDR flags set sequence fields, not standalone metadata OBUs
 [[capability]]
 id = "output.raw_i420"
 name = "Raw I420 planar output"
+category = "output"
+fixtureable = true
+spec_sections = ["7.21.1", "7.21.2", "7.21.6"]
+
+[[capability]]
+id = "output.raw_i422"
+name = "Raw I422 planar output"
+category = "output"
+fixtureable = true
+spec_sections = ["7.21.1", "7.21.2", "7.21.6"]
+
+[[capability]]
+id = "output.raw_i444"
+name = "Raw I444 planar output"
 category = "output"
 fixtureable = true
 spec_sections = ["7.21.1", "7.21.2", "7.21.6"]

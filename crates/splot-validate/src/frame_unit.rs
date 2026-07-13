@@ -92,9 +92,9 @@ pub(crate) enum SegRole {
     /// `None` when undecidable. TIP frames carry no `is_first_tile_group` (they are
     /// not in the first-tile-group list, mirror lines 404-411).
     TipFrame { output: Option<bool> },
-    /// `OBU_BRIDGE_FRAME`: always a non-output coded frame (mirror line 470); it
-    /// appears only in the § 7.3.4 list. Carries no `is_first_tile_group`.
-    BridgeFrame,
+    /// `OBU_BRIDGE_FRAME`. Carries no `is_first_tile_group`; single-picture
+    /// headers infer output while ordinary bridge frames infer non-output.
+    BridgeFrame { output: Option<bool> },
     /// `OBU_PADDING`: position-free within a coded frame unit.
     Padding,
 }
@@ -378,7 +378,7 @@ impl FrameUnitSegmenter {
                 is_first_tile_group,
                 ..
             } => is_first_tile_group.is_none(), // unreadable delimiter -> Ambiguous
-            SegRole::TipFrame { .. } | SegRole::BridgeFrame => {
+            SegRole::TipFrame { .. } | SegRole::BridgeFrame { .. } => {
                 debug_assert!(is_no_delimiter_frame_role(role));
                 let _ = frame;
                 true
@@ -536,16 +536,16 @@ impl FrameUnitSegmenter {
                 obu,
                 report,
             )),
-            SegRole::BridgeFrame => Some(Self::observe_frame(
+            SegRole::BridgeFrame { output } => Some(Self::observe_frame(
                 state,
                 embedded_key,
                 first_coded_unit_started,
                 coded_frames_opened_for_embedded_layer,
                 None,
-                output_class(type_decided_output(obu.header.obu_type)),
+                output_class(output),
                 false,
-                true,  // OBU_BRIDGE_FRAME carries no in-band coded-frame delimiter
-                true,  // a bridge frame is non-output by type (mirror line 470), not a header parse
+                true,             // OBU_BRIDGE_FRAME carries no in-band coded-frame delimiter
+                output.is_some(), // the active sequence header decides the bridge class
                 false, // a bridge frame carries no is_first_tile_group bit to be unreadable
                 obu,
                 report,
@@ -792,7 +792,8 @@ impl FrameUnitSegmenter {
     /// `delimiter_unreadable` marks a tile-group OBU whose `is_first_tile_group` bit could
     /// not be read while a coded frame is open: the boundary is undecidable, so the structural
     /// continuation judgments are suppressed and the open frame's output class routes to
-    /// Unknown.
+    /// Unknown. For bridge frames, the active sequence header decides whether the frame is
+    /// the single-picture output form or the video-sequence non-output form.
     ///
     /// Returns this OBU's [`FrameBoundary`]: `OpensNewUnit` for the first OBU of a coded frame,
     /// `Ambiguous` for the undecidable boundary, `ContinuesUnit` for every decided continuation.
@@ -909,7 +910,7 @@ fn is_frame_role(role: SegRole) -> bool {
         SegRole::TileFrame { .. }
             | SegRole::SefFrame
             | SegRole::TipFrame { .. }
-            | SegRole::BridgeFrame
+            | SegRole::BridgeFrame { .. }
     )
 }
 
@@ -921,7 +922,7 @@ fn is_frame_role(role: SegRole) -> bool {
 /// type ends and the next begins. SEF is excluded — § 7.3.3 makes a SEF its own
 /// single-OBU coded frame, judged by the SEF-single-OBU rule in `observe_frame`.
 fn is_no_delimiter_frame_role(role: SegRole) -> bool {
-    matches!(role, SegRole::TipFrame { .. } | SegRole::BridgeFrame)
+    matches!(role, SegRole::TipFrame { .. } | SegRole::BridgeFrame { .. })
 }
 
 /// Maps a parsed output flag to a classification (`None` → Unknown).
@@ -938,21 +939,15 @@ fn output_class(output: Option<bool>) -> OutputClass {
 /// `OBU_REGULAR_SEF` — the § 7.3.3 "Or" branch makes a SEF a coded *output* frame unit, mirror
 /// line 417), `Some(false)` for `OBU_BRIDGE_FRAME` (it appears only in the § 7.3.4
 /// coded-*non-output*-frame-unit list, mirror line 470). `None` for every other frame type
-/// (CLK / OLK / `*_TILE_GROUP` / `SWITCH` / `RAS` / `*_TIP`), whose class is carried by the
+/// (CLK / OLK / `*_TILE_GROUP` / `SWITCH` / `RAS` / `*_TIP` / `BRIDGE`), whose class is
+/// carried by the
 /// `immediate_output_frame` / `implicit_output_frame` flags — they appear in *both* § 7.3.3 and
 /// § 7.3.4.
 ///
-/// This is the single source of truth shared by the [`FrameUnitSegmenter`] (its `SefFrame` /
-/// `BridgeFrame` arms map through here) and the [`CodedExtendedLayerTracker`](crate::celu)
-/// wiring (`frame_celu_facts`), so the two layers never disagree on a type-decided class.
+/// The bridge class is instead derived from the active sequence header by
+/// `ValidatorContext::bridge_output_class`, because a single-picture bridge is an output frame.
 pub(crate) fn type_decided_output(obu_type: ObuType) -> Option<bool> {
-    if obu_type.is_sef() {
-        Some(true)
-    } else if obu_type == ObuType::BridgeFrame {
-        Some(false)
-    } else {
-        None
-    }
+    if obu_type.is_sef() { Some(true) } else { None }
 }
 
 /// Builds a `frame-unit/` presence-order error anchored at the offending OBU.
@@ -996,8 +991,20 @@ mod tests {
     fn same_type_adjacent_bridge_reports_ambiguous_boundary() {
         let mut seg = FrameUnitSegmenter::default();
         let mut r = ValidationReport::new();
-        let first = seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
-        let second = seg.observe(&obu(ObuType::BridgeFrame, 1), SegRole::BridgeFrame, &mut r);
+        let first = seg.observe(
+            &obu(ObuType::BridgeFrame, 0),
+            SegRole::BridgeFrame {
+                output: Some(false),
+            },
+            &mut r,
+        );
+        let second = seg.observe(
+            &obu(ObuType::BridgeFrame, 1),
+            SegRole::BridgeFrame {
+                output: Some(false),
+            },
+            &mut r,
+        );
         assert_eq!(
             first,
             Some(FrameBoundary::OpensNewUnit),
@@ -1030,8 +1037,20 @@ mod tests {
             SegRole::BufferRemovalTiming,
             &mut r,
         );
-        seg.observe(&obu(ObuType::BridgeFrame, 2), SegRole::BridgeFrame, &mut r);
-        let second = seg.observe(&obu(ObuType::BridgeFrame, 3), SegRole::BridgeFrame, &mut r);
+        seg.observe(
+            &obu(ObuType::BridgeFrame, 2),
+            SegRole::BridgeFrame {
+                output: Some(false),
+            },
+            &mut r,
+        );
+        let second = seg.observe(
+            &obu(ObuType::BridgeFrame, 3),
+            SegRole::BridgeFrame {
+                output: Some(false),
+            },
+            &mut r,
+        );
         assert_eq!(second, Some(FrameBoundary::Ambiguous));
         seg.finish(&mut r);
         assert!(
@@ -1046,7 +1065,13 @@ mod tests {
     fn different_type_adjacent_no_delimiter_frames_split_decidedly() {
         let mut seg = FrameUnitSegmenter::default();
         let mut r = ValidationReport::new();
-        seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
+        seg.observe(
+            &obu(ObuType::BridgeFrame, 0),
+            SegRole::BridgeFrame {
+                output: Some(false),
+            },
+            &mut r,
+        );
         let second = seg.observe(
             &obu(ObuType::RegularTip, 1),
             SegRole::TipFrame { output: Some(true) },
@@ -1072,11 +1097,14 @@ mod tests {
         let mut peek_seg = FrameUnitSegmenter::default();
         let mut authority_seg = FrameUnitSegmenter::default();
         let mut r = ValidationReport::new();
-        peek_seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
-        authority_seg.observe(&obu(ObuType::BridgeFrame, 0), SegRole::BridgeFrame, &mut r);
+        let bridge = SegRole::BridgeFrame {
+            output: Some(false),
+        };
+        peek_seg.observe(&obu(ObuType::BridgeFrame, 0), bridge, &mut r);
+        authority_seg.observe(&obu(ObuType::BridgeFrame, 0), bridge, &mut r);
         let second = obu(ObuType::BridgeFrame, 1);
-        let peek = peek_seg.commits_pending_ref_update(&second, SegRole::BridgeFrame);
-        let boundary = authority_seg.observe(&second, SegRole::BridgeFrame, &mut r);
+        let peek = peek_seg.commits_pending_ref_update(&second, bridge);
+        let boundary = authority_seg.observe(&second, bridge, &mut r);
         assert_eq!(boundary, Some(FrameBoundary::Ambiguous));
         assert!(
             peek,
@@ -1088,8 +1116,11 @@ mod tests {
         let peek_seg = FrameUnitSegmenter::default();
         let mut authority_seg = FrameUnitSegmenter::default();
         let first = obu(ObuType::BridgeFrame, 0);
-        let peek = peek_seg.commits_pending_ref_update(&first, SegRole::BridgeFrame);
-        let boundary = authority_seg.observe(&first, SegRole::BridgeFrame, &mut r);
+        let bridge = SegRole::BridgeFrame {
+            output: Some(false),
+        };
+        let peek = peek_seg.commits_pending_ref_update(&first, bridge);
+        let boundary = authority_seg.observe(&first, bridge, &mut r);
         assert_eq!(boundary, Some(FrameBoundary::OpensNewUnit));
         assert_eq!(peek, commit_for(boundary));
         assert!(peek);

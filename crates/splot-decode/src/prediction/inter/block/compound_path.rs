@@ -88,7 +88,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     drl_reorder: DrlReorder,
     temporal_first_frame: bool,
     enable_adaptive_mvd: bool,
-    residual_quantizer_deltas_are_zero: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
@@ -233,6 +232,10 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         use_amvd,
         tile_offset,
     )?;
+    let global_mvs = [
+        global_motion_mv(core, compound.ref_frame0, block_ctx, precision.mv_precision),
+        global_motion_mv(core, compound.ref_frame1, block_ctx, precision.mv_precision),
+    ];
     if compound.y_mode.has_newmv() || compound.y_mode.has_nearmv() {
         let config = MvReadConfig::inter(precision.mv_precision);
         let bank = ref_mv_bank
@@ -248,7 +251,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             find_compound_mv_stack_with_temporal(
                 mv_grid,
                 block_ctx,
-                [Mv::ZERO; 2],
+                global_mvs,
                 bank,
                 drl_reorder,
                 temporal,
@@ -275,7 +278,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             let stack0 = find_mv_stack_with_temporal(
                 mv_grid,
                 &single_ref_block_context(block_ctx, compound.ref_frame0),
-                Mv::ZERO,
+                global_mvs[0],
+                DEFAULT_WARP_PARAMS,
                 bank,
                 warp_param_bank,
                 false,
@@ -287,7 +291,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             let stack1 = find_mv_stack_with_temporal(
                 mv_grid,
                 &single_ref_block_context(block_ctx, compound.ref_frame1),
-                Mv::ZERO,
+                global_mvs[1],
+                DEFAULT_WARP_PARAMS,
                 bank,
                 warp_param_bank,
                 false,
@@ -453,6 +458,9 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             }
         }
     }
+    if compound.y_mode == CompoundYMode::GlobalGlobal {
+        [compound.mv0, compound.mv1] = global_mvs;
+    }
     let warp_models = if local_warp {
         compound_local_warp_models(
             mv_grid,
@@ -465,6 +473,23 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             n4h,
             tile_offset,
         )?
+    } else if compound.y_mode == CompoundYMode::GlobalGlobal {
+        [
+            global_motion_warp(
+                core,
+                compound.ref_frame0,
+                effective_force_integer_mv(core),
+                n4w,
+                n4h,
+            ),
+            global_motion_warp(
+                core,
+                compound.ref_frame1,
+                effective_force_integer_mv(core),
+                n4w,
+                n4h,
+            ),
+        ]
     } else {
         [None, None]
     };
@@ -561,12 +586,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         compound_blend,
         tile_offset,
     )? {
-        return Err(compound_cap!(
-            "compound_opfl_refine_all_active",
-            tile_offset,
-            "inter.compound.opfl_refine",
-            SPEC_MODE_INFO
-        ));
+        compound.use_optflow = true;
     }
     let interp = resolve_compound_interp_filter(
         cdfs,
@@ -622,7 +642,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         mi_rows,
         mi_cols,
         sb_h4,
-        residual_quantizer_deltas_are_zero,
         residual_tool_policy,
         block_qindex,
         luma_use_tcq,
@@ -737,33 +756,24 @@ fn compound_ref_warp_model(
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<Option<[i32; 6]>> {
-    match super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref) {
-        super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
-            if samples.as_slice().is_empty() {
-                return Err(inter_cap!(
-                    "compound_local_warp_empty_sample_list",
-                    tile_offset,
-                    "inter.compound.local_warp.empty_sample_list",
-                    "7.12.3.1"
-                ));
-            }
-            Ok(Some(local_warp_estimation(
-                samples.as_slice(),
-                mv,
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                tile_offset,
-            )?))
-        }
-        super::super::find_mv_stack::WarpSampleCollection::List1MvUnretained => Err(inter_cap!(
-            "compound_warp_sample_list1_mv_unretained",
+    let samples = super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref);
+    if samples.is_empty() {
+        return Err(inter_cap!(
+            "compound_local_warp_empty_sample_list",
             tile_offset,
-            "inter.compound.local_warp.second_list_neighbour_mv",
-            "7.12.3.2"
-        )),
+            "inter.compound.local_warp.empty_sample_list",
+            "7.12.3.1"
+        ));
     }
+    Ok(Some(local_warp_estimation(
+        &samples,
+        mv,
+        mi_row,
+        mi_col,
+        n4w,
+        n4h,
+        tile_offset,
+    )?))
 }
 
 /// AV2 § 7.13.3.14: compound LOCALWARP (`compoundWarp = 1`) disables the
@@ -849,7 +859,6 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
     mi_rows: usize,
     mi_cols: usize,
     sb_h4: usize,
-    residual_quantizer_deltas_are_zero: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     luma_use_tcq: bool,
@@ -903,22 +912,6 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
         );
     }
     let residual = if skip == 0 {
-        if !residual_quantizer_deltas_are_zero {
-            return Err(compound_cap!(
-                "compound_block_residual_quantizer_delta",
-                tile_offset,
-                "inter.compound.residual.nonzero_quantizer_delta",
-                SPEC_MODE_INFO
-            ));
-        }
-        if !inter_residual_geometry_supported(frontier) {
-            return Err(compound_cap!(
-                "compound_block_chroma_partitioned_residual",
-                tile_offset,
-                "inter.compound.residual.chroma_partition_geometry",
-                SPEC_MODE_INFO
-            ));
-        }
         Some(read_inter_residual(
             work_unit,
             symbols,
@@ -1242,7 +1235,6 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     sb_h4: usize,
     max_drl_bits_minus_1: u32,
     drl_reorder: DrlReorder,
-    residual_quantizer_deltas_are_zero: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     luma_use_tcq: bool,
@@ -1287,10 +1279,14 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     let temporal = (ref_frame0 != ref_frame1)
         .then_some(temporal_context)
         .flatten();
+    let precision = frame_mv_precision(core, tile_offset)?;
     let candidate = find_compound_mv_stack_with_temporal(
         mv_grid,
         block_ctx,
-        [Mv::ZERO; 2],
+        [
+            global_motion_mv(core, ref_frame0, block_ctx, precision),
+            global_motion_mv(core, ref_frame1, block_ctx, precision),
+        ],
         bank,
         drl_reorder,
         temporal,
@@ -1332,7 +1328,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
             .average_with_cwp_weight(candidate.cwp_weight),
             interp: ReconInterpolationFilter::EightTapSharp,
             use_amvd: false,
-            precision: BlockPrecisionRecord::most_probable(frame_mv_precision(core, tile_offset)?),
+            precision: BlockPrecisionRecord::most_probable(precision),
             skip_mode: true,
             use_refinemv: false,
             refinemv_switchable: false,
@@ -1346,7 +1342,6 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         mi_rows,
         mi_cols,
         sb_h4,
-        residual_quantizer_deltas_are_zero,
         residual_tool_policy,
         block_qindex,
         luma_use_tcq,
@@ -1468,12 +1463,23 @@ fn compound_all_opfl_reachable<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<bool> {
     if compound_opfl_refine_type(core, tile_offset)? != REFINE_ALL
-        || !compound_opfl_block_size_allowed(n4w, n4h)
-        || !matches!(blend, mc::CompoundBlend::Average { .. })
+        || !compound_all_opfl_block_allowed(compound, n4w, n4h, blend)
     {
         return Ok(false);
     }
     compound_opfl_reference_allowed(core, reference, ref_frame_idx, compound, tile_offset)
+}
+
+fn compound_all_opfl_block_allowed(
+    compound: super::super::compound::CompoundBlockSyntax,
+    n4w: usize,
+    n4h: usize,
+    blend: mc::CompoundBlend,
+) -> bool {
+    compound_opfl_block_size_allowed(n4w, n4h)
+        && compound.y_mode != CompoundYMode::GlobalGlobal
+        && matches!(blend, mc::CompoundBlend::Average { .. })
+        && blend.cwp_weight() == mc::CWP_EQUAL
 }
 
 fn compound_opfl_refine_type(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u32> {

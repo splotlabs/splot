@@ -25,12 +25,12 @@ fn missing_capability_message_formats_id_and_context() {
 #[test]
 fn compressed_runtime_message_keeps_unsupported_feature_rule() {
     let message = super::missing_capability_message!(
-        "intra.chroma.directional.d113",
-        neighbour = "above_left",
+        "intra.directional.neighbour_reorder",
+        neighbour = "directional",
     );
     let error = DecodeError::UnsupportedFeature {
         unsupported: Box::new(DecodeUnsupportedFeature::new(
-            "general_intra_directional_d113_chroma_neighbour",
+            "general_intra_directional_neighbour_reorder",
             crate::pipeline::GENERAL_INTRA_MODE_SPEC_SECTION,
             message,
             None,

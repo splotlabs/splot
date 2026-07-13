@@ -75,21 +75,21 @@ fn lr_source_read_resource_limit_cites_source_read_process() {
 
 #[test]
 fn unsupported_structure_report_uses_planner_metadata() {
-    let error = plan_byte_stream(&[0x01, 0x14], &DecodeOptions::default()).unwrap_err();
+    let error = plan_byte_stream(&[0x01, 0x50], &DecodeOptions::default()).unwrap_err();
 
     let report = DecodeDiagnosticReport::from_decode_error(&error).unwrap();
 
     assert_eq!(report.diagnostic.rule_id, UNSUPPORTED_FEATURE_RULE_ID);
     assert_eq!(report.diagnostic.severity, DecodeSeverity::Error);
-    assert_eq!(report.diagnostic.spec_section, Some("5.2.1"));
+    assert_eq!(report.diagnostic.spec_section, Some("7.1"));
     let DecodeDiagnosticDetails::UnsupportedStructure(details) = report.details else {
         panic!("expected unsupported-structure details");
     };
     assert_eq!(
         details.unsupported_reason,
-        DecodeUnsupportedReason::UnsupportedFrameObu.as_str()
+        DecodeUnsupportedReason::MultistreamSelection.as_str()
     );
-    assert_eq!(details.obu_type, "OBU_OPEN_LOOP_KEY");
+    assert_eq!(details.obu_type, "OBU_MSDO");
     assert_eq!(details.byte_offset, 1);
 }
 

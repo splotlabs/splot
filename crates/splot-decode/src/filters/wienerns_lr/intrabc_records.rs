@@ -1072,6 +1072,16 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
             "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds",
         ));
     }
+    let frame_size = core.frame_size.ok_or_else(|| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size",
+        )
+    })?;
+    let frame_width =
+        i32::try_from(frame_size.width).map_err(|_| intrabc_geometry_error(tile_offset))?;
+    let frame_height =
+        i32::try_from(frame_size.height).map_err(|_| intrabc_geometry_error(tile_offset))?;
     let scaling = derive_plane_scaling(
         checked_i32_from_usize(block.x, tile_offset)?,
         checked_i32_from_usize(block.y, tile_offset)?,
@@ -1079,10 +1089,10 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         info.block_mv.col,
         0,
         0,
-        domain.ref_mi_cols,
-        domain.ref_mi_rows,
-        checked_i32_from_usize(block.width, tile_offset)?,
-        checked_i32_from_usize(block.height, tile_offset)?,
+        frame_width,
+        frame_height,
+        frame_width,
+        frame_height,
     );
     Ok(IntrabcPredictionGeometry {
         scaling,

@@ -19,15 +19,14 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope, FrameQuantizerDeltasScope};
-use crate::pipeline::general_intra::general_intra_unsupported;
-use crate::pipeline::reconstruct::new_general_intra_workspace;
+use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
 use crate::pipeline::{
-    deblock_quant_deltas, derive_tile_plan, ensure_runtime_limits, unsupported_at,
+    deblock_quant_deltas, derive_tile_plan, derive_visible_luma_rect, ensure_runtime_limits,
+    unsupported_at,
 };
 use crate::prediction::inter::{
     InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
-use crate::support::capability::missing_capability_message;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 #[allow(clippy::too_many_arguments)]
@@ -75,18 +74,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
-    if core
-        .gdf_params
-        .as_ref()
-        .is_some_and(|gdf| gdf.gdf_frame_enable && gdf.gdf_per_block == Some(true))
-    {
-        return Err(general_intra_unsupported(
-            "general_intra_gdf_per_block_unimplemented",
-            Some(offset),
-            missing_capability_message!("filters.gdf", per_block = "enabled"),
-            "7.20.5",
-        ));
-    }
     let initial_cdfs = FrameCdfSubset::default_for_base_q(qindex).map_err(|_| {
         unsupported_at(
             "frame_engine_intra_cdf_default_init",
@@ -127,11 +114,17 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-
     let pixel_format =
         PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
-    let mut workspace =
-        new_general_intra_workspace::<T>(frame_width, frame_height, bit_depth, pixel_format)?;
+    let visible_luma_rect =
+        derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
+    let mut workspace = new_general_intra_workspace_with_visible_rect::<T>(
+        frame_width,
+        frame_height,
+        bit_depth,
+        pixel_format,
+        visible_luma_rect,
+    )?;
 
     let store = ReferenceFrameStore::<&DecodedFrame<T>>::with_capacity(1).map_err(|_| {
         unsupported_at(
@@ -164,7 +157,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         luma_use_tcq,
         false,
         bit_depth,
-        initial_cdfs,
+        &initial_cdfs,
     )?;
 
     let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
@@ -180,6 +173,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     let ccso_grid = filter_inputs.ccso_grid.clone();
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
+    filter_sink.set_gdf_grid(filter_inputs.gdf_grid);
     filter_sink.set_cfl_ds_filter_index(
         sequence
             .intra
@@ -189,12 +183,19 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     filter_sink.set_tx_skip_records(filter_inputs.tx_skip_records);
     filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
     filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
-    let frame =
-        filter_sink.into_filtered_frame(core, deblock_quant_deltas(sequence, core), offset)?;
+    let disable_loopfilters_across_tiles = sequence
+        .filter
+        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
+    let frame = filter_sink.into_filtered_frame(
+        core,
+        disable_loopfilters_across_tiles,
+        deblock_quant_deltas(sequence, core),
+        offset,
+    )?;
     Ok((frame, frame_cdfs, ccso_grid))
 }
 
-fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
+pub(crate) fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {
     let qm = core.setup_qm_params.filter(|qm| qm.using_qmatrix)?;
     let levels_le8 = core
         .lossless_info

@@ -280,6 +280,14 @@ impl<T: ReconSample> SharedFrame<T> {
     }
 }
 
+impl<T: ReconSample> core::ops::Deref for SharedFrame<T> {
+    type Target = DecodedFrame<T>;
+
+    fn deref(&self) -> &Self::Target {
+        self.get()
+    }
+}
+
 fn validate_crop_alignment(pixel_format: PixelFormat, rect: PlaneRect) -> Result<()> {
     if pixel_format.is_monochrome() {
         return Ok(());

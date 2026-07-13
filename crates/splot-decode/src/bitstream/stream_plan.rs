@@ -147,7 +147,7 @@ impl DecodeStreamPlan {
         self.obus.iter()
     }
 
-    /// Accepted closed-loop-key frame candidates in deterministic source order.
+    /// Accepted key-frame candidates in deterministic source order.
     pub fn frame_candidates(&self) -> impl Iterator<Item = &DecodePlannedObu> {
         self.obus
             .iter()
@@ -226,21 +226,18 @@ impl DecodeIvfFrameContext {
 pub enum DecodePlannedObuRole {
     /// Ordering/global marker accepted by the planner.
     Global,
+    /// OBU retained for source traversal but not selected for base temporal-layer
+    /// extraction (AV2 Annex F.3.2).
+    UnselectedLayer,
     /// State OBU for the selected base layer.
     SelectedLayerState,
-    /// Closed-loop-key frame candidate for the decode stage (AV2 § 5.2.1
-    /// `OBU_CLOSED_LOOP_KEY`).
+    /// Key-frame candidate for the decode stage (AV2 § 5.2.1).
     FrameCandidate,
-    /// Inter frame candidate carried in an `OBU_REGULAR_TILE_GROUP` (AV2 § 5.2.1,
-    /// § 5.19): a non-key frame whose first tile group carries the frame header.
-    /// Admitted by the planner so the multi-frame runtime can reach it; the runtime
-    /// decode of an inter frame is tracked by `DECODE-FIRST-INTER-FRAME-FRONTIER`.
-    ///
-    /// Caveat: every `OBU_REGULAR_TILE_GROUP` is currently classified with this role,
-    /// so a frame split across multiple tile groups (§ 5.19 continuation,
-    /// `tg_start`..`tg_end`) is over-counted by `frame_candidate_count` — only the
-    /// first tile group of a frame starts a new frame. See the `classify_obu` TODO;
-    /// the runtime's one-tile-group shape gate masks this today.
+    /// A non-first tile-group OBU that continues the preceding coded frame.
+    /// Continuations are retained in source order but do not consume a frame
+    /// decode slot of their own (AV2 § 7.3.3 / § 7.3.4).
+    FrameContinuation,
+    /// Non-key frame candidate admitted so the multi-frame runtime can process it.
     InterFrameCandidate,
 }
 
@@ -250,6 +247,12 @@ impl DecodePlannedObuRole {
     #[must_use]
     pub const fn is_frame_candidate(self) -> bool {
         matches!(self, Self::FrameCandidate | Self::InterFrameCandidate)
+    }
+
+    /// Whether this role carries tile data for an already-open coded frame.
+    #[must_use]
+    pub const fn is_frame_continuation(self) -> bool {
+        matches!(self, Self::FrameContinuation)
     }
 }
 
@@ -334,6 +337,8 @@ pub enum DecodeSourceIssueKind {
     IvfFramePayloadError,
     /// Non-fatal IVF container warning.
     IvfWarning,
+    /// IVF codec metadata selects a codec outside the AV2 decoder input domain.
+    IvfUnsupportedCodec,
 }
 
 impl DecodeSourceIssueKind {
@@ -345,6 +350,7 @@ impl DecodeSourceIssueKind {
             Self::IvfContainerError => "ivf_container_error",
             Self::IvfFramePayloadError => "ivf_frame_payload_error",
             Self::IvfWarning => "ivf_warning",
+            Self::IvfUnsupportedCodec => "ivf_unsupported_codec",
         }
     }
 }
@@ -426,20 +432,12 @@ impl fmt::Display for DecodeSourceIssue {
 pub enum DecodeUnsupportedReason {
     /// OBU layer scope violates AV2 § 6.2.2 global/local xlayer rules.
     InvalidLayerScope,
-    /// OBU uses a temporal layer other than the selected base layer.
-    NonBaseTemporalLayer,
     /// OBU uses an embedded layer other than the selected base layer.
     NonBaseEmbeddedLayer,
     /// OBU uses an extended layer other than the selected base layer or global layer.
     NonBaseExtendedLayer,
     /// OBU participates in multistream or external-HLS selection.
     MultistreamSelection,
-    /// OBU is frame-carrying but not the v1 closed-loop-key candidate.
-    UnsupportedFrameObu,
-    /// OBU can affect output/timing state that this planner tier does not model.
-    UnsupportedOutputEffectObu,
-    /// Reserved OBU types are outside the decode planner tier.
-    ReservedObu,
 }
 
 /// Generates an exhaustive `const fn as_str(self) -> &'static str` label mapping.
@@ -470,13 +468,9 @@ macro_rules! impl_reason_labels {
 
 impl_reason_labels!(pub DecodeUnsupportedReason {
     InvalidLayerScope => "invalid_layer_scope",
-    NonBaseTemporalLayer => "non_base_temporal_layer",
     NonBaseEmbeddedLayer => "non_base_embedded_layer",
     NonBaseExtendedLayer => "non_base_extended_layer",
     MultistreamSelection => "multistream_selection",
-    UnsupportedFrameObu => "unsupported_frame_obu",
-    UnsupportedOutputEffectObu => "unsupported_output_effect_obu",
-    ReservedObu => "reserved_obu",
 });
 
 impl fmt::Display for DecodeUnsupportedReason {
@@ -601,6 +595,13 @@ pub(crate) fn plan_stream(
             if let Some(error) = &ivf.error {
                 return Err(DecodeError::MalformedSource {
                     issue: issue_from_ivf_error(error),
+                });
+            }
+            if let Some(header) = ivf.header
+                && header.fourcc != *b"AV02"
+            {
+                return Err(DecodeError::MalformedSource {
+                    issue: issue_from_unsupported_ivf_codec(header.fourcc),
                 });
             }
             let mut first_unsupported = None;
@@ -751,6 +752,10 @@ fn classify_obu(
     let header = envelope.header;
     let obu_type = header.obu_type;
 
+    if obu_type.is_reserved() {
+        return Ok(DecodePlannedObuRole::Global);
+    }
+
     if obu_type.requires_global_xlayer() && header.extended_layer_id != GLOBAL_XLAYER_ID {
         return unsupported(
             DecodeUnsupportedReason::InvalidLayerScope,
@@ -767,15 +772,10 @@ fn classify_obu(
             "this OBU type is not permitted to use the AV2 global extended layer id",
         );
     }
-
-    if header.temporal_layer_id != selected_layer.temporal_layer_id {
-        return unsupported(
-            DecodeUnsupportedReason::NonBaseTemporalLayer,
-            envelope,
-            "6.2.2",
-            "only temporal layer 0 is selected by the initial decode stream planner",
-        );
+    if obu_type == ObuType::TemporalDelimiter {
+        return Ok(DecodePlannedObuRole::Global);
     }
+
     if header.embedded_layer_id != selected_layer.embedded_layer_id {
         return unsupported(
             DecodeUnsupportedReason::NonBaseEmbeddedLayer,
@@ -794,68 +794,54 @@ fn classify_obu(
             "only extended layer 0 and global-scope OBUs are accepted by the initial decode stream planner",
         );
     }
+    if header.temporal_layer_id != selected_layer.temporal_layer_id {
+        return Ok(DecodePlannedObuRole::UnselectedLayer);
+    }
 
     match header.obu_type {
-        ObuType::TemporalDelimiter | ObuType::Padding => Ok(DecodePlannedObuRole::Global),
-        ObuType::ClosedLoopKey => Ok(DecodePlannedObuRole::FrameCandidate),
-        // AV2 § 5.2.1 / § 5.19: `OBU_REGULAR_TILE_GROUP` carries a tile group of a
-        // non-key frame, and the first tile group holds that frame's header.
-        // `OBU_REGULAR_TIP` is a §5.2.1 `frame_header(1)` OBU, not a tile-group OBU,
-        // but it is still a selected-layer frame candidate for traversal. The planner
-        // admits both so the multi-frame runtime can reach them; the actual inter/TIP
-        // frame decode (header shared tail, § 5.20 mode info, motion compensation) is
-        // gated and tracked by `DECODE-FIRST-INTER-FRAME-FRONTIER`.
-        // TODO(spec: DECODE-FIRST-INTER-FRAME-FRONTIER): this admits EVERY regular tile
-        // group as a distinct frame candidate. A single inter frame may span multiple
-        // `OBU_REGULAR_TILE_GROUP` OBUs (§ 5.19 tile-group continuation,
-        // `tg_start`..`tg_end`); only the first carries the frame header, the rest are
-        // continuations, not new frames. Distinguishing them needs the tile-group
-        // structure (`tg_start`), which is not parsed at planner classification, so
-        // `frame_candidate_count` would over-count a multi-tile-group frame. This is
-        // masked today by the runtime's strict one-`OBU_REGULAR_TILE_GROUP`
-        // shape gate (`ensure_multiframe_plan_shape`); refine when multi-tile-group
-        // inter frames are supported.
-        ObuType::RegularTileGroup | ObuType::RegularTip => {
-            Ok(DecodePlannedObuRole::InterFrameCandidate)
+        ObuType::Padding => Ok(DecodePlannedObuRole::Global),
+        obu_type if obu_type.is_tile_group() && is_tile_group_continuation(envelope) => {
+            Ok(DecodePlannedObuRole::FrameContinuation)
         }
+        ObuType::ClosedLoopKey | ObuType::OpenLoopKey => Ok(DecodePlannedObuRole::FrameCandidate),
+        ObuType::LeadingTileGroup
+        | ObuType::RegularTileGroup
+        | ObuType::Switch
+        | ObuType::LeadingSef
+        | ObuType::RegularSef
+        | ObuType::LeadingTip
+        | ObuType::RegularTip
+        | ObuType::BridgeFrame
+        | ObuType::RasFrame => Ok(DecodePlannedObuRole::InterFrameCandidate),
         ObuType::OperatingPointSet if header.extended_layer_id == GLOBAL_XLAYER_ID => {
             Ok(DecodePlannedObuRole::Global)
         }
-        ObuType::SequenceHeader | ObuType::OperatingPointSet | ObuType::FilmGrain => {
-            Ok(DecodePlannedObuRole::SelectedLayerState)
-        }
+        ObuType::SequenceHeader
+        | ObuType::OperatingPointSet
+        | ObuType::MultiFrameHeader
+        | ObuType::MetadataShort
+        | ObuType::MetadataGroup
+        | ObuType::BufferRemovalTiming
+        | ObuType::QuantizationMatrix
+        | ObuType::FilmGrain
+        | ObuType::ContentInterpretation => Ok(DecodePlannedObuRole::SelectedLayerState),
         ObuType::Msdo | ObuType::LayerConfigurationRecord | ObuType::AtlasSegment => unsupported(
             DecodeUnsupportedReason::MultistreamSelection,
             envelope,
             "7.1",
             "multistream, atlas, and external-HLS selection are outside the initial decode stream planner tier",
         ),
-        obu_type
-            if obu_type.is_tile_group()
-                || obu_type.is_sef()
-                || obu_type == ObuType::LeadingTip
-                || obu_type == ObuType::BridgeFrame =>
-        {
-            unsupported(
-                DecodeUnsupportedReason::UnsupportedFrameObu,
-                envelope,
-                "5.2.1",
-                "only OBU_CLOSED_LOOP_KEY, OBU_REGULAR_TILE_GROUP, and OBU_REGULAR_TIP are accepted as frame candidates by the initial decode stream planner",
-            )
+        ObuType::Reserved0 | ObuType::Reserved(_) | ObuType::TemporalDelimiter => {
+            Ok(DecodePlannedObuRole::Global)
         }
-        ObuType::Reserved0 | ObuType::Reserved(_) => unsupported(
-            DecodeUnsupportedReason::ReservedObu,
-            envelope,
-            "5.2.1",
-            "reserved OBU types are outside the initial decode stream planner tier",
-        ),
-        _ => unsupported(
-            DecodeUnsupportedReason::UnsupportedOutputEffectObu,
-            envelope,
-            output_effect_spec_section(header.obu_type),
-            "this OBU can affect state or output not modeled by the initial decode stream planner tier",
-        ),
     }
+}
+
+fn is_tile_group_continuation(envelope: ObuEnvelope<'_>) -> bool {
+    envelope
+        .payload
+        .first()
+        .is_some_and(|first| first & 0x80 == 0)
 }
 
 fn unsupported(
@@ -873,18 +859,6 @@ fn unsupported(
             message,
         },
     })
-}
-
-fn output_effect_spec_section(obu_type: ObuType) -> &'static str {
-    match obu_type {
-        ObuType::MultiFrameHeader => "5.7",
-        ObuType::MetadataShort | ObuType::MetadataGroup => "5.17",
-        ObuType::BufferRemovalTiming => "5.12",
-        ObuType::QuantizationMatrix => "5.13",
-        ObuType::FilmGrain => "5.14",
-        ObuType::ContentInterpretation => "5.15",
-        _ => "5.2.1",
-    }
 }
 
 fn issue_from_core_error(
@@ -919,6 +893,19 @@ fn issue_from_ivf_warning(warning: &IvfWarning) -> DecodeSourceIssue {
         ivf_warning_frame_index(warning),
         warning.to_string(),
     )
+}
+
+fn issue_from_unsupported_ivf_codec(fourcc: [u8; 4]) -> DecodeSourceIssue {
+    DecodeSourceIssue {
+        kind: DecodeSourceIssueKind::IvfUnsupportedCodec,
+        rule_id: Some("decode/unsupported-ivf-codec"),
+        offset: Some(ByteOffset::new(8)),
+        frame_index: None,
+        message: format!(
+            "IVF codec fourcc 0x{:02X}{:02X}{:02X}{:02X} is not AV02",
+            fourcc[0], fourcc[1], fourcc[2], fourcc[3]
+        ),
+    }
 }
 
 fn issue_from_ivf_source(

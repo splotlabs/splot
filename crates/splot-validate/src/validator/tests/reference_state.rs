@@ -251,19 +251,20 @@ pub(in crate::validator::tests) fn clk_frame_long_term(
 /// `frame_size_override_flag == 1` (SWITCH) so frame_size() reads explicit dims.
 ///
 /// `max_mlayer_id` selects the §5.18.2 refresh arm (mirror :4493 vs :4507):
-/// - `0`: the RAS refresh derives from RefValid/RefLongTermId, which the inter parser
-///   cannot ground, so it stops with `InterStop::UnmodeledDerivation` BEFORE
-///   `ref_frame_idx` (no `refresh_frame_flags` bits, parse never reaches the reference
-///   region — the reachability boundary).
+/// - `0`: the RAS refresh derives from RefValid/RefLongTermId. The parser reaches the
+///   reference region when the modeled §7.23 state grounds those values, and otherwise
+///   stops with `InterStop::UnmodeledDerivation` before `ref_frame_idx`.
 /// - `!= 0`: the RAS falls through to the SWITCH arm and reads
 ///   `refresh_frame_flags f(NumRefFrames)` explicitly, so the body parses through the
 ///   inter control region and `inter.ref_frame_idx` IS recorded for the §6.17.2
 ///   `long_term_id_in_use` check.
 ///
-/// `num_total_refs` is coded as f(3); each `ref_frame_idx[i]` is f(CeilLog2(NumRefFrames))
-/// and points at slot 0. (A `num_total_refs` above `Min(REFS_PER_FRAME, NumRefFrames)`
-/// independently trips `frame-header/num-total-refs-out-of-range`, which doubles as a
-/// proof the parse reached the reference region.)
+/// RAS derives `FrameType == SWITCH_FRAME`, so `explicitRefFrameMap` is inferred to 1 and
+/// no `frame_explicit_ref_frame_map` bit is present (mirror :4579-4587). `num_total_refs`
+/// is coded as f(3); each `ref_frame_idx[i]` is f(CeilLog2(NumRefFrames)) and points at
+/// slot 0. (A `num_total_refs` above `Min(REFS_PER_FRAME, NumRefFrames)` independently
+/// trips `frame-header/num-total-refs-out-of-range`, which doubles as a proof the parse
+/// reached the reference region.)
 pub(in crate::validator::tests) fn ras_frame_explicit_map(
     ref_long_term_id: u32,
     max_mlayer_id: u32,
@@ -303,7 +304,6 @@ pub(in crate::validator::tests) fn ras_frame_explicit_map_at_layer(
     } else {
         fb.f(0, num_ref_frames); // refresh_frame_flags f(NumRefFrames)
     }
-    fb.bit(1); // frame_explicit_ref_frame_map (explicit_ref_frame_map seq flag set)
     fb.f(num_total_refs, 3); // num_total_refs f(3)
     for _ in 0..num_total_refs {
         fb.f(0, ceil_log2_u32(num_ref_frames)); // ref_frame_idx[i] -> slot 0
@@ -318,7 +318,7 @@ pub(in crate::validator::tests) fn ras_frame_explicit_map_at_layer(
 }
 
 #[test]
-fn validator_ras_ref_long_term_silent_when_max_mlayer_zero_stops_before_ref_frame_idx() {
+fn validator_ras_ref_long_term_fires_when_max_mlayer_zero_derivation_is_grounded() {
     let seq = FrameCoreSeq {
         long_term_frame_id_bits: 4,
         explicit_ref_frame_map: true,
@@ -330,9 +330,10 @@ fn validator_ras_ref_long_term_silent_when_max_mlayer_zero_stops_before_ref_fram
     data.extend(ras_frame_explicit_map(3, 0, 8, 1));
     let report = Validator::new(false).validate_bytes(&data);
     assert!(
-        !has_ras_ref_long_term_error(&report),
-        "a RAS with max_mlayer_id == 0 stops before ref_frame_idx -> the §6.17.2 long-term \
-         check is unreachable and must stay silent (no false positive); report was: {report}"
+        has_ras_ref_long_term_error(&report),
+        "the proven reference state grounds the max_mlayer_id == 0 refresh derivation, so the \
+         explicit ref_frame_idx is reachable and its RefLongTermId 5 missing from [3] must \
+         violate §6.17.2; report was: {report}"
     );
 }
 

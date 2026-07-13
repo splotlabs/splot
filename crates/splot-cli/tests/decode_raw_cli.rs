@@ -10,7 +10,7 @@ use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod common;
-use common::read_dir_names;
+use common::{empty_avmenc_ivf, read_dir_names};
 
 static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -95,6 +95,26 @@ fn decode_explicit_raw_success_for_minimal_fixture() {
     assert!(out.stdout.is_empty(), "stdout was not empty");
     assert!(out.stderr.is_empty(), "stderr was not empty");
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_raw());
+}
+
+#[test]
+fn decode_empty_ivf_creates_empty_raw_output() {
+    let input = temp_input("ivf", &empty_avmenc_ivf());
+    let output = temp_output("raw");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    assert_eq!(std::fs::read(&output).unwrap(), Vec::<u8>::new());
 }
 
 #[test]

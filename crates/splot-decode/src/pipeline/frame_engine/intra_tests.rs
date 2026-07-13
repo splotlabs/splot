@@ -113,11 +113,8 @@ fn intra_gate_rejects_gdf_per_block_frame() {
         gdf.gdf_frame_enable = true;
         gdf.gdf_per_block = Some(true);
     })
-    .expect_err("mutated fixture must fail closed");
-    assert_eq!(
-        unsupported_reason(error),
-        "general_intra_gdf_per_block_unimplemented"
-    );
+    .expect_err("fixture without a use_gdf symbol must fail closed");
+    assert_eq!(unsupported_reason(error), "inter_exit_symbol");
 }
 
 #[test]

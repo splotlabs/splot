@@ -11,8 +11,7 @@ use super::super::cdf::{
     tile_cdf_save_policy,
 };
 use super::super::{
-    SymbolInitBoundary, TileBruPath, TileCoeffFrameFacts, TileCoeffFrameFactsInput,
-    TilePayloadSource,
+    SymbolInitBoundary, TileCoeffFrameFacts, TileCoeffFrameFactsInput, TilePayloadSource,
 };
 use super::*;
 use crate::bitstream::tile_payload::encode_symbol_sequence;
@@ -162,7 +161,6 @@ pub(crate) fn make_work_unit_at(
             allow_parity_hiding: false,
             base_q_idx: 0,
         }),
-        bru_path: TileBruPath::NotUsed,
         symbol: SymbolInitBoundary {
             consumed_bits: payload.len().saturating_mul(8).min(15) as u64,
             symbol_max_bits: payload.len() as i64 * 8 - 15,

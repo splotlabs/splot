@@ -675,28 +675,22 @@ pub(crate) fn tip_reference_pair_from_hints(
     ref_order_hints: &[Option<u32>],
 ) -> Option<TipReferencePair> {
     let current = i32::try_from(current_order_hint).ok()?;
-    let mut closest_past: Option<(usize, i32, i32)> = None;
-    let mut second_past: Option<(usize, i32, i32)> = None;
-    let mut closest_future: Option<(usize, i32, i32)> = None;
-    for (index, hint) in ref_order_hints.iter().copied().enumerate() {
-        let Some(hint) = hint.and_then(|hint| i32::try_from(hint).ok()) else {
-            continue;
-        };
-        let distance = super::super::get_relative_dist(current, hint);
-        if distance > 0 {
-            let candidate = (index, distance, hint);
-            if closest_past.is_none_or(|(_, old, _)| distance < old) {
-                second_past = closest_past;
-                closest_past = Some(candidate);
-            } else if second_past.is_none_or(|(_, old, _)| distance < old) {
-                second_past = Some(candidate);
-            }
-        } else if distance < 0 && closest_future.is_none_or(|(_, old, _)| distance > old) {
-            closest_future = Some((index, distance, hint));
-        }
-    }
-    let (past_ref, past_offset, past_hint) = closest_past?;
-    let (future_ref, future_offset, future_hint) = closest_future.or(second_past)?;
+    let sorted = sorted_reference_hints(ref_order_hints);
+    let past_index = sorted
+        .iter()
+        .rposition(|&(_, hint)| super::super::get_relative_dist(hint, current) < 0)?;
+    let has_future = sorted
+        .iter()
+        .any(|&(_, hint)| super::super::get_relative_dist(hint, current) > 0);
+    let future_index = if has_future {
+        past_index.checked_add(1)?
+    } else {
+        past_index.checked_sub(1)?
+    };
+    let &(past_ref, past_hint) = sorted.get(past_index)?;
+    let &(future_ref, future_hint) = sorted.get(future_index)?;
+    let past_offset = super::super::get_relative_dist(current, past_hint);
+    let future_offset = super::super::get_relative_dist(current, future_hint);
     let ref_offset = if future_offset < 0 {
         super::super::get_relative_dist(future_hint, past_hint)
     } else {
@@ -709,6 +703,23 @@ pub(crate) fn tip_reference_pair_from_hints(
         future_offset,
         ref_offset: ref_offset.min(MAX_FRAME_DISTANCE),
     })
+}
+
+fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> {
+    let mut sorted = ref_order_hints
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(index, hint)| Some((index, i32::try_from(hint?).ok()?)))
+        .collect::<Vec<_>>();
+    for i in 0..sorted.len() {
+        for j in i + 1..sorted.len() {
+            if super::super::get_relative_dist(sorted[j].1, sorted[i].1) < 0 {
+                sorted.swap(i, j);
+            }
+        }
+    }
+    sorted
 }
 
 fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superblock_size8: usize) {
@@ -928,7 +939,7 @@ fn project_temporal_motion_field(
             let target_hint = i32::try_from(target_hint).unwrap_or(i32::MAX);
             let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
             let mut ref_offset = super::super::get_relative_dist(source_hint, target_hint);
-            if ref_offset == 0 || ref_offset.abs() > MAX_FRAME_DISTANCE {
+            if ref_offset.abs() > MAX_FRAME_DISTANCE {
                 continue;
             }
             if (side == 0 && ref_offset < 0) || (side == 1 && ref_offset > 0) {
@@ -1060,7 +1071,7 @@ fn project_no_constraint(v8: usize, delta: i32, max8: usize) -> Option<usize> {
 }
 
 fn project_mv(mv: Mv, numerator: i32, denominator: i32) -> Option<Mv> {
-    let denominator = denominator.clamp(1, MAX_FRAME_DISTANCE) as usize;
+    let denominator = denominator.clamp(0, MAX_FRAME_DISTANCE) as usize;
     let numerator = numerator.clamp(-MAX_FRAME_DISTANCE, MAX_FRAME_DISTANCE);
     let scale = DIV_MULT.get(denominator).copied()?;
     let bound = (1 << 16) - 1;
@@ -1243,6 +1254,35 @@ mod tests {
     }
 
     #[test]
+    fn tip_reference_pair_matches_sort_ref_order_for_equal_future_hints() {
+        let context = tip_context(
+            8,
+            vec![
+                Some(10),
+                Some(7),
+                Some(6),
+                Some(10),
+                Some(5),
+                Some(4),
+                Some(3),
+            ],
+            4,
+            4,
+        );
+
+        assert_eq!(
+            context.tip_reference_pair(),
+            Some(TipReferencePair {
+                past_ref: 1,
+                future_ref: 3,
+                past_offset: 1,
+                future_offset: -2,
+                ref_offset: 3,
+            })
+        );
+    }
+
+    #[test]
     fn tip_reference_pair_uses_the_two_nearest_past_references() {
         let context = tip_context(10, vec![Some(2), Some(6), Some(9)], 4, 4);
 
@@ -1389,6 +1429,44 @@ mod tests {
             })
         );
         assert!(!output.cell(8, 27).unwrap().valid);
+    }
+
+    #[test]
+    fn projection_records_zero_offset_reference() {
+        let mut source = TemporalMotionField::new(4, 4).unwrap();
+        *source.cell_mut(0, 0).unwrap() = TemporalMotionCell {
+            ref_order_hints: [Some(4), None],
+            mvs: [Mv::ZERO, Mv::ZERO],
+        };
+        let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
+
+        project_temporal_motion_field(
+            &source,
+            4,
+            2,
+            1,
+            8,
+            0,
+            0,
+            None,
+            &[Some(4)],
+            None,
+            &mut output,
+        );
+
+        assert_eq!(
+            output.cell(0, 0),
+            Some(ProjectedTemporalMotionCell {
+                valid: true,
+                mv: Mv::ZERO,
+                ref_offset: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn zero_offset_projection_uses_the_zero_divisor_multiplier() {
+        assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Some(Mv::ZERO));
     }
 
     #[test]

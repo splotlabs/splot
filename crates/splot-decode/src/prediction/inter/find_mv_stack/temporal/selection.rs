@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use super::{MAX_FRAME_DISTANCE, TemporalMotionField, TemporalProjectionConfig};
+use super::{
+    MAX_FRAME_DISTANCE, TemporalMotionField, TemporalProjectionConfig, sorted_reference_hints,
+};
 
 const TIP_MFMV_STACK_SIZE: usize = 3;
 const MFMV_STACK_SIZE: usize = 4;
@@ -109,16 +111,10 @@ pub(super) fn projection_queue(
     ref_order_hints: &[Option<u32>],
     ref_motion_fields: &[Option<TemporalMotionField>],
 ) -> Vec<TemporalProjection> {
-    let mut sorted: Vec<_> = (0..ref_order_hints.len())
-        .filter(|&index| ref_order_hints[index].is_some())
-        .collect();
-    sorted.sort_by(|&a, &b| {
-        relative_distance(
-            ref_order_hints[a].unwrap_or(0),
-            ref_order_hints[b].unwrap_or(0),
-        )
-        .cmp(&0)
-    });
+    let sorted = sorted_reference_hints(ref_order_hints)
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
     let overlays: Vec<_> = (0..ref_order_hints.len())
         .map(|index| {
             let Some(hint) = ref_order_hints[index] else {
@@ -358,6 +354,44 @@ mod tests {
                     target_ref: None,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn tip_projection_pair_matches_sort_ref_order_for_equal_future_hints() {
+        let fields = std::array::from_fn::<_, 7, _>(|_| Some(reference_field(4, 4, &[])));
+        let ref_order_hints = [
+            Some(10),
+            Some(7),
+            Some(6),
+            Some(10),
+            Some(5),
+            Some(4),
+            Some(3),
+        ];
+        let queue = projection_queue(
+            (4, 4),
+            8,
+            TemporalProjectionConfig {
+                frame_size: (16, 16),
+                step: 1,
+                unit_size8: 8,
+                enable_tip: true,
+                enable_trajectory: false,
+                reduced: false,
+            },
+            &[0, 1, 2, 3, 4, 5, 6],
+            &ref_order_hints,
+            &fields,
+        );
+
+        assert_eq!(
+            queue.first(),
+            Some(&TemporalProjection {
+                ref_index: 3,
+                side: 0,
+                target_ref: Some(1),
+            })
         );
     }
 

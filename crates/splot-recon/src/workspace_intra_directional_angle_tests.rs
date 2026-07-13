@@ -5,9 +5,11 @@
 
 use crate::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, IntraDirectionalAngle,
-    IntraDirectionalAngleEdge, IntraDirectionalAngleEdges, IntraMiddleDirectionalAngle,
-    IntraMiddleDirectionalAngleEdges, IntraRectBlockSize, OutputIndex, PixelFormat, PlaneId,
-    PlaneRect, PlaneSize, ReconError, ReconSample, predict_intra_directional_angle_rect_into,
+    IntraDirectionalAngleEdge, IntraDirectionalAngleEdges, IntraDirectionalAngleIdifEdges,
+    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges, IntraRectBlockSize, OutputIndex,
+    PixelFormat, PlaneId, PlaneRect, PlaneSize, ReconError, ReconSample,
+    predict_intra_directional_angle_rect_into,
+    predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_into,
 };
 
@@ -77,6 +79,15 @@ fn workspace_rect_samples<T: ReconSample>(
         .unwrap()
         .flat_map(|row| row.iter().copied())
         .collect()
+}
+
+fn one_sided_idif_edge<T: Copy>(corner: T, edge: &[T]) -> Vec<T> {
+    let mut idif = vec![corner, corner];
+    // splot-copy-ok: materialize the independent expected IDIF edge in test storage
+    idif.extend_from_slice(edge);
+    // splot-copy-ok: materialize the independent expected IDIF tail in test storage
+    idif.extend_from_slice(&[edge[edge.len() - 1]; 2]);
+    idif
 }
 
 fn predict_middle_d135_with_edges(
@@ -239,53 +250,145 @@ fn workspace_predicts_middle_directional_angle_from_in_storage_edges() {
 fn workspace_directional_angle_accepts_10_bit_u16_samples() {
     let block = rect_block(2, 2);
     let target = rect(1, 1, block.width(), block.height());
+    let corner = 64_u16;
     let above = [128_u16, 256, 384, 512, 640, 768, 896, 1000];
-    let mut workspace = workspace_with_format(BitDepth::Ten, PixelFormat::Yuv444, 10, 6, 0_u16);
+    let idif = one_sided_idif_edge(corner, &above);
+    let mut workspace = workspace(BitDepth::Ten, 10, 6, 0_u16);
     workspace
-        .write_rect(PlaneId::U, rect(1, 0, above.len(), 1), &above, above.len())
+        .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[corner], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(1, 0, above.len(), 1), &above, above.len())
         .unwrap();
 
     let mut expected = vec![0_u16; block.width() * block.height()];
-    predict_intra_directional_angle_rect_into(
+    predict_intra_directional_angle_rect_one_sided_idif_into(
         BitDepth::Ten,
         block,
         IntraDirectionalAngle::D67,
-        IntraDirectionalAngleEdges::above(&above),
+        IntraDirectionalAngleIdifEdges::above(&idif),
         &mut expected,
         block.width(),
     )
     .unwrap();
 
     workspace
-        .predict_intra_directional_angle_rect(PlaneId::U, 1, 1, block, IntraDirectionalAngle::D67)
+        .predict_intra_directional_angle_rect(PlaneId::Y, 1, 1, block, IntraDirectionalAngle::D67)
         .unwrap();
     assert_eq!(
-        workspace_rect_samples(&workspace, PlaneId::U, target),
+        workspace_rect_samples(&workspace, PlaneId::Y, target),
         expected
     );
 }
 
 #[test]
-fn workspace_one_sided_directional_angle_still_rejects_luma() {
+fn workspace_predicts_luma_one_sided_idif_from_in_storage_above_edge() {
     let block = rect_block(2, 2);
-    let mut workspace = workspace(BitDepth::Eight, 8, 8, 0_u8);
+    let target = rect(1, 1, block.width(), block.height());
+    let corner = 7_u8;
+    let above = [12, 20, 28, 36, 44, 52, 60, 68];
+    let idif = one_sided_idif_edge(corner, &above);
 
-    assert!(matches!(
-        workspace.predict_intra_directional_angle_rect(
-            PlaneId::Y,
-            1,
-            1,
+    for angle in [IntraDirectionalAngle::D45, IntraDirectionalAngle::D67] {
+        let mut workspace = workspace(BitDepth::Eight, 10, 6, 0_u8);
+        workspace
+            .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[corner], 1)
+            .unwrap();
+        workspace
+            .write_rect(PlaneId::Y, rect(1, 0, above.len(), 1), &above, above.len())
+            .unwrap();
+
+        let mut expected = vec![0_u8; block.width() * block.height()];
+        predict_intra_directional_angle_rect_one_sided_idif_into(
+            BitDepth::Eight,
             block,
-            IntraDirectionalAngle::D45
-        ),
-        Err(
-            ReconError::WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
-                plane: PlaneId::Y,
-                p_angle: 45,
-                rect
-            }
-        ) if rect == PlaneRect::new(1, 1, 4, 4).unwrap()
-    ));
+            angle,
+            IntraDirectionalAngleIdifEdges::above(&idif),
+            &mut expected,
+            block.width(),
+        )
+        .unwrap();
+
+        workspace
+            .predict_intra_directional_angle_rect(PlaneId::Y, 1, 1, block, angle)
+            .unwrap();
+        assert_eq!(
+            workspace_rect_samples(&workspace, PlaneId::Y, target),
+            expected
+        );
+    }
+}
+
+#[test]
+fn workspace_predicts_luma_one_sided_idif_from_in_storage_left_edge() {
+    let block = rect_block(2, 2);
+    let target = rect(1, 1, block.width(), block.height());
+    let corner = 5_u8;
+    let left = [10, 20, 30, 40, 50, 60, 70, 80];
+    let idif = one_sided_idif_edge(corner, &left);
+    let mut workspace = workspace(BitDepth::Eight, 6, 10, 0_u8);
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 1, 1), &[corner], 1)
+        .unwrap();
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 1, 1, left.len()), &left, 1)
+        .unwrap();
+
+    let mut expected = vec![0_u8; block.width() * block.height()];
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        block,
+        IntraDirectionalAngle::D203,
+        IntraDirectionalAngleIdifEdges::left(&idif),
+        &mut expected,
+        block.width(),
+    )
+    .unwrap();
+
+    workspace
+        .predict_intra_directional_angle_rect(PlaneId::Y, 1, 1, block, IntraDirectionalAngle::D203)
+        .unwrap();
+    assert_eq!(
+        workspace_rect_samples(&workspace, PlaneId::Y, target),
+        [
+            13, 17, 21, 25, 24, 28, 31, 35, 34, 38, 41, 45, 44, 48, 51, 55
+        ]
+    );
+    assert_eq!(
+        expected,
+        workspace_rect_samples(&workspace, PlaneId::Y, target)
+    );
+}
+
+#[test]
+fn workspace_luma_one_sided_idif_uses_own_edge_sample_when_corner_is_out_of_frame() {
+    let block = rect_block(2, 2);
+    let target = rect(0, 1, block.width(), block.height());
+    let above = [12, 20, 28, 36, 44, 52, 60, 68];
+    let idif = one_sided_idif_edge(above[0], &above);
+    let mut workspace = workspace(BitDepth::Eight, 8, 6, 0_u8);
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, above.len(), 1), &above, above.len())
+        .unwrap();
+
+    let mut expected = vec![0_u8; block.width() * block.height()];
+    predict_intra_directional_angle_rect_one_sided_idif_into(
+        BitDepth::Eight,
+        block,
+        IntraDirectionalAngle::D67,
+        IntraDirectionalAngleIdifEdges::above(&idif),
+        &mut expected,
+        block.width(),
+    )
+    .unwrap();
+
+    workspace
+        .predict_intra_directional_angle_rect(PlaneId::Y, 0, 1, block, IntraDirectionalAngle::D67)
+        .unwrap();
+    assert_eq!(
+        workspace_rect_samples(&workspace, PlaneId::Y, target),
+        expected
+    );
 }
 
 #[test]

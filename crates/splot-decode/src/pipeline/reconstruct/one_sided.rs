@@ -271,6 +271,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     above_mrl_index: usize,
     secondary_mrl: bool,
     use_tcq: bool,
+    availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
@@ -287,10 +288,22 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
         height,
         mrl_index,
         above_mrl_index,
+        availability,
+        bit_depth,
     )?;
     if secondary_mrl {
-        let secondary =
-            cardinal_mrl_luma_prediction(workspace, direction, x, y, width, height, 0, 0)?;
+        let secondary = cardinal_mrl_luma_prediction(
+            workspace,
+            direction,
+            x,
+            y,
+            width,
+            height,
+            0,
+            0,
+            availability,
+            bit_depth,
+        )?;
         average_luma_prediction_with(&mut prediction, secondary)?;
     }
     let out = if block.all_zero {
@@ -322,10 +335,12 @@ fn cardinal_mrl_luma_prediction<T: ReconSample>(
     height: usize,
     mrl_index: usize,
     above_mrl_index: usize,
+    availability: IntraEdgeAvailability,
+    bit_depth: BitDepth,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let mut prediction = vec![T::default(); width * height];
     match direction {
-        IntraCardinalDirection::Vertical => {
+        IntraCardinalDirection::Vertical if availability.above => {
             let above_row = y
                 .checked_sub(1)
                 .and_then(|row| row.checked_sub(above_mrl_index))
@@ -341,7 +356,19 @@ fn cardinal_mrl_luma_prediction<T: ReconSample>(
                 }
             }
         }
-        IntraCardinalDirection::Horizontal => {
+        IntraCardinalDirection::Vertical => {
+            let sample = if availability.left {
+                let left_col = x
+                    .checked_sub(1)
+                    .and_then(|col| col.checked_sub(mrl_index))
+                    .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                workspace.reconstructed_sample(PlaneId::Y, left_col, y)?
+            } else {
+                noneighbour_above::<T>(bit_depth)
+            };
+            prediction.fill(sample);
+        }
+        IntraCardinalDirection::Horizontal if availability.left => {
             let left_col = x
                 .checked_sub(1)
                 .and_then(|col| col.checked_sub(mrl_index))
@@ -353,6 +380,18 @@ fn cardinal_mrl_luma_prediction<T: ReconSample>(
                     prediction[row * width + column] = sample;
                 }
             }
+        }
+        IntraCardinalDirection::Horizontal => {
+            let sample = if availability.above {
+                let above_row = y
+                    .checked_sub(1)
+                    .and_then(|row| row.checked_sub(above_mrl_index))
+                    .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                workspace.reconstructed_sample(PlaneId::Y, x, above_row)?
+            } else {
+                noneighbour_left::<T>(bit_depth)
+            };
+            prediction.fill(sample);
         }
     }
     Ok(prediction)
@@ -412,7 +451,11 @@ pub(crate) fn build_one_sided_above_idif_edge<T: ReconSample>(
         .and_then(|v| v.checked_sub(1))
         .and_then(|v| x.checked_add(v))
         .map_or(max_x, |limit| limit.min(max_x));
-    let corner_col = x.checked_sub(1).unwrap_or(x);
+    let corner_col = if availability.left {
+        x.checked_sub(1).unwrap_or(x)
+    } else {
+        x
+    };
     let edge = build_one_sided_idif_edge(
         width,
         height,
@@ -502,6 +545,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
     num4_below_left: usize,
     have_above: bool,
     mrl_index: usize,
+    above_mrl_index: usize,
     use_tcq: bool,
     luma_context: Option<LumaTransformTypeContext>,
     dpcm: Option<DpcmDirection>,
@@ -525,6 +569,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             num4_below_left,
             have_above,
             mrl_index,
+            above_mrl_index,
             availability.left,
             bit_depth,
             edge_filter,
@@ -543,6 +588,7 @@ pub(crate) fn reconstruct_general_intra_one_sided_left_neighbour_block_into<T: R
             num4_below_left,
             have_above,
             mrl_index,
+            0,
             availability.left,
             bit_depth,
             edge_filter,
@@ -601,6 +647,7 @@ fn predict_general_intra_luma_one_sided_left_mrl<T: ReconSample>(
     num4_below_left: usize,
     have_above: bool,
     mrl_index: usize,
+    above_mrl_index: usize,
     have_left: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -617,6 +664,7 @@ fn predict_general_intra_luma_one_sided_left_mrl<T: ReconSample>(
         num4_below_left,
         have_above,
         mrl_index,
+        above_mrl_index,
         have_left,
         bit_depth,
         edge_filter,
@@ -644,6 +692,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
     num4_below_left: usize,
     have_above: bool,
     mrl_index: usize,
+    above_mrl_index: usize,
     use_tcq: bool,
     have_left: bool,
     bit_depth: BitDepth,
@@ -658,6 +707,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
         num4_below_left,
         have_above,
         mrl_index,
+        above_mrl_index,
         have_left,
         bit_depth,
         OneSidedEdgeFilter::default(),
@@ -671,6 +721,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
         log2_height,
         num4_below_left,
         have_above,
+        0,
         0,
         have_left,
         bit_depth,
@@ -703,6 +754,7 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
     num4_below_left: usize,
     have_above: bool,
     mrl_index: usize,
+    above_mrl_index: usize,
     have_left: bool,
     bit_depth: BitDepth,
     edge_filter: OneSidedEdgeFilter,
@@ -718,11 +770,9 @@ pub(super) fn build_one_sided_left_idif_edge<T: ReconSample>(
                 |_| Ok(noneighbour_left::<T>(bit_depth)),
             );
         }
-        if mrl_index != 0 {
-            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
-        }
         let fallback_row = y
             .checked_sub(1)
+            .and_then(|row| row.checked_sub(above_mrl_index))
             .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
         let fallback = workspace.reconstructed_sample(plane_id, x, fallback_row)?;
         return build_one_sided_idif_edge(

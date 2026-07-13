@@ -55,11 +55,11 @@ pub(crate) fn encode_y4m_stream_from_plan(
         PipelineDecodedFrame::Eight(first_frame) => {
             write_y4m_stream(
                 &mut y4m,
-                first_frame,
+                first_frame.get(),
                 frame_rate,
                 &outputs,
                 |output| match &output.frame {
-                    PipelineDecodedFrame::Eight(frame) => Some(frame),
+                    PipelineDecodedFrame::Eight(frame) => Some(frame.get()),
                     PipelineDecodedFrame::Ten(_) => None,
                 },
             )?;
@@ -67,11 +67,11 @@ pub(crate) fn encode_y4m_stream_from_plan(
         PipelineDecodedFrame::Ten(first_frame) => {
             write_y4m_stream(
                 &mut y4m,
-                first_frame,
+                first_frame.get(),
                 frame_rate,
                 &outputs,
                 |output| match &output.frame {
-                    PipelineDecodedFrame::Ten(frame) => Some(frame),
+                    PipelineDecodedFrame::Ten(frame) => Some(frame.get()),
                     PipelineDecodedFrame::Eight(_) => None,
                 },
             )?;

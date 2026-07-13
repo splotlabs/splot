@@ -38,10 +38,6 @@ pub(crate) struct IntraLumaUnsupported {
 }
 
 impl IntraLumaUnsupported {
-    pub(crate) const fn new(reason_id: &'static str, message: &'static str) -> Self {
-        Self { reason_id, message }
-    }
-
     pub(crate) const fn reason_id(self) -> &'static str {
         self.reason_id
     }
@@ -313,6 +309,7 @@ impl IntraLumaPlan {
                     neighbours.num_below_left(),
                     neighbours.has_above(),
                     0,
+                    0,
                     use_tcq,
                     Some(luma_context),
                     None,
@@ -423,8 +420,6 @@ fn plan_directional_luma_angle(
     let has_edge = has_above || has_left;
     let supports_small_cardinal_edge =
         has_edge && block_ctx.block().width4() >= 2 && block_ctx.block().height4() >= 2;
-    let supports_small_one_sided_left =
-        has_left && block_ctx.block().width4() >= 2 && block_ctx.block().height4() >= 2;
     let supports_small_one_sided_above = has_above
         && has_left
         && block_ctx.block().width4() >= 2
@@ -435,7 +430,6 @@ fn plan_directional_luma_angle(
     let full_sb_with_edge = is_full_sb && has_edge;
     let full_sb_no_neighbour_cardinal = is_full_sb && is_top_left && allow_no_neighbour_cardinal;
     let full_sb_with_above = is_full_sb && has_above;
-    let full_sb_with_left = is_full_sb && has_left;
     let full_sb_left_only = full_sb_first_row && has_left;
     let full_sb_no_above_left = full_sb_left_only;
     let full_sb_above_left = full_sb_with_above && has_left;
@@ -465,7 +459,6 @@ fn plan_directional_luma_angle(
             || supports_small_one_sided_above
             || full_sb_no_above_left
             || (full_sb_top_left_no_neighbour
-                && block_ctx.bit_depth() == BitDepth::Eight
                 && matches!(
                     mode,
                     SupportedDirectionalLumaMode::D45 | SupportedDirectionalLumaMode::D67
@@ -475,15 +468,7 @@ fn plan_directional_luma_angle(
         .ok_or(UNSUPPORTED_D45_POSITION);
     }
     if p_angle > 180 && p_angle < 270 {
-        return (full_sb_with_left
-            || supports_small_one_sided_left
-            || (full_sb_top_left_no_neighbour
-                && allow_no_neighbour_cardinal
-                && block_ctx.bit_depth() == BitDepth::Eight
-                && matches!(mode, SupportedDirectionalLumaMode::D203)
-                && p_angle == directional_mode_p_angle(mode)))
-        .then_some(IntraLumaPlan::DirectionalOneSidedLeft { p_angle })
-        .ok_or(UNSUPPORTED_D203_POSITION);
+        return Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle });
     }
     match mode {
         SupportedDirectionalLumaMode::Vertical => {
@@ -530,9 +515,9 @@ fn plan_directional_luma_angle(
         SupportedDirectionalLumaMode::D67 => full_sb_above_left_with_above_right
             .then_some(IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 67 })
             .ok_or(UNSUPPORTED_D45_POSITION),
-        SupportedDirectionalLumaMode::D203 => full_sb_left_only
-            .then_some(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 })
-            .ok_or(UNSUPPORTED_D203_POSITION),
+        SupportedDirectionalLumaMode::D203 => {
+            Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 })
+        }
         SupportedDirectionalLumaMode::D135 => {
             if is_top_left && is_full_sb {
                 Ok(IntraLumaPlan::DirectionalFirst { mode })
@@ -613,15 +598,6 @@ const UNSUPPORTED_D45_POSITION: IntraLumaUnsupported = unsupported(
     ),
 );
 
-const UNSUPPORTED_D203_POSITION: IntraLumaUnsupported = unsupported(
-    "general_intra_d203_unverified_position",
-    missing_capability_message!(
-        "intra.luma.directional.d203",
-        neighbour = "left_below_left",
-        block = "non_full_sb_or_not_first_row",
-    ),
-);
-
 const UNSUPPORTED_MULTIBLOCK_DIRECTIONAL: IntraLumaUnsupported = unsupported(
     "general_intra_multiblock_directional_subblock",
     missing_capability_message!(
@@ -635,7 +611,7 @@ const UNSUPPORTED_DIRECTIONAL_NON_DCTONLY_SIZE: IntraLumaUnsupported = unsupport
     missing_capability_message!("intra.luma.directional.transform_set", block = "non_64x64"),
 );
 
-const UNSUPPORTED_LUMA_MODE: IntraLumaUnsupported = unsupported(
+pub(crate) const UNSUPPORTED_LUMA_MODE: IntraLumaUnsupported = unsupported(
     "general_intra_unsupported_luma_mode",
     missing_capability_message!("intra.luma.mode", mode = "unsupported"),
 );

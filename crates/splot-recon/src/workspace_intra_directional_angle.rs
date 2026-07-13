@@ -5,9 +5,11 @@
 
 use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
 use crate::{
-    BitDepth, IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraMiddleDirectionalAngle,
-    IntraMiddleDirectionalAngleEdges, IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize,
-    PlaneId, PlaneRect, ReconError, ReconSample, Result, predict_intra_directional_angle_rect_into,
+    BitDepth, IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleIdifEdges,
+    IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
+    IntraMiddleDirectionalAngleIdifEdges, IntraRectBlockSize, PlaneId, PlaneRect, ReconError,
+    ReconSample, Result, predict_intra_directional_angle_rect_into,
+    predict_intra_directional_angle_rect_one_sided_idif_into,
     predict_intra_middle_directional_angle_rect_idif_into,
     predict_intra_middle_directional_angle_rect_into,
 };
@@ -28,7 +30,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         angle: IntraDirectionalAngle,
     ) -> Result<()> {
         let rect = block_rect(x, y, size)?;
-        reject_luma_directional_angle(plane, angle.p_angle(), rect)?;
         let bit_depth = self.info.bit_depth();
         self.plane_mut(plane)?
             .predict_intra_directional_angle_rect(rect, size, angle, bit_depth)
@@ -55,20 +56,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     }
 }
 
-fn reject_luma_directional_angle(plane: PlaneId, p_angle: u16, rect: PlaneRect) -> Result<()> {
-    if matches!(plane, PlaneId::Y) {
-        Err(
-            ReconError::WorkspaceDirectionalAngleIntraPredictionLumaIdifUnsupported {
-                plane,
-                p_angle,
-                rect,
-            },
-        )
-    } else {
-        Ok(())
-    }
-}
-
 impl<T: ReconSample> CurrentFramePlane<T> {
     fn predict_intra_directional_angle_rect(
         &mut self,
@@ -88,15 +75,46 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             angle.p_angle(),
             directional_edge_context(edge_kind),
         )?;
-        let edges = super::workspace_edges::directional_angle_edges(edge_kind, &edge);
-        predict_intra_directional_angle_rect_into(
-            bit_depth,
-            size,
-            angle,
-            edges,
-            &mut self.samples[output_start..],
-            self.stride_samples,
-        )
+        if self.plane == PlaneId::Y {
+            let corner = self.one_sided_directional_corner(rect, edge_kind)?;
+            let idif_edge = extend_one_sided_idif_edge(corner, &edge)?;
+            let edges = match edge_kind {
+                IntraDirectionalAngleEdge::Above => {
+                    IntraDirectionalAngleIdifEdges::above(&idif_edge)
+                }
+                IntraDirectionalAngleEdge::Left => IntraDirectionalAngleIdifEdges::left(&idif_edge),
+            };
+            predict_intra_directional_angle_rect_one_sided_idif_into(
+                bit_depth,
+                size,
+                angle,
+                edges,
+                &mut self.samples[output_start..],
+                self.stride_samples,
+            )
+        } else {
+            let edges = super::workspace_edges::directional_angle_edges(edge_kind, &edge);
+            predict_intra_directional_angle_rect_into(
+                bit_depth,
+                size,
+                angle,
+                edges,
+                &mut self.samples[output_start..],
+                self.stride_samples,
+            )
+        }
+    }
+
+    fn one_sided_directional_corner(
+        &self,
+        rect: PlaneRect,
+        edge: IntraDirectionalAngleEdge,
+    ) -> Result<T> {
+        let (x, y) = match edge {
+            IntraDirectionalAngleEdge::Above => (rect.x().saturating_sub(1), rect.y() - 1),
+            IntraDirectionalAngleEdge::Left => (rect.x() - 1, rect.y().saturating_sub(1)),
+        };
+        self.reconstructed_sample(x, y)
     }
 
     fn predict_intra_middle_directional_angle_rect(
@@ -162,6 +180,30 @@ fn directional_angle_edge_len(size: IntraRectBlockSize) -> Result<usize> {
 
 fn extend_middle_idif_edges<T: ReconSample>(left: &[T], above: &[T]) -> Result<(Vec<T>, Vec<T>)> {
     Ok((extend_one_idif_edge(left)?, extend_one_idif_edge(above)?))
+}
+
+fn extend_one_sided_idif_edge<T: ReconSample>(corner: T, edge: &[T]) -> Result<Vec<T>> {
+    let last = *edge.last().ok_or(ReconError::ArithmeticOverflow {
+        context: "workspace one-sided directional angle IDIF edge sample",
+    })?;
+    let out_len = edge
+        .len()
+        .checked_add(4)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "workspace one-sided directional angle IDIF edge length",
+        })?;
+    let mut out = Vec::new();
+    out.try_reserve_exact(out_len)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "workspace one-sided directional angle IDIF edge allocation",
+        })?;
+    out.push(corner);
+    out.push(corner);
+    // splot-copy-ok: build the IDIF edge extension in bounded scratch storage
+    out.extend_from_slice(edge);
+    out.push(last);
+    out.push(last);
+    Ok(out)
 }
 
 fn extend_one_idif_edge<T: ReconSample>(edge: &[T]) -> Result<Vec<T>> {

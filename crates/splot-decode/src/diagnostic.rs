@@ -239,7 +239,8 @@ const fn malformed_source_spec_section(kind: DecodeSourceIssueKind) -> Option<&'
         DecodeSourceIssueKind::AnnexBParseError
         | DecodeSourceIssueKind::IvfFramePayloadError
         | DecodeSourceIssueKind::IvfContainerError
-        | DecodeSourceIssueKind::IvfWarning => None,
+        | DecodeSourceIssueKind::IvfWarning
+        | DecodeSourceIssueKind::IvfUnsupportedCodec => None,
     }
 }
 

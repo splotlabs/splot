@@ -21,37 +21,30 @@ fn raw_obu_limit_is_checked_before_parsing_next_obu() {
             source
         } if source.name() == DecodeLimitName::MaxObus
     ));
-}
 
-#[test]
-fn unsupported_prefix_is_reported_before_later_obu_limit() {
-    let bytes = [0x01, 0x14, 0x01, 0x08];
-    let options = DecodeOptions::new(
-        DecodeLimits::unlimited().with_max_obus(crate::DecodeLimitThreshold::Max(1)),
-    );
-
+    let bytes = [0x01, 0x50, 0x01, 0x08];
     let error = plan_byte_stream(&bytes, &options).unwrap_err();
 
     assert!(matches!(
         error,
         crate::DecodeError::UnsupportedStructure {
             unsupported
-        } if unsupported.reason() == DecodeUnsupportedReason::UnsupportedFrameObu
+        } if unsupported.reason() == DecodeUnsupportedReason::MultistreamSelection
     ));
 }
 
 #[test]
 fn malformed_suffix_is_reported_after_unsupported_prefix() {
-    let bytes = [0x01, 0x14, 0x05, 0x10];
+    for bytes in [[0x01, 0x14, 0x05, 0x10], [0x01, 0x1D, 0x05, 0x10]] {
+        let error = plan_byte_stream(&bytes, &DecodeOptions::default()).unwrap_err();
 
-    let error = plan_byte_stream(&bytes, &DecodeOptions::default()).unwrap_err();
-
-    assert!(matches!(
-        error,
-        crate::DecodeError::MalformedSource {
-            issue
-        } if issue.kind() == crate::DecodeSourceIssueKind::AnnexBParseError
-    ));
+        assert!(matches!(
+            error,
+            crate::DecodeError::MalformedSource {
+                issue
+            } if issue.kind() == crate::DecodeSourceIssueKind::AnnexBParseError
+        ));
+    }
 }
 
 #[test]

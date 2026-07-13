@@ -23,6 +23,7 @@ const CFL_FILTERS_420: [[[i32; 3]; 3]; 3] = [
     [[0, 0, 0], [1, 2, 1], [1, 2, 1]],
     [[0, 1, 0], [1, 4, 1], [0, 1, 0]],
 ];
+const CFL_FILTERS_422: [[i32; 3]; 3] = [[0, 4, 4], [2, 4, 2], [0, 8, 0]];
 const CFL_ALPHA_SHIFT: u32 = 11;
 const CFL_ALPHA_SCALE: i32 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
@@ -45,13 +46,6 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    if workspace.info().pixel_format() != PixelFormat::Yuv420 {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_non_420_chroma",
-            },
-        );
-    }
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let prediction = if cfl_params.index == CflIndex::Multi {
@@ -169,6 +163,9 @@ fn apply_cfl_prediction<T: ReconSample>(
     bit_depth: BitDepth,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = usize::from(pixel_format.subsampling_x());
+    let sub_y = usize::from(pixel_format.subsampling_y());
     let alpha_q3 = cfl_alpha_q3(
         workspace,
         plane_id,
@@ -193,11 +190,11 @@ fn apply_cfl_prediction<T: ReconSample>(
     let max = i32::from(bit_depth.max_sample());
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
-        let luma_y = chroma_y.saturating_mul(2);
+        let luma_y = chroma_y << sub_y;
         let clamp_y = row == 0 || luma_y % 64 == 0;
         for col in 0..width {
             let chroma_x = x.saturating_add(col);
-            let luma_x = chroma_x.saturating_mul(2);
+            let luma_x = chroma_x << sub_x;
             let clamp_x = col == 0 || luma_x % 64 == 0;
             let luma = cfl_luma_q3(
                 workspace,
@@ -264,6 +261,9 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = usize::from(pixel_format.subsampling_x());
+    let sub_y = usize::from(pixel_format.subsampling_y());
     let have_above = y > 0;
     let have_left = x > 0;
     let (mut num_above, mut num_left) = if have_above && have_left {
@@ -289,12 +289,12 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     let mut sum_xy = 0i32;
     let mut sum_xx = 0i32;
     if num_above > 0 {
-        let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib);
+        let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
         let step = width.checked_div(num_above).unwrap_or(0).max(1);
         let start = if step == 1 { 0 } else { step >> 1 };
         for col in (start..width).step_by(step) {
             let chroma_x = x.saturating_add(col);
-            let luma_x = chroma_x.saturating_mul(2);
+            let luma_x = chroma_x << sub_x;
             let clamp_x = col == 0 || luma_x % 64 == 0;
             let luma = cfl_luma_q3_with_min_y(
                 workspace,
@@ -319,7 +319,7 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
         let start = if step == 1 { 0 } else { step >> 1 };
         for row in (start..height).step_by(step) {
             let chroma_y = y.saturating_add(row);
-            let luma_y = chroma_y.saturating_mul(2);
+            let luma_y = chroma_y << sub_y;
             let clamp_y = row == 0 || luma_y % 64 == 0;
             let luma = cfl_luma_q3(
                 workspace,
@@ -364,15 +364,18 @@ fn cfl_luma_average_q3<T: ReconSample>(
     sb_mib: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = usize::from(pixel_format.subsampling_x());
+    let sub_y = usize::from(pixel_format.subsampling_y());
     let step_w = if width > 32 { 2 } else { 1 };
     let step_h = if height > 32 { 2 } else { 1 };
     let mut sum = 0u32;
     let mut count = 0u32;
     if let Some(above_y) = y.checked_sub(1) {
-        let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib);
+        let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
         for col in (0..width).step_by(step_w) {
             let chroma_x = x.saturating_add(col);
-            let luma_x = chroma_x.saturating_mul(2);
+            let luma_x = chroma_x << sub_x;
             let clamp_x = col == 0 || luma_x % 64 == 0;
             sum = sum.saturating_add(cfl_luma_q3_with_min_y(
                 workspace,
@@ -389,7 +392,7 @@ fn cfl_luma_average_q3<T: ReconSample>(
     if let Some(left_x) = x.checked_sub(1) {
         for row in (0..height).step_by(step_h) {
             let chroma_y = y.saturating_add(row);
-            let luma_y = chroma_y.saturating_mul(2);
+            let luma_y = chroma_y << sub_y;
             let clamp_y = row == 0 || luma_y % 64 == 0;
             sum = sum.saturating_add(cfl_luma_q3(
                 workspace,
@@ -428,8 +431,13 @@ fn cfl_luma_q3<T: ReconSample>(
     )
 }
 
-fn cfl_above_min_luma_ref_y(chroma_y: usize, sb_mib: usize) -> Option<isize> {
-    let luma_mi_row = chroma_y / 2;
+fn cfl_above_min_luma_ref_y(
+    chroma_y: usize,
+    sb_mib: usize,
+    pixel_format: PixelFormat,
+) -> Option<isize> {
+    let luma_y = chroma_y << pixel_format.subsampling_y();
+    let luma_mi_row = luma_y / MI_SIZE;
     let sb_height_luma = sb_mib.saturating_mul(MI_SIZE);
     let sb_start_luma_y = if sb_mib == 0 {
         0
@@ -532,11 +540,14 @@ fn mhccp_references<T: ReconSample>(
     num4_above_right: usize,
     num4_below_left: usize,
 ) -> core::result::Result<MhccpRefs, GeneralIntraResidualError> {
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = usize::from(pixel_format.subsampling_x());
+    let sub_y = usize::from(pixel_format.subsampling_y());
     let have_above = y > 0;
     let have_left = x > 0;
     let above = if have_above { y.min(2) } else { 0 };
     let left = if have_left { x.min(2) } else { 0 };
-    let luma_mi_row = y / 2;
+    let luma_mi_row = (y << sub_y) / MI_SIZE;
     let sb_height_luma = sb_mib.saturating_mul(MI_SIZE);
     let sb_start_luma_y = if sb_mib == 0 {
         0
@@ -545,13 +556,13 @@ fn mhccp_references<T: ReconSample>(
             .checked_div(sb_mib)
             .map_or(0, |sb_row| sb_row.saturating_mul(sb_height_luma))
     };
-    let sb_chroma_y = sb_start_luma_y / 2;
+    let sb_chroma_y = sb_start_luma_y >> sub_y;
     let min_chroma_ref_y = sb_chroma_y.saturating_sub(1);
     let min_luma_ref_y = isize::try_from(sb_start_luma_y)
         .ok()
         .and_then(|sb_y| sb_y.checked_sub(1));
-    let luma_width = width.saturating_mul(2);
-    let luma_height = height.saturating_mul(2);
+    let luma_width = width << sub_x;
+    let luma_height = height << sub_y;
     let extra_right = if have_above && luma_width > MI_SIZE {
         num4_above_right.saturating_mul(MI_SIZE).min(width)
     } else {
@@ -568,12 +579,12 @@ fn mhccp_references<T: ReconSample>(
     let ref_width = left
         .saturating_add(width)
         .saturating_add(extra_right)
-        .min(64)
+        .min(128 >> sub_x)
         .min(left.saturating_add(frame_right));
     let ref_height = above
         .saturating_add(height)
         .saturating_add(extra_bottom)
-        .min(64)
+        .min(128 >> sub_y)
         .min(above.saturating_add(frame_bottom));
     if ref_width < left.saturating_add(width) || ref_height < above.saturating_add(height) {
         return Err(
@@ -631,12 +642,21 @@ fn cfl_luma_q3_with_min_y<T: ReconSample>(
     let Some(filter_index) = cfl_filter_index(cfl_ds_filter_index) else {
         return Ok(0);
     };
-    let luma_x = (chroma_x.saturating_mul(2)) as isize;
-    let luma_y = (chroma_y.saturating_mul(2)) as isize;
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = isize::from(pixel_format.subsampling_x());
+    let sub_y = isize::from(pixel_format.subsampling_y());
+    let luma_x = (chroma_x << sub_x) as isize;
+    let luma_y = (chroma_y << sub_y) as isize;
     let mut total = 0i32;
-    for (dy_index, dy) in [-1isize, 0, 1].into_iter().enumerate() {
-        for (dx_index, dx) in [-1isize, 0, 1].into_iter().enumerate() {
-            let weight = CFL_FILTERS_420[filter_index][dy_index][dx_index];
+    for dy in -sub_y..=sub_y {
+        for dx in -sub_x..=sub_x {
+            let weight = if sub_x != 0 && sub_y != 0 {
+                CFL_FILTERS_420[filter_index][(dy + sub_y) as usize][(dx + sub_x) as usize]
+            } else if sub_x != 0 {
+                CFL_FILTERS_422[filter_index][(dx + sub_x) as usize]
+            } else {
+                8
+            };
             if weight == 0 {
                 continue;
             }

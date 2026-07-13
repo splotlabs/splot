@@ -433,7 +433,41 @@ fn predict_two_sided_middle_luma_mrl<T: ReconSample>(
             build_top_row_left_only_middle_mrl_above_idif_edge(workspace, x, y, width, mrl_index)?,
             build_top_row_left_only_middle_mrl_left_idif_edge(workspace, x, y, height, mrl_index)?,
         ),
-        (false, false) => return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge),
+        (false, false) => {
+            let corner = noneighbour_corner::<T>(bit_depth);
+            (
+                build_two_sided_middle_mrl_idif_edge(
+                    width,
+                    mrl_index,
+                    i32::try_from(width)
+                        .ok()
+                        .and_then(|width| width.checked_add(1))
+                        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?,
+                    |logical| {
+                        Ok(if logical < 0 {
+                            corner
+                        } else {
+                            noneighbour_above::<T>(bit_depth)
+                        })
+                    },
+                )?,
+                build_two_sided_middle_mrl_idif_edge(
+                    height,
+                    mrl_index,
+                    i32::try_from(height)
+                        .ok()
+                        .and_then(|height| height.checked_add(1))
+                        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?,
+                    |logical| {
+                        Ok(if logical < 0 {
+                            corner
+                        } else {
+                            noneighbour_left::<T>(bit_depth)
+                        })
+                    },
+                )?,
+            )
+        }
     };
     let mut prediction = vec![T::default(); width * height];
     predict_intra_middle_directional_angle_rect_idif_mrl_into(

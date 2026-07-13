@@ -75,6 +75,14 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeReferenceStateError {
+    /// A frame header named a slot outside the active reference buffer.
+    #[error("reference slot {slot} is outside the active {slot_count}-slot buffer")]
+    SlotOutOfRange {
+        /// Zero-based slot index from the frame header.
+        slot: usize,
+        /// Active reference-slot count.
+        slot_count: usize,
+    },
     /// A slot marked valid had no decoded-frame index attached.
     #[error("valid reference slot {slot} has no stored decoded-frame index")]
     MissingFrame {
@@ -110,6 +118,12 @@ pub enum DecodeReferenceStateError {
         actual_width: usize,
         /// Retained decoded-frame coded luma height in samples.
         actual_height: usize,
+    },
+    /// A derive-order-hint SEF selected a slot that § 6.17.2 does not permit showing.
+    #[error("reference slot {slot} is not eligible for derive-order-hint show-existing output")]
+    ShowExistingFrameIneligible {
+        /// Zero-based reference slot index.
+        slot: usize,
     },
 }
 

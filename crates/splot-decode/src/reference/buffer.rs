@@ -8,12 +8,16 @@
 //!
 //! Feature tracking: `DECODE-INTER-MULTIREF-RUNTIME`.
 
-use splot_core::headers::frame::CcsoParams;
+use splot_core::headers::frame::{
+    CcsoParams, GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+};
+use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
 
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::filters::ccso::CcsoUnitGrid;
+use crate::pipeline::ActiveFilmGrain;
 use crate::pipeline::PipelineFrame;
 use crate::prediction::inter::TemporalMotionField;
 
@@ -32,6 +36,9 @@ struct Slot {
     delta_q_v_ac: i32,
     is_inter: bool,
     adapted: bool,
+    num_total_refs: u32,
+    saved_order_hints: SavedGlobalMotionOrderHints,
+    saved_gm_params: SavedGlobalMotionParams,
     lr_frame_filter_class_counts: [u8; 3],
     lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     frame_index: Option<usize>,
@@ -39,6 +46,10 @@ struct Slot {
     ccso_params: Option<CcsoParams>,
     ccso_grid: Option<CcsoUnitGrid>,
     motion_field: Option<TemporalMotionField>,
+    long_term_id: Option<u32>,
+    display_grain: Option<ActiveFilmGrain>,
+    embedded_layer_id: EmbeddedLayerId,
+    output_done: bool,
 }
 
 impl Slot {
@@ -56,6 +67,9 @@ impl Slot {
         delta_q_v_ac: 0,
         is_inter: false,
         adapted: false,
+        num_total_refs: 0,
+        saved_order_hints: [0; 7],
+        saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0; 3],
         lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
         frame_index: None,
@@ -63,6 +77,10 @@ impl Slot {
         ccso_params: None,
         ccso_grid: None,
         motion_field: None,
+        long_term_id: None,
+        display_grain: None,
+        embedded_layer_id: EmbeddedLayerId::from_bits(0),
+        output_done: false,
     };
 
     fn refresh(&mut self, frame_index: usize, update: &FrameRefUpdate, valid: bool, counter: u32) {
@@ -80,6 +98,9 @@ impl Slot {
             delta_q_v_ac: update.delta_q_v_ac,
             is_inter: update.is_inter,
             adapted: update.adapted,
+            num_total_refs: update.num_total_refs,
+            saved_order_hints: update.saved_order_hints,
+            saved_gm_params: update.saved_gm_params,
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
             lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
             frame_index: Some(frame_index),
@@ -87,6 +108,10 @@ impl Slot {
             ccso_params: update.ccso_params.clone(),
             ccso_grid: update.ccso_grid.clone(),
             motion_field: Some(update.motion_field.clone()),
+            long_term_id: update.long_term_id,
+            display_grain: None,
+            embedded_layer_id: update.embedded_layer_id,
+            output_done: false,
         };
     }
 }
@@ -106,18 +131,31 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) is_key_or_switch: bool,
     pub(crate) is_inter: bool,
     pub(crate) adapted: bool,
+    pub(crate) num_total_refs: u32,
+    pub(crate) saved_order_hints: SavedGlobalMotionOrderHints,
+    pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
     pub(crate) lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     pub(crate) frame_cdfs: FrameCdfSubset,
     pub(crate) ccso_params: Option<CcsoParams>,
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
     pub(crate) motion_field: TemporalMotionField,
+    pub(crate) long_term_id: Option<u32>,
+    pub(crate) embedded_layer_id: EmbeddedLayerId,
+}
+
+#[derive(Clone, Debug)]
+struct OpenLoopState {
+    refresh_frame_flags: u32,
+    co_vcl_refresh_frame_flags: u32,
+    ref_long_term_ids: Vec<u32>,
 }
 
 pub(crate) struct RuntimeReferenceBuffer {
     slots: Vec<Slot>,
     frame_counter: u32,
     started: bool,
+    open_loop: Option<OpenLoopState>,
 }
 
 impl RuntimeReferenceBuffer {
@@ -127,14 +165,60 @@ impl RuntimeReferenceBuffer {
             slots: vec![Slot::EMPTY; num_ref_frames],
             frame_counter: 0,
             started: false,
+            open_loop: None,
         })
     }
 
-    pub(crate) fn update(&mut self, frame_index: usize, update: &FrameRefUpdate) {
-        if self.started {
-            self.frame_counter = self.frame_counter.wrapping_add(1);
+    pub(crate) fn len(&self) -> usize {
+        self.slots.len()
+    }
+
+    pub(crate) fn prepare_for_frame(&mut self, obu_type: ObuType, first_picture_in_tu: bool) {
+        if first_picture_in_tu && (obu_type == ObuType::OpenLoopKey || is_regular_non_olk(obu_type))
+        {
+            self.finish_open_loop();
         }
-        self.started = true;
+    }
+
+    pub(crate) fn note_frame(
+        &mut self,
+        obu_type: ObuType,
+        first_picture_in_tu: bool,
+        update: &FrameRefUpdate,
+        ref_long_term_ids: &[u32],
+    ) {
+        if obu_type == ObuType::OpenLoopKey {
+            self.open_loop = Some(OpenLoopState {
+                refresh_frame_flags: update.refresh_frame_flags,
+                co_vcl_refresh_frame_flags: 0,
+                ref_long_term_ids: ref_long_term_ids.to_vec(),
+            });
+        } else if !first_picture_in_tu
+            && is_regular_non_olk(obu_type)
+            && let Some(open_loop) = self.open_loop.as_mut()
+        {
+            open_loop.co_vcl_refresh_frame_flags |= update.refresh_frame_flags;
+        }
+    }
+
+    fn finish_open_loop(&mut self) {
+        let Some(open_loop) = self.open_loop.take() else {
+            return;
+        };
+        let refreshed = open_loop.refresh_frame_flags | open_loop.co_vcl_refresh_frame_flags;
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            let retained_by_refresh = (refreshed >> index) & 1 != 0;
+            let retained_long_term = slot
+                .long_term_id
+                .is_some_and(|id| open_loop.ref_long_term_ids.contains(&id));
+            if !retained_by_refresh && !retained_long_term {
+                slot.valid = false;
+            }
+        }
+    }
+
+    pub(crate) fn update(&mut self, frame_index: usize, update: &FrameRefUpdate) {
+        self.advance_frame_counter();
         let mut first = true;
         for (i, slot) in self.slots.iter_mut().enumerate() {
             if (update.refresh_frame_flags >> i) & 1 == 0 {
@@ -144,6 +228,79 @@ impl RuntimeReferenceBuffer {
             first = false;
             slot.refresh(frame_index, update, valid, self.frame_counter);
         }
+    }
+
+    pub(crate) fn note_show_existing(&mut self) {
+        self.advance_frame_counter();
+    }
+
+    fn advance_frame_counter(&mut self) {
+        if self.started {
+            self.frame_counter = self.frame_counter.wrapping_add(1);
+        }
+        self.started = true;
+    }
+
+    pub(crate) fn save_grain_for_refreshed_slots(
+        &mut self,
+        refresh_frame_flags: u32,
+        display_grain: Option<&ActiveFilmGrain>,
+    ) {
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if (refresh_frame_flags >> index) & 1 != 0 {
+                slot.display_grain = display_grain.cloned();
+            }
+        }
+    }
+
+    pub(crate) fn save_grain_for_slot(
+        &mut self,
+        slot: u32,
+        display_grain: Option<ActiveFilmGrain>,
+    ) -> Result<()> {
+        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+        let slot_count = self.slots.len();
+        let stored =
+            self.slots
+                .get_mut(slot_index)
+                .ok_or(DecodeReferenceStateError::SlotOutOfRange {
+                    slot: slot_index,
+                    slot_count,
+                })?;
+        if !stored.valid {
+            return Err(DecodeReferenceStateError::MissingFrame { slot: slot_index }.into());
+        }
+        stored.display_grain = display_grain;
+        Ok(())
+    }
+
+    pub(crate) fn restrict_references_for_switch(
+        &mut self,
+        current_layer: EmbeddedLayerId,
+        presence: &splot_core::headers::sequence::MLayerPresenceMap,
+    ) -> Vec<usize> {
+        let mut restricted = Vec::new();
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if presence.is_present(current_layer, slot.embedded_layer_id) {
+                slot.order_hint = u32::MAX;
+                restricted.push(index);
+            }
+        }
+        restricted
+    }
+
+    pub(crate) fn retains_hidden_long_term_reference(
+        &self,
+        long_term_id: u32,
+        frame_index: usize,
+    ) -> bool {
+        self.slots.iter().any(|slot| {
+            slot.valid
+                && slot.long_term_id == Some(long_term_id)
+                && slot.frame_index == Some(frame_index)
+                && !slot.immediate_output_frame
+                && !slot.implicit_output_frame
+        })
     }
 
     pub(crate) fn build_store_eight<'a>(
@@ -202,6 +359,66 @@ impl RuntimeReferenceBuffer {
             .iter()
             .any(|slot| slot.valid && slot.frame_index == Some(frame_index))
     }
+
+    pub(crate) fn frame_index_for_slot(&self, slot: u32) -> Result<usize> {
+        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+        if slot_index >= self.slots.len() {
+            return Err(DecodeReferenceStateError::SlotOutOfRange {
+                slot: slot_index,
+                slot_count: self.slots.len(),
+            }
+            .into());
+        }
+        let slot = &self.slots[slot_index];
+        if !slot.valid {
+            return Err(DecodeReferenceStateError::MissingFrame { slot: slot_index }.into());
+        }
+        slot.frame_index
+            .ok_or_else(|| DecodeReferenceStateError::MissingFrame { slot: slot_index }.into())
+    }
+
+    pub(crate) fn mark_sef_derive_output(
+        &mut self,
+        slot: u32,
+        source_already_output: bool,
+    ) -> Result<()> {
+        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+        let slot_count = self.slots.len();
+        let stored =
+            self.slots
+                .get_mut(slot_index)
+                .ok_or(DecodeReferenceStateError::SlotOutOfRange {
+                    slot: slot_index,
+                    slot_count,
+                })?;
+        if !stored.valid {
+            return Err(DecodeReferenceStateError::MissingFrame { slot: slot_index }.into());
+        }
+        if source_already_output
+            || stored.output_done
+            || stored.implicit_output_frame
+            || stored.immediate_output_frame
+        {
+            return Err(DecodeReferenceStateError::ShowExistingFrameIneligible {
+                slot: slot_index,
+            }
+            .into());
+        }
+        stored.output_done = true;
+        Ok(())
+    }
+}
+
+fn is_regular_non_olk(obu_type: ObuType) -> bool {
+    matches!(
+        obu_type,
+        ObuType::RegularSef
+            | ObuType::RegularTip
+            | ObuType::Switch
+            | ObuType::RasFrame
+            | ObuType::BridgeFrame
+            | ObuType::RegularTileGroup
+    )
 }
 
 fn ensure_slot_matches_frame<T: splot_recon::ReconSample>(
@@ -244,7 +461,11 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_delta_q_u_ac: Vec<i32>,
     pub(crate) ref_delta_q_v_ac: Vec<i32>,
     pub(crate) ref_is_inter: Vec<bool>,
+    pub(crate) ref_long_term_id: Vec<Option<u32>>,
     pub(crate) ref_adapted: Vec<bool>,
+    pub(crate) ref_num_total_refs: Vec<u32>,
+    pub(crate) saved_global_motion_order_hints: Vec<SavedGlobalMotionOrderHints>,
+    pub(crate) saved_global_motion_params: Vec<SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
@@ -268,7 +489,11 @@ impl ReferenceMetadata {
             ref_delta_q_u_ac: Vec::with_capacity(num),
             ref_delta_q_v_ac: Vec::with_capacity(num),
             ref_is_inter: Vec::with_capacity(num),
+            ref_long_term_id: Vec::with_capacity(num),
             ref_adapted: Vec::with_capacity(num),
+            ref_num_total_refs: Vec::with_capacity(num),
+            saved_global_motion_order_hints: Vec::with_capacity(num),
+            saved_global_motion_params: Vec::with_capacity(num),
             lr_frame_filter_class_counts: Vec::with_capacity(num),
             lr_frame_filter_taps: Vec::with_capacity(num),
             ref_frame_cdfs: Vec::with_capacity(num),
@@ -293,7 +518,12 @@ impl ReferenceMetadata {
         self.ref_delta_q_u_ac.push(slot.delta_q_u_ac);
         self.ref_delta_q_v_ac.push(slot.delta_q_v_ac);
         self.ref_is_inter.push(slot.is_inter);
+        self.ref_long_term_id.push(slot.long_term_id);
         self.ref_adapted.push(slot.adapted);
+        self.ref_num_total_refs.push(slot.num_total_refs);
+        self.saved_global_motion_order_hints
+            .push(slot.saved_order_hints);
+        self.saved_global_motion_params.push(slot.saved_gm_params);
         self.lr_frame_filter_class_counts
             .push(slot.lr_frame_filter_class_counts);
         self.lr_frame_filter_taps

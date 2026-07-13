@@ -47,6 +47,7 @@ pub(super) fn parse_show_existing_frame(
     let frame_to_show_map_idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
     core.frame_to_show_map_idx = Some(frame_to_show_map_idx);
     let derive_sef_order_hint = reader.read_flag()?;
+    core.derive_sef_order_hint = Some(derive_sef_order_hint);
     if !derive_sef_order_hint {
         core.order_hint_lsb = Some(reader.read_f(seq.order_hint_bits)?);
         core.order_hint = get_disp_order_hint(

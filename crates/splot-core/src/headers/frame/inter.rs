@@ -274,6 +274,8 @@ pub struct InterControl {
     pub num_total_refs: Option<u32>,
     /// `ref_frame_idx[0..NumTotalRefs]` (mirror :4611-4625), when read or derived.
     pub ref_frame_idx: Vec<u32>,
+    /// `OrderHints[0..NumTotalRefs] = RefOrderHint[ref_frame_idx[i]]` (mirror :4711).
+    pub order_hints: Vec<u32>,
     /// `FrameWidth`/`FrameHeight` from the reference-grounded frame size (mirror
     /// :4627-4643), when exactly known.
     pub frame_size: Option<FrameSize>,
@@ -413,6 +415,9 @@ pub(crate) struct InterFrameContext {
     /// `OrderHint` (§ 5.18.2), including any extension beyond the coded `OrderHintLsbs`,
     /// threaded into the implicit reference-map ranking (`get_ref_frames()` § 7.7).
     pub order_hint: Option<u32>,
+    /// Bitmask of slots holding long-term references listed by the current RAS frame.
+    /// `None` means the required § 7.23 long-term-id state was unavailable.
+    pub ras_long_term_ref_mask: Option<u32>,
 }
 
 /// `RefValid[idx]` from the modeled reference state: `true` only when the slot is in
@@ -598,11 +603,26 @@ fn read_inter_refresh_frame_flags(
             let idx = ctx.bridge_frame_ref_idx.unwrap_or(0);
             return Ok(Some(1u32.wrapping_shl(idx)));
         }
+        if seq.enable_short_refresh_frame_flags {
+            return if reader.read_flag()? {
+                let idx = reader.read_f(ceil_log2(seq.num_ref_frames))?;
+                Ok(Some(1u32.wrapping_shl(idx)))
+            } else {
+                Ok(Some(0))
+            };
+        }
         return Ok(Some(reader.read_f(seq.num_ref_frames)?));
     }
 
     if ctx.obu_type == ObuType::RasFrame && seq.max_mlayer_id == 0 {
-        return Ok(None);
+        let Some(long_term_refs) = ctx.ras_long_term_ref_mask else {
+            return Ok(None);
+        };
+        let all_frames = 1u32
+            .checked_shl(seq.num_ref_frames)
+            .unwrap_or(0)
+            .wrapping_sub(1);
+        return Ok(Some(all_frames & !long_term_refs));
     }
 
     if ctx.frame_type == FrameType::Switch {
@@ -717,6 +737,18 @@ fn parse_inter_reference_region(
             return Ok(());
         }
     }
+
+    control.order_hints = control
+        .ref_frame_idx
+        .iter()
+        .take(num_total_refs as usize)
+        .map(|&slot| {
+            reference_state
+                .ref_order_hint
+                .and_then(|hints| hints.get(slot as usize).copied())
+                .unwrap_or(u32::MAX)
+        })
+        .collect();
 
     if seq.enable_bru && ctx.frame_type == FrameType::Inter && !is_tip && !ctx.is_bridge {
         let use_bru = reader.read_flag()?; // use_bru f(1)
@@ -1065,7 +1097,7 @@ fn derive_implicit_ref_map(
         order_hint: i32::try_from(current_order_hint).unwrap_or(i32::MAX),
         obu_mlayer_id: 0,
         obu_tlayer_id: 0,
-        allowed_frames: -1,
+        allowed_frames: ctx.ras_long_term_ref_mask.map_or(-1, |mask| mask as i32),
         is_bridge: false,
         bridge_frame_ref_idx: 0,
         frame_width,
@@ -1121,6 +1153,7 @@ mod tests {
             bridge_frame_ref_idx: None,
             cur_mfh_id_is_zero: true,
             order_hint: Some(0),
+            ras_long_term_ref_mask: None,
         }
     }
 
@@ -1173,6 +1206,44 @@ mod tests {
         );
         assert_eq!(control.disable_cdf_update, Some(false));
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
+    }
+
+    #[test]
+    fn bridge_overwrite_uses_short_refresh_flag_syntax() {
+        let mut bits = Bits::default();
+        bits.bit(1); // bridge_frame_overwrite_flag
+        bits.bit(1); // has_refresh_frame_flags
+        bits.f(5, 3); // frame_to_refresh
+        bits.f(1920 - 1, 12); // bridge_frame_width_minus_1
+        bits.f(1080 - 1, 12); // bridge_frame_height_minus_1
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let mut seq = inter_seq();
+        seq.enable_short_refresh_frame_flags = true;
+        let ctx = InterFrameContext {
+            obu_type: ObuType::BridgeFrame,
+            frame_type: FrameType::Inter,
+            is_bridge: true,
+            bridge_frame_ref_idx: Some(2),
+            cur_mfh_id_is_zero: true,
+            order_hint: Some(0),
+            ras_long_term_ref_mask: None,
+        };
+        let mut valid = [false; NUM_REF_FRAMES];
+        valid[2] = true;
+        let order_hints = [0; NUM_REF_FRAMES];
+        let mut widths = [0; NUM_REF_FRAMES];
+        let mut heights = [0; NUM_REF_FRAMES];
+        widths[2] = 1280;
+        heights[2] = 720;
+        let state = FrameReferenceStateView::from_slots(&valid, &order_hints, &widths, &heights);
+
+        let control = parse_inter_control(&mut reader, &seq, &ctx, &state, false).unwrap();
+
+        assert_eq!(control.refresh_frame_flags, Some(1 << 5));
+        assert_eq!(control.frame_size, Some(FrameSize::new(1280, 720)));
+        assert_eq!(control.stop, Some(InterStop::BruInactiveOrBridgeReturn));
+        assert_eq!(reader.consumed_bits(), 29);
     }
 
     /// AV2 § 5.18.2 (mirror :5039-5043): on the ordinary inter / switch path (TipFrameMode
@@ -2301,7 +2372,7 @@ mod tests {
         assert!(!tail.allow_warpmv_mode, "no DELTAWARP motion mode enabled");
         assert_eq!(tail.reduced_tx_set, 0);
         assert!(
-            !tail.use_global_motion,
+            !tail.global_motion.use_global_motion,
             "global motion enabled in the sequence but unused by this frame"
         );
         assert!(!tail.film_grain.apply_grain, "no film grain applied");

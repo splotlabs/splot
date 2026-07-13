@@ -51,7 +51,7 @@ pub(super) fn frame_header_core_checks(
     first_picture_in_tu: bool,
     active_sequence: &SequenceHeader,
     mfh_record: Option<&MultiFrameHeaderRecord>,
-    reference_state: FrameReferenceAvailability<'_>,
+    reference_state: &FrameReferenceAvailability<'_>,
     options: &ValidationOptions,
     report: &mut ValidationReport,
 ) -> FrameRapReferences {
@@ -60,7 +60,7 @@ pub(super) fn frame_header_core_checks(
         qm: qm_state,
         film_grain: film_grain_state,
         reference_buffer,
-    } = reference_state;
+    } = *reference_state;
     if obu.header.obu_type == ObuType::RasFrame
         && let Some(inter) = active_sequence.inter.as_ref()
         && inter.long_term_frame_id_bits == 0
@@ -145,7 +145,7 @@ pub(super) fn frame_header_core_checks(
         first_picture_in_tu,
         active_sequence,
         mfh_record,
-        reference_buffer,
+        &reference_buffer,
     ) else {
         return FrameRapReferences::default();
     };

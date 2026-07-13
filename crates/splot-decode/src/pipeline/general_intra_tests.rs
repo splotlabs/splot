@@ -6,7 +6,9 @@
 use std::{collections::BTreeSet, fmt::Debug};
 
 use splot_parallel::ThreadCount;
-use splot_recon::{BitDepth, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneSize, ReconSample};
+use splot_recon::{
+    BitDepth, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneSize, ReconSample, SharedFrame,
+};
 
 use super::*;
 use crate::bitstream::tile_payload::{
@@ -171,39 +173,36 @@ fn decode_context() -> DecodeContext {
     DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context")
 }
 
-fn decode_eight(fixture: &[u8]) -> DecodedFrame<u8> {
+fn decode_fixture(fixture: &[u8]) -> PipelineDecodedFrame {
     let options = DecodeOptions::default();
     let context = decode_context();
     let plan = context.plan_bytes(fixture, options).expect("plan");
-    let frame = context
+    context
         .pool()
         .install(|| decode_frame_from_plan(fixture, &options, &plan))
-        .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = frame.frame else {
+        .expect("decode")
+        .frame
+}
+
+pub(super) fn decode_eight(fixture: &[u8]) -> SharedFrame<u8> {
+    let PipelineDecodedFrame::Eight(frame) = decode_fixture(fixture) else {
         panic!("fixture decoded as 10-bit");
     };
     frame
 }
 
-fn decode_general_intra_luma(fixture: &[u8]) -> DecodedFrame<u8> {
+fn decode_general_intra_luma(fixture: &[u8]) -> SharedFrame<u8> {
     decode_eight(fixture)
 }
 
-fn decode_ten(fixture: &[u8]) -> DecodedFrame<u16> {
-    let options = DecodeOptions::default();
-    let context = decode_context();
-    let plan = context.plan_bytes(fixture, options).expect("plan");
-    let frame = context
-        .pool()
-        .install(|| decode_frame_from_plan(fixture, &options, &plan))
-        .expect("decode");
-    let PipelineDecodedFrame::Ten(frame) = frame.frame else {
+fn decode_ten(fixture: &[u8]) -> SharedFrame<u16> {
+    let PipelineDecodedFrame::Ten(frame) = decode_fixture(fixture) else {
         panic!("fixture decoded as 8-bit");
     };
     frame
 }
 
-fn assert_yuv420_frame<T: ReconSample>(
+pub(super) fn assert_yuv420_frame<T: ReconSample>(
     frame: &DecodedFrame<T>,
     bit_depth: BitDepth,
     width: usize,
@@ -217,7 +216,11 @@ fn assert_yuv420_frame<T: ReconSample>(
     );
 }
 
-fn assert_chroma_size<T: ReconSample>(frame: &DecodedFrame<T>, width: usize, height: usize) {
+pub(super) fn assert_chroma_size<T: ReconSample>(
+    frame: &DecodedFrame<T>,
+    width: usize,
+    height: usize,
+) {
     let size = PlaneSize::new(width, height).unwrap();
     assert_eq!(frame.u().unwrap().visible_size(), size);
     assert_eq!(frame.v().unwrap().visible_size(), size);
@@ -262,8 +265,20 @@ fn frame_hash<T: ReconSample>(frame: &DecodedFrame<T>) -> String {
     DecodedFrameHashInput::new(frame).compute_hash().to_hex()
 }
 
-fn assert_hash<T: ReconSample>(frame: &DecodedFrame<T>, expected: &str) {
+pub(super) fn assert_hash<T: ReconSample>(frame: &DecodedFrame<T>, expected: &str) {
     assert_eq!(frame_hash(frame), expected);
+}
+
+pub(super) fn assert_eight_bit_oracle(
+    fixture: &[u8],
+    frame_size: (usize, usize),
+    chroma_size: (usize, usize),
+    expected_hash: &str,
+) {
+    let frame = decode_eight(fixture);
+    assert_yuv420_frame(&frame, BitDepth::Eight, frame_size.0, frame_size.1);
+    assert_chroma_size(&frame, chroma_size.0, chroma_size.1);
+    assert_hash(&frame, expected_hash);
 }
 
 fn assert_all_samples_eq<T>(samples: &[T], expected: T, label: &str)
@@ -467,11 +482,10 @@ fn qmseg_intra_frame_decodes_to_oracle() {
 
 #[test]
 fn seqdeltaq_intra_frame_decodes_to_oracle() {
-    let frame = decode_eight(SEQDELTAQ_FIXTURE);
-    assert_yuv420_frame(&frame, BitDepth::Eight, 128, 64);
-    assert_chroma_size(&frame, 64, 32);
-    assert_hash(
-        &frame,
+    assert_eight_bit_oracle(
+        SEQDELTAQ_FIXTURE,
+        (128, 64),
+        (64, 32),
         "3febac78b0b0e4c27e1a080073d7f4ecf51b5a6d689f495169354834d4659c11",
     );
 }
@@ -1759,30 +1773,12 @@ fn grid_2d_intra_frame_decodes_to_oracle() {
     let u = frame.u().unwrap().samples();
     let v = frame.v().unwrap().samples();
 
-    assert!(
-        quad(u, 0, 0).iter().all(|&s| s == 110),
-        "U top-left flat 110"
-    );
-    assert!(
-        quad(u, 0, 1).iter().all(|&s| s == 200),
-        "U top-right flat 200"
-    );
-    assert!(
-        quad(u, 1, 1).iter().all(|&s| s == 130),
-        "U bottom-right flat 130"
-    );
-    assert!(
-        quad(v, 0, 0).iter().all(|&s| s == 120),
-        "V top-left flat 120"
-    );
-    assert!(
-        quad(v, 0, 1).iter().all(|&s| s == 160),
-        "V top-right flat 160"
-    );
-    assert!(
-        quad(v, 1, 1).iter().all(|&s| s == 140),
-        "V bottom-right flat 140"
-    );
+    assert_all_samples_eq(&quad(u, 0, 0), 110, "U top-left");
+    assert_all_samples_eq(&quad(u, 0, 1), 200, "U top-right");
+    assert_all_samples_eq(&quad(u, 1, 1), 130, "U bottom-right");
+    assert_all_samples_eq(&quad(v, 0, 0), 120, "V top-left");
+    assert_all_samples_eq(&quad(v, 0, 1), 160, "V top-right");
+    assert_all_samples_eq(&quad(v, 1, 1), 140, "V bottom-right");
 
     let u_bl = quad(u, 1, 0);
     let v_bl = quad(v, 1, 0);

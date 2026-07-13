@@ -52,33 +52,52 @@ fn derived_alpha() -> CflParams {
 }
 
 #[test]
-fn cfl_reconstruction_rejects_non_420_chroma_geometry() {
-    let mut frame = workspace(PixelFormat::Yuv444);
+fn cfl_reconstruction_supports_non_420_chroma_geometry() {
+    for pixel_format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
+        let mut frame = workspace(pixel_format);
 
-    let error = reconstruct_general_intra_chroma_cfl_block_into(
-        &mut frame,
-        &zero_block(),
-        PlaneId::U,
-        0,
-        0,
-        2,
-        2,
-        0,
-        derived_alpha(),
-        0,
-        16,
-        0,
-        0,
-        BitDepth::Eight,
-    )
-    .unwrap_err();
+        reconstruct_general_intra_chroma_cfl_block_into(
+            &mut frame,
+            &zero_block(),
+            PlaneId::U,
+            0,
+            0,
+            2,
+            2,
+            0,
+            derived_alpha(),
+            0,
+            16,
+            0,
+            0,
+            BitDepth::Eight,
+        )
+        .unwrap();
 
-    assert!(matches!(
-        error,
-        GeneralIntraResidualError::UnsupportedTransformToolResidual {
-            reason: "general_intra_cfl_non_420_chroma"
-        }
-    ));
+        assert_eq!(frame.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 128);
+    }
+}
+
+#[test]
+fn cfl_luma_sample_uses_422_and_444_filters() {
+    let luma = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    for (pixel_format, expected) in [(PixelFormat::Yuv422, 52), (PixelFormat::Yuv444, 40)] {
+        let mut frame = workspace(pixel_format);
+        frame
+            .write_rect_block(
+                PlaneId::Y,
+                0,
+                0,
+                IntraRectBlockSize::new(2, 2).unwrap(),
+                &luma,
+            )
+            .unwrap();
+
+        assert_eq!(
+            cfl_luma_q3(&frame, 1, 1, false, false, 0).unwrap(),
+            expected
+        );
+    }
 }
 
 #[test]
@@ -110,4 +129,17 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
     let threshold_not_extended =
         mhccp_references(&frame, PlaneId::U, 8, 0, 8, 2, 0, 16, 0, 1).unwrap();
     assert_eq!(threshold_not_extended.height, 2);
+}
+
+#[test]
+fn mhccp_reference_extensions_use_non_420_subsampling() {
+    for pixel_format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
+        let frame = workspace_sized(pixel_format, 128, 128);
+        let refs = mhccp_references(&frame, PlaneId::U, 32, 0, 16, 8, 0, 16, 0, 1).unwrap();
+
+        assert_eq!(
+            (refs.width, refs.height, refs.above, refs.left),
+            (18, 12, 0, 2)
+        );
+    }
 }

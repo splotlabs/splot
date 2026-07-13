@@ -35,8 +35,8 @@ use crate::bitstream::tile_payload::{
 use crate::error::{DecodeError, Result};
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
 use crate::{
-    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeOptions, DecodeRuntimeConfig,
-    DecodeStreamPlan,
+    DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
+    DecodeRuntimeConfig, DecodeStreamPlan,
 };
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -91,12 +91,20 @@ const SIMPLE_INTERINTRA_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-3frame-simple-interintra-64x32-10bit.ivf"
 );
 
+const FRACTIONAL_INTRABC_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-mono-intrabc-morph-128x128-q100.ivf"
+);
+
 const TWO_FRAME_SUBPEL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf"
 );
 
 const TWO_FRAME_RESIDUAL_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-residual-64x64.ivf"
+);
+
+const TWO_FRAME_Y_DC_DELTA_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-2frame-flatstep-inter-y-dc-delta1-64x64-q80.ivf"
 );
 
 const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
@@ -106,6 +114,9 @@ const TWO_FRAME_MVSTACK_FIXTURE: &[u8] = include_bytes!(
 const MULTI_SB_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2sb-inter-128x64-q80.ivf");
 
+const MULTI_TILE_INTER_FIXTURE: &[u8] =
+    include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2tile-inter-128x64-q80.ivf");
+
 const GRID_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-grid-inter-128x128-q80.ivf");
 
@@ -113,11 +124,16 @@ const MVORDER_INTER_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-mvorder-64x64.ivf"
 );
 
+const MULTI_TILE_LR_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/\
+     syn-2frame-lr-switchable-768x256-8bit.ivf"
+);
+
 const FLAT_LUMA: u8 = 100;
 const FLAT_CHROMA_U: u8 = 120;
 const FLAT_CHROMA_V: u8 = 130;
 
-fn decode_context() -> DecodeContext {
+pub(super) fn decode_context() -> DecodeContext {
     DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context")
 }
 
@@ -125,7 +141,7 @@ fn plan_fixture(bytes: &[u8], options: &DecodeOptions) -> DecodeStreamPlan {
     decode_context().plan_bytes(bytes, *options).expect("plan")
 }
 
-fn decode_fixture(bytes: &[u8]) -> Vec<PipelineFrame> {
+pub(super) fn decode_fixture(bytes: &[u8]) -> Vec<PipelineFrame> {
     let options = DecodeOptions::default();
     decode_fixture_with_options(bytes, &options).expect("decode")
 }
@@ -178,7 +194,7 @@ fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usi
     }
 }
 
-fn frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
+pub(super) fn frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
@@ -217,20 +233,20 @@ fn write_original_ivf_frames(bytes: &mut Vec<u8>, frames: &[ParsedIvfFrame<'_>])
     }
 }
 
-fn decode_inter_blocks_after_quantization_mutation(
+fn decode_inter_frame_after_quantization_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams) + Send,
-) -> Result<()> {
+) -> Result<DecodedFrame<u8>> {
     let context = decode_context();
     context
         .pool()
-        .install(move || decode_inter_blocks_after_quantization_mutation_inner(bytes, mutate))
+        .install(move || decode_inter_frame_after_quantization_mutation_inner(bytes, mutate))
 }
 
-fn decode_inter_blocks_after_quantization_mutation_inner(
+fn decode_inter_frame_after_quantization_mutation_inner(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams),
-) -> Result<()> {
+) -> Result<DecodedFrame<u8>> {
     let options = DecodeOptions::default();
     let plan = plan_fixture(bytes, &options);
     let parsed = parse_ivf_fixture(bytes, "inter");
@@ -268,90 +284,51 @@ fn decode_inter_blocks_after_quantization_mutation_inner(
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),
+        key_envelope.header.embedded_layer_id,
     )?;
     reference.update(0, &update);
     let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
-    let (_, inter_envelope) = crate::pipeline::following_inter_envelope(
+    let (prefix, inter_envelope) = crate::pipeline::following_inter_envelope(
         &parsed,
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
     let (store, meta) = reference.build_store_eight(&frames)?;
     let inter_state = super::InterReferenceState::from_metadata(&store, meta);
-    let mut core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
+    let first_picture_in_tu = prefix
+        .iter()
+        .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
+    let mut core = super::parse_inter_frame_core(
+        inter_envelope,
+        &sequence,
+        &inter_state,
+        first_picture_in_tu,
+        None,
+    )?;
     mutate(
         core.quantization_params
             .as_mut()
             .expect("fixture inter core has quantization params"),
     );
     super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
-    let inter = core
-        .inter
-        .as_ref()
-        .expect("fixture inter core has inter control");
-    let tail = core
-        .inter_tail
-        .as_ref()
-        .expect("fixture inter core has inter tail");
-    assert!(
-        !tail.reference_select,
-        "helper covers single-reference fixtures"
-    );
-    let frame_size = core.frame_size.expect("fixture inter core has frame size");
-    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
-        frame_size.width as usize,
-        frame_size.height as usize,
-        BitDepth::Eight,
-        PixelFormat::Yuv420,
-    )?;
-    let ref_frame_idx = inter.ref_frame_idx.clone();
-    let qindex = core
-        .quantization_params
-        .expect("fixture inter core has quantization params")
-        .base_q_idx;
-    let luma_use_tcq = core
-        .lossless_info
-        .as_ref()
-        .is_some_and(|lossless| lossless.allow_tcq);
-    let residual_use_ddt = sequence
-        .transform_quant_entropy
-        .as_ref()
-        .is_some_and(|tq| tq.enable_inter_ddt);
-    let initial_cdfs =
-        super::resolve_initial_frame_cdfs(&core, &sequence, &inter_state, inter_envelope.offset)?;
-    super::block::decode_inter_blocks(
+    let (frame, ..) = super::decode_inter_frame(
         &plan,
         inter_candidate,
         bytes,
         inter_envelope,
+        core,
         &sequence,
-        &core,
         &options,
-        inter
-            .interpolation_filter
-            .expect("fixture has interpolation filter"),
-        inter.num_total_refs.expect("fixture has NumTotalRefs") as usize,
-        tail.reference_select,
-        sequence
-            .inter
-            .as_ref()
-            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound),
-        &ref_frame_idx,
         &inter_state,
-        &mut workspace,
-        qindex,
-        luma_use_tcq,
-        residual_use_ddt,
         BitDepth::Eight,
-        initial_cdfs,
     )?;
-    Ok(())
+    Ok(frame)
 }
 
-fn parse_inter_core_for_validation(
+pub(super) fn parse_inter_core_for_validation(
     bytes: &[u8],
 ) -> Result<(SequenceHeader, FrameHeaderCore, ByteOffset)> {
     let options = DecodeOptions::default();
@@ -391,20 +368,30 @@ fn parse_inter_core_for_validation(
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),
+        key_envelope.header.embedded_layer_id,
     )?;
     reference.update(0, &update);
     let frames = vec![Some(key_frame)];
 
     let inter_candidate = candidates.next().expect("fixture has an inter candidate");
     let mut next_unvalidated_following_ivf_record = 1;
-    let (_, inter_envelope) = crate::pipeline::following_inter_envelope(
+    let (prefix, inter_envelope) = crate::pipeline::following_inter_envelope(
         &parsed,
         inter_candidate,
         &mut next_unvalidated_following_ivf_record,
     )?;
     let (store, meta) = reference.build_store_eight(&frames)?;
     let inter_state = super::InterReferenceState::from_metadata(&store, meta);
-    let core = super::parse_inter_frame_core(inter_envelope, &sequence, &inter_state)?;
+    let first_picture_in_tu = prefix
+        .iter()
+        .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
+    let core = super::parse_inter_frame_core(
+        inter_envelope,
+        &sequence,
+        &inter_state,
+        first_picture_in_tu,
+        None,
+    )?;
     Ok((sequence, core, inter_envelope.offset))
 }
 
@@ -740,6 +727,20 @@ fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
 }
 
 #[test]
+fn multi_tile_inter_fixture_enforces_tile_count_limit() {
+    let options = DecodeOptions::default()
+        .with_limits(DecodeLimits::default().with_max_tile_count(DecodeLimitThreshold::Max(1)));
+    let Err(error) = decode_fixture_with_options(MULTI_TILE_LR_FIXTURE, &options) else {
+        panic!("two tile columns must exceed a one-tile resource limit");
+    };
+    let DecodeError::Limit { source } = error else {
+        panic!("expected tile-count limit error");
+    };
+    assert_eq!(source.name(), DecodeLimitName::MaxTileCount);
+    assert_eq!(source.actual(), Some(2));
+}
+
+#[test]
 fn ten_bit_flex_mvres_inter_fixture_decodes_avm_bit_exact() {
     let frames = decode_fixture(TWO_FRAME_INTER_10BIT_FIXTURE);
     assert_eq!(
@@ -846,6 +847,17 @@ fn simple_path_interintra_fixture_decodes_avm_bit_exact() {
             "8f0c833c194e738ab2b07654bc75fb38189bfc4b1e13e90ff6d266fcaf45e110"
         ],
         "frame hashes pinned from the avmdec --i420 --rawvideo byte-identical output"
+    );
+}
+
+#[test]
+fn fractional_quarter_pel_intrabc_fixture_decodes_avm_bit_exact() {
+    let frames = decode_fixture(FRACTIONAL_INTRABC_FIXTURE);
+    assert_eq!(frames.len(), 1, "one closed-loop key frame");
+    assert_eq!(
+        frame_hashes(&frames),
+        ["5e6a9eac61011e29f965e53a7fb8f2e8278bae53c1370772ea96344cf8e56dea"],
+        "AVM-pinned output proves the quarter-pel IntrABC BILINEAR path"
     );
 }
 
@@ -970,26 +982,28 @@ fn residual_fixture_decodes_two_frames() {
 }
 
 #[test]
-fn skip_zero_residual_rejects_nonzero_effective_quantizer_deltas() {
-    let Err(error) =
-        decode_inter_blocks_after_quantization_mutation(TWO_FRAME_RESIDUAL_FIXTURE, |quant| {
+fn residual_reconstruction_uses_nonzero_luma_dc_quantizer_delta() {
+    let baseline =
+        decode_inter_frame_after_quantization_mutation(TWO_FRAME_RESIDUAL_FIXTURE, |_| {})
+            .expect("baseline residual frame decodes");
+    let nonzero =
+        decode_inter_frame_after_quantization_mutation(TWO_FRAME_RESIDUAL_FIXTURE, |quant| {
             quant.delta_q_y_dc = 1;
         })
-    else {
-        panic!("skip == 0 residual with non-zero effective deltas must fail closed");
-    };
-    assert_eq!(
-        unsupported_reason(error),
-        "inter_block_residual_quantizer_delta"
+        .expect("non-zero DeltaQYDc residual frame decodes");
+    assert_ne!(
+        baseline.y().samples(),
+        nonzero.y().samples(),
+        "DeltaQYDc must change reconstructed luma residuals"
     );
 }
 
 #[test]
 fn skip_one_inter_allows_nonzero_effective_quantizer_deltas() {
-    decode_inter_blocks_after_quantization_mutation(TWO_FRAME_INTER_FIXTURE, |quant| {
+    decode_inter_frame_after_quantization_mutation(TWO_FRAME_INTER_FIXTURE, |quant| {
         quant.delta_q_y_dc = 1;
     })
-    .expect("skip == 1 reads no residual and must not hit the residual dequant guard");
+    .expect("skip == 1 reads no residual and accepts the frame quantizer state");
 }
 
 #[test]
@@ -1055,6 +1069,41 @@ fn residual_fixture_per_frame_hash_is_stable() {
 }
 
 #[test]
+fn nonzero_y_dc_quantizer_delta_fixture_is_bit_exact() {
+    let (_, core, _) = decode_context()
+        .pool()
+        .install(|| parse_inter_core_for_validation(TWO_FRAME_Y_DC_DELTA_FIXTURE))
+        .expect("quantizer-delta fixture inter header parses");
+    let quantization = core
+        .quantization_params
+        .expect("quantizer-delta fixture has frame quantization params");
+    assert_eq!(
+        (
+            quantization.delta_q_y_dc,
+            quantization.delta_q_u_dc,
+            quantization.delta_q_u_ac,
+            quantization.delta_q_v_dc,
+            quantization.delta_q_v_ac,
+        ),
+        (1, 0, 0, 0, 0)
+    );
+
+    let frames = decode_fixture(TWO_FRAME_Y_DC_DELTA_FIXTURE);
+    assert_eq!(
+        frame_hashes(&frames),
+        [
+            "ebf2ba02fa61281e66533bc142260d49971a96101442d7df7d099b1d2be3bad5",
+            "e73a3b0168597953992650452b153d6d316f649254b2493864fb6d320a3d8f53",
+        ]
+    );
+    let key = frames[0].frame();
+    let inter = frames[1].frame();
+    assert_ne!(key.y().samples(), inter.y().samples());
+    assert_eq!(key.u().unwrap().samples(), inter.u().unwrap().samples());
+    assert_eq!(key.v().unwrap().samples(), inter.v().unwrap().samples());
+}
+
+#[test]
 fn mvstack_fixture_decodes_two_frames() {
     let frames = decode_fixture(TWO_FRAME_MVSTACK_FIXTURE);
     assert_eq!(
@@ -1109,6 +1158,20 @@ fn multi_sb_fixture_per_frame_hash_is_stable() {
     assert_ne!(
         hashes[0], hashes[1],
         "the multi-superblock inter frame must differ from the key frame (real cross-SB MV shift)"
+    );
+}
+
+#[test]
+fn multi_tile_inter_fixture_decodes_bit_exact() {
+    let frames = decode_fixture(MULTI_TILE_INTER_FIXTURE);
+    assert_yuv420_8bit_frames(&frames, 128, 64);
+    assert_eq!(
+        frame_hashes(&frames),
+        [
+            "2dc3b82d7f75dd5f400474fbf370a9acc2e631f65e2cc1263d0ec0684b14da15",
+            "dc9b4c4aef4e6dc1afa43ed16a93c17dd2fab9c1e61b5ab97dbae863d62a7ebd"
+        ],
+        "two-tile output must match the pinned avmdec frames"
     );
 }
 
@@ -1373,6 +1436,10 @@ fn append_future_state_record_after_fourth_multiref_candidate() -> Vec<u8> {
 
 const COMPOUND_AVERAGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf"
+);
+
+const OPFL_REFINE_ALL_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
 );
 
 #[test]
@@ -1736,6 +1803,36 @@ fn compound_average_fixture_per_frame_hash_is_stable() {
     );
 }
 
+#[test]
+fn opfl_refine_all_fixture_decodes_eight_frames_bit_exact() {
+    let frames = decode_fixture(OPFL_REFINE_ALL_FIXTURE);
+    assert_eq!(frames.len(), 8, "the reordered stream outputs eight frames");
+    assert_yuv420_8bit_frames(&frames, 64, 64);
+    assert_eq!(
+        frame_hashes(&frames),
+        [
+            "ac6643e7adeb891d3474a24e94643a757f142e4f0a22e30b3c8d6a9d22b9fa1e",
+            "c0331ed45cab6459a7cf12b8031782313bc00a23258fcbe56ff4f9b6a30345ea",
+            "1ed7b6b97aa3432ad7c0c7038690d2ca3afad49d1f608a28c588039fb396ea68",
+            "d04c1bb49fa6eeca21ec80ee80ecc35c21d7bccef31424c570411ad62ed58c5b",
+            "ab4dd3757f74f9a9334ecaa80ce6767cee6511b802b10501b18852c4ff5e1bc9",
+            "84552d55e0a7556120e4822fcb25e3fa0f10daa384c37749466bbd4716417381",
+            "6b08ad26c8a8109a0ed5883aaef81c1a1e09922130c4cb775725322500d8661c",
+            "eda392e6f6eff8edb7d11bc629463ef5e44bcfa52d3f6a825fd9c7133857aebc",
+        ],
+        "frame hashes pinned from byte-identical isolated/current AVM output"
+    );
+}
+
+#[test]
+fn opfl_refine_all_fixture_rejects_truncated_payload() {
+    let truncated = &OPFL_REFINE_ALL_FIXTURE[..OPFL_REFINE_ALL_FIXTURE.len() - 1];
+    let error = decode_context()
+        .plan_bytes(truncated, DecodeOptions::default())
+        .expect_err("truncating the final coded frame must fail closed");
+    assert!(matches!(error, DecodeError::MalformedSource { .. }));
+}
+
 fn assert_rounded_average(ref0: &[u8], ref1: &[u8], compound: &[u8]) {
     assert_eq!(ref0.len(), ref1.len(), "reference plane lengths");
     assert_eq!(ref0.len(), compound.len(), "compound plane length");
@@ -2088,7 +2185,7 @@ fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
 }
 
 #[test]
-fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
+fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
     let (mut sequence, mut quantization) =
         fixture_sequence_and_quantization(TWO_FRAME_RESIDUAL_FIXTURE);
     let tq = sequence
@@ -2105,16 +2202,23 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
     quantization.delta_q_u_ac = 0;
     quantization.delta_q_v_dc = 0;
     quantization.delta_q_v_ac = 0;
-    assert!(
-        super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
-        "raw sequence base delta 23 maps to effective zero"
+    let deltas = super::effective_quantizer_deltas(&sequence, &quantization)
+        .expect("fixture has transform/quant/entropy config");
+    assert_eq!(
+        (
+            deltas.y_dc,
+            deltas.u_dc,
+            deltas.v_dc,
+            deltas.u_ac,
+            deltas.v_ac
+        ),
+        (0, 0, 0, 0, 0)
     );
 
     quantization.delta_q_y_dc = 1;
-    assert!(
-        !super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
-        "a parsed frame DeltaQYDc would desync zero-delta dequantization"
-    );
+    let deltas = super::effective_quantizer_deltas(&sequence, &quantization)
+        .expect("fixture has transform/quant/entropy config");
+    assert_eq!(deltas.y_dc, 1);
     quantization.delta_q_y_dc = 0;
 
     sequence
@@ -2122,15 +2226,22 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
         .as_mut()
         .expect("sequence config")
         .base_uv_ac_delta_q = 24;
-    assert!(
-        !super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
-        "a non-zero sequence BaseUVAcDeltaQ would desync zero-delta dequantization"
-    );
+    let deltas = super::effective_quantizer_deltas(&sequence, &quantization)
+        .expect("fixture has transform/quant/entropy config");
+    assert_eq!((deltas.u_ac, deltas.v_ac), (1, 1));
     quantization.delta_q_u_ac = -1;
     quantization.delta_q_v_ac = -1;
-    assert!(
-        super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
-        "parsed frame deltas may cancel sequence base deltas; the gate checks the effective sums"
+    let deltas = super::effective_quantizer_deltas(&sequence, &quantization)
+        .expect("fixture has transform/quant/entropy config");
+    assert_eq!(
+        (
+            deltas.y_dc,
+            deltas.u_dc,
+            deltas.v_dc,
+            deltas.u_ac,
+            deltas.v_ac
+        ),
+        (0, 0, 0, 0, 0)
     );
 
     sequence.general.chroma_format_idc = ChromaFormatIdc::Monochrome;
@@ -2138,10 +2249,21 @@ fn effective_quantizer_delta_gate_includes_frame_and_sequence_offsets() {
     quantization.delta_q_v_dc = -7;
     quantization.delta_q_u_ac = 11;
     quantization.delta_q_v_ac = -13;
-    assert!(
-        super::effective_quantizer_deltas_are_zero(&sequence, &quantization),
-        "monochrome streams ignore chroma delta sums"
+    let deltas = super::effective_quantizer_deltas(&sequence, &quantization)
+        .expect("fixture has transform/quant/entropy config");
+    assert_eq!(
+        (
+            deltas.y_dc,
+            deltas.u_dc,
+            deltas.v_dc,
+            deltas.u_ac,
+            deltas.v_ac
+        ),
+        (0, 0, 0, 0, 0)
     );
+
+    sequence.transform_quant_entropy = None;
+    assert!(super::effective_quantizer_deltas(&sequence, &quantization).is_none());
 }
 
 #[test]
@@ -2152,6 +2274,28 @@ fn tip_output_disables_saved_cdf_blending() {
         true,
         Some(TipFrameMode::AsOutput)
     ));
+}
+
+#[test]
+fn tip_output_validation_accepts_leading_and_regular_obus() {
+    decode_context().pool().install(|| {
+        let (_sequence, mut core, offset) =
+            parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
+        core.status = FrameHeaderParseStatus::InterHeaderComplete;
+        core.frame_is_intra = Some(false);
+        core.inter
+            .as_mut()
+            .expect("fixture has inter control")
+            .tip_frame_mode = Some(TipFrameMode::AsOutput);
+
+        for obu_type in [
+            splot_core::types::ObuType::LeadingTip,
+            splot_core::types::ObuType::RegularTip,
+        ] {
+            core.obu_type = obu_type;
+            super::validate_tip_output_frame_core(&core, offset).unwrap();
+        }
+    });
 }
 
 #[test]

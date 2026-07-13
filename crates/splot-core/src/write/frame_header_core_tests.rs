@@ -835,6 +835,8 @@ mod tests {
         bits.uvlc(0); // seq_header_id_in_frame_header
         bits.f(5, 3); // bridge_frame_ref_idx = 5 f(CeilLog2(8) == 3) — read before single-pic
         bits.bit(0); // bridge_frame_overwrite_flag = 0 (mirror :4423)
+        bits.f(64 - 1, 12); // bridge_frame_width_minus_1 (§ 5.18.4.2)
+        bits.f(64 - 1, 12); // bridge_frame_height_minus_1 (§ 5.18.4.2)
         bits.bit(0); // allow_intrabc = 0 (intrabc_params(), mirror :4571) -> STOP at bridge return
         let data = bits.into_bytes();
         let core =

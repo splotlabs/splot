@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::prediction::inter::mv_scaling::derive_plane_scaling;
+use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
@@ -51,21 +51,9 @@ pub(super) fn reference_area_bounds(
     candidate: Mv,
     sub_x: u32,
     sub_y: u32,
-    ref_mi_cols: i32,
-    ref_mi_rows: i32,
+    scaling: PlaneScaling,
 ) -> ReferenceAreaBounds {
-    let scaling = derive_plane_scaling(
-        plane_x,
-        plane_y,
-        candidate.row,
-        candidate.col,
-        sub_x,
-        sub_y,
-        ref_mi_cols,
-        ref_mi_rows,
-        width as i32,
-        height as i32,
-    );
+    let scaling = scaling.with_mv(plane_x, plane_y, candidate.row, candidate.col, sub_x, sub_y);
     let x_padding = if width == 4 { (1, 2) } else { (3, 4) };
     let y_padding = if height == 4 { (1, 2) } else { (3, 4) };
     let last_x = scaling.start_x + scaling.step_x * width.saturating_sub(1) as i32;
@@ -375,8 +363,11 @@ mod tests {
 
     #[test]
     fn reference_area_uses_the_refinemv_extension() {
+        let scaling = crate::prediction::inter::mv_scaling::derive_plane_scaling(
+            16, 16, 0, 0, 0, 0, 64, 64, 64, 64,
+        );
         assert_eq!(
-            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, 16, 16),
+            reference_area_bounds(16, 16, 16, 16, Mv::ZERO, 0, 0, scaling),
             ReferenceAreaBounds {
                 first_x: 13,
                 first_y: 13,

@@ -71,15 +71,15 @@ impl ValidatorContext {
     /// Only a frame whose `frame_header_info()` parse **completed** stages a § 7.23 update;
     /// everything else poisons all slots. Completion is what establishes the frame's
     /// decodability and the trustworthiness of its slot facts: a parse that stopped past the
-    /// prefix ([`FrameHeaderParseStatus::UnsupportedUntilFeature`] — the inter / TIP / bridge
-    /// reference-control region this phase does not parse to completion — or any
-    /// truncated / coverage stop) may have read its `refresh_frame_flags` / dims correctly
+    /// prefix ([`FrameHeaderParseStatus::UnsupportedUntilFeature`] or any truncated /
+    /// coverage stop) may have read its `refresh_frame_flags` / dims correctly
     /// *or* mis-positioned them, and its decodability is unestablished, so the downstream
     /// slot facts could be wrong both ways. Recording a normal § 7.23 [`Refresh`] from such a
     /// frame would assert facts about the buffer the validator has not earned; the sound
     /// treatment is to poison (mask known is not enough — see the
     /// [`FrameRefUpdate::PoisonAll`] contract). The grounded completed statuses are
-    /// [`FrameHeaderParseStatus::IntraHeaderComplete`] (an intra header read in full) and
+    /// [`FrameHeaderParseStatus::IntraHeaderComplete`] (an intra header read in full),
+    /// [`FrameHeaderParseStatus::InterHeaderComplete`] (an inter or TIP-output header), and
     /// [`FrameHeaderParseStatus::ShowExistingFrameComplete`] (a SEF read in full).
     ///
     /// - A completed show-existing-frame sets `refresh_frame_flags = 0` (§ 5.18.2 :4180), so
@@ -89,9 +89,8 @@ impl ValidatorContext {
     ///   its own refresh ([`FrameRefUpdate::ClkReset`]).
     /// - Any other **completed** frame whose `refresh_frame_flags`, `frame_type`, dims, and
     ///   order hint all parsed applies the § 7.23 update with the key/switch `first` rule.
-    /// - Otherwise (the core did not resolve, an incomplete / unsupported / truncated parse —
-    ///   including every inter / TIP / bridge path, which never completes in this phase — or
-    ///   any missing fact) the frame's effect on the buffer is unestablished, so poison all
+    /// - Otherwise (the core did not resolve, an incomplete / unsupported / truncated parse,
+    ///   or any missing fact) the frame's effect on the buffer is unestablished, so poison all
     ///   ([`FrameRefUpdate::PoisonAll`]).
     pub(super) fn derive_ref_update(
         &self,
@@ -105,6 +104,7 @@ impl ValidatorContext {
         if !matches!(
             core.status,
             FrameHeaderParseStatus::IntraHeaderComplete
+                | FrameHeaderParseStatus::InterHeaderComplete
                 | FrameHeaderParseStatus::ShowExistingFrameComplete
         ) {
             return FrameRefUpdate::PoisonAll;
@@ -119,10 +119,29 @@ impl ValidatorContext {
         else {
             return FrameRefUpdate::PoisonAll;
         };
+        let quantizer = core
+            .quantization_params
+            .map(|quant| (quant.base_q_idx, quant.delta_q_u_ac, quant.delta_q_v_ac))
+            .or_else(|| {
+                infer_tip_output_quantizer(
+                    &core,
+                    obu.header.extended_layer_id,
+                    &self.reference_state,
+                )
+            });
         let Some(facts) = slot_facts(
-            core.order_hint_lsb,
-            core.frame_size.map(|size| size.width),
-            core.frame_size.map(|size| size.height),
+            (core.order_hint, core.order_hint_lsb),
+            (
+                core.frame_size.map(|size| size.width),
+                core.frame_size.map(|size| size.height),
+            ),
+            quantizer.map(|values| values.0),
+            (
+                quantizer.map(|values| values.1),
+                quantizer.map(|values| values.2),
+            ),
+            (core.implicit_output_frame, core.immediate_output_frame),
+            core.frame_type,
             core.long_term_id,
         ) else {
             return FrameRefUpdate::PoisonAll;
@@ -350,4 +369,55 @@ impl ValidatorContext {
             }
         }
     }
+}
+
+/// Infers `base_q_idx`, `DeltaQUAc`, and `DeltaQVAc` for a TIP-as-output frame when
+/// `enable_tip_explicit_qp == 0`
+/// (AV2 v1.0.0 § 5.18.2, mirror :5105-5112). The reference list indices follow the
+/// closest-past/closest-future selection of § 7.8; when no future reference exists, the
+/// second-closest past reference is used by the motion-field-estimation process (§ 7.9.1).
+fn infer_tip_output_quantizer(
+    core: &FrameHeaderCore,
+    xlayer: ExtendedLayerId,
+    reference_state: &ReferenceStateTracker,
+) -> Option<(u32, i32, i32)> {
+    let inter = core.inter.as_ref()?;
+    if inter.tip_frame_mode != Some(TipFrameMode::AsOutput) {
+        return None;
+    }
+
+    let current_order_hint = i32::try_from(core.order_hint?).ok()?;
+    let mut closest_past: Option<(i32, SlotFacts)> = None;
+    let mut second_past: Option<(i32, SlotFacts)> = None;
+    let mut closest_future: Option<(i32, SlotFacts)> = None;
+
+    for &slot in &inter.ref_frame_idx {
+        let SlotState::Valid(facts) = reference_state.slot(xlayer, slot as usize) else {
+            continue;
+        };
+        let distance = get_relative_dist(current_order_hint, i32::try_from(facts.order_hint).ok()?);
+        if distance > 0 {
+            let candidate = (distance, facts);
+            if closest_past.is_none_or(|(old, _)| distance < old) {
+                second_past = closest_past;
+                closest_past = Some(candidate);
+            } else if second_past.is_none_or(|(old, _)| distance < old) {
+                second_past = Some(candidate);
+            }
+        } else if distance < 0 && closest_future.is_none_or(|(old, _)| distance > old) {
+            closest_future = Some((distance, facts));
+        }
+    }
+
+    let (_, past) = closest_past?;
+    let (_, future) = closest_future.or(second_past)?;
+    Some((
+        u32::try_from((u64::from(past.base_q_idx) + u64::from(future.base_q_idx) + 1) >> 1).ok()?,
+        ((i64::from(past.delta_q_u_ac) + i64::from(future.delta_q_u_ac) + 1) >> 1)
+            .try_into()
+            .ok()?,
+        ((i64::from(past.delta_q_v_ac) + i64::from(future.delta_q_v_ac) + 1) >> 1)
+            .try_into()
+            .ok()?,
+    ))
 }

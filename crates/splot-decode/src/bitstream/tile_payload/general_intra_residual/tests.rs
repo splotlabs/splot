@@ -336,7 +336,7 @@ fn ensure_with_test_payload_fsc_and_policy(
             tx_size,
             is_inter,
             lossless: facts
-                .lossless_for_segment(current_segment_id())
+                .lossless_for_segment(current_frame_qm_segment_id())
                 .unwrap_or(false),
             fsc_mode,
             eob,
@@ -1566,6 +1566,36 @@ fn resolve_block_qm_selects_level_plane_and_offset() {
     let _segment = FrameQmSegmentScope::install(3);
     let luma_segment = resolve_block_qm(PlaneId::Y, DCT_DCT, 8, 8, 3, 3).unwrap();
     assert_eq!(luma_segment.seg_level, 9);
+}
+
+#[test]
+fn resolve_block_qm_limits_user_matrix_to_eight_by_eight() {
+    let _qm = FrameQmScope::install(Some(QmFrameLevels {
+        levels_gt8: [6, 6, 6],
+        levels_le8: [[6, 6, 6]; 16],
+    }));
+    let mut levels: [Option<FrameUserQmLevel>; NUM_CUSTOM_QMS] = std::array::from_fn(|_| None);
+    let mut transforms = std::array::from_fn(|_| std::array::from_fn(|_| None));
+    transforms[0][0] = Some(QmUserPlane {
+        width: 8,
+        height: 8,
+        values: Arc::from([16; 64]),
+    });
+    levels[6] = Some(FrameUserQmLevel { transforms });
+    let _user = FrameUserQmScope::install(Some(Arc::new(levels)));
+
+    assert!(
+        resolve_block_qm(PlaneId::Y, DCT_DCT, 4, 4, 2, 2)
+            .unwrap()
+            .user
+            .is_some()
+    );
+    assert!(
+        resolve_block_qm(PlaneId::Y, DCT_DCT, 32, 32, 5, 5)
+            .unwrap()
+            .user
+            .is_none()
+    );
 }
 
 /// `resolve_block_qm` is the flat path (`None`) with no installed scope, for
