@@ -100,28 +100,36 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "refine-MV motion-grid size",
         })?;
+    let candidates = [block.mv0, block.mv1];
+    let motion_cell = |local_x: usize, local_y: usize| -> Result<MotionCell> {
+        let width = (block.rect.luma_w - local_x).min(REFINEMV_UNIT_SIZE);
+        let height = (block.rect.luma_h - local_y).min(REFINEMV_UNIT_SIZE);
+        let mut rect = block.rect;
+        rect.luma_x += local_x;
+        rect.luma_y += local_y;
+        rect.luma_w = width;
+        rect.luma_h = height;
+        let mvs = if block.search_refinemv {
+            search_refinemv(sink, block, rect, offset)?
+        } else {
+            candidates
+        };
+        Ok(MotionCell::from_refinemv(mvs))
+    };
+    if cell_count == 1 {
+        return Ok(CompoundMotionGrid::from_single_refinemv(
+            candidates,
+            motion_cell(0, 0)?,
+        ));
+    }
     let mut cells = Vec::with_capacity(cell_count);
     for local_y in (0..block.rect.luma_h).step_by(REFINEMV_UNIT_SIZE) {
         for local_x in (0..block.rect.luma_w).step_by(REFINEMV_UNIT_SIZE) {
-            let width = (block.rect.luma_w - local_x).min(REFINEMV_UNIT_SIZE);
-            let height = (block.rect.luma_h - local_y).min(REFINEMV_UNIT_SIZE);
-            let mut rect = block.rect;
-            rect.luma_x += local_x;
-            rect.luma_y += local_y;
-            rect.luma_w = width;
-            rect.luma_h = height;
-            let mvs = if block.search_refinemv {
-                search_refinemv(sink, block, rect, offset)?
-            } else {
-                [block.mv0, block.mv1]
-            };
-            cells.push(MotionCell::from_refinemv(mvs));
+            cells.push(motion_cell(local_x, local_y)?);
         }
     }
     Ok(CompoundMotionGrid::from_refinemv(
-        columns,
-        [block.mv0, block.mv1],
-        cells,
+        columns, candidates, cells,
     ))
 }
 
