@@ -70,6 +70,18 @@ const WIENER_NS_CONFIG_Y: [(isize, isize, usize); WIENER_NS_LUMA_TAPS] = [
     (-3, 3, 15),
 ];
 
+/// First tap `(dy, dx, coeff_index)` of each § 7.20.3 `Wiener_Ns_Config_Y`
+/// symmetric pair; the partner tap is `(-dy, -dx, coeff_index)`.
+const WIENER_NS_CONFIG_Y_PAIRS: [(isize, isize, usize); WIENER_NS_LUMA_COEFFS] = {
+    let mut pairs = [(0isize, 0isize, 0usize); WIENER_NS_LUMA_COEFFS];
+    let mut j = 0;
+    while j < WIENER_NS_LUMA_COEFFS {
+        pairs[j] = WIENER_NS_CONFIG_Y[2 * j];
+        j += 1;
+    }
+    pairs
+};
+
 /// Caller-resolved parameters for AV2 § 7.20.3 luma Wiener NS filtering.
 ///
 /// `width` and `height` describe the output block in samples. `output_stride`
@@ -396,7 +408,6 @@ fn filter_padded_luma_segment<T: ReconSample>(
     params: &WienerNsLumaFilter<'_>,
     max_sample: u16,
 ) -> Result<()> {
-    const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
     let coeffs = params
         .coeffs_by_class
         .get(subclass)
@@ -410,28 +421,44 @@ fn filter_padded_luma_segment<T: ReconSample>(
     for (a, &m) in seg.iter_mut().zip(center_seg) {
         *a = i64::from(m.to_u16()) << WIENER_NS_PREC_BITS;
     }
-    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y {
+    let mut sum_coeff = 0i64;
+    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y_PAIRS {
         let coeff = i64::from(coeffs[coeff_index]);
-        let row = rows
-            .get(
-                usize::try_from(dy + RADIUS as isize)
-                    .map_err(|_| luma_segment_error(params.width))?,
-            )
-            .ok_or_else(|| luma_segment_error(params.width))?;
-        let offset =
-            usize::try_from(dx + RADIUS as isize).map_err(|_| luma_segment_error(params.width))?;
-        let taps = row
-            .get(c0 + offset..c0 + offset + len)
-            .ok_or_else(|| luma_segment_error(params.width))?;
-        for ((a, &t), &m) in seg.iter_mut().zip(taps).zip(center_seg) {
-            *a += (i64::from(t.to_u16()) - i64::from(m.to_u16())) * coeff;
+        sum_coeff += coeff;
+        let plus = tap_segment(rows, c0, len, dy, dx, params.width)?;
+        let minus = tap_segment(rows, c0, len, -dy, -dx, params.width)?;
+        for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
+            *a += coeff * (i64::from(tp.to_u16()) + i64::from(tm.to_u16()));
         }
+    }
+    let center_scale = 2 * sum_coeff;
+    for (a, &m) in seg.iter_mut().zip(center_seg) {
+        *a -= center_scale * i64::from(m.to_u16());
     }
     for &s in seg.iter() {
         let value = round2(s, WIENER_NS_PREC_BITS).clamp(0, i64::from(max_sample));
         filtered.push(T::try_from_u16(value as u16)?);
     }
     Ok(())
+}
+
+/// Resolves the padded-row segment for one § 7.20.3 tap `(dy, dx)`, preserving
+/// the config-order row-index, offset, and slice bounds checks.
+fn tap_segment<'r, T: ReconSample>(
+    rows: &[&'r [T]; 2 * WIENER_NS_LUMA_TAP_RADIUS + 1],
+    c0: usize,
+    len: usize,
+    dy: isize,
+    dx: isize,
+    width: usize,
+) -> Result<&'r [T]> {
+    const RADIUS: isize = WIENER_NS_LUMA_TAP_RADIUS as isize;
+    let row = rows
+        .get(usize::try_from(dy + RADIUS).map_err(|_| luma_segment_error(width))?)
+        .ok_or_else(|| luma_segment_error(width))?;
+    let offset = usize::try_from(dx + RADIUS).map_err(|_| luma_segment_error(width))?;
+    row.get(c0 + offset..c0 + offset + len)
+        .ok_or_else(|| luma_segment_error(width))
 }
 
 const fn luma_segment_error(width: usize) -> ReconError {
@@ -810,6 +837,14 @@ mod tests {
             }
         );
         assert_eq!(output, [77]);
+    }
+
+    #[test]
+    fn config_y_is_symmetric_pairs() {
+        for (j, &(dy, dx, coeff_index)) in WIENER_NS_CONFIG_Y_PAIRS.iter().enumerate() {
+            assert_eq!(WIENER_NS_CONFIG_Y[2 * j], (dy, dx, coeff_index));
+            assert_eq!(WIENER_NS_CONFIG_Y[2 * j + 1], (-dy, -dx, coeff_index));
+        }
     }
 
     #[test]
