@@ -583,16 +583,18 @@ fn compute_cdef_filter_plane<T: ReconSample>(
 
     let mut filtered_block = [T::default(); 64];
     if interior {
-        let mut pad = [0i32; CDEF_PADDED_AREA];
+        let mut pad = [0u16; CDEF_PADDED_AREA];
         for r in 0..h + 2 * CDEF_TAP_REACH {
             let start = (y0 - CDEF_TAP_REACH + r) * snap.width + (x0 - CDEF_TAP_REACH);
             let src = snap
                 .samples
                 .get(start..start + w + 2 * CDEF_TAP_REACH)
                 .ok_or(CdefError::Workspace)?;
-            for (dst, &value) in pad[r * CDEF_PADDED_SIDE..].iter_mut().zip(src) {
-                *dst = i32::from(value);
-            }
+            let dst_start = r * CDEF_PADDED_SIDE;
+            let dst = pad
+                .get_mut(dst_start..dst_start + src.len())
+                .ok_or(CdefError::Workspace)?;
+            dst.copy_from_slice(src);
         }
         let filter = CdefBlockFilter {
             pri_str: ctx.pri_str,

@@ -260,7 +260,8 @@ pub struct CdefBlockFilter {
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
 ///
 /// `pad` holds the `CDEF_PADDED_SIDE x CDEF_PADDED_SIDE` row-major
-/// neighbourhood whose `(w x h)` output block starts at row 2, column 2; the
+/// neighbourhood in native `u16` sample storage, widened to `i32` per tap. Its
+/// `(w x h)` output block starts at row 2, column 2; the
 /// caller guarantees every tap position is inside the § 5.20.9.3 filter region
 /// (`CdefAvailable` everywhere), which is what makes the per-tap availability
 /// guard of [`cdef_filter_sample`] statically true. Bit-exact with calling
@@ -272,7 +273,7 @@ pub struct CdefBlockFilter {
 /// and the largest tap displacement is `2 * CDEF_PADDED_SIDE + 2` in either
 /// direction.
 pub fn cdef_filter_block_interior(
-    pad: &[i32; CDEF_PADDED_AREA],
+    pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
@@ -304,19 +305,22 @@ pub fn cdef_filter_block_interior(
     for i in 0..h {
         for j in 0..w {
             let center_index = (i + 2) * CDEF_PADDED_SIDE + (j + 2);
-            let center = pad[center_index];
+            let center = i32::from(pad[center_index]);
             let mut sum = 0i32;
             let mut max = center;
             let mut min = center;
             for k in 0..2 {
                 for sign_index in 0..2 {
-                    let p = pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])];
+                    let p =
+                        i32::from(pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])]);
                     sum += pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
                     max = max.max(p);
                     min = min.min(p);
                     for dir_off_index in 0..2 {
-                        let s = pad[center_index
-                            .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])];
+                        let s = i32::from(
+                            pad[center_index
+                                .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
+                        );
                         sum +=
                             sec_taps[k] * constrain_with_adj(s - center, filter.sec_str, sec_adj);
                         max = max.max(s);
@@ -455,7 +459,7 @@ mod tests {
     }
 
     fn per_sample_reference(
-        pad: &[i32; CDEF_PADDED_AREA],
+        pad: &[u16; CDEF_PADDED_AREA],
         i: usize,
         j: usize,
         filter: &CdefBlockFilter,
@@ -464,7 +468,7 @@ mod tests {
             let row = (i + 2).wrapping_add_signed(dy);
             let col = (j + 2).wrapping_add_signed(dx);
             CdefTap {
-                value: pad[row * CDEF_PADDED_SIDE + col],
+                value: i32::from(pad[row * CDEF_PADDED_SIDE + col]),
                 available: true,
             }
         };
@@ -475,7 +479,7 @@ mod tests {
             )
         };
         let mut taps = CdefSampleTaps {
-            center: pad[(i + 2) * CDEF_PADDED_SIDE + (j + 2)],
+            center: i32::from(pad[(i + 2) * CDEF_PADDED_SIDE + (j + 2)]),
             primary: [[CdefTap {
                 value: 0,
                 available: false,
@@ -507,10 +511,10 @@ mod tests {
     fn block_interior_kernel_matches_per_sample_filter() {
         for (coeff_shift, max_sample) in [(0u32, 255u32), (2, 1023)] {
             let mut state = 0x1234_5678u32 ^ (coeff_shift * 77);
-            let mut pad = [0i32; CDEF_PADDED_AREA];
+            let mut pad = [0u16; CDEF_PADDED_AREA];
             for cell in &mut pad {
                 state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                *cell = ((state >> 16) % (max_sample + 1)) as i32;
+                *cell = ((state >> 16) % (max_sample + 1)) as u16;
             }
             for dir in 0..8usize {
                 for (pri, sec) in [(0, 0), (1, 0), (0, 2), (4, 2), (7, 3), (63, 63)] {
