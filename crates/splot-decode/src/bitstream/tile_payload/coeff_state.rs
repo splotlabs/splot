@@ -12,13 +12,63 @@ use std::collections::TryReserveError;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::PlaneId;
 
+use crate::support::reusable_scratch::with_reusable_scratch;
 use crate::tile::block_context::ChromaSampling;
 
 const PLANE_COUNT: usize = 3;
 const MAX_ADJUSTED_TX_EXTENT: usize = 32;
+const MAX_RETAINED_COEFF_BUFFERS: usize = 64;
 static ZERO_QUANT_SIGN: [i32; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT] =
     [0; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
+
+#[derive(Default)]
+struct TransformCoeffBufferRecycler {
+    levels: Vec<Vec<u32>>,
+    signed: Vec<Vec<i32>>,
+}
+
+thread_local! {
+    static TRANSFORM_COEFF_BUFFERS: core::cell::RefCell<TransformCoeffBufferRecycler> =
+        const { core::cell::RefCell::new(TransformCoeffBufferRecycler {
+            levels: Vec::new(),
+            signed: Vec::new(),
+        }) };
+}
+
+fn take_zeroed_buffer<T: Default + Copy>(
+    buffers: &mut Vec<Vec<T>>,
+    len: usize,
+) -> Result<Vec<T>, TryReserveError> {
+    let mut buffer = buffers.pop().unwrap_or_default();
+    buffer.clear();
+    buffer.try_reserve_exact(len)?;
+    buffer.resize(len, T::default());
+    Ok(buffer)
+}
+
+fn recycle_buffer<T>(buffers: &mut Vec<Vec<T>>, mut buffer: Vec<T>) {
+    if buffer.capacity() == 0
+        || buffers.len() == MAX_RETAINED_COEFF_BUFFERS
+        || buffers.try_reserve(1).is_err()
+    {
+        return;
+    }
+    buffer.clear();
+    buffers.push(buffer);
+}
+
+pub(crate) fn recycle_coeff_quant(buffer: Vec<i32>) {
+    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+        recycle_buffer(&mut buffers.signed, buffer);
+    });
+}
+
+impl Drop for super::general_intra_residual::LumaCoeffBlock {
+    fn drop(&mut self) {
+        recycle_coeff_quant(core::mem::take(&mut self.quant));
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TransformCoeffBlockState {
@@ -42,18 +92,31 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
+        let (level, quant) = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+            let level = take_zeroed_buffer(&mut buffers.levels, allocation.coeff_count)?;
+            let quant = match take_zeroed_buffer(&mut buffers.signed, allocation.coeff_count) {
+                Ok(quant) => quant,
+                Err(error) => {
+                    recycle_buffer(&mut buffers.levels, level);
+                    return Err(error);
+                }
+            };
+            Ok((level, quant))
+        })?;
         Ok(Self {
             width,
             height,
-            level: zeroed_vec(allocation.coeff_count)?,
+            level,
             quant_sign: Vec::new(),
-            quant: zeroed_vec(allocation.coeff_count)?,
+            quant,
         })
     }
 
     pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
         if self.quant_sign.is_empty() {
-            self.quant_sign = zeroed_vec(self.level.len())?;
+            self.quant_sign = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+                take_zeroed_buffer(&mut buffers.signed, self.level.len())
+            })?;
         }
         Ok(())
     }
@@ -88,8 +151,8 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn into_quant(self) -> Vec<i32> {
-        self.quant
+    pub(crate) fn into_quant(mut self) -> Vec<i32> {
+        core::mem::take(&mut self.quant)
     }
 
     pub(crate) fn set_level(
@@ -160,6 +223,32 @@ impl TransformCoeffBlockState {
         }
         Ok(pos)
     }
+}
+
+impl Drop for TransformCoeffBlockState {
+    fn drop(&mut self) {
+        let level = core::mem::take(&mut self.level);
+        let quant_sign = core::mem::take(&mut self.quant_sign);
+        let quant = core::mem::take(&mut self.quant);
+        with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+            recycle_buffer(&mut buffers.levels, level);
+            recycle_buffer(&mut buffers.signed, quant_sign);
+            recycle_buffer(&mut buffers.signed, quant);
+        });
+    }
+}
+
+#[cfg(test)]
+fn clear_transform_coeff_buffers() {
+    TRANSFORM_COEFF_BUFFERS
+        .with(|slot| *slot.borrow_mut() = TransformCoeffBufferRecycler::default());
+}
+
+#[cfg(test)]
+fn transform_coeff_buffer_counts() -> (usize, usize) {
+    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+        (buffers.levels.len(), buffers.signed.len())
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

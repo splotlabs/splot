@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use splot_parallel::{ThreadCount, WorkerPool};
 
 fn update(plane: usize, x4: usize, y4: usize, w4: usize, h4: usize) -> CoeffContextUpdate {
     CoeffContextUpdate {
@@ -68,6 +69,87 @@ fn transform_block_fsc_state_allocates_zeroed_quant_sign() {
 
     assert_eq!(state.quant_sign, [0; 12]);
     assert_eq!(state.quant_sign(), &[0; 12]);
+}
+
+#[test]
+fn maximum_transform_buffers_are_reused_and_zeroed() {
+    clear_transform_coeff_buffers();
+    let mut state = TransformCoeffBlockState::new(32, 32).unwrap();
+    state.ensure_quant_sign().unwrap();
+    let pointers = (
+        state.level.as_ptr(),
+        state.quant_sign.as_ptr(),
+        state.quant.as_ptr(),
+    );
+    state.level.fill(7);
+    state.quant_sign.fill(-1);
+    state.quant.fill(9);
+    let quant = state.into_quant();
+    recycle_coeff_quant(quant);
+
+    let mut reused = TransformCoeffBlockState::new(32, 32).unwrap();
+    reused.ensure_quant_sign().unwrap();
+    assert_eq!(reused.level.as_ptr(), pointers.0);
+    assert_eq!(reused.quant_sign.as_ptr(), pointers.1);
+    assert_eq!(reused.quant.as_ptr(), pointers.2);
+    assert!(reused.level.iter().all(|value| *value == 0));
+    assert!(reused.quant_sign.iter().all(|value| *value == 0));
+    assert!(reused.quant.iter().all(|value| *value == 0));
+}
+
+#[test]
+fn transform_state_errors_return_buffers_for_reuse() {
+    clear_transform_coeff_buffers();
+    let mut state = TransformCoeffBlockState::new(4, 4).unwrap();
+    let pointers = (state.level.as_ptr(), state.quant.as_ptr());
+    assert!(state.set_quant(16, 1).is_err());
+    drop(state);
+
+    assert!(TransformCoeffBlockState::new(0, 4).is_err());
+    let reused = TransformCoeffBlockState::new(4, 4).unwrap();
+    assert_eq!(reused.level.as_ptr(), pointers.0);
+    assert_eq!(reused.quant.as_ptr(), pointers.1);
+}
+
+#[test]
+fn transform_block_recycler_is_thread_local() {
+    clear_transform_coeff_buffers();
+    drop(TransformCoeffBlockState::new(4, 4).unwrap());
+    assert_eq!(transform_coeff_buffer_counts(), (1, 1));
+
+    let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
+    pool.install(|| {
+        assert_eq!(transform_coeff_buffer_counts(), (0, 0));
+        drop(TransformCoeffBlockState::new(4, 4).unwrap());
+        assert_eq!(transform_coeff_buffer_counts(), (1, 1));
+    });
+
+    assert_eq!(transform_coeff_buffer_counts(), (1, 1));
+}
+
+#[test]
+fn transform_block_recycler_tolerates_reentrant_recycle() {
+    clear_transform_coeff_buffers();
+    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |outer| {
+        recycle_buffer(&mut outer.levels, vec![0]);
+        with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |inner| {
+            recycle_buffer(&mut inner.levels, vec![0]);
+        });
+        assert_eq!(outer.levels.len(), 1);
+    });
+    assert_eq!(transform_coeff_buffer_counts(), (1, 0));
+}
+
+#[test]
+fn transform_block_recycler_has_a_retention_limit() {
+    clear_transform_coeff_buffers();
+    for _ in 0..=MAX_RETAINED_COEFF_BUFFERS {
+        recycle_coeff_quant(vec![0]);
+    }
+    assert_eq!(
+        transform_coeff_buffer_counts(),
+        (0, MAX_RETAINED_COEFF_BUFFERS)
+    );
 }
 
 #[test]

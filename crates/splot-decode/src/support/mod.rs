@@ -5,3 +5,4 @@
 
 pub(crate) mod capability;
 pub(crate) mod pipeline_limits;
+pub(crate) mod reusable_scratch;

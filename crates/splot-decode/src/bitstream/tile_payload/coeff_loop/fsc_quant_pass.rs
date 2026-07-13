@@ -164,6 +164,9 @@ impl NonZeroCoeffFscQuantPass {
     pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
         &self.block
     }
+    pub(crate) fn into_block(self) -> TransformCoeffBlockState {
+        self.block
+    }
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffFscQuantPassError {

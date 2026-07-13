@@ -83,21 +83,12 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     };
 
     assert_eq!(reconstruct(&block).unwrap(), 40);
-    assert_eq!(
-        reconstruct(&LumaCoeffBlock {
-            intra_ist: None,
-            ..block.clone()
-        })
-        .unwrap(),
-        76,
-    );
-    assert!(
-        reconstruct(&LumaCoeffBlock {
-            plane_tx_type: 1,
-            ..block
-        })
-        .is_err()
-    );
+    let mut missing_intra_ist = block.clone();
+    missing_intra_ist.intra_ist = None;
+    assert_eq!(reconstruct(&missing_intra_ist).unwrap(), 76);
+    let mut wrong_plane_tx_type = block;
+    wrong_plane_tx_type.plane_tx_type = 1;
+    assert!(reconstruct(&wrong_plane_tx_type).is_err());
 }
 
 #[test]
