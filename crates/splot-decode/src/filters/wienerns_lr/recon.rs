@@ -370,15 +370,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let lr_timer = crate::timing::start();
         let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
-        let [y_runs, u_runs, v_runs] = if any_lr_active {
-            final_filters::coalesced_lr_source_rows_all(&lr_source_blocks)
+        let (lr_source_blocks, plane_ends) = if any_lr_active {
+            final_filters::coalesced_lr_source_rows_all(lr_source_blocks)
         } else {
-            [Vec::new(), Vec::new(), Vec::new()]
+            (Vec::new(), [0, 0])
         };
+        let [y_end, u_end] = plane_ends;
+        let y_runs = &lr_source_blocks[..y_end];
+        let u_runs = &lr_source_blocks[y_end..u_end];
+        let v_runs = &lr_source_blocks[u_end..];
         self.apply_luma_lr_runs(
             core,
             offset,
-            &y_runs,
+            y_runs,
             &lr_unit_filters,
             &deblocked_luma,
             &cdef_luma,
@@ -387,7 +391,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             core,
             offset,
             PlaneId::U,
-            &u_runs,
+            u_runs,
             &lr_unit_filters,
             &deblocked_u,
             &cdef_u,
@@ -398,7 +402,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             core,
             offset,
             PlaneId::V,
-            &v_runs,
+            v_runs,
             &lr_unit_filters,
             &deblocked_v,
             &cdef_v,
