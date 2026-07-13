@@ -341,14 +341,7 @@ fn apply_tip_filter_edge<T: ReconSample>(
         curr_lossless: false,
         bit_depth,
     };
-    for lane in 0..lanes {
-        apply_sample_filter(
-            plane_ctx,
-            PerpLine::new(x + dy * lane, y + dx * lane, dx, dy),
-            params,
-        )?;
-    }
-    Ok(())
+    apply_edge_samples(plane_ctx, PerpLine::new(x, y, dx, dy), lanes, params)
 }
 
 fn deblock_plane_pass<T: ReconSample>(
@@ -922,13 +915,12 @@ fn deblock_filter_edge<T: ReconSample>(
         bit_depth,
     };
 
-    for i in 0..MI_SIZE {
-        let px = x_p + dy * i;
-        let py = y_p + dx * i;
-        apply_sample_filter(plane_ctx, PerpLine::new(px, py, dx, dy), sample_params)?;
-    }
-
-    Ok(())
+    apply_edge_samples(
+        plane_ctx,
+        PerpLine::new(x_p, y_p, dx, dy),
+        MI_SIZE,
+        sample_params,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1006,6 +998,100 @@ impl PerpLine {
 }
 
 const GATHER_HALF: usize = 8;
+
+fn apply_edge_samples<T: ReconSample>(
+    plane_ctx: &mut PlaneCtx<'_, T>,
+    perp: PerpLine,
+    lanes: usize,
+    params: DeblockSampleFilter,
+) -> Result<(), DeblockError> {
+    let PerpLine { x, y, dx, dy } = perp;
+    if lanes == 0 {
+        return Ok(());
+    }
+    if lanes <= MI_SIZE
+        && params.boundary == GATHER_HALF
+        && dx == 1
+        && dy == 0
+        && x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x <= plane_ctx.width.saturating_sub(GATHER_HALF)
+        && y >= plane_ctx.y_origin
+        && y.checked_add(lanes)
+            .is_some_and(|end| end <= plane_ctx.height)
+    {
+        let row_start = y - plane_ctx.y_origin;
+        let column_start = x - GATHER_HALF - plane_ctx.x_origin;
+        if let Some(rows) = plane_ctx.rows.get_mut(row_start..row_start + lanes)
+            && rows
+                .iter()
+                .all(|row| column_start + 2 * GATHER_HALF <= row.len())
+        {
+            for row in rows {
+                deblock_sample_filter(
+                    &mut row[column_start..column_start + 2 * GATHER_HALF],
+                    &params,
+                )
+                .map_err(|_| DeblockError::SampleFilter)?;
+            }
+            return Ok(());
+        }
+    }
+
+    if lanes <= MI_SIZE
+        && params.boundary == GATHER_HALF
+        && dx == 0
+        && dy == 1
+        && y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
+        && y <= plane_ctx.height.saturating_sub(GATHER_HALF)
+        && x >= plane_ctx.x_origin
+        && x.checked_add(lanes)
+            .is_some_and(|end| end <= plane_ctx.width)
+    {
+        let row_start = y - GATHER_HALF - plane_ctx.y_origin;
+        let column_start = x - plane_ctx.x_origin;
+        if let Some(rows) = plane_ctx
+            .rows
+            .get_mut(row_start..row_start + 2 * GATHER_HALF)
+            && rows.iter().all(|row| column_start + lanes <= row.len())
+        {
+            let mut lines = [[T::default(); 2 * GATHER_HALF]; MI_SIZE];
+            for (sample_index, row) in rows.iter().enumerate() {
+                for lane in 0..lanes {
+                    lines[lane][sample_index] = row[column_start + lane];
+                }
+            }
+            for line in &mut lines[..lanes] {
+                deblock_sample_filter(line, &params).map_err(|_| DeblockError::SampleFilter)?;
+            }
+
+            if !params.prev_lossless {
+                for sample_index in params.boundary - params.max_width_neg..params.boundary {
+                    for lane in 0..lanes {
+                        rows[sample_index][column_start + lane] = lines[lane][sample_index];
+                    }
+                }
+            }
+            if !params.curr_lossless {
+                let width = params.max_width_neg.max(params.max_width_pos);
+                for sample_index in params.boundary..params.boundary + width {
+                    for lane in 0..lanes {
+                        rows[sample_index][column_start + lane] = lines[lane][sample_index];
+                    }
+                }
+            }
+            return Ok(());
+        }
+    }
+
+    for lane in 0..lanes {
+        apply_sample_filter(
+            plane_ctx,
+            PerpLine::new(x + dy * lane, y + dx * lane, dx, dy),
+            params,
+        )?;
+    }
+    Ok(())
+}
 
 fn apply_sample_filter<T: ReconSample>(
     plane_ctx: &mut PlaneCtx<'_, T>,
