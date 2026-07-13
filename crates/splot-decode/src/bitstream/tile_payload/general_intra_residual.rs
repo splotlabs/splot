@@ -59,8 +59,11 @@ use luma_transform_partition::MAX_LUMA_TRANSFORM_PARTITION_UNITS;
 pub(crate) use luma_transform_partition::{
     LumaTransformPartitionContext, LumaTransformPartitionUnits,
 };
-pub(crate) use reconstruct::reconstruct_general_intra_coeff_block_rect_with_prediction_into;
-use reconstruct::{reconstruct_block_setup, resolve_secondary_inverse_transform};
+use reconstruct::reconstruct_block_setup;
+pub(crate) use reconstruct::{
+    reconstruct_general_intra_coeff_block_rect_with_prediction_into,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt,
+};
 
 const TX_4X4: usize = 0;
 const TX_64X64: usize = 4;
@@ -2215,7 +2218,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
     reconstruct_general_intra_block_rect_with_prediction_core(
         quant,
         prediction,
-        &mut out,
+        ReconstructionOutput::Reusable(&mut out),
         qindex,
         plane_id,
         log2_width,
@@ -2231,45 +2234,16 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt<T: ReconSample>(
-    block: &LumaCoeffBlock,
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
-    use_tcq: bool,
-    use_ddt: bool,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let secondary =
-        resolve_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, None)?;
-    let mut out = Vec::new();
-    reconstruct_general_intra_block_rect_with_prediction_core(
-        &block.quant,
-        prediction,
-        &mut out,
-        qindex,
-        plane_id,
-        log2_width,
-        log2_height,
-        block.plane_tx_type,
-        use_tcq && block.use_tcq,
-        use_ddt,
-        block.lossless,
-        secondary.as_ref(),
-        None,
-        bit_depth,
-    )?;
-    Ok(out)
+enum ReconstructionOutput<'a, T> {
+    Reusable(&'a mut Vec<T>),
+    Fixed(&'a mut [T]),
 }
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
-    out: &mut Vec<T>,
+    output: ReconstructionOutput<'_, T>,
     qindex: u32,
     plane_id: PlaneId,
     log2_width: u32,
@@ -2301,8 +2275,14 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             actual: quant.len(),
         });
     }
-    out.clear();
-    out.resize(setup.samples, T::default());
+    let out = match output {
+        ReconstructionOutput::Reusable(out) => {
+            out.clear();
+            out.resize(setup.samples, T::default());
+            out.as_mut_slice()
+        }
+        ReconstructionOutput::Fixed(out) => out,
+    };
     with_residual_scratch(|scratch| {
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
         let residual_scratch = &mut scratch.residual[..setup.samples];

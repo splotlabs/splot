@@ -122,7 +122,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
     super::reconstruct_general_intra_block_rect_with_prediction_core(
         &block.quant,
         prediction,
-        out,
+        super::ReconstructionOutput::Reusable(out),
         qindex,
         plane_id,
         log2_width,
@@ -133,6 +133,41 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
         block.lossless,
         secondary.as_ref(),
         dpcm,
+        bit_depth,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt<
+    T: ReconSample,
+>(
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    out: &mut [T],
+    qindex: u32,
+    plane_id: PlaneId,
+    log2_width: u32,
+    log2_height: u32,
+    use_tcq: bool,
+    use_ddt: bool,
+    bit_depth: BitDepth,
+) -> Result<(), GeneralIntraResidualError> {
+    let secondary =
+        resolve_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, None)?;
+    super::reconstruct_general_intra_block_rect_with_prediction_core(
+        &block.quant,
+        prediction,
+        super::ReconstructionOutput::Fixed(out),
+        qindex,
+        plane_id,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
+        use_tcq && block.use_tcq,
+        use_ddt,
+        block.lossless,
+        secondary.as_ref(),
+        None,
         bit_depth,
     )
 }
