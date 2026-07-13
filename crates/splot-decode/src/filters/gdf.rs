@@ -11,8 +11,8 @@ use splot_core::tables::loop_restoration::{
 use splot_parallel::prelude::*;
 use splot_recon::math::{clip3, round2_signed};
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, LoopRestorationSourceBounds, PlaneId, PlaneRect, ReconError,
-    ReconSample,
+    BitDepth, CurrentFrameWorkspace, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId,
+    PlaneRect, ReconSample, loop_restoration_source_sample,
 };
 
 use crate::Result;
@@ -464,6 +464,12 @@ impl<T: ReconSample> GdfSource<T> {
                 "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
             )
         })? - radius;
+        let source_error = || {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+            )
+        };
         let mut samples = Vec::with_capacity(width * height);
         for row in 0..height {
             let y = origin_y
@@ -479,6 +485,25 @@ impl<T: ReconSample> GdfSource<T> {
                         "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
                     )
                 })?;
+            let left = loop_restoration_source_sample(PlaneId::Y, isize::MIN, y, bounds)
+                .map_err(|_| source_error())?;
+            let right = loop_restoration_source_sample(PlaneId::Y, isize::MAX, y, bounds)
+                .map_err(|_| source_error())?;
+            if right.x >= block.frame_width || left.y >= block.frame_height {
+                return Err(source_error());
+            }
+            let source = match left.source {
+                LoopRestorationSource::CurrFrame => curr_luma,
+                LoopRestorationSource::CdefFrame => cdef_luma,
+            };
+            let row_start = left
+                .y
+                .checked_mul(block.frame_width)
+                .ok_or_else(source_error)?;
+            let row_end = row_start
+                .checked_add(block.frame_width)
+                .ok_or_else(source_error)?;
+            let source_row = source.get(row_start..row_end).ok_or_else(source_error)?;
             for col in 0..width {
                 let x = origin_x
                     .checked_add(isize::try_from(col).map_err(|_| {
@@ -493,33 +518,8 @@ impl<T: ReconSample> GdfSource<T> {
                             "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
                         )
                     })?;
-                let sample = splot_recon::loop_restoration_source_sample(PlaneId::Y, x, y, bounds)
-                    .and_then(|resolved| {
-                        let source = match resolved.source {
-                            splot_recon::LoopRestorationSource::CurrFrame => curr_luma,
-                            splot_recon::LoopRestorationSource::CdefFrame => cdef_luma,
-                        };
-                        let index = resolved
-                            .y
-                            .checked_mul(block.frame_width)
-                            .and_then(|start| start.checked_add(resolved.x))
-                            .ok_or(ReconError::ArithmeticOverflow {
-                                context: "GDF source sample index",
-                            })?;
-                        source
-                            .get(index)
-                            .copied()
-                            .ok_or(ReconError::BufferLengthMismatch {
-                                expected: index.saturating_add(1),
-                                actual: source.len(),
-                            })
-                    })
-                    .map_err(|_| {
-                        gdf_filter_error(
-                            offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-                        )
-                    })?;
+                let x = x.clamp(left.x as isize, right.x as isize) as usize;
+                let sample = source_row.get(x).copied().ok_or_else(source_error)?;
                 samples.push(T::try_from_u16(sample).map_err(|_| {
                     gdf_filter_error(
                         offset,
