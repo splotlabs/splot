@@ -51,10 +51,6 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-fn take_parsed_residual_planes(capacity: usize) -> RecycledVec<ParsedResidualPlane> {
-    RecycledVec::take(&PARSED_RESIDUAL_PLANES, capacity)
-}
-
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(super) enum CctxRole {
     None,
@@ -112,7 +108,7 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let mut planes = take_parsed_residual_planes(self.planes.len());
+        let mut planes = RecycledVec::take(&PARSED_RESIDUAL_PLANES, self.planes.len());
         for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {

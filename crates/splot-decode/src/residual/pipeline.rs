@@ -57,9 +57,7 @@ impl<T> RecycledVec<T> {
     fn take(recycler: &'static LocalKey<Cell<Option<Vec<T>>>>, capacity: usize) -> Self {
         let mut entries = recycler.with(Cell::take).unwrap_or_default();
         entries.clear();
-        if entries.capacity() < capacity {
-            entries.reserve(capacity);
-        }
+        entries.reserve(capacity);
         Self { entries, recycler }
     }
 }
@@ -70,7 +68,7 @@ where
 {
     fn clone(&self) -> Self {
         let mut clone = Self::take(self.recycler, self.len());
-        clone.extend(self.iter().cloned());
+        clone.extend_from_slice(&self.entries);
         clone
     }
 }

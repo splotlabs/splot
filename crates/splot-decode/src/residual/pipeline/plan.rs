@@ -16,9 +16,10 @@ use super::{
     RecycledVec, ResidualPipelineUnsupported, ResidualPlanePlan, ResidualReconstructionPlan,
 };
 
-// AV2 § 9.3 caps a block axis at 64 4x4 units
+// AV2 § 9.2 caps a block axis at 64 4x4 units
 // (`docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
-const MAX_RESIDUAL_CHUNKS_PER_AXIS: usize = 64 / CHUNK_64_N4;
+const MAX_RESIDUAL_BLOCK_AXIS_N4: usize = 64;
+const MAX_RESIDUAL_CHUNKS_PER_AXIS: usize = MAX_RESIDUAL_BLOCK_AXIS_N4 / CHUNK_64_N4;
 pub(super) const MAX_RESIDUAL_PLANES: usize =
     MAX_RESIDUAL_CHUNKS_PER_AXIS * MAX_RESIDUAL_CHUNKS_PER_AXIS * (1 + CHROMA_PLANES.len());
 
@@ -293,7 +294,7 @@ fn push_ordered_planes(
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
-    if width_chunks > MAX_RESIDUAL_CHUNKS_PER_AXIS || height_chunks > MAX_RESIDUAL_CHUNKS_PER_AXIS {
+    if block.width4() > MAX_RESIDUAL_BLOCK_AXIS_N4 || block.height4() > MAX_RESIDUAL_BLOCK_AXIS_N4 {
         return Err(UNSUPPORTED_RESIDUAL_PLANE_CAPACITY);
     }
     let (sub_x, sub_y) = block_ctx.chroma().subsampling(PlaneId::U);

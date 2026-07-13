@@ -540,7 +540,8 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
 fn max_residual_plan_capacity_reuses_storage_after_bound_error() {
     let plan = |width4, height4| {
         let block = BlockRect::new(0, 0, width4, height4);
-        let tx = TxShape::from_luma_4x4(width4, height4).expect("power-of-two block shape");
+        let tx = TxShape::from_luma_4x4(width4.min(64), height4.min(64))
+            .expect("bounded transform shape");
         let ctx = BlockCtx::new(
             block,
             tx,
@@ -564,7 +565,7 @@ fn max_residual_plan_capacity_reuses_storage_after_bound_error() {
     let storage = max_plan.planes.as_ptr();
     drop(max_plan);
 
-    let error = plan(128, 64).expect_err("out-of-table block must exceed the plan bound");
+    let error = plan(65, 64).expect_err("first out-of-table width must exceed the plan bound");
     assert_eq!(error.reason_id(), "general_intra_residual_plane_capacity");
 
     let after_error = plan(64, 64).expect("bound error must leave plan storage reusable");
