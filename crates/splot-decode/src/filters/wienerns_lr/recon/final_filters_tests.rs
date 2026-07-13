@@ -280,3 +280,14 @@ fn keeps_tile_unit_and_stripe_domains_separate() {
         assert_eq!(runs, vec![first, next]);
     }
 }
+
+#[test]
+fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
+    WIENER_NS_LUMA_SCRATCH.with(|slot| slot.set(None));
+
+    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES + 1, |_| ());
+    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_none()));
+
+    with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES, |_| ());
+    WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_some()));
+}

@@ -171,7 +171,8 @@ pub use wienerns_chroma_filter::{
 };
 pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,
-    WienerNsLumaPaddedSource, wiener_ns_filter_luma_block, wiener_ns_filter_luma_block_padded,
+    WienerNsLumaPaddedSource, WienerNsLumaScratch, wiener_ns_filter_luma_block,
+    wiener_ns_filter_luma_block_padded, wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, InterIntraMode,
