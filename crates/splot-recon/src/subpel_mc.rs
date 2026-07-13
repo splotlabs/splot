@@ -580,6 +580,23 @@ fn subpel_copy_block<T: ReconSample>(
     output
 }
 
+std::thread_local! {
+    static SUBPEL_INTERMEDIATE: std::cell::Cell<Option<Vec<i32>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn with_subpel_intermediate<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
+    SUBPEL_INTERMEDIATE.with(|slot| {
+        let mut intermediate = slot.take().unwrap_or_default();
+        if intermediate.len() < len {
+            intermediate.resize(len, 0);
+        }
+        let result = f(&mut intermediate[..len]);
+        slot.set(Some(intermediate));
+        result
+    })
+}
+
 /// Two-pass § 7.13.3.18 convolution core. With an unscaled horizontal step
 /// the sub-pel phase is column-invariant, and when every clipped column read
 /// is the identity a row's whole tap window is one contiguous `w + 7` slice
@@ -684,104 +701,111 @@ fn subpel_predict_block_internal<T: ReconSample>(
     read_hi = read_hi.min(intermediate_height);
     read_lo = read_lo.min(read_hi);
 
-    let mut intermediate = vec![0i32; intermediate_height * w];
-    for r in read_lo..read_hi {
-        let ref_row = clip3(
-            first_y,
-            last_y,
-            (start_y >> SCALE_SUBPEL_BITS) + r as i64 - 3,
-        );
-        let ref_row = (ref_row as usize).min(reference.height - 1);
-        let window = x_window_direct
-            .then(|| {
-                let row_base = ref_row * reference.stride + (x0 - 3) as usize;
-                reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
-            })
-            .flatten();
-        if let Some(window) = window {
-            let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
-            let row_out = &mut intermediate[r * w..(r + 1) * w];
-            if phase == 0 {
-                for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
-                    *out = i32::from(sample.to_u16()) << (FILTER_BITS - INTER_ROUND0);
+    let intermediate_len =
+        intermediate_height
+            .checked_mul(w)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "subpel intermediate sample count",
+            })?;
+    with_subpel_intermediate(intermediate_len, |intermediate| {
+        for r in read_lo..read_hi {
+            let ref_row = clip3(
+                first_y,
+                last_y,
+                (start_y >> SCALE_SUBPEL_BITS) + r as i64 - 3,
+            );
+            let ref_row = (ref_row as usize).min(reference.height - 1);
+            let window = x_window_direct
+                .then(|| {
+                    let row_base = ref_row * reference.stride + (x0 - 3) as usize;
+                    reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
+                })
+                .flatten();
+            if let Some(window) = window {
+                let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
+                let row_out = &mut intermediate[r * w..(r + 1) * w];
+                if phase == 0 {
+                    for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
+                        *out = i32::from(sample.to_u16()) << (FILTER_BITS - INTER_ROUND0);
+                    }
+                    continue;
+                }
+                let taps = &h_filter_rows[phase];
+                let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
+                let taps = &taps[tap_start..tap_end];
+                for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
+                    let mut s: i64 = 0;
+                    let samples = &win[tap_start..tap_start + taps.len()];
+                    for (&tap, &sample) in taps.iter().zip(samples) {
+                        s += i64::from(tap) * i64::from(sample.to_u16());
+                    }
+                    *out = round2(s, INTER_ROUND0) as i32;
                 }
                 continue;
             }
-            let taps = &h_filter_rows[phase];
-            let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
-            let taps = &taps[tap_start..tap_end];
-            for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
+            for c in 0..w {
+                let p = start_x + step_x * c as i64;
+                let phase = ((p >> 6) & SUBPEL_MASK) as usize;
+                if phase == 0 {
+                    let ref_col = clip3(first_x, last_x, p >> SCALE_SUBPEL_BITS);
+                    intermediate[r * w + c] = (reference.sample(ref_row, ref_col as usize) as i32)
+                        << (FILTER_BITS - INTER_ROUND0);
+                    continue;
+                }
+                let taps = &h_filter_rows[phase];
+                let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
+                let taps = &taps[tap_start..tap_end];
                 let mut s: i64 = 0;
-                let samples = &win[tap_start..tap_start + taps.len()];
-                for (&tap, &sample) in taps.iter().zip(samples) {
-                    s += i64::from(tap) * i64::from(sample.to_u16());
+                for (tap_offset, &tap) in taps.iter().enumerate() {
+                    let t = tap_start + tap_offset;
+                    let ref_col = clip3(first_x, last_x, (p >> SCALE_SUBPEL_BITS) + t as i64 - 3);
+                    s += i64::from(tap) * reference.sample(ref_row, ref_col as usize);
                 }
-                *out = round2(s, INTER_ROUND0) as i32;
+                intermediate[r * w + c] = round2(s, INTER_ROUND0) as i32;
             }
-            continue;
         }
-        for c in 0..w {
-            let p = start_x + step_x * c as i64;
+
+        let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
+
+        let mut output = vec![0i32; w * h];
+        let mut acc = [0i64; MAX_BLOCK_DIM];
+        for r in 0..h {
+            let p = (start_y & 1023) + step_y * r as i64;
             let phase = ((p >> 6) & SUBPEL_MASK) as usize;
+            let taps = &v_filter_rows[phase];
+            let base = (p >> SCALE_SUBPEL_BITS) as usize;
+            if base + NUM_TAPS > intermediate_height {
+                return Err(ReconError::SubpelIntermediateOutOfRange {
+                    base,
+                    intermediate_height,
+                });
+            }
             if phase == 0 {
-                let ref_col = clip3(first_x, last_x, p >> SCALE_SUBPEL_BITS);
-                intermediate[r * w + c] = (reference.sample(ref_row, ref_col as usize) as i32)
-                    << (FILTER_BITS - INTER_ROUND0);
+                let center = &intermediate[(base + 3) * w..(base + 4) * w];
+                for (out, &value) in output[r * w..(r + 1) * w].iter_mut().zip(center) {
+                    *out = round2(i64::from(value) << FILTER_BITS, inter_round1) as i32;
+                }
                 continue;
             }
-            let taps = &h_filter_rows[phase];
-            let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
+            let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
+            let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter as usize][phase];
             let taps = &taps[tap_start..tap_end];
-            let mut s: i64 = 0;
+            let acc = &mut acc[..w];
+            acc.fill(0);
             for (tap_offset, &tap) in taps.iter().enumerate() {
                 let t = tap_start + tap_offset;
-                let ref_col = clip3(first_x, last_x, (p >> SCALE_SUBPEL_BITS) + t as i64 - 3);
-                s += i64::from(tap) * reference.sample(ref_row, ref_col as usize);
+                let tap = i64::from(tap);
+                for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
+                    *a += tap * i64::from(v);
+                }
             }
-            intermediate[r * w + c] = round2(s, INTER_ROUND0) as i32;
-        }
-    }
-
-    let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
-
-    let mut output = vec![0i32; w * h];
-    let mut acc = [0i64; MAX_BLOCK_DIM];
-    for r in 0..h {
-        let p = (start_y & 1023) + step_y * r as i64;
-        let phase = ((p >> 6) & SUBPEL_MASK) as usize;
-        let taps = &v_filter_rows[phase];
-        let base = (p >> SCALE_SUBPEL_BITS) as usize;
-        if base + NUM_TAPS > intermediate_height {
-            return Err(ReconError::SubpelIntermediateOutOfRange {
-                base,
-                intermediate_height,
-            });
-        }
-        if phase == 0 {
-            let center = &intermediate[(base + 3) * w..(base + 4) * w];
-            for (out, &value) in output[r * w..(r + 1) * w].iter_mut().zip(center) {
-                *out = round2(i64::from(value) << FILTER_BITS, inter_round1) as i32;
-            }
-            continue;
-        }
-        let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
-        let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter as usize][phase];
-        let taps = &taps[tap_start..tap_end];
-        let acc = &mut acc[..w];
-        acc.fill(0);
-        for (tap_offset, &tap) in taps.iter().enumerate() {
-            let t = tap_start + tap_offset;
-            let tap = i64::from(tap);
-            for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
-                *a += tap * i64::from(v);
+            for (out, &s) in output[r * w..(r + 1) * w].iter_mut().zip(acc.iter()) {
+                *out = round2(s, inter_round1) as i32;
             }
         }
-        for (out, &s) in output[r * w..(r + 1) * w].iter_mut().zip(acc.iter()) {
-            *out = round2(s, inter_round1) as i32;
-        }
-    }
 
-    Ok(output)
+        Ok(output)
+    })
 }
 
 #[cfg(test)]
