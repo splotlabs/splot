@@ -16,6 +16,8 @@ use crate::tile::block_context::ChromaSampling;
 
 const PLANE_COUNT: usize = 3;
 const MAX_ADJUSTED_TX_EXTENT: usize = 32;
+static ZERO_QUANT_SIGN: [i32; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT] =
+    [0; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,9 +46,16 @@ impl TransformCoeffBlockState {
             width,
             height,
             level: zeroed_vec(allocation.coeff_count)?,
-            quant_sign: zeroed_vec(allocation.coeff_count)?,
+            quant_sign: Vec::new(),
             quant: zeroed_vec(allocation.coeff_count)?,
         })
+    }
+
+    pub(crate) fn ensure_quant_sign(&mut self) -> Result<(), TileCoeffStateError> {
+        if self.quant_sign.is_empty() {
+            self.quant_sign = zeroed_vec(self.level.len())?;
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -66,7 +75,11 @@ impl TransformCoeffBlockState {
 
     #[must_use]
     pub(crate) fn quant_sign(&self) -> &[i32] {
-        &self.quant_sign
+        if self.quant_sign.is_empty() {
+            &ZERO_QUANT_SIGN[..self.level.len()]
+        } else {
+            &self.quant_sign
+        }
     }
 
     #[must_use]
@@ -97,6 +110,7 @@ impl TransformCoeffBlockState {
         value: i32,
     ) -> Result<(), TileCoeffStateError> {
         let idx = self.index(row, col)?;
+        self.ensure_quant_sign()?;
         self.quant_sign[idx] = value;
         Ok(())
     }
@@ -112,7 +126,7 @@ impl TransformCoeffBlockState {
     }
 
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i32, TileCoeffStateError> {
-        Ok(self.quant_sign[self.index(row, col)?])
+        Ok(self.quant_sign()[self.index(row, col)?])
     }
 
     pub(crate) fn quant_at(&self, pos: usize) -> Result<i32, TileCoeffStateError> {
