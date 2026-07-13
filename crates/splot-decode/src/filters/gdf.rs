@@ -279,13 +279,28 @@ fn compute_block<T: ReconSample>(
     block: GdfBlock,
     offset: ByteOffset,
 ) -> Result<Vec<T>> {
-    let grad = gradients(source, &block);
+    let source_origin = source.relative_position(block.x, block.y).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+        )
+    })?;
+    debug_assert!(source_origin.0 >= GDF_READ_RADIUS && source_origin.1 >= GDF_READ_RADIUS);
+    let grad = gradients(source, &block, source_origin);
     let classes = classes(&grad, &block);
     let mut output = Vec::with_capacity(block.width * block.height);
     for row in 0..block.height {
         for col in 0..block.width {
             let class = &classes[(row >> 1) * (block.width >> 1) + (col >> 1)];
-            let sample = gdf_sample(base_luma, source, &block, row, col, class);
+            let sample = gdf_sample(
+                base_luma,
+                source,
+                &block,
+                row,
+                col,
+                (source_origin.0 + col, source_origin.1 + row),
+                class,
+            );
             output.push(T::try_from_u16(sample).map_err(|_| {
                 gdf_filter_error(
                     offset,
@@ -538,14 +553,31 @@ impl<T: ReconSample> GdfSource<T> {
         })
     }
 
+    #[cfg(test)]
     fn get(&self, x: isize, y: isize) -> i64 {
-        let col = x.saturating_sub(self.origin_x);
-        let row = y.saturating_sub(self.origin_y);
-        if col < 0 || row < 0 || col as usize >= self.stride {
+        let Some((col, row)) = self.relative_position_signed(x, y) else {
+            return 0;
+        };
+        if col >= self.stride {
             return 0;
         }
+        self.get_at(col, row)
+    }
+
+    fn relative_position(&self, x: usize, y: usize) -> Option<(usize, usize)> {
+        self.relative_position_signed(isize::try_from(x).ok()?, isize::try_from(y).ok()?)
+    }
+
+    fn relative_position_signed(&self, x: isize, y: isize) -> Option<(usize, usize)> {
+        let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
+        let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
+        Some((col, row))
+    }
+
+    fn get_at(&self, col: usize, row: usize) -> i64 {
+        debug_assert!(col < self.stride);
         self.samples
-            .get((row as usize) * self.stride + col as usize)
+            .get(row * self.stride + col)
             .map_or(0, |sample| i64::from(sample.to_u16()))
     }
 }
@@ -553,20 +585,28 @@ impl<T: ReconSample> GdfSource<T> {
 fn gradients<T: ReconSample>(
     source: &GdfSource<T>,
     block: &GdfBlock,
+    source_origin: (usize, usize),
 ) -> [[i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS] {
     let rows = block.height + 2;
     let cols = block.width + 2;
     let mut grad = [[0_i64; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS];
     for i in 0..rows {
         for j in 0..cols {
-            let sample_x = block.x as isize - 1 + j as isize;
-            let sample_y = block.y as isize - 1 + i as isize;
-            for (direction, (delta_y, delta_x)) in
-                [(1, 0), (0, 1), (1, 1), (-1, 1)].into_iter().enumerate()
+            let sample_col = source_origin.0 - 1 + j;
+            let sample_row = source_origin.1 - 1 + i;
+            for (direction, (delta_y, delta_x)) in [(1_isize, 0_isize), (0, 1), (1, 1), (-1, 1)]
+                .into_iter()
+                .enumerate()
             {
-                let before = source.get(sample_x - delta_x, sample_y - delta_y);
-                let center = source.get(sample_x, sample_y);
-                let after = source.get(sample_x + delta_x, sample_y + delta_y);
+                let before = source.get_at(
+                    sample_col.wrapping_add_signed(-delta_x),
+                    sample_row.wrapping_add_signed(-delta_y),
+                );
+                let center = source.get_at(sample_col, sample_row);
+                let after = source.get_at(
+                    sample_col.wrapping_add_signed(delta_x),
+                    sample_row.wrapping_add_signed(delta_y),
+                );
                 grad[direction][i * cols + j] = (center * 2 - before - after).abs();
             }
         }
@@ -628,11 +668,11 @@ fn gdf_sample<T: ReconSample>(
     block: &GdfBlock,
     row: usize,
     col: usize,
+    source_position: (usize, usize),
     class: &GdfClass,
 ) -> u16 {
-    let x = block.x as isize + col as isize;
-    let y = block.y as isize + row as isize;
-    let sample2 = source.get(x, y);
+    let (source_col, source_row) = source_position;
+    let sample2 = source.get_at(source_col, source_row);
     let cls = usize::from(class.index);
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
@@ -640,8 +680,14 @@ fn gdf_sample<T: ReconSample>(
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     for (k, &(dy, dx)) in GDF_COORDS.iter().enumerate() {
         let alpha = i64::from(alpha_table[k][cls]);
-        let sample3 = source.get(x - dx, y - dy);
-        let sample4 = source.get(x + dx, y + dy);
+        let sample3 = source.get_at(
+            source_col.wrapping_add_signed(-dx),
+            source_row.wrapping_add_signed(-dy),
+        );
+        let sample4 = source.get_at(
+            source_col.wrapping_add_signed(dx),
+            source_row.wrapping_add_signed(dy),
+        );
         let above = clip3(-alpha, alpha, (sample3 - sample2) << shift);
         let below = clip3(-alpha, alpha, (sample4 - sample2) << shift);
         let comb = clip3(-512, 511, above + below);
