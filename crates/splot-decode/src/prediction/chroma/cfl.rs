@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! AV2 § 7.13.5/§ 7.13.6 chroma-from-luma reconstruction helpers.
+//!
+//! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
 use splot_recon::math::{approx_divide, resolve_division, round2_i32, round2_signed_i32};
 use splot_recon::mhccp::{
@@ -46,6 +48,112 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let out = reconstruct_general_intra_chroma_cfl_block(
+        workspace,
+        block,
+        plane_id,
+        x,
+        y,
+        log2_width,
+        log2_height,
+        qindex,
+        cfl_params,
+        cfl_ds_filter_index,
+        sb_mib,
+        num4_above_right,
+        num4_below_left,
+        bit_depth,
+        None,
+    )?;
+    let block_size = IntraRectBlockSize::new(
+        u8::try_from(log2_width).unwrap_or(u8::MAX),
+        u8::try_from(log2_height).unwrap_or(u8::MAX),
+    )?;
+    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    u_block: &LumaCoeffBlock,
+    v_block: &LumaCoeffBlock,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    cfl_params: CflParams,
+    cfl_ds_filter_index: u8,
+    sb_mib: usize,
+    u_neighbours: (usize, usize),
+    v_neighbours: (usize, usize),
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let luma_ac = if cfl_params.index == CflIndex::Multi {
+        None
+    } else {
+        Some(prepare_cfl_luma_ac(
+            workspace,
+            x,
+            y,
+            width,
+            height,
+            cfl_ds_filter_index,
+            sb_mib,
+            bit_depth,
+        )?)
+    };
+    let run = |(plane_id, block, neighbours): (PlaneId, &LumaCoeffBlock, (usize, usize))| {
+        reconstruct_general_intra_chroma_cfl_block(
+            workspace,
+            block,
+            plane_id,
+            x,
+            y,
+            log2_width,
+            log2_height,
+            qindex,
+            cfl_params,
+            cfl_ds_filter_index,
+            sb_mib,
+            neighbours.0,
+            neighbours.1,
+            bit_depth,
+            luma_ac.as_deref(),
+        )
+    };
+    let u_out = run((PlaneId::U, u_block, u_neighbours))?;
+    let v_out = run((PlaneId::V, v_block, v_neighbours))?;
+    let block_size = IntraRectBlockSize::new(
+        u8::try_from(log2_width).unwrap_or(u8::MAX),
+        u8::try_from(log2_height).unwrap_or(u8::MAX),
+    )?;
+    workspace.write_rect_block(PlaneId::U, x, y, block_size, &u_out)?;
+    workspace.write_rect_block(PlaneId::V, x, y, block_size, &v_out)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    log2_width: u32,
+    log2_height: u32,
+    qindex: u32,
+    cfl_params: CflParams,
+    cfl_ds_filter_index: u8,
+    sb_mib: usize,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    bit_depth: BitDepth,
+    luma_ac: Option<&[i32]>,
+) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let prediction = if cfl_params.index == CflIndex::Multi {
@@ -75,6 +183,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
             cfl_ds_filter_index,
             sb_mib,
             bit_depth,
+            luma_ac,
         )?
     };
     let out = if block.all_zero {
@@ -92,12 +201,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
             bit_depth,
         )?
     };
-    let block_size = IntraRectBlockSize::new(
-        u8::try_from(log2_width).unwrap_or(u8::MAX),
-        u8::try_from(log2_height).unwrap_or(u8::MAX),
-    )?;
-    workspace.write_rect_block(plane_id, x, y, block_size, &out)?;
-    Ok(())
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -112,6 +216,7 @@ fn cfl_prediction<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     bit_depth: BitDepth,
+    luma_ac: Option<&[i32]>,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(
@@ -133,6 +238,22 @@ fn cfl_prediction<T: ReconSample>(
         predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?
     };
     let mut prediction = vec![dc; width.saturating_mul(height)];
+    let owned_luma_ac;
+    let luma_ac = if let Some(luma_ac) = luma_ac {
+        luma_ac
+    } else {
+        owned_luma_ac = prepare_cfl_luma_ac(
+            workspace,
+            x,
+            y,
+            width,
+            height,
+            cfl_ds_filter_index,
+            sb_mib,
+            bit_depth,
+        )?;
+        &owned_luma_ac
+    };
     apply_cfl_prediction(
         workspace,
         plane_id,
@@ -144,6 +265,7 @@ fn cfl_prediction<T: ReconSample>(
         cfl_ds_filter_index,
         sb_mib,
         bit_depth,
+        luma_ac,
         &mut prediction,
     )?;
     Ok(prediction)
@@ -161,11 +283,9 @@ fn apply_cfl_prediction<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     bit_depth: BitDepth,
+    luma_ac: &[i32],
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let pixel_format = workspace.info().pixel_format();
-    let sub_x = usize::from(pixel_format.subsampling_x());
-    let sub_y = usize::from(pixel_format.subsampling_y());
     let alpha_q3 = cfl_alpha_q3(
         workspace,
         plane_id,
@@ -177,7 +297,41 @@ fn apply_cfl_prediction<T: ReconSample>(
         cfl_ds_filter_index,
         sb_mib,
     )?;
-    let luma_avg = cfl_luma_average_q3(
+    let max = i32::from(bit_depth.max_sample());
+    for row in 0..height {
+        for col in 0..width {
+            let index = row * width + col;
+            let scaled_luma = round2_signed_i32(alpha_q3 * luma_ac[index], CFL_ALPHA_SHIFT);
+            let dc = i32::from(prediction[index].to_u16());
+            let clipped = (dc + scaled_luma).clamp(0, max) as u16;
+            prediction[index] = T::try_from_u16(clipped)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_cfl_luma_ac<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    cfl_ds_filter_index: u8,
+    sb_mib: usize,
+    bit_depth: BitDepth,
+) -> core::result::Result<Vec<i32>, GeneralIntraResidualError> {
+    if cfl_filter_index(cfl_ds_filter_index).is_none() {
+        return Err(
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "general_intra_cfl_filter",
+            },
+        );
+    }
+    let pixel_format = workspace.info().pixel_format();
+    let sub_x = usize::from(pixel_format.subsampling_x());
+    let sub_y = usize::from(pixel_format.subsampling_y());
+    let average_q3 = cfl_luma_average_q3(
         workspace,
         x,
         y,
@@ -187,7 +341,7 @@ fn apply_cfl_prediction<T: ReconSample>(
         sb_mib,
         bit_depth,
     )?;
-    let max = i32::from(bit_depth.max_sample());
+    let mut samples_q3 = Vec::with_capacity(width.saturating_mul(height));
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
         let luma_y = chroma_y << sub_y;
@@ -196,22 +350,19 @@ fn apply_cfl_prediction<T: ReconSample>(
             let chroma_x = x.saturating_add(col);
             let luma_x = chroma_x << sub_x;
             let clamp_x = col == 0 || luma_x % 64 == 0;
-            let luma = cfl_luma_q3(
-                workspace,
-                chroma_x,
-                chroma_y,
-                clamp_x,
-                clamp_y,
-                cfl_ds_filter_index,
-            )?;
-            let scaled_luma = round2_signed_i32(alpha_q3 * (luma - luma_avg), CFL_ALPHA_SHIFT);
-            let index = row * width + col;
-            let dc = i32::from(prediction[index].to_u16());
-            let clipped = (dc + scaled_luma).clamp(0, max) as u16;
-            prediction[index] = T::try_from_u16(clipped)?;
+            samples_q3.push(
+                cfl_luma_q3(
+                    workspace,
+                    chroma_x,
+                    chroma_y,
+                    clamp_x,
+                    clamp_y,
+                    cfl_ds_filter_index,
+                )? - average_q3,
+            );
         }
     }
-    Ok(())
+    Ok(samples_q3)
 }
 
 #[allow(clippy::too_many_arguments)]

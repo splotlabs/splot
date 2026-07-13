@@ -10,8 +10,9 @@ use crate::bitstream::tile_payload::{
     TileBlockDecodedState, current_frame_qm_segment_id, is_cctx_geometry_allowed,
     reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
+use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
-use super::ResidualPlanePlan;
+use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
 pub(super) fn can_hold_for_cctx_pair(
     plane: ResidualPlanePlan,
@@ -67,6 +68,15 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         );
     };
     if cctx_type == 0 {
+        if reconstruct_cfl_pair(
+            workspace,
+            block_decoded,
+            (u_plane, &u_coeffs),
+            (v_plane, &v_coeffs),
+            qindex,
+        )? {
+            return Ok(());
+        }
         u_plane.reconstruct(
             workspace,
             &u_coeffs,
@@ -96,6 +106,69 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         intra_edge,
         luma_context,
     )
+}
+
+fn reconstruct_cfl_pair<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block_decoded: &TileBlockDecodedState,
+    u: (ResidualPlanePlan, &LumaCoeffBlock),
+    v: (ResidualPlanePlan, &LumaCoeffBlock),
+    qindex: u32,
+) -> core::result::Result<bool, GeneralIntraResidualError> {
+    let (u_plane, u_coeffs) = u;
+    let (v_plane, v_coeffs) = v;
+    let (
+        ResidualReconstructionPlan::ChromaCfl {
+            params: u_params,
+            cfl_ds_filter_index: u_filter,
+            sb_mib: u_sb_mib,
+        },
+        ResidualReconstructionPlan::ChromaCfl {
+            params: v_params,
+            cfl_ds_filter_index: v_filter,
+            sb_mib: v_sb_mib,
+        },
+    ) = (u_plane.reconstruction, v_plane.reconstruction)
+    else {
+        return Ok(false);
+    };
+    if u_plane.plane_id != PlaneId::U
+        || v_plane.plane_id != PlaneId::V
+        || u_plane.x != v_plane.x
+        || u_plane.y != v_plane.y
+        || u_plane.tx != v_plane.tx
+        || u_params != v_params
+        || u_filter != v_filter
+        || u_sb_mib != v_sb_mib
+    {
+        return Ok(false);
+    }
+
+    let u_neighbours = u_plane.plane_neighbours(u_plane.block_ctx, block_decoded);
+    let v_neighbours = v_plane.plane_neighbours(v_plane.block_ctx, block_decoded);
+    reconstruct_general_intra_chroma_cfl_pair_into(
+        workspace,
+        u_coeffs,
+        v_coeffs,
+        u_plane.x,
+        u_plane.y,
+        u_plane.tx.width_log2(),
+        u_plane.tx.height_log2(),
+        qindex,
+        u_params,
+        u_filter,
+        u_sb_mib,
+        (
+            u_neighbours.num_above_right(),
+            u_neighbours.num_below_left(),
+        ),
+        (
+            v_neighbours.num_above_right(),
+            v_neighbours.num_below_left(),
+        ),
+        u_plane.block_ctx.bit_depth(),
+    )?;
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]

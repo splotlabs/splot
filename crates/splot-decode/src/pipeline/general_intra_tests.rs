@@ -168,7 +168,6 @@ const LOSSLESS_SDP_DPCM_UV_H_FIXTURE: &[u8] = include_bytes!(
 );
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
-
 fn decode_context() -> DecodeContext {
     DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).expect("context")
 }
@@ -2487,4 +2486,5 @@ fn horz_rectangular_partition_intra_frame_decodes_to_oracle() {
     );
 }
 mod general_intra_cdef_tests;
+mod general_intra_cfl_tests;
 mod general_intra_deblock_tests;
