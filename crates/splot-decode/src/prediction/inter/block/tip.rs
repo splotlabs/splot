@@ -10,7 +10,6 @@ use splot_recon::{DecodedFrame, PixelFormat, ReconError};
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
 
-#[derive(Clone, Copy)]
 struct TipUnit<'a, T: ReconSample> {
     params: mc::InterBlockParams<'a, T>,
     mvs: [Mv; 2],
@@ -18,6 +17,7 @@ struct TipUnit<'a, T: ReconSample> {
     luma_y: usize,
     luma_w: usize,
     luma_h: usize,
+    output: Option<mc::CompoundBlockMetadata>,
 }
 
 const fn tip_uses_two_references(weight: i16) -> bool {
@@ -158,6 +158,86 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
     } else {
         8
     }
+}
+
+fn prediction_unit_count(
+    width: usize,
+    height: usize,
+    unit_size: usize,
+) -> splot_recon::Result<usize> {
+    if unit_size == 0 {
+        return Err(ReconError::ZeroDimension {
+            field: "TIP prediction unit size",
+        });
+    }
+    width
+        .div_ceil(unit_size)
+        .checked_mul(height.div_ceil(unit_size))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "TIP prediction unit count",
+        })
+}
+
+fn prediction_unit_rects(
+    width: usize,
+    height: usize,
+    unit_size: usize,
+) -> impl Iterator<Item = (usize, usize, usize, usize)> {
+    (0..height).step_by(unit_size).flat_map(move |y| {
+        (0..width).step_by(unit_size).map(move |x| {
+            let unit_width = (width - x).min(unit_size);
+            let unit_height = (height - y).min(unit_size);
+            (x, y, unit_width, unit_height)
+        })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_parallel_outputs<T: ReconSample>(
+    sink: &mc::WorkspaceSink<'_, T>,
+    units: &mut [TipUnit<'_, T>],
+    output_samples: &mut [T],
+    output_stride: usize,
+    use_optflow: bool,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if output_stride == 0 {
+        return Err(ReconError::ZeroDimension {
+            field: "TIP compound output stride",
+        }
+        .into());
+    }
+    let expected =
+        units
+            .len()
+            .checked_mul(output_stride)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "TIP compound output arena length",
+            })?;
+    if output_samples.len() != expected {
+        return Err(ReconError::BufferLengthMismatch {
+            expected,
+            actual: output_samples.len(),
+        }
+        .into());
+    }
+    output_samples
+        .par_chunks_mut(output_stride)
+        .zip(units.par_iter_mut())
+        .try_for_each(|(samples, unit)| {
+            let compound = unit
+                .params
+                .into_compound()
+                .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+            unit.output = Some(mc::predict_compound_average_block_into(
+                sink,
+                compound,
+                use_optflow.then_some(8),
+                tile_offset,
+                samples,
+            )?);
+            Ok(())
+        })
 }
 
 pub(super) const fn reference_uses_16x16_units(
@@ -440,7 +520,6 @@ pub(super) fn reconstruct<T: ReconSample>(
                         (references.future_ref, references.future_offset),
                     ],
                 ));
-    let mut records = Vec::new();
     let frame_size = sink.info().coded_luma_size();
     let block_w = placed
         .luma_w
@@ -449,85 +528,91 @@ pub(super) fn reconstruct<T: ReconSample>(
         .luma_h
         .min(frame_size.height().saturating_sub(placed.luma_y));
 
+    let unit_count = prediction_unit_count(block_w, block_h, unit_size)?;
     let mut units = Vec::new();
-    for local_y in (0..block_h).step_by(unit_size) {
-        for local_x in (0..block_w).step_by(unit_size) {
-            let luma_x = placed.luma_x + local_x;
-            let luma_y = placed.luma_y + local_y;
-            let luma_w = (block_w - local_x).min(unit_size);
-            let luma_h = (block_h - local_y).min(unit_size);
-            let chroma_x = luma_x.max(placed.chroma_luma_x);
-            let chroma_y = luma_y.max(placed.chroma_luma_y);
-            let chroma_end_x = (luma_x + luma_w).min(placed.chroma_luma_x + placed.chroma_luma_w);
-            let chroma_end_y = (luma_y + luma_h).min(placed.chroma_luma_y + placed.chroma_luma_h);
-            let predict_chroma =
-                placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
-            let mvs = temporal
-                .tip_candidate(luma_y / 8, luma_x / 8, placed.block.mv)
-                .ok_or_else(|| {
-                    inter_missing!(
-                        "inter_tip_motion_field",
-                        tile_offset,
-                        "inter.tip.motion_field",
-                        SPEC_MODE_INFO
-                    )
-                })?;
-            let unit = PlacedInterBlock {
-                luma_x,
-                luma_y,
-                luma_w,
-                luma_h,
-                chroma_luma_x: chroma_x,
-                chroma_luma_y: chroma_y,
-                chroma_luma_w: chroma_end_x.saturating_sub(chroma_x),
-                chroma_luma_h: chroma_end_y.saturating_sub(chroma_y),
-                predict_chroma,
-                sub8x8_chroma: false,
-                interintra_chroma: false,
-                block: InterBlock {
-                    ref_frame0: references.past_ref,
-                    ref_frame1: two_references.then_some(references.future_ref),
-                    mv: mvs[0],
-                    mv1: mvs[1],
-                    interp: interpolation_filter,
-                    warp_params: [None, None],
-                    bawp: BawpSyntax::default(),
-                    interintra: None,
-                    compound_blend: blend,
-                    optflow_distances: use_optflow
-                        .then_some([references.past_offset, references.future_offset]),
-                    residual: None,
-                },
-            };
-            let rect = mc::McBlockRect {
-                luma_x,
-                luma_y,
-                luma_w,
-                luma_h,
-                chroma_luma_x: unit.chroma_luma_x,
-                chroma_luma_y: unit.chroma_luma_y,
-                chroma_luma_w: unit.chroma_luma_w,
-                chroma_luma_h: unit.chroma_luma_h,
-            };
-            let params = super::super::resolve_inter_block_params(
-                ref_frame_idx,
-                reference,
-                &unit,
-                rect,
-                tile_offset,
-            )?
-            .with_refinemv(use_refinemv)
-            .with_refinemv_search(search_refinemv)
-            .with_optflow_sad_threshold(use_optflow.then_some(if output { 15 } else { 6 }));
-            units.push(TipUnit {
-                params,
-                mvs,
-                luma_x,
-                luma_y,
-                luma_w,
-                luma_h,
-            });
-        }
+    units.try_reserve_exact(unit_count).map_err(|_| {
+        inter_cap!(
+            "inter_tip_unit_allocation",
+            tile_offset,
+            "inter.tip.prediction_unit_allocation",
+            "7.13.3.1"
+        )
+    })?;
+    for (local_x, local_y, luma_w, luma_h) in prediction_unit_rects(block_w, block_h, unit_size) {
+        let luma_x = placed.luma_x + local_x;
+        let luma_y = placed.luma_y + local_y;
+        let chroma_x = luma_x.max(placed.chroma_luma_x);
+        let chroma_y = luma_y.max(placed.chroma_luma_y);
+        let chroma_end_x = (luma_x + luma_w).min(placed.chroma_luma_x + placed.chroma_luma_w);
+        let chroma_end_y = (luma_y + luma_h).min(placed.chroma_luma_y + placed.chroma_luma_h);
+        let predict_chroma =
+            placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
+        let mvs = temporal
+            .tip_candidate(luma_y / 8, luma_x / 8, placed.block.mv)
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_tip_motion_field",
+                    tile_offset,
+                    "inter.tip.motion_field",
+                    SPEC_MODE_INFO
+                )
+            })?;
+        let unit = PlacedInterBlock {
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            chroma_luma_x: chroma_x,
+            chroma_luma_y: chroma_y,
+            chroma_luma_w: chroma_end_x.saturating_sub(chroma_x),
+            chroma_luma_h: chroma_end_y.saturating_sub(chroma_y),
+            predict_chroma,
+            sub8x8_chroma: false,
+            interintra_chroma: false,
+            block: InterBlock {
+                ref_frame0: references.past_ref,
+                ref_frame1: two_references.then_some(references.future_ref),
+                mv: mvs[0],
+                mv1: mvs[1],
+                interp: interpolation_filter,
+                warp_params: [None, None],
+                bawp: BawpSyntax::default(),
+                interintra: None,
+                compound_blend: blend,
+                optflow_distances: use_optflow
+                    .then_some([references.past_offset, references.future_offset]),
+                residual: None,
+            },
+        };
+        let rect = mc::McBlockRect {
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            chroma_luma_x: unit.chroma_luma_x,
+            chroma_luma_y: unit.chroma_luma_y,
+            chroma_luma_w: unit.chroma_luma_w,
+            chroma_luma_h: unit.chroma_luma_h,
+        };
+        let params = super::super::resolve_inter_block_params(
+            ref_frame_idx,
+            reference,
+            &unit,
+            rect,
+            tile_offset,
+        )?
+        .with_refinemv(use_refinemv)
+        .with_refinemv_search(search_refinemv)
+        .with_optflow_sad_threshold(use_optflow.then_some(if output { 15 } else { 6 }));
+        units.push(TipUnit {
+            params,
+            mvs,
+            luma_x,
+            luma_y,
+            luma_w,
+            luma_h,
+            output: None,
+        });
     }
     let parallel_output = two_references && splot_parallel::on_worker_pool();
     let output_stride = mc::mc_planes(sink.info().pixel_format())
@@ -546,33 +631,38 @@ pub(super) fn reconstruct<T: ReconSample>(
     } else {
         Vec::new()
     };
-    let outputs = if parallel_output {
+    if parallel_output {
         let shared: &mc::WorkspaceSink<'_, T> = sink;
-        let results: Vec<_> = output_samples
-            .par_chunks_mut(output_stride)
-            .zip(units.par_iter())
-            .map(|(samples, unit)| {
-                let compound = unit
-                    .params
-                    .into_compound()
-                    .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-                let metadata = mc::predict_compound_average_block_into(
-                    shared,
-                    compound,
-                    use_optflow.then_some(8),
-                    tile_offset,
-                    samples,
-                )?;
-                let samples: &[T] = samples;
-                Ok(Some((metadata, samples)))
-            })
-            .collect();
-        results.into_iter().collect::<Result<Vec<_>>>()?
-    } else {
-        (0..units.len()).map(|_| None).collect()
-    };
-    for (unit, output) in units.into_iter().zip(outputs) {
-        let stored_mvs = if let Some((metadata, samples)) = output {
+        compute_parallel_outputs(
+            shared,
+            &mut units,
+            &mut output_samples,
+            output_stride,
+            use_optflow,
+            tile_offset,
+        )?;
+    }
+    let mut records = Vec::new();
+    records.try_reserve_exact(unit_count).map_err(|_| {
+        inter_cap!(
+            "inter_tip_temporal_record_allocation",
+            tile_offset,
+            "inter.tip.temporal_record_allocation",
+            "7.22"
+        )
+    })?;
+    let mut output_chunks = output_samples.chunks_exact(output_stride);
+    for unit in units {
+        let stored_mvs = if parallel_output {
+            let metadata = unit
+                .output
+                .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+            let samples = output_chunks
+                .next()
+                .ok_or(ReconError::BufferLengthMismatch {
+                    expected: output_stride,
+                    actual: 0,
+                })?;
             let refined_mvs = if use_optflow {
                 metadata.stored_mvs_at_origin()?
             } else {
@@ -772,13 +862,19 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 #[cfg(test)]
 mod tests {
     use super::{
-        output_prediction_unit_size, prediction_unit_size, tip_optflow_references_allowed,
+        TipUnit, compute_parallel_outputs, output_prediction_unit_size, prediction_unit_count,
+        prediction_unit_rects, prediction_unit_size, tip_optflow_references_allowed,
         tip_refinemv_offsets_allowed, tip_refinemv_references_allowed, tip_temporal_mvs,
         tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
-    use crate::prediction::inter::Mv;
+    use crate::prediction::inter::{Mv, mc};
     use splot_core::headers::frame::{FrameSize, FrameType};
-    use splot_recon::InterpolationFilter;
+    use splot_core::span::ByteOffset;
+    use splot_parallel::{ThreadCount, WorkerPool};
+    use splot_recon::{
+        BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
+        PixelFormat, PlaneRect, PlaneSize, ReconError,
+    };
 
     #[test]
     fn tip_reference_unit_size_follows_refinement_and_large_block_gates() {
@@ -786,6 +882,93 @@ mod tests {
         assert_eq!(prediction_unit_size(8, 32, false), 8);
         assert_eq!(prediction_unit_size(64, 32, true), 8);
         assert_eq!(prediction_unit_size(256, 256, true), 16);
+    }
+
+    #[test]
+    fn tip_prediction_unit_count_checks_zero_and_overflow() {
+        assert_eq!(
+            prediction_unit_count(8, 8, 0),
+            Err(ReconError::ZeroDimension {
+                field: "TIP prediction unit size"
+            })
+        );
+        assert_eq!(
+            prediction_unit_count(usize::MAX, usize::MAX, 1),
+            Err(ReconError::ArithmeticOverflow {
+                context: "TIP prediction unit count"
+            })
+        );
+    }
+
+    #[test]
+    fn tip_prediction_units_clip_edges_in_raster_order() {
+        let rects: Vec<_> = prediction_unit_rects(17, 9, 8).collect();
+        assert_eq!(prediction_unit_count(17, 9, 8), Ok(rects.len()));
+        assert_eq!(
+            rects,
+            [
+                (0, 0, 8, 8),
+                (8, 0, 8, 8),
+                (16, 0, 1, 8),
+                (0, 8, 8, 1),
+                (8, 8, 8, 1),
+                (16, 8, 1, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn tip_parallel_output_error_precedes_publication() -> Result<(), Box<dyn std::error::Error>> {
+        let reference = tip_workspace()?.freeze()?;
+        let mut workspace = tip_workspace()?;
+        let params = mc::InterBlockParams::single(
+            &reference,
+            mc::McBlockRect::from_luma_rect(0, 0, 8, 8),
+            Mv::ZERO,
+            InterpolationFilter::EightTap,
+        );
+        let mut units = [TipUnit {
+            params,
+            mvs: [Mv::ZERO; 2],
+            luma_x: 0,
+            luma_y: 0,
+            luma_w: 8,
+            luma_h: 8,
+            output: None,
+        }];
+        let mut output = [7u8; 96];
+        let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into()?))?;
+        let result = {
+            let sink = mc::WorkspaceSink::Frame(&mut workspace);
+            pool.install(|| {
+                compute_parallel_outputs(
+                    &sink,
+                    &mut units,
+                    &mut output,
+                    96,
+                    false,
+                    ByteOffset::new(0),
+                )
+            })
+        };
+
+        assert!(result.is_err());
+        assert!(units[0].output.is_none());
+        assert_eq!(output, [7; 96]);
+        Ok(())
+    }
+
+    fn tip_workspace() -> splot_recon::Result<CurrentFrameWorkspace<u8>> {
+        let size = PlaneSize::new(8, 8)?;
+        let visible = PlaneRect::new(0, 0, 8, 8)?;
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            PixelFormat::Yuv420,
+            size,
+            visible,
+        )?;
+        CurrentFrameWorkspace::new(info, 0)
     }
 
     #[test]
