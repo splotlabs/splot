@@ -10,9 +10,9 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
 
 use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformPartitionContext,
-    LumaTransformTypeContext, PositionedLumaCoeffBlock, TileBlockDecodedState,
-    TileCoeffContextState, TransformToolResidualPolicy, decode_general_intra_luma_partition_coeffs,
-    decode_general_intra_plane_coeffs,
+    LumaTransformPartitionUnits, LumaTransformTypeContext, PositionedLumaCoeffBlock,
+    TileBlockDecodedState, TileCoeffContextState, TransformToolResidualPolicy,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
@@ -29,13 +29,14 @@ pub(super) struct ParsedResidualPlane {
     pub(super) cctx_role: CctxRole,
 }
 
+#[allow(clippy::large_enum_variant)]
 pub(super) enum ParsedResidualPlaneKind {
     Single {
         coeffs: LumaCoeffBlock,
         palette_color_map: Option<Vec<u8>>,
     },
     Lossless(Vec<ParsedTransformUnit>),
-    PartitionedLuma(Vec<ParsedTransformUnit>),
+    PartitionedLuma(LumaTransformPartitionUnits<ParsedTransformUnit>),
 }
 
 pub(super) struct ParsedTransformUnit {
@@ -372,7 +373,7 @@ impl ResidualPlanePlan {
             policy,
         )?;
         let single = blocks.len() == 1;
-        let mut units = Vec::with_capacity(blocks.len());
+        let mut units = LumaTransformPartitionUnits::new();
         for block in blocks {
             let unit = if single {
                 self
@@ -396,7 +397,7 @@ impl ResidualPlanePlan {
                 plan: unit,
                 block,
                 palette_color_map: unit_palette_color_map,
-            });
+            })?;
         }
         Ok(ParsedResidualPlane {
             plane: self,
