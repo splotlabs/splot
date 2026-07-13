@@ -278,7 +278,7 @@ fn compute_block<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<Vec<T>> {
     let grad = gradients(source, &block);
-    let classes = classes(&grad, block.width, block.height);
+    let classes = classes(&grad, &block);
     let mut output = Vec::with_capacity(block.width * block.height);
     for row in 0..block.height {
         for col in 0..block.width {
@@ -575,22 +575,43 @@ fn gradients<T: ReconSample>(
 #[derive(Clone, Copy, Default)]
 struct GdfClass {
     index: u8,
-    strengths: [i64; GDF_DIRECTIONS],
+    strength_contribution: [i64; 3],
 }
 
-fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], width: usize, height: usize) -> Vec<GdfClass> {
-    let class_cols = width >> 1;
-    let class_rows = height >> 1;
+fn classes(grad: &[Vec<i64>; GDF_DIRECTIONS], block: &GdfBlock) -> Vec<GdfClass> {
+    let class_cols = block.width >> 1;
+    let class_rows = block.height >> 1;
+    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
+    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+    let strength_shift = if block.bit_depth == BitDepth::Eight {
+        2
+    } else {
+        4
+    };
     let mut classes = vec![GdfClass::default(); class_cols * class_rows];
     for i in (0..class_rows).rev() {
         for j in 0..class_cols {
             let mut strengths = [0_i64; GDF_DIRECTIONS];
             for direction in 0..GDF_DIRECTIONS {
-                strengths[direction] = grad_sum(&grad[direction], width + 2, i * 2, j * 2, 4, 4);
+                strengths[direction] =
+                    grad_sum(&grad[direction], block.width + 2, i * 2, j * 2, 4, 4);
             }
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
-            classes[i * class_cols + j] = GdfClass { index, strengths };
+            let cls = usize::from(index);
+            let mut strength_contribution = [0_i64; 3];
+            for (direction, strength) in strengths.into_iter().enumerate() {
+                let k = GDF_COORDS.len() + direction;
+                let alpha = i64::from(alpha_table[k][cls]);
+                let comb = (strength >> strength_shift).min(alpha);
+                for (idx, total) in strength_contribution.iter_mut().enumerate() {
+                    *total += comb * i64::from(weight_table[idx][k][cls]);
+                }
+            }
+            classes[i * class_cols + j] = GdfClass {
+                index,
+                strength_contribution,
+            };
         }
     }
     classes
@@ -608,29 +629,19 @@ fn gdf_sample<T: ReconSample>(
     let y = block.y as isize + row as isize;
     let sample2 = source.get(x, y);
     let cls = usize::from(class.index);
-    let mut gdf_idx = [0_i64; 3];
-    for k in 0..22 {
-        let alpha = i64::from(GDF_ALPHA[block.ref_dst_idx][block.qp_idx][k][cls]);
-        let comb = if k < GDF_COORDS.len() {
-            let (dy, dx) = GDF_COORDS[k];
-            let sample3 = source.get(x - dx, y - dy);
-            let sample4 = source.get(x + dx, y + dy);
-            let shift = u32::from(10 - block.bit_depth.bits().min(10));
-            let above = clip3(-alpha, alpha, (sample3 - sample2) << shift);
-            let below = clip3(-alpha, alpha, (sample4 - sample2) << shift);
-            clip3(-512, 511, above + below)
-        } else {
-            let direction = k - GDF_COORDS.len();
-            let mut v = class.strengths[direction];
-            v >>= if block.bit_depth == BitDepth::Eight {
-                2
-            } else {
-                4
-            };
-            v.min(alpha)
-        };
+    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
+    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+    let mut gdf_idx = class.strength_contribution;
+    let shift = u32::from(10 - block.bit_depth.bits().min(10));
+    for (k, &(dy, dx)) in GDF_COORDS.iter().enumerate() {
+        let alpha = i64::from(alpha_table[k][cls]);
+        let sample3 = source.get(x - dx, y - dy);
+        let sample4 = source.get(x + dx, y + dy);
+        let above = clip3(-alpha, alpha, (sample3 - sample2) << shift);
+        let below = clip3(-alpha, alpha, (sample4 - sample2) << shift);
+        let comb = clip3(-512, 511, above + below);
         for (idx, total) in gdf_idx.iter_mut().enumerate() {
-            *total += comb * i64::from(GDF_WEIGHT[block.ref_dst_idx][block.qp_idx][idx][k][cls]);
+            *total += comb * i64::from(weight_table[idx][k][cls]);
         }
     }
 
