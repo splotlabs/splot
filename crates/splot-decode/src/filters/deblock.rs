@@ -994,9 +994,44 @@ fn gather_line<T: ReconSample>(
     plane_ctx: &PlaneCtx<'_, T>,
     perp: PerpLine,
 ) -> [T; 2 * GATHER_HALF] {
+    let mut line = [T::default(); 2 * GATHER_HALF];
+    if perp.x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && perp.y >= plane_ctx.y_origin
+        && perp.x <= plane_ctx.width.saturating_sub(GATHER_HALF)
+        && perp.dx == 1
+        && perp.dy == 0
+    {
+        let row = perp.y - plane_ctx.y_origin;
+        let start = perp.x - GATHER_HALF - plane_ctx.x_origin;
+        if let Some(src) = plane_ctx
+            .rows
+            .get(row)
+            .and_then(|row| row.get(start..start + 2 * GATHER_HALF))
+        {
+            line.copy_from_slice(src);
+            return line;
+        }
+    }
+    if perp.y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
+        && perp.x >= plane_ctx.x_origin
+        && perp.x < plane_ctx.width
+        && perp.y <= plane_ctx.height.saturating_sub(GATHER_HALF)
+        && perp.dx == 0
+        && perp.dy == 1
+    {
+        let start = perp.y - GATHER_HALF - plane_ctx.y_origin;
+        let x = perp.x - plane_ctx.x_origin;
+        if let Some(rows) = plane_ctx.rows.get(start..start + 2 * GATHER_HALF)
+            && rows.iter().all(|row| x < row.len())
+        {
+            for (lane, row) in line.iter_mut().zip(rows) {
+                *lane = row[x];
+            }
+            return line;
+        }
+    }
     let max_x = plane_ctx.width.saturating_sub(1) as isize;
     let max_y = plane_ctx.height.saturating_sub(1) as isize;
-    let mut line = [T::default(); 2 * GATHER_HALF];
     for (idx, lane) in line.iter_mut().enumerate() {
         let offset = idx as isize - GATHER_HALF as isize;
         let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
