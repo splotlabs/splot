@@ -467,18 +467,15 @@ fn coeff_scan_walk_returns_reverse_scan_entries_without_mutation() {
     let block_before = start.block().clone();
 
     let walk = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 9]).unwrap();
-    let entries = walk.entries();
+    let expected = [
+        CoeffScanEntry::new(3, 9, 1, 1),
+        CoeffScanEntry::new(2, 1, 0, 1),
+        CoeffScanEntry::new(1, 8, 1, 0),
+        CoeffScanEntry::new(0, 0, 0, 0),
+    ];
 
-    assert_eq!(
-        entries,
-        [
-            CoeffScanEntry::for_test(3, 9, 1, 1),
-            CoeffScanEntry::for_test(2, 1, 0, 1),
-            CoeffScanEntry::for_test(1, 8, 1, 0),
-            CoeffScanEntry::for_test(0, 0, 0, 0),
-        ]
-        .as_slice()
-    );
+    assert!(walk.entries().eq(expected));
+    assert!(walk.entries().eq(expected));
     assert_eq!(start.block(), &block_before);
     assert_eq!(tile, tile_before);
     assert_eq!(symbols.consumed_bits(), consumed_before);
@@ -515,7 +512,7 @@ fn coeff_scan_walk_rejects_out_of_range_position_without_mutation() {
     let start = nonzero_start_for_eob(4, &mut tile, &mut symbols);
     let block_before = start.block().clone();
 
-    let err = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 64]).unwrap_err();
+    let err = walk_nonzero_coeff_scan(&start, &[0, 8, 65, 64]).unwrap_err();
 
     assert!(matches!(
         err,
@@ -548,8 +545,8 @@ fn coeff_fsc_scan_walk_returns_forward_segment_without_mutation() {
     assert_eq!(
         entries,
         [
-            CoeffScanEntry::for_test(2, 1, 0, 1),
-            CoeffScanEntry::for_test(3, 9, 1, 1),
+            CoeffScanEntry::new(2, 1, 0, 1),
+            CoeffScanEntry::new(3, 9, 1, 1),
         ]
         .as_slice()
     );

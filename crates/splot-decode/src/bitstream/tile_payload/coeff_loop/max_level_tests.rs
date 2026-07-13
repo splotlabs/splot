@@ -5,7 +5,7 @@ use super::*;
 
 fn entry(scan_index: usize, row: usize, col: usize) -> CoeffScanEntry {
     let pos = row.saturating_mul(8).saturating_add(col);
-    CoeffScanEntry::for_test(scan_index, pos, row, col)
+    CoeffScanEntry::new(scan_index, pos, row, col)
 }
 
 fn config(plane: usize, tx_class: CoeffTransformClass, is_hidden: bool) -> CoeffMaxLevelConfig {
@@ -141,7 +141,7 @@ fn coefficient_max_level_plane_tx_type_handoff_matches_direct_config()
 #[test]
 fn coefficient_max_level_pathological_coordinates_are_total() {
     let derived = derive_coeff_max_level(
-        CoeffScanEntry::for_test(7, usize::MAX, usize::MAX, usize::MAX),
+        CoeffScanEntry::new(7, usize::MAX, usize::MAX, usize::MAX),
         config(0, CoeffTransformClass::TwoD, false),
     );
 

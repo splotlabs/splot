@@ -123,14 +123,14 @@ pub(crate) enum CoeffQuantPassError {
 pub(crate) fn apply_nonzero_coeff_quant_pass(
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     signs: &[CoeffSignRead],
     inputs: &[CoeffQuantPassInput],
     config: CoeffQuantPassConfig,
 ) -> Result<NonZeroCoeffQuantPass, CoeffQuantPassError> {
     validate_coeff_quant_pass_config(config)?;
 
-    let read_inputs = preflight_quant_pass(block, walk.entries(), signs, inputs, config)?;
+    let read_inputs = preflight_quant_pass(block, walk, signs, inputs, config)?;
     let read_quants = read_nonzero_coeff_quants(
         symbols,
         walk,
@@ -181,7 +181,7 @@ pub(crate) fn validate_coeff_quant_pass_config(
 pub(crate) fn apply_nonzero_coeff_quant_pass_with_derived_max_levels(
     symbols: &mut SymbolDecoder<'_>,
     block: &mut TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     signs: &[CoeffSignRead],
     max_level_config: CoeffQuantPassMaxLevelConfig,
     config: CoeffQuantPassConfig,
@@ -200,29 +200,28 @@ pub(crate) fn apply_nonzero_coeff_quant_pass_with_derived_max_levels(
 
 fn preflight_quant_pass(
     block: &TransformCoeffBlockState,
-    entries: &[CoeffScanEntry],
+    walk: &NonZeroCoeffScanWalk<'_>,
     signs: &[CoeffSignRead],
     inputs: &[CoeffQuantPassInput],
     config: CoeffQuantPassConfig,
 ) -> Result<Vec<CoeffReadQuantInput>, CoeffQuantPassError> {
-    if signs.len() != entries.len() {
+    if signs.len() != walk.len() {
         return Err(CoeffQuantPassError::SignCountMismatch {
             signs: signs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
-    if inputs.len() != entries.len() {
+    if inputs.len() != walk.len() {
         return Err(CoeffQuantPassError::InputCountMismatch {
             inputs: inputs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
 
     let mut read_inputs = Vec::new();
-    read_inputs.try_reserve(entries.len())?;
-    for (index, ((entry, sign), input)) in entries
-        .iter()
-        .copied()
+    read_inputs.try_reserve(walk.len())?;
+    for (index, ((entry, sign), input)) in walk
+        .entries()
         .zip(signs.iter().copied())
         .zip(inputs.iter().copied())
         .enumerate()

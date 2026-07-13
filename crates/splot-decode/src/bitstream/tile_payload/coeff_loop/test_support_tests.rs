@@ -13,6 +13,8 @@ use super::super::coeff_state::{CoeffContextUpdate, TileCoeffContextState};
 use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::ordinary_pass::CoeffOrdinaryBranch;
 use super::read_nonzero_coeff_block_start;
+use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
+use super::{AllZeroCoeffBlockInput, NonZeroCoeffEobContextInput};
 
 pub(crate) type BranchRun<T> = (
     T,
@@ -112,4 +114,33 @@ pub(crate) fn setup_start_with_input(
     let mut symbols = symbol_decoder(payload);
     let start = read_nonzero_coeff_block_start(&mut tile, &mut symbols, start).ok()?;
     Some((tile, symbols, start))
+}
+
+pub(crate) fn setup_luma_8x8_walk<'scan>(
+    payload: &[u8],
+    scan: &'scan [u16],
+) -> Option<NonZeroCoeffScanWalk<'scan>> {
+    let (_, _, start) = setup_start_with_input(
+        payload,
+        NonZeroCoeffBlockStartInput {
+            block: AllZeroCoeffBlockInput {
+                plane: 0,
+                x4: 0,
+                y4: 0,
+                w4: 2,
+                h4: 2,
+            },
+            eob: NonZeroCoeffEobContextInput {
+                plane: 0,
+                is_inter: false,
+                tx_width_log2: 3,
+                tx_height_log2: 3,
+                coeff_cdf_q_ctx: 0,
+            },
+        },
+    )?;
+    if start.eob_read().eob().eob() != scan.len() {
+        return None;
+    }
+    walk_nonzero_coeff_scan(&start, scan).ok()
 }

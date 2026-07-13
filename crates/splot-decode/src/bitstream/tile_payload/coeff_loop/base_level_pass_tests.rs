@@ -27,15 +27,15 @@ const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0xff, 0xff, 0x80],
 ];
 
-fn setup_start<'a>(
+fn setup_start<'a, 'scan>(
     payload: &'a [u8],
     plane: usize,
-    scan: &[u16],
+    scan: &'scan [u16],
 ) -> Option<(
     TileCdfSubset,
     SymbolDecoder<'a>,
     NonZeroCoeffBlockStart,
-    NonZeroCoeffScanWalk,
+    NonZeroCoeffScanWalk<'scan>,
 )> {
     let (tile, symbols, start) = setup_start_with_input(
         payload,
@@ -84,30 +84,36 @@ fn chroma_config() -> CoeffBaseDerivedLevelPassConfig {
     }
 }
 
-fn run_pass(
+fn run_pass<'scan>(
     payload: &[u8],
     plane: usize,
-    scan: &[u16],
+    scan: &'scan [u16],
     config: CoeffBaseDerivedLevelPassConfig,
-) -> Option<NonZeroCoeffBaseDerivedLevelPass> {
+) -> Option<(
+    NonZeroCoeffBaseDerivedLevelPass,
+    NonZeroCoeffScanWalk<'scan>,
+)> {
     let (mut tile, mut symbols, start, walk) = setup_start(payload, plane, scan)?;
-    apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config).ok()
+    let pass =
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, &walk, config)
+            .ok()?;
+    Some((pass, walk))
 }
 
 fn find_payload(
     plane: usize,
     scan: &[u16],
     config: CoeffBaseDerivedLevelPassConfig,
-    predicate: impl Fn(&NonZeroCoeffBaseDerivedLevelPass) -> bool,
+    predicate: impl Fn(&NonZeroCoeffBaseDerivedLevelPass, &NonZeroCoeffScanWalk<'_>) -> bool,
 ) -> [u8; 5] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
                 let payload = [first, second, suffix[0], suffix[1], suffix[2]];
-                let Some(pass) = run_pass(&payload, plane, scan, config) else {
+                let Some((pass, walk)) = run_pass(&payload, plane, scan, config) else {
                     continue;
                 };
-                if predicate(&pass) {
+                if predicate(&pass, &walk) {
                     return payload;
                 }
             }
@@ -148,9 +154,12 @@ fn base_lf_row_changed(
     })
 }
 
-fn uses_tcq_context_one(pass: &NonZeroCoeffBaseDerivedLevelPass) -> bool {
+fn uses_tcq_context_one(
+    pass: &NonZeroCoeffBaseDerivedLevelPass,
+    walk: &NonZeroCoeffScanWalk<'_>,
+) -> bool {
     let mut tcq_state = 0usize;
-    pass.walk().entries().iter().any(|entry| {
+    walk.entries().any(|entry| {
         let uses_context_one = (tcq_state >> 1) & 1 == 1;
         let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
         tcq_state = next_tcq_state(tcq_state, level).unwrap();
@@ -161,15 +170,14 @@ fn uses_tcq_context_one(pass: &NonZeroCoeffBaseDerivedLevelPass) -> bool {
 #[test]
 fn coefficient_base_level_pass_derives_later_contexts_from_written_levels() {
     let config = luma_config(false, false);
-    let payload = find_payload(0, &SCAN, config, |_| true);
+    let payload = find_payload(0, &SCAN, config, |_, _| true);
     let (mut tile, mut symbols, start, walk) = setup_start(&payload, 0, &SCAN).unwrap();
     let rows_before = base_lf_rows(&tile, 10, 0);
     let pass =
-        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, &walk, config)
             .unwrap();
 
     assert_eq!(pass.eob_read().eob().eob(), SCAN.len());
-    assert_eq!(pass.walk().entries().len(), SCAN.len());
     assert!(base_lf_row_changed(&tile, &rows_before, 10, 0));
 }
 
@@ -180,16 +188,12 @@ fn coefficient_base_level_pass_tracks_first_pass_tcq_state_for_selectors() {
     let (mut tile, mut symbols, start, walk) = setup_start(&payload, 0, &SCAN).unwrap();
     let rows_before = base_lf_rows(&tile, 0, 1);
     let pass =
-        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, &walk, config)
             .unwrap();
-    let expected_tcq_state = pass
-        .walk()
-        .entries()
-        .iter()
-        .fold(0usize, |tcq_state, entry| {
-            let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
-            next_tcq_state(tcq_state, level).unwrap()
-        });
+    let expected_tcq_state = walk.entries().fold(0usize, |tcq_state, entry| {
+        let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
+        next_tcq_state(tcq_state, level).unwrap()
+    });
 
     assert_eq!(pass.first_pass().tcq_state(), expected_tcq_state);
     assert!(base_lf_row_changed(&tile, &rows_before, 0, 1));
@@ -198,18 +202,13 @@ fn coefficient_base_level_pass_tracks_first_pass_tcq_state_for_selectors() {
 #[test]
 fn coefficient_base_level_pass_tracks_parity_hiding_summary_before_dc() {
     let config = luma_config(true, false);
-    let payload = find_payload(0, &SCAN, config, |pass| {
+    let payload = find_payload(0, &SCAN, config, |pass, _| {
         pass.first_pass().num_nonzero() > 0 || pass.first_pass().sum_abs1() > 0
     });
-    let pass = run_pass(&payload, 0, &SCAN, config).unwrap();
+    let (pass, walk) = run_pass(&payload, 0, &SCAN, config).unwrap();
     let mut expected_sum_abs1 = 0u32;
     let mut expected_num_nonzero = 0usize;
-    for entry in pass
-        .walk()
-        .entries()
-        .iter()
-        .filter(|entry| entry.scan_index() > 0)
-    {
+    for entry in walk.entries().filter(|entry| entry.scan_index() > 0) {
         let level = pass.block().level_at(entry.row(), entry.col()).unwrap();
         let clipped = level.min(NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1);
         expected_sum_abs1 ^= clipped & 1;
@@ -226,7 +225,7 @@ fn coefficient_base_level_pass_tracks_parity_hiding_summary_before_dc() {
 #[test]
 fn coefficient_base_level_pass_consumes_parity_hidden_base_row() {
     let config = luma_config(true, false);
-    let payload = find_payload(0, &DC_LAST_HIDDEN_SCAN, config, |pass| {
+    let payload = find_payload(0, &DC_LAST_HIDDEN_SCAN, config, |pass, _| {
         pass.first_pass().is_hidden() && pass.first_pass().num_nonzero() >= 4
     });
     let (mut tile, mut symbols, start, walk) =
@@ -242,9 +241,9 @@ fn coefficient_base_level_pass_consumes_parity_hidden_base_row() {
         })
         .collect::<Vec<_>>();
     let pass =
-        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, &walk, config)
             .unwrap();
-    let final_entry = pass.walk().entries().last().copied().unwrap();
+    let final_entry = walk.entries().last().unwrap();
 
     assert_eq!(pass.eob_read().eob().eob(), DC_LAST_HIDDEN_SCAN.len());
     assert!(pass.first_pass().is_hidden());
@@ -261,8 +260,8 @@ fn coefficient_base_level_pass_consumes_parity_hidden_base_row() {
 #[test]
 fn coefficient_base_level_pass_disables_chroma_low_frequency_base_range() {
     let config = chroma_config();
-    let payload = find_payload(1, &DC_FIRST_SCAN, config, |pass| {
-        let entry = pass.walk().entries()[0];
+    let payload = find_payload(1, &DC_FIRST_SCAN, config, |pass, walk| {
+        let entry = walk.entries().next().unwrap();
         pass.block()
             .level_at(entry.row(), entry.col())
             .is_ok_and(|level| level > 4)
@@ -270,9 +269,9 @@ fn coefficient_base_level_pass_disables_chroma_low_frequency_base_range() {
     let (mut tile, mut symbols, start, walk) = setup_start(&payload, 1, &DC_FIRST_SCAN).unwrap();
     let symbol_count_before = symbols.symbol_count();
     let pass =
-        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, walk, config)
+        apply_nonzero_coeff_base_derived_level_pass(&mut tile, &mut symbols, start, &walk, config)
             .unwrap();
-    let first_entry = pass.walk().entries()[0];
+    let first_entry = walk.entries().next().unwrap();
 
     assert!(
         pass.block()
@@ -287,7 +286,7 @@ fn coefficient_base_level_pass_disables_chroma_low_frequency_base_range() {
 
 #[test]
 fn coefficient_base_level_pass_rejects_static_config_before_base_consumption() {
-    let payload = find_payload(0, &SCAN, luma_config(false, false), |_| true);
+    let payload = find_payload(0, &SCAN, luma_config(false, false), |_, _| true);
     let (mut tile, mut symbols, start, walk) = setup_start(&payload, 0, &SCAN).unwrap();
     let tile_before = tile.clone();
     let consumed_before = symbols.consumed_bits();
@@ -296,7 +295,7 @@ fn coefficient_base_level_pass_rejects_static_config_before_base_consumption() {
         &mut tile,
         &mut symbols,
         start,
-        walk,
+        &walk,
         CoeffBaseDerivedLevelPassConfig {
             tx_width: 16,
             ..luma_config(false, false)

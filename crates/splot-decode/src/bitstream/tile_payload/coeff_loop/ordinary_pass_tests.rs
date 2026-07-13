@@ -72,14 +72,14 @@ fn setup_start(
     setup_start_with_input(payload, NonZeroCoeffBlockStartInput { block, eob })
 }
 
-fn setup_start_and_walk<'a>(
+fn setup_start_and_walk<'a, 'scan>(
     payload: &'a [u8],
-    scan: &[u16],
+    scan: &'scan [u16],
 ) -> Option<(
     TileCdfSubset,
     SymbolDecoder<'a>,
     NonZeroCoeffBlockStart,
-    NonZeroCoeffScanWalk,
+    NonZeroCoeffScanWalk<'scan>,
 )> {
     let (tile, symbols, start) = setup_start(payload)?;
     if start.eob_read().eob().eob() != scan.len() {
@@ -122,10 +122,8 @@ fn dc_sign_selector() -> CoeffDcSignSelector {
     }
 }
 
-fn base_inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffBaseSymbolReadInput> {
+fn base_inputs_for(walk: &NonZeroCoeffScanWalk<'_>) -> Vec<CoeffBaseSymbolReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .enumerate()
         .map(|(index, entry)| CoeffBaseSymbolReadInput {
             entry,
@@ -166,10 +164,8 @@ fn sign_inputs_for(reads: &[CoeffBaseSymbolRead]) -> Vec<CoeffSignReadInput> {
         .collect()
 }
 
-fn sign_bit_inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffSignReadInput> {
+fn sign_bit_inputs_for(walk: &NonZeroCoeffScanWalk<'_>) -> Vec<CoeffSignReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .map(|entry| CoeffSignReadInput {
             entry,
             source: CoeffSignReadSource::SignBit,
@@ -268,7 +264,7 @@ fn payload_from(first: u8, second: u8, suffix: [u8; 3]) -> [u8; 12] {
 
 fn base_reads_for_payload(
     payload: &[u8],
-) -> Option<(NonZeroCoeffScanWalk, Vec<CoeffBaseSymbolRead>)> {
+) -> Option<(NonZeroCoeffScanWalk<'static>, Vec<CoeffBaseSymbolRead>)> {
     let (mut tile, mut symbols, _start, walk) = setup_start_and_walk(payload, &SCAN)?;
     let inputs = base_inputs_for(&walk);
     let reads = read_nonzero_coeff_base_symbols(&mut tile, &mut symbols, &walk, &inputs).ok()?;
@@ -285,7 +281,7 @@ fn derived_first_pass_for_payload(
         &mut tile,
         &mut symbols,
         start,
-        walk,
+        &walk,
         config,
     )
     .ok()
@@ -370,7 +366,7 @@ fn after_derived_base_prefix(
         &mut tile,
         &mut symbols,
         start,
-        walk,
+        &walk,
         config,
     )
     .unwrap();
@@ -471,7 +467,6 @@ fn coefficient_ordinary_pass_composes_level_sign_and_quant_writes() {
     .unwrap();
 
     assert_eq!(pass.eob_read().eob().eob(), SCAN.len());
-    assert_eq!(pass.walk(), &expected_walk);
     for read in expected_reads {
         let entry = read.entry();
         assert_eq!(
@@ -599,7 +594,6 @@ fn coefficient_ordinary_pass_with_derived_base_preserves_first_pass_results() {
     .unwrap();
 
     assert_eq!(derived.eob_read(), derived_first_pass.eob_read());
-    assert_eq!(derived.walk(), derived_first_pass.walk());
     assert_eq!(
         derived.base_level_pass().first_pass(),
         derived_first_pass.first_pass()
@@ -617,18 +611,7 @@ fn coefficient_ordinary_pass_with_derived_base_feeds_hidden_summary_to_quant() {
     });
     let pass = derived_pass_for_payload(&payload, &DC_LAST_HIDDEN_SCAN, config, false).unwrap();
     let first_pass = pass.base_level_pass().first_pass();
-    let dc_entry = pass
-        .walk()
-        .entries()
-        .iter()
-        .find(|entry| entry.scan_index() == 0)
-        .copied()
-        .unwrap();
-    let dc_quant = pass
-        .block()
-        .quant_at(dc_entry.pos())
-        .unwrap()
-        .unsigned_abs();
+    let dc_quant = pass.block().quant_at(0).unwrap().unsigned_abs();
 
     assert!(first_pass.is_hidden());
     assert!(first_pass.sum_abs1() > 0);

@@ -9,9 +9,9 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
 use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{FrameCdfSubset, TileCdfArray, TileCdfError};
 use super::super::super::coeff_state::TransformCoeffBlockState;
-use super::super::branch::NonZeroCoeffBlockStartInput;
 use super::super::max_level::CoeffTransformClass;
-use super::super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
+use super::super::scan_walk::NonZeroCoeffScanWalk;
+use super::super::test_support::setup_luma_8x8_walk as setup_walk;
 use super::super::*;
 use super::*;
 
@@ -35,37 +35,6 @@ fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
     .unwrap()
 }
 
-fn setup_walk(payload: &[u8], scan: &[u16]) -> Option<NonZeroCoeffScanWalk> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload, CdfUpdateMode::Enabled);
-    let start = read_nonzero_coeff_block_start(
-        &mut tile,
-        &mut symbols,
-        NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 0,
-                y4: 0,
-                w4: 2,
-                h4: 2,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 3,
-                tx_height_log2: 3,
-                coeff_cdf_q_ctx: 0,
-            },
-        },
-    )
-    .ok()?;
-    if start.eob_read().eob().eob() != scan.len() {
-        return None;
-    }
-    walk_nonzero_coeff_scan(&start, scan).ok()
-}
-
 fn find_eob_payload() -> [u8; 5] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
@@ -80,9 +49,9 @@ fn find_eob_payload() -> [u8; 5] {
     panic!("no coefficient sign EOB payload found");
 }
 
-fn block_for(walk: &NonZeroCoeffScanWalk) -> TransformCoeffBlockState {
+fn block_for(walk: &NonZeroCoeffScanWalk<'_>) -> TransformCoeffBlockState {
     let mut block = TransformCoeffBlockState::new(8, 8).unwrap();
-    for (index, entry) in walk.entries().iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let level = match index {
             0 => 3,
             1 => 2,
@@ -113,7 +82,7 @@ fn invalid_dc_sign_selector() -> CoeffDcSignSelector {
 }
 
 fn scan_entry(scan_index: usize, row: usize, col: usize) -> CoeffScanEntry {
-    CoeffScanEntry::for_test(
+    CoeffScanEntry::new(
         scan_index,
         row.saturating_mul(8).saturating_add(col),
         row,
@@ -143,10 +112,8 @@ fn source_config(
     }
 }
 
-fn inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffSignReadInput> {
+fn inputs_for(walk: &NonZeroCoeffScanWalk<'_>) -> Vec<CoeffSignReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .enumerate()
         .map(|(index, entry)| CoeffSignReadInput {
             entry,
@@ -277,7 +244,7 @@ fn coefficient_sign_source_derives_sign_bit_and_skip_sources() {
 
 #[test]
 fn coefficient_sign_source_derivation_reports_state_errors() {
-    let entry = CoeffScanEntry::for_test(0, 99, 4, 0);
+    let entry = CoeffScanEntry::new(0, 99, 4, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
     let block = TransformCoeffBlockState::new(4, 4).unwrap();
 

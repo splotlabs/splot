@@ -3,21 +3,14 @@
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-use splot_core::symbol::SymbolDecoder;
-
-use super::super::cdf::{CoeffCdfSelector, TileCdfSubset};
 use super::super::coeff_state::TileCoeffStateError;
-use super::base_symbol::{
-    CoeffBaseRangeRead, CoeffBaseSymbolRead, CoeffBaseSymbolReadInput, CoeffBaseSymbolSource,
-    read_nonzero_coeff_base_symbols,
-};
+use super::base_symbol::CoeffBaseSymbolRead;
 use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
 use super::level_state::{CoeffLevelStateWriteError, apply_nonzero_coeff_base_levels};
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
 use super::test_support::setup_start_with_input;
 use super::*;
 
-const BASE_LEVELS: u32 = 2;
 const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
     [0x00, 0x00, 0x80],
     [0xff, 0x00, 0x80],
@@ -28,12 +21,8 @@ const SCAN: [u16; 4] = [0, 8, 1, 9];
 const ALT_SCAN: [u16; 4] = [0, 8, 9, 1];
 const LARGE_SCAN: [u16; 4] = [0, 1, 8, 63];
 
-fn setup_start(
-    payload: &[u8],
-    w4: usize,
-    h4: usize,
-) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffBlockStart)> {
-    setup_start_with_input(
+fn setup_start(payload: &[u8], w4: usize, h4: usize) -> Option<NonZeroCoeffBlockStart> {
+    let (_, _, start) = setup_start_with_input(
         payload,
         NonZeroCoeffBlockStartInput {
             block: AllZeroCoeffBlockInput {
@@ -51,91 +40,41 @@ fn setup_start(
                 coeff_cdf_q_ctx: 0,
             },
         },
-    )
+    )?;
+    Some(start)
 }
 
-fn base_eob_selector() -> CoeffCdfSelector {
-    CoeffCdfSelector::BaseEob {
-        coeff_cdf_q_ctx: 0,
-        tx_size: 0,
-        ctx: 0,
-    }
-}
-
-fn base_selector() -> CoeffCdfSelector {
-    CoeffCdfSelector::Base {
-        coeff_cdf_q_ctx: 0,
-        tx_size: 0,
-        ctx: 0,
-        tcq_ctx: 0,
-    }
-}
-
-fn br_selector() -> CoeffCdfSelector {
-    CoeffCdfSelector::Br {
-        coeff_cdf_q_ctx: 0,
-        ctx: 0,
-    }
-}
-
-fn inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffBaseSymbolReadInput> {
-    walk.entries()
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(index, entry)| CoeffBaseSymbolReadInput {
-            entry,
-            base: if index == 0 {
-                CoeffBaseSymbolSource::BaseEob {
-                    selector: base_eob_selector(),
-                }
-            } else {
-                CoeffBaseSymbolSource::Base {
-                    selector: base_selector(),
-                }
-            },
-            base_levels: BASE_LEVELS,
-            base_range: CoeffBaseRangeRead::Enabled {
-                selector: br_selector(),
-            },
-        })
-        .collect()
-}
-
-fn setup_reads(
+fn setup_reads<'scan>(
     payload: &[u8],
-    scan: &[u16],
+    scan: &'scan [u16],
     w4: usize,
     h4: usize,
 ) -> Option<(
     NonZeroCoeffBlockStart,
-    NonZeroCoeffScanWalk,
+    NonZeroCoeffScanWalk<'scan>,
     Vec<CoeffBaseSymbolRead>,
 )> {
-    let (mut tile, mut symbols, start) = setup_start(payload, w4, h4)?;
+    let start = setup_start(payload, w4, h4)?;
     if start.eob_read().eob().eob() != scan.len() {
         return None;
     }
     let walk = walk_nonzero_coeff_scan(&start, scan).ok()?;
-    let inputs = inputs_for(&walk);
-    let reads = read_nonzero_coeff_base_symbols(&mut tile, &mut symbols, &walk, &inputs).ok()?;
+    let reads = walk
+        .entries()
+        .enumerate()
+        .map(|(index, entry)| CoeffBaseSymbolRead::for_test(entry, index as u32 + 1))
+        .collect();
     Some((start, walk, reads))
 }
 
-fn read_payload(payload: &[u8]) -> Option<Vec<CoeffBaseSymbolRead>> {
-    let (_, _, reads) = setup_reads(payload, &SCAN, 2, 2)?;
-    Some(reads)
-}
-
-fn find_payload(predicate: impl Fn(&[CoeffBaseSymbolRead]) -> bool) -> [u8; 5] {
+fn find_payload() -> [u8; 5] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
             for suffix in PAYLOAD_SUFFIXES {
                 let payload = [first, second, suffix[0], suffix[1], suffix[2]];
-                let Some(reads) = read_payload(&payload) else {
-                    continue;
-                };
-                if predicate(&reads) {
+                if setup_start(&payload, 2, 2)
+                    .is_some_and(|start| start.eob_read().eob().eob() == SCAN.len())
+                {
                     return payload;
                 }
             }
@@ -146,7 +85,7 @@ fn find_payload(predicate: impl Fn(&[CoeffBaseSymbolRead]) -> bool) -> [u8; 5] {
 
 #[test]
 fn coefficient_level_state_write_sets_levels_from_scan_entries() {
-    let payload = find_payload(|reads| reads.iter().any(|read| read.base_range_symbol().is_some()));
+    let payload = find_payload();
     let (start, walk, reads) = setup_reads(&payload, &SCAN, 2, 2).unwrap();
     let eob_read = start.eob_read();
 
@@ -170,7 +109,7 @@ fn coefficient_level_state_write_sets_levels_from_scan_entries() {
 
 #[test]
 fn coefficient_level_state_write_rejects_read_count_mismatch() {
-    let payload = find_payload(|reads| !reads.is_empty());
+    let payload = find_payload();
     let (start, walk, mut reads) = setup_reads(&payload, &SCAN, 2, 2).unwrap();
     let before = start.clone();
     reads.pop();
@@ -190,7 +129,7 @@ fn coefficient_level_state_write_rejects_read_count_mismatch() {
 
 #[test]
 fn coefficient_level_state_write_rejects_scan_entry_mismatch() {
-    let payload = find_payload(|reads| !reads.is_empty());
+    let payload = find_payload();
     let (start, _walk, reads) = setup_reads(&payload, &SCAN, 2, 2).unwrap();
     let alt_walk = walk_nonzero_coeff_scan(&start, &ALT_SCAN).unwrap();
 
@@ -204,9 +143,9 @@ fn coefficient_level_state_write_rejects_scan_entry_mismatch() {
 
 #[test]
 fn coefficient_level_state_write_rejects_mismatched_block_geometry() {
-    let payload = find_payload(|reads| !reads.is_empty());
+    let payload = find_payload();
     let (_large_start, large_walk, reads) = setup_reads(&payload, &LARGE_SCAN, 2, 2).unwrap();
-    let (_tile, _symbols, small_start) = setup_start(&payload, 1, 1).unwrap();
+    let small_start = setup_start(&payload, 1, 1).unwrap();
 
     let err = apply_nonzero_coeff_base_levels(small_start, &large_walk, &reads).unwrap_err();
 

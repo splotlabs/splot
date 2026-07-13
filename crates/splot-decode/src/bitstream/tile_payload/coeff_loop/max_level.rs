@@ -78,23 +78,20 @@ pub(crate) enum CoeffMaxLevelError {
 }
 
 pub(crate) fn derive_nonzero_coeff_max_levels(
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffMaxLevelConfig,
 ) -> Result<Vec<CoeffMaxLevel>, CoeffMaxLevelError> {
-    let entries = walk.entries();
     let mut levels = Vec::new();
-    levels.try_reserve(entries.len())?;
+    levels.try_reserve(walk.len())?;
     levels.extend(
-        entries
-            .iter()
-            .copied()
+        walk.entries()
             .map(|entry| derive_coeff_max_level(entry, config)),
     );
     Ok(levels)
 }
 
 pub(crate) fn derive_nonzero_coeff_max_levels_from_plane_tx_type(
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffMaxLevelPlaneTxTypeConfig,
 ) -> Result<Vec<CoeffMaxLevel>, CoeffMaxLevelError> {
     derive_nonzero_coeff_max_levels(walk, config.max_level_config())

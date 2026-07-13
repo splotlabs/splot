@@ -8,12 +8,11 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
 
 use super::super::super::cdf::FrameCdfSubset;
 use super::super::super::coeff_state::TransformCoeffBlockState;
-use super::super::branch::NonZeroCoeffBlockStartInput;
-use super::super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
+use super::super::scan_walk::NonZeroCoeffScanWalk;
 use super::super::sign_symbol::{
     CoeffSignRead, CoeffSignReadInput, CoeffSignReadSource, read_nonzero_coeff_signs,
 };
-use super::super::*;
+use super::super::test_support::setup_luma_8x8_walk as setup_walk;
 use super::*;
 
 const EOB_SCAN: [u16; 4] = [0, 8, 1, 9];
@@ -34,37 +33,6 @@ fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
     .unwrap()
 }
 
-fn setup_walk(payload: &[u8], scan: &[u16]) -> Option<NonZeroCoeffScanWalk> {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let mut symbols = symbol_decoder(payload, CdfUpdateMode::Enabled);
-    let start = read_nonzero_coeff_block_start(
-        &mut tile,
-        &mut symbols,
-        NonZeroCoeffBlockStartInput {
-            block: AllZeroCoeffBlockInput {
-                plane: 0,
-                x4: 0,
-                y4: 0,
-                w4: 2,
-                h4: 2,
-            },
-            eob: NonZeroCoeffEobContextInput {
-                plane: 0,
-                is_inter: false,
-                tx_width_log2: 3,
-                tx_height_log2: 3,
-                coeff_cdf_q_ctx: 0,
-            },
-        },
-    )
-    .ok()?;
-    if start.eob_read().eob().eob() != scan.len() {
-        return None;
-    }
-    walk_nonzero_coeff_scan(&start, scan).ok()
-}
-
 fn find_eob_payload() -> [u8; 5] {
     for first in u8::MIN..=u8::MAX {
         for second in u8::MIN..=u8::MAX {
@@ -79,9 +47,9 @@ fn find_eob_payload() -> [u8; 5] {
     panic!("no coefficient quant EOB payload found");
 }
 
-fn block_for(walk: &NonZeroCoeffScanWalk) -> TransformCoeffBlockState {
+fn block_for(walk: &NonZeroCoeffScanWalk<'_>) -> TransformCoeffBlockState {
     let mut block = TransformCoeffBlockState::new(8, 8).unwrap();
-    for (index, entry) in walk.entries().iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let level = match index {
             0 => 3,
             1 => 2,
@@ -100,11 +68,12 @@ fn block_for(walk: &NonZeroCoeffScanWalk) -> TransformCoeffBlockState {
     block
 }
 
-fn signs_for(block: &TransformCoeffBlockState, walk: &NonZeroCoeffScanWalk) -> Vec<CoeffSignRead> {
+fn signs_for(
+    block: &TransformCoeffBlockState,
+    walk: &NonZeroCoeffScanWalk<'_>,
+) -> Vec<CoeffSignRead> {
     let inputs: Vec<_> = walk
         .entries()
-        .iter()
-        .copied()
         .map(|entry| CoeffSignReadInput {
             entry,
             source: if block.level_at(entry.row(), entry.col()).unwrap() == 0 {
@@ -119,10 +88,8 @@ fn signs_for(block: &TransformCoeffBlockState, walk: &NonZeroCoeffScanWalk) -> V
     read_nonzero_coeff_signs(&mut tile, &mut symbols, block, walk, &inputs).unwrap()
 }
 
-fn quant_inputs_for(walk: &NonZeroCoeffScanWalk, quants: &[u32]) -> Vec<CoeffQuantReadInput> {
+fn quant_inputs_for(walk: &NonZeroCoeffScanWalk<'_>, quants: &[u32]) -> Vec<CoeffQuantReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .zip(quants.iter().copied())
         .enumerate()
         .map(|(index, (entry, quant))| CoeffQuantReadInput {
@@ -172,11 +139,7 @@ fn coefficient_quant_state_writes_signed_quant_and_summary_state() {
         assert_eq!(write.hr_level_avg(), input.hr_level_avg);
         assert_eq!(block.quant_at(input.entry.pos()).unwrap(), expected);
     }
-    let dc_entry_index = walk
-        .entries()
-        .iter()
-        .position(|entry| entry.pos() == 0)
-        .unwrap();
+    let dc_entry_index = walk.entries().position(|entry| entry.pos() == 0).unwrap();
     let expected_dc = if signs[dc_entry_index].sign() { 1 } else { 2 };
     assert_eq!(state.cul_level(), 4);
     assert_eq!(state.dc_category(), expected_dc);
@@ -275,8 +238,6 @@ fn coefficient_quant_state_requires_hidden_parity_sign() {
     let mut block = block_for(&walk);
     let hidden_entry = walk
         .entries()
-        .iter()
-        .copied()
         .find(|entry| entry.scan_index() == 0)
         .unwrap();
     block

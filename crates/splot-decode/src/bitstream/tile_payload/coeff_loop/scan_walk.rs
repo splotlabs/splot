@@ -50,32 +50,57 @@ impl CoeffScanEntry {
     pub(crate) const fn col(self) -> usize {
         self.col
     }
+}
 
+#[derive(Debug)]
+enum NonZeroCoeffScanSource<'a> {
+    Scan {
+        scan: &'a [u16],
+        width: usize,
+    },
     #[cfg(test)]
-    pub(crate) const fn for_test(scan_index: usize, pos: usize, row: usize, col: usize) -> Self {
-        Self {
-            scan_index,
-            pos,
-            row,
-            col,
+    Entries(Vec<CoeffScanEntry>),
+}
+
+#[derive(Debug)]
+pub(crate) struct NonZeroCoeffScanWalk<'a> {
+    source: NonZeroCoeffScanSource<'a>,
+}
+
+impl NonZeroCoeffScanWalk<'_> {
+    #[must_use]
+    pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = CoeffScanEntry> + '_ {
+        (0..self.len()).map(|index| self.entry(index))
+    }
+
+    #[must_use]
+    pub(crate) fn len(&self) -> usize {
+        match &self.source {
+            NonZeroCoeffScanSource::Scan { scan, .. } => scan.len(),
+            #[cfg(test)]
+            NonZeroCoeffScanSource::Entries(entries) => entries.len(),
         }
     }
-}
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffScanWalk {
-    entries: Vec<CoeffScanEntry>,
-}
-
-impl NonZeroCoeffScanWalk {
-    #[must_use]
-    pub(crate) fn entries(&self) -> &[CoeffScanEntry] {
-        &self.entries
+    fn entry(&self, index: usize) -> CoeffScanEntry {
+        match &self.source {
+            NonZeroCoeffScanSource::Scan { scan, width } => {
+                let scan_index = scan.len() - index - 1;
+                let pos = usize::from(scan[scan_index]);
+                CoeffScanEntry::new(scan_index, pos, pos / width, pos % width)
+            }
+            #[cfg(test)]
+            NonZeroCoeffScanSource::Entries(entries) => entries[index],
+        }
     }
 
     #[cfg(test)]
-    pub(crate) fn from_entries_for_test(entries: Vec<CoeffScanEntry>) -> Self {
-        Self { entries }
+    pub(crate) fn from_entries_for_test(
+        entries: Vec<CoeffScanEntry>,
+    ) -> NonZeroCoeffScanWalk<'static> {
+        NonZeroCoeffScanWalk {
+            source: NonZeroCoeffScanSource::Entries(entries),
+        }
     }
 }
 
@@ -193,10 +218,10 @@ where
     Ok(entries)
 }
 
-pub(crate) fn walk_nonzero_coeff_scan(
+pub(crate) fn walk_nonzero_coeff_scan<'a>(
     start: &NonZeroCoeffBlockStart,
-    scan: &[u16],
-) -> Result<NonZeroCoeffScanWalk, CoeffLoopContextError> {
+    scan: &'a [u16],
+) -> Result<NonZeroCoeffScanWalk<'a>, CoeffLoopContextError> {
     let eob = start.eob_read().eob().eob();
     if eob == 0 {
         return Err(CoeffLoopContextError::InvalidScanWalkEob { eob });
@@ -208,9 +233,26 @@ pub(crate) fn walk_nonzero_coeff_scan(
         });
     }
 
-    let entries = collect_scan_entries(start, scan[..eob].iter().copied().enumerate().rev(), eob)?;
+    let block = start.block();
+    let width = block.width();
+    let coeff_count = block.level().len();
+    for (scan_index, scan_pos) in scan[..eob].iter().copied().enumerate().rev() {
+        let pos = usize::from(scan_pos);
+        if pos >= coeff_count {
+            return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
+                scan_index,
+                pos,
+                coeff_count,
+            });
+        }
+    }
 
-    Ok(NonZeroCoeffScanWalk { entries })
+    Ok(NonZeroCoeffScanWalk {
+        source: NonZeroCoeffScanSource::Scan {
+            scan: &scan[..eob],
+            width,
+        },
+    })
 }
 
 pub(crate) fn walk_fsc_coeff_scan(

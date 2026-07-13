@@ -101,23 +101,17 @@ pub(crate) enum CoeffReadQuantError {
 
 pub(crate) fn read_nonzero_coeff_quants(
     symbols: &mut SymbolDecoder<'_>,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     inputs: &[CoeffReadQuantInput],
     config: CoeffReadQuantConfig,
 ) -> Result<Vec<CoeffReadQuant>, CoeffReadQuantError> {
-    let entries = walk.entries();
-    if inputs.len() != entries.len() {
+    if inputs.len() != walk.len() {
         return Err(CoeffReadQuantError::InputCountMismatch {
             inputs: inputs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
-    for (index, (entry, input)) in entries
-        .iter()
-        .copied()
-        .zip(inputs.iter().copied())
-        .enumerate()
-    {
+    for (index, (entry, input)) in walk.entries().zip(inputs.iter().copied()).enumerate() {
         if input.entry != entry {
             return Err(CoeffReadQuantError::ScanEntryMismatch {
                 index,
@@ -130,7 +124,7 @@ pub(crate) fn read_nonzero_coeff_quants(
 
     let mut state = CoeffReadQuantState::new(config);
     let mut reads = Vec::new();
-    reads.try_reserve(entries.len())?;
+    reads.try_reserve(walk.len())?;
     for (index, input) in inputs.iter().copied().enumerate() {
         reads.push(state.read_one(symbols, index, input)?);
     }
