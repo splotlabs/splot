@@ -192,10 +192,7 @@ fn luma_transform_partition_storage_rejects_a_sixth_unit() {
             reason: "unsupported_general_intra_tx_partition_record_capacity",
         })
     ));
-    assert_eq!(
-        units.iter().copied().collect::<Vec<_>>(),
-        (0..5).collect::<Vec<_>>()
-    );
+    assert!(units.iter().copied().eq(0..5));
 }
 
 #[test]

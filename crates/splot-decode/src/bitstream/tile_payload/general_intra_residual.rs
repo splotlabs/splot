@@ -68,7 +68,7 @@ const IST_8X8_HEIGHT: usize = 32;
 const ANGLE_STEP: i32 = 3;
 const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
 const DCT_DCT: usize = 0;
-// § 5.20.6.3 emits at most five transform units for HORZ5 and VERT5 partitions.
+// AV2 § 5.20.6.3 (`docs/spec/av2/1.0.0/05-syntax-structures.md`) emits at most five units.
 const MAX_LUMA_TRANSFORM_PARTITION_UNITS: usize = 5;
 const ADST_DCT: usize = 1;
 const DCT_ADST: usize = 2;
