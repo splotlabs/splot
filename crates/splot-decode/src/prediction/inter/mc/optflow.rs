@@ -401,8 +401,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
-    let mut pred0 = vec![0i32; block_w * block_h];
-    let mut pred1 = vec![0i32; block_w * block_h];
+    let [mut pred0, mut pred1] = super::take_compound_prediction_buffers(block_w * block_h);
 
     for row in (0..block_h).step_by(subblock_h) {
         for col in (0..block_w).step_by(subblock_w) {
@@ -521,6 +520,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
         block_h,
         scaling0,
         scaling1,
+        recycle_buffers: true,
     })
 }
 

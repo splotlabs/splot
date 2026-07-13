@@ -900,6 +900,34 @@ struct CompoundPlanePrediction {
     block_h: usize,
     scaling0: PlaneScaling,
     scaling1: PlaneScaling,
+    recycle_buffers: bool,
+}
+
+std::thread_local! {
+    static COMPOUND_PREDICTION_BUFFERS: std::cell::Cell<Option<[Vec<i32>; 2]>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+        let mut buffers = slot.take().unwrap_or_default();
+        for buffer in &mut buffers {
+            buffer.resize(len, 0);
+        }
+        buffers
+    })
+}
+
+impl Drop for CompoundPlanePrediction {
+    fn drop(&mut self) {
+        if self.recycle_buffers {
+            let buffers = [
+                core::mem::take(&mut self.pred0),
+                core::mem::take(&mut self.pred1),
+            ];
+            COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(Some(buffers)));
+        }
+    }
 }
 
 fn compound_plane_prediction_for_block<T: ReconSample>(
@@ -1018,6 +1046,7 @@ fn compound_plane_prediction<T: ReconSample>(
         block_h,
         scaling0,
         scaling1,
+        recycle_buffers: false,
     })
 }
 
@@ -1067,6 +1096,7 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         block_h,
         scaling0: pred0.scaling,
         scaling1: pred1.scaling,
+        recycle_buffers: false,
     })
 }
 
