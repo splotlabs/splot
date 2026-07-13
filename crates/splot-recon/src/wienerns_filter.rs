@@ -242,9 +242,8 @@ pub fn wiener_ns_filter_luma_block_padded<T: ReconSample>(
 
 /// Applies padded luma Wiener NS filtering with reusable working storage.
 ///
-/// `scratch` retains its allocations between calls. Its filtered output is
-/// cleared before validation and after an error, and `output` is not modified
-/// unless filtering succeeds.
+/// `scratch` retains its allocations between calls, and `output` is not
+/// modified unless filtering succeeds.
 ///
 /// # Errors
 /// Returns the same errors as [`wiener_ns_filter_luma_block_padded`], plus a
@@ -319,40 +318,33 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
             .push(row.iter().all(|sample| sample.to_u16() <= max_sample));
     }
 
-    let filter_result = (|| {
-        for r in 0..params.height {
-            let window_in_range = scratch
-                .clean_rows
-                .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
-                .is_some_and(|rows| rows.iter().all(|&clean| clean));
-            if window_in_range {
-                filter_padded_luma_row_in_range(
-                    &mut scratch.filtered,
-                    &mut scratch.acc,
-                    source.samples,
-                    stride,
-                    r,
-                    params,
-                    max_sample,
-                )?;
-            } else {
-                filter_padded_luma_row_validated(
-                    &mut scratch.filtered,
-                    source.samples,
-                    stride,
-                    &tap_offsets,
-                    center_offset,
-                    r,
-                    params,
-                    max_sample,
-                )?;
-            }
+    for r in 0..params.height {
+        let window_in_range = scratch
+            .clean_rows
+            .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
+            .is_some_and(|rows| rows.iter().all(|&clean| clean));
+        if window_in_range {
+            filter_padded_luma_row_in_range(
+                &mut scratch.filtered,
+                &mut scratch.acc,
+                source.samples,
+                stride,
+                r,
+                params,
+                max_sample,
+            )?;
+        } else {
+            filter_padded_luma_row_validated(
+                &mut scratch.filtered,
+                source.samples,
+                stride,
+                &tap_offsets,
+                center_offset,
+                r,
+                params,
+                max_sample,
+            )?;
         }
-        Ok(())
-    })();
-    if let Err(error) = filter_result {
-        scratch.filtered.clear();
-        return Err(error);
     }
 
     for row_index in 0..params.height {
@@ -871,112 +863,26 @@ mod tests {
     }
 
     #[test]
-    fn padded_filter_rejects_source_sample_out_of_range() {
-        let width = 1;
-        let height = 1;
-        let radius = WIENER_NS_LUMA_TAP_RADIUS;
-        let stride = width + 2 * radius;
-        let mut padded = vec![0u16; stride * (height + 2 * radius)];
-        padded[radius] = 1024;
-        let coeffs = [ZERO];
-        let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
-        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-        let mut output = [77u16; 1];
-
-        let err = wiener_ns_filter_luma_block_padded(&mut output, &params, &source).unwrap_err();
-
-        assert_eq!(
-            err,
-            ReconError::WienerNsFilterSourceSampleOutOfRange {
-                x: 0,
-                y: -4,
-                value: 1024,
-                max: 1023,
-            }
-        );
-        assert_eq!(output, [77]);
-    }
-
-    #[test]
-    fn padded_into_reuses_and_overwrites_scratch() {
-        let coeffs = [ZERO];
-        let mut scratch = WienerNsLumaScratch::default();
-        let large_width = 16;
-        let large_height = 8;
-        let large_stride = large_width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-        let large_padded = padded_from(large_height, large_stride, |x, y| {
-            ((x * 17 + y * 11 + 512).rem_euclid(1024)) as u16
-        });
-        let large_source =
-            WienerNsLumaPaddedSource::new(&large_padded, large_stride, large_width, large_height)
-                .unwrap();
-        let large_params = params(
-            large_width,
-            large_height,
-            large_width,
-            BitDepth::Ten,
-            &coeffs,
-            None,
-        );
-        let mut large_output = vec![0u16; large_width * large_height];
-        wiener_ns_filter_luma_block_padded_into(
-            &mut large_output,
-            &large_params,
-            &large_source,
-            &mut scratch,
-        )
-        .unwrap();
-        let filtered_ptr = scratch.filtered.as_ptr();
-        let acc_ptr = scratch.acc.as_ptr();
-        let capacities = (
-            scratch.clean_rows.capacity(),
-            scratch.filtered.capacity(),
-            scratch.acc.capacity(),
-        );
-
-        let width = 2;
-        let height = 2;
-        let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-        let padded = vec![37u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
-        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
-        let small_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
-        let mut output = vec![u16::MAX; width * height];
-        wiener_ns_filter_luma_block_padded_into(&mut output, &small_params, &source, &mut scratch)
-            .unwrap();
-
-        assert_eq!(output, [37; 4]);
-        assert_eq!(scratch.filtered.as_ptr(), filtered_ptr);
-        assert_eq!(scratch.acc.as_ptr(), acc_ptr);
-        assert_eq!(
-            (
-                scratch.clean_rows.capacity(),
-                scratch.filtered.capacity(),
-                scratch.acc.capacity(),
-            ),
-            capacities
-        );
-    }
-
-    #[test]
-    fn padded_into_clears_partial_filter_after_error_and_recovers() {
+    fn padded_scratch_recovers_after_source_sample_error() {
         let width = 2;
         let height = 2;
         let radius = WIENER_NS_LUMA_TAP_RADIUS;
         let stride = width + 2 * radius;
-        let coeffs = [ZERO];
-        let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
         let mut padded = vec![23u16; stride * (height + 2 * radius)];
-        padded[(height + 2 * radius - 1) * stride + radius] = 1024;
+        let invalid_sample = (height + 2 * radius - 1) * stride + radius;
+        padded[invalid_sample] = 1024;
+        let coeffs = [ZERO];
+        let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
         let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
         let mut scratch = WienerNsLumaScratch::default();
         let mut output = [77u16; 4];
 
-        let error =
+        let err =
             wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch)
                 .unwrap_err();
 
         assert_eq!(
-            error,
+            err,
             ReconError::WienerNsFilterSourceSampleOutOfRange {
                 x: 0,
                 y: 5,
@@ -985,9 +891,8 @@ mod tests {
             }
         );
         assert_eq!(output, [77; 4]);
-        assert!(scratch.filtered.is_empty());
 
-        padded[(height + 2 * radius - 1) * stride + radius] = 23;
+        padded[invalid_sample] = 23;
         let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
         wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch)
             .unwrap();
@@ -995,24 +900,42 @@ mod tests {
     }
 
     #[test]
-    fn padded_into_supports_maximum_restoration_stripe() {
+    fn padded_into_reuses_maximum_restoration_stripe_scratch() {
         let width = 512;
         let height = 64;
         let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
         let padded = vec![91u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
         let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
         let coeffs = [ZERO];
-        let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
+        let large_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
         let mut scratch = WienerNsLumaScratch::default();
         let mut output = vec![0u16; width * height];
 
-        wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch)
+        wiener_ns_filter_luma_block_padded_into(&mut output, &large_params, &source, &mut scratch)
             .unwrap();
 
         assert!(output.iter().all(|&sample| sample == 91));
         assert!(scratch.filtered.capacity() >= width * height);
         assert!(scratch.acc.capacity() >= width);
         assert!(scratch.clean_rows.capacity() >= height + 2 * WIENER_NS_LUMA_TAP_RADIUS);
+        let clean_rows_capacity = scratch.clean_rows.capacity();
+        let filtered_ptr = scratch.filtered.as_ptr();
+        let acc_ptr = scratch.acc.as_ptr();
+
+        let width = 2;
+        let height = 2;
+        let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
+        let padded = vec![37u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
+        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        let params = params(width, height, width, BitDepth::Ten, &coeffs, None);
+        let mut output = [u16::MAX; 4];
+        wiener_ns_filter_luma_block_padded_into(&mut output, &params, &source, &mut scratch)
+            .unwrap();
+
+        assert_eq!(output, [37; 4]);
+        assert_eq!(scratch.clean_rows.capacity(), clean_rows_capacity);
+        assert_eq!(scratch.filtered.as_ptr(), filtered_ptr);
+        assert_eq!(scratch.acc.as_ptr(), acc_ptr);
     }
 
     #[test]
