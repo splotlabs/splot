@@ -5,7 +5,7 @@
 
 use splot_core::symbol::SymbolDecoder;
 
-use super::super::cdf::{FrameCdfSubset, TileCdfSubset};
+use super::super::cdf::{FrameCdfSubset, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
 use super::base_level_pass::{CoeffBaseDerivedLevelPassConfig, CoeffBaseDerivedLevelPassError};
 use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
@@ -26,7 +26,6 @@ use super::ordinary_pass::{
     apply_nonzero_coeff_ordinary_pass_with_state_context,
 };
 use super::scan_walk::walk_nonzero_coeff_scan;
-use super::sign_symbol::{CoeffSignCdfSyntax, CoeffSignReadSource};
 use super::test_support::{
     OrdinaryBranchRun, run_ordinary_branch, seeded_6x6_context_state as seeded_context_state,
     setup_start_with_input, symbol_decoder,
@@ -182,19 +181,6 @@ fn assert_luma_context_edges(
     assert_eq!(&context_state.left_level(0).unwrap()[0..2], &[cul_level; 2]);
     assert_eq!(&context_state.above_dc(0).unwrap()[0..2], &[dc_category; 2]);
     assert_eq!(&context_state.left_dc(0).unwrap()[0..2], &[dc_category; 2]);
-}
-
-fn state_context_pass_for_payload(
-    payload: &[u8],
-    base_config: CoeffBaseDerivedLevelPassConfig,
-    state_context: CoeffOrdinaryStateContextConfig,
-) -> Option<(TileCoeffContextState, NonZeroCoeffOrdinaryDerivedBasePass)> {
-    state_context_pass_for_payload_with_start(
-        payload,
-        nonzero_start_input(),
-        base_config,
-        state_context,
-    )
 }
 
 fn state_context_pass_for_payload_with_start(
@@ -408,9 +394,16 @@ fn coefficient_ordinary_branch_nonzero_runs_state_context_pass() {
     let base_config = luma_base_config(false, false);
     let state_context = state_context_config();
     let payload = find_state_context_payload(base_config, state_context, |pass| {
-        dc_sign_ctx_from(pass) == Some(1)
+        pass.block().level()[0] != 0
     });
     let (mut tile, mut symbols, mut context_state) = branch_state(&payload);
+    let dc_sign_ctx_one = TileCdfSelector::DcSign {
+        coeff_cdf_q_ctx: 0,
+        plane_type: 0,
+        group: 0,
+        ctx: 1,
+    };
+    let dc_sign_before = tile.row(dc_sign_ctx_one).unwrap().to_vec();
 
     let branch = apply_coeff_ordinary_branch(
         &mut context_state,
@@ -425,7 +418,7 @@ fn coefficient_ordinary_branch_nonzero_runs_state_context_pass() {
     };
     let quant_state = pass.quant_state();
 
-    assert_eq!(dc_sign_ctx_from(&pass), Some(1));
+    assert_ne!(tile.row(dc_sign_ctx_one).unwrap(), dc_sign_before);
     assert_luma_context_edges(
         &context_state,
         quant_state.cul_level(),
@@ -632,30 +625,38 @@ fn coefficient_ordinary_branch_geometry_all_zero_preserves_direct_branch() {
     assert_eq!(derived, direct);
 }
 
-fn dc_sign_ctx_from(pass: &NonZeroCoeffOrdinaryDerivedBasePass) -> Option<usize> {
-    pass.derived_sign_inputs()
-        .iter()
-        .find_map(|input| match input.source {
-            CoeffSignReadSource::Cdf {
-                syntax: CoeffSignCdfSyntax::DcSign,
-                selector,
-            } if input.entry.scan_index() == 0 => Some(selector.ctx),
-            _ => None,
-        })
-}
-
 #[test]
 fn coefficient_ordinary_pass_with_state_context_reads_dc_before_commit() {
     let base_config = luma_base_config(false, false);
     let state_context = state_context_config();
     let payload = find_state_context_payload(base_config, state_context, |pass| {
-        dc_sign_ctx_from(pass) == Some(1)
+        pass.block().level()[0] != 0
     });
-    let (context_state, pass) =
-        state_context_pass_for_payload(&payload, base_config, state_context).unwrap();
+    let (mut tile, mut symbols, start) = setup_start_and_walk(&payload, &DC_ONLY_SCAN).unwrap();
+    let mut context_state = seeded_context_state();
+    let dc_sign_ctx_one = TileCdfSelector::DcSign {
+        coeff_cdf_q_ctx: 0,
+        plane_type: 0,
+        group: 0,
+        ctx: 1,
+    };
+    let dc_sign_before = tile.row(dc_sign_ctx_one).unwrap().to_vec();
+    let pass = apply_nonzero_coeff_ordinary_pass_with_state_context(
+        &mut context_state,
+        &mut tile,
+        &mut symbols,
+        CoeffOrdinaryStateContextPassInput {
+            start,
+            scan: &DC_ONLY_SCAN,
+            base_config,
+            state_context,
+            lossless: false,
+        },
+    )
+    .unwrap();
     let quant_state = pass.quant_state();
 
-    assert_eq!(dc_sign_ctx_from(&pass), Some(1));
+    assert_ne!(tile.row(dc_sign_ctx_one).unwrap(), dc_sign_before);
     assert_luma_context_edges(
         &context_state,
         quant_state.cul_level(),

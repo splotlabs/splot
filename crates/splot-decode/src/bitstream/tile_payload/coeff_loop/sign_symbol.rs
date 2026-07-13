@@ -192,12 +192,20 @@ pub(crate) fn derive_nonzero_coeff_sign_inputs(
     inputs.try_reserve(entries.len())?;
     for entry in entries.iter().copied() {
         let level = block.level_at(entry.row(), entry.col())?;
-        inputs.push(CoeffSignReadInput {
-            entry,
-            source: derive_coeff_sign_source(entry, level, config),
-        });
+        inputs.push(derive_nonzero_coeff_sign_input(entry, level, config));
     }
     Ok(inputs)
+}
+
+pub(crate) fn derive_nonzero_coeff_sign_input(
+    entry: CoeffScanEntry,
+    level: u32,
+    config: CoeffSignSourceDeriveConfig<'_>,
+) -> CoeffSignReadInput {
+    CoeffSignReadInput {
+        entry,
+        source: derive_coeff_sign_source(entry, level, config),
+    }
 }
 
 fn derive_coeff_sign_source(
