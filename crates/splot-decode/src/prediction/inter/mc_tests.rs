@@ -156,6 +156,32 @@ fn deferred_window_plane_writes_are_isolated() {
 }
 
 #[test]
+fn deferred_window_reuses_and_clears_sample_storage() {
+    let workspace = workspace_with_format(PixelFormat::Yuv444, 16, 16);
+    let mut window =
+        BlockReconWindow::for_block(&workspace, rect(0, 0, 8, 8)).expect("initial deferred window");
+    WorkspaceSink::Window(&mut window)
+        .write_rect(
+            PlaneId::Y,
+            PlaneRect::new(0, 0, 8, 8).expect("luma rect"),
+            &[7; 64],
+            8,
+        )
+        .expect("fill initial deferred window");
+    let storage = window.into_samples();
+    let allocation = storage.as_ptr();
+
+    let mut storage = storage;
+    let window =
+        BlockReconWindow::for_block_with_storage(&workspace, rect(0, 0, 4, 4), &mut storage)
+            .expect("reused deferred window");
+    let storage = window.into_samples();
+
+    assert_eq!(storage.as_ptr(), allocation);
+    assert!(storage.iter().all(|&sample| sample == 0));
+}
+
+#[test]
 fn dispatcher_zero_mv_copies_single_reference_planes() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);

@@ -31,7 +31,7 @@ struct DecodedTileChunk<T: ReconSample> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_tiles<T: ReconSample>(
+pub(super) fn decode_tiles<T: DeferredReconSample>(
     work_units: &mut [DecodeTileWorkUnit<'_>],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -315,7 +315,7 @@ fn tile_plane_rect<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_tile_chunk<T: ReconSample>(
+fn decode_tile_chunk<T: DeferredReconSample>(
     work_units: &mut [DecodeTileWorkUnit<'_>],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -357,7 +357,6 @@ fn decode_tile_chunk<T: ReconSample>(
     let chunk_offset = work_units
         .first()
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
-
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
         let mut coeff_ctx =

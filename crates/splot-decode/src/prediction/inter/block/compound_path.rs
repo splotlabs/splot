@@ -49,14 +49,14 @@ pub(super) fn read_reference_mode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_compound_inter_block<T: ReconSample>(
+pub(super) fn decode_compound_inter_block<T: DeferredReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    deferred: &mut super::deferred_recon::DeferredInterRecon,
+    deferred: &mut super::deferred_recon::DeferredInterRecon<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
@@ -830,14 +830,14 @@ pub(super) struct ResolvedCompoundBlock {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct_resolved_compound_inter_block<T: ReconSample>(
+pub(super) fn reconstruct_resolved_compound_inter_block<T: DeferredReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    deferred: &mut super::deferred_recon::DeferredInterRecon,
+    deferred: &mut super::deferred_recon::DeferredInterRecon<T>,
     temporal_context: Option<&TemporalMvContext>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
@@ -1202,14 +1202,14 @@ fn wedge_temporal_allowed_lists(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
+pub(super) fn decode_skip_mode_inter_block<T: DeferredReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    deferred: &mut super::deferred_recon::DeferredInterRecon,
+    deferred: &mut super::deferred_recon::DeferredInterRecon<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,

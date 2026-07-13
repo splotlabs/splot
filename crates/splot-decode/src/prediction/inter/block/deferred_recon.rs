@@ -14,6 +14,10 @@
 //! applies the temporal-motion records in block order. Any job error falls
 //! back to re-running that block inline against the frame workspace, so
 //! failures surface exactly as they would on the ordered path.
+//!
+//! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
+
+use std::sync::{Mutex, MutexGuard};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
@@ -32,6 +36,54 @@ use crate::Result;
 use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, FrameQuantizerSnapshot, current_frame_qm_segment_id,
 };
+static BLOCK_RECON_U8_STORAGE: Mutex<Vec<Vec<Vec<u8>>>> = Mutex::new(Vec::new());
+static BLOCK_RECON_U16_STORAGE: Mutex<Vec<Vec<Vec<u16>>>> = Mutex::new(Vec::new());
+
+fn lock_storage<T>(storage: &Mutex<Vec<Vec<Vec<T>>>>) -> MutexGuard<'_, Vec<Vec<Vec<T>>>> {
+    storage
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn take_storage<T>(storage: &Mutex<Vec<Vec<Vec<T>>>>) -> Vec<Vec<T>> {
+    lock_storage(storage).pop().unwrap_or_default()
+}
+
+fn recycle_storage<T>(storage: &Mutex<Vec<Vec<Vec<T>>>>, buffers: Vec<Vec<T>>) {
+    let mut storage = lock_storage(storage);
+    if storage.len() < splot_parallel::current_pool_width() {
+        storage.push(buffers);
+    }
+}
+
+/// Decoded sample storage with a type-safe deferred-window recycler.
+pub(crate) trait DeferredReconSample: ReconSample {
+    /// Takes retained block-window storage.
+    fn take_deferred_storage() -> Vec<Vec<Self>>;
+
+    /// Returns block-window storage to the shared recycler.
+    fn recycle_deferred_storage(storage: Vec<Vec<Self>>);
+}
+
+impl DeferredReconSample for u8 {
+    fn take_deferred_storage() -> Vec<Vec<Self>> {
+        take_storage(&BLOCK_RECON_U8_STORAGE)
+    }
+
+    fn recycle_deferred_storage(storage: Vec<Vec<Self>>) {
+        recycle_storage(&BLOCK_RECON_U8_STORAGE, storage);
+    }
+}
+
+impl DeferredReconSample for u16 {
+    fn take_deferred_storage() -> Vec<Vec<Self>> {
+        take_storage(&BLOCK_RECON_U16_STORAGE)
+    }
+
+    fn recycle_deferred_storage(storage: Vec<Vec<Self>>) {
+        recycle_storage(&BLOCK_RECON_U16_STORAGE, storage);
+    }
+}
 
 /// How a queued block reconstructs and which temporal record it produces.
 #[derive(Clone, Copy, Debug)]
@@ -71,18 +123,20 @@ enum JobOutput {
     Tip(Vec<TipTemporalRecord>),
 }
 
-type JobResult<T> = Result<(BlockReconWindow<T>, JobOutput)>;
+type JobResult<T> = std::result::Result<(BlockReconWindow<T>, JobOutput), Vec<T>>;
 
 /// Queue of pure inter blocks whose reconstruction is deferred to a flush.
 #[derive(Debug)]
-pub(super) struct DeferredInterRecon {
+pub(super) struct DeferredInterRecon<T: DeferredReconSample> {
     pending: Vec<PendingBlock>,
+    storage: Vec<Vec<T>>,
 }
 
-impl DeferredInterRecon {
+impl<T: DeferredReconSample> DeferredInterRecon<T> {
     pub(super) fn new() -> Self {
         Self {
             pending: Vec::new(),
+            storage: T::take_deferred_storage(),
         }
     }
 
@@ -100,6 +154,15 @@ impl DeferredInterRecon {
             qindex,
             tile_offset,
         });
+    }
+}
+
+impl<T: DeferredReconSample> Drop for DeferredInterRecon<T> {
+    fn drop(&mut self) {
+        for buffer in &mut self.storage {
+            buffer.clear();
+        }
+        T::recycle_deferred_storage(core::mem::take(&mut self.storage));
     }
 }
 
@@ -210,12 +273,21 @@ fn run_windowed<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     snapshot: &FrameQuantizerSnapshot,
     shared: &FlushShared<'_, '_, T>,
+    samples: Vec<T>,
 ) -> JobResult<T> {
-    let mut window =
-        BlockReconWindow::for_block(workspace, block.placed.motion_compensation_rect())?;
+    let mut samples = samples;
+    let Ok(mut window) = BlockReconWindow::for_block_with_storage(
+        workspace,
+        block.placed.motion_compensation_rect(),
+        &mut samples,
+    ) else {
+        return Err(samples);
+    };
     let _scopes = snapshot.install(block.segment_id);
-    let output = execute(block, &mut WorkspaceSink::Window(&mut window), shared)?;
-    Ok((window, output))
+    match execute(block, &mut WorkspaceSink::Window(&mut window), shared) {
+        Ok(output) => Ok((window, output)),
+        Err(_) => Err(window.into_samples()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -264,8 +336,8 @@ fn apply_output<T: ReconSample>(
 /// Reconstructs and publishes every queued block, in queue order for all
 /// order-observable effects.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn flush_deferred<T: ReconSample>(
-    deferred: &mut DeferredInterRecon,
+pub(super) fn flush_deferred<T: DeferredReconSample>(
+    deferred: &mut DeferredInterRecon<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     motion_field: &mut TemporalMotionField,
     temporal_context: Option<&TemporalMvContext>,
@@ -295,24 +367,11 @@ pub(super) fn flush_deferred<T: ReconSample>(
         residual_use_ddt,
         bit_depth,
     };
-    let mut results: Vec<Option<JobResult<T>>> = if pending.len() > 1 {
-        let frame: &CurrentFrameWorkspace<T> = workspace;
-        pending
-            .par_iter()
-            .map(|block| Some(run_windowed(block, frame, &snapshot, &shared)))
-            .collect()
-    } else {
-        pending.iter().map(|_| None).collect()
-    };
-    for (block, slot) in pending.iter().zip(results.iter_mut()) {
-        let output = if let Some(Ok((window, output))) = slot.take() {
-            window.publish(workspace)?;
-            output
-        } else {
-            let _scopes = snapshot.install(block.segment_id);
-            execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?
-        };
-        apply_output(
+    if pending.len() == 1 {
+        let block = &pending[0];
+        let _scopes = snapshot.install(block.segment_id);
+        let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
+        return apply_output(
             output,
             &block.placed,
             workspace,
@@ -321,7 +380,54 @@ pub(super) fn flush_deferred<T: ReconSample>(
             mi_rows,
             mi_cols,
             current_order_hint,
-        )?;
+        );
+    }
+
+    let batch_size = splot_parallel::current_pool_width()
+        .min(pending.len())
+        .max(1);
+    if deferred.storage.len() < batch_size {
+        deferred.storage.resize_with(batch_size, Vec::new);
+    }
+    let mut results = Vec::with_capacity(batch_size);
+    for blocks in pending.chunks(batch_size) {
+        let slots = &mut deferred.storage[..blocks.len()];
+        results.clear();
+        {
+            let frame: &CurrentFrameWorkspace<T> = workspace;
+            slots
+                .par_iter_mut()
+                .zip(blocks.par_iter())
+                .map(|(samples, block)| {
+                    run_windowed(block, frame, &snapshot, &shared, core::mem::take(samples))
+                })
+                .collect_into_vec(&mut results);
+        }
+        for ((block, result), samples) in blocks.iter().zip(results.drain(..)).zip(slots) {
+            let output = match result {
+                Ok((window, output)) => {
+                    let published = window.publish(workspace);
+                    *samples = window.into_samples();
+                    published?;
+                    output
+                }
+                Err(storage) => {
+                    *samples = storage;
+                    let _scopes = snapshot.install(block.segment_id);
+                    execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?
+                }
+            };
+            apply_output(
+                output,
+                &block.placed,
+                workspace,
+                motion_field,
+                &shared,
+                mi_rows,
+                mi_cols,
+                current_order_hint,
+            )?;
+        }
     }
     Ok(())
 }
