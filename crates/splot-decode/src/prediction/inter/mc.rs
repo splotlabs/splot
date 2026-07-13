@@ -8,7 +8,7 @@ use splot_recon::{
     ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
     WarpPredictBlockParams, blend_compound_average_weighted_sample, subpel_predict_block,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    warp_predict_block, wedge_mask_plane_sample,
+    subpel_predict_block_into, warp_predict_block, wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling, derive_plane_scaling_prescaled};
@@ -906,6 +906,8 @@ struct CompoundPlanePrediction {
 std::thread_local! {
     static COMPOUND_PREDICTION_BUFFERS: std::cell::Cell<Option<[Vec<i32>; 2]>> =
         const { std::cell::Cell::new(None) };
+    static INITIAL_LUMA_PREDICTIONS: std::cell::Cell<Option<Vec<u16>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
@@ -915,6 +917,29 @@ fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
             buffer.resize(len, 0);
         }
         buffers
+    })
+}
+
+fn with_initial_luma_predictions<R>(
+    width: usize,
+    height: usize,
+    predict: impl FnOnce(&mut [u16], &mut [u16]) -> Result<R>,
+) -> Result<R> {
+    let len = width
+        .checked_mul(height)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "initial luma prediction sample count",
+        })?;
+    let storage_len = len.checked_mul(2).ok_or(ReconError::ArithmeticOverflow {
+        context: "paired initial luma prediction sample count",
+    })?;
+    INITIAL_LUMA_PREDICTIONS.with(|slot| {
+        let mut storage = slot.take().unwrap_or_default();
+        storage.resize(storage_len, 0);
+        let (pred0, pred1) = storage.split_at_mut(len);
+        let result = predict(pred0, pred1);
+        slot.set(Some(storage));
+        result
     })
 }
 

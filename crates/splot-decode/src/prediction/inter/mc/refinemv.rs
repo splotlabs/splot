@@ -154,32 +154,40 @@ fn search_refinemv<T: ReconSample>(
         row: candidate.row - SEARCH_PADDING,
         col: candidate.col - SEARCH_PADDING,
     };
-    let pred0 = super::optflow::initial_luma_prediction(
-        sink,
-        block.reference0,
-        prediction_rect,
-        search_mv(candidates[0]),
-        InterpolationFilter::Bilinear,
-        Some((candidates[0], rect.luma_w, rect.luma_h)),
-        offset,
-    )?;
-    let pred1 = super::optflow::initial_luma_prediction(
-        sink,
-        block.reference1,
-        prediction_rect,
-        search_mv(candidates[1]),
-        InterpolationFilter::Bilinear,
-        Some((candidates[1], rect.luma_w, rect.luma_h)),
-        offset,
-    )?;
-    let (dx, dy) = search_refinemv_offset(
-        &pred0,
-        &pred1,
+    let (dx, dy) = super::with_initial_luma_predictions(
         prediction_width,
-        rect.luma_w,
-        rect.luma_h,
-        sink.info().bit_depth(),
-        !block.refinemv_switchable,
+        prediction_height,
+        |pred0, pred1| {
+            super::optflow::initial_luma_prediction(
+                sink,
+                block.reference0,
+                prediction_rect,
+                search_mv(candidates[0]),
+                InterpolationFilter::Bilinear,
+                Some((candidates[0], rect.luma_w, rect.luma_h)),
+                offset,
+                pred0,
+            )?;
+            super::optflow::initial_luma_prediction(
+                sink,
+                block.reference1,
+                prediction_rect,
+                search_mv(candidates[1]),
+                InterpolationFilter::Bilinear,
+                Some((candidates[1], rect.luma_w, rect.luma_h)),
+                offset,
+                pred1,
+            )?;
+            Ok(search_refinemv_offset(
+                pred0,
+                pred1,
+                prediction_width,
+                rect.luma_w,
+                rect.luma_h,
+                sink.info().bit_depth(),
+                !block.refinemv_switchable,
+            )?)
+        },
     )?;
     Ok([
         Mv {
