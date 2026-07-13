@@ -628,9 +628,18 @@ impl<'samples, 'rows, T: ReconSample> PlaneCtx<'samples, 'rows, T> {
     }
 }
 
-#[derive(Default)]
+const STRENGTH_CACHE_LEN: usize = max_quantizer_index(BitDepth::Ten) as usize + 1;
+
 struct StrengthCache {
-    entries: Vec<(u32, (i32, i32))>,
+    entries: [Option<(i32, i32)>; STRENGTH_CACHE_LEN],
+}
+
+impl Default for StrengthCache {
+    fn default() -> Self {
+        Self {
+            entries: [None; STRENGTH_CACHE_LEN],
+        }
+    }
 }
 
 impl StrengthCache {
@@ -641,15 +650,21 @@ impl StrengthCache {
         df_delta_q: i32,
         bit_depth: BitDepth,
     ) -> (i32, i32) {
-        if let Some(&(_, value)) = self.entries.iter().find(|(key, _)| *key == qindex) {
-            return value;
-        }
-        let value = adaptive_strength(
-            deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
-            bit_depth,
-        );
-        self.entries.push((qindex, value));
-        value
+        let Some(entry) = usize::try_from(qindex)
+            .ok()
+            .and_then(|index| self.entries.get_mut(index))
+        else {
+            return adaptive_strength(
+                deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
+                bit_depth,
+            );
+        };
+        *entry.get_or_insert_with(|| {
+            adaptive_strength(
+                deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
+                bit_depth,
+            )
+        })
     }
 }
 
