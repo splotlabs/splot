@@ -528,21 +528,30 @@ pub fn blend_compound_average_weighted(
         });
     }
 
-    let max_sample = i64::from(bit_depth.max_sample());
-    let shift = 4 + compound_inter_post_round();
-    let forward = i64::from(cwp_weight);
-    let backward = 16 - forward;
     Ok(pred0
         .iter()
         .zip(pred1.iter())
         .map(|(&left, &right)| {
-            let blended = round2(
-                forward * i64::from(left) + backward * i64::from(right),
-                shift,
-            );
-            clip3(0, max_sample, blended) as u16
+            blend_compound_average_weighted_sample(left, right, bit_depth, cwp_weight)
         })
         .collect())
+}
+
+/// Blends one pair of § 7.13.3.18 compound intermediate samples with the
+/// supplied § 7.13.3.16 `cwpWeight`, then applies the final § 4.8 `Clip1`.
+pub fn blend_compound_average_weighted_sample(
+    pred0: i32,
+    pred1: i32,
+    bit_depth: BitDepth,
+    cwp_weight: i16,
+) -> u16 {
+    let forward = i64::from(cwp_weight);
+    let backward = 16 - forward;
+    let blended = round2(
+        forward * i64::from(pred0) + backward * i64::from(pred1),
+        4 + compound_inter_post_round(),
+    );
+    clip3(0, i64::from(bit_depth.max_sample()), blended) as u16
 }
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
