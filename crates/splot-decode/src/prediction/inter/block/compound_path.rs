@@ -739,7 +739,7 @@ fn compound_ref_warp_model(
 ) -> Result<Option<[i64; 6]>> {
     match super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref) {
         super::super::find_mv_stack::WarpSampleCollection::Samples(samples) => {
-            if samples.is_empty() {
+            if samples.as_slice().is_empty() {
                 return Err(inter_cap!(
                     "compound_local_warp_empty_sample_list",
                     tile_offset,
@@ -748,7 +748,7 @@ fn compound_ref_warp_model(
                 ));
             }
             Ok(Some(local_warp_estimation(
-                &samples,
+                samples.as_slice(),
                 mv,
                 mi_row,
                 mi_col,

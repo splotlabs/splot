@@ -2,43 +2,47 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::{
-    CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, MAX_PR_NUM, MAX_REF_MV_STACK_SIZE, Mv,
-    MvBlockContext, MvStackEntry, NeighbourCell, OrderHintMvContext, TIP_REF_FRAME,
-    TemporalMvContext, insert_compound_mv_stack_entry,
+    CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, FixedStack, MAX_PR_NUM,
+    MAX_REF_MV_STACK_SIZE, Mv, MvBlockContext, MvStackEntry, NeighbourCell, OrderHintMvContext,
+    TIP_REF_FRAME, TemporalMvContext, insert_compound_mv_stack_entry,
 };
 
 const MAX_DR_STACK_SIZE: usize = 4;
 const MAX_DR_PR_NUM: usize = 2;
 
-fn push_bounded_unique<T: Copy + Eq>(entries: &mut Vec<T>, prune_count: &mut usize, candidate: T) {
+fn push_bounded_unique<T: Eq>(
+    entries: &mut FixedStack<T, MAX_DR_STACK_SIZE>,
+    prune_count: &mut usize,
+    candidate: T,
+) {
     if *prune_count < MAX_DR_PR_NUM {
         for entry in entries.iter() {
             *prune_count += 1;
-            if *entry == candidate {
+            if entry == &candidate {
                 return;
             }
         }
     }
     if entries.len() < MAX_DR_STACK_SIZE {
-        entries.push(candidate);
+        let _ = entries.try_push(candidate);
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
 struct SingleMvCandidate {
     ref_frame: i8,
     mv: Mv,
 }
 
 pub(super) struct CompoundDerivedMvState {
-    entries: Vec<[Mv; 2]>,
-    singles: Vec<SingleMvCandidate>,
+    entries: FixedStack<[Mv; 2], MAX_DR_STACK_SIZE>,
+    singles: FixedStack<SingleMvCandidate, MAX_DR_STACK_SIZE>,
     prune_count: usize,
     single_prune_count: usize,
 }
 
 pub(super) struct CompoundScanState {
-    pub(super) entries: Vec<CompoundMvStackEntry>,
+    pub(super) entries: FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     pub(super) prune_count: usize,
     pub(super) derived: CompoundDerivedMvState,
 }
@@ -46,7 +50,7 @@ pub(super) struct CompoundScanState {
 impl CompoundScanState {
     pub(super) fn new() -> Self {
         Self {
-            entries: Vec::with_capacity(MAX_REF_MV_STACK_SIZE),
+            entries: FixedStack::new(),
             prune_count: 0,
             derived: CompoundDerivedMvState::new(),
         }
@@ -56,8 +60,8 @@ impl CompoundScanState {
 impl CompoundDerivedMvState {
     pub(super) fn new() -> Self {
         Self {
-            entries: Vec::with_capacity(MAX_DR_STACK_SIZE),
-            singles: Vec::with_capacity(MAX_DR_STACK_SIZE),
+            entries: FixedStack::new(),
+            singles: FixedStack::new(),
             prune_count: 0,
             single_prune_count: 0,
         }
@@ -136,11 +140,11 @@ impl CompoundDerivedMvState {
 
     pub(super) fn fill(
         &self,
-        entries: &mut Vec<CompoundMvStackEntry>,
+        entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
         prune_count: &mut usize,
     ) {
-        for &mvs in &self.entries {
+        for &mvs in self.entries.iter() {
             if entries.len() >= max_ref_mv_count {
                 return;
             }
@@ -160,7 +164,7 @@ impl CompoundDerivedMvState {
 pub(super) struct DerivedMvState<'a> {
     temporal: Option<&'a TemporalMvContext>,
     order_hints: Option<OrderHintMvContext<'a>>,
-    entries: Vec<Mv>,
+    entries: FixedStack<Mv, MAX_DR_STACK_SIZE>,
     prune_count: usize,
 }
 
@@ -172,7 +176,7 @@ impl<'a> DerivedMvState<'a> {
         Self {
             temporal,
             order_hints,
-            entries: Vec::with_capacity(MAX_DR_STACK_SIZE),
+            entries: FixedStack::new(),
             prune_count: 0,
         }
     }
@@ -229,11 +233,11 @@ impl<'a> DerivedMvState<'a> {
 
     pub(super) fn fill(
         &self,
-        entries: &mut Vec<MvStackEntry>,
+        entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
         max_ref_mv_count: usize,
         prune_count: &mut usize,
     ) {
-        for &candidate in &self.entries {
+        for &candidate in self.entries.iter() {
             if entries.len() >= max_ref_mv_count {
                 return;
             }
@@ -247,12 +251,14 @@ impl<'a> DerivedMvState<'a> {
                     }
                 }
             }
-            if !duplicate {
-                entries.push(MvStackEntry {
+            if !duplicate
+                && !entries.try_push(MvStackEntry {
                     mv: candidate,
                     weight: 0,
                     offsets: (0, 0),
-                });
+                })
+            {
+                return;
             }
         }
     }
@@ -269,7 +275,7 @@ mod tests {
         let mut derived = DerivedMvState::new(None, None);
         derived.push(first);
         derived.push(second);
-        let mut entries = vec![
+        let mut entries = FixedStack::from_entries([
             MvStackEntry {
                 mv: Mv { row: 17, col: -10 },
                 weight: 1,
@@ -285,7 +291,7 @@ mod tests {
                 weight: 1,
                 offsets: (0, 0),
             },
-        ];
+        ]);
         let mut prune_count = MAX_PR_NUM;
 
         derived.fill(&mut entries, 4, &mut prune_count);
@@ -303,6 +309,20 @@ mod tests {
         derived.push(candidate);
         derived.push(candidate);
 
-        assert_eq!(derived.entries, [candidate]);
+        assert_eq!(&derived.entries[..], [candidate]);
+    }
+
+    #[test]
+    fn derived_mv_storage_keeps_the_first_four_candidates() {
+        let mut derived = DerivedMvState::new(None, None);
+
+        for col in 0..5 {
+            derived.push(Mv { row: 0, col });
+        }
+
+        assert_eq!(derived.entries.len(), MAX_DR_STACK_SIZE);
+        for (index, entry) in derived.entries.iter().enumerate() {
+            assert_eq!(entry.col, index as i32);
+        }
     }
 }

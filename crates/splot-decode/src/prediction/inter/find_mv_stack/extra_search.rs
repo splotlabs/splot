@@ -2,14 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::{
-    CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, MAX_PR_NUM, MAX_REF_MV_STACK_SIZE, Mv,
-    MvBlockContext, MvStackEntry, clamp_mv, insert_compound_mv_stack_entry,
+    CWP_EQUAL, CompoundMvCandidate, CompoundMvStackEntry, FixedStack, MAX_PR_NUM,
+    MAX_REF_MV_STACK_SIZE, Mv, MvBlockContext, MvStackEntry, clamp_mv,
+    insert_compound_mv_stack_entry,
 };
 
 pub(super) fn extra_search(
     block: &MvBlockContext,
     global_mv: Mv,
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) {
     for entry in entries.iter_mut() {
@@ -28,7 +29,7 @@ pub(super) fn extra_search(
             }
         }
         if !already_present {
-            entries.push(MvStackEntry {
+            let _ = entries.try_push(MvStackEntry {
                 mv: global_mv,
                 weight: 0,
                 offsets: (0, 0),
@@ -54,7 +55,7 @@ pub(super) fn extra_search(
 pub(super) fn compound_extra_search(
     block: &MvBlockContext,
     global_mvs: [Mv; 2],
-    entries: &mut Vec<CompoundMvStackEntry>,
+    entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
 ) {
     for entry in entries.iter_mut() {
@@ -86,7 +87,7 @@ pub(super) fn compound_extra_search(
 }
 
 fn insert_compound_mixture_candidate(
-    entries: &mut Vec<CompoundMvStackEntry>,
+    entries: &mut FixedStack<CompoundMvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     y_cand: usize,
     x_cand: usize,
@@ -117,7 +118,7 @@ fn insert_compound_mixture_candidate(
 }
 
 fn insert_mixture_candidate(
-    entries: &mut Vec<MvStackEntry>,
+    entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
     prune_count: &mut usize,
     y_cand: usize,
     x_cand: usize,
@@ -140,7 +141,7 @@ fn insert_mixture_candidate(
             }
         }
     }
-    entries.push(MvStackEntry {
+    let _ = entries.try_push(MvStackEntry {
         mv: candidate,
         weight: 0,
         offsets: (0, 0),

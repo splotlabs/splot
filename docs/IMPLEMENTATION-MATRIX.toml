@@ -16136,6 +16136,8 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::block2_predicts_block0_mv_via_above_neighbour",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::same_side_spatial_projection_survives_disabled_temporal_scan",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::single_mv_stack_derives_tip_neighbour_for_another_reference",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::single_mv_storage_keeps_the_first_six_candidates",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/derived.rs::tests::derived_mv_storage_keeps_the_first_four_candidates",
     "crates/splot-decode/src/prediction/inter/tests.rs::mvstack_fixture_decodes_two_frames",
     "crates/splot-decode/src/prediction/inter/tests.rs::mvstack_fixture_per_frame_hash_is_stable",
     "crates/splot-cli/tests/decode_cli.rs::decode_two_frame_inter_mvstack_fixture_decodes_bit_exact",
@@ -16542,6 +16544,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_projects_tip_neighbour_to_its_reference_pair",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_storage_keeps_the_first_six_candidates",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::compound_spatial_derivation_uses_both_reference_trajectories",
     "crates/splot-decode/src/prediction/inter/compound.rs::tests::compound_average_reads_global_global_mode",
     "crates/splot-cli/tests/decode_cli.rs::decode_compound_average_three_frame_fixture_is_bit_exact",
@@ -16661,6 +16664,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_local_warp_derives_a_model_per_reference_list",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_warp_blend_forces_plain_average_but_keeps_masks",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_local_warp_motion_suppresses_cwp",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::warp_sample_storage_keeps_the_first_eight_samples",
 ]
 commands = [
     "cargo test -p splot-recon warp_prediction --locked",
