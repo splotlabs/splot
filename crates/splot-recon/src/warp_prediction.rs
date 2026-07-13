@@ -10,7 +10,8 @@
 //! mode selection, `SubMvs` storage, compound blending, extended warp, scaled
 //! reference fallback, and decode entropy remain caller responsibilities.
 //!
-//! Feature tracking: `RECON-SUBPEL-MC`.
+//! Feature tracking: `DECODE-FIRST-INTER-FRAME-FRONTIER`,
+//! `DECODE-INTER-COMPOUND-LOCALWARP`.
 
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 
@@ -101,14 +102,13 @@ pub fn warp_shear_is_valid(warp_params: [i64; 6]) -> bool {
 /// # Errors
 /// Returns [`ReconError`] for invalid reference bounds, a filter phase outside
 /// the generated table, or arithmetic overflow.
-#[allow(clippy::too_many_arguments)]
 pub fn ext_warp_predict_unit<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
     i4: usize,
     j4: usize,
     is_compound: bool,
-) -> Result<Vec<i32>> {
+) -> Result<[i32; 16]> {
     let round1 = if is_compound {
         INTER_ROUND1_COMPOUND
     } else {
@@ -153,17 +153,17 @@ pub fn ext_warp_predict_unit<T: ReconSample>(
         }
     }
     let taps_y = phase(sy4)?;
-    let mut out = vec![0i32; 16];
+    let mut output = [0i32; 16];
     for k in -2i64..2 {
         for l in -2i64..2 {
             let mut sum = 0i64;
             for (m, &tap) in taps_y.iter().enumerate() {
                 sum += i64::from(tap) * intermediate[((k + m as i64 + 2) * 4 + (l + 2)) as usize];
             }
-            out[((k + 2) * 4 + (l + 2)) as usize] = round2(sum, round1) as i32;
+            output[((k + 2) * 4 + (l + 2)) as usize] = round2(sum, round1) as i32;
         }
     }
-    Ok(out)
+    Ok(output)
 }
 
 /// prediction section and returns row-major samples after the final `Clip1`.
@@ -191,6 +191,26 @@ pub fn warp_predict_block<T: ReconSample>(
     params: &WarpPredictBlockParams,
     is_compound: bool,
 ) -> Result<Vec<i32>> {
+    let mut output = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+    warp_predict_block_into(reference, params, is_compound, &mut output)?;
+    Ok(output.into())
+}
+
+/// Writes one AV2 § 7.13.3.19 block-warp prediction into a caller-owned 8x8
+/// array.
+///
+/// The prediction semantics match [`warp_predict_block`], including the
+/// compound `InterRound1` selection and unclipped `i32` output. The output may
+/// be partially modified when a derived vertical filter phase is invalid.
+///
+/// # Errors
+/// Returns the same errors as [`warp_predict_block`].
+pub fn warp_predict_block_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    is_compound: bool,
+    output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+) -> Result<()> {
     let round1 = if is_compound {
         INTER_ROUND1_COMPOUND
     } else {
@@ -201,7 +221,7 @@ pub fn warp_predict_block<T: ReconSample>(
     let projected = project_section_center(params)?;
     let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
     build_intermediate(reference, params, &shear, &projected, &mut intermediate)?;
-    build_output(&shear, &projected, &intermediate, round1)
+    build_output(&shear, &projected, &intermediate, round1, output)
 }
 
 fn validate_params(params: &WarpPredictBlockParams) -> Result<()> {
@@ -417,8 +437,8 @@ fn build_output(
     projected: &ProjectedCenter,
     intermediate: &[i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
     round1: u32,
-) -> Result<Vec<i32>> {
-    let mut output = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+    output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+) -> Result<()> {
     for i1 in -4..4 {
         for i2 in -4..4 {
             let sy = projected
@@ -440,7 +460,7 @@ fn build_output(
             output[row * WARPED_BLOCK_SIZE + col] = round2(sum, round1) as i32;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 fn warped_filter_row(phase: i64) -> Result<&'static [i32; WARP_FILTER_TAPS]> {
@@ -661,13 +681,36 @@ mod tests {
     }
 
     #[test]
+    fn fixed_block_output_matches_vec_wrapper() {
+        let (ref_w, ref_h) = (32usize, 32usize);
+        let samples = build_ref(ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        let mut params = default_params(10, 9, ref_w as i64, ref_h as i64);
+        params.warp_params = [
+            1 << WARPEDMODEL_PREC_BITS,
+            -(2 << WARPEDMODEL_PREC_BITS),
+            (1 << WARPEDMODEL_PREC_BITS) + 256,
+            -128,
+            192,
+            (1 << WARPEDMODEL_PREC_BITS) - 320,
+        ];
+
+        for is_compound in [false, true] {
+            let expected = warp_predict_block(&view, &params, is_compound).unwrap();
+            let mut output = [i32::MIN; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+            warp_predict_block_into(&view, &params, is_compound, &mut output).unwrap();
+            assert_eq!(output.as_slice(), expected);
+        }
+    }
+
+    #[test]
     fn ext_compound_intermediate_flat_reference_is_scaled_by_filter_gain() {
         let (ref_w, ref_h) = (32usize, 32usize);
         let samples = vec![77u16; ref_w * ref_h];
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
         let params = default_params(8, 12, ref_w as i64, ref_h as i64);
         let out = ext_warp_predict_unit(&view, &params, 0, 0, true).unwrap();
-        assert_eq!(out, vec![16 * 77i32; 16]);
+        assert_eq!(out, [16 * 77i32; 16]);
     }
 
     #[test]
@@ -777,7 +820,9 @@ mod tests {
         let params = default_params(8, 12, ref_w as i64, ref_h as i64);
         for (i4, j4) in [(0usize, 0usize), (1, 1)] {
             let out = crate::math::clip1_predicted_samples(
-                ext_warp_predict_unit(&view, &params, i4, j4, false).unwrap(),
+                ext_warp_predict_unit(&view, &params, i4, j4, false)
+                    .unwrap()
+                    .into(),
                 i64::from(params.bit_depth.max_sample()),
             );
             for r in 0..4 {
@@ -798,7 +843,9 @@ mod tests {
         params.warp_params[0] = 3 << WARPEDMODEL_PREC_BITS;
         params.warp_params[1] = 2 << WARPEDMODEL_PREC_BITS;
         let out = crate::math::clip1_predicted_samples(
-            ext_warp_predict_unit(&view, &params, 0, 1, false).unwrap(),
+            ext_warp_predict_unit(&view, &params, 0, 1, false)
+                .unwrap()
+                .into(),
             i64::from(params.bit_depth.max_sample()),
         );
         for r in 0..4 {

@@ -6,9 +6,10 @@ use splot_recon::BitDepth;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, InterpolationFilter, PlaneId, PlaneRect, ReconError,
     ReconSample, ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE,
-    WarpPredictBlockParams, blend_compound_average_weighted_sample, subpel_predict_block,
-    subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    subpel_predict_block_into, warp_predict_block, wedge_mask_plane_sample,
+    WarpPredictBlockParams, blend_compound_average_weighted_sample, ext_warp_predict_unit,
+    subpel_predict_block, subpel_predict_block_compound_intermediate,
+    subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
+    warp_predict_block_into, wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling, derive_plane_scaling_prescaled};
@@ -46,6 +47,18 @@ fn pack_samples<T: ReconSample>(samples: &[u16]) -> splot_recon::Result<Vec<T>> 
     let mut packed = Vec::with_capacity(samples.len());
     for &sample in samples {
         packed.push(T::try_from_u16(sample)?);
+    }
+    Ok(packed)
+}
+
+fn clip_and_pack_warp_samples<T: ReconSample, const N: usize>(
+    samples: &[i32; N],
+    max_sample: i64,
+) -> splot_recon::Result<[T; N]> {
+    let mut packed = [T::default(); N];
+    for (dst, &sample) in packed.iter_mut().zip(samples) {
+        let clipped = clip3(0, max_sample, i64::from(sample)) as u16;
+        *dst = T::try_from_u16(clipped)?;
     }
     Ok(packed)
 }
@@ -837,11 +850,9 @@ fn predict_warp_plane<T: ReconSample>(
                     last_y,
                     bit_depth,
                 };
-                let predicted = splot_recon::math::clip1_predicted_samples(
-                    splot_recon::ext_warp_predict_unit(&view, &params, i4, j4, false)?,
-                    i64::from(bit_depth.max_sample()),
-                );
-                let packed = pack_samples(&predicted)?;
+                let predicted = ext_warp_predict_unit(&view, &params, i4, j4, false)?;
+                let packed =
+                    clip_and_pack_warp_samples(&predicted, i64::from(bit_depth.max_sample()))?;
                 let rect = PlaneRect::new(write_x, write_y, 4, 4)?;
                 sink.write_rect(plane, rect, &packed, 4)?;
             }
@@ -868,20 +879,13 @@ fn predict_warp_plane<T: ReconSample>(
                 last_y: ref_height as i64 - 1,
                 bit_depth,
             };
-            let predicted = splot_recon::math::clip1_predicted_samples(
-                warp_predict_block(&view, &params, false)?,
-                i64::from(bit_depth.max_sample()),
-            );
+            let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+            warp_predict_block_into(&view, &params, false, &mut predicted)?;
             let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
             let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
-            let mut packed: Vec<T> = Vec::with_capacity(write_w.saturating_mul(write_h));
-            for row in 0..write_h {
-                for col in 0..write_w {
-                    packed.push(T::try_from_u16(predicted[row * WARPED_BLOCK_SIZE + col])?);
-                }
-            }
+            let packed = clip_and_pack_warp_samples(&predicted, i64::from(bit_depth.max_sample()))?;
             let rect = PlaneRect::new(write_x, write_y, write_w, write_h)?;
-            sink.write_rect(plane, rect, &packed, write_w)?;
+            sink.write_rect(plane, rect, &packed, WARPED_BLOCK_SIZE)?;
         }
     }
     Ok(())
@@ -1273,7 +1277,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     last_y,
                     bit_depth,
                 };
-                let predicted = splot_recon::ext_warp_predict_unit(&view, &params, i4, j4, true)?;
+                let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
                 write_compound_section(&mut samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
             }
         }
@@ -1292,7 +1296,8 @@ fn compound_ref_intermediate<T: ReconSample>(
                     last_y: ref_height as i64 - 1,
                     bit_depth,
                 };
-                let predicted = splot_recon::warp_predict_block(&view, &params, true)?;
+                let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
+                warp_predict_block_into(&view, &params, true, &mut predicted)?;
                 let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
                 let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
                 write_compound_section(
