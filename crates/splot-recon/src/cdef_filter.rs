@@ -267,17 +267,18 @@ pub struct CdefBlockFilter {
 /// guard of [`cdef_filter_sample`] statically true. Bit-exact with calling
 /// [`cdef_filter_sample`] per sample on all-available taps.
 ///
-/// Filtered samples are written to `out[i * w + j]` for `i in 0..h`,
-/// `j in 0..w`; `w` and `h` are clamped to 8. Every tap index provably stays
-/// inside the scratch: the center index is at least `2 * CDEF_PADDED_SIDE + 2`
-/// and the largest tap displacement is `2 * CDEF_PADDED_SIDE + 2` in either
+/// Filtered samples are written in native `u16` storage to `out[i * w + j]`
+/// for `i in 0..h`, `j in 0..w`; `w` and `h` are clamped to 8. Every tap index
+/// provably stays inside the scratch: the center index is at least
+/// `2 * CDEF_PADDED_SIDE + 2` and the largest tap displacement is
+/// `2 * CDEF_PADDED_SIDE + 2` in either
 /// direction.
 pub fn cdef_filter_block_interior(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
     h: usize,
     filter: &CdefBlockFilter,
-    out: &mut [i32; 64],
+    out: &mut [u16; 64],
 ) {
     let w = w.min(8);
     let h = h.min(8);
@@ -329,7 +330,7 @@ pub fn cdef_filter_block_interior(
                 }
             }
             let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
-            out[i * w + j] = rounded.clamp(min, max);
+            out[i * w + j] = rounded.clamp(min, max) as u16;
         }
     }
 }
@@ -527,12 +528,12 @@ mod tests {
                             coeff_shift,
                         };
                         for (w, h) in [(8usize, 8usize), (4, 4), (5, 3)] {
-                            let mut out = [0i32; 64];
+                            let mut out = [0u16; 64];
                             cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
                             for i in 0..h {
                                 for j in 0..w {
                                     assert_eq!(
-                                        out[i * w + j],
+                                        i32::from(out[i * w + j]),
                                         per_sample_reference(&pad, i, j, &filter),
                                         "shift={coeff_shift} dir={dir} pri={pri} sec={sec} \
                                          damping={damping_base} w={w} h={h} i={i} j={j}"
