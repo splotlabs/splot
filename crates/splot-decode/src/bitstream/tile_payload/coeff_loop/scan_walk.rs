@@ -50,16 +50,6 @@ impl CoeffScanEntry {
     pub(crate) const fn col(self) -> usize {
         self.col
     }
-
-    #[cfg(test)]
-    pub(crate) const fn for_test(scan_index: usize, pos: usize, row: usize, col: usize) -> Self {
-        Self {
-            scan_index,
-            pos,
-            row,
-            col,
-        }
-    }
 }
 
 #[derive(Debug)]

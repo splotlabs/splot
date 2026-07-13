@@ -20,8 +20,8 @@ fn symbol_decoder(payload: &[u8]) -> SymbolDecoder<'_> {
 
 fn walk() -> NonZeroCoeffScanWalk<'static> {
     NonZeroCoeffScanWalk::from_entries_for_test(vec![
-        CoeffScanEntry::for_test(1, 1, 0, 1),
-        CoeffScanEntry::for_test(0, 0, 0, 0),
+        CoeffScanEntry::new(1, 1, 0, 1),
+        CoeffScanEntry::new(0, 0, 0, 0),
     ])
 }
 
@@ -134,8 +134,8 @@ fn coefficient_quant_pass_reads_quant_and_writes_signed_quant() {
 #[test]
 fn coefficient_quant_pass_derives_low_frequency_max_levels() {
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![
-        CoeffScanEntry::for_test(1, 1, 0, 1),
-        CoeffScanEntry::for_test(0, 15, 3, 3),
+        CoeffScanEntry::new(1, 1, 0, 1),
+        CoeffScanEntry::new(0, 15, 3, 3),
     ]);
     let levels = [7, 5];
     let signs = signs_for(&walk, &levels, &[false, false]);
@@ -169,7 +169,7 @@ fn coefficient_quant_pass_derives_low_frequency_max_levels() {
 
 #[test]
 fn coefficient_quant_pass_derives_hidden_final_max_level() {
-    let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let entry = CoeffScanEntry::new(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
     let levels = [3];
     let signs = signs_for(&walk, &levels, &[false]);
@@ -211,7 +211,7 @@ fn coefficient_quant_pass_derives_hidden_final_max_level() {
 
 #[test]
 fn coefficient_quant_pass_applies_hidden_parity_consistently() {
-    let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let entry = CoeffScanEntry::new(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
     let levels = [2];
     let signs = signs_for(&walk, &levels, &[false]);
@@ -246,7 +246,7 @@ fn coefficient_quant_pass_applies_hidden_parity_consistently() {
 
 #[test]
 fn coefficient_quant_pass_applies_tcq_consistently() {
-    let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let entry = CoeffScanEntry::new(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
     let levels = [1];
     let signs = signs_for(&walk, &levels, &[false]);
@@ -277,7 +277,7 @@ fn coefficient_quant_pass_applies_tcq_consistently() {
 
 #[test]
 fn coefficient_quant_pass_allows_hidden_dc_without_parity_sign_when_sum_abs1_zero() {
-    let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let entry = CoeffScanEntry::new(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
     let levels = [0];
     let signs = vec![CoeffSignRead::for_test(

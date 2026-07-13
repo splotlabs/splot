@@ -389,8 +389,8 @@ fn encode_coeff_symbol(
 
 #[test]
 fn coefficient_base_symbols_roundtrip_through_symbol_encoder() {
-    let entry0 = CoeffScanEntry::for_test(1, 8, 1, 0);
-    let entry1 = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let entry0 = CoeffScanEntry::new(1, 8, 1, 0);
+    let entry1 = CoeffScanEntry::new(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry0, entry1]);
     let base_range = br_range();
     let inputs = vec![
@@ -440,7 +440,7 @@ fn coefficient_base_symbols_roundtrip_through_symbol_encoder() {
 
 #[test]
 fn coefficient_base_eob_only_roundtrips_through_symbol_encoder() {
-    let entry = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let entry = CoeffScanEntry::new(0, 0, 0, 0);
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entry]);
     let inputs = vec![CoeffBaseSymbolReadInput {
         entry,

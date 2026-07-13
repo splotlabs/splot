@@ -468,10 +468,10 @@ fn coeff_scan_walk_returns_reverse_scan_entries_without_mutation() {
 
     let walk = walk_nonzero_coeff_scan(&start, &[0, 8, 1, 9]).unwrap();
     let expected = [
-        CoeffScanEntry::for_test(3, 9, 1, 1),
-        CoeffScanEntry::for_test(2, 1, 0, 1),
-        CoeffScanEntry::for_test(1, 8, 1, 0),
-        CoeffScanEntry::for_test(0, 0, 0, 0),
+        CoeffScanEntry::new(3, 9, 1, 1),
+        CoeffScanEntry::new(2, 1, 0, 1),
+        CoeffScanEntry::new(1, 8, 1, 0),
+        CoeffScanEntry::new(0, 0, 0, 0),
     ];
 
     assert!(walk.entries().eq(expected));
@@ -545,8 +545,8 @@ fn coeff_fsc_scan_walk_returns_forward_segment_without_mutation() {
     assert_eq!(
         entries,
         [
-            CoeffScanEntry::for_test(2, 1, 0, 1),
-            CoeffScanEntry::for_test(3, 9, 1, 1),
+            CoeffScanEntry::new(2, 1, 0, 1),
+            CoeffScanEntry::new(3, 9, 1, 1),
         ]
         .as_slice()
     );

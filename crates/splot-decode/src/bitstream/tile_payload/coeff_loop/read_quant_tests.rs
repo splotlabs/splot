@@ -263,7 +263,7 @@ fn read_quant_rejects_oversized_golomb_remainder_width() {
 
 #[test]
 fn read_quant_finite_q_roundtrips_through_symbol_encoder() {
-    let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
+    let entry = CoeffScanEntry::new(3, 9, 1, 1);
     let (m, k, c_max) = (4u32, 5u32, 6u32);
     let (q, coeff_rem) = (2u32, 10u32);
     let length = m;
@@ -299,7 +299,7 @@ fn read_quant_finite_q_roundtrips_through_symbol_encoder() {
 
 #[test]
 fn read_quant_golomb_extension_roundtrips_through_symbol_encoder() {
-    let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
+    let entry = CoeffScanEntry::new(3, 9, 1, 1);
     let (m, k, c_max) = (1u32, 2u32, 5u32);
     let (golomb_prefix, coeff_rem) = (1u32, 5u32);
     let q = c_max;
@@ -336,7 +336,7 @@ fn read_quant_golomb_extension_roundtrips_through_symbol_encoder() {
 
 #[test]
 fn read_quant_finite_q_roundtrips_across_parameter_grid() {
-    let entry = CoeffScanEntry::for_test(3, 9, 1, 1);
+    let entry = CoeffScanEntry::new(3, 9, 1, 1);
     let (m, k, c_max) = (4u32, 5u32, 6u32);
     let level = 4u32;
     let mut cases = 0u32;
@@ -384,8 +384,8 @@ fn read_quant_finite_q_roundtrips_across_parameter_grid() {
 #[allow(clippy::many_single_char_names)]
 #[test]
 fn read_quant_multi_coeff_roundtrips_with_state_carry() {
-    let a = CoeffScanEntry::for_test(1, 8, 1, 0);
-    let b = CoeffScanEntry::for_test(0, 0, 0, 0);
+    let a = CoeffScanEntry::new(1, 8, 1, 0);
+    let b = CoeffScanEntry::new(0, 0, 0, 0);
     let (m, c_max) = (4u32, 6u32);
     let (q, coeff_rem) = (1u32, 3u32);
     let length = m;

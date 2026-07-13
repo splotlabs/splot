@@ -42,6 +42,16 @@ pub(crate) struct CoeffBaseSymbolRead {
 }
 
 impl CoeffBaseSymbolRead {
+    #[cfg(test)]
+    pub(crate) const fn for_test(entry: CoeffScanEntry, level: u32) -> Self {
+        Self {
+            entry,
+            base_symbol: 0,
+            base_range_symbol: None,
+            level,
+        }
+    }
+
     #[must_use]
     pub(crate) const fn entry(self) -> CoeffScanEntry {
         self.entry
