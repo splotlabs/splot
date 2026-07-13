@@ -453,6 +453,34 @@ pub fn subpel_predict_block<T: ReconSample>(
     })
 }
 
+/// Writes one AV2 § 7.13.3.18 single-reference prediction into caller-owned
+/// contiguous `u16` storage after the final § 4.8 `Clip1`.
+///
+/// The function writes the first `params.w * params.h` samples and leaves any
+/// trailing storage unchanged.
+///
+/// # Errors
+///
+/// Returns the same errors as [`subpel_predict_block`] and
+/// [`ReconError::BufferLengthMismatch`] when `output` is too short.
+pub fn subpel_predict_block_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> Result<()> {
+    let intermediate_height = validate_subpel_params(params)?;
+    let max_sample = i64::from(params.bit_depth.max_sample());
+    subpel_predict_block_internal_into_validated(
+        reference,
+        params,
+        INTER_ROUND1_NON_COMPOUND,
+        intermediate_height,
+        output,
+        params.w,
+        |pred| clip3(0, max_sample, i64::from(pred)) as u16,
+    )
+}
+
 /// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for one
 /// reference list of a compound inter block and returns the row-major `w * h`
 /// intermediate `Preds[refList]` values after `Round2(s, InterRound1)` but

@@ -235,38 +235,49 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
             prediction_rect.luma_y += region_y;
             prediction_rect.luma_w = round_up(region_w)?;
             prediction_rect.luma_h = round_up(region_h)?;
-            let pred0 = initial_luma_prediction(
-                sink,
-                block.reference0,
-                prediction_rect,
-                base_mvs[0],
-                InterpolationFilter::Bilinear,
-                candidates.map(|mvs| (mvs[0], region_w, region_h)),
-                offset,
-            )?;
-            let pred1 = initial_luma_prediction(
-                sink,
-                block.reference1,
-                prediction_rect,
-                base_mvs[1],
-                InterpolationFilter::Bilinear,
-                candidates.map(|mvs| (mvs[1], region_w, region_h)),
-                offset,
-            )?;
-            if block.optflow_sad_threshold.is_some_and(|threshold| {
-                normalized_sad(&pred0, &pred1, sink.info().bit_depth()) < threshold
-            }) {
-                return Ok(refinemv);
-            }
-            let deltas = derive_optflow_mv_deltas(
-                &pred0,
-                &pred1,
+            let deltas = super::with_initial_luma_predictions(
                 prediction_rect.luma_w,
                 prediction_rect.luma_h,
-                unit_size,
-                sink.info().bit_depth(),
-                distances,
+                |pred0, pred1| {
+                    initial_luma_prediction(
+                        sink,
+                        block.reference0,
+                        prediction_rect,
+                        base_mvs[0],
+                        InterpolationFilter::Bilinear,
+                        candidates.map(|mvs| (mvs[0], region_w, region_h)),
+                        offset,
+                        pred0,
+                    )?;
+                    initial_luma_prediction(
+                        sink,
+                        block.reference1,
+                        prediction_rect,
+                        base_mvs[1],
+                        InterpolationFilter::Bilinear,
+                        candidates.map(|mvs| (mvs[1], region_w, region_h)),
+                        offset,
+                        pred1,
+                    )?;
+                    if block.optflow_sad_threshold.is_some_and(|threshold| {
+                        normalized_sad(pred0, pred1, sink.info().bit_depth()) < threshold
+                    }) {
+                        return Ok(None);
+                    }
+                    Ok(Some(derive_optflow_mv_deltas(
+                        pred0,
+                        pred1,
+                        prediction_rect.luma_w,
+                        prediction_rect.luma_h,
+                        unit_size,
+                        sink.info().bit_depth(),
+                        distances,
+                    )?))
+                },
             )?;
+            let Some(deltas) = deltas else {
+                return Ok(refinemv);
+            };
             let local_columns = prediction_rect.luma_w / unit_size;
             for (index, delta) in deltas.into_iter().enumerate() {
                 let local_row = index / local_columns;
@@ -330,6 +341,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample>(
     sink: &WorkspaceSink<'_, T>,
     reference: &DecodedFrame<T>,
@@ -338,7 +350,8 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     interp: InterpolationFilter,
     refinemv_area: Option<(Mv, usize, usize)>,
     offset: ByteOffset,
-) -> Result<Vec<u16>> {
+    output: &mut [u16],
+) -> Result<()> {
     let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, PlaneId::Y, offset)?;
     let scaling = derive_plane_scaling(
         rect.luma_x as i64,
@@ -365,7 +378,7 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
             ref_mi_rows,
         )
     });
-    subpel_predict_block(
+    subpel_predict_block_into(
         &view,
         &SubpelPredictParams {
             interp,
@@ -381,6 +394,7 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
             last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
             bit_depth: sink.info().bit_depth(),
         },
+        output,
     )
     .map_err(Into::into)
 }

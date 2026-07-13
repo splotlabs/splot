@@ -154,6 +154,7 @@ pub use subpel_mc::{
     blend_compound_average_equal, blend_compound_average_weighted,
     blend_compound_average_weighted_sample, subpel_predict_block,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
+    subpel_predict_block_into,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,

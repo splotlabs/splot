@@ -612,6 +612,8 @@ fn ten_bit_clip_uses_full_range() {
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
     let params = SubpelPredictParams {
         bit_depth: BitDepth::Ten,
+        start_x: (3 << SCALE_SUBPEL_BITS) + (8 << 6),
+        start_y: (3 << SCALE_SUBPEL_BITS) + (8 << 6),
         ..full_pel_params(
             InterpolationFilter::EightTap,
             4,
@@ -624,6 +626,39 @@ fn ten_bit_clip_uses_full_range() {
     };
     let out = subpel_predict_block(&view, &params).unwrap();
     assert!(out.iter().all(|&s| s == 1023), "10-bit clip: {out:?}");
+
+    let mut into = vec![u16::MAX; params.w * params.h + 2];
+    subpel_predict_block_into(&view, &params, &mut into).unwrap();
+    assert_eq!(&into[..params.w * params.h], out);
+    assert_eq!(&into[params.w * params.h..], &[u16::MAX; 2]);
+}
+
+#[test]
+fn single_prediction_into_rejects_short_output_without_writes() {
+    let ref_w = 8usize;
+    let ref_h = 8usize;
+    let samples = build_ref(vec![80u16; ref_w * ref_h], ref_w, ref_h);
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = full_pel_params(
+        InterpolationFilter::EightTap,
+        4,
+        4,
+        2,
+        2,
+        ref_w as i64,
+        ref_h as i64,
+    );
+    let sentinel = u16::MAX;
+    let mut output = vec![sentinel; params.w * params.h - 1];
+
+    assert_eq!(
+        subpel_predict_block_into(&view, &params, &mut output),
+        Err(ReconError::BufferLengthMismatch {
+            expected: params.w * params.h,
+            actual: params.w * params.h - 1,
+        })
+    );
+    assert!(output.iter().all(|&sample| sample == sentinel));
 }
 
 #[test]
