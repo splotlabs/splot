@@ -22,8 +22,6 @@ const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
 const GDF_TEST_STRIPE_SIZE: usize = 64;
 const GDF_DIRECTIONS: usize = 4;
-const GDF_GRADIENT_CAPACITY: usize = (MI_SIZE + 2) * (MI_SIZE + 2);
-const GDF_CLASS_CAPACITY: usize = (MI_SIZE / 2) * (MI_SIZE / 2);
 const GDF_COORDS: [(isize, isize); 18] = [
     (6, 0),
     (5, 0),
@@ -253,6 +251,15 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 source_bounds(core, &band_block, disable_loopfilters_across_tiles, offset)?;
             let source =
                 GdfSource::materialize(curr_luma, cdef_luma, &bounds, &band_block, offset)?;
+            let band_origin = source.relative_position(segment_x, y).ok_or_else(|| {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+                )
+            })?;
+            let grad_cols = segment_width + 2;
+            let grad = band_gradients(&source, band_origin, height + 2, grad_cols);
+            let classes = band_classes(&grad, grad_cols, &band_block);
             let segment_end = segment_x.checked_add(segment_width).ok_or_else(|| {
                 gdf_filter_error(
                     offset,
@@ -284,6 +291,8 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     compute_block(
                         &source,
                         &base_luma,
+                        &classes,
+                        segment_width >> 1,
                         GdfBlock {
                             x,
                             width,
@@ -450,6 +459,8 @@ struct GdfBlock {
 fn compute_block<T: ReconSample>(
     source: &GdfSource<T>,
     base_luma: &[u16],
+    classes: &[GdfClass],
+    class_cols: usize,
     block: GdfBlock,
     offset: ByteOffset,
 ) -> Result<[T; MI_SIZE * MI_SIZE]> {
@@ -459,16 +470,52 @@ fn compute_block<T: ReconSample>(
             "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
         )
     })?;
-    debug_assert!(source_origin.0 >= GDF_READ_RADIUS && source_origin.1 >= GDF_READ_RADIUS);
-    let grad = gradients(source, &block, source_origin);
-    let classes = classes(&grad, &block);
+    if source_origin.0 < GDF_READ_RADIUS || source_origin.1 < GDF_READ_RADIUS {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+        ));
+    }
+    let stride = source.stride;
+    let tap_offsets = gdf_tap_offsets(stride, offset)?;
+    let last_col = source_origin
+        .0
+        .checked_add(block.width)
+        .and_then(|value| value.checked_add(GDF_READ_RADIUS - 1))
+        .ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+    let window_end = source_origin
+        .1
+        .checked_add(block.height)
+        .and_then(|value| value.checked_add(GDF_READ_RADIUS - 1))
+        .and_then(|last_row| last_row.checked_mul(stride))
+        .and_then(|prefix| prefix.checked_add(last_col))
+        .and_then(|last_index| last_index.checked_add(1))
+        .ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+    if last_col >= stride || window_end > source.samples.len() {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+        ));
+    }
+    let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
     for row in 0..block.height {
         for col in 0..block.width {
-            let class = &classes[(row >> 1) * (block.width >> 1) + (col >> 1)];
+            let class = &classes[(row >> 1) * class_cols + class_col_base + (col >> 1)];
             let sample = gdf_sample(
                 base_luma,
                 source,
+                &tap_offsets,
                 &block,
                 row,
                 col,
@@ -893,14 +940,14 @@ impl<T: ReconSample> GdfSource<T> {
     }
 }
 
-fn gradients<T: ReconSample>(
+fn band_gradients<T: ReconSample>(
     source: &GdfSource<T>,
-    block: &GdfBlock,
     source_origin: (usize, usize),
-) -> [[u16; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS] {
-    let rows = block.height + 2;
-    let cols = block.width + 2;
-    let mut grad = [[0_u16; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS];
+    rows: usize,
+    cols: usize,
+) -> Vec<u16> {
+    let plane = rows * cols;
+    let mut grad = vec![0_u16; GDF_DIRECTIONS * plane];
     for i in 0..rows {
         for j in 0..cols {
             let sample_col = source_origin.0 - 1 + j;
@@ -918,7 +965,8 @@ fn gradients<T: ReconSample>(
                     sample_col.wrapping_add_signed(delta_x),
                     sample_row.wrapping_add_signed(delta_y),
                 );
-                grad[direction][i * cols + j] = (center * 2 - before - after).unsigned_abs() as u16;
+                grad[direction * plane + i * cols + j] =
+                    (center * 2 - before - after).unsigned_abs() as u16;
             }
         }
     }
@@ -931,12 +979,10 @@ struct GdfClass {
     strength_contribution: [i32; 3],
 }
 
-fn classes(
-    grad: &[[u16; GDF_GRADIENT_CAPACITY]; GDF_DIRECTIONS],
-    block: &GdfBlock,
-) -> [GdfClass; GDF_CLASS_CAPACITY] {
+fn band_classes(grad: &[u16], grad_cols: usize, block: &GdfBlock) -> Vec<GdfClass> {
     let class_cols = block.width >> 1;
     let class_rows = block.height >> 1;
+    let plane = (block.height + 2) * grad_cols;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let strength_shift = if block.bit_depth == BitDepth::Eight {
@@ -944,13 +990,13 @@ fn classes(
     } else {
         4
     };
-    let mut classes = [GdfClass::default(); GDF_CLASS_CAPACITY];
-    for i in (0..class_rows).rev() {
+    let mut classes = vec![GdfClass::default(); class_rows * class_cols];
+    for i in 0..class_rows {
         for j in 0..class_cols {
             let mut strengths = [0_u32; GDF_DIRECTIONS];
             for direction in 0..GDF_DIRECTIONS {
-                strengths[direction] =
-                    grad_sum(&grad[direction], block.width + 2, i * 2, j * 2, 4, 4);
+                let plane_slice = &grad[direction * plane..direction * plane + plane];
+                strengths[direction] = grad_sum(plane_slice, grad_cols, i * 2, j * 2, 4, 4);
             }
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
@@ -973,9 +1019,34 @@ fn classes(
     classes
 }
 
+fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COORDS.len()]> {
+    let stride = isize::try_from(stride).map_err(|_| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
+        )
+    })?;
+    let mut offsets = [0_usize; GDF_COORDS.len()];
+    for (slot, &(dy, dx)) in offsets.iter_mut().zip(GDF_COORDS.iter()) {
+        *slot = dy
+            .checked_mul(stride)
+            .and_then(|row| row.checked_add(dx))
+            .and_then(|index| usize::try_from(index).ok())
+            .ok_or_else(|| {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
+                )
+            })?;
+    }
+    Ok(offsets)
+}
+
+#[allow(clippy::too_many_arguments)]
 fn gdf_sample<T: ReconSample>(
     base_luma: &[u16],
     source: &GdfSource<T>,
+    tap_offsets: &[usize; GDF_COORDS.len()],
     block: &GdfBlock,
     row: usize,
     col: usize,
@@ -983,22 +1054,18 @@ fn gdf_sample<T: ReconSample>(
     class: &GdfClass,
 ) -> u16 {
     let (source_col, source_row) = source_position;
-    let sample2 = source.get_at(source_col, source_row);
+    let samples = source.samples.as_slice();
+    let base = source_row * source.stride + source_col;
+    let sample2 = i32::from(samples[base].to_u16());
     let cls = usize::from(class.index);
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let mut gdf_idx = class.strength_contribution;
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
-    for (k, &(dy, dx)) in GDF_COORDS.iter().enumerate() {
+    for (k, &tap) in tap_offsets.iter().enumerate() {
         let alpha = alpha_table[k][cls];
-        let sample3 = source.get_at(
-            source_col.wrapping_add_signed(-dx),
-            source_row.wrapping_add_signed(-dy),
-        );
-        let sample4 = source.get_at(
-            source_col.wrapping_add_signed(dx),
-            source_row.wrapping_add_signed(dy),
-        );
+        let sample3 = i32::from(samples[base - tap].to_u16());
+        let sample4 = i32::from(samples[base + tap].to_u16());
         let above = ((sample3 - sample2) << shift).clamp(-alpha, alpha);
         let below = ((sample4 - sample2) << shift).clamp(-alpha, alpha);
         let comb = (above + below).clamp(-512, 511);
@@ -1122,9 +1189,9 @@ fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::D
 mod tests {
     use super::{
         GDF_READ_RADIUS, GdfBlock, GdfBlockGrid, GdfReferenceContext, GdfSource,
-        RESTRICTED_ORDER_HINT, compute_block, copy_base_block, gdf_inter_ref_dst_idx,
-        gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_row_for_tile_end, grad_sum, gradients,
-        preserve_lossless_luma_samples, tile_axis_bounds,
+        RESTRICTED_ORDER_HINT, band_classes, band_gradients, compute_block, copy_base_block,
+        gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_row_for_tile_end,
+        grad_sum, preserve_lossless_luma_samples, tile_axis_bounds,
     };
     use crate::filters::deblock::DeblockBlock;
     use crate::filters::lossless::LosslessBlockGrid;
@@ -1405,14 +1472,24 @@ mod tests {
         let Some(origin) = source.relative_position(block.x, block.y) else {
             return;
         };
-        let grad = gradients(&source, &block, origin);
-        assert!(grad.iter().flatten().all(|&value| value <= 2046));
+        let grad_cols = block.width + 2;
+        let plane = (block.height + 2) * grad_cols;
+        let grad = band_gradients(&source, origin, block.height + 2, grad_cols);
+        assert!(grad.iter().all(|&value| value <= 2046));
         assert!(
-            grad.iter()
-                .all(|direction| grad_sum(direction, block.width + 2, 0, 0, 4, 4) <= 32_736)
+            grad.chunks_exact(plane)
+                .all(|direction| grad_sum(direction, grad_cols, 0, 0, 4, 4) <= 32_736)
         );
 
-        let filtered = compute_block::<u16>(&source, &curr, block, ByteOffset::new(0));
+        let classes = band_classes(&grad, grad_cols, &block);
+        let filtered = compute_block::<u16>(
+            &source,
+            &curr,
+            &classes,
+            block.width >> 1,
+            block,
+            ByteOffset::new(0),
+        );
         assert!(filtered.is_ok());
         assert!(filtered.is_ok_and(|samples| samples.into_iter().all(|sample| sample <= 1023)));
     }
