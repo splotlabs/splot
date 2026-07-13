@@ -10,7 +10,9 @@ use super::super::cdf::{
     EobPtSize, FrameCdfSubset, TileCdfArray, TileCdfError, TileCdfSelector, TileCdfSubset,
 };
 use super::super::coeff_state::{TileCoeffContextState, TileCoeffStateError};
-use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::{
+    NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput, read_nonzero_fsc_coeff_block_start,
+};
 use super::scan_walk::{CoeffScanEntry, walk_fsc_coeff_scan, walk_nonzero_coeff_scan};
 use super::test_support::seeded_luma_context_state;
 use super::*;
@@ -363,18 +365,15 @@ fn coeff_block_eob_branch_nonzero_reads_derived_eob_without_state_mutation() {
 }
 
 #[test]
-fn coeff_block_eob_branch_invalid_nonzero_geometry_preserves_symbol_state() {
-    let frame = FrameCdfSubset::from_defaults();
-    let mut tile = frame.tile_copy();
-    let tile_before = tile.clone();
-    let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-
-    let err = read_nonzero_coeff_block_start(
-        &mut tile,
-        &mut symbols,
-        NonZeroCoeffBlockStartInput {
+fn coeff_block_eob_branches_invalid_geometry_preserve_symbol_state() {
+    for use_fsc in [false, true] {
+        let frame = FrameCdfSubset::from_defaults();
+        let mut tile = frame.tile_copy();
+        let tile_before = tile.clone();
+        let mut symbols = symbol_decoder(&[0x00, 0x80], CdfUpdateMode::Enabled);
+        let consumed_before = symbols.consumed_bits();
+        let symbol_count_before = symbols.symbol_count();
+        let input = NonZeroCoeffBlockStartInput {
             block: AllZeroCoeffBlockInput {
                 plane: 0,
                 x4: 0,
@@ -389,20 +388,26 @@ fn coeff_block_eob_branch_invalid_nonzero_geometry_preserves_symbol_state() {
                 tx_height_log2: 3,
                 coeff_cdf_q_ctx: 0,
             },
-        },
-    )
-    .unwrap_err();
+        };
 
-    assert!(matches!(
-        err,
-        CoeffLoopContextError::State(TileCoeffStateError::InvalidAdjustedTransformExtent {
-            axis: "width",
-            value: 0
-        })
-    ));
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
+        let err = if use_fsc {
+            read_nonzero_fsc_coeff_block_start(&mut tile, &mut symbols, input)
+        } else {
+            read_nonzero_coeff_block_start(&mut tile, &mut symbols, input)
+        }
+        .unwrap_err();
+
+        assert!(matches!(
+            err,
+            CoeffLoopContextError::State(TileCoeffStateError::InvalidAdjustedTransformExtent {
+                axis: "width",
+                value: 0
+            })
+        ));
+        assert_eq!(tile, tile_before);
+        assert_eq!(symbols.consumed_bits(), consumed_before);
+        assert_eq!(symbols.symbol_count(), symbol_count_before);
+    }
 }
 
 #[test]

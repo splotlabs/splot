@@ -156,6 +156,7 @@ pub(crate) fn apply_nonzero_coeff_fsc_level_pass(
 ) -> Result<NonZeroCoeffFscLevelPass, CoeffFscLevelPassError> {
     let (eob_read, mut block) = start.into_parts();
     preflight_pass(eob_read, &block, &walk, config)?;
+    block.ensure_quant_sign()?;
 
     let entries = walk.entries();
     let mut derived_inputs = Vec::new();

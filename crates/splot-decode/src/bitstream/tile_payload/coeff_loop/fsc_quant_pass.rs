@@ -12,7 +12,9 @@ use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
     TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
 };
-use super::branch::{NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput};
+use super::branch::{
+    NonZeroCoeffBlockStart, NonZeroCoeffBlockStartInput, read_nonzero_fsc_coeff_block_start,
+};
 use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, CoeffFscLevelPassError, CoeffFscLevelRead, NonZeroCoeffFscLevelPass,
     apply_nonzero_coeff_fsc_level_pass,
@@ -38,7 +40,6 @@ use super::{
     AllZeroCoeffBlockInput, CoeffBranchInput, CoeffLoopContextError,
     CoeffTxSizeTables as CoeffFscBranchTxSizeTables, DEFAULT_TX_SIZE_TABLES,
     NonZeroCoeffEobContextInput, NonZeroCoeffEobSymbolRead, commit_nonzero_coeff_context,
-    read_nonzero_coeff_block_start,
 };
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
@@ -241,7 +242,7 @@ pub(crate) fn apply_coeff_fsc_branch(
         });
     }
 
-    let start = read_nonzero_coeff_block_start(cdfs, symbols, input.start)?;
+    let start = read_nonzero_fsc_coeff_block_start(cdfs, symbols, input.start)?;
     let walk = walk_fsc_coeff_scan(&start, input.seg_eob, input.scan)?;
     let level_pass =
         apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, start, walk, input.level_config)?;

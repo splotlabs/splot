@@ -44,6 +44,7 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
     assert_eq!(state.width(), 4);
     assert_eq!(state.height(), 3);
     assert_eq!(state.level(), &[0; 12]);
+    assert!(state.quant_sign.is_empty());
     assert_eq!(state.quant_sign(), &[0; 12]);
     assert_eq!(state.quant(), &[0; 12]);
 
@@ -51,12 +52,22 @@ fn transform_block_state_is_zero_initialized_and_row_major() {
     state.set_quant_sign(2, 1, -1).unwrap();
     state.set_quant(9, -12).unwrap();
 
+    assert!(!state.quant_sign.is_empty());
     assert_eq!(state.level_at(2, 1).unwrap(), 7);
     assert_eq!(state.quant_sign_at(2, 1).unwrap(), -1);
     assert_eq!(state.quant_at(9).unwrap(), -12);
     assert_eq!(state.level()[9], 7);
     assert_eq!(state.quant_sign()[9], -1);
     assert_eq!(state.quant()[9], -12);
+}
+
+#[test]
+fn transform_block_fsc_state_allocates_zeroed_quant_sign() {
+    let mut state = TransformCoeffBlockState::new(4, 3).unwrap();
+    state.ensure_quant_sign().unwrap();
+
+    assert_eq!(state.quant_sign, [0; 12]);
+    assert_eq!(state.quant_sign(), &[0; 12]);
 }
 
 #[test]
@@ -76,7 +87,7 @@ fn transform_block_state_rejects_invalid_extents_and_coordinates() {
         }
     ));
 
-    let state = TransformCoeffBlockState::new(4, 4).unwrap();
+    let mut state = TransformCoeffBlockState::new(4, 4).unwrap();
     assert!(matches!(
         state.level_at(4, 0).unwrap_err(),
         TileCoeffStateError::TransformCoordinateOutOfBounds {
@@ -90,6 +101,16 @@ fn transform_block_state_rejects_invalid_extents_and_coordinates() {
         state.quant_at(16).unwrap_err(),
         TileCoeffStateError::QuantPositionOutOfBounds { pos: 16, len: 16 }
     ));
+    assert!(matches!(
+        state.set_quant_sign(4, 0, 1).unwrap_err(),
+        TileCoeffStateError::TransformCoordinateOutOfBounds {
+            row: 4,
+            col: 0,
+            height: 4,
+            width: 4
+        }
+    ));
+    assert!(state.quant_sign.is_empty());
 }
 
 #[test]
