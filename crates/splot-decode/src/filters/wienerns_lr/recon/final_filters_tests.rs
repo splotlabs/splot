@@ -291,3 +291,94 @@ fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
     with_wiener_ns_luma_scratch::<u16, _>(MAX_RETAINED_WIENER_NS_LUMA_SAMPLES, |_| ());
     WIENER_NS_LUMA_SCRATCH.with(|slot| assert!(slot.take().is_some()));
 }
+
+#[test]
+fn lr_source_window_reuses_storage_after_an_error() {
+    let bounds = LoopRestorationSourceBounds {
+        luma_start_x: 0,
+        luma_end_x: 7,
+        luma_start_y: 0,
+        luma_end_y: 7,
+        luma_stripe_start_y: 0,
+        luma_stripe_end_y: 7,
+        subsampling_x: 0,
+        subsampling_y: 0,
+    };
+    let curr = vec![0; 64];
+    let cdef: Vec<u16> = (0..64).map(|sample| sample as u16).collect();
+    let mut storage = Vec::new();
+
+    let window = LrSourceWindow::<u16>::materialize(
+        &mut storage,
+        PlaneId::Y,
+        &curr,
+        &cdef,
+        8,
+        8,
+        &bounds,
+        2,
+        2,
+        4,
+        4,
+        1,
+    )
+    .unwrap();
+    assert_eq!(window.get_abs(2, 2), 18);
+    let allocation = window.samples.as_ptr();
+
+    assert!(
+        LrSourceWindow::<u16>::materialize(
+            &mut storage,
+            PlaneId::Y,
+            &curr,
+            &cdef[..8],
+            8,
+            8,
+            &bounds,
+            2,
+            2,
+            2,
+            2,
+            1,
+        )
+        .is_err()
+    );
+    let window = LrSourceWindow::<u16>::materialize(
+        &mut storage,
+        PlaneId::Y,
+        &curr,
+        &cdef,
+        8,
+        8,
+        &bounds,
+        2,
+        2,
+        2,
+        2,
+        1,
+    )
+    .unwrap();
+    assert_eq!(window.samples.as_ptr(), allocation);
+    assert_eq!(window.get_abs(3, 3), 27);
+}
+
+#[test]
+fn lr_source_scratch_does_not_retain_oversized_buffers() {
+    LR_SOURCE_SCRATCH.with(|slot| slot.set(None));
+    with_lr_source_scratch::<u16, _>(|scratch| {
+        scratch
+            .primary
+            .try_reserve_exact(MAX_RETAINED_LR_SCRATCH_ELEMENTS + 1)
+            .unwrap();
+    });
+    LR_SOURCE_SCRATCH.with(|slot| assert!(slot.take().is_none()));
+
+    let allocation = with_lr_source_scratch::<u16, _>(|scratch| {
+        scratch.primary.try_reserve_exact(16).unwrap();
+        scratch.primary.as_ptr()
+    });
+    with_lr_source_scratch::<u16, _>(|scratch| {
+        assert_eq!(scratch.primary.as_ptr(), allocation);
+    });
+    LR_SOURCE_SCRATCH.with(|slot| slot.set(None));
+}

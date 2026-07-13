@@ -33,6 +33,8 @@ thread_local! {
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
     static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
+    static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
@@ -48,6 +50,43 @@ fn with_wiener_ns_luma_scratch<T: ReconSample, R>(
             .unwrap_or_default();
         let result = f(&mut scratch);
         if sample_count <= MAX_RETAINED_WIENER_NS_LUMA_SAMPLES {
+            slot.set(Some(scratch));
+        }
+        result
+    })
+}
+
+const MAX_RETAINED_LR_SCRATCH_ELEMENTS: usize = 64 * 1024;
+
+#[derive(Default)]
+struct LrSourceScratch<T> {
+    primary: Vec<T>,
+    secondary: Vec<T>,
+    cell_subclasses: Vec<usize>,
+    subclasses: Vec<usize>,
+}
+
+impl<T> LrSourceScratch<T> {
+    fn is_bounded(&self) -> bool {
+        [
+            self.primary.capacity(),
+            self.secondary.capacity(),
+            self.cell_subclasses.capacity(),
+            self.subclasses.capacity(),
+        ]
+        .into_iter()
+        .all(|capacity| capacity <= MAX_RETAINED_LR_SCRATCH_ELEMENTS)
+    }
+}
+
+fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch<T>) -> R) -> R {
+    LR_SOURCE_SCRATCH.with(|slot| {
+        let mut scratch = slot
+            .take()
+            .and_then(|scratch| scratch.downcast::<LrSourceScratch<T>>().ok())
+            .unwrap_or_default();
+        let result = f(&mut scratch);
+        if scratch.is_bounded() {
             slot.set(Some(scratch));
         }
         result
@@ -220,16 +259,17 @@ fn clipped_lr_source_block(
     Ok(clipped)
 }
 
-struct LrSourceWindow<T> {
-    samples: Vec<T>,
+struct LrSourceWindow<'a, T> {
+    samples: &'a [T],
     stride: usize,
     origin_x: isize,
     origin_y: isize,
 }
 
-impl<T: ReconSample> LrSourceWindow<T> {
+impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
     #[allow(clippy::too_many_arguments)]
     fn materialize(
+        samples: &'a mut Vec<T>,
         plane: PlaneId,
         curr_plane: &[u16],
         cdef_plane: &[u16],
@@ -248,8 +288,14 @@ impl<T: ReconSample> LrSourceWindow<T> {
         let rows = height
             .checked_add(radius.checked_mul(2).ok_or(OVERFLOW_WINDOW)?)
             .ok_or(OVERFLOW_WINDOW)?;
+        let sample_count = stride.checked_mul(rows).ok_or(OVERFLOW_WINDOW)?;
         let radius = isize::try_from(radius).map_err(|_| OVERFLOW_WINDOW)?;
-        let mut samples = Vec::with_capacity(stride.checked_mul(rows).ok_or(OVERFLOW_WINDOW)?);
+        samples.clear();
+        samples
+            .try_reserve_exact(sample_count)
+            .map_err(|_| ReconError::ArithmeticOverflow {
+                context: "LR source window allocation",
+            })?;
         for row_index in 0..rows {
             let y = block_y
                 .checked_sub(radius)
@@ -583,53 +629,64 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "PC-Wiener block y")
             .map_err(|_| luma_lr_filter_error(offset))?;
-        let window = LrSourceWindow::<T>::materialize(
-            PlaneId::Y,
-            curr_luma,
-            cdef_luma,
-            self.luma_width,
-            self.luma_height,
-            &bounds,
-            block_x,
-            block_y,
-            block.width,
-            block.height,
-            PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        let subclasses = self.luma_lr_subclasses(
-            offset,
-            &block,
-            &window,
-            qindex,
-            PC_WIENER_FULL_CLASSES,
-            filter_set_index,
-            sample_count,
-        )?;
-        let mut output = vec![T::default(); sample_count];
-        let params = PcWienerFilter {
-            width: block.width,
-            height: block.height,
-            output_stride: block.width,
-            bit_depth: self.bit_depth,
-            filter_set_index,
-            subclasses: &subclasses,
-        };
-        let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        let (padded, padded_stride) = window
-            .tail_from(
-                block_x.saturating_sub(tap_radius),
-                block_y.saturating_sub(tap_radius),
+        with_lr_source_scratch(|scratch| {
+            let LrSourceScratch {
+                primary,
+                cell_subclasses,
+                subclasses,
+                ..
+            } = scratch;
+            let window = LrSourceWindow::<T>::materialize(
+                primary,
+                PlaneId::Y,
+                curr_luma,
+                cdef_luma,
+                self.luma_width,
+                self.luma_height,
+                &bounds,
+                block_x,
+                block_y,
+                block.width,
+                block.height,
+                PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
             )
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let padded_source =
-            PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
-                .map_err(|_| luma_lr_filter_error(offset))?;
-        pc_wiener_filter_block_padded(&mut output, &params, &padded_source)
             .map_err(|_| luma_lr_filter_error(offset))?;
-        self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
-        Ok((block, output))
+            let subclass_map = self.luma_lr_subclasses(
+                offset,
+                &block,
+                &window,
+                qindex,
+                PC_WIENER_FULL_CLASSES,
+                filter_set_index,
+                sample_count,
+                cell_subclasses,
+                subclasses,
+            )?;
+            let mut output = vec![T::default(); sample_count];
+            let params = PcWienerFilter {
+                width: block.width,
+                height: block.height,
+                output_stride: block.width,
+                bit_depth: self.bit_depth,
+                filter_set_index,
+                subclasses: subclass_map,
+            };
+            let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
+                .map_err(|_| luma_lr_filter_error(offset))?;
+            let (padded, padded_stride) = window
+                .tail_from(
+                    block_x.saturating_sub(tap_radius),
+                    block_y.saturating_sub(tap_radius),
+                )
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let padded_source =
+                PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
+                    .map_err(|_| luma_lr_filter_error(offset))?;
+            pc_wiener_filter_block_padded(&mut output, &params, &padded_source)
+                .map_err(|_| luma_lr_filter_error(offset))?;
+            self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
+            Ok((block, output))
+        })
     }
 
     fn publish_lr_outputs(
@@ -824,41 +881,45 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| luma_lr_filter_error(offset))?;
-        let chroma_window = LrSourceWindow::<T>::materialize(
-            plane_id,
-            curr_chroma,
-            cdef_chroma,
-            plane_width,
-            plane_height,
-            &chroma_bounds,
-            block_x,
-            block_y,
-            block.width,
-            block.height,
-            WIENER_NS_CHROMA_TAP_RADIUS,
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        let luma_window = LrSourceWindow::<T>::materialize(
-            PlaneId::Y,
-            curr_luma,
-            cdef_luma,
-            self.luma_width,
-            self.luma_height,
-            &luma_bounds,
-            block_x.saturating_mul(2),
-            block_y.saturating_mul(2),
-            block.width.saturating_mul(2),
-            block.height.saturating_mul(2),
-            WIENER_NS_CHROMA_TAP_RADIUS * 2,
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        wiener_ns_filter_chroma_block(
-            &mut output,
-            &params,
-            |x, y| chroma_window.get_abs(x, y),
-            |x, y| luma_window.get_abs(x, y),
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
+        with_lr_source_scratch(|scratch| {
+            let chroma_window = LrSourceWindow::<T>::materialize(
+                &mut scratch.primary,
+                plane_id,
+                curr_chroma,
+                cdef_chroma,
+                plane_width,
+                plane_height,
+                &chroma_bounds,
+                block_x,
+                block_y,
+                block.width,
+                block.height,
+                WIENER_NS_CHROMA_TAP_RADIUS,
+            )
+            .map_err(|_| luma_lr_filter_error(offset))?;
+            let luma_window = LrSourceWindow::<T>::materialize(
+                &mut scratch.secondary,
+                PlaneId::Y,
+                curr_luma,
+                cdef_luma,
+                self.luma_width,
+                self.luma_height,
+                &luma_bounds,
+                block_x.saturating_mul(2),
+                block_y.saturating_mul(2),
+                block.width.saturating_mul(2),
+                block.height.saturating_mul(2),
+                WIENER_NS_CHROMA_TAP_RADIUS * 2,
+            )
+            .map_err(|_| luma_lr_filter_error(offset))?;
+            wiener_ns_filter_chroma_block(
+                &mut output,
+                &params,
+                |x, y| chroma_window.get_abs(x, y),
+                |x, y| luma_window.get_abs(x, y),
+            )
+            .map_err(|_| luma_lr_filter_error(offset))
+        })?;
         self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, &mut output, offset)?;
         Ok((block, output))
     }
@@ -892,57 +953,74 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
             .map_err(|_| luma_lr_filter_error(offset))?;
-        let window = LrSourceWindow::<T>::materialize(
-            PlaneId::Y,
-            curr_luma,
-            cdef_luma,
-            self.luma_width,
-            self.luma_height,
-            &bounds,
-            block_x,
-            block_y,
-            block.width,
-            block.height,
-            WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
-        )
-        .map_err(|_| luma_lr_filter_error(offset))?;
-        let subclasses = if num_classes > 1 {
-            Some(self.luma_lr_subclasses(
-                offset,
-                &block,
-                &window,
-                qindex,
-                num_classes,
-                filter_set_index,
-                sample_count,
-            )?)
-        } else {
-            None
-        };
-        let mut output = vec![T::default(); sample_count];
-        let params = WienerNsLumaFilter {
-            width: block.width,
-            height: block.height,
-            output_stride: block.width,
-            bit_depth: self.bit_depth,
-            coeffs_by_class: coeffs,
-            subclasses: subclasses.as_deref(),
-        };
-        let tap_radius =
-            isize::try_from(WIENER_NS_LUMA_TAP_RADIUS).map_err(|_| luma_lr_filter_error(offset))?;
-        let (padded, padded_stride) = window
-            .tail_from(
-                block_x.saturating_sub(tap_radius),
-                block_y.saturating_sub(tap_radius),
+        let mut output = with_lr_source_scratch(|scratch| -> Result<Vec<T>> {
+            let LrSourceScratch {
+                primary,
+                cell_subclasses,
+                subclasses,
+                ..
+            } = scratch;
+            let window = LrSourceWindow::<T>::materialize(
+                primary,
+                PlaneId::Y,
+                curr_luma,
+                cdef_luma,
+                self.luma_width,
+                self.luma_height,
+                &bounds,
+                block_x,
+                block_y,
+                block.width,
+                block.height,
+                WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
             )
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        let padded_source =
-            WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+            let subclass_map = if num_classes > 1 {
+                Some(self.luma_lr_subclasses(
+                    offset,
+                    &block,
+                    &window,
+                    qindex,
+                    num_classes,
+                    filter_set_index,
+                    sample_count,
+                    cell_subclasses,
+                    subclasses,
+                )?)
+            } else {
+                None
+            };
+            let mut output = vec![T::default(); sample_count];
+            let params = WienerNsLumaFilter {
+                width: block.width,
+                height: block.height,
+                output_stride: block.width,
+                bit_depth: self.bit_depth,
+                coeffs_by_class: coeffs,
+                subclasses: subclass_map,
+            };
+            let tap_radius = isize::try_from(WIENER_NS_LUMA_TAP_RADIUS)
                 .map_err(|_| luma_lr_filter_error(offset))?;
-        with_wiener_ns_luma_scratch(sample_count, |scratch| {
-            wiener_ns_filter_luma_block_padded_into(&mut output, &params, &padded_source, scratch)
-        })
-        .map_err(|_| luma_lr_filter_error(offset))?;
+            let (padded, padded_stride) = window
+                .tail_from(
+                    block_x.saturating_sub(tap_radius),
+                    block_y.saturating_sub(tap_radius),
+                )
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let padded_source =
+                WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
+                    .map_err(|_| luma_lr_filter_error(offset))?;
+            with_wiener_ns_luma_scratch(sample_count, |scratch| {
+                wiener_ns_filter_luma_block_padded_into(
+                    &mut output,
+                    &params,
+                    &padded_source,
+                    scratch,
+                )
+            })
+            .map_err(|_| luma_lr_filter_error(offset))?;
+            Ok(output)
+        })?;
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
         Ok((block, output))
     }
@@ -1015,16 +1093,20 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn luma_lr_subclasses(
+    fn luma_lr_subclasses<'a>(
         &self,
         offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
-        window: &LrSourceWindow<T>,
+        window: &LrSourceWindow<'_, T>,
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
         sample_count: usize,
-    ) -> Result<Vec<usize>> {
+        cell_subclasses: &mut Vec<usize>,
+        subclasses: &'a mut Vec<usize>,
+    ) -> Result<&'a [usize]> {
+        cell_subclasses.clear();
+        subclasses.clear();
         if sample_count
             != block
                 .width
@@ -1042,7 +1124,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|_| luma_lr_filter_error(offset))?;
         let tile_end_y = mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
             .map_err(|_| luma_lr_filter_error(offset))?;
-        let mut cell_subclasses = vec![0; cell_cols * cell_rows];
+        let cell_count = cell_cols
+            .checked_mul(cell_rows)
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        cell_subclasses
+            .try_reserve_exact(cell_count)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        cell_subclasses.resize(cell_count, 0);
+        subclasses
+            .try_reserve_exact(sample_count)
+            .map_err(|_| luma_lr_filter_error(offset))?;
         let mut group_start = 0;
         while group_start < cell_cols {
             let class_x = block
@@ -1079,7 +1170,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             };
             let group_cols = group_end - group_start;
             let padded_source = PcWienerClassifyPaddedSource::new(
-                &window.samples,
+                window.samples,
                 window.stride,
                 window.origin_x,
                 window.origin_y,
@@ -1118,7 +1209,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             group_start = group_end;
         }
 
-        let mut subclasses = Vec::with_capacity(sample_count);
         for row in 0..block.height {
             let cell_row = row / MI_SIZE;
             for cell_col in 0..cell_cols {
