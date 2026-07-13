@@ -51,20 +51,19 @@ pub(crate) enum CoeffLevelStateWriteError {
 
 pub(crate) fn apply_nonzero_coeff_base_levels(
     start: NonZeroCoeffBlockStart,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     reads: &[CoeffBaseSymbolRead],
 ) -> Result<NonZeroCoeffLevelState, CoeffLevelStateWriteError> {
     let (eob_read, mut block) = start.into_parts();
-    let entries = walk.entries();
-    if reads.len() != entries.len() {
+    if reads.len() != walk.len() {
         return Err(CoeffLevelStateWriteError::ReadCountMismatch {
             reads: reads.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
 
-    preflight_level_writes(&block, entries, reads)?;
-    for (entry, read) in entries.iter().copied().zip(reads.iter().copied()) {
+    preflight_level_writes(&block, walk, reads)?;
+    for (entry, read) in walk.entries().zip(reads.iter().copied()) {
         block.set_level(entry.row(), entry.col(), read.level())?;
     }
 
@@ -73,15 +72,10 @@ pub(crate) fn apply_nonzero_coeff_base_levels(
 
 fn preflight_level_writes(
     block: &TransformCoeffBlockState,
-    entries: &[CoeffScanEntry],
+    walk: &NonZeroCoeffScanWalk<'_>,
     reads: &[CoeffBaseSymbolRead],
 ) -> Result<(), CoeffLevelStateWriteError> {
-    for (index, (entry, read)) in entries
-        .iter()
-        .copied()
-        .zip(reads.iter().copied())
-        .enumerate()
-    {
+    for (index, (entry, read)) in walk.entries().zip(reads.iter().copied()).enumerate() {
         let actual = read.entry();
         if actual != entry {
             return Err(CoeffLevelStateWriteError::ScanEntryMismatch {

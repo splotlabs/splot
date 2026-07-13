@@ -98,7 +98,6 @@ impl CoeffBaseFirstPassSummary {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
     eob_read: NonZeroCoeffEobSymbolRead,
-    walk: NonZeroCoeffScanWalk,
     first_pass: CoeffBaseFirstPassSummary,
     block: TransformCoeffBlockState,
 }
@@ -107,11 +106,6 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     #[must_use]
     pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
         self.eob_read
-    }
-
-    #[must_use]
-    pub(crate) const fn walk(&self) -> &NonZeroCoeffScanWalk {
-        &self.walk
     }
 
     #[must_use]
@@ -125,10 +119,8 @@ impl NonZeroCoeffBaseDerivedLevelPass {
     }
 
     #[must_use]
-    pub(crate) const fn walk_and_block_mut(
-        &mut self,
-    ) -> (&NonZeroCoeffScanWalk, &mut TransformCoeffBlockState) {
-        (&self.walk, &mut self.block)
+    pub(crate) const fn block_mut(&mut self) -> &mut TransformCoeffBlockState {
+        &mut self.block
     }
 
     #[must_use]
@@ -169,14 +161,14 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     start: NonZeroCoeffBlockStart,
-    walk: NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<NonZeroCoeffBaseDerivedLevelPass, CoeffBaseDerivedLevelPassError> {
     let (eob_read, mut block) = start.into_parts();
-    preflight_pass(eob_read, &block, &walk, config)?;
+    preflight_pass(eob_read, &block, walk, config)?;
 
     let mut first_pass = CoeffBaseFirstPassSummary::default();
-    for (index, entry) in walk.entries().iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let input = derive_base_symbol_input(index, entry, &block, first_pass, config);
         let read = read_coeff_base_symbol(cdfs, symbols, input)?;
         first_pass.update_after_level(entry, read.level(), config)?;
@@ -185,7 +177,6 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
 
     Ok(NonZeroCoeffBaseDerivedLevelPass {
         eob_read,
-        walk,
         first_pass,
         block,
     })
@@ -194,7 +185,7 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
 fn preflight_pass(
     eob_read: NonZeroCoeffEobSymbolRead,
     block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> Result<(), CoeffBaseDerivedLevelPassError> {
     if config.parity_hiding && config.use_tcq {
@@ -216,11 +207,10 @@ fn preflight_pass(
     }
 
     let eob = eob_read.eob().eob();
-    let entries = walk.entries();
-    if eob != entries.len() {
+    if eob != walk.len() {
         return Err(CoeffBaseDerivedLevelPassError::ScanEntryCountMismatch {
             eob,
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
     Ok(())

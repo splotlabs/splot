@@ -78,10 +78,8 @@ fn br_selector() -> CoeffCdfSelector {
     }
 }
 
-fn inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffBaseSymbolReadInput> {
+fn inputs_for(walk: &NonZeroCoeffScanWalk<'_>) -> Vec<CoeffBaseSymbolReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .enumerate()
         .map(|(index, entry)| CoeffBaseSymbolReadInput {
             entry,
@@ -102,14 +100,14 @@ fn inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffBaseSymbolReadInput> {
         .collect()
 }
 
-fn setup_reads(
+fn setup_reads<'scan>(
     payload: &[u8],
-    scan: &[u16],
+    scan: &'scan [u16],
     w4: usize,
     h4: usize,
 ) -> Option<(
     NonZeroCoeffBlockStart,
-    NonZeroCoeffScanWalk,
+    NonZeroCoeffScanWalk<'scan>,
     Vec<CoeffBaseSymbolRead>,
 )> {
     let (mut tile, mut symbols, start) = setup_start(payload, w4, h4)?;

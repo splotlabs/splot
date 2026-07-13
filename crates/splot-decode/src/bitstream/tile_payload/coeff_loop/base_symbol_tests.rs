@@ -45,7 +45,11 @@ fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
 fn setup_walk(
     payload: &[u8],
     mode: CdfUpdateMode,
-) -> Option<(TileCdfSubset, SymbolDecoder<'_>, NonZeroCoeffScanWalk)> {
+) -> Option<(
+    TileCdfSubset,
+    SymbolDecoder<'_>,
+    NonZeroCoeffScanWalk<'static>,
+)> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload, mode);
@@ -138,13 +142,11 @@ fn assert_read_state(tile: &TileCdfSubset, symbols: &SymbolDecoder<'_>, before: 
 }
 
 fn inputs_for(
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     base_levels: u32,
     base_range: CoeffBaseRangeRead,
 ) -> Vec<CoeffBaseSymbolReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .enumerate()
         .map(|(index, entry)| CoeffBaseSymbolReadInput {
             entry,
@@ -262,7 +264,7 @@ fn coefficient_base_symbol_read_matches_direct_sequence() {
     )
     .unwrap();
 
-    assert_eq!(helper_walk.entries(), direct_walk.entries());
+    assert!(helper_walk.entries().eq(direct_walk.entries()));
     assert_eq!(as_tuples(&actual), expected);
     assert!(actual.iter().any(|read| read.base_range_symbol().is_some()));
     assert_eq!(
@@ -279,7 +281,7 @@ fn coefficient_base_symbol_read_rejects_mismatched_scan_entries_before_read() {
     let (mut tile, mut symbols, walk) = setup_walk(&payload, CdfUpdateMode::Enabled).unwrap();
     let state_before = read_state(&tile, &symbols);
     let mut inputs = inputs_for(&walk, BASE_LEVELS, br_range());
-    inputs[0].entry = walk.entries()[1];
+    inputs[0].entry = walk.entries().nth(1).unwrap();
 
     let err = read_nonzero_coeff_base_symbols(&mut tile, &mut symbols, &walk, &inputs).unwrap_err();
 

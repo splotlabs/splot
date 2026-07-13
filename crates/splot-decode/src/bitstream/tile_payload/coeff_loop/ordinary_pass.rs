@@ -181,7 +181,6 @@ pub(crate) type CoeffOrdinaryContextCommitConfig = AllZeroCoeffBlockInput;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffOrdinaryPass {
     eob_read: NonZeroCoeffEobSymbolRead,
-    walk: NonZeroCoeffScanWalk,
     quant_state: NonZeroCoeffQuantState,
     block: TransformCoeffBlockState,
 }
@@ -190,11 +189,6 @@ impl NonZeroCoeffOrdinaryPass {
     #[must_use]
     pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
         self.eob_read
-    }
-
-    #[must_use]
-    pub(crate) const fn walk(&self) -> &NonZeroCoeffScanWalk {
-        &self.walk
     }
 
     #[must_use]
@@ -228,11 +222,6 @@ impl NonZeroCoeffOrdinaryDerivedBasePass {
     #[must_use]
     pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
         self.base_level_pass.eob_read()
-    }
-
-    #[must_use]
-    pub(crate) const fn walk(&self) -> &NonZeroCoeffScanWalk {
-        self.base_level_pass.walk()
     }
 
     #[must_use]
@@ -410,7 +399,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass(
 
     Ok(NonZeroCoeffOrdinaryPass {
         eob_read,
-        walk,
         quant_state,
         block,
     })
@@ -425,8 +413,13 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
     let sign_config = input.sign_config;
     let lossless = input.lossless;
     let walk = walk_nonzero_coeff_scan(&input.start, input.scan)?;
-    let mut base_level_pass =
-        apply_nonzero_coeff_base_derived_level_pass(cdfs, symbols, input.start, walk, base_config)?;
+    let mut base_level_pass = apply_nonzero_coeff_base_derived_level_pass(
+        cdfs,
+        symbols,
+        input.start,
+        &walk,
+        base_config,
+    )?;
     let first_pass = base_level_pass.first_pass();
     let sign_derive_config = CoeffSignSourceDeriveConfig {
         coeff_cdf_q_ctx: sign_config.coeff_cdf_q_ctx,
@@ -442,7 +435,7 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         w4: sign_config.w4,
         h4: sign_config.h4,
     };
-    for entry in base_level_pass.walk().entries().iter().copied() {
+    for entry in walk.entries() {
         base_level_pass
             .block()
             .level_at(entry.row(), entry.col())
@@ -455,13 +448,12 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         lossless,
         hr_level_avg: 0,
     };
-    let (walk, block) = base_level_pass.walk_and_block_mut();
     let quant_state = apply_interleaved_sign_and_quant_pass(
         cdfs,
         symbols,
         InterleavedSignQuantPassInput {
-            block,
-            walk,
+            block: base_level_pass.block_mut(),
+            walk: &walk,
             sign_inputs: InterleavedSignInputs::Derived(sign_derive_config),
             max_level_config: CoeffQuantPassMaxLevelConfig {
                 plane: base_config.plane,
@@ -547,7 +539,7 @@ fn commit_coeff_context(
 
 struct InterleavedSignQuantPassInput<'a> {
     block: &'a mut TransformCoeffBlockState,
-    walk: &'a NonZeroCoeffScanWalk,
+    walk: &'a NonZeroCoeffScanWalk<'a>,
     sign_inputs: InterleavedSignInputs<'a>,
     max_level_config: CoeffQuantPassMaxLevelConfig,
     config: CoeffQuantPassConfig,
@@ -573,13 +565,12 @@ fn apply_interleaved_sign_and_quant_pass(
     } = input;
     validate_coeff_quant_pass_config(config)?;
 
-    let entries = walk.entries();
     let max_level_config = CoeffMaxLevelConfig {
         plane: max_level_config.plane,
         tx_class: max_level_config.tx_class,
         is_hidden: config.is_hidden,
     };
-    for (index, entry) in entries.iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let max_level = derive_coeff_max_level(entry, max_level_config);
         max_level
             .max_level
@@ -603,7 +594,7 @@ fn apply_interleaved_sign_and_quant_pass(
         lossless: config.lossless,
     });
 
-    for (index, entry) in entries.iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let level = block
             .level_at(entry.row(), entry.col())
             .map_err(CoeffSignReadError::from)?;
@@ -614,7 +605,7 @@ fn apply_interleaved_sign_and_quant_pass(
                     .copied()
                     .ok_or(CoeffSignReadError::InputCountMismatch {
                         inputs: inputs.len(),
-                        entries: entries.len(),
+                        entries: walk.len(),
                     })?
             }
             InterleavedSignInputs::Derived(config) => {

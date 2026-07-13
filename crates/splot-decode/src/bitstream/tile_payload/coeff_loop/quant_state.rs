@@ -202,32 +202,30 @@ pub(crate) enum CoeffQuantStateWriteError {
 
 pub(crate) fn apply_nonzero_coeff_quant_state(
     block: &mut TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     signs: &[CoeffSignRead],
     inputs: &[CoeffQuantReadInput],
     config: CoeffQuantStateConfig,
 ) -> Result<NonZeroCoeffQuantState, CoeffQuantStateWriteError> {
-    let entries = walk.entries();
-    if signs.len() != entries.len() {
+    if signs.len() != walk.len() {
         return Err(CoeffQuantStateWriteError::SignCountMismatch {
             signs: signs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
-    if inputs.len() != entries.len() {
+    if inputs.len() != walk.len() {
         return Err(CoeffQuantStateWriteError::InputCountMismatch {
             inputs: inputs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
-    let levels = preflight_quant_writes(block, entries, signs, inputs, config)?;
+    let levels = preflight_quant_writes(block, walk, signs, inputs, config)?;
     let mut state = CoeffQuantStateAccumulator::new(config);
     let mut writes = Vec::new();
-    writes.try_reserve(entries.len())?;
+    writes.try_reserve(walk.len())?;
 
-    for (index, ((entry, sign), input)) in entries
-        .iter()
-        .copied()
+    for (index, ((entry, sign), input)) in walk
+        .entries()
         .zip(signs.iter().copied())
         .zip(inputs.iter().copied())
         .enumerate()
@@ -247,16 +245,15 @@ pub(crate) fn apply_nonzero_coeff_quant_state(
 
 fn preflight_quant_writes(
     block: &TransformCoeffBlockState,
-    entries: &[CoeffScanEntry],
+    walk: &NonZeroCoeffScanWalk<'_>,
     signs: &[CoeffSignRead],
     inputs: &[CoeffQuantReadInput],
     config: CoeffQuantStateConfig,
 ) -> Result<Vec<u32>, CoeffQuantStateWriteError> {
     let mut levels = Vec::new();
-    levels.try_reserve(entries.len())?;
-    for (index, ((entry, sign), input)) in entries
-        .iter()
-        .copied()
+    levels.try_reserve(walk.len())?;
+    for (index, ((entry, sign), input)) in walk
+        .entries()
         .zip(signs.iter().copied())
         .zip(inputs.iter().copied())
         .enumerate()

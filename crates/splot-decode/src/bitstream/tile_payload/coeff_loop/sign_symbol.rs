@@ -184,13 +184,12 @@ pub(crate) enum CoeffSignSourceDeriveError {
 
 pub(crate) fn derive_nonzero_coeff_sign_inputs(
     block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     config: CoeffSignSourceDeriveConfig<'_>,
 ) -> Result<Vec<CoeffSignReadInput>, CoeffSignSourceDeriveError> {
-    let entries = walk.entries();
     let mut inputs = Vec::new();
-    inputs.try_reserve(entries.len())?;
-    for entry in entries.iter().copied() {
+    inputs.try_reserve(walk.len())?;
+    for entry in walk.entries() {
         let level = block.level_at(entry.row(), entry.col())?;
         inputs.push(derive_nonzero_coeff_sign_input(entry, level, config));
     }
@@ -252,14 +251,13 @@ pub(crate) fn read_nonzero_coeff_signs(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     inputs: &[CoeffSignReadInput],
 ) -> Result<Vec<CoeffSignRead>, CoeffSignReadError> {
-    let entries = walk.entries();
     preflight_nonzero_coeff_signs(block, walk, inputs)?;
     let mut reads = Vec::new();
-    reads.try_reserve(entries.len())?;
-    for (entry, input) in entries.iter().copied().zip(inputs.iter().copied()) {
+    reads.try_reserve(walk.len())?;
+    for (entry, input) in walk.entries().zip(inputs.iter().copied()) {
         let level = block.level_at(entry.row(), entry.col())?;
         reads.push(read_preflighted_nonzero_coeff_sign(
             cdfs, symbols, input, level,
@@ -270,23 +268,17 @@ pub(crate) fn read_nonzero_coeff_signs(
 
 pub(crate) fn preflight_nonzero_coeff_signs(
     block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     inputs: &[CoeffSignReadInput],
 ) -> Result<(), CoeffSignReadError> {
-    let entries = walk.entries();
-    if inputs.len() != entries.len() {
+    if inputs.len() != walk.len() {
         return Err(CoeffSignReadError::InputCountMismatch {
             inputs: inputs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
 
-    for (index, (entry, input)) in entries
-        .iter()
-        .copied()
-        .zip(inputs.iter().copied())
-        .enumerate()
-    {
+    for (index, (entry, input)) in walk.entries().zip(inputs.iter().copied()).enumerate() {
         if input.entry != entry {
             return Err(CoeffSignReadError::ScanEntryMismatch {
                 index,

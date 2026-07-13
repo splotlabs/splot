@@ -34,14 +34,12 @@ fn encode_extended(
     enc.write_literal(coeff_rem, length).unwrap();
 }
 
-fn walk() -> NonZeroCoeffScanWalk {
-    NonZeroCoeffScanWalk::from_entries_for_test(vec![
-        CoeffScanEntry::for_test(3, 9, 1, 1),
-        CoeffScanEntry::for_test(2, 1, 0, 1),
-        CoeffScanEntry::for_test(1, 8, 1, 0),
-        CoeffScanEntry::for_test(0, 0, 0, 0),
-    ])
-}
+const WALK_ENTRIES: [CoeffScanEntry; 4] = [
+    CoeffScanEntry::new(3, 9, 1, 1),
+    CoeffScanEntry::new(2, 1, 0, 1),
+    CoeffScanEntry::new(1, 8, 1, 0),
+    CoeffScanEntry::new(0, 0, 0, 0),
+];
 
 fn input(entry: CoeffScanEntry, level: u32, max_level: u32) -> CoeffReadQuantInput {
     CoeffReadQuantInput {
@@ -61,8 +59,7 @@ fn config(hr_level_avg: u32) -> CoeffReadQuantConfig {
 
 #[test]
 fn read_quant_below_threshold_consumes_no_bits() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut symbols = symbol_decoder(&[0x80]);
     let consumed_before = symbols.consumed_bits();
     let symbol_count_before = symbols.symbol_count();
@@ -81,8 +78,7 @@ fn read_quant_below_threshold_consumes_no_bits() {
 
 #[test]
 fn read_quant_finite_q_length_updates_quant_and_hr_average() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut symbols = symbol_decoder(&[0b0011_0100, 0x80]);
     let inputs = [input(entries[0], 3, 3)];
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entries[0]]);
@@ -109,8 +105,7 @@ fn read_quant_finite_q_length_updates_quant_and_hr_average() {
 
 #[test]
 fn read_quant_golomb_extension_path_reads_until_terminator() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut symbols = symbol_decoder(&[0x03, 0x40, 0x80]);
     let inputs = [input(entries[0], 2, 2)];
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entries[0]]);
@@ -137,8 +132,7 @@ fn read_quant_golomb_extension_path_reads_until_terminator() {
 
 #[test]
 fn read_quant_hidden_dc_and_tcq_adjust_predicted_extension() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let hidden_dc = entries[3];
     let mut symbols = symbol_decoder(&[0b1000_0100, 0x80]);
     let inputs = [input(hidden_dc, 2, 3)];
@@ -171,8 +165,7 @@ fn read_quant_hidden_dc_and_tcq_adjust_predicted_extension() {
 
 #[test]
 fn read_quant_rejects_input_mismatch_before_consumption() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut symbols = symbol_decoder(&[0xff, 0x80]);
     let consumed_before = symbols.consumed_bits();
     let symbol_count_before = symbols.symbol_count();
@@ -191,8 +184,7 @@ fn read_quant_rejects_input_mismatch_before_consumption() {
 
 #[test]
 fn read_quant_rejects_unterminated_golomb_prefix() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut symbols = symbol_decoder(&[]);
     let inputs = [input(entries[0], 3, 3)];
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entries[0]]);
@@ -210,8 +202,7 @@ fn read_quant_rejects_unterminated_golomb_prefix() {
 
 #[test]
 fn read_quant_rejects_pathological_max_level_and_overflow() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut invalid_symbols = symbol_decoder(&[0xff, 0x80]);
     let inputs = [input(entries[0], 0, 0)];
     let walk_one = NonZeroCoeffScanWalk::from_entries_for_test(vec![entries[0]]);
@@ -254,8 +245,7 @@ fn read_quant_rejects_pathological_max_level_and_overflow() {
 
 #[test]
 fn read_quant_rejects_oversized_golomb_remainder_width() {
-    let walk = walk();
-    let entries = walk.entries();
+    let entries = WALK_ENTRIES;
     let mut symbols = symbol_decoder(&[0x00, 0x00, 0x00, 0x00, 0x08, 0x80]);
     let inputs = [input(entries[0], 2, 2)];
     let walk = NonZeroCoeffScanWalk::from_entries_for_test(vec![entries[0]]);

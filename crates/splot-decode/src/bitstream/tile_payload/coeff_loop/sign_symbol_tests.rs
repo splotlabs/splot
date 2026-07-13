@@ -35,7 +35,7 @@ fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
     .unwrap()
 }
 
-fn setup_walk(payload: &[u8], scan: &[u16]) -> Option<NonZeroCoeffScanWalk> {
+fn setup_walk<'scan>(payload: &[u8], scan: &'scan [u16]) -> Option<NonZeroCoeffScanWalk<'scan>> {
     let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     let mut symbols = symbol_decoder(payload, CdfUpdateMode::Enabled);
@@ -80,9 +80,9 @@ fn find_eob_payload() -> [u8; 5] {
     panic!("no coefficient sign EOB payload found");
 }
 
-fn block_for(walk: &NonZeroCoeffScanWalk) -> TransformCoeffBlockState {
+fn block_for(walk: &NonZeroCoeffScanWalk<'_>) -> TransformCoeffBlockState {
     let mut block = TransformCoeffBlockState::new(8, 8).unwrap();
-    for (index, entry) in walk.entries().iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let level = match index {
             0 => 3,
             1 => 2,
@@ -143,10 +143,8 @@ fn source_config(
     }
 }
 
-fn inputs_for(walk: &NonZeroCoeffScanWalk) -> Vec<CoeffSignReadInput> {
+fn inputs_for(walk: &NonZeroCoeffScanWalk<'_>) -> Vec<CoeffSignReadInput> {
     walk.entries()
-        .iter()
-        .copied()
         .enumerate()
         .map(|(index, entry)| CoeffSignReadInput {
             entry,

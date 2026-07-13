@@ -84,25 +84,19 @@ pub(crate) enum CoeffBaseSymbolReadError {
 pub(crate) fn read_nonzero_coeff_base_symbols(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    walk: &NonZeroCoeffScanWalk,
+    walk: &NonZeroCoeffScanWalk<'_>,
     inputs: &[CoeffBaseSymbolReadInput],
 ) -> Result<Vec<CoeffBaseSymbolRead>, CoeffBaseSymbolReadError> {
-    let entries = walk.entries();
-    if inputs.len() != entries.len() {
+    if inputs.len() != walk.len() {
         return Err(CoeffBaseSymbolReadError::InputCountMismatch {
             inputs: inputs.len(),
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
 
     let mut reads = Vec::new();
-    reads.try_reserve(entries.len())?;
-    for (index, (entry, input)) in entries
-        .iter()
-        .copied()
-        .zip(inputs.iter().copied())
-        .enumerate()
-    {
+    reads.try_reserve(walk.len())?;
+    for (index, (entry, input)) in walk.entries().zip(inputs.iter().copied()).enumerate() {
         if input.entry != entry {
             return Err(CoeffBaseSymbolReadError::ScanEntryMismatch {
                 index,
