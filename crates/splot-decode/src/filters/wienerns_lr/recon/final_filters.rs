@@ -118,6 +118,28 @@ fn with_luma_lr_output_storage<T: ReconSample, R>(
     })
 }
 
+fn align_luma_lr_output_storage<T>(storage: &mut Vec<Vec<T>>, blocks: &[WienerNsLrSourceBlock]) {
+    if storage.len() < blocks.len() {
+        storage.resize_with(blocks.len(), Vec::new);
+    }
+    for (index, block) in blocks.iter().enumerate() {
+        let sample_count = block.width.saturating_mul(block.height);
+        let best = storage[index..]
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, output)| {
+                (
+                    output.capacity() < sample_count,
+                    output.capacity().abs_diff(sample_count),
+                )
+            })
+            .map(|(offset, _)| index + offset);
+        if let Some(best) = best {
+            storage.swap(index, best);
+        }
+    }
+}
+
 fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
     wienerns_lr_selectable_transform_record_error_reason(
         offset,
@@ -577,8 +599,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .and_then(|samples| samples.checked_mul(2))
             .unwrap_or_default();
         with_luma_lr_output_storage(max_retained_samples, |storage| {
-            storage.truncate(y_blocks.len());
-            storage.resize_with(y_blocks.len(), Vec::new);
+            let block_count = y_blocks.len();
+            align_luma_lr_output_storage(storage, y_blocks);
             let compute =
                 |block: &WienerNsLrSourceBlock, output: &mut Vec<T>| match block.restoration_type {
                     LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
@@ -615,7 +637,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let filtered: Vec<WienerNsLrSourceBlock> = if splot_parallel::on_worker_pool() {
                 let timer = crate::timing::start();
                 let tally = crate::timing::WorkerTally::new();
-                let outputs = storage
+                let outputs = storage[..block_count]
                     .par_iter_mut()
                     .zip(y_blocks.par_iter())
                     .map(|(output, block)| {
@@ -635,7 +657,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 );
                 outputs
             } else {
-                storage
+                storage[..block_count]
                     .iter_mut()
                     .zip(y_blocks)
                     .map(|(output, block)| compute(block, output))
@@ -643,10 +665,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             };
             let filtered = filtered
                 .into_iter()
-                .zip(storage.iter_mut())
+                .zip(storage[..block_count].iter_mut())
                 .map(|(block, output)| (block, core::mem::take(output)))
                 .collect();
-            self.publish_lr_outputs(PlaneId::Y, filtered, offset, Some(storage))
+            self.publish_lr_outputs(
+                PlaneId::Y,
+                filtered,
+                offset,
+                Some(&mut storage[..block_count]),
+            )
         })
     }
 

@@ -319,6 +319,24 @@ fn luma_lr_output_storage_drops_buffers_larger_than_the_frame() {
 }
 
 #[test]
+fn luma_lr_output_storage_matches_capacity_instead_of_position() {
+    let mut storage = vec![
+        Vec::<u8>::with_capacity(16),
+        Vec::with_capacity(64),
+        Vec::with_capacity(32),
+    ];
+    let mut wide = block(0, 0, 0);
+    wide.width = 8;
+    let ordinary = block(0, 0, 0);
+
+    align_luma_lr_output_storage(&mut storage, &[wide, ordinary]);
+
+    assert_eq!(storage[0].capacity(), 32);
+    assert_eq!(storage[1].capacity(), 16);
+    assert_eq!(storage[2].capacity(), 64);
+}
+
+#[test]
 fn lr_source_window_reuses_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
