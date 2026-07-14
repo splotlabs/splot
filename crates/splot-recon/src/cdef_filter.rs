@@ -257,6 +257,165 @@ pub struct CdefBlockFilter {
     pub coeff_shift: u32,
 }
 
+fn cdef_padded_row<const W: usize>(
+    pad: &[u16; CDEF_PADDED_AREA],
+    center_index: usize,
+    relative_offset: isize,
+) -> Option<&[u16; W]> {
+    let start = center_index.checked_add_signed(relative_offset)?;
+    let end = start.checked_add(W)?;
+    pad.get(start..end)?.try_into().ok()
+}
+
+fn cdef_output_row<const W: usize>(out: &mut [u16; 64], row: usize) -> Option<&mut [u16; W]> {
+    let start = row.checked_mul(W)?;
+    let end = start.checked_add(W)?;
+    out.get_mut(start..end)?.try_into().ok()
+}
+
+fn cdef_primary_rows<'a, const W: usize>(
+    pad: &'a [u16; CDEF_PADDED_AREA],
+    center_index: usize,
+    relative_offsets: &[[isize; 2]; 2],
+) -> Option<[[&'a [u16; W]; 2]; 2]> {
+    Some([
+        [
+            cdef_padded_row(pad, center_index, relative_offsets[0][0])?,
+            cdef_padded_row(pad, center_index, relative_offsets[0][1])?,
+        ],
+        [
+            cdef_padded_row(pad, center_index, relative_offsets[1][0])?,
+            cdef_padded_row(pad, center_index, relative_offsets[1][1])?,
+        ],
+    ])
+}
+
+fn cdef_secondary_rows<'a, const W: usize>(
+    pad: &'a [u16; CDEF_PADDED_AREA],
+    center_index: usize,
+    relative_offsets: &[[[isize; 2]; 2]; 2],
+) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
+    Some([
+        [
+            [
+                cdef_padded_row(pad, center_index, relative_offsets[0][0][0])?,
+                cdef_padded_row(pad, center_index, relative_offsets[0][0][1])?,
+            ],
+            [
+                cdef_padded_row(pad, center_index, relative_offsets[0][1][0])?,
+                cdef_padded_row(pad, center_index, relative_offsets[0][1][1])?,
+            ],
+        ],
+        [
+            [
+                cdef_padded_row(pad, center_index, relative_offsets[1][0][0])?,
+                cdef_padded_row(pad, center_index, relative_offsets[1][0][1])?,
+            ],
+            [
+                cdef_padded_row(pad, center_index, relative_offsets[1][1][0])?,
+                cdef_padded_row(pad, center_index, relative_offsets[1][1][1])?,
+            ],
+        ],
+    ])
+}
+
+fn cdef_filter_block_interior_rows<const W: usize>(
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    pri_rel: &[[isize; 2]; 2],
+    sec_rel: &[[[isize; 2]; 2]; 2],
+    out: &mut [u16; 64],
+) -> Option<()> {
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row];
+    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
+    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
+
+    if filter.pri_str != 0 && filter.sec_str != 0 {
+        for i in 0..h {
+            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
+            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
+            let pri_rows = cdef_primary_rows::<W>(pad, center_index, pri_rel)?;
+            let sec_rows = cdef_secondary_rows::<W>(pad, center_index, sec_rel)?;
+            let output_row = cdef_output_row::<W>(out, i)?;
+            for j in 0..W {
+                let center = i32::from(center_row[j]);
+                let mut sum = 0i32;
+                let mut max = center;
+                let mut min = center;
+                for (k, (pri_by_sign, sec_by_sign)) in pri_rows.iter().zip(&sec_rows).enumerate() {
+                    for (pri_row, sec_by_dir) in pri_by_sign.iter().zip(sec_by_sign) {
+                        let p = i32::from(pri_row[j]);
+                        sum +=
+                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                        max = max.max(p);
+                        min = min.min(p);
+                        for sec_row in sec_by_dir {
+                            let s = i32::from(sec_row[j]);
+                            sum += sec_taps[k]
+                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                            max = max.max(s);
+                            min = min.min(s);
+                        }
+                    }
+                }
+                let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
+                output_row[j] = rounded.clamp(min, max) as u16;
+            }
+        }
+    } else if filter.pri_str != 0 {
+        for i in 0..h {
+            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
+            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
+            let pri_rows = cdef_primary_rows::<W>(pad, center_index, pri_rel)?;
+            let output_row = cdef_output_row::<W>(out, i)?;
+            for j in 0..W {
+                let center = i32::from(center_row[j]);
+                let mut sum = 0i32;
+                for (k, pri_by_sign) in pri_rows.iter().enumerate() {
+                    for pri_row in pri_by_sign {
+                        let p = i32::from(pri_row[j]);
+                        sum +=
+                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                    }
+                }
+                output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+            }
+        }
+    } else if filter.sec_str != 0 {
+        for i in 0..h {
+            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
+            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
+            let sec_rows = cdef_secondary_rows::<W>(pad, center_index, sec_rel)?;
+            let output_row = cdef_output_row::<W>(out, i)?;
+            for j in 0..W {
+                let center = i32::from(center_row[j]);
+                let mut sum = 0i32;
+                for (k, sec_by_sign) in sec_rows.iter().enumerate() {
+                    for sec_by_dir in sec_by_sign {
+                        for sec_row in sec_by_dir {
+                            let s = i32::from(sec_row[j]);
+                            sum += sec_taps[k]
+                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                        }
+                    }
+                }
+                output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+            }
+        }
+    } else {
+        for i in 0..h {
+            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
+            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
+            let output_row = cdef_output_row::<W>(out, i)?;
+            *output_row = *center_row;
+        }
+    }
+    Some(())
+}
+
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
 ///
 /// `pad` holds the `CDEF_PADDED_SIDE x CDEF_PADDED_SIDE` row-major
@@ -282,11 +441,6 @@ pub fn cdef_filter_block_interior(
 ) {
     let w = w.min(8);
     let h = h.min(8);
-    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
-    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
-    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
 
     let rel = |dir: usize, k: usize, sign: i32| -> isize {
         (sign * CDEF_DIRECTIONS[dir & 7][k][0]) as isize * CDEF_PADDED_SIDE as isize
@@ -302,6 +456,21 @@ pub fn cdef_filter_block_interior(
             }
         }
     }
+
+    let row_result = match w {
+        8 => cdef_filter_block_interior_rows::<8>(pad, h, filter, &pri_rel, &sec_rel, out),
+        4 => cdef_filter_block_interior_rows::<4>(pad, h, filter, &pri_rel, &sec_rel, out),
+        _ => None,
+    };
+    if row_result.is_some() {
+        return;
+    }
+
+    let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
+    let pri_taps = CDEF_PRI_TAPS[tap_row];
+    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
+    let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
 
     if filter.pri_str != 0 && filter.sec_str != 0 {
         for i in 0..h {
@@ -578,7 +747,7 @@ mod tests {
                             dir,
                             coeff_shift,
                         };
-                        for (w, h) in [(8usize, 8usize), (4, 4), (5, 3)] {
+                        for (w, h) in [(8usize, 8usize), (4, 8), (4, 4), (5, 3)] {
                             let mut out = [0u16; 64];
                             cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
                             for i in 0..h {
