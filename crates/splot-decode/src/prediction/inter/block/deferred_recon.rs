@@ -110,6 +110,7 @@ struct PendingBlock<T: ReconSample> {
     tip_scratch: TipReconstructScratch<T>,
 }
 
+#[derive(Debug)]
 struct CompoundOutput {
     grid: Option<CompoundMotionGrid>,
     syntax: CompoundBlockSyntax,
@@ -118,9 +119,10 @@ struct CompoundOutput {
     mi_col: usize,
 }
 
+#[derive(Debug)]
 enum JobOutput {
     Single,
-    Compound(Box<CompoundOutput>),
+    Compound(CompoundOutput),
     Tip,
 }
 
@@ -131,6 +133,7 @@ type JobResult<T> = std::result::Result<(BlockReconWindow<T>, JobOutput), Vec<T>
 pub(super) struct DeferredInterRecon<T: DeferredReconSample> {
     pending: Vec<PendingBlock<T>>,
     storage: Vec<Vec<T>>,
+    results: Vec<JobResult<T>>,
     tip_scratch: Vec<TipReconstructScratch<T>>,
 }
 
@@ -139,6 +142,7 @@ impl<T: DeferredReconSample> DeferredInterRecon<T> {
         Self {
             pending: Vec::new(),
             storage: T::take_deferred_storage(),
+            results: Vec::new(),
             tip_scratch: Vec::new(),
         }
     }
@@ -252,13 +256,13 @@ fn execute<T: ReconSample>(
             block.tile_offset,
         )
         .map(|grid| {
-            JobOutput::Compound(Box::new(CompoundOutput {
+            JobOutput::Compound(CompoundOutput {
                 grid,
                 syntax,
                 warp_params,
                 mi_row,
                 mi_col,
-            }))
+            })
         }),
         PendingKind::Tip => {
             tip::reconstruct(
@@ -375,73 +379,29 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
     if deferred.pending.is_empty() {
         return Ok(());
     }
-    let mut pending = core::mem::take(&mut deferred.pending);
-    let snapshot = FrameQuantizerSnapshot::capture();
-    let shared = FlushShared {
-        reference,
-        ref_frame_idx,
-        temporal_context,
-        sequence,
-        core,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
-    };
-    if pending.len() == 1 {
-        let block = &mut pending[0];
-        let _scopes = snapshot.install(block.segment_id);
-        let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
-        let result = apply_output(
-            output,
-            block,
-            workspace,
-            motion_field,
-            &shared,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-        );
-        if matches!(block.kind, PendingKind::Tip) {
-            deferred.recycle_tip_scratch(core::mem::take(&mut block.tip_scratch));
-        }
-        return result;
-    }
-
-    let batch_size = splot_parallel::current_pool_width()
-        .min(pending.len())
-        .max(1);
-    if deferred.storage.len() < batch_size {
-        deferred.storage.resize_with(batch_size, Vec::new);
-    }
-    let mut results = Vec::with_capacity(batch_size);
-    for blocks in pending.chunks_mut(batch_size) {
-        let slots = &mut deferred.storage[..blocks.len()];
-        results.clear();
-        {
-            let frame: &CurrentFrameWorkspace<T> = workspace;
-            slots
-                .par_iter_mut()
-                .zip(blocks.par_iter_mut())
-                .map(|(samples, block)| {
-                    run_windowed(block, frame, &snapshot, &shared, core::mem::take(samples))
-                })
-                .collect_into_vec(&mut results);
-        }
-        for ((block, result), samples) in blocks.iter_mut().zip(results.drain(..)).zip(slots) {
-            let output = match result {
-                Ok((window, output)) => {
-                    let published = window.publish(workspace);
-                    *samples = window.into_samples();
-                    published?;
-                    output
-                }
-                Err(storage) => {
-                    *samples = storage;
-                    let _scopes = snapshot.install(block.segment_id);
-                    execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?
-                }
-            };
-            apply_output(
+    let DeferredInterRecon {
+        pending,
+        storage,
+        results,
+        tip_scratch,
+    } = deferred;
+    let result = (|| {
+        let snapshot = FrameQuantizerSnapshot::capture();
+        let shared = FlushShared {
+            reference,
+            ref_frame_idx,
+            temporal_context,
+            sequence,
+            core,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+        };
+        if pending.len() == 1 {
+            let block = &mut pending[0];
+            let _scopes = snapshot.install(block.segment_id);
+            let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
+            return apply_output(
                 output,
                 block,
                 workspace,
@@ -450,13 +410,63 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
                 mi_rows,
                 mi_cols,
                 current_order_hint,
-            )?;
-            if matches!(block.kind, PendingKind::Tip) {
-                deferred
-                    .tip_scratch
-                    .push(core::mem::take(&mut block.tip_scratch));
+            );
+        }
+
+        let batch_size = splot_parallel::current_pool_width()
+            .min(pending.len())
+            .max(1);
+        if storage.len() < batch_size {
+            storage.resize_with(batch_size, Vec::new);
+        }
+        results.reserve(batch_size);
+        for blocks in pending.chunks_mut(batch_size) {
+            let slots = &mut storage[..blocks.len()];
+            results.clear();
+            {
+                let frame: &CurrentFrameWorkspace<T> = workspace;
+                slots
+                    .par_iter_mut()
+                    .zip(blocks.par_iter_mut())
+                    .map(|(samples, block)| {
+                        run_windowed(block, frame, &snapshot, &shared, core::mem::take(samples))
+                    })
+                    .collect_into_vec(results);
+            }
+            for ((block, result), samples) in blocks.iter_mut().zip(results.drain(..)).zip(slots) {
+                let output = match result {
+                    Ok((window, output)) => {
+                        let published = window.publish(workspace);
+                        *samples = window.into_samples();
+                        published?;
+                        output
+                    }
+                    Err(storage) => {
+                        *samples = storage;
+                        let _scopes = snapshot.install(block.segment_id);
+                        execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?
+                    }
+                };
+                apply_output(
+                    output,
+                    block,
+                    workspace,
+                    motion_field,
+                    &shared,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
+                )?;
             }
         }
+        Ok(())
+    })();
+    for block in pending.iter_mut() {
+        if matches!(block.kind, PendingKind::Tip) {
+            tip_scratch.push(core::mem::take(&mut block.tip_scratch));
+        }
     }
-    Ok(())
+    pending.clear();
+    results.clear();
+    result
 }
