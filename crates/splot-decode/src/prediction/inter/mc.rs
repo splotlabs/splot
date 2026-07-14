@@ -442,18 +442,30 @@ impl CompoundBlockMetadata {
     }
 }
 
-pub(crate) struct CompoundBlockOutput<T> {
+pub(crate) struct CompoundBlockOutput<T: 'static> {
     metadata: CompoundBlockMetadata,
     samples: Vec<T>,
 }
 
+impl<T: 'static> Drop for CompoundBlockOutput<T> {
+    fn drop(&mut self) {
+        let samples = std::mem::take(&mut self.samples);
+        MC_SAMPLES_RECYCLER.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            if slot.is_none() {
+                *slot = Some(Box::new(samples));
+            }
+        });
+    }
+}
+
 impl<T: ReconSample> CompoundBlockOutput<T> {
     pub(crate) fn publish(
-        self,
+        mut self,
         sink: &mut WorkspaceSink<'_, T>,
     ) -> Result<Option<CompoundMotionGrid>> {
         self.metadata.publish(&self.samples, sink)?;
-        Ok(self.metadata.motion)
+        Ok(self.metadata.motion.take())
     }
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
@@ -600,7 +612,19 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
 ) -> Result<CompoundBlockOutput<T>> {
     let sample_count =
         compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
-    let mut samples = vec![T::default(); sample_count];
+    let mut samples: Vec<T> = MC_SAMPLES_RECYCLER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some(any) = slot.take() {
+            match any.downcast::<Vec<T>>() {
+                Ok(vec) => *vec,
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        }
+    });
+    samples.clear();
+    samples.resize(sample_count, T::default());
     let metadata =
         predict_compound_average_block_into(sink, block, optflow_unit_size, offset, &mut samples)?;
     Ok(CompoundBlockOutput { metadata, samples })
@@ -1065,6 +1089,8 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static SUBPEL_PREDICTION_BUFFER: std::cell::Cell<Option<Vec<u16>>> =
         const { std::cell::Cell::new(None) };
+    static MC_SAMPLES_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> =
+        std::cell::RefCell::new(None);
 }
 
 fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {

@@ -107,7 +107,7 @@ struct PendingBlock<T: ReconSample> {
     segment_id: usize,
     qindex: u32,
     tile_offset: ByteOffset,
-    tip_scratch: TipReconstructScratch<T>,
+    tip_scratch: Option<TipReconstructScratch<T>>,
 }
 
 #[derive(Debug)]
@@ -155,9 +155,9 @@ impl<T: DeferredReconSample> DeferredInterRecon<T> {
         tile_offset: ByteOffset,
     ) {
         let tip_scratch = if matches!(kind, PendingKind::Tip) {
-            self.take_tip_scratch()
+            Some(self.take_tip_scratch())
         } else {
-            TipReconstructScratch::default()
+            None
         };
         self.pending.push(PendingBlock {
             segment_id: current_frame_qm_segment_id(),
@@ -265,8 +265,16 @@ fn execute<T: ReconSample>(
             })
         }),
         PendingKind::Tip => {
+            let scratch = block.tip_scratch.as_mut().ok_or_else(|| {
+                super::super::unsupported_at(
+                    "inter_deferred_missing_tip_scratch",
+                    block.tile_offset,
+                    "missing tip scratch buffer",
+                    "7.10.6",
+                )
+            })?;
             tip::reconstruct(
-                &mut block.tip_scratch,
+                scratch,
                 sink,
                 &block.placed,
                 shared.temporal_context.ok_or_else(|| {
@@ -343,6 +351,14 @@ fn apply_output<T: ReconSample>(
         ),
         JobOutput::Tip => {
             let coded = workspace.info().coded_luma_size();
+            let scratch = block.tip_scratch.as_ref().ok_or_else(|| {
+                super::super::unsupported_at(
+                    "inter_deferred_missing_tip_scratch",
+                    block.tile_offset,
+                    "missing tip scratch buffer",
+                    "7.10.6",
+                )
+            })?;
             apply_tip_temporal_records(
                 motion_field,
                 shared.reference,
@@ -350,7 +366,7 @@ fn apply_output<T: ReconSample>(
                 coded.height().div_ceil(4),
                 coded.width().div_ceil(4),
                 shared.core.display_order_hint().unwrap_or(0),
-                block.tip_scratch.records(),
+                scratch.records(),
             );
             Ok(())
         }
@@ -484,8 +500,8 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
         Ok(())
     })();
     for block in pending.iter_mut() {
-        if matches!(block.kind, PendingKind::Tip) {
-            tip_scratch.push(core::mem::take(&mut block.tip_scratch));
+        if let Some(scratch) = block.tip_scratch.take() {
+            tip_scratch.push(scratch);
         }
     }
     pending.clear();
