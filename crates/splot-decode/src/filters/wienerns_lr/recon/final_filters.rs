@@ -577,23 +577,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .and_then(|samples| samples.checked_mul(2))
             .unwrap_or_default();
         with_luma_lr_output_storage(max_retained_samples, |storage| {
-            let mut slots = Vec::with_capacity(y_blocks.len());
-            for block in y_blocks {
-                let sample_count = block.width.saturating_mul(block.height);
-                let best = storage
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, output)| {
-                        (
-                            output.capacity() < sample_count,
-                            output.capacity().abs_diff(sample_count),
-                        )
-                    })
-                    .map(|(index, _)| index);
-                slots.push(best.map_or_else(Vec::new, |index| storage.swap_remove(index)));
-            }
+            storage.truncate(y_blocks.len());
+            storage.resize_with(y_blocks.len(), Vec::new);
             let compute =
-                |block: &WienerNsLrSourceBlock, output: Vec<T>| match block.restoration_type {
+                |block: &WienerNsLrSourceBlock, output: &mut Vec<T>| match block.restoration_type {
                     LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
                         offset,
                         block,
@@ -625,16 +612,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     }
                     LrUnitRestorationType::None => Err(luma_lr_filter_error(offset)),
                 };
-            let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> = if splot_parallel::on_worker_pool()
-            {
+            let filtered: Vec<WienerNsLrSourceBlock> = if splot_parallel::on_worker_pool() {
                 let timer = crate::timing::start();
                 let tally = crate::timing::WorkerTally::new();
-                let outputs = slots
+                let outputs = storage
                     .par_iter_mut()
                     .zip(y_blocks.par_iter())
                     .map(|(output, block)| {
                         tally.note_worker();
-                        compute(block, core::mem::take(output))
+                        compute(block, output)
                     })
                     .collect::<Result<_>>()?;
                 crate::timing::report_detail(
@@ -649,15 +635,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 );
                 outputs
             } else {
-                slots
+                storage
                     .iter_mut()
                     .zip(y_blocks)
-                    .map(|(output, block)| compute(block, core::mem::take(output)))
+                    .map(|(output, block)| compute(block, output))
                     .collect::<Result<_>>()?
             };
-            let result = self.publish_lr_outputs(PlaneId::Y, filtered, offset, Some(&mut slots));
-            storage.append(&mut slots);
-            result
+            let filtered = filtered
+                .into_iter()
+                .zip(storage.iter_mut())
+                .map(|(block, output)| (block, core::mem::take(output)))
+                .collect();
+            self.publish_lr_outputs(PlaneId::Y, filtered, offset, Some(storage))
         })
     }
 
@@ -670,8 +659,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         cdef_luma: &[u16],
         qindex: u32,
         filter_set_index: usize,
-        mut output: Vec<T>,
-    ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
+        output: &mut Vec<T>,
+    ) -> Result<WienerNsLrSourceBlock> {
         let block = clipped_lr_source_block(
             block,
             self.luma_width,
@@ -743,10 +732,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let padded_source =
                 PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(|_| luma_lr_filter_error(offset))?;
-            pc_wiener_filter_block_padded(&mut output, &params, &padded_source)
+            pc_wiener_filter_block_padded(output, &params, &padded_source)
                 .map_err(|_| luma_lr_filter_error(offset))?;
-            self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
-            Ok((block, output))
+            self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
+            Ok(block)
         })
     }
 
@@ -1003,8 +992,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         num_classes: usize,
         filter_set_index: usize,
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
-        mut output: Vec<T>,
-    ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
+        output: &mut Vec<T>,
+    ) -> Result<WienerNsLrSourceBlock> {
         let block = clipped_lr_source_block(
             block,
             self.luma_width,
@@ -1022,7 +1011,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
             .map_err(|_| luma_lr_filter_error(offset))?;
-        let mut output = with_lr_source_scratch(|scratch| -> Result<Vec<T>> {
+        with_lr_source_scratch(|scratch| -> Result<()> {
             let LrSourceScratch {
                 primary,
                 cell_subclasses,
@@ -1081,18 +1070,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(|_| luma_lr_filter_error(offset))?;
             with_wiener_ns_luma_scratch(sample_count, |scratch| {
-                wiener_ns_filter_luma_block_padded_into(
-                    &mut output,
-                    &params,
-                    &padded_source,
-                    scratch,
-                )
+                wiener_ns_filter_luma_block_padded_into(output, &params, &padded_source, scratch)
             })
             .map_err(|_| luma_lr_filter_error(offset))?;
-            Ok(output)
+            Ok(())
         })?;
-        self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, &mut output, offset)?;
-        Ok((block, output))
+        self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
+        Ok(block)
     }
 
     fn preserve_lossless_lr_samples(
