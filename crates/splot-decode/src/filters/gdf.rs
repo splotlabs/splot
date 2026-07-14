@@ -357,7 +357,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
         Ok(())
     };
     let luma_samples = luma.into_samples();
-    if splot_parallel::on_worker_pool() {
+    if splot_parallel::on_multiworker_pool() {
         let timer = crate::timing::start();
         let tally = crate::timing::WorkerTally::new();
         let result = luma_samples
@@ -543,12 +543,14 @@ fn compute_block<T: ReconSample>(
     let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
     if block.width == MI_SIZE {
+        let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
         for row in 0..block.height {
             let class_base = (row >> 1) * class_cols + class_col_base;
             let samples = gdf_width4_row(
                 base_luma,
                 source,
                 &tap_offsets,
+                max_tap,
                 [classes[class_base], classes[class_base + 1]],
                 &block,
                 row,
@@ -1218,11 +1220,7 @@ fn band_classes(
 
     for i in 0..class_rows {
         for j in 0..class_cols {
-            let mut strengths = [0_u32; GDF_DIRECTIONS];
-            strengths[0] = grad_sum_4x4(g0, grad_cols, i * 2, j * 2);
-            strengths[1] = grad_sum_4x4(g1, grad_cols, i * 2, j * 2);
-            strengths[2] = grad_sum_4x4(g2, grad_cols, i * 2, j * 2);
-            strengths[3] = grad_sum_4x4(g3, grad_cols, i * 2, j * 2);
+            let strengths = grad_sums_4x4_all(g0, g1, g2, g3, grad_cols, i * 2, j * 2);
 
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
@@ -1272,6 +1270,7 @@ fn gdf_width4_row(
     base_luma: &[u16],
     source: &GdfSource<'_>,
     tap_offsets: &[usize; GDF_COORDS.len()],
+    max_tap: usize,
     classes: [GdfClass; 2],
     block: &GdfBlock,
     row: usize,
@@ -1286,7 +1285,6 @@ fn gdf_width4_row(
     };
     let base = (source_origin.1 + row) * source.stride + source_origin.0;
 
-    let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
     let samples = source.samples;
     if base < max_tap || base + max_tap + MI_SIZE > samples.len() {
         return Err(source_error());
@@ -1468,33 +1466,36 @@ fn finish_gdf_sample(
 }
 
 #[inline]
-fn grad_sum_4x4(grad: &[u16], stride: usize, row: usize, col: usize) -> u32 {
-    let offset0 = row * stride + col;
-    let offset1 = (row + 1) * stride + col;
-    let offset2 = (row + 2) * stride + col;
-    let offset3 = (row + 3) * stride + col;
+fn grad_sums_4x4_all(
+    g0: &[u16],
+    g1: &[u16],
+    g2: &[u16],
+    g3: &[u16],
+    stride: usize,
+    row: usize,
+    col: usize,
+) -> [u32; 4] {
+    let mut sum0 = 0u32;
+    let mut sum1 = 0u32;
+    let mut sum2 = 0u32;
+    let mut sum3 = 0u32;
 
-    let r0: &[u16; 4] = (&grad[offset0..offset0 + 4]).try_into().unwrap_or(&[0; 4]);
-    let r1: &[u16; 4] = (&grad[offset1..offset1 + 4]).try_into().unwrap_or(&[0; 4]);
-    let r2: &[u16; 4] = (&grad[offset2..offset2 + 4]).try_into().unwrap_or(&[0; 4]);
-    let r3: &[u16; 4] = (&grad[offset3..offset3 + 4]).try_into().unwrap_or(&[0; 4]);
+    let max_idx = (row + 3) * stride + col + 4;
+    if max_idx <= g0.len() && max_idx <= g1.len() && max_idx <= g2.len() && max_idx <= g3.len() {
+        for r in 0..4 {
+            let off = (row + r) * stride + col;
+            let s0 = &g0[off..off + 4];
+            let s1 = &g1[off..off + 4];
+            let s2 = &g2[off..off + 4];
+            let s3 = &g3[off..off + 4];
 
-    u32::from(r0[0])
-        + u32::from(r0[1])
-        + u32::from(r0[2])
-        + u32::from(r0[3])
-        + u32::from(r1[0])
-        + u32::from(r1[1])
-        + u32::from(r1[2])
-        + u32::from(r1[3])
-        + u32::from(r2[0])
-        + u32::from(r2[1])
-        + u32::from(r2[2])
-        + u32::from(r2[3])
-        + u32::from(r3[0])
-        + u32::from(r3[1])
-        + u32::from(r3[2])
-        + u32::from(r3[3])
+            sum0 += u32::from(s0[0]) + u32::from(s0[1]) + u32::from(s0[2]) + u32::from(s0[3]);
+            sum1 += u32::from(s1[0]) + u32::from(s1[1]) + u32::from(s1[2]) + u32::from(s1[3]);
+            sum2 += u32::from(s2[0]) + u32::from(s2[1]) + u32::from(s2[2]) + u32::from(s2[3]);
+            sum3 += u32::from(s3[0]) + u32::from(s3[1]) + u32::from(s3[2]) + u32::from(s3[3]);
+        }
+    }
+    [sum0, sum1, sum2, sum3]
 }
 
 #[cfg(test)]
@@ -2020,10 +2021,12 @@ mod tests {
                                     strength_contribution: [1_024, -1_024, 256],
                                 },
                             ];
+                            let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
                             let row_result = gdf_width4_row(
                                 &base_luma,
                                 &source,
                                 &tap_offsets,
+                                max_tap,
                                 classes,
                                 &block,
                                 0,

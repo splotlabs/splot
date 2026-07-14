@@ -206,19 +206,38 @@ pub(crate) enum NeighbourYMode {
     Other,
 }
 
+thread_local! {
+    static NEIGHBOUR_MV_CELLS: std::cell::RefCell<Vec<Option<NeighbourCell>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 pub(crate) struct NeighbourMvGrid {
     mi_rows: usize,
     mi_cols: usize,
     cells: Vec<Option<NeighbourCell>>,
 }
 
+impl Drop for NeighbourMvGrid {
+    fn drop(&mut self) {
+        let cells = std::mem::take(&mut self.cells);
+        let _ = NEIGHBOUR_MV_CELLS.try_with(|slot| {
+            *slot.borrow_mut() = cells;
+        });
+    }
+}
+
 impl NeighbourMvGrid {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let cells = mi_rows.checked_mul(mi_cols)?;
+        let len = mi_rows.checked_mul(mi_cols)?;
+        let cells = NEIGHBOUR_MV_CELLS.with(|slot| {
+            let mut v = slot.take();
+            v.clear();
+            v.resize(len, None);
+            v
+        });
         Some(Self {
             mi_rows,
             mi_cols,
-            cells: vec![None; cells],
+            cells,
         })
     }
 

@@ -361,6 +361,10 @@ impl From<IntrabcBlockVector> for Mv {
     }
 }
 
+thread_local! {
+    static INTRABC_VALUES: std::cell::RefCell<Vec<Option<IntrabcBlockFacts>>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntrabcPreludeState {
     mi_rows: usize,
@@ -371,6 +375,15 @@ pub(crate) struct TileIntrabcPreludeState {
     enable_refmvbank: bool,
     seed_bank_from_above: bool,
     drl_reorder: DrlReorderMode,
+}
+
+impl Drop for TileIntrabcPreludeState {
+    fn drop(&mut self) {
+        let values = std::mem::take(&mut self.values);
+        let _ = INTRABC_VALUES.try_with(|slot| {
+            *slot.borrow_mut() = values;
+        });
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -408,11 +421,17 @@ impl TileIntrabcPreludeState {
             Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
             Some(DrlReorder::Disabled) | None => DrlReorderMode::Disabled,
         };
+        let values = INTRABC_VALUES.with(|slot| {
+            let mut v = slot.take();
+            v.clear();
+            v.resize(values_len, None);
+            v
+        });
         Ok(Self {
             mi_rows,
             mi_cols,
             sb_size4,
-            values: vec![None; values_len],
+            values,
             bank: IntrabcRefMvBank::new(sb_size4),
             enable_refmvbank,
             seed_bank_from_above: !frame_is_intra_only,

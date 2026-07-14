@@ -21,7 +21,11 @@ struct SourceLineAllowance {
     reason: &'static str,
 }
 
-const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[];
+const HARD_LINE_ALLOWANCES: &[SourceLineAllowance] = &[SourceLineAllowance {
+    path: "crates/splot-decode/src/prediction/inter/find_mv_stack.rs",
+    max_lines: 2600,
+    reason: "large inter motion vector prediction neighbour search",
+}];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SourceFileLineCount {

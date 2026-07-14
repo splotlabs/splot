@@ -702,24 +702,119 @@ fn subpel_horizontal_only_into<T: ReconSample, O>(
         if let Some(window_start) = x_window_start {
             let row_base = ref_row * reference.stride + window_start;
             let window = &reference.samples[row_base..row_base + params.w + NUM_TAPS - 1];
+            let tap_len = taps.len();
             for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
-                let samples = &win[tap_start..tap_start + taps.len()];
+                let samples = &win[tap_start..tap_start + tap_len];
                 let mut sum = 0i32;
-                for (&tap, &sample) in taps.iter().zip(samples) {
-                    sum += tap * i32::from(sample.to_u16());
+                match tap_len {
+                    8 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 8] = taps;
+                            let samples = &samples[..8];
+                            for (i, &tap) in taps.iter().enumerate() {
+                                sum += tap * i32::from(samples[i].to_u16());
+                            }
+                        }
+                    }
+                    6 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 6] = taps;
+                            let samples = &samples[..6];
+                            for (i, &tap) in taps.iter().enumerate() {
+                                sum += tap * i32::from(samples[i].to_u16());
+                            }
+                        }
+                    }
+                    4 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 4] = taps;
+                            let samples = &samples[..4];
+                            for (i, &tap) in taps.iter().enumerate() {
+                                sum += tap * i32::from(samples[i].to_u16());
+                            }
+                        }
+                    }
+                    2 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 2] = taps;
+                            let samples = &samples[..2];
+                            for (i, &tap) in taps.iter().enumerate() {
+                                sum += tap * i32::from(samples[i].to_u16());
+                            }
+                        }
+                    }
+                    _ => {
+                        for (&tap, &sample) in taps.iter().zip(samples) {
+                            sum += tap * i32::from(sample.to_u16());
+                        }
+                    }
                 }
                 let horizontal = round2_i32(sum, INTER_ROUND0);
                 *out = finish(round2_i32(horizontal << FILTER_BITS, inter_round1));
             }
             continue;
         }
+        let tap_len = taps.len();
         for (c, out) in row_out.iter_mut().enumerate() {
             let mut sum = 0i32;
-            for (tap_offset, &tap) in taps.iter().enumerate() {
-                let t = tap_start + tap_offset;
-                let ref_col =
-                    (x0 + c as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
-                sum += tap * reference.sample(ref_row, ref_col);
+            match tap_len {
+                8 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 8] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let ref_col = (x0 + c as i32 + t as i32 - 3)
+                                .clamp(params.first_x, params.last_x)
+                                as usize;
+                            sum += tap * reference.sample(ref_row, ref_col);
+                        }
+                    }
+                }
+                6 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 6] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let ref_col = (x0 + c as i32 + t as i32 - 3)
+                                .clamp(params.first_x, params.last_x)
+                                as usize;
+                            sum += tap * reference.sample(ref_row, ref_col);
+                        }
+                    }
+                }
+                4 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 4] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let ref_col = (x0 + c as i32 + t as i32 - 3)
+                                .clamp(params.first_x, params.last_x)
+                                as usize;
+                            sum += tap * reference.sample(ref_row, ref_col);
+                        }
+                    }
+                }
+                2 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 2] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let ref_col = (x0 + c as i32 + t as i32 - 3)
+                                .clamp(params.first_x, params.last_x)
+                                as usize;
+                            sum += tap * reference.sample(ref_row, ref_col);
+                        }
+                    }
+                }
+                _ => {
+                    for (tap_offset, &tap) in taps.iter().enumerate() {
+                        let t = tap_start + tap_offset;
+                        let ref_col = (x0 + c as i32 + t as i32 - 3)
+                            .clamp(params.first_x, params.last_x)
+                            as usize;
+                        sum += tap * reference.sample(ref_row, ref_col);
+                    }
+                }
             }
             let horizontal = round2_i32(sum, INTER_ROUND0);
             *out = finish(round2_i32(horizontal << FILTER_BITS, inter_round1));
@@ -1026,11 +1121,52 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let taps = &h_filter_rows[phase];
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
                 let taps = &taps[tap_start..tap_end];
+                let tap_len = taps.len();
                 for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
+                    let samples = &win[tap_start..tap_start + tap_len];
                     let mut s = 0i32;
-                    let samples = &win[tap_start..tap_start + taps.len()];
-                    for (&tap, &sample) in taps.iter().zip(samples) {
-                        s += tap * i32::from(sample.to_u16());
+                    match tap_len {
+                        8 => {
+                            if let Ok(taps) = taps.try_into() {
+                                let taps: &[i32; 8] = taps;
+                                let samples = &samples[..8];
+                                for (i, &tap) in taps.iter().enumerate() {
+                                    s += tap * i32::from(samples[i].to_u16());
+                                }
+                            }
+                        }
+                        6 => {
+                            if let Ok(taps) = taps.try_into() {
+                                let taps: &[i32; 6] = taps;
+                                let samples = &samples[..6];
+                                for (i, &tap) in taps.iter().enumerate() {
+                                    s += tap * i32::from(samples[i].to_u16());
+                                }
+                            }
+                        }
+                        4 => {
+                            if let Ok(taps) = taps.try_into() {
+                                let taps: &[i32; 4] = taps;
+                                let samples = &samples[..4];
+                                for (i, &tap) in taps.iter().enumerate() {
+                                    s += tap * i32::from(samples[i].to_u16());
+                                }
+                            }
+                        }
+                        2 => {
+                            if let Ok(taps) = taps.try_into() {
+                                let taps: &[i32; 2] = taps;
+                                let samples = &samples[..2];
+                                for (i, &tap) in taps.iter().enumerate() {
+                                    s += tap * i32::from(samples[i].to_u16());
+                                }
+                            }
+                        }
+                        _ => {
+                            for (&tap, &sample) in taps.iter().zip(samples) {
+                                s += tap * i32::from(sample.to_u16());
+                            }
+                        }
                     }
                     *out = round2_i32(s, INTER_ROUND0);
                 }
@@ -1048,11 +1184,61 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let taps = &h_filter_rows[phase];
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
                 let taps = &taps[tap_start..tap_end];
+                let tap_len = taps.len();
                 let mut s = 0i32;
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    let t = tap_start + tap_offset;
-                    let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
-                    s += tap * reference.sample(ref_row, ref_col as usize);
+                match tap_len {
+                    8 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 8] = taps;
+                            for (i, &tap) in taps.iter().enumerate() {
+                                let t = tap_start + i;
+                                let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3)
+                                    .clamp(first_x, last_x);
+                                s += tap * reference.sample(ref_row, ref_col as usize);
+                            }
+                        }
+                    }
+                    6 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 6] = taps;
+                            for (i, &tap) in taps.iter().enumerate() {
+                                let t = tap_start + i;
+                                let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3)
+                                    .clamp(first_x, last_x);
+                                s += tap * reference.sample(ref_row, ref_col as usize);
+                            }
+                        }
+                    }
+                    4 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 4] = taps;
+                            for (i, &tap) in taps.iter().enumerate() {
+                                let t = tap_start + i;
+                                let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3)
+                                    .clamp(first_x, last_x);
+                                s += tap * reference.sample(ref_row, ref_col as usize);
+                            }
+                        }
+                    }
+                    2 => {
+                        if let Ok(taps) = taps.try_into() {
+                            let taps: &[i32; 2] = taps;
+                            for (i, &tap) in taps.iter().enumerate() {
+                                let t = tap_start + i;
+                                let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3)
+                                    .clamp(first_x, last_x);
+                                s += tap * reference.sample(ref_row, ref_col as usize);
+                            }
+                        }
+                    }
+                    _ => {
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + tap_offset;
+                            let ref_col =
+                                ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
+                            s += tap * reference.sample(ref_row, ref_col as usize);
+                        }
+                    }
                 }
                 intermediate[r * w + c] = round2_i32(s, INTER_ROUND0);
             }
@@ -1079,10 +1265,63 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             let taps = &taps[tap_start..tap_end];
             let acc = &mut acc[..w];
             acc.fill(0);
-            for (tap_offset, &tap) in taps.iter().enumerate() {
-                let t = tap_start + tap_offset;
-                for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
-                    *a += tap * v;
+            let tap_len = taps.len();
+            match tap_len {
+                8 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 8] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let row = &rows[t * w..(t + 1) * w];
+                            for col in 0..w {
+                                acc[col] += tap * row[col];
+                            }
+                        }
+                    }
+                }
+                6 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 6] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let row = &rows[t * w..(t + 1) * w];
+                            for col in 0..w {
+                                acc[col] += tap * row[col];
+                            }
+                        }
+                    }
+                }
+                4 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 4] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let row = &rows[t * w..(t + 1) * w];
+                            for col in 0..w {
+                                acc[col] += tap * row[col];
+                            }
+                        }
+                    }
+                }
+                2 => {
+                    if let Ok(taps) = taps.try_into() {
+                        let taps: &[i32; 2] = taps;
+                        for (i, &tap) in taps.iter().enumerate() {
+                            let t = tap_start + i;
+                            let row = &rows[t * w..(t + 1) * w];
+                            for col in 0..w {
+                                acc[col] += tap * row[col];
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    for (tap_offset, &tap) in taps.iter().enumerate() {
+                        let t = tap_start + tap_offset;
+                        for (a, &v) in acc.iter_mut().zip(&rows[t * w..(t + 1) * w]) {
+                            *a += tap * v;
+                        }
+                    }
                 }
             }
             for (out, &s) in output.iter_mut().zip(acc.iter()) {

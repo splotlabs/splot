@@ -688,9 +688,36 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
         )
     };
     let use_ddt = enable_inter_ddt && !use_intrabc;
-    let mut paired = vec![false; residual.blocks.len()];
+    let blocks_len = residual.blocks.len();
+    if blocks_len == 0 {
+        return Ok(());
+    }
+
+    let mut paired_mask = 0u64;
+    let mut paired_vec = if blocks_len > 64 {
+        Some(vec![false; blocks_len])
+    } else {
+        None
+    };
+
+    let is_paired = |index: usize, mask: u64, vec_opt: &Option<Vec<bool>>| -> bool {
+        if let Some(vec) = vec_opt {
+            vec[index]
+        } else {
+            (mask & (1 << index)) != 0
+        }
+    };
+
+    let set_paired = |index: usize, mask: &mut u64, vec_opt: &mut Option<Vec<bool>>| {
+        if let Some(vec) = vec_opt {
+            vec[index] = true;
+        } else {
+            *mask |= 1 << index;
+        }
+    };
+
     for (index, block) in residual.blocks.iter().enumerate() {
-        if paired[index] {
+        if is_paired(index, paired_mask, &paired_vec) {
             continue;
         }
         let cctx_type = block.coeffs.cctx_type.unwrap_or(0);
@@ -707,8 +734,8 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
                 sink, block, v_block, qindex, cctx_type, use_ddt, bit_depth,
             )
             .map_err(map_recon)?;
-            paired[index] = true;
-            paired[v_index] = true;
+            set_paired(index, &mut paired_mask, &mut paired_vec);
+            set_paired(v_index, &mut paired_mask, &mut paired_vec);
             continue;
         }
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
@@ -726,7 +753,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
             bit_depth,
         )
         .map_err(map_recon)?;
-        paired[index] = true;
+        set_paired(index, &mut paired_mask, &mut paired_vec);
     }
     Ok(())
 }

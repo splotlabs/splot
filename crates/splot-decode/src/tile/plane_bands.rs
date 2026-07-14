@@ -70,21 +70,39 @@ pub(crate) fn publish_rect_runs_parallel<T: ReconSample>(
         split_row = group_bottom;
     }
 
-    bands
-        .into_par_iter()
-        .try_for_each(|(band, band_top_row, band_runs)| {
-            for (rect, samples, row_stride) in band_runs {
-                write_rect_into_band(
-                    &mut *band,
-                    stride,
-                    band_top_row,
-                    *rect,
-                    samples,
-                    *row_stride,
-                )?;
-            }
-            Some(())
-        })
+    if splot_parallel::on_multiworker_pool() {
+        bands
+            .into_par_iter()
+            .try_for_each(|(band, band_top_row, band_runs)| {
+                for (rect, samples, row_stride) in band_runs {
+                    write_rect_into_band(
+                        &mut *band,
+                        stride,
+                        band_top_row,
+                        *rect,
+                        samples,
+                        *row_stride,
+                    )?;
+                }
+                Some(())
+            })
+    } else {
+        bands
+            .into_iter()
+            .try_for_each(|(band, band_top_row, band_runs)| {
+                for (rect, samples, row_stride) in band_runs {
+                    write_rect_into_band(
+                        &mut *band,
+                        stride,
+                        band_top_row,
+                        *rect,
+                        samples,
+                        *row_stride,
+                    )?;
+                }
+                Some(())
+            })
+    }
 }
 
 #[cfg(test)]

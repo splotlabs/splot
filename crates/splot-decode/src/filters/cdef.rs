@@ -370,7 +370,7 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
             }))
         };
 
-        if splot_parallel::on_worker_pool()
+        if splot_parallel::on_multiworker_pool()
             && let Some(bands) = CdefRowBands::split(workspace, mi_rows, sub_y)
         {
             let timer = crate::timing::start();
@@ -521,14 +521,24 @@ fn compute_cdef_block<T: ReconSample>(
         (0, 0)
     } else {
         let mut block = [[0i32; 8]; 8];
-        for (i, row) in block.iter_mut().enumerate() {
-            let start = (y0 + i.min(block_h - 1)) * luma_snap.width + x0;
-            let src = luma_snap
-                .samples
-                .get(start..start + block_w)
-                .ok_or(CdefError::Geometry)?;
-            for (j, cell) in row.iter_mut().enumerate() {
-                *cell = (i32::from(src[j.min(block_w - 1)]) >> ctx.coeff_shift) - 128;
+        if block_w == 8 && block_h == 8 {
+            for (i, row) in block.iter_mut().enumerate() {
+                let start = (y0 + i) * luma_snap.width + x0;
+                let src = &luma_snap.samples[start..start + 8];
+                for j in 0..8 {
+                    row[j] = (i32::from(src[j]) >> ctx.coeff_shift) - 128;
+                }
+            }
+        } else {
+            for (i, row) in block.iter_mut().enumerate() {
+                let start = (y0 + i.min(block_h - 1)) * luma_snap.width + x0;
+                let src = luma_snap
+                    .samples
+                    .get(start..start + block_w)
+                    .ok_or(CdefError::Geometry)?;
+                for (j, cell) in row.iter_mut().enumerate() {
+                    *cell = (i32::from(src[j.min(block_w - 1)]) >> ctx.coeff_shift) - 128;
+                }
             }
         }
         cdef_direction(&block)

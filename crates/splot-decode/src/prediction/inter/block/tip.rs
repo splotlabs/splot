@@ -639,7 +639,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             });
         }
     }
-    let parallel_output = two_references && splot_parallel::on_worker_pool();
+    let parallel_output = two_references && splot_parallel::on_multiworker_pool();
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))

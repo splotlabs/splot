@@ -634,7 +634,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     }
                     LrUnitRestorationType::None => Err(luma_lr_filter_error(offset)),
                 };
-            let filtered: Vec<WienerNsLrSourceBlock> = if splot_parallel::on_worker_pool() {
+            let filtered: Vec<WienerNsLrSourceBlock> = if splot_parallel::on_multiworker_pool() {
                 let timer = crate::timing::start();
                 let tally = crate::timing::WorkerTally::new();
                 let outputs = storage[..block_count]
@@ -883,31 +883,32 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 cdef_luma,
             )
         };
-        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> = if splot_parallel::on_worker_pool() {
-            let timer = crate::timing::start();
-            let tally = crate::timing::WorkerTally::new();
-            let outputs = plane_blocks
-                .par_iter()
-                .map(|block| {
-                    tally.note_worker();
-                    compute(block)
-                })
-                .collect::<Result<_>>()?;
-            crate::timing::report_detail(
-                "lr_chroma_blocks",
-                timer,
-                &format!(
-                    "plane={} units={} threads={} workers_used={}",
-                    plane_index,
-                    plane_blocks.len(),
-                    splot_parallel::current_pool_width(),
-                    tally.workers_used()
-                ),
-            );
-            outputs
-        } else {
-            plane_blocks.iter().map(&compute).collect::<Result<_>>()?
-        };
+        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> =
+            if splot_parallel::on_multiworker_pool() {
+                let timer = crate::timing::start();
+                let tally = crate::timing::WorkerTally::new();
+                let outputs = plane_blocks
+                    .par_iter()
+                    .map(|block| {
+                        tally.note_worker();
+                        compute(block)
+                    })
+                    .collect::<Result<_>>()?;
+                crate::timing::report_detail(
+                    "lr_chroma_blocks",
+                    timer,
+                    &format!(
+                        "plane={} units={} threads={} workers_used={}",
+                        plane_index,
+                        plane_blocks.len(),
+                        splot_parallel::current_pool_width(),
+                        tally.workers_used()
+                    ),
+                );
+                outputs
+            } else {
+                plane_blocks.iter().map(&compute).collect::<Result<_>>()?
+            };
         self.publish_lr_outputs(plane_id, filtered, offset, None)
     }
 

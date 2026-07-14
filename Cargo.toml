@@ -118,6 +118,9 @@ if_not_else = "allow"
 # stay at their defaults.
 [profile.release]
 overflow-checks = false
+lto = true
+codegen-units = 1
+panic = "abort"
 
 [profile.dev]
 overflow-checks = true

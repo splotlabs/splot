@@ -670,27 +670,26 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         self.row_range(last_row, rect.x(), rect.width())?;
 
         for row_index in 0..rect.height() {
-            let source_row_start = row_index.checked_mul(row_stride_samples).ok_or(
-                ReconError::ArithmeticOverflow {
-                    context: "current-frame workspace source row offset",
-                },
-            )?;
-            let target_start = target_base + row_index * self.stride_samples;
-            let source_row = &samples[source_row_start..source_row_start + rect.width()];
-            if source_row.iter().any(|sample| sample.to_u16() > max_sample) {
-                for (column, &sample) in source_row.iter().enumerate() {
-                    validate_sample_value(self.plane, target_start + column, sample, max_sample)?;
-                }
-            }
-        }
-
-        for row_index in 0..rect.height() {
             let source_row_start = row_index * row_stride_samples;
             let target_start = target_base + row_index * self.stride_samples;
             let target_range = target_start..target_start + rect.width();
             let source_range = source_row_start..source_row_start + rect.width();
+            let source_row = &samples[source_range];
+
+            for (column, &sample) in source_row.iter().enumerate() {
+                let value = sample.to_u16();
+                if value > max_sample {
+                    return Err(ReconError::SampleOutOfRange {
+                        plane: self.plane,
+                        sample_index: target_start + column,
+                        value,
+                        max: max_sample,
+                    });
+                }
+            }
+
             // splot-copy-ok: write caller samples into owned current-frame workspace plane storage
-            self.samples[target_range].copy_from_slice(&samples[source_range]);
+            self.samples[target_range].copy_from_slice(source_row);
         }
         Ok(())
     }

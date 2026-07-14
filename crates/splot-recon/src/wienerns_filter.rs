@@ -468,23 +468,39 @@ fn filter_padded_luma_segment<T: ReconSample>(
     let center_seg = center
         .get(c0..c0 + len)
         .ok_or_else(|| luma_segment_error(params.width))?;
-    for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a = i32::from(m.to_u16()) << WIENER_NS_PREC_BITS;
-    }
+
     let mut sum_coeff = 0i32;
-    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y_PAIRS {
-        let coeff = i32::from(coeffs[coeff_index]);
-        sum_coeff += coeff;
-        let plus = tap_segment(rows, c0, len, dy, dx, params.width)?;
-        let minus = tap_segment(rows, c0, len, -dy, -dx, params.width)?;
-        for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
-            *a += coeff * (i32::from(tp.to_u16()) + i32::from(tm.to_u16()));
-        }
+    let mut plus_slices = [&[] as &[T]; WIENER_NS_LUMA_COEFFS];
+    let mut minus_slices = [&[] as &[T]; WIENER_NS_LUMA_COEFFS];
+    let mut coeff_vals = [0i32; WIENER_NS_LUMA_COEFFS];
+
+    for i in 0..WIENER_NS_LUMA_COEFFS {
+        let (dy, dx, coeff_index) = WIENER_NS_CONFIG_Y_PAIRS[i];
+        coeff_vals[i] = i32::from(coeffs[coeff_index]);
+        sum_coeff += coeff_vals[i];
+        plus_slices[i] = tap_segment(rows, c0, len, dy, dx, params.width)?;
+        minus_slices[i] = tap_segment(rows, c0, len, -dy, -dx, params.width)?;
     }
+
+    assert_eq!(center_seg.len(), len);
+    assert_eq!(seg.len(), len);
+    for j in 0..WIENER_NS_LUMA_COEFFS {
+        assert_eq!(plus_slices[j].len(), len);
+        assert_eq!(minus_slices[j].len(), len);
+    }
+
     let center_scale = 2 * sum_coeff;
-    for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a -= center_scale * i32::from(m.to_u16());
+    for i in 0..len {
+        let mut sum = 0i32;
+        for j in 0..WIENER_NS_LUMA_COEFFS {
+            let tp = i32::from(plus_slices[j][i].to_u16());
+            let tm = i32::from(minus_slices[j][i].to_u16());
+            sum += coeff_vals[j] * (tp + tm);
+        }
+        let center_val = i32::from(center_seg[i].to_u16());
+        seg[i] = (center_val << WIENER_NS_PREC_BITS) + sum - center_scale * center_val;
     }
+
     for &s in seg.iter() {
         let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
         filtered.push(T::try_from_u16(value as u16)?);

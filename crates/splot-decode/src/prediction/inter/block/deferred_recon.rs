@@ -413,20 +413,22 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
             residual_use_ddt,
             bit_depth,
         };
-        if pending.len() == 1 {
-            let block = &mut pending[0];
-            let _scopes = snapshot.install(block.segment_id);
-            let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
-            return apply_output(
-                output,
-                block,
-                workspace,
-                motion_field,
-                &shared,
-                mi_rows,
-                mi_cols,
-                current_order_hint,
-            );
+        if pending.len() == 1 || splot_parallel::current_pool_width() <= 1 {
+            for block in pending.iter_mut() {
+                let _scopes = snapshot.install(block.segment_id);
+                let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
+                apply_output(
+                    output,
+                    block,
+                    workspace,
+                    motion_field,
+                    &shared,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
+                )?;
+            }
+            return Ok(());
         }
 
         let batch_size = splot_parallel::current_pool_width()
