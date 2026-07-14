@@ -386,6 +386,12 @@ impl<'a, T: ReconSample> ReferencePlaneView<'a, T> {
         let col = col.min(self.width - 1);
         i32::from(self.samples[row * self.stride + col].to_u16())
     }
+
+    pub(crate) fn row(&self, row: usize) -> &[T] {
+        let row = row.min(self.height - 1);
+        let start = row * self.stride;
+        &self.samples[start..start + self.width]
+    }
 }
 
 /// AV2 § 7.13.3.18 block inter prediction parameters for the single-reference
