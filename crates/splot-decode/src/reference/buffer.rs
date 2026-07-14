@@ -328,7 +328,7 @@ impl RuntimeReferenceBuffer {
         let num = self.slots.len();
         let mut store: ReferenceFrameStore<&'a DecodedFrame<T>> =
             ReferenceFrameStore::with_capacity(num)?;
-        let mut meta = ReferenceMetadata::with_capacity(num);
+        let mut meta = take_reference_metadata(num);
         for (i, slot) in self.slots.iter().enumerate() {
             meta.push_slot(slot);
             if !slot.valid {
@@ -533,6 +533,53 @@ impl ReferenceMetadata {
         self.ref_ccso_unit_grids.push(slot.ccso_grid.clone());
         self.ref_motion_fields.push(slot.motion_field.clone());
     }
+
+    pub(crate) fn clear(&mut self) {
+        self.ref_valid.clear();
+        self.ref_order_hint.clear();
+        self.ref_order_hint_lsbs.clear();
+        self.ref_implicit_output_frame.clear();
+        self.ref_immediate_output_frame.clear();
+        self.ref_frame_width.clear();
+        self.ref_frame_height.clear();
+        self.ref_base_q_idx.clear();
+        self.ref_counter.clear();
+        self.ref_delta_q_u_ac.clear();
+        self.ref_delta_q_v_ac.clear();
+        self.ref_is_inter.clear();
+        self.ref_long_term_id.clear();
+        self.ref_adapted.clear();
+        self.ref_num_total_refs.clear();
+        self.saved_global_motion_order_hints.clear();
+        self.saved_global_motion_params.clear();
+        self.lr_frame_filter_class_counts.clear();
+        self.lr_frame_filter_taps.clear();
+        self.ref_frame_cdfs.clear();
+        self.ref_ccso_params.clear();
+        self.ref_ccso_unit_grids.clear();
+        self.ref_motion_fields.clear();
+    }
+}
+
+std::thread_local! {
+    static METADATA_RECYCLER: std::cell::RefCell<Vec<ReferenceMetadata>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+pub(crate) fn take_reference_metadata(capacity: usize) -> ReferenceMetadata {
+    let mut meta = METADATA_RECYCLER
+        .with(|cell| cell.borrow_mut().pop())
+        .unwrap_or_else(|| ReferenceMetadata::with_capacity(capacity));
+    meta.clear();
+    meta
+}
+
+pub(crate) fn recycle_reference_metadata(meta: ReferenceMetadata) {
+    METADATA_RECYCLER.with(|cell| {
+        let mut recycler = cell.borrow_mut();
+        if recycler.len() < 8 {
+            recycler.push(meta);
+        }
+    });
 }
 
 #[cfg(test)]

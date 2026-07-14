@@ -31,6 +31,11 @@ const CFL_ALPHA_SCALE: i32 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 
+std::thread_local! {
+    static CFL_LUMA_AC_RECYCLER: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
+    static CFL_PRED_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = const { std::cell::RefCell::new(None) };
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
@@ -104,10 +109,11 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
+    let mut owned_luma_ac = CFL_LUMA_AC_RECYCLER.with(std::cell::RefCell::take);
     let luma_ac = if cfl_params.index == CflIndex::Multi {
         None
     } else {
-        Some(prepare_cfl_luma_ac(
+        prepare_cfl_luma_ac_into(
             workspace,
             x,
             y,
@@ -116,7 +122,9 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             cfl_ds_filter_index,
             sb_mib,
             bit_depth,
-        )?)
+            &mut owned_luma_ac,
+        )?;
+        Some(&*owned_luma_ac)
     };
     let block_size = IntraRectBlockSize::new(
         u8::try_from(log2_width).unwrap_or(u8::MAX),
@@ -157,7 +165,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             num4_above_right,
             num4_below_left,
             bit_depth,
-            luma_ac.as_deref(),
+            luma_ac,
         )
     };
     let result = run(PlaneId::U, u_block, u_neighbours, &mut u_out)
@@ -174,6 +182,12 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
         });
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, u_out);
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, v_out);
+    CFL_LUMA_AC_RECYCLER.with(|cell| {
+        let mut recycler = cell.borrow_mut();
+        if recycler.capacity() < owned_luma_ac.capacity() {
+            *recycler = owned_luma_ac;
+        }
+    });
     result
 }
 
@@ -198,58 +212,82 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
-    let prediction = if cfl_params.index == CflIndex::Multi {
-        mhccp_prediction(
-            workspace,
-            plane_id,
-            x,
-            y,
-            width,
-            height,
-            cfl_params,
-            cfl_ds_filter_index,
-            sb_mib,
-            num4_above_right,
-            num4_below_left,
-            bit_depth,
-        )?
-    } else {
-        cfl_prediction(
-            workspace,
-            plane_id,
-            x,
-            y,
-            log2_width,
-            log2_height,
-            cfl_params,
-            cfl_ds_filter_index,
-            sb_mib,
-            bit_depth,
-            luma_ac,
-        )?
-    };
-    if block.all_zero {
-        out.copy_from_slice(&prediction);
-        Ok(())
-    } else {
-        reconstruct_general_intra_coeff_block_rect_with_prediction_into(
-            block,
-            &prediction,
-            out,
-            qindex,
-            plane_id,
-            log2_width,
-            log2_height,
-            false,
-            None,
-            None,
-            bit_depth,
-        )
-    }
+
+    let mut prediction: Vec<T> = CFL_PRED_RECYCLER.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some(any) = slot.take() {
+            match any.downcast::<Vec<T>>() {
+                Ok(vec) => *vec,
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        }
+    });
+
+    let res = (|| {
+        if cfl_params.index == CflIndex::Multi {
+            mhccp_prediction_into(
+                workspace,
+                plane_id,
+                x,
+                y,
+                width,
+                height,
+                cfl_params,
+                cfl_ds_filter_index,
+                sb_mib,
+                num4_above_right,
+                num4_below_left,
+                bit_depth,
+                &mut prediction,
+            )
+        } else {
+            cfl_prediction_into(
+                workspace,
+                plane_id,
+                x,
+                y,
+                log2_width,
+                log2_height,
+                cfl_params,
+                cfl_ds_filter_index,
+                sb_mib,
+                bit_depth,
+                luma_ac,
+                &mut prediction,
+            )
+        }?;
+
+        if block.all_zero {
+            out.copy_from_slice(&prediction);
+            Ok(())
+        } else {
+            reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+                block,
+                &prediction,
+                out,
+                qindex,
+                plane_id,
+                log2_width,
+                log2_height,
+                false,
+                None,
+                None,
+                bit_depth,
+            )
+        }
+    })();
+
+    CFL_PRED_RECYCLER.with(|cell| {
+        *cell.borrow_mut() = Some(Box::new(prediction));
+    });
+
+    res
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cfl_prediction<T: ReconSample>(
+fn cfl_prediction_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,
     x: usize,
@@ -261,7 +299,8 @@ fn cfl_prediction<T: ReconSample>(
     sb_mib: usize,
     bit_depth: BitDepth,
     luma_ac: Option<&[i32]>,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    prediction: &mut Vec<T>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(
             GeneralIntraResidualError::UnsupportedTransformToolResidual {
@@ -281,12 +320,13 @@ fn cfl_prediction<T: ReconSample>(
     } else {
         predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?
     };
-    let mut prediction = vec![dc; width.saturating_mul(height)];
-    let owned_luma_ac;
+    prediction.clear();
+    prediction.resize(width.saturating_mul(height), dc);
+    let mut owned_luma_ac = CFL_LUMA_AC_RECYCLER.with(std::cell::RefCell::take);
     let luma_ac = if let Some(luma_ac) = luma_ac {
         luma_ac
     } else {
-        owned_luma_ac = prepare_cfl_luma_ac(
+        prepare_cfl_luma_ac_into(
             workspace,
             x,
             y,
@@ -295,6 +335,7 @@ fn cfl_prediction<T: ReconSample>(
             cfl_ds_filter_index,
             sb_mib,
             bit_depth,
+            &mut owned_luma_ac,
         )?;
         &owned_luma_ac
     };
@@ -310,9 +351,15 @@ fn cfl_prediction<T: ReconSample>(
         sb_mib,
         bit_depth,
         luma_ac,
-        &mut prediction,
+        prediction,
     )?;
-    Ok(prediction)
+    CFL_LUMA_AC_RECYCLER.with(|cell| {
+        let mut recycler = cell.borrow_mut();
+        if recycler.capacity() < owned_luma_ac.capacity() {
+            *recycler = owned_luma_ac;
+        }
+    });
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -355,7 +402,7 @@ fn apply_cfl_prediction<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn prepare_cfl_luma_ac<T: ReconSample>(
+fn prepare_cfl_luma_ac_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     x: usize,
     y: usize,
@@ -364,7 +411,8 @@ fn prepare_cfl_luma_ac<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<Vec<i32>, GeneralIntraResidualError> {
+    samples_q3: &mut Vec<i32>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(
             GeneralIntraResidualError::UnsupportedTransformToolResidual {
@@ -385,7 +433,8 @@ fn prepare_cfl_luma_ac<T: ReconSample>(
         sb_mib,
         bit_depth,
     )?;
-    let mut samples_q3 = Vec::with_capacity(width.saturating_mul(height));
+    samples_q3.clear();
+    samples_q3.reserve(width.saturating_mul(height));
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
         let luma_y = chroma_y << sub_y;
@@ -406,7 +455,85 @@ fn prepare_cfl_luma_ac<T: ReconSample>(
             );
         }
     }
-    Ok(samples_q3)
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mhccp_prediction_into<T: ReconSample>(
+    workspace: &CurrentFrameWorkspace<T>,
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    cfl_params: CflParams,
+    cfl_ds_filter_index: u8,
+    sb_mib: usize,
+    num4_above_right: usize,
+    num4_below_left: usize,
+    bit_depth: BitDepth,
+    prediction: &mut Vec<T>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    let Some(mh_dir) = cfl_params.mh_dir else {
+        return Err(
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "general_intra_cfl_multi_missing_mh_dir",
+            },
+        );
+    };
+    if mh_dir > 2 || cfl_filter_index(cfl_ds_filter_index).is_none() {
+        return Err(
+            GeneralIntraResidualError::UnsupportedTransformToolResidual {
+                reason: "general_intra_cfl_multi_filter",
+            },
+        );
+    }
+    let refs = mhccp_references(
+        workspace,
+        plane_id,
+        x,
+        y,
+        width,
+        height,
+        cfl_ds_filter_index,
+        sb_mib,
+        num4_above_right,
+        num4_below_left,
+    )?;
+    let params = derive_mhccp_params(&refs, mh_dir, bit_depth);
+    let max = i32::from(bit_depth.max_sample());
+    let mid = 1i32 << (u32::from(bit_depth.bits()) - 1);
+    prediction.clear();
+    prediction.reserve(width.saturating_mul(height));
+    for row in 0..height {
+        for col in 0..width {
+            let center_index = (refs.above + row) * refs.width + refs.left + col;
+            let center = i32::from(refs.luma[center_index]);
+            let linear = match mh_dir {
+                0 => center,
+                1 => {
+                    let top_row = refs.above.saturating_add(row).saturating_sub(1);
+                    i32::from(refs.luma[top_row * refs.width + refs.left + col])
+                }
+                _ => {
+                    let left_col = refs.left.saturating_add(col).saturating_sub(1);
+                    i32::from(refs.luma[(refs.above + row) * refs.width + left_col])
+                }
+            };
+            let vector = [
+                linear,
+                round2_i32(center.saturating_mul(center), u32::from(bit_depth.bits())),
+                mid,
+            ];
+            let mut predicted = 0i32;
+            for k in 0..MHCCP_PARAM_COUNT {
+                predicted =
+                    predicted.saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
+            }
+            prediction.push(T::try_from_u16(predicted.clamp(0, max) as u16)?);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -644,82 +771,6 @@ fn cfl_above_min_luma_ref_y(
     isize::try_from(sb_start_luma_y)
         .ok()
         .and_then(|sb_y| sb_y.checked_sub(1))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn mhccp_prediction<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    plane_id: PlaneId,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    cfl_params: CflParams,
-    cfl_ds_filter_index: u8,
-    sb_mib: usize,
-    num4_above_right: usize,
-    num4_below_left: usize,
-    bit_depth: BitDepth,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    let Some(mh_dir) = cfl_params.mh_dir else {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_multi_missing_mh_dir",
-            },
-        );
-    };
-    if mh_dir > 2 || cfl_filter_index(cfl_ds_filter_index).is_none() {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_multi_filter",
-            },
-        );
-    }
-    let refs = mhccp_references(
-        workspace,
-        plane_id,
-        x,
-        y,
-        width,
-        height,
-        cfl_ds_filter_index,
-        sb_mib,
-        num4_above_right,
-        num4_below_left,
-    )?;
-    let params = derive_mhccp_params(&refs, mh_dir, bit_depth);
-    let max = i32::from(bit_depth.max_sample());
-    let mid = 1i32 << (u32::from(bit_depth.bits()) - 1);
-    let mut prediction = Vec::with_capacity(width.saturating_mul(height));
-    for row in 0..height {
-        for col in 0..width {
-            let center_index = (refs.above + row) * refs.width + refs.left + col;
-            let center = i32::from(refs.luma[center_index]);
-            let linear = match mh_dir {
-                0 => center,
-                1 => {
-                    let top_row = refs.above.saturating_add(row).saturating_sub(1);
-                    i32::from(refs.luma[top_row * refs.width + refs.left + col])
-                }
-                _ => {
-                    let left_col = refs.left.saturating_add(col).saturating_sub(1);
-                    i32::from(refs.luma[(refs.above + row) * refs.width + left_col])
-                }
-            };
-            let vector = [
-                linear,
-                round2_i32(center.saturating_mul(center), u32::from(bit_depth.bits())),
-                mid,
-            ];
-            let mut predicted = 0i32;
-            for k in 0..MHCCP_PARAM_COUNT {
-                predicted =
-                    predicted.saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
-            }
-            prediction.push(T::try_from_u16(predicted.clamp(0, max) as u16)?);
-        }
-    }
-    Ok(prediction)
 }
 
 #[allow(clippy::too_many_arguments)]
