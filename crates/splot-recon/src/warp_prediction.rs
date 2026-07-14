@@ -348,8 +348,40 @@ pub fn warp_predict_block_into<T: ReconSample>(
     let shear = setup_shear(params.warp_params)?;
     let projected = project_section_center(params)?;
     let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-    build_intermediate(reference, params, &shear, &projected, &mut intermediate)?;
+    if let Some(source_origin) = interior_warp_source_origin(reference, params, &projected) {
+        build_interior_intermediate(
+            reference,
+            &shear,
+            &projected,
+            source_origin,
+            &mut intermediate,
+        )?;
+    } else {
+        build_intermediate(reference, params, &shear, &projected, &mut intermediate)?;
+    }
     build_output(&shear, &projected, &intermediate, round1, output)
+}
+
+fn interior_warp_source_origin<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    projected: &ProjectedCenter,
+) -> Option<(usize, usize)> {
+    let first_col = projected.x4_int.checked_sub(7)?;
+    let last_col = projected.x4_int.checked_add(7)?;
+    let first_row = projected.y4_int.checked_sub(7)?;
+    let last_row = projected.y4_int.checked_add(7)?;
+    let source_origin = (
+        usize::try_from(first_col).ok()?,
+        usize::try_from(first_row).ok()?,
+    );
+    (first_col >= params.first_x
+        && last_col <= params.last_x
+        && first_row >= params.first_y
+        && last_row <= params.last_y
+        && usize::try_from(last_col).is_ok_and(|col| col < reference.width())
+        && usize::try_from(last_row).is_ok_and(|row| row < reference.height()))
+    .then_some(source_origin)
 }
 
 fn validate_params(params: &WarpPredictBlockParams) -> Result<()> {
@@ -580,6 +612,32 @@ fn build_intermediate<T: ReconSample>(
             }
             let row = (i1 + 7) as usize;
             let col = (i2 + 4) as usize;
+            intermediate[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, INTER_ROUND0);
+        }
+    }
+    Ok(())
+}
+
+fn build_interior_intermediate<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    shear: &Shear,
+    projected: &ProjectedCenter,
+    (first_col, first_row): (usize, usize),
+    intermediate: &mut [i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+) -> Result<()> {
+    for row in 0..WARP_INTERMEDIATE_ROWS {
+        let i1 = row as i32 - 7;
+        let source = reference.row(first_row + row);
+        for col in 0..WARPED_BLOCK_SIZE {
+            let i2 = col as i32 - 4;
+            let sx = projected.sx4 + shear.alpha * i2 + shear.beta * i1;
+            let taps = warped_filter_row(sx)?;
+            let samples = &source[first_col + col..first_col + col + WARP_FILTER_TAPS];
+            let sum = taps
+                .iter()
+                .zip(samples)
+                .map(|(&tap, &sample)| tap * i32::from(sample.to_u16()))
+                .sum();
             intermediate[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, INTER_ROUND0);
         }
     }
@@ -931,6 +989,11 @@ mod tests {
         let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
         params.warp_params[0] = -(2 << WARPEDMODEL_PREC_BITS);
         params.warp_params[1] = -(1 << WARPEDMODEL_PREC_BITS);
+        let projected = project_section_center(&params).unwrap();
+        assert_eq!(
+            interior_warp_source_origin(&view, &params, &projected),
+            None
+        );
 
         let out = crate::math::clip1_predicted_samples(
             warp_predict_block(&view, &params, false).unwrap(),
