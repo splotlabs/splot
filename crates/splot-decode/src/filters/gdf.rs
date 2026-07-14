@@ -54,6 +54,7 @@ struct GdfScratch {
     source: Vec<u16>,
     gradients: Vec<u16>,
     classes: Vec<GdfClass>,
+    base_luma: Vec<u16>,
 }
 
 std::thread_local! {
@@ -193,23 +194,6 @@ pub(crate) fn apply_frame<T: ReconSample>(
             "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
         ));
     }
-    let base_luma: Vec<u16> = workspace
-        .samples(PlaneId::Y)
-        .map_err(|_| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-            )
-        })?
-        .iter()
-        .map(|sample| sample.to_u16())
-        .collect();
-    if base_luma.len() != expected_samples {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        ));
-    }
     let ref_dst_idx = if frame_is_intra {
         GDF_INTRA_REF_DST
     } else {
@@ -251,6 +235,13 @@ pub(crate) fn apply_frame<T: ReconSample>(
         let y = band_index * MI_SIZE;
         let height = MI_SIZE.min(luma_height - y);
         let stripe_row = gdf_stripe_row(core, y, luma_height, offset)?;
+
+        let band_base_luma = &mut scratch.base_luma;
+        resize_scratch(band_base_luma, band.len(), offset)?;
+        for (dst, src) in band_base_luma.iter_mut().zip(band.iter()) {
+            *dst = src.to_u16();
+        }
+
         for &(segment_x, segment_width) in &band_segments {
             let band_block = GdfBlock {
                 x: segment_x,
@@ -327,7 +318,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 let mut block = if block_enabled {
                     compute_block(
                         &source,
-                        &base_luma,
+                        band_base_luma,
                         &scratch.classes,
                         segment_width >> 1,
                         GdfBlock {
@@ -339,17 +330,18 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     )?
                 } else {
                     let copied =
-                        copy_base_block::<T>(&base_luma, luma_width, x, y, width, height, offset)?;
+                        copy_base_block::<T>(band_base_luma, stride, x, 0, width, height, offset)?;
                     let mut block = [T::default(); MI_SIZE * MI_SIZE];
                     block[..copied.len()].copy_from_slice(&copied);
                     block
                 };
                 preserve_lossless_luma_samples(
                     lossless_grid,
-                    &base_luma,
+                    band_base_luma,
                     luma_width,
                     x,
                     y,
+                    0,
                     width,
                     height,
                     &mut block,
@@ -604,7 +596,8 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
     base_luma: &[u16],
     luma_width: usize,
     x: usize,
-    y: usize,
+    y_frame: usize,
+    y_band: usize,
     width: usize,
     height: usize,
     output: &mut [T],
@@ -616,11 +609,12 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
     for row in 0..height {
         for col in 0..width {
             let sample_x = x + col;
-            let sample_y = y + row;
-            if !lossless_grid.plane_sample_lossless(PlaneId::Y, sample_x, sample_y, 0, 0) {
+            let sample_y_frame = y_frame + row;
+            if !lossless_grid.plane_sample_lossless(PlaneId::Y, sample_x, sample_y_frame, 0, 0) {
                 continue;
             }
-            let src = sample_y
+            let sample_y_band = y_band + row;
+            let src = sample_y_band
                 .checked_mul(luma_width)
                 .and_then(|start| start.checked_add(sample_x))
                 .and_then(|index| base_luma.get(index).copied())
@@ -964,25 +958,43 @@ impl<'a> GdfSource<'a> {
                 .checked_add(block.frame_width)
                 .ok_or_else(source_error)?;
             let source_row = source.get(row_start..row_end).ok_or_else(source_error)?;
-            for col in 0..width {
-                let x = origin_x
-                    .checked_add(isize::try_from(col).map_err(|_| {
-                        gdf_filter_error(
-                            offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                        )
-                    })?)
-                    .ok_or_else(|| {
-                        gdf_filter_error(
-                            offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                        )
-                    })?;
-                let x = x.clamp(left.x as isize, right.x as isize) as usize;
-                let sample = source_row.get(x).copied().ok_or_else(source_error)?;
-                samples[row * width + col] = T::try_from_u16(sample)
-                    .map_err(|_| source_error())?
-                    .to_u16();
+            let left_clamped_count = (left.x as isize - origin_x).max(0) as usize;
+            let middle_count = ((right.x as isize - origin_x).min(width as isize)
+                - left_clamped_count as isize)
+                .max(0) as usize;
+            let right_clamped_count = width - left_clamped_count - middle_count;
+
+            let left_val = source_row.get(left.x).copied().ok_or_else(source_error)?;
+            let left_val_t = T::try_from_u16(left_val)
+                .map_err(|_| source_error())?
+                .to_u16();
+
+            let right_val = source_row.get(right.x).copied().ok_or_else(source_error)?;
+            let right_val_t = T::try_from_u16(right_val)
+                .map_err(|_| source_error())?
+                .to_u16();
+
+            let row_offset = row * width;
+
+            if left_clamped_count > 0 {
+                samples[row_offset..row_offset + left_clamped_count].fill(left_val_t);
+            }
+
+            if middle_count > 0 {
+                let src_start = (origin_x + left_clamped_count as isize) as usize;
+                let src_slice = source_row
+                    .get(src_start..src_start + middle_count)
+                    .ok_or_else(source_error)?;
+                let dst_slice = &mut samples[row_offset + left_clamped_count
+                    ..row_offset + left_clamped_count + middle_count];
+                for (dst, &src) in dst_slice.iter_mut().zip(src_slice.iter()) {
+                    *dst = T::try_from_u16(src).map_err(|_| source_error())?.to_u16();
+                }
+            }
+
+            if right_clamped_count > 0 {
+                samples[row_offset + left_clamped_count + middle_count..row_offset + width]
+                    .fill(right_val_t);
             }
         }
         Ok(Self {
@@ -1001,7 +1013,9 @@ impl<'a> GdfSource<'a> {
         if col >= self.stride {
             return 0;
         }
-        self.get_at(col, row)
+        self.samples
+            .get(row * self.stride + col)
+            .map_or(0, |&sample| i32::from(sample))
     }
 
     fn relative_position(&self, x: usize, y: usize) -> Option<(usize, usize)> {
@@ -1012,13 +1026,6 @@ impl<'a> GdfSource<'a> {
         let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
         let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
         Some((col, row))
-    }
-
-    fn get_at(&self, col: usize, row: usize) -> i32 {
-        debug_assert!(col < self.stride);
-        self.samples
-            .get(row * self.stride + col)
-            .map_or(0, |&sample| i32::from(sample))
     }
 }
 
@@ -1043,24 +1050,62 @@ fn band_gradients(
         )
     })?;
     resize_scratch(grad, len, offset)?;
+
+    let stride = source.stride;
+    let col_start_idx = source_origin.0 - 2;
+    let len_to_slice = cols + 2;
+
     for i in 0..rows {
-        for j in 0..cols {
-            let sample_col = source_origin.0 - 1 + j;
-            let sample_row = source_origin.1 - 1 + i;
-            for (direction, (delta_y, delta_x)) in [(1_isize, 0_isize), (0, 1), (1, 1), (-1, 1)]
-                .into_iter()
-                .enumerate()
+        let sample_row = source_origin.1 - 1 + i;
+
+        let prev_start = (sample_row - 1) * stride + col_start_idx;
+        let curr_start = sample_row * stride + col_start_idx;
+        let next_start = (sample_row + 1) * stride + col_start_idx;
+
+        let prev_slice = &source.samples[prev_start..prev_start + len_to_slice];
+        let curr_slice = &source.samples[curr_start..curr_start + len_to_slice];
+        let next_slice = &source.samples[next_start..next_start + len_to_slice];
+
+        let prev_wins = prev_slice.windows(3);
+        let curr_wins = curr_slice.windows(3);
+        let next_wins = next_slice.windows(3);
+
+        for (j, ((p_win, c_win), n_win)) in prev_wins.zip(curr_wins).zip(next_wins).enumerate() {
+            let err = || {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+                )
+            };
+            let p: &[u16; 3] = p_win.try_into().map_err(|_| err())?;
+            let c: &[u16; 3] = c_win.try_into().map_err(|_| err())?;
+            let n: &[u16; 3] = n_win.try_into().map_err(|_| err())?;
+
+            let center = i32::from(c[1]);
+
             {
-                let before = source.get_at(
-                    sample_col.wrapping_add_signed(-delta_x),
-                    sample_row.wrapping_add_signed(-delta_y),
-                );
-                let center = source.get_at(sample_col, sample_row);
-                let after = source.get_at(
-                    sample_col.wrapping_add_signed(delta_x),
-                    sample_row.wrapping_add_signed(delta_y),
-                );
-                grad[direction * plane + i * cols + j] =
+                let before = i32::from(p[1]);
+                let after = i32::from(n[1]);
+                grad[i * cols + j] = (center * 2 - before - after).unsigned_abs() as u16;
+            }
+
+            {
+                let before = i32::from(c[0]);
+                let after = i32::from(c[2]);
+                grad[plane + i * cols + j] = (center * 2 - before - after).unsigned_abs() as u16;
+            }
+
+            {
+                let before = i32::from(p[0]);
+                let after = i32::from(n[2]);
+                grad[2 * plane + i * cols + j] =
+                    (center * 2 - before - after).unsigned_abs() as u16;
+            }
+
+            {
+                let before = i32::from(n[0]);
+                let after = i32::from(p[2]);
+                grad[3 * plane + i * cols + j] =
                     (center * 2 - before - after).unsigned_abs() as u16;
             }
         }
@@ -1124,7 +1169,7 @@ fn band_classes(
             let mut strengths = [0_u32; GDF_DIRECTIONS];
             for direction in 0..GDF_DIRECTIONS {
                 let plane_slice = &grad[direction * plane..direction * plane + plane];
-                strengths[direction] = grad_sum(plane_slice, grad_cols, i * 2, j * 2, 4, 4);
+                strengths[direction] = grad_sum_4x4(plane_slice, grad_cols, i * 2, j * 2);
             }
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
@@ -1156,22 +1201,15 @@ fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COOR
     })?;
     let mut offsets = [0_usize; GDF_COORDS.len()];
     for (slot, &(dy, dx)) in offsets.iter_mut().zip(GDF_COORDS.iter()) {
-        *slot = dy
-            .checked_mul(stride)
-            .and_then(|row| row.checked_add(dx))
-            .and_then(|index| usize::try_from(index).ok())
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                )
-            })?;
+        let val = dy * stride + dx;
+        *slot = usize::try_from(val).map_err(|_| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
+            )
+        })?;
     }
     Ok(offsets)
-}
-
-fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
-    samples.get(start..start + len)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1192,27 +1230,84 @@ fn gdf_width4_row(
         )
     };
     let base = (source_origin.1 + row) * source.stride + source_origin.0;
-    let centers = exact_slice(source.samples, base, MI_SIZE).ok_or_else(source_error)?;
-    let center_values: [i32; MI_SIZE] = core::array::from_fn(|col| i32::from(centers[col]));
-    let mut gdf_idx: [[i32; 3]; MI_SIZE] =
-        core::array::from_fn(|col| classes[col >> 1].strength_contribution);
+
+    let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
+    let samples = source.samples;
+    if base < max_tap || base + max_tap + MI_SIZE > samples.len() {
+        return Err(source_error());
+    }
+
+    let centers: &[u16; 4] = (&samples[base..base + MI_SIZE])
+        .try_into()
+        .map_err(|_| source_error())?;
+    let center_values: [i32; MI_SIZE] = [
+        i32::from(centers[0]),
+        i32::from(centers[1]),
+        i32::from(centers[2]),
+        i32::from(centers[3]),
+    ];
+    let mut gdf_idx: [[i32; 3]; MI_SIZE] = [
+        classes[0].strength_contribution,
+        classes[0].strength_contribution,
+        classes[1].strength_contribution,
+        classes[1].strength_contribution,
+    ];
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
+
+    let cls0 = usize::from(classes[0].index);
+    let cls1 = usize::from(classes[1].index);
+
     for (k, &tap) in tap_offsets.iter().enumerate() {
-        let negative = exact_slice(source.samples, base - tap, MI_SIZE).ok_or_else(source_error)?;
-        let positive = exact_slice(source.samples, base + tap, MI_SIZE).ok_or_else(source_error)?;
-        for col in 0..MI_SIZE {
-            let cls = usize::from(classes[col >> 1].index);
-            let alpha = alpha_table[k][cls];
-            let above =
-                ((i32::from(negative[col]) - center_values[col]) << shift).clamp(-alpha, alpha);
-            let below =
-                ((i32::from(positive[col]) - center_values[col]) << shift).clamp(-alpha, alpha);
+        let neg0 = i32::from(samples[base - tap]);
+        let neg1 = i32::from(samples[base - tap + 1]);
+        let neg2 = i32::from(samples[base - tap + 2]);
+        let neg3 = i32::from(samples[base - tap + 3]);
+
+        let pos0 = i32::from(samples[base + tap]);
+        let pos1 = i32::from(samples[base + tap + 1]);
+        let pos2 = i32::from(samples[base + tap + 2]);
+        let pos3 = i32::from(samples[base + tap + 3]);
+
+        let alpha0 = alpha_table[k][cls0];
+        let alpha1 = alpha_table[k][cls1];
+
+        // col = 0
+        {
+            let above = ((neg0 - center_values[0]) << shift).clamp(-alpha0, alpha0);
+            let below = ((pos0 - center_values[0]) << shift).clamp(-alpha0, alpha0);
             let comb = (above + below).clamp(-512, 511);
-            for (idx, total) in gdf_idx[col].iter_mut().enumerate() {
-                *total += comb * weight_table[idx][k][cls];
-            }
+            gdf_idx[0][0] += comb * weight_table[0][k][cls0];
+            gdf_idx[0][1] += comb * weight_table[1][k][cls0];
+            gdf_idx[0][2] += comb * weight_table[2][k][cls0];
+        }
+        // col = 1
+        {
+            let above = ((neg1 - center_values[1]) << shift).clamp(-alpha0, alpha0);
+            let below = ((pos1 - center_values[1]) << shift).clamp(-alpha0, alpha0);
+            let comb = (above + below).clamp(-512, 511);
+            gdf_idx[1][0] += comb * weight_table[0][k][cls0];
+            gdf_idx[1][1] += comb * weight_table[1][k][cls0];
+            gdf_idx[1][2] += comb * weight_table[2][k][cls0];
+        }
+        // col = 2
+        {
+            let above = ((neg2 - center_values[2]) << shift).clamp(-alpha1, alpha1);
+            let below = ((pos2 - center_values[2]) << shift).clamp(-alpha1, alpha1);
+            let comb = (above + below).clamp(-512, 511);
+            gdf_idx[2][0] += comb * weight_table[0][k][cls1];
+            gdf_idx[2][1] += comb * weight_table[1][k][cls1];
+            gdf_idx[2][2] += comb * weight_table[2][k][cls1];
+        }
+        // col = 3
+        {
+            let above = ((neg3 - center_values[3]) << shift).clamp(-alpha1, alpha1);
+            let below = ((pos3 - center_values[3]) << shift).clamp(-alpha1, alpha1);
+            let comb = (above + below).clamp(-512, 511);
+            gdf_idx[3][0] += comb * weight_table[0][k][cls1];
+            gdf_idx[3][1] += comb * weight_table[1][k][cls1];
+            gdf_idx[3][2] += comb * weight_table[2][k][cls1];
         }
     }
     Ok(core::array::from_fn(|col| {
@@ -1267,13 +1362,27 @@ fn finish_gdf_sample(
     } else {
         5_i32
     };
-    let mut pos = 0_usize;
-    for (idx, value) in gdf_idx.iter().enumerate() {
-        let biased = (*value + GDF_BIAS[block.ref_dst_idx][block.qp_idx][idx]) * scale;
-        let v = round2_signed_i32(biased, 15);
-        let digit = v.clamp(-scale, scale - 1) + scale;
-        pos = pos * (scale as usize * 2) + usize::try_from(digit).unwrap_or_default();
-    }
+
+    let bias = &GDF_BIAS[block.ref_dst_idx][block.qp_idx];
+
+    // idx = 0
+    let biased0 = (gdf_idx[0] + bias[0]) * scale;
+    let v0 = round2_signed_i32(biased0, 15);
+    let digit0 = (v0.clamp(-scale, scale - 1) + scale) as usize;
+
+    // idx = 1
+    let biased1 = (gdf_idx[1] + bias[1]) * scale;
+    let v1 = round2_signed_i32(biased1, 15);
+    let digit1 = (v1.clamp(-scale, scale - 1) + scale) as usize;
+
+    // idx = 2
+    let biased2 = (gdf_idx[2] + bias[2]) * scale;
+    let v2 = round2_signed_i32(biased2, 15);
+    let digit2 = (v2.clamp(-scale, scale - 1) + scale) as usize;
+
+    let scale_u = scale as usize * 2;
+    let pos = (digit0 * scale_u + digit1) * scale_u + digit2;
+
     let err = if block.ref_dst_idx == GDF_INTRA_REF_DST {
         GDF_INTRA_ERROR[block.qp_idx][pos]
     } else {
@@ -1283,7 +1392,7 @@ fn finish_gdf_sample(
         err * block.pix_scale,
         12 - u32::from(block.bit_depth.bits()),
     );
-    let base_index = (block.y + row) * block.frame_width + block.x + col;
+    let base_index = row * block.frame_width + block.x + col;
     let base = base_luma
         .get(base_index)
         .copied()
@@ -1292,6 +1401,37 @@ fn finish_gdf_sample(
     (base + residual).clamp(0, block.max_sample) as u16
 }
 
+#[inline]
+fn grad_sum_4x4(grad: &[u16], stride: usize, row: usize, col: usize) -> u32 {
+    let offset0 = row * stride + col;
+    let offset1 = (row + 1) * stride + col;
+    let offset2 = (row + 2) * stride + col;
+    let offset3 = (row + 3) * stride + col;
+
+    let r0: &[u16; 4] = (&grad[offset0..offset0 + 4]).try_into().unwrap_or(&[0; 4]);
+    let r1: &[u16; 4] = (&grad[offset1..offset1 + 4]).try_into().unwrap_or(&[0; 4]);
+    let r2: &[u16; 4] = (&grad[offset2..offset2 + 4]).try_into().unwrap_or(&[0; 4]);
+    let r3: &[u16; 4] = (&grad[offset3..offset3 + 4]).try_into().unwrap_or(&[0; 4]);
+
+    u32::from(r0[0])
+        + u32::from(r0[1])
+        + u32::from(r0[2])
+        + u32::from(r0[3])
+        + u32::from(r1[0])
+        + u32::from(r1[1])
+        + u32::from(r1[2])
+        + u32::from(r1[3])
+        + u32::from(r2[0])
+        + u32::from(r2[1])
+        + u32::from(r2[2])
+        + u32::from(r2[3])
+        + u32::from(r3[0])
+        + u32::from(r3[1])
+        + u32::from(r3[2])
+        + u32::from(r3[3])
+}
+
+#[cfg(test)]
 fn grad_sum(
     grad: &[u16],
     stride: usize,
@@ -1617,6 +1757,7 @@ mod tests {
             Some(&grid),
             &base,
             8,
+            4,
             4,
             4,
             8,
