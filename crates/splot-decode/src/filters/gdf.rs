@@ -17,6 +17,7 @@ use splot_recon::{
 
 use crate::Result;
 use crate::filters::wienerns_lr::wienerns_lr_selectable_transform_record_error_reason;
+use crate::support::reusable_scratch::with_reusable_scratch;
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -45,6 +46,20 @@ const GDF_COORDS: [(isize, isize); 18] = [
 const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
 const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
+const GDF_SCRATCH_ALLOCATION_REASON: &str =
+    "unsupported_wienerns_lr_selectable_transform_records_gdf_allocation";
+
+#[derive(Default)]
+struct GdfScratch {
+    source: Vec<u16>,
+    gradients: Vec<u16>,
+    classes: Vec<GdfClass>,
+}
+
+std::thread_local! {
+    static GDF_SCRATCH: std::cell::RefCell<GdfScratch> =
+        std::cell::RefCell::new(GdfScratch::default());
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GdfReferenceContext {
@@ -229,7 +244,10 @@ pub(crate) fn apply_frame<T: ReconSample>(
             )
         })?;
     let band_count = luma_height.div_ceil(MI_SIZE);
-    let compute_band = |band_index: usize, band: &mut [T]| -> Result<()> {
+    let compute_band = |scratch: &mut GdfScratch,
+                        band_index: usize,
+                        band: &mut [T]|
+     -> Result<()> {
         let y = band_index * MI_SIZE;
         let height = MI_SIZE.min(luma_height - y);
         let stripe_row = gdf_stripe_row(core, y, luma_height, offset)?;
@@ -249,8 +267,14 @@ pub(crate) fn apply_frame<T: ReconSample>(
             };
             let bounds =
                 source_bounds(core, &band_block, disable_loopfilters_across_tiles, offset)?;
-            let source =
-                GdfSource::materialize(curr_luma, cdef_luma, &bounds, &band_block, offset)?;
+            let source = GdfSource::materialize::<T>(
+                &mut scratch.source,
+                curr_luma,
+                cdef_luma,
+                &bounds,
+                &band_block,
+                offset,
+            )?;
             let band_origin = source.relative_position(segment_x, y).ok_or_else(|| {
                 gdf_filter_error(
                     offset,
@@ -258,8 +282,21 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 )
             })?;
             let grad_cols = segment_width + 2;
-            let grad = band_gradients(&source, band_origin, height + 2, grad_cols);
-            let classes = band_classes(&grad, grad_cols, &band_block);
+            band_gradients(
+                &source,
+                band_origin,
+                height + 2,
+                grad_cols,
+                &mut scratch.gradients,
+                offset,
+            )?;
+            band_classes(
+                &scratch.gradients,
+                grad_cols,
+                &band_block,
+                &mut scratch.classes,
+                offset,
+            )?;
             let segment_end = segment_x.checked_add(segment_width).ok_or_else(|| {
                 gdf_filter_error(
                     offset,
@@ -291,7 +328,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     compute_block(
                         &source,
                         &base_luma,
-                        &classes,
+                        &scratch.classes,
                         segment_width >> 1,
                         GdfBlock {
                             x,
@@ -336,7 +373,9 @@ pub(crate) fn apply_frame<T: ReconSample>(
             .enumerate()
             .try_for_each(|(band_index, band)| {
                 tally.note_worker();
-                compute_band(band_index, band)
+                with_reusable_scratch(&GDF_SCRATCH, |scratch| {
+                    compute_band(scratch, band_index, band)
+                })
             });
         crate::timing::report_detail(
             "gdf_bands",
@@ -350,10 +389,12 @@ pub(crate) fn apply_frame<T: ReconSample>(
         );
         result
     } else {
-        luma_samples
-            .chunks_mut(band_len)
-            .enumerate()
-            .try_for_each(|(band_index, band)| compute_band(band_index, band))
+        with_reusable_scratch(&GDF_SCRATCH, |scratch| {
+            luma_samples
+                .chunks_mut(band_len)
+                .enumerate()
+                .try_for_each(|(band_index, band)| compute_band(scratch, band_index, band))
+        })
     }
 }
 
@@ -457,7 +498,7 @@ struct GdfBlock {
 }
 
 fn compute_block<T: ReconSample>(
-    source: &GdfSource<T>,
+    source: &GdfSource<'_>,
     base_luma: &[u16],
     classes: &[GdfClass],
     class_cols: usize,
@@ -788,15 +829,29 @@ fn source_bounds(
     })
 }
 
-struct GdfSource<T> {
-    samples: Vec<T>,
+fn resize_scratch<T: Clone + Default>(
+    buffer: &mut Vec<T>,
+    len: usize,
+    offset: ByteOffset,
+) -> Result<()> {
+    buffer.clear();
+    buffer
+        .try_reserve_exact(len)
+        .map_err(|_| gdf_filter_error(offset, GDF_SCRATCH_ALLOCATION_REASON))?;
+    buffer.resize(len, T::default());
+    Ok(())
+}
+
+struct GdfSource<'a> {
+    samples: &'a [u16],
     stride: usize,
     origin_x: isize,
     origin_y: isize,
 }
 
-impl<T: ReconSample> GdfSource<T> {
-    fn materialize(
+impl<'a> GdfSource<'a> {
+    fn materialize<T: ReconSample>(
+        samples: &'a mut Vec<u16>,
         curr_luma: &[u16],
         cdef_luma: &[u16],
         bounds: &LoopRestorationSourceBounds,
@@ -821,6 +876,13 @@ impl<T: ReconSample> GdfSource<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
                 )
             })?;
+        let sample_count = width.checked_mul(height).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
+            )
+        })?;
+        resize_scratch(samples, sample_count, offset)?;
         let radius = isize::try_from(GDF_READ_RADIUS).map_err(|_| {
             gdf_filter_error(
                 offset,
@@ -845,7 +907,6 @@ impl<T: ReconSample> GdfSource<T> {
                 "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
             )
         };
-        let mut samples = Vec::with_capacity(width * height);
         for row in 0..height {
             let y = origin_y
                 .checked_add(isize::try_from(row).map_err(|_| {
@@ -895,16 +956,13 @@ impl<T: ReconSample> GdfSource<T> {
                     })?;
                 let x = x.clamp(left.x as isize, right.x as isize) as usize;
                 let sample = source_row.get(x).copied().ok_or_else(source_error)?;
-                samples.push(T::try_from_u16(sample).map_err(|_| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-                    )
-                })?);
+                samples[row * width + col] = T::try_from_u16(sample)
+                    .map_err(|_| source_error())?
+                    .to_u16();
             }
         }
         Ok(Self {
-            samples,
+            samples: samples.as_slice(),
             stride: width,
             origin_x,
             origin_y,
@@ -936,18 +994,31 @@ impl<T: ReconSample> GdfSource<T> {
         debug_assert!(col < self.stride);
         self.samples
             .get(row * self.stride + col)
-            .map_or(0, |sample| i32::from(sample.to_u16()))
+            .map_or(0, |&sample| i32::from(sample))
     }
 }
 
-fn band_gradients<T: ReconSample>(
-    source: &GdfSource<T>,
+fn band_gradients(
+    source: &GdfSource<'_>,
     source_origin: (usize, usize),
     rows: usize,
     cols: usize,
-) -> Vec<u16> {
-    let plane = rows * cols;
-    let mut grad = vec![0_u16; GDF_DIRECTIONS * plane];
+    grad: &mut Vec<u16>,
+    offset: ByteOffset,
+) -> Result<()> {
+    let plane = rows.checked_mul(cols).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    let len = GDF_DIRECTIONS.checked_mul(plane).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    resize_scratch(grad, len, offset)?;
     for i in 0..rows {
         for j in 0..cols {
             let sample_col = source_origin.0 - 1 + j;
@@ -970,7 +1041,7 @@ fn band_gradients<T: ReconSample>(
             }
         }
     }
-    grad
+    Ok(())
 }
 
 #[derive(Clone, Copy, Default)]
@@ -979,10 +1050,37 @@ struct GdfClass {
     strength_contribution: [i32; 3],
 }
 
-fn band_classes(grad: &[u16], grad_cols: usize, block: &GdfBlock) -> Vec<GdfClass> {
+fn band_classes(
+    grad: &[u16],
+    grad_cols: usize,
+    block: &GdfBlock,
+    classes: &mut Vec<GdfClass>,
+    offset: ByteOffset,
+) -> Result<()> {
     let class_cols = block.width >> 1;
     let class_rows = block.height >> 1;
-    let plane = (block.height + 2) * grad_cols;
+    let plane = block
+        .height
+        .checked_add(2)
+        .and_then(|rows| rows.checked_mul(grad_cols))
+        .ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+    let grad_len = GDF_DIRECTIONS.checked_mul(plane).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    if grad.len() != grad_len {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        ));
+    }
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let strength_shift = if block.bit_depth == BitDepth::Eight {
@@ -990,7 +1088,13 @@ fn band_classes(grad: &[u16], grad_cols: usize, block: &GdfBlock) -> Vec<GdfClas
     } else {
         4
     };
-    let mut classes = vec![GdfClass::default(); class_rows * class_cols];
+    let len = class_rows.checked_mul(class_cols).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    resize_scratch(classes, len, offset)?;
     for i in 0..class_rows {
         for j in 0..class_cols {
             let mut strengths = [0_u32; GDF_DIRECTIONS];
@@ -1016,7 +1120,7 @@ fn band_classes(grad: &[u16], grad_cols: usize, block: &GdfBlock) -> Vec<GdfClas
             };
         }
     }
-    classes
+    Ok(())
 }
 
 fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COORDS.len()]> {
@@ -1043,9 +1147,9 @@ fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COOR
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gdf_sample<T: ReconSample>(
+fn gdf_sample(
     base_luma: &[u16],
-    source: &GdfSource<T>,
+    source: &GdfSource<'_>,
     tap_offsets: &[usize; GDF_COORDS.len()],
     block: &GdfBlock,
     row: usize,
@@ -1054,9 +1158,9 @@ fn gdf_sample<T: ReconSample>(
     class: &GdfClass,
 ) -> u16 {
     let (source_col, source_row) = source_position;
-    let samples = source.samples.as_slice();
+    let samples = source.samples;
     let base = source_row * source.stride + source_col;
-    let sample2 = i32::from(samples[base].to_u16());
+    let sample2 = i32::from(samples[base]);
     let cls = usize::from(class.index);
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
@@ -1064,8 +1168,8 @@ fn gdf_sample<T: ReconSample>(
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     for (k, &tap) in tap_offsets.iter().enumerate() {
         let alpha = alpha_table[k][cls];
-        let sample3 = i32::from(samples[base - tap].to_u16());
-        let sample4 = i32::from(samples[base + tap].to_u16());
+        let sample3 = i32::from(samples[base - tap]);
+        let sample4 = i32::from(samples[base + tap]);
         let above = ((sample3 - sample2) << shift).clamp(-alpha, alpha);
         let below = ((sample4 - sample2) << shift).clamp(-alpha, alpha);
         let comb = (above + below).clamp(-512, 511);
@@ -1188,11 +1292,13 @@ fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::D
 #[cfg(test)]
 mod tests {
     use super::{
-        GDF_READ_RADIUS, GdfBlock, GdfBlockGrid, GdfReferenceContext, GdfSource,
-        RESTRICTED_ORDER_HINT, band_classes, band_gradients, compute_block, copy_base_block,
-        gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_row_for_tile_end,
-        grad_sum, preserve_lossless_luma_samples, tile_axis_bounds,
+        GDF_READ_RADIUS, GDF_SCRATCH_ALLOCATION_REASON, GdfBlock, GdfBlockGrid,
+        GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes, band_gradients,
+        compute_block, copy_base_block, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
+        gdf_stripe_row_for_tile_end, grad_sum, preserve_lossless_luma_samples, resize_scratch,
+        tile_axis_bounds,
     };
+    use crate::error::DecodeError;
     use crate::filters::deblock::DeblockBlock;
     use crate::filters::lossless::LosslessBlockGrid;
     use splot_core::span::ByteOffset;
@@ -1306,8 +1412,15 @@ mod tests {
             pix_scale: 1,
             max_sample: 1_023,
         };
-        let band_result =
-            GdfSource::<u16>::materialize(&curr, &cdef, &bounds, &band_block, ByteOffset::new(0));
+        let mut band_samples = Vec::new();
+        let band_result = GdfSource::materialize::<u16>(
+            &mut band_samples,
+            &curr,
+            &cdef,
+            &bounds,
+            &band_block,
+            ByteOffset::new(0),
+        );
         assert!(band_result.is_ok());
         let Ok(band_source) = band_result else {
             return;
@@ -1319,8 +1432,15 @@ mod tests {
                 width: 4,
                 ..band_block
             };
-            let local_result =
-                GdfSource::<u16>::materialize(&curr, &cdef, &bounds, &block, ByteOffset::new(0));
+            let mut local_samples = Vec::new();
+            let local_result = GdfSource::materialize::<u16>(
+                &mut local_samples,
+                &curr,
+                &cdef,
+                &bounds,
+                &block,
+                ByteOffset::new(0),
+            );
             assert!(local_result.is_ok());
             let Ok(local_source) = local_result else {
                 return;
@@ -1463,8 +1583,15 @@ mod tests {
             pix_scale: 4,
             max_sample: 1023,
         };
-        let source_result =
-            GdfSource::<u16>::materialize(&curr, &curr, &bounds, &block, ByteOffset::new(0));
+        let mut source_samples = Vec::new();
+        let source_result = GdfSource::materialize::<u16>(
+            &mut source_samples,
+            &curr,
+            &curr,
+            &bounds,
+            &block,
+            ByteOffset::new(0),
+        );
         assert!(source_result.is_ok());
         let Ok(source) = source_result else {
             return;
@@ -1474,14 +1601,26 @@ mod tests {
         };
         let grad_cols = block.width + 2;
         let plane = (block.height + 2) * grad_cols;
-        let grad = band_gradients(&source, origin, block.height + 2, grad_cols);
+        let mut grad = Vec::new();
+        let grad_result = band_gradients(
+            &source,
+            origin,
+            block.height + 2,
+            grad_cols,
+            &mut grad,
+            ByteOffset::new(0),
+        );
+        assert!(grad_result.is_ok());
         assert!(grad.iter().all(|&value| value <= 2046));
         assert!(
             grad.chunks_exact(plane)
                 .all(|direction| grad_sum(direction, grad_cols, 0, 0, 4, 4) <= 32_736)
         );
 
-        let classes = band_classes(&grad, grad_cols, &block);
+        let mut classes = Vec::new();
+        let classes_result =
+            band_classes(&grad, grad_cols, &block, &mut classes, ByteOffset::new(0));
+        assert!(classes_result.is_ok());
         let filtered = compute_block::<u16>(
             &source,
             &curr,
@@ -1492,5 +1631,30 @@ mod tests {
         );
         assert!(filtered.is_ok());
         assert!(filtered.is_ok_and(|samples| samples.into_iter().all(|sample| sample <= 1023)));
+    }
+
+    #[test]
+    fn scratch_resize_reuses_storage_and_clears_old_values() {
+        let mut scratch = Vec::new();
+        assert!(resize_scratch(&mut scratch, 8, ByteOffset::new(0)).is_ok());
+        scratch.fill(9_u16);
+        let capacity = scratch.capacity();
+
+        assert!(resize_scratch(&mut scratch, 4, ByteOffset::new(0)).is_ok());
+        assert_eq!(scratch, vec![0; 4]);
+        assert_eq!(scratch.capacity(), capacity);
+    }
+
+    #[test]
+    fn scratch_capacity_overflow_is_typed() {
+        let mut scratch = vec![1_u8];
+        let result = resize_scratch(&mut scratch, usize::MAX, ByteOffset::new(17));
+
+        assert!(matches!(
+            result,
+            Err(DecodeError::UnsupportedFeature { unsupported })
+                if unsupported.reason() == GDF_SCRATCH_ALLOCATION_REASON
+        ));
+        assert!(scratch.is_empty());
     }
 }
