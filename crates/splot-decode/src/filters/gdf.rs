@@ -550,6 +550,30 @@ fn compute_block<T: ReconSample>(
     }
     let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
+    if block.width == MI_SIZE {
+        for row in 0..block.height {
+            let class_base = (row >> 1) * class_cols + class_col_base;
+            let samples = gdf_width4_row(
+                base_luma,
+                source,
+                &tap_offsets,
+                [classes[class_base], classes[class_base + 1]],
+                &block,
+                row,
+                source_origin,
+                offset,
+            )?;
+            for (col, sample) in samples.into_iter().enumerate() {
+                output[row * MI_SIZE + col] = T::try_from_u16(sample).map_err(|_| {
+                    gdf_filter_error(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
+                    )
+                })?;
+            }
+        }
+        return Ok(output);
+    }
     for row in 0..block.height {
         for col in 0..block.width {
             let class = &classes[(row >> 1) * class_cols + class_col_base + (col >> 1)];
@@ -1146,6 +1170,56 @@ fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COOR
     Ok(offsets)
 }
 
+fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
+    samples.get(start..start + len)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn gdf_width4_row(
+    base_luma: &[u16],
+    source: &GdfSource<'_>,
+    tap_offsets: &[usize; GDF_COORDS.len()],
+    classes: [GdfClass; 2],
+    block: &GdfBlock,
+    row: usize,
+    source_origin: (usize, usize),
+    offset: ByteOffset,
+) -> Result<[u16; MI_SIZE]> {
+    let source_error = || {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+        )
+    };
+    let base = (source_origin.1 + row) * source.stride + source_origin.0;
+    let centers = exact_slice(source.samples, base, MI_SIZE).ok_or_else(source_error)?;
+    let center_values: [i32; MI_SIZE] = core::array::from_fn(|col| i32::from(centers[col]));
+    let mut gdf_idx: [[i32; 3]; MI_SIZE] =
+        core::array::from_fn(|col| classes[col >> 1].strength_contribution);
+    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
+    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+    let shift = u32::from(10 - block.bit_depth.bits().min(10));
+    for (k, &tap) in tap_offsets.iter().enumerate() {
+        let negative = exact_slice(source.samples, base - tap, MI_SIZE).ok_or_else(source_error)?;
+        let positive = exact_slice(source.samples, base + tap, MI_SIZE).ok_or_else(source_error)?;
+        for col in 0..MI_SIZE {
+            let cls = usize::from(classes[col >> 1].index);
+            let alpha = alpha_table[k][cls];
+            let above =
+                ((i32::from(negative[col]) - center_values[col]) << shift).clamp(-alpha, alpha);
+            let below =
+                ((i32::from(positive[col]) - center_values[col]) << shift).clamp(-alpha, alpha);
+            let comb = (above + below).clamp(-512, 511);
+            for (idx, total) in gdf_idx[col].iter_mut().enumerate() {
+                *total += comb * weight_table[idx][k][cls];
+            }
+        }
+    }
+    Ok(core::array::from_fn(|col| {
+        finish_gdf_sample(base_luma, block, row, col, &gdf_idx[col])
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn gdf_sample(
     base_luma: &[u16],
@@ -1178,6 +1252,16 @@ fn gdf_sample(
         }
     }
 
+    finish_gdf_sample(base_luma, block, row, col, &gdf_idx)
+}
+
+fn finish_gdf_sample(
+    base_luma: &[u16],
+    block: &GdfBlock,
+    row: usize,
+    col: usize,
+    gdf_idx: &[i32; 3],
+) -> u16 {
     let scale = if block.ref_dst_idx == GDF_INTRA_REF_DST {
         8_i32
     } else {
@@ -1292,10 +1376,11 @@ fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::D
 #[cfg(test)]
 mod tests {
     use super::{
-        GDF_READ_RADIUS, GDF_SCRATCH_ALLOCATION_REASON, GdfBlock, GdfBlockGrid,
-        GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes, band_gradients,
-        compute_block, copy_base_block, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
-        gdf_stripe_row_for_tile_end, grad_sum, preserve_lossless_luma_samples, resize_scratch,
+        GDF_ALPHA, GDF_READ_RADIUS, GDF_SCRATCH_ALLOCATION_REASON, GdfBlock, GdfBlockGrid,
+        GdfClass, GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
+        band_gradients, compute_block, copy_base_block, gdf_inter_ref_dst_idx,
+        gdf_inter_ref_dst_idx_from_max_dist, gdf_sample, gdf_stripe_row_for_tile_end,
+        gdf_tap_offsets, gdf_width4_row, grad_sum, preserve_lossless_luma_samples, resize_scratch,
         tile_axis_bounds,
     };
     use crate::error::DecodeError;
@@ -1656,5 +1741,113 @@ mod tests {
                 if unsupported.reason() == GDF_SCRATCH_ALLOCATION_REASON
         ));
         assert!(scratch.is_empty());
+    }
+
+    #[test]
+    fn width_four_row_matches_legacy_samples_for_all_tables_and_classes() {
+        let source_origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
+        let stride = 4 + GDF_READ_RADIUS * 2;
+        let source_len = stride * (1 + GDF_READ_RADIUS * 2);
+        let offset = ByteOffset::new(0);
+        let tap_offsets_result = gdf_tap_offsets(stride, offset);
+        assert!(tap_offsets_result.is_ok());
+        let Ok(tap_offsets) = tap_offsets_result else {
+            return;
+        };
+
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            let max_sample = bit_depth.max_sample();
+            for source_case in 0..4 {
+                let samples: Vec<u16> = (0..source_len)
+                    .map(|index| match source_case {
+                        0 => 0,
+                        1 => max_sample,
+                        2 => {
+                            if index.is_multiple_of(2) {
+                                0
+                            } else {
+                                max_sample
+                            }
+                        }
+                        _ => {
+                            ((index * 73 + index / stride * 29) % (usize::from(max_sample) + 1))
+                                as u16
+                        }
+                    })
+                    .collect();
+                let source = GdfSource {
+                    samples: &samples,
+                    stride,
+                    origin_x: 0,
+                    origin_y: 0,
+                };
+                let base_luma = [0, max_sample, max_sample / 2, max_sample];
+                for (ref_dst_idx, alpha_by_qp) in GDF_ALPHA.iter().enumerate() {
+                    for qp_idx in 0..alpha_by_qp.len() {
+                        let block = GdfBlock {
+                            x: 0,
+                            y: 0,
+                            width: 4,
+                            height: 1,
+                            frame_width: 4,
+                            frame_height: 1,
+                            bit_depth,
+                            qp_idx,
+                            ref_dst_idx,
+                            pix_scale: source_case + 1,
+                            max_sample: i32::from(max_sample),
+                        };
+                        for class_index in 0..4_u8 {
+                            let class_delta = i32::from(class_index);
+                            let classes = [
+                                GdfClass {
+                                    index: class_index,
+                                    strength_contribution: [
+                                        -511 + class_delta,
+                                        class_delta,
+                                        511 - class_delta,
+                                    ],
+                                },
+                                GdfClass {
+                                    index: 3 - class_index,
+                                    strength_contribution: [1_024, -1_024, 256],
+                                },
+                            ];
+                            let row_result = gdf_width4_row(
+                                &base_luma,
+                                &source,
+                                &tap_offsets,
+                                classes,
+                                &block,
+                                0,
+                                source_origin,
+                                offset,
+                            );
+                            assert!(row_result.is_ok());
+                            let Ok(actual) = row_result else {
+                                return;
+                            };
+                            let expected = core::array::from_fn(|col| {
+                                gdf_sample(
+                                    &base_luma,
+                                    &source,
+                                    &tap_offsets,
+                                    &block,
+                                    0,
+                                    col,
+                                    (source_origin.0 + col, source_origin.1),
+                                    &classes[col >> 1],
+                                )
+                            });
+                            assert_eq!(
+                                actual, expected,
+                                "bit depth {bit_depth:?}, source {source_case}, reference \
+                                 {ref_dst_idx}, qp {qp_idx}, class {class_index}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
