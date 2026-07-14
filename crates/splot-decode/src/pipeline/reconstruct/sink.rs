@@ -12,9 +12,11 @@ use splot_recon::{
 use crate::Result;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
-    reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
+    reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt,
 };
+
+const INTER_RESIDUAL_SAMPLE_CAPACITY: usize = 64 * 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraEdgeAvailability {
@@ -218,14 +220,29 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
     let in_frame_width = width.min(storage.width().saturating_sub(x));
     let in_frame_height = height.min(storage.height().saturating_sub(y));
     let rect = PlaneRect::new(x, y, in_frame_width, in_frame_height)?;
-    let mut prediction = vec![T::default(); width * height];
+    let sample_count = block_size.sample_count();
+    let mut prediction_storage = [T::default(); INTER_RESIDUAL_SAMPLE_CAPACITY];
+    let prediction = prediction_storage.get_mut(..sample_count).ok_or(
+        GeneralIntraResidualError::PredictionLength {
+            expected: sample_count,
+            actual: INTER_RESIDUAL_SAMPLE_CAPACITY,
+        },
+    )?;
     for (row_index, row) in sink.rect_rows(plane_id, rect)?.enumerate() {
         let start = row_index * width;
         prediction[start..start + in_frame_width].copy_from_slice(row);
     }
-    let out = reconstruct_general_intra_coeff_block_rect_with_prediction_and_ddt(
+    let mut output_storage = [T::default(); INTER_RESIDUAL_SAMPLE_CAPACITY];
+    let output = output_storage.get_mut(..sample_count).ok_or(
+        GeneralIntraResidualError::PredictionLength {
+            expected: sample_count,
+            actual: INTER_RESIDUAL_SAMPLE_CAPACITY,
+        },
+    )?;
+    reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt(
         block,
-        &prediction,
+        prediction,
+        output,
         qindex,
         plane_id,
         log2_width,
@@ -234,7 +251,7 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
         use_ddt,
         bit_depth,
     )?;
-    sink.write_rect_block(plane_id, x, y, block_size, &out)?;
+    sink.write_rect_block(plane_id, x, y, block_size, output)?;
     Ok(())
 }
 
