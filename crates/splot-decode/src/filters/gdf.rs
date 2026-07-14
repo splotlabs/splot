@@ -1055,6 +1055,10 @@ fn band_gradients(
     let col_start_idx = source_origin.0 - 2;
     let len_to_slice = cols + 2;
 
+    let (g0, g_rest) = grad.split_at_mut(plane);
+    let (g1, g_rest) = g_rest.split_at_mut(plane);
+    let (g2, g3) = g_rest.split_at_mut(plane);
+
     for i in 0..rows {
         let sample_row = source_origin.1 - 1 + i;
 
@@ -1062,52 +1066,87 @@ fn band_gradients(
         let curr_start = sample_row * stride + col_start_idx;
         let next_start = (sample_row + 1) * stride + col_start_idx;
 
-        let prev_slice = &source.samples[prev_start..prev_start + len_to_slice];
-        let curr_slice = &source.samples[curr_start..curr_start + len_to_slice];
-        let next_slice = &source.samples[next_start..next_start + len_to_slice];
-
-        let prev_wins = prev_slice.windows(3);
-        let curr_wins = curr_slice.windows(3);
-        let next_wins = next_slice.windows(3);
-
-        for (j, ((p_win, c_win), n_win)) in prev_wins.zip(curr_wins).zip(next_wins).enumerate() {
-            let err = || {
+        let prev_slice = source
+            .samples
+            .get(prev_start..prev_start + len_to_slice)
+            .ok_or_else(|| {
                 gdf_filter_error(
                     offset,
                     "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
                 )
-            };
-            let p: &[u16; 3] = p_win.try_into().map_err(|_| err())?;
-            let c: &[u16; 3] = c_win.try_into().map_err(|_| err())?;
-            let n: &[u16; 3] = n_win.try_into().map_err(|_| err())?;
+            })?;
+        let curr_slice = source
+            .samples
+            .get(curr_start..curr_start + len_to_slice)
+            .ok_or_else(|| {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+                )
+            })?;
+        let next_slice = source
+            .samples
+            .get(next_start..next_start + len_to_slice)
+            .ok_or_else(|| {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
+                )
+            })?;
 
-            let center = i32::from(c[1]);
+        let start_idx = i * cols;
+        let end_idx = start_idx + cols;
+        let r0 = g0.get_mut(start_idx..end_idx).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+        let r1 = g1.get_mut(start_idx..end_idx).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+        let r2 = g2.get_mut(start_idx..end_idx).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+        let r3 = g3.get_mut(start_idx..end_idx).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
 
-            {
-                let before = i32::from(p[1]);
-                let after = i32::from(n[1]);
-                grad[i * cols + j] = (center * 2 - before - after).unsigned_abs() as u16;
-            }
+        let prev = &prev_slice[..len_to_slice];
+        let curr = &curr_slice[..len_to_slice];
+        let next = &next_slice[..len_to_slice];
+        let d0 = &mut r0[..cols];
+        let d1 = &mut r1[..cols];
+        let d2 = &mut r2[..cols];
+        let d3 = &mut r3[..cols];
 
-            {
-                let before = i32::from(c[0]);
-                let after = i32::from(c[2]);
-                grad[plane + i * cols + j] = (center * 2 - before - after).unsigned_abs() as u16;
-            }
+        for j in 0..cols {
+            let center = i32::from(curr[j + 1]);
 
-            {
-                let before = i32::from(p[0]);
-                let after = i32::from(n[2]);
-                grad[2 * plane + i * cols + j] =
-                    (center * 2 - before - after).unsigned_abs() as u16;
-            }
+            let before_p1 = i32::from(prev[j + 1]);
+            let after_n1 = i32::from(next[j + 1]);
+            d0[j] = (center * 2 - before_p1 - after_n1).unsigned_abs() as u16;
 
-            {
-                let before = i32::from(n[0]);
-                let after = i32::from(p[2]);
-                grad[3 * plane + i * cols + j] =
-                    (center * 2 - before - after).unsigned_abs() as u16;
-            }
+            let before_c0 = i32::from(curr[j]);
+            let after_c2 = i32::from(curr[j + 2]);
+            d1[j] = (center * 2 - before_c0 - after_c2).unsigned_abs() as u16;
+
+            let before_p0 = i32::from(prev[j]);
+            let after_n2 = i32::from(next[j + 2]);
+            d2[j] = (center * 2 - before_p0 - after_n2).unsigned_abs() as u16;
+
+            let before_n0 = i32::from(next[j]);
+            let after_p2 = i32::from(prev[j + 2]);
+            d3[j] = (center * 2 - before_n0 - after_p2).unsigned_abs() as u16;
         }
     }
     Ok(())
@@ -1164,13 +1203,27 @@ fn band_classes(
         )
     })?;
     resize_scratch(classes, len, offset)?;
+
+    let (g0, g_rest) = grad.split_at(plane);
+    let (g1, g_rest) = g_rest.split_at(plane);
+    let (g2, g3) = g_rest.split_at(plane);
+
+    let classes_slice = classes.get_mut(..len).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    let mut classes_iter = classes_slice.iter_mut();
+
     for i in 0..class_rows {
         for j in 0..class_cols {
             let mut strengths = [0_u32; GDF_DIRECTIONS];
-            for direction in 0..GDF_DIRECTIONS {
-                let plane_slice = &grad[direction * plane..direction * plane + plane];
-                strengths[direction] = grad_sum_4x4(plane_slice, grad_cols, i * 2, j * 2);
-            }
+            strengths[0] = grad_sum_4x4(g0, grad_cols, i * 2, j * 2);
+            strengths[1] = grad_sum_4x4(g1, grad_cols, i * 2, j * 2);
+            strengths[2] = grad_sum_4x4(g2, grad_cols, i * 2, j * 2);
+            strengths[3] = grad_sum_4x4(g3, grad_cols, i * 2, j * 2);
+
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
             let cls = usize::from(index);
@@ -1183,10 +1236,12 @@ fn band_classes(
                     *total += comb * weight_table[idx][k][cls];
                 }
             }
-            classes[i * class_cols + j] = GdfClass {
-                index,
-                strength_contribution,
-            };
+            if let Some(dest) = classes_iter.next() {
+                *dest = GdfClass {
+                    index,
+                    strength_contribution,
+                };
+            }
         }
     }
     Ok(())
@@ -1259,55 +1314,66 @@ fn gdf_width4_row(
     let cls0 = usize::from(classes[0].index);
     let cls1 = usize::from(classes[1].index);
 
-    for (k, &tap) in tap_offsets.iter().enumerate() {
-        let neg0 = i32::from(samples[base - tap]);
-        let neg1 = i32::from(samples[base - tap + 1]);
-        let neg2 = i32::from(samples[base - tap + 2]);
-        let neg3 = i32::from(samples[base - tap + 3]);
+    let wt0 = &weight_table[0];
+    let wt1 = &weight_table[1];
+    let wt2 = &weight_table[2];
 
-        let pos0 = i32::from(samples[base + tap]);
-        let pos1 = i32::from(samples[base + tap + 1]);
-        let pos2 = i32::from(samples[base + tap + 2]);
-        let pos3 = i32::from(samples[base + tap + 3]);
+    for (k, &tap) in tap_offsets.iter().enumerate() {
+        let neg: &[u16; 4] = samples[base - tap..base - tap + 4]
+            .try_into()
+            .map_err(|_| source_error())?;
+        let pos: &[u16; 4] = samples[base + tap..base + tap + 4]
+            .try_into()
+            .map_err(|_| source_error())?;
+
+        let neg0 = i32::from(neg[0]);
+        let neg1 = i32::from(neg[1]);
+        let neg2 = i32::from(neg[2]);
+        let neg3 = i32::from(neg[3]);
+
+        let pos0 = i32::from(pos[0]);
+        let pos1 = i32::from(pos[1]);
+        let pos2 = i32::from(pos[2]);
+        let pos3 = i32::from(pos[3]);
 
         let alpha0 = alpha_table[k][cls0];
         let alpha1 = alpha_table[k][cls1];
 
-        // col = 0
+        let wt0_k = &wt0[k];
+        let wt1_k = &wt1[k];
+        let wt2_k = &wt2[k];
+
         {
             let above = ((neg0 - center_values[0]) << shift).clamp(-alpha0, alpha0);
             let below = ((pos0 - center_values[0]) << shift).clamp(-alpha0, alpha0);
             let comb = (above + below).clamp(-512, 511);
-            gdf_idx[0][0] += comb * weight_table[0][k][cls0];
-            gdf_idx[0][1] += comb * weight_table[1][k][cls0];
-            gdf_idx[0][2] += comb * weight_table[2][k][cls0];
+            gdf_idx[0][0] += comb * wt0_k[cls0];
+            gdf_idx[0][1] += comb * wt1_k[cls0];
+            gdf_idx[0][2] += comb * wt2_k[cls0];
         }
-        // col = 1
         {
             let above = ((neg1 - center_values[1]) << shift).clamp(-alpha0, alpha0);
             let below = ((pos1 - center_values[1]) << shift).clamp(-alpha0, alpha0);
             let comb = (above + below).clamp(-512, 511);
-            gdf_idx[1][0] += comb * weight_table[0][k][cls0];
-            gdf_idx[1][1] += comb * weight_table[1][k][cls0];
-            gdf_idx[1][2] += comb * weight_table[2][k][cls0];
+            gdf_idx[1][0] += comb * wt0_k[cls0];
+            gdf_idx[1][1] += comb * wt1_k[cls0];
+            gdf_idx[1][2] += comb * wt2_k[cls0];
         }
-        // col = 2
         {
             let above = ((neg2 - center_values[2]) << shift).clamp(-alpha1, alpha1);
             let below = ((pos2 - center_values[2]) << shift).clamp(-alpha1, alpha1);
             let comb = (above + below).clamp(-512, 511);
-            gdf_idx[2][0] += comb * weight_table[0][k][cls1];
-            gdf_idx[2][1] += comb * weight_table[1][k][cls1];
-            gdf_idx[2][2] += comb * weight_table[2][k][cls1];
+            gdf_idx[2][0] += comb * wt0_k[cls1];
+            gdf_idx[2][1] += comb * wt1_k[cls1];
+            gdf_idx[2][2] += comb * wt2_k[cls1];
         }
-        // col = 3
         {
             let above = ((neg3 - center_values[3]) << shift).clamp(-alpha1, alpha1);
             let below = ((pos3 - center_values[3]) << shift).clamp(-alpha1, alpha1);
             let comb = (above + below).clamp(-512, 511);
-            gdf_idx[3][0] += comb * weight_table[0][k][cls1];
-            gdf_idx[3][1] += comb * weight_table[1][k][cls1];
-            gdf_idx[3][2] += comb * weight_table[2][k][cls1];
+            gdf_idx[3][0] += comb * wt0_k[cls1];
+            gdf_idx[3][1] += comb * wt1_k[cls1];
+            gdf_idx[3][2] += comb * wt2_k[cls1];
         }
     }
     Ok(core::array::from_fn(|col| {

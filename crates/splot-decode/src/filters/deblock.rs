@@ -1251,11 +1251,56 @@ fn gather_line<T: ReconSample>(
     perp: PerpLine,
 ) -> [T; 2 * GATHER_HALF] {
     let mut line = [T::default(); 2 * GATHER_HALF];
-    if perp.x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
-        && perp.y >= plane_ctx.y_origin
-        && perp.x <= plane_ctx.width.saturating_sub(GATHER_HALF)
-        && perp.dx == 1
+
+    if let PlaneRows::Contiguous { samples, stride } = &plane_ctx.rows {
+        let stride = *stride;
+        if perp.dx == 1
+            && perp.dy == 0
+            && perp.x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+            && perp.y >= plane_ctx.y_origin
+        {
+            let row = perp.y - plane_ctx.y_origin;
+            let start = perp.x - GATHER_HALF - plane_ctx.x_origin;
+            if row < plane_ctx.height {
+                let row_start = row * stride;
+                let start_idx = row_start + start;
+                if start < stride
+                    && start + 2 * GATHER_HALF <= stride
+                    && start_idx + 2 * GATHER_HALF <= samples.len()
+                {
+                    line.copy_from_slice(&samples[start_idx..start_idx + 2 * GATHER_HALF]);
+                    return line;
+                }
+            }
+        }
+        if perp.dx == 0
+            && perp.dy == 1
+            && perp.y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
+            && perp.x >= plane_ctx.x_origin
+            && perp.x < plane_ctx.width
+            && perp.y <= plane_ctx.height.saturating_sub(GATHER_HALF)
+        {
+            let start = perp.y - GATHER_HALF - plane_ctx.y_origin;
+            let x = perp.x - plane_ctx.x_origin;
+            if x < stride
+                && (start + 15)
+                    .checked_mul(stride)
+                    .and_then(|row_start| row_start.checked_add(x))
+                    .is_some_and(|idx| idx < samples.len())
+            {
+                let start_idx = start * stride + x;
+                for (i, lane) in line.iter_mut().enumerate() {
+                    *lane = samples[start_idx + i * stride];
+                }
+                return line;
+            }
+        }
+    }
+
+    if perp.dx == 1
         && perp.dy == 0
+        && perp.x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && perp.y >= plane_ctx.y_origin
     {
         let row = perp.y - plane_ctx.y_origin;
         let start = perp.x - GATHER_HALF - plane_ctx.x_origin;

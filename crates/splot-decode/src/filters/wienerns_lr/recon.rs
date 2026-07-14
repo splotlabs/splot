@@ -10,6 +10,30 @@
 //! §7.13.2.17 intra edge-filter-strength selection and the §7.17 chroma-transform
 //! deblock helper used by the surrounding filter code.
 
+use std::cell::RefCell;
+
+struct LrScratch {
+    deblocked_luma: Vec<u16>,
+    deblocked_u: Vec<u16>,
+    deblocked_v: Vec<u16>,
+    cdef_luma: Vec<u16>,
+    cdef_u: Vec<u16>,
+    cdef_v: Vec<u16>,
+}
+
+thread_local! {
+    static LR_SCRATCH: RefCell<LrScratch> = const {
+        RefCell::new(LrScratch {
+            deblocked_luma: Vec::new(),
+            deblocked_u: Vec::new(),
+            deblocked_v: Vec::new(),
+            cdef_luma: Vec::new(),
+            cdef_u: Vec::new(),
+            cdef_v: Vec::new(),
+        })
+    };
+}
+
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconSample};
 
@@ -269,165 +293,177 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .gdf_params
             .as_ref()
             .is_some_and(|gdf| gdf.gdf_frame_enable);
-        let deblocked_luma = if any_lr_active || self.ccso_grid.is_some() || gdf_active {
-            self.plane_snapshot(
-                PlaneId::Y,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let deblocked_u = if u_lr_active {
-            self.plane_snapshot(
-                PlaneId::U,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let deblocked_v = if v_lr_active {
-            self.plane_snapshot(
-                PlaneId::V,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        crate::timing::report("filter_deblock_snapshots", snapshot_timer);
-        let cdef_timer = crate::timing::start();
-        let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
-        if let (Some(grid), Some(strengths)) = (
-            self.cdef_grid.as_ref(),
-            crate::filters::cdef::cdef_frame_strengths(core),
-        ) {
-            crate::filters::cdef::cdef_general_intra_frame_indexed(
-                &mut self.workspace,
-                &strengths,
-                grid,
-                cdef_skip_grid.as_ref(),
-                self.lossless_grid.as_ref(),
-                (mi_rows, mi_cols),
-                self.bit_depth,
-            )
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
+
+        LR_SCRATCH.with(|cell| -> Result<()> {
+            let mut scratch = cell.borrow_mut();
+
+            if any_lr_active || self.ccso_grid.is_some() || gdf_active {
+                self.plane_snapshot(
+                    PlaneId::Y,
+                    &mut scratch.deblocked_luma,
                     offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
-                )
-            })?;
-        }
-        crate::timing::report("filter_cdef", cdef_timer);
-        let ccso_timer = crate::timing::start();
-        if let Some(grid) = self.ccso_grid.as_ref() {
-            crate::filters::ccso::ccso_frame(
-                &mut self.workspace,
-                &deblocked_luma,
-                core,
-                grid,
-                self.lossless_grid.as_ref(),
-                self.bit_depth,
-            )
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
+                    "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
+                )?;
+            } else {
+                scratch.deblocked_luma.clear();
+            }
+            if u_lr_active {
+                self.plane_snapshot(
+                    PlaneId::U,
+                    &mut scratch.deblocked_u,
                     offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                    "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+                )?;
+            } else {
+                scratch.deblocked_u.clear();
+            }
+            if v_lr_active {
+                self.plane_snapshot(
+                    PlaneId::V,
+                    &mut scratch.deblocked_v,
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
+                )?;
+            } else {
+                scratch.deblocked_v.clear();
+            }
+            crate::timing::report("filter_deblock_snapshots", snapshot_timer);
+            let cdef_timer = crate::timing::start();
+            let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
+            if let (Some(grid), Some(strengths)) = (
+                self.cdef_grid.as_ref(),
+                crate::filters::cdef::cdef_frame_strengths(core),
+            ) {
+                crate::filters::cdef::cdef_general_intra_frame_indexed(
+                    &mut self.workspace,
+                    &strengths,
+                    grid,
+                    cdef_skip_grid.as_ref(),
+                    self.lossless_grid.as_ref(),
+                    (mi_rows, mi_cols),
+                    self.bit_depth,
                 )
-            })?;
-        }
-        crate::timing::report("filter_ccso", ccso_timer);
-        let lr_snapshot_timer = crate::timing::start();
-        let cdef_luma = if any_lr_active || gdf_active {
-            self.plane_snapshot(
-                PlaneId::Y,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let cdef_u = if u_lr_active {
-            self.plane_snapshot(
-                PlaneId::U,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let cdef_v = if v_lr_active {
-            self.plane_snapshot(
-                PlaneId::V,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        crate::timing::report("filter_cdef_snapshots", lr_snapshot_timer);
-        let lr_timer = crate::timing::start();
-        let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
-        let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
-        let (lr_source_blocks, plane_ends) = if any_lr_active {
-            final_filters::coalesced_lr_source_rows_all(lr_source_blocks)
-        } else {
-            (Vec::new(), [0, 0])
-        };
-        let [y_end, u_end] = plane_ends;
-        let y_runs = &lr_source_blocks[..y_end];
-        let u_runs = &lr_source_blocks[y_end..u_end];
-        let v_runs = &lr_source_blocks[u_end..];
-        self.apply_luma_lr_runs(
-            core,
-            offset,
-            y_runs,
-            &lr_unit_filters,
-            &deblocked_luma,
-            &cdef_luma,
-        )?;
-        self.apply_chroma_lr_runs(
-            core,
-            offset,
-            PlaneId::U,
-            u_runs,
-            &lr_unit_filters,
-            &deblocked_u,
-            &cdef_u,
-            &deblocked_luma,
-            &cdef_luma,
-        )?;
-        self.apply_chroma_lr_runs(
-            core,
-            offset,
-            PlaneId::V,
-            v_runs,
-            &lr_unit_filters,
-            &deblocked_v,
-            &cdef_v,
-            &deblocked_luma,
-            &cdef_luma,
-        )?;
-        crate::timing::report("filter_lr", lr_timer);
-        let gdf_timer = crate::timing::start();
-        if gdf_active {
-            crate::filters::gdf::apply_frame(
-                &mut self.workspace,
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
+                    )
+                })?;
+            }
+            crate::timing::report("filter_cdef", cdef_timer);
+            let ccso_timer = crate::timing::start();
+            if let Some(grid) = self.ccso_grid.as_ref() {
+                crate::filters::ccso::ccso_frame(
+                    &mut self.workspace,
+                    &scratch.deblocked_luma,
+                    core,
+                    grid,
+                    self.lossless_grid.as_ref(),
+                    self.bit_depth,
+                )
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                    )
+                })?;
+            }
+            crate::timing::report("filter_ccso", ccso_timer);
+            let lr_snapshot_timer = crate::timing::start();
+            if any_lr_active || gdf_active {
+                self.plane_snapshot(
+                    PlaneId::Y,
+                    &mut scratch.cdef_luma,
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
+                )?;
+            } else {
+                scratch.cdef_luma.clear();
+            }
+            if u_lr_active {
+                self.plane_snapshot(
+                    PlaneId::U,
+                    &mut scratch.cdef_u,
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+                )?;
+            } else {
+                scratch.cdef_u.clear();
+            }
+            if v_lr_active {
+                self.plane_snapshot(
+                    PlaneId::V,
+                    &mut scratch.cdef_v,
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
+                )?;
+            } else {
+                scratch.cdef_v.clear();
+            }
+            crate::timing::report("filter_cdef_snapshots", lr_snapshot_timer);
+            let lr_timer = crate::timing::start();
+            let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
+            let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
+            let (lr_source_blocks, plane_ends) = if any_lr_active {
+                final_filters::coalesced_lr_source_rows_all(lr_source_blocks)
+            } else {
+                (Vec::new(), [0, 0])
+            };
+            let [y_end, u_end] = plane_ends;
+            let y_runs = &lr_source_blocks[..y_end];
+            let u_runs = &lr_source_blocks[y_end..u_end];
+            let v_runs = &lr_source_blocks[u_end..];
+            self.apply_luma_lr_runs(
                 core,
-                &deblocked_luma,
-                &cdef_luma,
-                self.gdf_grid.as_ref(),
-                self.lossless_grid.as_ref(),
-                self.luma_width,
-                self.luma_height,
-                self.bit_depth,
-                disable_loopfilters_across_tiles,
-                self.gdf_reference,
                 offset,
+                y_runs,
+                &lr_unit_filters,
+                &scratch.deblocked_luma,
+                &scratch.cdef_luma,
             )?;
-        }
-        crate::timing::report("filter_gdf", gdf_timer);
+            self.apply_chroma_lr_runs(
+                core,
+                offset,
+                PlaneId::U,
+                u_runs,
+                &lr_unit_filters,
+                &scratch.deblocked_u,
+                &scratch.cdef_u,
+                &scratch.deblocked_luma,
+                &scratch.cdef_luma,
+            )?;
+            self.apply_chroma_lr_runs(
+                core,
+                offset,
+                PlaneId::V,
+                v_runs,
+                &lr_unit_filters,
+                &scratch.deblocked_v,
+                &scratch.cdef_v,
+                &scratch.deblocked_luma,
+                &scratch.cdef_luma,
+            )?;
+            crate::timing::report("filter_lr", lr_timer);
+            let gdf_timer = crate::timing::start();
+            if gdf_active {
+                crate::filters::gdf::apply_frame(
+                    &mut self.workspace,
+                    core,
+                    &scratch.deblocked_luma,
+                    &scratch.cdef_luma,
+                    self.gdf_grid.as_ref(),
+                    self.lossless_grid.as_ref(),
+                    self.luma_width,
+                    self.luma_height,
+                    self.bit_depth,
+                    disable_loopfilters_across_tiles,
+                    self.gdf_reference,
+                    offset,
+                )?;
+            }
+            crate::timing::report("filter_gdf", gdf_timer);
+            Ok(())
+        })?;
         Ok(self.workspace.freeze()?)
     }
 
@@ -481,13 +517,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     fn plane_snapshot(
         &self,
         plane: PlaneId,
+        dest: &mut Vec<u16>,
         offset: ByteOffset,
         reason: &'static str,
-    ) -> Result<Vec<u16>> {
-        self.workspace
+    ) -> Result<()> {
+        let samples = self
+            .workspace
             .samples(plane)
-            .map_err(|_| wienerns_lr_selectable_transform_record_error_reason(offset, reason))
-            .map(|samples| samples.iter().map(|sample| sample.to_u16()).collect())
+            .map_err(|_| wienerns_lr_selectable_transform_record_error_reason(offset, reason))?;
+        dest.clear();
+        dest.reserve(samples.len());
+        dest.extend(samples.iter().map(|sample| sample.to_u16()));
+        Ok(())
     }
 }
 
