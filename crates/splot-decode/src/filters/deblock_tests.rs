@@ -557,7 +557,7 @@ fn strength_cache_matches_direct_computation() {
     for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
         for &(quant_delta, df_delta_q) in &[(0i32, 0i32), (-6, 3), (12, -2)] {
             let mut cache = StrengthCache::default();
-            for qindex in (0u32..=300).chain([1000, u32::MAX]) {
+            for qindex in (0u32..=300).chain([301, 302, 303, 304, 1000, u32::MAX]) {
                 let direct = adaptive_strength(
                     deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
                     bit_depth,
