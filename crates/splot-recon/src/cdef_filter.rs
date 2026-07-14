@@ -287,38 +287,102 @@ fn cdef_filter_block_interior_rows<const W: usize>(
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
 
+    let c_base = (2 * CDEF_PADDED_SIDE + 2) as isize;
+    let p00_base = c_base + pri_rel[0][0];
+    let p01_base = c_base + pri_rel[0][1];
+    let p10_base = c_base + pri_rel[1][0];
+    let p11_base = c_base + pri_rel[1][1];
+
+    let s000_base = c_base + sec_rel[0][0][0];
+    let s001_base = c_base + sec_rel[0][0][1];
+    let s010_base = c_base + sec_rel[0][1][0];
+    let s011_base = c_base + sec_rel[0][1][1];
+    let s100_base = c_base + sec_rel[1][0][0];
+    let s101_base = c_base + sec_rel[1][0][1];
+    let s110_base = c_base + sec_rel[1][1][0];
+    let s111_base = c_base + sec_rel[1][1][1];
+
+    let max_row_offset = (h - 1) * CDEF_PADDED_SIDE;
+    let bases = [
+        c_base, p00_base, p01_base, p10_base, p11_base, s000_base, s001_base, s010_base, s011_base,
+        s100_base, s101_base, s110_base, s111_base,
+    ];
+    for &base in &bases {
+        assert!(base >= 0);
+        assert!(base as usize + max_row_offset + W <= CDEF_PADDED_AREA);
+    }
+
     if filter.pri_str != 0 && filter.sec_str != 0 {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let c_idx = center_index;
-            let p00_idx = center_index.checked_add_signed(pri_rel[0][0])?;
-            let p01_idx = center_index.checked_add_signed(pri_rel[0][1])?;
-            let p10_idx = center_index.checked_add_signed(pri_rel[1][0])?;
-            let p11_idx = center_index.checked_add_signed(pri_rel[1][1])?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let c_idx = c_base as usize + row_offset;
+            let p00_idx = p00_base as usize + row_offset;
+            let p01_idx = p01_base as usize + row_offset;
+            let p10_idx = p10_base as usize + row_offset;
+            let p11_idx = p11_base as usize + row_offset;
 
-            let s000_idx = center_index.checked_add_signed(sec_rel[0][0][0])?;
-            let s001_idx = center_index.checked_add_signed(sec_rel[0][0][1])?;
-            let s010_idx = center_index.checked_add_signed(sec_rel[0][1][0])?;
-            let s011_idx = center_index.checked_add_signed(sec_rel[0][1][1])?;
-            let s100_idx = center_index.checked_add_signed(sec_rel[1][0][0])?;
-            let s101_idx = center_index.checked_add_signed(sec_rel[1][0][1])?;
-            let s110_idx = center_index.checked_add_signed(sec_rel[1][1][0])?;
-            let s111_idx = center_index.checked_add_signed(sec_rel[1][1][1])?;
+            let s000_idx = s000_base as usize + row_offset;
+            let s001_idx = s001_base as usize + row_offset;
+            let s010_idx = s010_base as usize + row_offset;
+            let s011_idx = s011_base as usize + row_offset;
+            let s100_idx = s100_base as usize + row_offset;
+            let s101_idx = s101_base as usize + row_offset;
+            let s110_idx = s110_base as usize + row_offset;
+            let s111_idx = s111_base as usize + row_offset;
 
-            let c_row: &[u16; W] = pad.get(c_idx..c_idx + W)?.try_into().ok()?;
-            let p00_row: &[u16; W] = pad.get(p00_idx..p00_idx + W)?.try_into().ok()?;
-            let p01_row: &[u16; W] = pad.get(p01_idx..p01_idx + W)?.try_into().ok()?;
-            let p10_row: &[u16; W] = pad.get(p10_idx..p10_idx + W)?.try_into().ok()?;
-            let p11_row: &[u16; W] = pad.get(p11_idx..p11_idx + W)?.try_into().ok()?;
+            let c_row: &[u16; W] = match (&pad[c_idx..c_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p00_row: &[u16; W] = match (&pad[p00_idx..p00_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p01_row: &[u16; W] = match (&pad[p01_idx..p01_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p10_row: &[u16; W] = match (&pad[p10_idx..p10_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p11_row: &[u16; W] = match (&pad[p11_idx..p11_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
 
-            let s000_row: &[u16; W] = pad.get(s000_idx..s000_idx + W)?.try_into().ok()?;
-            let s001_row: &[u16; W] = pad.get(s001_idx..s001_idx + W)?.try_into().ok()?;
-            let s010_row: &[u16; W] = pad.get(s010_idx..s010_idx + W)?.try_into().ok()?;
-            let s011_row: &[u16; W] = pad.get(s011_idx..s011_idx + W)?.try_into().ok()?;
-            let s100_row: &[u16; W] = pad.get(s100_idx..s100_idx + W)?.try_into().ok()?;
-            let s101_row: &[u16; W] = pad.get(s101_idx..s101_idx + W)?.try_into().ok()?;
-            let s110_row: &[u16; W] = pad.get(s110_idx..s110_idx + W)?.try_into().ok()?;
-            let s111_row: &[u16; W] = pad.get(s111_idx..s111_idx + W)?.try_into().ok()?;
+            let s000_row: &[u16; W] = match (&pad[s000_idx..s000_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s001_row: &[u16; W] = match (&pad[s001_idx..s001_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s010_row: &[u16; W] = match (&pad[s010_idx..s010_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s011_row: &[u16; W] = match (&pad[s011_idx..s011_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s100_row: &[u16; W] = match (&pad[s100_idx..s100_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s101_row: &[u16; W] = match (&pad[s101_idx..s101_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s110_row: &[u16; W] = match (&pad[s110_idx..s110_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s111_row: &[u16; W] = match (&pad[s111_idx..s111_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
 
             let output_row = cdef_output_row::<W>(out, i)?;
 
@@ -398,18 +462,33 @@ fn cdef_filter_block_interior_rows<const W: usize>(
         }
     } else if filter.pri_str != 0 {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let c_idx = center_index;
-            let p00_idx = center_index.checked_add_signed(pri_rel[0][0])?;
-            let p01_idx = center_index.checked_add_signed(pri_rel[0][1])?;
-            let p10_idx = center_index.checked_add_signed(pri_rel[1][0])?;
-            let p11_idx = center_index.checked_add_signed(pri_rel[1][1])?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let c_idx = c_base as usize + row_offset;
+            let p00_idx = p00_base as usize + row_offset;
+            let p01_idx = p01_base as usize + row_offset;
+            let p10_idx = p10_base as usize + row_offset;
+            let p11_idx = p11_base as usize + row_offset;
 
-            let c_row: &[u16; W] = pad.get(c_idx..c_idx + W)?.try_into().ok()?;
-            let p00_row: &[u16; W] = pad.get(p00_idx..p00_idx + W)?.try_into().ok()?;
-            let p01_row: &[u16; W] = pad.get(p01_idx..p01_idx + W)?.try_into().ok()?;
-            let p10_row: &[u16; W] = pad.get(p10_idx..p10_idx + W)?.try_into().ok()?;
-            let p11_row: &[u16; W] = pad.get(p11_idx..p11_idx + W)?.try_into().ok()?;
+            let c_row: &[u16; W] = match (&pad[c_idx..c_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p00_row: &[u16; W] = match (&pad[p00_idx..p00_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p01_row: &[u16; W] = match (&pad[p01_idx..p01_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p10_row: &[u16; W] = match (&pad[p10_idx..p10_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let p11_row: &[u16; W] = match (&pad[p11_idx..p11_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
 
             let output_row = cdef_output_row::<W>(out, i)?;
 
@@ -432,26 +511,53 @@ fn cdef_filter_block_interior_rows<const W: usize>(
         }
     } else if filter.sec_str != 0 {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let c_idx = center_index;
-            let s000_idx = center_index.checked_add_signed(sec_rel[0][0][0])?;
-            let s001_idx = center_index.checked_add_signed(sec_rel[0][0][1])?;
-            let s010_idx = center_index.checked_add_signed(sec_rel[0][1][0])?;
-            let s011_idx = center_index.checked_add_signed(sec_rel[0][1][1])?;
-            let s100_idx = center_index.checked_add_signed(sec_rel[1][0][0])?;
-            let s101_idx = center_index.checked_add_signed(sec_rel[1][0][1])?;
-            let s110_idx = center_index.checked_add_signed(sec_rel[1][1][0])?;
-            let s111_idx = center_index.checked_add_signed(sec_rel[1][1][1])?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let c_idx = c_base as usize + row_offset;
+            let s000_idx = s000_base as usize + row_offset;
+            let s001_idx = s001_base as usize + row_offset;
+            let s010_idx = s010_base as usize + row_offset;
+            let s011_idx = s011_base as usize + row_offset;
+            let s100_idx = s100_base as usize + row_offset;
+            let s101_idx = s101_base as usize + row_offset;
+            let s110_idx = s110_base as usize + row_offset;
+            let s111_idx = s111_base as usize + row_offset;
 
-            let c_row: &[u16; W] = pad.get(c_idx..c_idx + W)?.try_into().ok()?;
-            let s000_row: &[u16; W] = pad.get(s000_idx..s000_idx + W)?.try_into().ok()?;
-            let s001_row: &[u16; W] = pad.get(s001_idx..s001_idx + W)?.try_into().ok()?;
-            let s010_row: &[u16; W] = pad.get(s010_idx..s010_idx + W)?.try_into().ok()?;
-            let s011_row: &[u16; W] = pad.get(s011_idx..s011_idx + W)?.try_into().ok()?;
-            let s100_row: &[u16; W] = pad.get(s100_idx..s100_idx + W)?.try_into().ok()?;
-            let s101_row: &[u16; W] = pad.get(s101_idx..s101_idx + W)?.try_into().ok()?;
-            let s110_row: &[u16; W] = pad.get(s110_idx..s110_idx + W)?.try_into().ok()?;
-            let s111_row: &[u16; W] = pad.get(s111_idx..s111_idx + W)?.try_into().ok()?;
+            let c_row: &[u16; W] = match (&pad[c_idx..c_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s000_row: &[u16; W] = match (&pad[s000_idx..s000_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s001_row: &[u16; W] = match (&pad[s001_idx..s001_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s010_row: &[u16; W] = match (&pad[s010_idx..s010_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s011_row: &[u16; W] = match (&pad[s011_idx..s011_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s100_row: &[u16; W] = match (&pad[s100_idx..s100_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s101_row: &[u16; W] = match (&pad[s101_idx..s101_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s110_row: &[u16; W] = match (&pad[s110_idx..s110_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
+            let s111_row: &[u16; W] = match (&pad[s111_idx..s111_idx + W]).try_into() {
+                Ok(r) => r,
+                Err(_) => return None,
+            };
 
             let output_row = cdef_output_row::<W>(out, i)?;
 

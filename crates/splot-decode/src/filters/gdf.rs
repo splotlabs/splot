@@ -266,6 +266,8 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 &band_block,
                 offset,
             )?;
+            let tap_offsets = gdf_tap_offsets(source.stride, offset)?;
+            let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
             let band_origin = source.relative_position(segment_x, y).ok_or_else(|| {
                 gdf_filter_error(
                     offset,
@@ -326,6 +328,8 @@ pub(crate) fn apply_frame<T: ReconSample>(
                             width,
                             ..band_block
                         },
+                        &tap_offsets,
+                        max_tap,
                         offset,
                     )?
                 } else {
@@ -488,13 +492,15 @@ struct GdfBlock {
     pix_scale: i32,
     max_sample: i32,
 }
-
+#[allow(clippy::too_many_arguments)]
 fn compute_block<T: ReconSample>(
     source: &GdfSource<'_>,
     base_luma: &[u16],
     classes: &[GdfClass],
     class_cols: usize,
     block: GdfBlock,
+    tap_offsets: &[usize; GDF_COORDS.len()],
+    max_tap: usize,
     offset: ByteOffset,
 ) -> Result<[T; MI_SIZE * MI_SIZE]> {
     let source_origin = source.relative_position(block.x, block.y).ok_or_else(|| {
@@ -503,14 +509,13 @@ fn compute_block<T: ReconSample>(
             "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
         )
     })?;
+    let stride = source.stride;
     if source_origin.0 < GDF_READ_RADIUS || source_origin.1 < GDF_READ_RADIUS {
         return Err(gdf_filter_error(
             offset,
             "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
         ));
     }
-    let stride = source.stride;
-    let tap_offsets = gdf_tap_offsets(stride, offset)?;
     let last_col = source_origin
         .0
         .checked_add(block.width)
@@ -543,13 +548,12 @@ fn compute_block<T: ReconSample>(
     let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
     if block.width == MI_SIZE {
-        let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
         for row in 0..block.height {
             let class_base = (row >> 1) * class_cols + class_col_base;
             let samples = gdf_width4_row(
                 base_luma,
                 source,
-                &tap_offsets,
+                tap_offsets,
                 max_tap,
                 [classes[class_base], classes[class_base + 1]],
                 &block,
@@ -574,7 +578,7 @@ fn compute_block<T: ReconSample>(
             let sample = gdf_sample(
                 base_luma,
                 source,
-                &tap_offsets,
+                tap_offsets,
                 &block,
                 row,
                 col,
@@ -1317,22 +1321,21 @@ fn gdf_width4_row(
     let wt2 = &weight_table[2];
 
     for (k, &tap) in tap_offsets.iter().enumerate() {
-        let neg: &[u16; 4] = samples[base - tap..base - tap + 4]
-            .try_into()
-            .map_err(|_| source_error())?;
-        let pos: &[u16; 4] = samples[base + tap..base + tap + 4]
-            .try_into()
-            .map_err(|_| source_error())?;
+        let neg_slice = &samples[base - tap..base - tap + 4];
+        let pos_slice = &samples[base + tap..base + tap + 4];
+        if neg_slice.len() != 4 || pos_slice.len() != 4 {
+            return Err(source_error());
+        }
 
-        let neg0 = i32::from(neg[0]);
-        let neg1 = i32::from(neg[1]);
-        let neg2 = i32::from(neg[2]);
-        let neg3 = i32::from(neg[3]);
+        let neg0 = i32::from(neg_slice[0]);
+        let neg1 = i32::from(neg_slice[1]);
+        let neg2 = i32::from(neg_slice[2]);
+        let neg3 = i32::from(neg_slice[3]);
 
-        let pos0 = i32::from(pos[0]);
-        let pos1 = i32::from(pos[1]);
-        let pos2 = i32::from(pos[2]);
-        let pos3 = i32::from(pos[3]);
+        let pos0 = i32::from(pos_slice[0]);
+        let pos1 = i32::from(pos_slice[1]);
+        let pos2 = i32::from(pos_slice[2]);
+        let pos3 = i32::from(pos_slice[3]);
 
         let alpha0 = alpha_table[k][cls0];
         let alpha1 = alpha_table[k][cls1];
@@ -1914,12 +1917,18 @@ mod tests {
         let classes_result =
             band_classes(&grad, grad_cols, &block, &mut classes, ByteOffset::new(0));
         assert!(classes_result.is_ok());
+        let Ok(tap_offsets) = gdf_tap_offsets(source.stride, ByteOffset::new(0)) else {
+            return;
+        };
+        let max_tap = *tap_offsets.iter().max().unwrap_or(&0);
         let filtered = compute_block::<u16>(
             &source,
             &curr,
             &classes,
             block.width >> 1,
             block,
+            &tap_offsets,
+            max_tap,
             ByteOffset::new(0),
         );
         assert!(filtered.is_ok());
