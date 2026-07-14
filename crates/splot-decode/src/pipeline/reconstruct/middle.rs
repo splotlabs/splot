@@ -2,6 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Middle directional, two-sided, and cardinal neighbour intra entries with middle edge assembly.
+//!
+//! Feature tracking: `RECON-INTRA-MIDDLE-DIRECTIONAL-ANGLE-PREDICTION`.
+
+use core::ops::{Deref, DerefMut};
 
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection,
@@ -23,6 +27,39 @@ use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
     SupportedDirectionalLumaMode,
 };
+
+const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 64 + 4;
+
+struct TwoSidedMiddleIdifEdge<T: ReconSample> {
+    samples: [T; TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
+    len: usize,
+}
+
+impl<T: ReconSample> TwoSidedMiddleIdifEdge<T> {
+    fn new(len: usize) -> core::result::Result<Self, GeneralIntraResidualError> {
+        if len > TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY {
+            return Err(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge);
+        }
+        Ok(Self {
+            samples: [T::default(); TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
+            len,
+        })
+    }
+}
+
+impl<T: ReconSample> Deref for TwoSidedMiddleIdifEdge<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.samples[..self.len]
+    }
+}
+
+impl<T: ReconSample> DerefMut for TwoSidedMiddleIdifEdge<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.samples[..self.len]
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TwoSidedMiddleEdgeFilters {
@@ -96,7 +133,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
     )?;
     if matches!(plane_id, PlaneId::Y) {
         let (left_idif, above_idif) =
-            extend_directional_middle_idif_edges(&left, &above, bit_depth);
+            extend_directional_middle_idif_edges(&left, &above, bit_depth)?;
         predict_intra_middle_directional_angle_rect_idif_into(
             bit_depth,
             block_size,
@@ -228,14 +265,14 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
                     Ok::<T, splot_recon::ReconError>(left[i + 1])
                 })?
             } else {
-                extend_one_middle_idif_edge(&left, bit_depth)
+                extend_one_middle_idif_edge(&left, bit_depth)?
             };
             let above_idif = if availability.above {
                 build_two_sided_middle_idif_edge(width, filters.above, above[0], |i| {
                     Ok::<T, splot_recon::ReconError>(above[i + 1])
                 })?
             } else {
-                extend_one_middle_idif_edge(&above, bit_depth)
+                extend_one_middle_idif_edge(&above, bit_depth)?
             };
             predict_intra_middle_directional_angle_rect_idif_into(
                 bit_depth,
@@ -612,14 +649,14 @@ fn build_two_sided_middle_idif_edge<T: ReconSample>(
     edge_filter: OneSidedEdgeFilter,
     corner: T,
     in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let max_base = side
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let edge_len = side
         .checked_add(4)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let mut edge = vec![T::default(); edge_len];
+    let mut edge = TwoSidedMiddleIdifEdge::new(edge_len)?;
     edge[1] = corner;
     for i in 0..side {
         edge[i + 2] = in_edge(i)?;
@@ -849,23 +886,34 @@ fn extend_directional_middle_idif_edges<T: ReconSample>(
     left: &[T],
     above: &[T],
     bit_depth: BitDepth,
-) -> (Vec<T>, Vec<T>) {
-    (
-        extend_one_middle_idif_edge(left, bit_depth),
-        extend_one_middle_idif_edge(above, bit_depth),
-    )
+) -> core::result::Result<
+    (TwoSidedMiddleIdifEdge<T>, TwoSidedMiddleIdifEdge<T>),
+    GeneralIntraResidualError,
+> {
+    Ok((
+        extend_one_middle_idif_edge(left, bit_depth)?,
+        extend_one_middle_idif_edge(above, bit_depth)?,
+    ))
 }
 
-fn extend_one_middle_idif_edge<T: ReconSample>(edge: &[T], bit_depth: BitDepth) -> Vec<T> {
+fn extend_one_middle_idif_edge<T: ReconSample>(
+    edge: &[T],
+    bit_depth: BitDepth,
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let corner = edge
         .first()
         .copied()
         .unwrap_or(noneighbour_corner::<T>(bit_depth));
     let last = edge.last().copied().unwrap_or(corner);
-    let mut out = Vec::with_capacity(edge.len() + 3);
-    out.push(corner); // logical -2 == Edge[-1]
-    out.extend_from_slice(edge); // logical -1..side-1
-    out.push(last); // logical side == Edge[side - 1]
-    out.push(last); // logical side + 1 == Edge[side - 1]
-    out
+    let len = edge
+        .len()
+        .checked_add(3)
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let mut out = TwoSidedMiddleIdifEdge::new(len)?;
+    out[0] = corner; // logical -2 == Edge[-1]
+    let edge_end = 1 + edge.len();
+    out[1..edge_end].copy_from_slice(edge); // logical -1..side-1
+    out[len - 2] = last; // logical side == Edge[side - 1]
+    out[len - 1] = last; // logical side + 1 == Edge[side - 1]
+    Ok(out)
 }
