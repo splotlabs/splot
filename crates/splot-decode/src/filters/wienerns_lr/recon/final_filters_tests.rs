@@ -293,6 +293,32 @@ fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
 }
 
 #[test]
+fn luma_lr_output_storage_reuses_bounded_buffers() {
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
+    let allocation = with_luma_lr_output_storage::<u16, _>(16, |storage| {
+        storage.resize_with(1, Vec::new);
+        storage[0].try_reserve_exact(16).unwrap();
+        storage[0].as_ptr()
+    });
+
+    with_luma_lr_output_storage::<u16, _>(16, |storage| {
+        assert_eq!(storage[0].as_ptr(), allocation);
+    });
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
+}
+
+#[test]
+fn luma_lr_output_storage_drops_buffers_larger_than_the_frame() {
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
+    with_luma_lr_output_storage::<u16, _>(15, |storage| {
+        storage.resize_with(1, Vec::new);
+        storage[0].try_reserve_exact(16).unwrap();
+    });
+
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| assert!(slot.take().is_none()));
+}
+
+#[test]
 fn lr_source_window_reuses_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,

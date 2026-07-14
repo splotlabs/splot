@@ -35,6 +35,8 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
+    static LUMA_LR_OUTPUT_STORAGE: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
@@ -88,6 +90,29 @@ fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch
         let result = f(&mut scratch);
         if scratch.is_bounded() {
             slot.set(Some(scratch));
+        }
+        result
+    })
+}
+
+fn with_luma_lr_output_storage<T: ReconSample, R>(
+    max_retained_samples: usize,
+    f: impl FnOnce(&mut Vec<Vec<T>>) -> R,
+) -> R {
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| {
+        let mut storage = slot
+            .take()
+            .and_then(|storage| storage.downcast::<Vec<Vec<T>>>().ok())
+            .map_or_else(Vec::new, |storage| *storage);
+        let result = f(&mut storage);
+        for output in &mut storage {
+            output.clear();
+        }
+        let retained_samples = storage
+            .iter()
+            .try_fold(0usize, |total, output| total.checked_add(output.capacity()));
+        if retained_samples.is_some_and(|samples| samples <= max_retained_samples) {
+            slot.set(Some(Box::new(storage)));
         }
         result
     })
@@ -546,63 +571,97 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         } else {
             None
         };
-        let compute = |block: &WienerNsLrSourceBlock| match block.restoration_type {
-            LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
-                offset,
-                block,
-                curr_luma,
-                cdef_luma,
-                qindex,
-                filter_set_index,
-            ),
-            LrUnitRestorationType::WienerNonsep => {
-                if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
-                    self.compute_luma_lr_block(
+        let max_retained_samples = self
+            .luma_width
+            .checked_mul(self.luma_height)
+            .and_then(|samples| samples.checked_mul(2))
+            .unwrap_or_default();
+        with_luma_lr_output_storage(max_retained_samples, |storage| {
+            let mut slots = Vec::with_capacity(y_blocks.len());
+            for block in y_blocks {
+                let sample_count = block.width.saturating_mul(block.height);
+                let best = storage
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, output)| {
+                        (
+                            output.capacity() < sample_count,
+                            output.capacity().abs_diff(sample_count),
+                        )
+                    })
+                    .map(|(index, _)| index);
+                slots.push(best.map_or_else(Vec::new, |index| storage.swap_remove(index)));
+            }
+            let compute =
+                |block: &WienerNsLrSourceBlock, output: Vec<T>| match block.restoration_type {
+                    LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
                         offset,
                         block,
                         curr_luma,
                         cdef_luma,
                         qindex,
-                        *num_classes,
                         filter_set_index,
-                        coeffs,
-                    )
-                } else {
-                    let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, block, offset)?];
-                    self.compute_luma_lr_block(
-                        offset, block, curr_luma, cdef_luma, qindex, 1, 0, &coeffs,
-                    )
-                }
-            }
-            LrUnitRestorationType::None => Err(luma_lr_filter_error(offset)),
-        };
-        let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> = if splot_parallel::on_worker_pool() {
-            let timer = crate::timing::start();
-            let tally = crate::timing::WorkerTally::new();
-            let outputs = y_blocks
-                .par_iter()
-                .map(|block| {
-                    tally.note_worker();
-                    compute(block)
-                })
-                .collect::<Result<_>>()?;
-            crate::timing::report_detail(
-                "lr_luma_blocks",
-                timer,
-                &format!(
-                    "units={} threads={} workers_used={}",
-                    y_blocks.len(),
-                    splot_parallel::current_pool_width(),
-                    tally.workers_used()
-                ),
-            );
-            outputs
-        } else {
-            y_blocks.iter().map(&compute).collect::<Result<_>>()?
-        };
-        self.publish_lr_outputs(PlaneId::Y, filtered, offset)
+                        output,
+                    ),
+                    LrUnitRestorationType::WienerNonsep => {
+                        if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
+                            self.compute_luma_lr_block(
+                                offset,
+                                block,
+                                curr_luma,
+                                cdef_luma,
+                                qindex,
+                                *num_classes,
+                                filter_set_index,
+                                coeffs,
+                                output,
+                            )
+                        } else {
+                            let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, block, offset)?];
+                            self.compute_luma_lr_block(
+                                offset, block, curr_luma, cdef_luma, qindex, 1, 0, &coeffs, output,
+                            )
+                        }
+                    }
+                    LrUnitRestorationType::None => Err(luma_lr_filter_error(offset)),
+                };
+            let filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)> = if splot_parallel::on_worker_pool()
+            {
+                let timer = crate::timing::start();
+                let tally = crate::timing::WorkerTally::new();
+                let outputs = slots
+                    .par_iter_mut()
+                    .zip(y_blocks.par_iter())
+                    .map(|(output, block)| {
+                        tally.note_worker();
+                        compute(block, core::mem::take(output))
+                    })
+                    .collect::<Result<_>>()?;
+                crate::timing::report_detail(
+                    "lr_luma_blocks",
+                    timer,
+                    &format!(
+                        "units={} threads={} workers_used={}",
+                        y_blocks.len(),
+                        splot_parallel::current_pool_width(),
+                        tally.workers_used()
+                    ),
+                );
+                outputs
+            } else {
+                slots
+                    .iter_mut()
+                    .zip(y_blocks)
+                    .map(|(output, block)| compute(block, core::mem::take(output)))
+                    .collect::<Result<_>>()?
+            };
+            let result = self.publish_lr_outputs(PlaneId::Y, filtered, offset, Some(&mut slots));
+            storage.append(&mut slots);
+            result
+        })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn compute_pc_wiener_block(
         &self,
         offset: ByteOffset,
@@ -611,6 +670,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         cdef_luma: &[u16],
         qindex: u32,
         filter_set_index: usize,
+        mut output: Vec<T>,
     ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
         let block = clipped_lr_source_block(
             block,
@@ -662,7 +722,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 cell_subclasses,
                 subclasses,
             )?;
-            let mut output = vec![T::default(); sample_count];
+            output.clear();
+            output.resize(sample_count, T::default());
             let params = PcWienerFilter {
                 width: block.width,
                 height: block.height,
@@ -694,6 +755,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         plane_id: PlaneId,
         filtered: Vec<(WienerNsLrSourceBlock, Vec<T>)>,
         offset: ByteOffset,
+        recycle: Option<&mut [Vec<T>]>,
     ) -> Result<()> {
         let timer = crate::timing::start();
         let mut runs = Vec::with_capacity(filtered.len());
@@ -703,6 +765,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             runs.push((rect, output, block.width));
         }
         let result = self.publish_lr_runs(plane_id, &runs, offset);
+        if let Some(storage) = recycle {
+            for (slot, (_, mut output, _)) in storage.iter_mut().zip(runs) {
+                output.clear();
+                *slot = output;
+            }
+        }
         crate::timing::report_detail("lr_publish", timer, &format!("plane={}", plane_id.index()));
         result
     }
@@ -824,7 +892,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         } else {
             plane_blocks.iter().map(&compute).collect::<Result<_>>()?
         };
-        self.publish_lr_outputs(plane_id, filtered, offset)
+        self.publish_lr_outputs(plane_id, filtered, offset, None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -935,6 +1003,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         num_classes: usize,
         filter_set_index: usize,
         coeffs: &[[i16; WIENER_NS_LUMA_COEFFS]],
+        mut output: Vec<T>,
     ) -> Result<(WienerNsLrSourceBlock, Vec<T>)> {
         let block = clipped_lr_source_block(
             block,
@@ -990,7 +1059,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             } else {
                 None
             };
-            let mut output = vec![T::default(); sample_count];
+            output.clear();
+            output.resize(sample_count, T::default());
             let params = WienerNsLumaFilter {
                 width: block.width,
                 height: block.height,
