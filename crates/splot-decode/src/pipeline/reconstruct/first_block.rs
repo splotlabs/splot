@@ -22,8 +22,7 @@ use crate::bitstream::tile_payload::{
 };
 
 std::thread_local! {
-    static PAETH_ABOVE_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = std::cell::RefCell::new(None);
-    static PAETH_LEFT_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = std::cell::RefCell::new(None);
+    static PAETH_RECYCLER: std::cell::RefCell<Vec<Box<dyn std::any::Any>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 const MI_SIZE: usize = 4;
@@ -461,27 +460,17 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
 
-    let mut above: Vec<T> = PAETH_ABOVE_RECYCLER.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(any) = slot.take() {
-            match any.downcast::<Vec<T>>() {
-                Ok(vec) => *vec,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
+    let mut above: Vec<T> = PAETH_RECYCLER.with(|cell| {
+        cell.borrow_mut()
+            .pop()
+            .and_then(|any| any.downcast::<Vec<T>>().ok().map(|b| *b))
+            .unwrap_or_default()
     });
-    let mut left: Vec<T> = PAETH_LEFT_RECYCLER.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(any) = slot.take() {
-            match any.downcast::<Vec<T>>() {
-                Ok(vec) => *vec,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
+    let mut left: Vec<T> = PAETH_RECYCLER.with(|cell| {
+        cell.borrow_mut()
+            .pop()
+            .and_then(|any| any.downcast::<Vec<T>>().ok().map(|b| *b))
+            .unwrap_or_default()
     });
 
     let res = (|| {
@@ -517,11 +506,14 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
         )
     })();
 
-    PAETH_ABOVE_RECYCLER.with(|cell| {
-        *cell.borrow_mut() = Some(Box::new(above));
-    });
-    PAETH_LEFT_RECYCLER.with(|cell| {
-        *cell.borrow_mut() = Some(Box::new(left));
+    PAETH_RECYCLER.with(|cell| {
+        let mut recycler = cell.borrow_mut();
+        if recycler.len() < 8 {
+            recycler.push(Box::new(above));
+        }
+        if recycler.len() < 8 {
+            recycler.push(Box::new(left));
+        }
     });
 
     res
