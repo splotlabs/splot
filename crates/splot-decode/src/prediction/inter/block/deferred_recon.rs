@@ -433,21 +433,38 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
                     })
                     .collect_into_vec(results);
             }
+            let mut first_error = None;
             for ((block, result), samples) in blocks.iter_mut().zip(results.drain(..)).zip(slots) {
+                if first_error.is_some() {
+                    *samples = match result {
+                        Ok((window, _)) => window.into_samples(),
+                        Err(storage) => storage,
+                    };
+                    continue;
+                }
                 let output = match result {
                     Ok((window, output)) => {
                         let published = window.publish(workspace);
                         *samples = window.into_samples();
-                        published?;
+                        if let Err(error) = published {
+                            first_error = Some(error);
+                            continue;
+                        }
                         output
                     }
                     Err(storage) => {
                         *samples = storage;
                         let _scopes = snapshot.install(block.segment_id);
-                        execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?
+                        match execute(block, &mut WorkspaceSink::Frame(workspace), &shared) {
+                            Ok(output) => output,
+                            Err(error) => {
+                                first_error = Some(error);
+                                continue;
+                            }
+                        }
                     }
                 };
-                apply_output(
+                if let Err(error) = apply_output(
                     output,
                     block,
                     workspace,
@@ -456,7 +473,12 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
                     mi_rows,
                     mi_cols,
                     current_order_hint,
-                )?;
+                ) {
+                    first_error = Some(error);
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
             }
         }
         Ok(())
