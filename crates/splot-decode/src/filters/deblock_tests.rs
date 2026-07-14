@@ -275,7 +275,100 @@ fn edge_test_grid(curr_skip: bool) -> MiGrid {
         skip: curr_skip,
         lossless: false,
     });
-    MiGrid { mi_cols: 16, cells }
+    MiGrid {
+        mi_cols: 16,
+        cells,
+        candidates: vec![0; 4 * 16],
+    }
+}
+
+fn assert_candidate_mask_superset(
+    grid: &MiGrid,
+    mi_rows: usize,
+    mi_cols: usize,
+    plane: usize,
+    pass: usize,
+    sub_x: usize,
+    sub_y: usize,
+) {
+    let (dx, dy) = if pass == 0 { (1, 0) } else { (0, 1) };
+    let row_step = 1 << sub_y;
+    let col_step = 1 << sub_x;
+    for row in (0..mi_rows).step_by(row_step) {
+        for col in (0..mi_cols).step_by(col_step) {
+            if pass == 0 && col == 0 || pass == 1 && row == 0 {
+                continue;
+            }
+            let prev_row = row - (dy << sub_y);
+            let prev_col = col - (dx << sub_x);
+            let curr = grid.get(row, col).unwrap();
+            let prev = grid.get(prev_row, prev_col).unwrap();
+            let curr_tx_base = if plane == 0 {
+                (curr.base_row, curr.base_col)
+            } else {
+                (curr.chroma_base_row, curr.chroma_base_col)
+            };
+            let prev_tx_base = if plane == 0 {
+                (prev.base_row, prev.base_col)
+            } else {
+                (prev.chroma_base_row, prev.chroma_base_col)
+            };
+            let x_p = (col * MI_SIZE) >> sub_x;
+            let y_p = (row * MI_SIZE) >> sub_y;
+            let curr_sub_pu = sub_pu_base(&curr, plane, x_p, y_p, sub_x, sub_y);
+            let prev_sub_pu = sub_pu_base(
+                &prev,
+                plane,
+                x_p.saturating_sub(dx),
+                y_p.saturating_sub(dy),
+                sub_x,
+                sub_y,
+            );
+            if curr_tx_base != prev_tx_base || curr_sub_pu != prev_sub_pu {
+                assert!(
+                    grid.is_candidate(row, col, pass, true),
+                    "candidate mask missed plane={plane} pass={pass} row={row} col={col}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
+    let block = |r, c, n4w, n4h, sub_pu_size| DeblockBlock {
+        r,
+        c,
+        luma_prediction: prediction(r, c, 3),
+        chroma_prediction: prediction(r, c, 2),
+        chroma_base_r: r,
+        chroma_base_c: c,
+        n4w,
+        n4h,
+        luma_tx: 3,
+        chroma_tx: Some(2),
+        sub_pu_size,
+        chroma_transform_only: false,
+        qindex: 100,
+        skip: false,
+        lossless: false,
+    };
+    let blocks = [
+        block(0, 0, 1, 1, None),
+        block(0, 1, 5, 1, None),
+        block(1, 0, 1, 3, None),
+        block(1, 1, 2, 3, Some(DeblockSubPuSize::square(8))),
+        block(1, 3, 3, 3, None),
+    ];
+    let grid = build_mi_grid(&blocks, 4, 6).unwrap();
+
+    for (plane, sub_x, sub_y) in [(0, 0, 0), (1, 1, 1)] {
+        for pass in 0..2 {
+            assert_candidate_mask_superset(&grid, 4, 6, plane, pass, sub_x, sub_y);
+        }
+    }
+    assert!(!grid.is_candidate(3, 5, 0, false));
+    assert!(!grid.is_candidate(3, 5, 1, false));
 }
 
 fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {

@@ -17,6 +17,10 @@ const MI_SIZE: usize = 4;
 
 const SB_SIZE: usize = 64;
 
+const VERTICAL_TX_CANDIDATE: u8 = 1;
+const HORIZONTAL_TX_CANDIDATE: u8 = 2;
+const SUB_PU_CANDIDATE: u8 = 4;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DeblockPredictionUnit {
     pub(crate) base_r: usize,
@@ -385,6 +389,9 @@ fn deblock_plane_pass<T: ReconSample>(
                         break;
                     }
                     for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                        if !grid.is_candidate(r, c, plane_pass.pass, plane_pass.allow_df_sub_pu) {
+                            continue;
+                        }
                         deblock_filter_edge(
                             &mut ctx,
                             grid,
@@ -401,6 +408,9 @@ fn deblock_plane_pass<T: ReconSample>(
                         break;
                     }
                     for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                        if !grid.is_candidate(r, c, plane_pass.pass, plane_pass.allow_df_sub_pu) {
+                            continue;
+                        }
                         deblock_filter_edge(
                             &mut ctx,
                             grid,
@@ -494,6 +504,9 @@ fn deblock_plane_pass<T: ReconSample>(
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
         for c in (0..mi_cols).step_by(plane_pass.col_step) {
+            if !grid.is_candidate(r, c, plane_pass.pass, plane_pass.allow_df_sub_pu) {
+                continue;
+            }
             deblock_filter_edge(
                 &mut ctx,
                 grid,
@@ -1343,11 +1356,29 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
 struct MiGrid {
     mi_cols: usize,
     cells: Vec<Option<MiBlockInfo>>,
+    candidates: Vec<u8>,
 }
 
 impl MiGrid {
     fn get(&self, row: usize, col: usize) -> Option<MiBlockInfo> {
         self.cells.get(row * self.mi_cols + col).copied().flatten()
+    }
+
+    fn is_candidate(&self, row: usize, col: usize, pass: usize, allow_sub_pu: bool) -> bool {
+        let index = row * self.mi_cols + col;
+        let Some(cell) = self.cells.get(index) else {
+            return true;
+        };
+        if cell.is_none() {
+            return true;
+        }
+        let tx_candidate = if pass == 0 {
+            VERTICAL_TX_CANDIDATE
+        } else {
+            HORIZONTAL_TX_CANDIDATE
+        };
+        let mask = tx_candidate | if allow_sub_pu { SUB_PU_CANDIDATE } else { 0 };
+        self.candidates[index] & mask != 0
     }
 }
 
@@ -1364,6 +1395,11 @@ fn build_mi_grid(
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Workspace)?;
     cells.resize(count, None);
+    let mut candidates = Vec::new();
+    candidates
+        .try_reserve_exact(count)
+        .map_err(|_| DeblockError::Workspace)?;
+    candidates.resize(count, 0);
 
     for block in blocks {
         let info = MiBlockInfo::from_block(*block);
@@ -1374,8 +1410,13 @@ fn build_mi_grid(
                 }
             }
         }
+        mark_block_candidates(&mut candidates, block, mi_rows, mi_cols);
     }
-    Ok(MiGrid { mi_cols, cells })
+    Ok(MiGrid {
+        mi_cols,
+        cells,
+        candidates,
+    })
 }
 
 fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, mi_cols: usize) {
@@ -1388,6 +1429,7 @@ fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, m
                 }
             }
         }
+        mark_block_candidates(&mut grid.candidates, block, mi_rows, mi_cols);
     }
     for block in blocks.iter().filter(|block| block.chroma_transform_only) {
         for rr in block.r..block.r + block.n4h {
@@ -1402,6 +1444,55 @@ fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, m
                 }
             }
         }
+        mark_block_candidates(&mut grid.candidates, block, mi_rows, mi_cols);
+    }
+}
+
+fn mark_block_candidates(
+    candidates: &mut [u8],
+    block: &DeblockBlock,
+    mi_rows: usize,
+    mi_cols: usize,
+) {
+    let row_end = block.r.saturating_add(block.n4h).min(mi_rows);
+    let col_end = block.c.saturating_add(block.n4w).min(mi_cols);
+    let row_start = block.r.min(row_end);
+    let col_start = block.c.min(col_end);
+
+    for row in row_start..row_end {
+        mark_vertical_candidate(candidates, row, col_start, mi_cols);
+        mark_vertical_candidate(candidates, row, col_end, mi_cols);
+    }
+    for col in col_start..col_end {
+        mark_horizontal_candidate(candidates, row_start, col, mi_rows, mi_cols);
+        mark_horizontal_candidate(candidates, row_end, col, mi_rows, mi_cols);
+    }
+    if block.sub_pu_size.is_some() {
+        for row in row_start..row_end {
+            let start = row * mi_cols + col_start;
+            let end = row * mi_cols + col_end;
+            for candidate in &mut candidates[start..end] {
+                *candidate |= SUB_PU_CANDIDATE;
+            }
+        }
+    }
+}
+
+fn mark_vertical_candidate(candidates: &mut [u8], row: usize, col: usize, mi_cols: usize) {
+    for marked_col in col..col.saturating_add(2).min(mi_cols) {
+        candidates[row * mi_cols + marked_col] |= VERTICAL_TX_CANDIDATE;
+    }
+}
+
+fn mark_horizontal_candidate(
+    candidates: &mut [u8],
+    row: usize,
+    col: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+) {
+    for marked_row in row..row.saturating_add(2).min(mi_rows) {
+        candidates[marked_row * mi_cols + col] |= HORIZONTAL_TX_CANDIDATE;
     }
 }
 
