@@ -273,52 +273,6 @@ fn cdef_output_row<const W: usize>(out: &mut [u16; 64], row: usize) -> Option<&m
     out.get_mut(start..end)?.try_into().ok()
 }
 
-fn cdef_primary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    center_index: usize,
-    relative_offsets: &[[isize; 2]; 2],
-) -> Option<[[&'a [u16; W]; 2]; 2]> {
-    Some([
-        [
-            cdef_padded_row(pad, center_index, relative_offsets[0][0])?,
-            cdef_padded_row(pad, center_index, relative_offsets[0][1])?,
-        ],
-        [
-            cdef_padded_row(pad, center_index, relative_offsets[1][0])?,
-            cdef_padded_row(pad, center_index, relative_offsets[1][1])?,
-        ],
-    ])
-}
-
-fn cdef_secondary_rows<'a, const W: usize>(
-    pad: &'a [u16; CDEF_PADDED_AREA],
-    center_index: usize,
-    relative_offsets: &[[[isize; 2]; 2]; 2],
-) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
-    Some([
-        [
-            [
-                cdef_padded_row(pad, center_index, relative_offsets[0][0][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[0][0][1])?,
-            ],
-            [
-                cdef_padded_row(pad, center_index, relative_offsets[0][1][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[0][1][1])?,
-            ],
-        ],
-        [
-            [
-                cdef_padded_row(pad, center_index, relative_offsets[1][0][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[1][0][1])?,
-            ],
-            [
-                cdef_padded_row(pad, center_index, relative_offsets[1][1][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[1][1][1])?,
-            ],
-        ],
-    ])
-}
-
 fn cdef_filter_block_interior_rows<const W: usize>(
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
@@ -336,31 +290,108 @@ fn cdef_filter_block_interior_rows<const W: usize>(
     if filter.pri_str != 0 && filter.sec_str != 0 {
         for i in 0..h {
             let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let pri_rows = cdef_primary_rows::<W>(pad, center_index, pri_rel)?;
-            let sec_rows = cdef_secondary_rows::<W>(pad, center_index, sec_rel)?;
+            let c_idx = center_index;
+            let p00_idx = center_index.checked_add_signed(pri_rel[0][0])?;
+            let p01_idx = center_index.checked_add_signed(pri_rel[0][1])?;
+            let p10_idx = center_index.checked_add_signed(pri_rel[1][0])?;
+            let p11_idx = center_index.checked_add_signed(pri_rel[1][1])?;
+
+            let s000_idx = center_index.checked_add_signed(sec_rel[0][0][0])?;
+            let s001_idx = center_index.checked_add_signed(sec_rel[0][0][1])?;
+            let s010_idx = center_index.checked_add_signed(sec_rel[0][1][0])?;
+            let s011_idx = center_index.checked_add_signed(sec_rel[0][1][1])?;
+            let s100_idx = center_index.checked_add_signed(sec_rel[1][0][0])?;
+            let s101_idx = center_index.checked_add_signed(sec_rel[1][0][1])?;
+            let s110_idx = center_index.checked_add_signed(sec_rel[1][1][0])?;
+            let s111_idx = center_index.checked_add_signed(sec_rel[1][1][1])?;
+
+            let c_row: &[u16; W] = pad.get(c_idx..c_idx + W)?.try_into().ok()?;
+            let p00_row: &[u16; W] = pad.get(p00_idx..p00_idx + W)?.try_into().ok()?;
+            let p01_row: &[u16; W] = pad.get(p01_idx..p01_idx + W)?.try_into().ok()?;
+            let p10_row: &[u16; W] = pad.get(p10_idx..p10_idx + W)?.try_into().ok()?;
+            let p11_row: &[u16; W] = pad.get(p11_idx..p11_idx + W)?.try_into().ok()?;
+
+            let s000_row: &[u16; W] = pad.get(s000_idx..s000_idx + W)?.try_into().ok()?;
+            let s001_row: &[u16; W] = pad.get(s001_idx..s001_idx + W)?.try_into().ok()?;
+            let s010_row: &[u16; W] = pad.get(s010_idx..s010_idx + W)?.try_into().ok()?;
+            let s011_row: &[u16; W] = pad.get(s011_idx..s011_idx + W)?.try_into().ok()?;
+            let s100_row: &[u16; W] = pad.get(s100_idx..s100_idx + W)?.try_into().ok()?;
+            let s101_row: &[u16; W] = pad.get(s101_idx..s101_idx + W)?.try_into().ok()?;
+            let s110_row: &[u16; W] = pad.get(s110_idx..s110_idx + W)?.try_into().ok()?;
+            let s111_row: &[u16; W] = pad.get(s111_idx..s111_idx + W)?.try_into().ok()?;
+
             let output_row = cdef_output_row::<W>(out, i)?;
+
             for j in 0..W {
-                let center = i32::from(center_row[j]);
+                let center = i32::from(c_row[j]);
                 let mut sum = 0i32;
                 let mut max = center;
                 let mut min = center;
-                for (k, (pri_by_sign, sec_by_sign)) in pri_rows.iter().zip(&sec_rows).enumerate() {
-                    for (pri_row, sec_by_dir) in pri_by_sign.iter().zip(sec_by_sign) {
-                        let p = i32::from(pri_row[j]);
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
-                        max = max.max(p);
-                        min = min.min(p);
-                        for sec_row in sec_by_dir {
-                            let s = i32::from(sec_row[j]);
-                            sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
-                            max = max.max(s);
-                            min = min.min(s);
-                        }
-                    }
+
+                {
+                    let p0 = i32::from(p00_row[j]);
+                    sum += pri_taps[0] * constrain_with_adj(p0 - center, filter.pri_str, pri_adj);
+                    max = max.max(p0);
+                    min = min.min(p0);
+
+                    let s0 = i32::from(s000_row[j]);
+                    sum += sec_taps[0] * constrain_with_adj(s0 - center, filter.sec_str, sec_adj);
+                    max = max.max(s0);
+                    min = min.min(s0);
+
+                    let s1 = i32::from(s001_row[j]);
+                    sum += sec_taps[0] * constrain_with_adj(s1 - center, filter.sec_str, sec_adj);
+                    max = max.max(s1);
+                    min = min.min(s1);
+
+                    let p1 = i32::from(p01_row[j]);
+                    sum += pri_taps[0] * constrain_with_adj(p1 - center, filter.pri_str, pri_adj);
+                    max = max.max(p1);
+                    min = min.min(p1);
+
+                    let s2 = i32::from(s010_row[j]);
+                    sum += sec_taps[0] * constrain_with_adj(s2 - center, filter.sec_str, sec_adj);
+                    max = max.max(s2);
+                    min = min.min(s2);
+
+                    let s3 = i32::from(s011_row[j]);
+                    sum += sec_taps[0] * constrain_with_adj(s3 - center, filter.sec_str, sec_adj);
+                    max = max.max(s3);
+                    min = min.min(s3);
                 }
+
+                {
+                    let p0 = i32::from(p10_row[j]);
+                    sum += pri_taps[1] * constrain_with_adj(p0 - center, filter.pri_str, pri_adj);
+                    max = max.max(p0);
+                    min = min.min(p0);
+
+                    let s0 = i32::from(s100_row[j]);
+                    sum += sec_taps[1] * constrain_with_adj(s0 - center, filter.sec_str, sec_adj);
+                    max = max.max(s0);
+                    min = min.min(s0);
+
+                    let s1 = i32::from(s101_row[j]);
+                    sum += sec_taps[1] * constrain_with_adj(s1 - center, filter.sec_str, sec_adj);
+                    max = max.max(s1);
+                    min = min.min(s1);
+
+                    let p1 = i32::from(p11_row[j]);
+                    sum += pri_taps[1] * constrain_with_adj(p1 - center, filter.pri_str, pri_adj);
+                    max = max.max(p1);
+                    min = min.min(p1);
+
+                    let s2 = i32::from(s110_row[j]);
+                    sum += sec_taps[1] * constrain_with_adj(s2 - center, filter.sec_str, sec_adj);
+                    max = max.max(s2);
+                    min = min.min(s2);
+
+                    let s3 = i32::from(s111_row[j]);
+                    sum += sec_taps[1] * constrain_with_adj(s3 - center, filter.sec_str, sec_adj);
+                    max = max.max(s3);
+                    min = min.min(s3);
+                }
+
                 let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
                 output_row[j] = rounded.clamp(min, max) as u16;
             }
@@ -368,40 +399,84 @@ fn cdef_filter_block_interior_rows<const W: usize>(
     } else if filter.pri_str != 0 {
         for i in 0..h {
             let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let pri_rows = cdef_primary_rows::<W>(pad, center_index, pri_rel)?;
+            let c_idx = center_index;
+            let p00_idx = center_index.checked_add_signed(pri_rel[0][0])?;
+            let p01_idx = center_index.checked_add_signed(pri_rel[0][1])?;
+            let p10_idx = center_index.checked_add_signed(pri_rel[1][0])?;
+            let p11_idx = center_index.checked_add_signed(pri_rel[1][1])?;
+
+            let c_row: &[u16; W] = pad.get(c_idx..c_idx + W)?.try_into().ok()?;
+            let p00_row: &[u16; W] = pad.get(p00_idx..p00_idx + W)?.try_into().ok()?;
+            let p01_row: &[u16; W] = pad.get(p01_idx..p01_idx + W)?.try_into().ok()?;
+            let p10_row: &[u16; W] = pad.get(p10_idx..p10_idx + W)?.try_into().ok()?;
+            let p11_row: &[u16; W] = pad.get(p11_idx..p11_idx + W)?.try_into().ok()?;
+
             let output_row = cdef_output_row::<W>(out, i)?;
+
             for j in 0..W {
-                let center = i32::from(center_row[j]);
+                let center = i32::from(c_row[j]);
                 let mut sum = 0i32;
-                for (k, pri_by_sign) in pri_rows.iter().enumerate() {
-                    for pri_row in pri_by_sign {
-                        let p = i32::from(pri_row[j]);
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
-                    }
-                }
+
+                let p0 = i32::from(p00_row[j]);
+                sum += pri_taps[0] * constrain_with_adj(p0 - center, filter.pri_str, pri_adj);
+                let p1 = i32::from(p01_row[j]);
+                sum += pri_taps[0] * constrain_with_adj(p1 - center, filter.pri_str, pri_adj);
+
+                let p2 = i32::from(p10_row[j]);
+                sum += pri_taps[1] * constrain_with_adj(p2 - center, filter.pri_str, pri_adj);
+                let p3 = i32::from(p11_row[j]);
+                sum += pri_taps[1] * constrain_with_adj(p3 - center, filter.pri_str, pri_adj);
+
                 output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
             }
         }
     } else if filter.sec_str != 0 {
         for i in 0..h {
             let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let sec_rows = cdef_secondary_rows::<W>(pad, center_index, sec_rel)?;
+            let c_idx = center_index;
+            let s000_idx = center_index.checked_add_signed(sec_rel[0][0][0])?;
+            let s001_idx = center_index.checked_add_signed(sec_rel[0][0][1])?;
+            let s010_idx = center_index.checked_add_signed(sec_rel[0][1][0])?;
+            let s011_idx = center_index.checked_add_signed(sec_rel[0][1][1])?;
+            let s100_idx = center_index.checked_add_signed(sec_rel[1][0][0])?;
+            let s101_idx = center_index.checked_add_signed(sec_rel[1][0][1])?;
+            let s110_idx = center_index.checked_add_signed(sec_rel[1][1][0])?;
+            let s111_idx = center_index.checked_add_signed(sec_rel[1][1][1])?;
+
+            let c_row: &[u16; W] = pad.get(c_idx..c_idx + W)?.try_into().ok()?;
+            let s000_row: &[u16; W] = pad.get(s000_idx..s000_idx + W)?.try_into().ok()?;
+            let s001_row: &[u16; W] = pad.get(s001_idx..s001_idx + W)?.try_into().ok()?;
+            let s010_row: &[u16; W] = pad.get(s010_idx..s010_idx + W)?.try_into().ok()?;
+            let s011_row: &[u16; W] = pad.get(s011_idx..s011_idx + W)?.try_into().ok()?;
+            let s100_row: &[u16; W] = pad.get(s100_idx..s100_idx + W)?.try_into().ok()?;
+            let s101_row: &[u16; W] = pad.get(s101_idx..s101_idx + W)?.try_into().ok()?;
+            let s110_row: &[u16; W] = pad.get(s110_idx..s110_idx + W)?.try_into().ok()?;
+            let s111_row: &[u16; W] = pad.get(s111_idx..s111_idx + W)?.try_into().ok()?;
+
             let output_row = cdef_output_row::<W>(out, i)?;
+
             for j in 0..W {
-                let center = i32::from(center_row[j]);
+                let center = i32::from(c_row[j]);
                 let mut sum = 0i32;
-                for (k, sec_by_sign) in sec_rows.iter().enumerate() {
-                    for sec_by_dir in sec_by_sign {
-                        for sec_row in sec_by_dir {
-                            let s = i32::from(sec_row[j]);
-                            sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
-                        }
-                    }
-                }
+
+                let s0 = i32::from(s000_row[j]);
+                sum += sec_taps[0] * constrain_with_adj(s0 - center, filter.sec_str, sec_adj);
+                let s1 = i32::from(s001_row[j]);
+                sum += sec_taps[0] * constrain_with_adj(s1 - center, filter.sec_str, sec_adj);
+                let s2 = i32::from(s010_row[j]);
+                sum += sec_taps[0] * constrain_with_adj(s2 - center, filter.sec_str, sec_adj);
+                let s3 = i32::from(s011_row[j]);
+                sum += sec_taps[0] * constrain_with_adj(s3 - center, filter.sec_str, sec_adj);
+
+                let s4 = i32::from(s100_row[j]);
+                sum += sec_taps[1] * constrain_with_adj(s4 - center, filter.sec_str, sec_adj);
+                let s5 = i32::from(s101_row[j]);
+                sum += sec_taps[1] * constrain_with_adj(s5 - center, filter.sec_str, sec_adj);
+                let s6 = i32::from(s110_row[j]);
+                sum += sec_taps[1] * constrain_with_adj(s6 - center, filter.sec_str, sec_adj);
+                let s7 = i32::from(s111_row[j]);
+                sum += sec_taps[1] * constrain_with_adj(s7 - center, filter.sec_str, sec_adj);
+
                 output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
             }
         }

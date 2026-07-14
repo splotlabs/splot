@@ -312,7 +312,8 @@ fn interior_fast_path_matches_per_sample_reference() {
             ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
         }
     }
-    let snap = PlaneSnapshot::capture(&ws, PlaneId::Y, 64, 64).unwrap();
+    let mut samples = Vec::new();
+    let snap = PlaneSnapshot::capture(&mut samples, &ws, PlaneId::Y, 64, 64).unwrap();
     for dir in 0..8usize {
         for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
             let ctx = CdefFilterCtx {
@@ -389,7 +390,8 @@ fn zero_strengths_elide_all_writes() {
 #[test]
 fn snapshot_get_bounds() {
     let ws = workspace_8bit(16, 16, 50);
-    let snap = PlaneSnapshot::capture(&ws, PlaneId::Y, 16, 16).unwrap();
+    let mut samples = Vec::new();
+    let snap = PlaneSnapshot::capture(&mut samples, &ws, PlaneId::Y, 16, 16).unwrap();
     assert_eq!(snap.get(0, 0), Some(50));
     assert_eq!(snap.get(15, 15), Some(50));
     assert_eq!(snap.get(-1, 0), None, "negative x off-frame");
