@@ -31,7 +31,7 @@ use super::super::mc::{BlockReconWindow, CompoundMotionGrid, WorkspaceSink};
 use super::super::{InterReferenceState, PlacedInterBlock};
 use super::compound_path::record_compound_temporal_motion;
 use super::prediction::reconstruct_pure_inter_block;
-use super::tip::{self, TipTemporalRecord, apply_tip_temporal_records};
+use super::tip::{self, TipReconstructScratch, apply_tip_temporal_records};
 use crate::Result;
 use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, FrameQuantizerSnapshot, current_frame_qm_segment_id,
@@ -101,12 +101,13 @@ pub(super) enum PendingKind {
 }
 
 #[derive(Debug)]
-struct PendingBlock {
+struct PendingBlock<T: ReconSample> {
     placed: PlacedInterBlock,
     kind: PendingKind,
     segment_id: usize,
     qindex: u32,
     tile_offset: ByteOffset,
+    tip_scratch: TipReconstructScratch<T>,
 }
 
 struct CompoundOutput {
@@ -120,7 +121,7 @@ struct CompoundOutput {
 enum JobOutput {
     Single,
     Compound(Box<CompoundOutput>),
-    Tip(Vec<TipTemporalRecord>),
+    Tip,
 }
 
 type JobResult<T> = std::result::Result<(BlockReconWindow<T>, JobOutput), Vec<T>>;
@@ -128,8 +129,9 @@ type JobResult<T> = std::result::Result<(BlockReconWindow<T>, JobOutput), Vec<T>
 /// Queue of pure inter blocks whose reconstruction is deferred to a flush.
 #[derive(Debug)]
 pub(super) struct DeferredInterRecon<T: DeferredReconSample> {
-    pending: Vec<PendingBlock>,
+    pending: Vec<PendingBlock<T>>,
     storage: Vec<Vec<T>>,
+    tip_scratch: Vec<TipReconstructScratch<T>>,
 }
 
 impl<T: DeferredReconSample> DeferredInterRecon<T> {
@@ -137,6 +139,7 @@ impl<T: DeferredReconSample> DeferredInterRecon<T> {
         Self {
             pending: Vec::new(),
             storage: T::take_deferred_storage(),
+            tip_scratch: Vec::new(),
         }
     }
 
@@ -147,13 +150,27 @@ impl<T: DeferredReconSample> DeferredInterRecon<T> {
         qindex: u32,
         tile_offset: ByteOffset,
     ) {
+        let tip_scratch = if matches!(kind, PendingKind::Tip) {
+            self.take_tip_scratch()
+        } else {
+            TipReconstructScratch::default()
+        };
         self.pending.push(PendingBlock {
             segment_id: current_frame_qm_segment_id(),
             placed,
             kind,
             qindex,
             tile_offset,
+            tip_scratch,
         });
+    }
+
+    pub(super) fn take_tip_scratch(&mut self) -> TipReconstructScratch<T> {
+        self.tip_scratch.pop().unwrap_or_default()
+    }
+
+    pub(super) fn recycle_tip_scratch(&mut self, scratch: TipReconstructScratch<T>) {
+        self.tip_scratch.push(scratch);
     }
 }
 
@@ -195,7 +212,7 @@ struct FlushShared<'a, 'r, T: ReconSample> {
 }
 
 fn execute<T: ReconSample>(
-    block: &PendingBlock,
+    block: &mut PendingBlock<T>,
     sink: &mut WorkspaceSink<'_, T>,
     shared: &FlushShared<'_, '_, T>,
 ) -> Result<JobOutput> {
@@ -243,33 +260,36 @@ fn execute<T: ReconSample>(
                 mi_col,
             }))
         }),
-        PendingKind::Tip => tip::reconstruct(
-            sink,
-            &block.placed,
-            shared.temporal_context.ok_or_else(|| {
-                super::super::unsupported_at(
-                    "inter_deferred_missing_temporal_context",
-                    block.tile_offset,
-                    "missing required input: inter.tip.temporal_context",
-                    "7.10.6",
-                )
-            })?,
-            shared.sequence,
-            shared.core,
-            shared.ref_frame_idx,
-            shared.reference,
-            block.qindex,
-            shared.luma_use_tcq,
-            shared.residual_use_ddt,
-            shared.bit_depth,
-            block.tile_offset,
-        )
-        .map(JobOutput::Tip),
+        PendingKind::Tip => {
+            tip::reconstruct(
+                &mut block.tip_scratch,
+                sink,
+                &block.placed,
+                shared.temporal_context.ok_or_else(|| {
+                    super::super::unsupported_at(
+                        "inter_deferred_missing_temporal_context",
+                        block.tile_offset,
+                        "missing required input: inter.tip.temporal_context",
+                        "7.10.6",
+                    )
+                })?,
+                shared.sequence,
+                shared.core,
+                shared.ref_frame_idx,
+                shared.reference,
+                block.qindex,
+                shared.luma_use_tcq,
+                shared.residual_use_ddt,
+                shared.bit_depth,
+                block.tile_offset,
+            )?;
+            Ok(JobOutput::Tip)
+        }
     }
 }
 
 fn run_windowed<T: ReconSample>(
-    block: &PendingBlock,
+    block: &mut PendingBlock<T>,
     workspace: &CurrentFrameWorkspace<T>,
     snapshot: &FrameQuantizerSnapshot,
     shared: &FlushShared<'_, '_, T>,
@@ -293,7 +313,7 @@ fn run_windowed<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn apply_output<T: ReconSample>(
     output: JobOutput,
-    placed: &PlacedInterBlock,
+    block: &PendingBlock<T>,
     workspace: &CurrentFrameWorkspace<T>,
     motion_field: &mut TemporalMotionField,
     shared: &FlushShared<'_, '_, T>,
@@ -307,7 +327,7 @@ fn apply_output<T: ReconSample>(
             motion_field,
             shared.reference,
             shared.ref_frame_idx,
-            placed,
+            &block.placed,
             compound.syntax,
             compound.warp_params,
             compound.grid.as_ref(),
@@ -317,7 +337,7 @@ fn apply_output<T: ReconSample>(
             mi_cols,
             current_order_hint,
         ),
-        JobOutput::Tip(records) => {
+        JobOutput::Tip => {
             let coded = workspace.info().coded_luma_size();
             apply_tip_temporal_records(
                 motion_field,
@@ -326,7 +346,7 @@ fn apply_output<T: ReconSample>(
                 coded.height().div_ceil(4),
                 coded.width().div_ceil(4),
                 shared.core.display_order_hint().unwrap_or(0),
-                &records,
+                block.tip_scratch.records(),
             );
             Ok(())
         }
@@ -355,7 +375,7 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
     if deferred.pending.is_empty() {
         return Ok(());
     }
-    let pending = core::mem::take(&mut deferred.pending);
+    let mut pending = core::mem::take(&mut deferred.pending);
     let snapshot = FrameQuantizerSnapshot::capture();
     let shared = FlushShared {
         reference,
@@ -368,12 +388,12 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
         bit_depth,
     };
     if pending.len() == 1 {
-        let block = &pending[0];
+        let block = &mut pending[0];
         let _scopes = snapshot.install(block.segment_id);
         let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
-        return apply_output(
+        let result = apply_output(
             output,
-            &block.placed,
+            block,
             workspace,
             motion_field,
             &shared,
@@ -381,6 +401,10 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
             mi_cols,
             current_order_hint,
         );
+        if matches!(block.kind, PendingKind::Tip) {
+            deferred.recycle_tip_scratch(core::mem::take(&mut block.tip_scratch));
+        }
+        return result;
     }
 
     let batch_size = splot_parallel::current_pool_width()
@@ -390,20 +414,20 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
         deferred.storage.resize_with(batch_size, Vec::new);
     }
     let mut results = Vec::with_capacity(batch_size);
-    for blocks in pending.chunks(batch_size) {
+    for blocks in pending.chunks_mut(batch_size) {
         let slots = &mut deferred.storage[..blocks.len()];
         results.clear();
         {
             let frame: &CurrentFrameWorkspace<T> = workspace;
             slots
                 .par_iter_mut()
-                .zip(blocks.par_iter())
+                .zip(blocks.par_iter_mut())
                 .map(|(samples, block)| {
                     run_windowed(block, frame, &snapshot, &shared, core::mem::take(samples))
                 })
                 .collect_into_vec(&mut results);
         }
-        for ((block, result), samples) in blocks.iter().zip(results.drain(..)).zip(slots) {
+        for ((block, result), samples) in blocks.iter_mut().zip(results.drain(..)).zip(slots) {
             let output = match result {
                 Ok((window, output)) => {
                     let published = window.publish(workspace);
@@ -419,7 +443,7 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
             };
             apply_output(
                 output,
-                &block.placed,
+                block,
                 workspace,
                 motion_field,
                 &shared,
@@ -427,6 +451,11 @@ pub(super) fn flush_deferred<T: DeferredReconSample>(
                 mi_cols,
                 current_order_hint,
             )?;
+            if matches!(block.kind, PendingKind::Tip) {
+                deferred
+                    .tip_scratch
+                    .push(core::mem::take(&mut block.tip_scratch));
+            }
         }
     }
     Ok(())
