@@ -445,7 +445,9 @@ fn deblock_plane_pass<T: ReconSample>(
             let row_count = height
                 .checked_add(split_row_count)
                 .ok_or(DeblockError::Workspace)?;
-            let mut rows = Vec::with_capacity(row_count);
+            let mut rows = Vec::new();
+            rows.try_reserve_exact(row_count)
+                .map_err(|_| DeblockError::Workspace)?;
             for row in samples.chunks_mut(stride) {
                 rows.push(&mut row[..width]);
             }
