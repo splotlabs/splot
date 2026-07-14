@@ -293,6 +293,50 @@ fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
 }
 
 #[test]
+fn luma_lr_output_storage_reuses_bounded_buffers() {
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
+    let allocation = with_luma_lr_output_storage::<u16, _>(16, |storage| {
+        storage.resize_with(1, Vec::new);
+        storage[0].try_reserve_exact(16).unwrap();
+        storage[0].as_ptr()
+    });
+
+    with_luma_lr_output_storage::<u16, _>(16, |storage| {
+        assert_eq!(storage[0].as_ptr(), allocation);
+    });
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
+}
+
+#[test]
+fn luma_lr_output_storage_drops_buffers_larger_than_the_frame() {
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
+    with_luma_lr_output_storage::<u16, _>(15, |storage| {
+        storage.resize_with(1, Vec::new);
+        storage[0].try_reserve_exact(16).unwrap();
+    });
+
+    LUMA_LR_OUTPUT_STORAGE.with(|slot| assert!(slot.take().is_none()));
+}
+
+#[test]
+fn luma_lr_output_storage_matches_capacity_instead_of_position() {
+    let mut storage = vec![
+        Vec::<u8>::with_capacity(16),
+        Vec::with_capacity(64),
+        Vec::with_capacity(32),
+    ];
+    let mut wide = block(0, 0, 0);
+    wide.width = 8;
+    let ordinary = block(0, 0, 0);
+
+    align_luma_lr_output_storage(&mut storage, &[wide, ordinary]);
+
+    assert_eq!(storage[0].capacity(), 32);
+    assert_eq!(storage[1].capacity(), 16);
+    assert_eq!(storage[2].capacity(), 64);
+}
+
+#[test]
 fn lr_source_window_reuses_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
