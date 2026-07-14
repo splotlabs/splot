@@ -115,6 +115,71 @@ fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
 }
 
 #[test]
+fn inter_residual_recycler_reuses_lists_without_cross_block_state() {
+    INTER_RESIDUAL_RECYCLER.with(|slot| *slot.borrow_mut() = InterResidualRecycler::default());
+
+    let mut blocks = take_inter_residual_blocks();
+    blocks.reserve(8);
+    let blocks_capacity = blocks.capacity();
+    let blocks_pointer = blocks.as_ptr();
+    drop(InterResidual { blocks });
+
+    let reused_blocks = take_inter_residual_blocks();
+    assert!(reused_blocks.is_empty());
+    assert_eq!(reused_blocks.capacity(), blocks_capacity);
+    assert!(core::ptr::eq(reused_blocks.as_ptr(), blocks_pointer));
+
+    let mut reads = RecycledInterChromaReads::take();
+    reads.entries.reserve(4);
+    reads.entries.push(InterChromaURead {
+        unit: InterChromaUnit {
+            x4: 1,
+            y4: 2,
+            tx_fills_block: false,
+            chroma_inter_tx_type: DCT_DCT,
+        },
+        u_nonzero: true,
+    });
+    let reads_capacity = reads.entries.capacity();
+    let reads_pointer = reads.entries.as_ptr();
+    drop(reads);
+
+    let reused_reads = RecycledInterChromaReads::take();
+    assert!(reused_reads.entries.is_empty());
+    assert_eq!(reused_reads.entries.capacity(), reads_capacity);
+    assert!(core::ptr::eq(reused_reads.entries.as_ptr(), reads_pointer));
+}
+
+#[test]
+fn inter_residual_recycler_is_bounded_and_reentrant() {
+    INTER_RESIDUAL_RECYCLER.with(|slot| *slot.borrow_mut() = InterResidualRecycler::default());
+    for _ in 0..=MAX_RETAINED_INTER_RESIDUAL_LISTS {
+        let blocks = Vec::with_capacity(1);
+        recycle_inter_residual_blocks(blocks);
+    }
+    INTER_RESIDUAL_RECYCLER.with(|slot| {
+        let recycler = slot.borrow();
+        assert_eq!(
+            recycler.block_lists.len(),
+            MAX_RETAINED_INTER_RESIDUAL_LISTS
+        );
+        assert!(recycler.block_slots <= MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS);
+    });
+
+    INTER_RESIDUAL_RECYCLER.with(|slot| *slot.borrow_mut() = InterResidualRecycler::default());
+    let oversized = Vec::with_capacity(MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS + 1);
+    recycle_inter_residual_blocks(oversized);
+    INTER_RESIDUAL_RECYCLER.with(|slot| assert!(slot.borrow().block_lists.is_empty()));
+
+    INTER_RESIDUAL_RECYCLER.with(|slot| {
+        let _borrow = slot.borrow_mut();
+        let blocks = Vec::with_capacity(1);
+        recycle_inter_residual_blocks(blocks);
+    });
+    INTER_RESIDUAL_RECYCLER.with(|slot| assert!(slot.borrow().block_lists.is_empty()));
+}
+
+#[test]
 fn lossless_inter_residual_tx_size_reads_selector() {
     let offset = ByteOffset::new(0);
     let size_group =

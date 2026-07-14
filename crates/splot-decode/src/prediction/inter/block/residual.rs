@@ -3,9 +3,13 @@
 
 //! § 5.20.7.23 inter residual reads: transform partitioning, coefficient
 //! decode, and skipped-block coefficient-context resets.
+//!
+//! Feature tracking: `DECODE-INTER-RESIDUAL-DCT`.
 
 #[allow(clippy::wildcard_imports)]
 use super::*;
+
+use crate::support::reusable_scratch::with_reusable_scratch;
 
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
@@ -13,6 +17,24 @@ const TX_4X4: usize = 0;
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
+const MAX_RETAINED_INTER_RESIDUAL_LISTS: usize = 64;
+const MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS: usize = 16 * 1024;
+
+#[derive(Default)]
+struct InterResidualRecycler {
+    block_lists: Vec<Vec<InterResidualBlock>>,
+    block_slots: usize,
+    chroma_reads: Option<Vec<InterChromaURead>>,
+}
+
+std::thread_local! {
+    static INTER_RESIDUAL_RECYCLER: std::cell::RefCell<InterResidualRecycler> =
+        const { std::cell::RefCell::new(InterResidualRecycler {
+            block_lists: Vec::new(),
+            block_slots: 0,
+            chroma_reads: None,
+        }) };
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InterLumaTxTypeMap {
@@ -35,6 +57,65 @@ struct InterChromaUnit {
 struct InterChromaURead {
     unit: InterChromaUnit,
     u_nonzero: bool,
+}
+
+struct RecycledInterChromaReads {
+    entries: Vec<InterChromaURead>,
+}
+
+impl RecycledInterChromaReads {
+    fn take() -> Self {
+        let entries = with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
+            recycler.chroma_reads.take().unwrap_or_default()
+        });
+        Self { entries }
+    }
+}
+
+impl Drop for RecycledInterChromaReads {
+    fn drop(&mut self) {
+        let mut entries = core::mem::take(&mut self.entries);
+        entries.clear();
+        with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
+            let entries = match recycler.chroma_reads.take() {
+                Some(cached) if cached.capacity() > entries.capacity() => cached,
+                _ => entries,
+            };
+            recycler.chroma_reads = Some(entries);
+        });
+    }
+}
+
+fn take_inter_residual_blocks() -> Vec<InterResidualBlock> {
+    with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
+        let blocks = recycler.block_lists.pop().unwrap_or_default();
+        recycler.block_slots = recycler.block_slots.saturating_sub(blocks.capacity());
+        blocks
+    })
+}
+
+fn recycle_inter_residual_blocks(mut blocks: Vec<InterResidualBlock>) {
+    blocks.clear();
+    let capacity = blocks.capacity();
+    if capacity == 0 || capacity > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS {
+        return;
+    }
+    with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
+        if recycler.block_lists.len() == MAX_RETAINED_INTER_RESIDUAL_LISTS
+            || recycler.block_slots > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS - capacity
+            || recycler.block_lists.try_reserve(1).is_err()
+        {
+            return;
+        }
+        recycler.block_slots += capacity;
+        recycler.block_lists.push(blocks);
+    });
+}
+
+impl Drop for InterResidual {
+    fn drop(&mut self) {
+        recycle_inter_residual_blocks(core::mem::take(&mut self.blocks));
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,7 +258,9 @@ pub(crate) fn read_inter_residual(
     } else {
         None
     };
-    let mut blocks = Vec::new();
+    let mut residual = InterResidual {
+        blocks: take_inter_residual_blocks(),
+    };
     let mut luma_tx_types = InterLumaTxTypeMap::new(frontier.r, frontier.c, n4h, n4w, tile_offset)?;
 
     for start_chunk_y in (0..height_chunks).step_by(2) {
@@ -192,7 +275,7 @@ pub(crate) fn read_inter_residual(
                         work_unit,
                         symbols,
                         coeff_ctx,
-                        &mut blocks,
+                        &mut residual.blocks,
                         &mut luma_tx_types,
                         luma_tx_records.as_deref(),
                         luma_tx_size,
@@ -220,7 +303,7 @@ pub(crate) fn read_inter_residual(
                             work_unit,
                             symbols,
                             coeff_ctx,
-                            &mut blocks,
+                            &mut residual.blocks,
                             &luma_tx_types,
                             frontier,
                             mi_size_chunk,
@@ -239,7 +322,7 @@ pub(crate) fn read_inter_residual(
         }
     }
 
-    Ok(InterResidual { blocks })
+    Ok(residual)
 }
 
 /// Returns the chroma group's top-left chunk position when `(chunk_x, chunk_y)`
@@ -520,7 +603,7 @@ fn read_inter_residual_chroma_group(
     let base_y4 = chroma_ref.row() >> usize::from(subsampling_y);
     let lossless_uses_current_block =
         lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
-    let mut u_reads = Vec::new();
+    let mut u_reads = RecycledInterChromaReads::take();
     let mut y4 = y_offset4;
     while y4 < y_offset4 + num4x4_h {
         let mut x4 = x_offset4;
@@ -567,9 +650,10 @@ fn read_inter_residual_chroma_group(
                 tile_offset,
             )?;
             u_reads
+                .entries
                 .try_reserve(1)
                 .map_err(|_| residual_geometry_error(tile_offset))?;
-            u_reads.push(InterChromaURead { unit, u_nonzero });
+            u_reads.entries.push(InterChromaURead { unit, u_nonzero });
             x4 = x4
                 .checked_add(tx_w4)
                 .ok_or_else(|| residual_geometry_error(tile_offset))?;
@@ -579,7 +663,7 @@ fn read_inter_residual_chroma_group(
             .ok_or_else(|| residual_geometry_error(tile_offset))?;
     }
 
-    for read in u_reads {
+    for read in u_reads.entries.iter().copied() {
         let start_x = (base_x4 + read.unit.x4) * MI_SIZE;
         let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
         let v = read_inter_residual_plane(
