@@ -658,20 +658,65 @@ fn ten_bit_clip_uses_full_range() {
 }
 
 #[test]
+fn bilinear_2d_into_matches_reference_for_direct_and_clipped_blocks() {
+    let ref_w = 17usize;
+    let ref_h = 13usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 73 + index / ref_w * 211) % 1200) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+    for (base_x, base_y, w, h, phase_x, phase_y) in [
+        (3, 2, 6, 5, 1, 15),
+        (-2, -1, 6, 5, 8, 8),
+        (14, 11, 6, 5, 15, 1),
+    ] {
+        let params = SubpelPredictParams {
+            interp: InterpolationFilter::Bilinear,
+            w,
+            h,
+            start_x: (base_x << SCALE_SUBPEL_BITS) + (phase_x << 6),
+            start_y: (base_y << SCALE_SUBPEL_BITS) + (phase_y << 6),
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_w as i32 - 1,
+            last_y: ref_h as i32 - 1,
+            bit_depth: BitDepth::Ten,
+        };
+        let expected = reference_subpel(&samples, ref_w, ref_h, &params);
+        let mut output = vec![u16::MAX; w * h + 2];
+        subpel_predict_block_into(&view, &params, &mut output).unwrap();
+        assert_eq!(&output[..w * h], expected);
+        assert_eq!(&output[w * h..], &[u16::MAX; 2]);
+    }
+}
+
+#[test]
 fn single_prediction_into_rejects_short_output_without_writes() {
     let ref_w = 8usize;
     let ref_h = 8usize;
     let samples = build_ref(vec![80u16; ref_w * ref_h], ref_w, ref_h);
     let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-    let params = full_pel_params(
-        InterpolationFilter::EightTap,
-        4,
-        4,
-        2,
-        2,
-        ref_w as i32,
-        ref_h as i32,
-    );
+    let params = SubpelPredictParams {
+        interp: InterpolationFilter::Bilinear,
+        start_x: (2 << SCALE_SUBPEL_BITS) + (3 << 6),
+        start_y: (2 << SCALE_SUBPEL_BITS) + (13 << 6),
+        ..full_pel_params(
+            InterpolationFilter::Bilinear,
+            4,
+            4,
+            2,
+            2,
+            ref_w as i32,
+            ref_h as i32,
+        )
+    };
     let sentinel = u16::MAX;
     let mut output = vec![sentinel; params.w * params.h - 1];
 
