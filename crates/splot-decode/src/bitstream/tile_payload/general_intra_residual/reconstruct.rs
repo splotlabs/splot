@@ -3,11 +3,12 @@
 
 //! Shared transform-block reconstruction setup.
 
+use splot_recon::math::round2_i32;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, DequantBlockParams, DpcmDirection, IntraRectBlockSize,
     InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform, ac_quantizer,
-    dc_quantizer, dequantize_block, inverse_transform_2d_outer, secondary_inverse_transform,
-    tx_class,
+    dc_quantizer, dequant_coefficient, dequantize_block, inverse_transform_2d_outer,
+    secondary_inverse_transform, tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
@@ -175,6 +176,16 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
             actual: block.quant.len(),
         });
     }
+    if block.eob == 1
+        && block.plane_tx_type == DCT_DCT
+        && !block.lossless
+        && secondary.is_none()
+        && setup.params.qm.is_none()
+    {
+        let residual = dct_dc_residual(block.quant[0], &setup);
+        sink.add_constant_residual_rect_block(plane_id, x, y, block_size, residual)?;
+        return Ok(());
+    }
     super::with_residual_scratch(|scratch| {
         let dequant = &mut scratch.dequant[..setup.adjusted];
         dequantize_block(&setup.params, &block.quant, dequant)?;
@@ -186,6 +197,29 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         sink.add_residual_rect_block(plane_id, x, y, block_size, residual)?;
         Ok(())
     })
+}
+
+#[inline]
+fn dct_dc_residual(quant: i32, setup: &ReconstructBlockSetup) -> i32 {
+    let transform = setup.transform;
+    let mut dc = dequant_coefficient(
+        quant,
+        setup.params.dc_quant,
+        setup.params.dq_denom,
+        setup.params.bit_depth,
+    );
+    if transform.log2_width.abs_diff(transform.log2_height) % 2 == 1 {
+        dc = round2_i32(dc * 2896, 12);
+    }
+
+    let input_bound = 1i32 << (u32::from(transform.bit_depth.bits()) + 7);
+    let row = round2_i32(
+        dc.clamp(-input_bound, input_bound - 1) * 64,
+        u32::from(transform.row_shift),
+    )
+    .clamp(-input_bound, input_bound - 1);
+    let output_bound = 1i32 << u32::from(transform.bit_depth.bits());
+    round2_i32(row * 64, u32::from(transform.col_shift)).clamp(-output_bound, output_bound - 1)
 }
 
 fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {
@@ -282,4 +316,50 @@ pub(super) fn dequantize_coeff_block(
     }
     dequantize_block(params, &block.quant, out)?;
     Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dct_dc_residual_matches_full_transform_for_every_shape_and_bit_depth() {
+        for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+            for log2_width in 2..=6 {
+                for log2_height in 2..=6 {
+                    let samples = (1usize << log2_width) * (1usize << log2_height);
+                    let setup = reconstruct_block_setup(
+                        samples,
+                        220,
+                        PlaneId::Y,
+                        log2_width,
+                        log2_height,
+                        DCT_DCT,
+                        true,
+                        true,
+                        false,
+                        None,
+                        bit_depth,
+                    )
+                    .unwrap();
+                    assert!(setup.params.qm.is_none());
+                    for quant_dc in [i32::MIN, -257, -1, 1, 257, i32::MAX] {
+                        let mut quant = vec![0; setup.adjusted];
+                        quant[0] = quant_dc;
+                        let mut dequant = vec![0; setup.adjusted];
+                        let mut residual = vec![0; setup.samples];
+                        dequantize_block(&setup.params, &quant, &mut dequant).unwrap();
+                        inverse_transform_2d_outer(&setup.transform, &dequant, &mut residual)
+                            .unwrap();
+                        let dc = dct_dc_residual(quant_dc, &setup);
+                        assert!(
+                            residual.iter().all(|&value| value == dc),
+                            "shape {log2_width}x{log2_height}, {bit_depth:?}, quant {quant_dc}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

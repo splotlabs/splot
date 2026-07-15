@@ -273,6 +273,37 @@ pub enum CurrentFrameSurface<'surface, 'storage, T: ReconSample> {
     Row(&'surface mut CurrentFrameRowBand<'storage, T>),
 }
 
+struct CurrentFrameResidualTarget<'a, T: ReconSample> {
+    samples: &'a mut [T],
+    stride: usize,
+    base: usize,
+    rect: PlaneRect,
+    max_sample: u16,
+}
+
+impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
+    #[inline]
+    fn add(self, mut residual_at: impl FnMut(usize, usize) -> i32) -> Result<()> {
+        let max = i32::from(self.max_sample);
+        for row in 0..self.rect.height() {
+            let target_start = self.base + row * self.stride;
+            for (column, sample) in self.samples[target_start..target_start + self.rect.width()]
+                .iter_mut()
+                .enumerate()
+            {
+                let value = i32::from(sample.to_u16())
+                    .saturating_add(residual_at(row, column))
+                    .clamp(0, max) as u16;
+                // The surface's validated bit depth makes this infallible for
+                // the sealed u8/u16 sample implementations.
+                debug_assert!(value <= T::MAX_VALUE);
+                *sample = T::try_from_u16(value)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     /// Returns the decoded-frame metadata for this target.
     pub const fn info(&self) -> DecodedFrameInfo {
@@ -369,9 +400,44 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         size: IntraRectBlockSize,
         residual: &[i32],
     ) -> Result<()> {
-        let bit_depth = self.info().bit_depth();
         let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
-        let max_sample = bit_depth.max_sample();
+        let source_stride = size.width();
+        self.residual_rect_target(plane, rect, source_stride)?
+            .add(|row, column| residual[row * source_stride + column])
+    }
+
+    /// Adds one constant signed residual directly to a rectangular block.
+    ///
+    /// Target geometry and every prediction sample are validated before the
+    /// first sample is changed. Frame-edge overhang is clipped, while row
+    /// targets reject blocks crossing their exclusive band.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for an absent plane, invalid target geometry,
+    /// cross-band access, or an existing prediction sample outside the active
+    /// bit depth.
+    #[inline]
+    pub fn add_constant_residual_rect_block(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: i32,
+    ) -> Result<()> {
+        let rect = block_rect(x, y, size)?;
+        self.residual_rect_target(plane, rect, size.width())?
+            .add(|_, _| residual)
+    }
+
+    #[inline]
+    fn residual_rect_target(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        source_stride: usize,
+    ) -> Result<CurrentFrameResidualTarget<'_, T>> {
+        let max_sample = self.info().bit_depth().max_sample();
         let (target, target_stride, target_base, rect) = match self {
             Self::Frame(workspace) => {
                 let target = workspace.plane_mut(plane)?;
@@ -422,32 +488,20 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 let value = sample.to_u16();
                 if value > max_sample {
                     return Err(ReconError::ReconstructPredictionOutOfRange {
-                        sample_index: row_index * size.width() + column,
+                        sample_index: row_index * source_stride + column,
                         value,
                         max: max_sample,
                     });
                 }
             }
         }
-
-        let max = i32::from(max_sample);
-        for row_index in 0..rect.height() {
-            let target_start = target_base + row_index * target_stride;
-            let residual_start = row_index * size.width();
-            for (sample, &residual) in target[target_start..target_start + rect.width()]
-                .iter_mut()
-                .zip(&residual[residual_start..residual_start + rect.width()])
-            {
-                let value = i32::from(sample.to_u16())
-                    .saturating_add(residual)
-                    .clamp(0, max) as u16;
-                // The surface's validated bit depth makes this infallible for
-                // the sealed u8/u16 sample implementations.
-                debug_assert!(value <= T::MAX_VALUE);
-                *sample = T::try_from_u16(value)?;
-            }
-        }
-        Ok(())
+        Ok(CurrentFrameResidualTarget {
+            samples: target,
+            stride: target_stride,
+            base: target_base,
+            rect,
+            max_sample,
+        })
     }
 }
 
