@@ -477,6 +477,14 @@ pub fn subpel_predict_block_into<T: ReconSample>(
     output: &mut [u16],
 ) -> Result<()> {
     let intermediate_height = validate_subpel_params(params)?;
+    if params.interp == InterpolationFilter::Bilinear
+        && params.step_x == 1 << SCALE_SUBPEL_BITS
+        && params.step_y == 1 << SCALE_SUBPEL_BITS
+        && ((params.start_x >> 6) & SUBPEL_MASK) != 0
+        && ((params.start_y >> 6) & SUBPEL_MASK) != 0
+    {
+        return subpel_bilinear_2d_into(reference, params, output);
+    }
     let max_sample = i32::from(params.bit_depth.max_sample());
     subpel_predict_block_internal_into_validated(
         reference,
@@ -487,6 +495,98 @@ pub fn subpel_predict_block_into<T: ReconSample>(
         params.w,
         |pred| pred.clamp(0, max_sample) as u16,
     )
+}
+
+fn subpel_bilinear_2d_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> Result<()> {
+    let output_len = params.w * params.h;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let h_phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
+    let v_phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
+    let [h0, h1] = [
+        SUBPEL_FILTERS[BILINEAR as usize][h_phase][3],
+        SUBPEL_FILTERS[BILINEAR as usize][h_phase][4],
+    ];
+    let [v0, v1] = [
+        SUBPEL_FILTERS[BILINEAR as usize][v_phase][3],
+        SUBPEL_FILTERS[BILINEAR as usize][v_phase][4],
+    ];
+    let direct_x = usize::try_from(x0).ok().filter(|&x| {
+        x0 >= params.first_x
+            && x.checked_add(params.w).is_some_and(|last| {
+                last < reference.width
+                    && i32::try_from(last).is_ok_and(|last| last <= params.last_x)
+            })
+    });
+    let mut clipped_x = [0usize; MAX_BLOCK_DIM + 1];
+    if direct_x.is_none() {
+        for (c, col) in clipped_x[..=params.w].iter_mut().enumerate() {
+            *col = (x0 + c as i32)
+                .clamp(params.first_x, params.last_x)
+                .clamp(0, reference.width as i32 - 1) as usize;
+        }
+    }
+
+    let horizontal_row = |row: i32, destination: &mut [i32]| {
+        let row = row
+            .clamp(params.first_y, params.last_y)
+            .clamp(0, reference.height as i32 - 1) as usize;
+        let source = reference.row(row);
+        if let Some(x) = direct_x {
+            for (out, pair) in destination
+                .iter_mut()
+                .zip(source[x..=x + params.w].windows(2))
+            {
+                *out = round2_i32(
+                    h0 * i32::from(pair[0].to_u16()) + h1 * i32::from(pair[1].to_u16()),
+                    INTER_ROUND0,
+                );
+            }
+        } else {
+            for (c, out) in destination.iter_mut().enumerate() {
+                *out = round2_i32(
+                    h0 * i32::from(source[clipped_x[c]].to_u16())
+                        + h1 * i32::from(source[clipped_x[c + 1]].to_u16()),
+                    INTER_ROUND0,
+                );
+            }
+        }
+    };
+
+    let max_sample = i32::from(params.bit_depth.max_sample());
+    with_subpel_intermediate(2 * params.w, |intermediate| {
+        horizontal_row(y0, &mut intermediate[..params.w]);
+        let mut top_is_first = true;
+        for r in 0..params.h {
+            let (first, second) = intermediate.split_at_mut(params.w);
+            let (top, bottom) = if top_is_first {
+                (first, second)
+            } else {
+                (second, first)
+            };
+            horizontal_row(y0 + r as i32 + 1, bottom);
+            for (out, (&top, &bottom)) in output[r * params.w..][..params.w]
+                .iter_mut()
+                .zip(top.iter().zip(bottom.iter()))
+            {
+                *out = round2_i32(v0 * top + v1 * bottom, INTER_ROUND1_NON_COMPOUND)
+                    .clamp(0, max_sample) as u16;
+            }
+            top_is_first = !top_is_first;
+        }
+    });
+    Ok(())
 }
 
 /// Runs the AV2 § 7.13.3.18 separable interpolation-filter convolution for one
