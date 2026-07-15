@@ -243,74 +243,45 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })?;
         }
         crate::timing::report("filter_deblock", deblock_timer);
-        let snapshot_timer = crate::timing::start();
-        let lr_plane_active = |plane_index: usize| {
-            core.lr_params.as_ref().is_some_and(|lr| {
-                lr.planes.get(plane_index).is_some_and(|plane| {
-                    plane.restoration_type
-                        == splot_core::headers::frame::FrameRestorationType::WienerNonsep
-                        || (plane_index == PlaneId::Y.index()
-                            && matches!(
-                                plane.restoration_type,
-                                splot_core::headers::frame::FrameRestorationType::PcWiener
-                                    | splot_core::headers::frame::FrameRestorationType::Switchable
-                            ))
-                })
-            }) && self
-                .lr_source_blocks
-                .iter()
-                .any(|block| block.plane == plane_index)
-        };
-        let luma_lr_active = lr_plane_active(PlaneId::Y.index());
-        let u_lr_active = lr_plane_active(PlaneId::U.index());
-        let v_lr_active = lr_plane_active(PlaneId::V.index());
-        let any_lr_active = luma_lr_active || u_lr_active || v_lr_active;
-        let gdf_active = core
-            .gdf_params
-            .as_ref()
-            .is_some_and(|gdf| gdf.gdf_frame_enable);
-        let deblocked_luma = if any_lr_active || self.ccso_grid.is_some() || gdf_active {
-            self.plane_snapshot(
-                PlaneId::Y,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_deblocked_luma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let deblocked_u = if u_lr_active {
-            self.plane_snapshot(
-                PlaneId::U,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let deblocked_v = if v_lr_active {
-            self.plane_snapshot(
-                PlaneId::V,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_deblocked_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        crate::timing::report("filter_deblock_snapshots", snapshot_timer);
-        let cdef_timer = crate::timing::start();
         let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
-        if let (Some(grid), Some(strengths)) = (
-            self.cdef_grid.as_ref(),
-            crate::filters::cdef::cdef_frame_strengths(core),
-        ) {
-            crate::filters::cdef::cdef_general_intra_frame_indexed(
-                &mut self.workspace,
-                &strengths,
-                grid,
+        let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(core);
+        let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
+        let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
+        let (lr_source_blocks, plane_ends) =
+            final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
+        let [y_end, u_end] = plane_ends;
+        let y_runs = &lr_source_blocks[..y_end];
+        let u_runs = &lr_source_blocks[y_end..u_end];
+        let v_runs = &lr_source_blocks[u_end..];
+        let ranges = crate::filters::gdf::stripe_ranges(core, self.luma_height, offset)?;
+        let pixel_format = self.workspace.info().pixel_format();
+        let subsampling = (
+            usize::from(pixel_format.subsampling_x()),
+            usize::from(pixel_format.subsampling_y()),
+        );
+        let ccso_config = self
+            .ccso_grid
+            .as_ref()
+            .map(|grid| crate::filters::ccso::prepare_ccso(core, grid, self.bit_depth, subsampling))
+            .transpose()
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                )
+            })?;
+        let filter_timer = crate::timing::start();
+        let run_stripe = |&(start, end): &(usize, usize)| {
+            let mut cdef = crate::filters::cdef::cdef_stripe(
+                &self.workspace,
+                cdef_strengths.as_deref(),
+                self.cdef_grid.as_ref(),
                 cdef_skip_grid.as_ref(),
                 self.lossless_grid.as_ref(),
                 (mi_rows, mi_cols),
                 self.bit_depth,
+                start,
+                end,
             )
             .map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
@@ -318,117 +289,126 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
                 )
             })?;
-        }
-        crate::timing::report("filter_cdef", cdef_timer);
-        let ccso_timer = crate::timing::start();
-        if let Some(grid) = self.ccso_grid.as_ref() {
-            crate::filters::ccso::ccso_frame(
-                &mut self.workspace,
-                &deblocked_luma,
-                core,
-                grid,
-                self.lossless_grid.as_ref(),
-                self.bit_depth,
-            )
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+            if let Some((grid, config)) = self.ccso_grid.as_ref().zip(ccso_config.as_ref()) {
+                crate::filters::ccso::ccso_stripe(
+                    &mut cdef,
+                    grid,
+                    config,
+                    self.lossless_grid.as_ref(),
                 )
-            })?;
-        }
-        crate::timing::report("filter_ccso", ccso_timer);
-        let lr_snapshot_timer = crate::timing::start();
-        let cdef_luma = if any_lr_active || gdf_active {
-            self.plane_snapshot(
-                PlaneId::Y,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_luma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let cdef_u = if u_lr_active {
-            self.plane_snapshot(
-                PlaneId::U,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        let cdef_v = if v_lr_active {
-            self.plane_snapshot(
-                PlaneId::V,
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_chroma_snapshot",
-            )?
-        } else {
-            Vec::new()
-        };
-        crate::timing::report("filter_cdef_snapshots", lr_snapshot_timer);
-        let lr_timer = crate::timing::start();
-        let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
-        let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
-        let (lr_source_blocks, plane_ends) = if any_lr_active {
-            final_filters::coalesced_lr_source_rows_all(lr_source_blocks)
-        } else {
-            (Vec::new(), [0, 0])
-        };
-        let [y_end, u_end] = plane_ends;
-        let y_runs = &lr_source_blocks[..y_end];
-        let u_runs = &lr_source_blocks[y_end..u_end];
-        let v_runs = &lr_source_blocks[u_end..];
-        self.apply_luma_lr_runs(
-            core,
-            offset,
-            y_runs,
-            &lr_unit_filters,
-            &deblocked_luma,
-            &cdef_luma,
-        )?;
-        self.apply_chroma_lr_runs(
-            core,
-            offset,
-            PlaneId::U,
-            u_runs,
-            &lr_unit_filters,
-            &deblocked_u,
-            &cdef_u,
-            &deblocked_luma,
-            &cdef_luma,
-        )?;
-        self.apply_chroma_lr_runs(
-            core,
-            offset,
-            PlaneId::V,
-            v_runs,
-            &lr_unit_filters,
-            &deblocked_v,
-            &cdef_v,
-            &deblocked_luma,
-            &cdef_luma,
-        )?;
-        crate::timing::report("filter_lr", lr_timer);
-        let gdf_timer = crate::timing::start();
-        if gdf_active {
-            crate::filters::gdf::apply_frame(
-                &mut self.workspace,
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                    )
+                })?;
+            }
+            let mut frame = self.apply_lr_stripe(
                 core,
-                &deblocked_luma,
-                &cdef_luma,
+                offset,
+                cdef,
+                [y_runs, u_runs, v_runs],
+                &lr_unit_filters,
+            )?;
+            crate::filters::gdf::apply_stripe(
+                core,
+                frame.deblocked_y,
+                &frame.cdef_y,
+                &mut frame.post_lr_y,
                 self.gdf_grid.as_ref(),
                 self.lossless_grid.as_ref(),
-                self.luma_width,
-                self.luma_height,
                 self.bit_depth,
                 disable_loopfilters_across_tiles,
                 self.gdf_reference,
                 offset,
             )?;
+            Ok(frame.into_filtered())
+        };
+        let results: Vec<Result<final_filters::FilteredStripe>> = if ranges.len() > 1
+            && splot_parallel::on_multiworker_pool()
+        {
+            let mut slots: Vec<Option<Result<final_filters::FilteredStripe>>> =
+                (0..ranges.len()).map(|_| None).collect();
+            let scheduled = splot_parallel::ready_task_scope(|scope| {
+                for (range, slot) in ranges.iter().zip(&mut slots) {
+                    let run_stripe = &run_stripe;
+                    scope.spawn(move |_| {
+                        *slot = Some(run_stripe(range));
+                    });
+                }
+            });
+            if scheduled.is_ok() {
+                let missing = || {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+                    )
+                };
+                slots
+                    .into_iter()
+                    .map(|slot| slot.unwrap_or_else(|| Err(missing())))
+                    .collect()
+            } else {
+                ranges.iter().map(run_stripe).collect()
+            }
+        } else {
+            ranges.iter().map(run_stripe).collect()
+        };
+        let mut frames = Vec::with_capacity(results.len());
+        for result in results {
+            frames.push(result?);
         }
-        crate::timing::report("filter_gdf", gdf_timer);
+        crate::timing::report("filter_stripes", filter_timer);
+        for frame in &frames {
+            self.validate_filter_stripe(PlaneId::Y, &frame.y, offset)?;
+            if let Some(plane) = frame.u.as_ref() {
+                self.validate_filter_stripe(PlaneId::U, plane, offset)?;
+            }
+            if let Some(plane) = frame.v.as_ref() {
+                self.validate_filter_stripe(PlaneId::V, plane, offset)?;
+            }
+        }
+        for frame in frames {
+            self.publish_filter_stripe(PlaneId::Y, &frame.y, offset)?;
+            if let Some(plane) = frame.u.as_ref() {
+                self.publish_filter_stripe(PlaneId::U, plane, offset)?;
+            }
+            if let Some(plane) = frame.v.as_ref() {
+                self.publish_filter_stripe(PlaneId::V, plane, offset)?;
+            }
+        }
         Ok(self.workspace.freeze()?)
+    }
+
+    fn validate_filter_stripe(
+        &self,
+        plane: PlaneId,
+        stripe: &crate::filters::source::StripePlane,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        let error = || {
+            wienerns_lr_selectable_transform_record_error_reason(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+            )
+        };
+        let size = self
+            .workspace
+            .plane(plane)
+            .map_err(|_| error())?
+            .storage_size();
+        let end_y = stripe.end_y().ok_or_else(&error)?;
+        let max_sample = self.bit_depth.max_sample();
+        if stripe.width() != size.width()
+            || stripe.frame_height() != size.height()
+            || stripe.origin_y() > end_y
+            || end_y > size.height()
+            || T::try_from_u16(max_sample).is_err()
+            || stripe.samples().iter().any(|&sample| sample > max_sample)
+        {
+            return Err(error());
+        }
+        Ok(())
     }
 
     fn needs_tx_skip_grid(&self, core: &splot_core::headers::frame::FrameHeaderCore) -> bool {
@@ -478,16 +458,42 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(())
     }
 
-    fn plane_snapshot(
-        &self,
+    fn publish_filter_stripe(
+        &mut self,
         plane: PlaneId,
+        stripe: &crate::filters::source::StripePlane,
         offset: ByteOffset,
-        reason: &'static str,
-    ) -> Result<Vec<u16>> {
-        self.workspace
-            .samples(plane)
-            .map_err(|_| wienerns_lr_selectable_transform_record_error_reason(offset, reason))
-            .map(|samples| samples.iter().map(|sample| sample.to_u16()).collect())
+    ) -> Result<()> {
+        let error = || {
+            wienerns_lr_selectable_transform_record_error_reason(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+            )
+        };
+        let end_y = stripe.end_y().ok_or_else(&error)?;
+        let size = self
+            .workspace
+            .plane(plane)
+            .map_err(|_| error())?
+            .storage_size();
+        let mut frame = self.workspace.as_frame_mut();
+        let view = frame.plane_mut(plane).ok_or_else(&error)?;
+        let stride = view.stride_samples();
+        if stripe.width() != size.width() || stripe.frame_height() != size.height() {
+            return Err(error());
+        }
+        let samples = view.samples_mut();
+        for y in stripe.origin_y()..end_y {
+            let source = stripe.row(y).ok_or_else(&error)?;
+            let start = y.checked_mul(stride).ok_or_else(&error)?;
+            let destination = samples
+                .get_mut(start..start.checked_add(source.len()).ok_or_else(&error)?)
+                .ok_or_else(&error)?;
+            for (destination, &source) in destination.iter_mut().zip(source) {
+                *destination = T::try_from_u16(source).map_err(|_| error())?;
+            }
+        }
+        Ok(())
     }
 }
 

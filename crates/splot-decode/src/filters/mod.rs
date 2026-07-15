@@ -8,4 +8,5 @@ pub(crate) mod cdef;
 pub(crate) mod deblock;
 pub(crate) mod gdf;
 pub(crate) mod lossless;
+pub(crate) mod source;
 pub(crate) mod wienerns_lr;

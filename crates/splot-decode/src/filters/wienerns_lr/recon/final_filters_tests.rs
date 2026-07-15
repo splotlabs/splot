@@ -59,6 +59,31 @@ fn luma_rect(samples: &[u8], x: usize) -> Vec<u8> {
         .collect()
 }
 
+fn apply_luma_lr(
+    sink: &mut WienerNsLrReconSink<u8>,
+    core: &FrameHeaderCore,
+    blocks: &[WienerNsLrSourceBlock],
+) {
+    let cdef = crate::filters::cdef::cdef_stripe(
+        &sink.workspace,
+        None,
+        None,
+        None,
+        None,
+        (4, 4),
+        splot_recon::BitDepth::Eight,
+        0,
+        16,
+    )
+    .unwrap();
+    let filtered = sink
+        .apply_lr_stripe(core, ByteOffset::new(0), cdef, [blocks, &[], &[]], &[])
+        .unwrap()
+        .into_filtered();
+    sink.publish_filter_stripe(PlaneId::Y, &filtered.y, ByteOffset::new(0))
+        .unwrap();
+}
+
 #[test]
 fn merges_contiguous_row_blocks_and_splits_on_filter_visible_fields() {
     let mut stripe_split = block(0, 8, 0);
@@ -128,7 +153,6 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     let snapshot: Vec<u8> = (0..256)
         .map(|index| 48 + ((index * 37 + index / 16 * 19) % 160) as u8)
         .collect();
-    let source: Vec<u16> = snapshot.iter().map(|&sample| u16::from(sample)).collect();
     let mixed_core = switchable_core();
     assert_eq!(
         mixed_core.lr_params.as_ref().unwrap().planes[0].restoration_type,
@@ -144,38 +168,11 @@ fn switchable_luma_dispatches_mixed_units_from_one_snapshot() {
     pc_block.restoration_type = crate::bitstream::tile_payload::LrUnitRestorationType::PcWiener;
     let wiener_ns_block = block(0, 8, 0);
     let mut mixed = lr_sink(&snapshot);
-    mixed
-        .apply_luma_lr_runs(
-            &mixed_core,
-            ByteOffset::new(0),
-            &[pc_block, wiener_ns_block],
-            &[],
-            &source,
-            &source,
-        )
-        .unwrap();
+    apply_luma_lr(&mut mixed, &mixed_core, &[pc_block, wiener_ns_block]);
     let mut pc_only = lr_sink(&snapshot);
-    pc_only
-        .apply_luma_lr_runs(
-            &pc_core,
-            ByteOffset::new(0),
-            &[pc_block],
-            &[],
-            &source,
-            &source,
-        )
-        .unwrap();
+    apply_luma_lr(&mut pc_only, &pc_core, &[pc_block]);
     let mut wiener_ns_only = lr_sink(&snapshot);
-    wiener_ns_only
-        .apply_luma_lr_runs(
-            &wiener_ns_core,
-            ByteOffset::new(0),
-            &[wiener_ns_block],
-            &[],
-            &source,
-            &source,
-        )
-        .unwrap();
+    apply_luma_lr(&mut wiener_ns_only, &wiener_ns_core, &[wiener_ns_block]);
 
     let mixed_luma = mixed.workspace.samples(PlaneId::Y).unwrap();
     let pc_luma = pc_only.workspace.samples(PlaneId::Y).unwrap();
@@ -293,50 +290,6 @@ fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
 }
 
 #[test]
-fn luma_lr_output_storage_reuses_bounded_buffers() {
-    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
-    let allocation = with_luma_lr_output_storage::<u16, _>(16, |storage| {
-        storage.resize_with(1, Vec::new);
-        storage[0].try_reserve_exact(16).unwrap();
-        storage[0].as_ptr()
-    });
-
-    with_luma_lr_output_storage::<u16, _>(16, |storage| {
-        assert_eq!(storage[0].as_ptr(), allocation);
-    });
-    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
-}
-
-#[test]
-fn luma_lr_output_storage_drops_buffers_larger_than_the_frame() {
-    LUMA_LR_OUTPUT_STORAGE.with(|slot| slot.set(None));
-    with_luma_lr_output_storage::<u16, _>(15, |storage| {
-        storage.resize_with(1, Vec::new);
-        storage[0].try_reserve_exact(16).unwrap();
-    });
-
-    LUMA_LR_OUTPUT_STORAGE.with(|slot| assert!(slot.take().is_none()));
-}
-
-#[test]
-fn luma_lr_output_storage_matches_capacity_instead_of_position() {
-    let mut storage = vec![
-        Vec::<u8>::with_capacity(16),
-        Vec::with_capacity(64),
-        Vec::with_capacity(32),
-    ];
-    let mut wide = block(0, 0, 0);
-    wide.width = 8;
-    let ordinary = block(0, 0, 0);
-
-    align_luma_lr_output_storage(&mut storage, &[wide, ordinary]);
-
-    assert_eq!(storage[0].capacity(), 32);
-    assert_eq!(storage[1].capacity(), 16);
-    assert_eq!(storage[2].capacity(), 64);
-}
-
-#[test]
 fn lr_source_window_reuses_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
@@ -348,17 +301,24 @@ fn lr_source_window_reuses_storage_after_an_error() {
         subsampling_x: 0,
         subsampling_y: 0,
     };
-    let curr = vec![0; 64];
-    let cdef: Vec<u16> = (0..64).map(|sample| sample as u16).collect();
+    let curr_workspace = crate::test_support::yuv420_workspace(8, 8, 0);
+    let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
+    let mut cdef_workspace = crate::test_support::yuv420_workspace(8, 8, 0);
+    for sample in 0..64 {
+        cdef_workspace
+            .set_reconstructed_sample(PlaneId::Y, sample % 8, sample / 8, sample as u8)
+            .unwrap();
+    }
+    let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
+    let cdef = StripePlane::copy_from(cdef_source, 0, 8).unwrap();
+    let short_cdef = StripePlane::copy_from(cdef_source, 0, 1).unwrap();
     let mut storage = Vec::new();
 
-    let window = LrSourceWindow::<u16>::materialize(
+    let window = LrSourceWindow::<u8>::materialize(
         &mut storage,
         PlaneId::Y,
-        &curr,
+        curr,
         &cdef,
-        8,
-        8,
         &bounds,
         2,
         2,
@@ -371,13 +331,11 @@ fn lr_source_window_reuses_storage_after_an_error() {
     let allocation = window.samples.as_ptr();
 
     assert!(
-        LrSourceWindow::<u16>::materialize(
+        LrSourceWindow::<u8>::materialize(
             &mut storage,
             PlaneId::Y,
-            &curr,
-            &cdef[..8],
-            8,
-            8,
+            curr,
+            &short_cdef,
             &bounds,
             2,
             2,
@@ -387,13 +345,11 @@ fn lr_source_window_reuses_storage_after_an_error() {
         )
         .is_err()
     );
-    let window = LrSourceWindow::<u16>::materialize(
+    let window = LrSourceWindow::<u8>::materialize(
         &mut storage,
         PlaneId::Y,
-        &curr,
+        curr,
         &cdef,
-        8,
-        8,
         &bounds,
         2,
         2,
