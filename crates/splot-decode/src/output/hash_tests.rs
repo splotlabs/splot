@@ -297,15 +297,17 @@ fn crop_window_fixture_reports_and_hashes_only_visible_samples() {
 
 #[test]
 fn per_block_gdf_fixture_matches_reference_output_hash() {
-    let report = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(GDF_PER_BLOCK_FIXTURE, DecodeOptions::default())
-        .unwrap();
+    for threads in [1usize, 2, 4, 10] {
+        let report = context(ThreadCount::from(threads))
+            .decode_hash_report_bytes(GDF_PER_BLOCK_FIXTURE, DecodeOptions::default())
+            .unwrap();
 
-    assert_eq!(report.frames.len(), 1);
-    assert_eq!(
-        report.frames[0].hashes[0].digest_hex,
-        GDF_PER_BLOCK_EXPECTED_DIGEST
-    );
+        assert_eq!(report.frames.len(), 1);
+        assert_eq!(
+            report.frames[0].hashes[0].digest_hex,
+            GDF_PER_BLOCK_EXPECTED_DIGEST
+        );
+    }
 }
 
 #[test]
@@ -321,7 +323,7 @@ fn per_block_gdf_fixture_eof_fails_closed() {
 
 #[test]
 fn multi_tile_gdf_fixture_matches_reference_output_hash() {
-    for threads in [1usize, 4] {
+    for threads in [1usize, 2, 4, 10] {
         let report = context(ThreadCount::from(threads))
             .decode_hash_report_bytes(GDF_MULTI_TILE_FIXTURE, DecodeOptions::default())
             .unwrap();

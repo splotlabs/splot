@@ -49,6 +49,77 @@ const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 const GDF_SCRATCH_ALLOCATION_REASON: &str =
     "unsupported_wienerns_lr_selectable_transform_records_gdf_allocation";
 
+fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Option<usize> {
+    let local_y = y.checked_sub(tile_start)?;
+    let stripe = local_y.checked_add(GDF_TEST_STRIPE_OFF)? / GDF_TEST_STRIPE_SIZE;
+    let stripe_base = stripe
+        .checked_mul(GDF_TEST_STRIPE_SIZE)?
+        .checked_add(tile_start)?;
+    let end = stripe_base
+        .checked_add(GDF_TEST_STRIPE_SIZE - GDF_TEST_STRIPE_OFF)?
+        .min(tile_end);
+    (end > y).then_some(end)
+}
+
+fn gdf_stripe_bands<'a, T>(
+    core: &FrameHeaderCore,
+    samples: &'a mut [T],
+    stride: usize,
+    luma_height: usize,
+    offset: ByteOffset,
+) -> Result<Vec<(usize, &'a mut [T])>> {
+    if luma_height == 0 || stride == 0 {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        ));
+    }
+    let mut bands = Vec::new();
+    let mut tail = samples;
+    let mut y = 0;
+    while y < luma_height {
+        let (tile_start, tile_end) = core
+            .tile_info
+            .as_ref()
+            .map_or(Ok((0, luma_height - 1)), |tile| {
+                tile_axis_bounds(&tile.mi_row_starts, y, luma_height, offset)
+            })?;
+        let tile_end = tile_end.checked_add(1).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+        let end = gdf_stripe_end_for_tile(y, tile_start, tile_end).ok_or_else(|| {
+            gdf_filter_error(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+            )
+        })?;
+        let sample_count = end
+            .checked_sub(y)
+            .and_then(|rows| rows.checked_mul(stride))
+            .filter(|&count| count <= tail.len())
+            .ok_or_else(|| {
+                gdf_filter_error(
+                    offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
+                )
+            })?;
+        let (samples, rest) = tail.split_at_mut(sample_count);
+        bands.push((y, samples));
+        tail = rest;
+        y = end;
+    }
+    if !tail.is_empty() {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
+        ));
+    }
+    Ok(bands)
+}
+
 #[derive(Default)]
 struct GdfScratch {
     source: Vec<u16>,
@@ -234,25 +305,19 @@ pub(crate) fn apply_frame<T: ReconSample>(
             "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
         ));
     }
-    let band_len = stride
-        .checked_mul(MI_SIZE)
-        .filter(|&len| len != 0)
-        .ok_or_else(|| {
-            gdf_filter_error(
+    let stripes = gdf_stripe_bands(core, luma.into_samples(), stride, luma_height, offset)?;
+    let stripe_count = stripes.len();
+    let compute_stripe = |scratch: &mut GdfScratch, (y, stripe): (usize, &mut [T])| -> Result<()> {
+        let height = stripe.len() / stride;
+        if height < 2 || !height.is_multiple_of(2) {
+            return Err(gdf_filter_error(
                 offset,
                 "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
-    let band_count = luma_height.div_ceil(MI_SIZE);
-    let compute_band = |scratch: &mut GdfScratch,
-                        band_index: usize,
-                        band: &mut [T]|
-     -> Result<()> {
-        let y = band_index * MI_SIZE;
-        let height = MI_SIZE.min(luma_height - y);
+            ));
+        }
         let stripe_row = gdf_stripe_row(core, y, luma_height, offset)?;
         for &(segment_x, segment_width) in &band_segments {
-            let band_block = GdfBlock {
+            let stripe_block = GdfBlock {
                 x: segment_x,
                 y,
                 width: segment_width,
@@ -265,14 +330,18 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 pix_scale,
                 max_sample,
             };
-            let bounds =
-                source_bounds(core, &band_block, disable_loopfilters_across_tiles, offset)?;
+            let bounds = source_bounds(
+                core,
+                &stripe_block,
+                disable_loopfilters_across_tiles,
+                offset,
+            )?;
             let source = GdfSource::materialize::<T>(
                 &mut scratch.source,
                 curr_luma,
                 cdef_luma,
                 &bounds,
-                &band_block,
+                &stripe_block,
                 offset,
             )?;
             let band_origin = source.relative_position(segment_x, y).ok_or_else(|| {
@@ -293,7 +362,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
             band_classes(
                 &scratch.gradients,
                 grad_cols,
-                &band_block,
+                &stripe_block,
                 &mut scratch.classes,
                 offset,
             )?;
@@ -303,86 +372,110 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
                 )
             })?;
-            for x in (segment_x..segment_end).step_by(MI_SIZE) {
-                let width = MI_SIZE.min(segment_end - x);
-                if width < 2 || height < 2 || !width.is_multiple_of(2) || !height.is_multiple_of(2)
-                {
-                    return Err(gdf_filter_error(
+            let class_cols = segment_width >> 1;
+            for local_y in (0..height).step_by(MI_SIZE) {
+                let block_y = y + local_y;
+                let block_height = MI_SIZE.min(height - local_y);
+                let class_start = (local_y >> 1).checked_mul(class_cols).ok_or_else(|| {
+                    gdf_filter_error(
                         offset,
                         "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                    ));
-                }
-                let block_enabled = if per_block {
-                    block_grid
-                        .and_then(|grid| grid.enabled(stripe_row, x))
-                        .ok_or_else(|| {
-                            gdf_filter_error(
-                                offset,
-                                "unsupported_wienerns_lr_selectable_transform_records_gdf_grid",
-                            )
-                        })?
-                } else {
-                    true
-                };
-                let mut block = if block_enabled {
-                    compute_block(
-                        &source,
-                        &base_luma,
-                        &scratch.classes,
-                        segment_width >> 1,
-                        GdfBlock {
-                            x,
-                            width,
-                            ..band_block
-                        },
+                    )
+                })?;
+                let classes = scratch.classes.get(class_start..).ok_or_else(|| {
+                    gdf_filter_error(
                         offset,
-                    )?
-                } else {
-                    let copied =
-                        copy_base_block::<T>(&base_luma, luma_width, x, y, width, height, offset)?;
-                    let mut block = [T::default(); MI_SIZE * MI_SIZE];
-                    block[..copied.len()].copy_from_slice(&copied);
-                    block
-                };
-                preserve_lossless_luma_samples(
-                    lossless_grid,
-                    &base_luma,
-                    luma_width,
-                    x,
-                    y,
-                    width,
-                    height,
-                    &mut block,
-                    offset,
-                )?;
-                for row in 0..height {
-                    let src = &block[row * width..(row + 1) * width];
-                    let dst = &mut band[row * stride + x..row * stride + x + width];
-                    dst.copy_from_slice(src);
+                        "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+                    )
+                })?;
+                for x in (segment_x..segment_end).step_by(MI_SIZE) {
+                    let width = MI_SIZE.min(segment_end - x);
+                    if width < 2
+                        || block_height < 2
+                        || !width.is_multiple_of(2)
+                        || !block_height.is_multiple_of(2)
+                    {
+                        return Err(gdf_filter_error(
+                            offset,
+                            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+                        ));
+                    }
+                    let block_enabled = if per_block {
+                        block_grid
+                            .and_then(|grid| grid.enabled(stripe_row, x))
+                            .ok_or_else(|| {
+                                gdf_filter_error(
+                                    offset,
+                                    "unsupported_wienerns_lr_selectable_transform_records_gdf_grid",
+                                )
+                            })?
+                    } else {
+                        true
+                    };
+                    let mut block = if block_enabled {
+                        compute_block(
+                            &source,
+                            &base_luma,
+                            classes,
+                            class_cols,
+                            GdfBlock {
+                                x,
+                                y: block_y,
+                                width,
+                                height: block_height,
+                                ..stripe_block
+                            },
+                            offset,
+                        )?
+                    } else {
+                        let copied = copy_base_block::<T>(
+                            &base_luma,
+                            luma_width,
+                            x,
+                            block_y,
+                            width,
+                            block_height,
+                            offset,
+                        )?;
+                        let mut block = [T::default(); MI_SIZE * MI_SIZE];
+                        block[..copied.len()].copy_from_slice(&copied);
+                        block
+                    };
+                    preserve_lossless_luma_samples(
+                        lossless_grid,
+                        &base_luma,
+                        luma_width,
+                        x,
+                        block_y,
+                        width,
+                        block_height,
+                        &mut block,
+                        offset,
+                    )?;
+                    for row in 0..block_height {
+                        let src = &block[row * width..(row + 1) * width];
+                        let start = (local_y + row) * stride + x;
+                        let dst = &mut stripe[start..start + width];
+                        dst.copy_from_slice(src);
+                    }
                 }
             }
         }
         Ok(())
     };
-    let luma_samples = luma.into_samples();
     if splot_parallel::on_worker_pool() {
         let timer = crate::timing::start();
         let tally = crate::timing::WorkerTally::new();
-        let result = luma_samples
-            .par_chunks_mut(band_len)
-            .enumerate()
-            .try_for_each(|(band_index, band)| {
-                tally.note_worker();
-                with_reusable_scratch(&GDF_SCRATCH, |scratch| {
-                    compute_band(scratch, band_index, band)
-                })
-            });
+        let result = stripes.into_par_iter().try_for_each(|stripe| {
+            tally.note_worker();
+            with_reusable_scratch(&GDF_SCRATCH, |scratch| compute_stripe(scratch, stripe))
+        });
         crate::timing::report_detail(
-            "gdf_bands",
+            "gdf_stripes",
             timer,
             &format!(
                 "units={} threads={} workers_used={}",
-                band_count,
+                stripe_count,
                 splot_parallel::current_pool_width(),
                 tally.workers_used()
             ),
@@ -390,10 +483,9 @@ pub(crate) fn apply_frame<T: ReconSample>(
         result
     } else {
         with_reusable_scratch(&GDF_SCRATCH, |scratch| {
-            luma_samples
-                .chunks_mut(band_len)
-                .enumerate()
-                .try_for_each(|(band_index, band)| compute_band(scratch, band_index, band))
+            stripes
+                .into_iter()
+                .try_for_each(|stripe| compute_stripe(scratch, stripe))
         })
     }
 }
@@ -1379,9 +1471,9 @@ mod tests {
         GDF_ALPHA, GDF_READ_RADIUS, GDF_SCRATCH_ALLOCATION_REASON, GdfBlock, GdfBlockGrid,
         GdfClass, GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
         band_gradients, compute_block, copy_base_block, gdf_inter_ref_dst_idx,
-        gdf_inter_ref_dst_idx_from_max_dist, gdf_sample, gdf_stripe_row_for_tile_end,
-        gdf_tap_offsets, gdf_width4_row, grad_sum, preserve_lossless_luma_samples, resize_scratch,
-        tile_axis_bounds,
+        gdf_inter_ref_dst_idx_from_max_dist, gdf_sample, gdf_stripe_end_for_tile,
+        gdf_stripe_row_for_tile_end, gdf_tap_offsets, gdf_width4_row, grad_sum,
+        preserve_lossless_luma_samples, resize_scratch, tile_axis_bounds,
     };
     use crate::error::DecodeError;
     use crate::filters::deblock::DeblockBlock;
@@ -1420,6 +1512,20 @@ mod tests {
         assert_eq!(gdf_stripe_row_for_tile_end(124, 127, offset).ok(), Some(31));
         assert_eq!(gdf_stripe_row_for_tile_end(60, 63, offset).ok(), Some(15));
         assert_eq!(gdf_stripe_row_for_tile_end(64, 127, offset).ok(), Some(16));
+    }
+
+    #[test]
+    fn stripe_tasks_follow_restoration_boundaries_and_clip_to_tiles() {
+        assert_eq!(gdf_stripe_end_for_tile(0, 0, 128), Some(56));
+        assert_eq!(gdf_stripe_end_for_tile(52, 0, 128), Some(56));
+        assert_eq!(gdf_stripe_end_for_tile(56, 0, 128), Some(120));
+        assert_eq!(gdf_stripe_end_for_tile(116, 0, 128), Some(120));
+        assert_eq!(gdf_stripe_end_for_tile(120, 0, 128), Some(128));
+        assert_eq!(gdf_stripe_end_for_tile(0, 0, 64), Some(56));
+        assert_eq!(gdf_stripe_end_for_tile(56, 0, 64), Some(64));
+        assert_eq!(gdf_stripe_end_for_tile(64, 64, 128), Some(120));
+        assert_eq!(gdf_stripe_end_for_tile(120, 64, 128), Some(128));
+        assert_eq!(gdf_stripe_end_for_tile(128, 64, 128), None);
     }
 
     #[test]
@@ -1467,9 +1573,9 @@ mod tests {
     }
 
     #[test]
-    fn band_source_matches_per_block_windows() {
+    fn stripe_source_matches_per_block_windows_at_halo_boundaries() {
         let frame_width = 16;
-        let frame_height = 16;
+        let frame_height = 128;
         let curr: Vec<u16> = (0..frame_width * frame_height)
             .map(|index| index as u16)
             .collect();
@@ -1479,16 +1585,16 @@ mod tests {
             luma_end_x: frame_width - 1,
             luma_start_y: 0,
             luma_end_y: frame_height - 1,
-            luma_stripe_start_y: 4,
-            luma_stripe_end_y: 11,
+            luma_stripe_start_y: 0,
+            luma_stripe_end_y: 55,
             subsampling_x: 0,
             subsampling_y: 0,
         };
-        let band_block = GdfBlock {
+        let stripe_block = GdfBlock {
             x: 0,
-            y: 4,
+            y: 0,
             width: frame_width,
-            height: 4,
+            height: 56,
             frame_width,
             frame_height,
             bit_depth: BitDepth::Ten,
@@ -1497,44 +1603,54 @@ mod tests {
             pix_scale: 1,
             max_sample: 1_023,
         };
-        let mut band_samples = Vec::new();
-        let band_result = GdfSource::materialize::<u16>(
-            &mut band_samples,
+        let mut stripe_samples = Vec::new();
+        let stripe_result = GdfSource::materialize::<u16>(
+            &mut stripe_samples,
             &curr,
             &cdef,
             &bounds,
-            &band_block,
+            &stripe_block,
             ByteOffset::new(0),
         );
-        assert!(band_result.is_ok());
-        let Ok(band_source) = band_result else {
+        assert!(stripe_result.is_ok());
+        let Ok(stripe_source) = stripe_result else {
             return;
         };
 
-        for x in (0..frame_width).step_by(4) {
-            let block = GdfBlock {
-                x,
-                width: 4,
-                ..band_block
-            };
-            let mut local_samples = Vec::new();
-            let local_result = GdfSource::materialize::<u16>(
-                &mut local_samples,
-                &curr,
-                &cdef,
-                &bounds,
-                &block,
-                ByteOffset::new(0),
-            );
-            assert!(local_result.is_ok());
-            let Ok(local_source) = local_result else {
-                return;
-            };
-            let radius = GDF_READ_RADIUS as isize;
-            for y in block.y as isize - radius..block.y as isize + block.height as isize + radius {
-                for x in block.x as isize - radius..block.x as isize + block.width as isize + radius
+        for y in (0..56).step_by(4) {
+            for x in (0..frame_width).step_by(4) {
+                let block = GdfBlock {
+                    x,
+                    y,
+                    width: 4,
+                    height: 4,
+                    ..stripe_block
+                };
+                let mut local_samples = Vec::new();
+                let local_result = GdfSource::materialize::<u16>(
+                    &mut local_samples,
+                    &curr,
+                    &cdef,
+                    &bounds,
+                    &block,
+                    ByteOffset::new(0),
+                );
+                assert!(local_result.is_ok());
+                let Ok(local_source) = local_result else {
+                    return;
+                };
+                let radius = GDF_READ_RADIUS as isize;
+                for sample_y in
+                    block.y as isize - radius..block.y as isize + block.height as isize + radius
                 {
-                    assert_eq!(band_source.get(x, y), local_source.get(x, y));
+                    for sample_x in
+                        block.x as isize - radius..block.x as isize + block.width as isize + radius
+                    {
+                        assert_eq!(
+                            stripe_source.get(sample_x, sample_y),
+                            local_source.get(sample_x, sample_y)
+                        );
+                    }
                 }
             }
         }
