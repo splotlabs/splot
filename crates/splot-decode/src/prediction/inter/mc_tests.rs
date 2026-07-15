@@ -988,6 +988,66 @@ fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
 }
 
 #[test]
+fn uniform_motion_direct_average_matches_materialized_path() {
+    let width = 16usize;
+    let height = 16usize;
+    let chroma_len = width.div_ceil(2) * height.div_ceil(2);
+    let reference0 = frame_for(
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        width,
+        height,
+        (0..width * height)
+            .map(|index| 128 + (index * 13 % 700) as u16)
+            .collect(),
+        vec![384; chroma_len],
+        vec![512; chroma_len],
+    );
+    let reference1 = frame_for(
+        BitDepth::Ten,
+        PixelFormat::Yuv420,
+        width,
+        height,
+        (0..width * height)
+            .map(|index| 192 + (index * 17 % 600) as u16)
+            .collect(),
+        vec![448; chroma_len],
+        vec![576; chroma_len],
+    );
+    let rect = rect(4, 4, 8, 8);
+    let mvs = [Mv { row: 1, col: 1 }, Mv { row: -1, col: 2 }];
+    let cell = MotionCell::from_refinemv(mvs);
+    let uniform = CompoundMotionGrid::from_refinemv(1, mvs, vec![cell]);
+    let multiple = CompoundMotionGrid::from_refinemv(2, mvs, vec![cell; 2]);
+    let run = |motion| {
+        let mut workspace = workspace_for::<u16>(BitDepth::Ten, PixelFormat::Yuv420, width, height);
+        let mut output = vec![0; rect.luma_w * rect.luma_h];
+        predict_compound_plane_output(
+            &WorkspaceSink::Frame(&mut workspace),
+            &reference0,
+            &reference1,
+            PlaneId::Y,
+            rect,
+            mvs[0],
+            mvs[1],
+            InterpolationFilter::EightTap,
+            CompoundBlend::average_with_implicit_mask(true),
+            [None; 2],
+            0,
+            0,
+            None,
+            Some(motion),
+            ByteOffset::new(0),
+            &mut output,
+        )
+        .expect("compound motion prediction");
+        output
+    };
+
+    assert_eq!(run(&uniform), run(&multiple));
+}
+
+#[test]
 fn direct_compound_blend_preserves_sample_storage_width() {
     let pred0 = [20 * 16, 60 * 16, 255 * 16];
     let pred1 = [44 * 16, 120 * 16, 255 * 16];
@@ -1144,17 +1204,26 @@ fn workspace_with_format(
     width: usize,
     height: usize,
 ) -> CurrentFrameWorkspace<u8> {
+    workspace_for(BitDepth::Eight, pixel_format, width, height)
+}
+
+fn workspace_for<T: ReconSample>(
+    bit_depth: BitDepth,
+    pixel_format: PixelFormat,
+    width: usize,
+    height: usize,
+) -> CurrentFrameWorkspace<T> {
     let luma_size = PlaneSize::new(width, height).expect("luma size");
     let visible = PlaneRect::new(0, 0, width, height).expect("visible rect");
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
-        BitDepth::Eight,
+        bit_depth,
         pixel_format,
         luma_size,
         visible,
     )
     .expect("frame info");
-    CurrentFrameWorkspace::new(info, 0).expect("workspace")
+    CurrentFrameWorkspace::new(info, T::default()).expect("workspace")
 }
 
 fn dispatch_compound_samples(
@@ -1237,6 +1306,19 @@ fn frame_with_format(
     u: Vec<u8>,
     v: Vec<u8>,
 ) -> DecodedFrame<u8> {
+    frame_for(BitDepth::Eight, pixel_format, width, height, y, u, v)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn frame_for<T: ReconSample>(
+    bit_depth: BitDepth,
+    pixel_format: PixelFormat,
+    width: usize,
+    height: usize,
+    y: Vec<T>,
+    u: Vec<T>,
+    v: Vec<T>,
+) -> DecodedFrame<T> {
     let luma_size = PlaneSize::new(width, height).expect("luma size");
     let luma_rect = PlaneRect::new(0, 0, width, height).expect("luma rect");
     let chroma_width = width.div_ceil(1 << pixel_format.subsampling_x());
@@ -1245,7 +1327,7 @@ fn frame_with_format(
     let chroma_rect = PlaneRect::new(0, 0, chroma_width, chroma_height).expect("chroma rect");
     let info = DecodedFrameInfo::new(
         OutputIndex::new(0),
-        BitDepth::Eight,
+        bit_depth,
         pixel_format,
         luma_size,
         luma_rect,
@@ -1263,11 +1345,16 @@ fn frame_with_format(
     .expect("decoded frame")
 }
 
-fn plane(size: PlaneSize, stride: usize, visible: PlaneRect, samples: Vec<u8>) -> Plane<u8> {
+fn plane<T: ReconSample>(
+    size: PlaneSize,
+    stride: usize,
+    visible: PlaneRect,
+    samples: Vec<T>,
+) -> Plane<T> {
     Plane::from_vec(size, stride, visible, samples).expect("plane")
 }
 
-fn visible_samples(frame: &DecodedFrame<u8>, plane: PlaneId) -> Vec<u8> {
+fn visible_samples<T: ReconSample>(frame: &DecodedFrame<T>, plane: PlaneId) -> Vec<T> {
     frame
         .plane(plane)
         .expect("frame plane")

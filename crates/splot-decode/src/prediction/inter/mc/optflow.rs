@@ -463,6 +463,157 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     .map_err(Into::into)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compound_optflow_subpel_params<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: CompoundMcBlock<'_, T>,
+    plane: PlaneId,
+    sub_x: u32,
+    sub_y: u32,
+    motion: &CompoundMotionGrid,
+    prediction: &CompoundSubpelPlane<'_, T>,
+    cell: MotionCell,
+    reference: usize,
+    scaling: PlaneScaling,
+    row: usize,
+    col: usize,
+    width: usize,
+    height: usize,
+) -> SubpelPredictParams {
+    let scaling_template = prediction.scalings[reference];
+    let bounds = if let Some(mvs) = motion.refinemv_candidates() {
+        let refine_unit_w = 16usize >> sub_x;
+        let refine_unit_h = 16usize >> sub_y;
+        let refine_col = col / refine_unit_w * refine_unit_w;
+        let refine_row = row / refine_unit_h * refine_unit_h;
+        let refine_w = refine_unit_w.min(prediction.block_w - refine_col);
+        let refine_h = refine_unit_h.min(prediction.block_h - refine_row);
+        Some(super::refinemv::reference_area_bounds(
+            (prediction.plane_x + refine_col) as i32,
+            (prediction.plane_y + refine_row) as i32,
+            refine_w,
+            refine_h,
+            mvs[reference],
+            sub_x,
+            sub_y,
+            scaling_template,
+        ))
+    } else if let Some((area_width, area_height)) = subblock_reference_area_size(
+        plane,
+        (motion.unit_size >> sub_x).max(4),
+        (motion.unit_size >> sub_y).max(4),
+    ) {
+        Some(super::refinemv::reference_area_bounds(
+            (prediction.plane_x + col) as i32,
+            (prediction.plane_y + row) as i32,
+            area_width,
+            area_height,
+            cell.base_mvs[reference],
+            sub_x,
+            sub_y,
+            scaling_template,
+        ))
+    } else {
+        None
+    };
+    SubpelPredictParams {
+        interp: block.interp,
+        w: width,
+        h: height,
+        start_x: scaling.start_x,
+        start_y: scaling.start_y,
+        step_x: scaling.step_x,
+        step_y: scaling.step_y,
+        first_x: bounds.map_or(scaling.first_x, |bounds| bounds.first_x),
+        first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
+        last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
+        last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
+        bit_depth: sink.info().bit_depth(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: CompoundMcBlock<'_, T>,
+    plane: PlaneId,
+    sub_x: u32,
+    sub_y: u32,
+    motion: &CompoundMotionGrid,
+    implicit_mask: bool,
+    cwp_weight: i16,
+    offset: ByteOffset,
+    output: &mut [u16],
+) -> Result<bool> {
+    let [cell] = motion.cells.as_slice() else {
+        return Ok(false);
+    };
+    let prediction = super::compound_subpel_plane(sink, block, plane, sub_x, sub_y, offset)?;
+    let subblock_w = (motion.unit_size >> sub_x).max(4);
+    let subblock_h = (motion.unit_size >> sub_y).max(4);
+    if prediction.block_w > subblock_w || prediction.block_h > subblock_h {
+        return Ok(false);
+    }
+    let coded_luma_size = sink.info().coded_luma_size();
+    let frame_w = (coded_luma_size.width().div_ceil(4) * 4) >> sub_x;
+    let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
+    let Some(scalings) = super::compound_uniform_scalings(
+        Some(motion),
+        prediction.plane_x,
+        prediction.plane_y,
+        prediction.scalings,
+        sub_x,
+        sub_y,
+    ) else {
+        return Ok(false);
+    };
+    if !super::compound_average_weights_are_uniform(
+        implicit_mask,
+        cwp_weight,
+        prediction.block_w,
+        prediction.block_h,
+        prediction.scalings,
+        Some(scalings),
+        (frame_w, frame_h),
+    ) {
+        return Ok(false);
+    }
+    let params0 = compound_optflow_subpel_params(
+        sink,
+        block,
+        plane,
+        sub_x,
+        sub_y,
+        motion,
+        &prediction,
+        *cell,
+        0,
+        scalings[0],
+        0,
+        0,
+        prediction.block_w,
+        prediction.block_h,
+    );
+    let params1 = compound_optflow_subpel_params(
+        sink,
+        block,
+        plane,
+        sub_x,
+        sub_y,
+        motion,
+        &prediction,
+        *cell,
+        1,
+        scalings[1],
+        0,
+        0,
+        prediction.block_w,
+        prediction.block_h,
+    );
+    super::predict_compound_average_into(&prediction, &[params0, params1], cwp_weight, output)?;
+    Ok(true)
+}
+
 pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -472,115 +623,55 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     motion: &CompoundMotionGrid,
     offset: ByteOffset,
 ) -> Result<CompoundPlanePrediction> {
-    let (view0, _, _) = reference_plane_view(block.reference0, plane, offset)?;
-    let (view1, _, _) = reference_plane_view(block.reference1, plane, offset)?;
-    let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
-    let frame_size = sink.info().coded_luma_size();
-    let reference_size0 = block.reference0.info().coded_luma_size();
-    let reference_size1 = block.reference1.info().coded_luma_size();
-    let scaling0 = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        block.mv0.row,
-        block.mv0.col,
-        sub_x,
-        sub_y,
-        reference_size0.width() as i32,
-        reference_size0.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    );
-    let scaling1 = derive_plane_scaling(
-        plane_x as i32,
-        plane_y as i32,
-        block.mv1.row,
-        block.mv1.col,
-        sub_x,
-        sub_y,
-        reference_size1.width() as i32,
-        reference_size1.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    );
-    let scaling_templates = [scaling0, scaling1];
+    let prediction = super::compound_subpel_plane(sink, block, plane, sub_x, sub_y, offset)?;
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
-    let [mut pred0, mut pred1] = super::take_compound_prediction_buffers(block_w * block_h);
+    let [mut pred0, mut pred1] =
+        super::take_compound_prediction_buffers(prediction.block_w * prediction.block_h);
 
-    for row in (0..block_h).step_by(subblock_h) {
-        for col in (0..block_w).step_by(subblock_w) {
-            let width = subblock_w.min(block_w - col);
-            let height = subblock_h.min(block_h - row);
+    for row in (0..prediction.block_h).step_by(subblock_h) {
+        for col in (0..prediction.block_w).step_by(subblock_w) {
+            let width = subblock_w.min(prediction.block_w - col);
+            let height = subblock_h.min(prediction.block_h - row);
             let luma_x = col << sub_x;
             let luma_y = row << sub_y;
             let cell = motion.cell_at_luma_offset(luma_x, luma_y)?;
-            let base_mvs = cell.base_mvs;
-            let mvs = cell.mvs;
-            let candidates = motion.refinemv_candidates();
-            for (reference, (view, output)) in [(&view0, &mut pred0), (&view1, &mut pred1)]
-                .into_iter()
+            for (reference, (view, output)) in prediction
+                .views
+                .iter()
+                .zip([&mut pred0, &mut pred1])
                 .enumerate()
             {
-                let scaling = scaling_templates[reference].with_prescaled_mv(
-                    (plane_x + col) as i32,
-                    (plane_y + row) as i32,
-                    mvs[reference][0],
-                    mvs[reference][1],
+                let scaling = prediction.scalings[reference].with_prescaled_mv(
+                    (prediction.plane_x + col) as i32,
+                    (prediction.plane_y + row) as i32,
+                    cell.mvs[reference][0],
+                    cell.mvs[reference][1],
                     sub_x,
                     sub_y,
                 );
-                let bounds = if let Some(mvs) = candidates {
-                    let refine_unit_w = 16usize >> sub_x;
-                    let refine_unit_h = 16usize >> sub_y;
-                    let refine_col = col / refine_unit_w * refine_unit_w;
-                    let refine_row = row / refine_unit_h * refine_unit_h;
-                    let refine_w = refine_unit_w.min(block_w - refine_col);
-                    let refine_h = refine_unit_h.min(block_h - refine_row);
-                    Some(super::refinemv::reference_area_bounds(
-                        (plane_x + refine_col) as i32,
-                        (plane_y + refine_row) as i32,
-                        refine_w,
-                        refine_h,
-                        mvs[reference],
-                        sub_x,
-                        sub_y,
-                        scaling_templates[reference],
-                    ))
-                } else if let Some((area_width, area_height)) =
-                    subblock_reference_area_size(plane, subblock_w, subblock_h)
-                {
-                    Some(super::refinemv::reference_area_bounds(
-                        (plane_x + col) as i32,
-                        (plane_y + row) as i32,
-                        area_width,
-                        area_height,
-                        base_mvs[reference],
-                        sub_x,
-                        sub_y,
-                        scaling_templates[reference],
-                    ))
-                } else {
-                    None
-                };
-                let start = row * block_w + col;
+                let params = compound_optflow_subpel_params(
+                    sink,
+                    block,
+                    plane,
+                    sub_x,
+                    sub_y,
+                    motion,
+                    &prediction,
+                    cell,
+                    reference,
+                    scaling,
+                    row,
+                    col,
+                    width,
+                    height,
+                );
+                let start = row * prediction.block_w + col;
                 subpel_predict_block_compound_intermediate_into(
                     view,
-                    &SubpelPredictParams {
-                        interp: block.interp,
-                        w: width,
-                        h: height,
-                        start_x: scaling.start_x,
-                        start_y: scaling.start_y,
-                        step_x: scaling.step_x,
-                        step_y: scaling.step_y,
-                        first_x: bounds.map_or(scaling.first_x, |bounds| bounds.first_x),
-                        first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
-                        last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
-                        last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-                        bit_depth: sink.info().bit_depth(),
-                    },
+                    &params,
                     &mut output[start..],
-                    block_w,
+                    prediction.block_w,
                 )?;
             }
         }
@@ -589,12 +680,12 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     Ok(CompoundPlanePrediction {
         pred0,
         pred1,
-        plane_x,
-        plane_y,
-        block_w,
-        block_h,
-        scaling0,
-        scaling1,
+        plane_x: prediction.plane_x,
+        plane_y: prediction.plane_y,
+        block_w: prediction.block_w,
+        block_h: prediction.block_h,
+        scaling0: prediction.scalings[0],
+        scaling1: prediction.scalings[1],
         recycle_buffers: true,
     })
 }

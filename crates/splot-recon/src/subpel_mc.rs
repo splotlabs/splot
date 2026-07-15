@@ -642,6 +642,55 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
     )
 }
 
+/// Produces one compound intermediate predictor and blends it directly with
+/// the caller-owned first predictor using a uniform § 7.13.3.16 weight.
+///
+/// Both `pred0` and `output` are contiguous row-major `params.w * params.h`
+/// blocks. The second intermediate is passed directly from the convolution to
+/// the average and is never materialized.
+///
+/// # Errors
+///
+/// Returns the same errors as [`subpel_predict_block`] and
+/// [`ReconError::BufferLengthMismatch`] when either block has the wrong length.
+pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    pred0: &[i32],
+    cwp_weight: i16,
+    output: &mut [u16],
+) -> Result<()> {
+    let intermediate_height = validate_subpel_params(params)?;
+    let sample_count = params
+        .w
+        .checked_mul(params.h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "compound prediction sample count",
+        })?;
+    for len in [pred0.len(), output.len()] {
+        if len != sample_count {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: sample_count,
+                actual: len,
+            });
+        }
+    }
+    let mut index = 0;
+    subpel_predict_block_internal_into_validated(
+        reference,
+        params,
+        INTER_ROUND1_COMPOUND,
+        intermediate_height,
+        output,
+        params.w,
+        |pred1| {
+            let pred0 = pred0[index];
+            index += 1;
+            blend_compound_average_weighted_sample(pred0, pred1, params.bit_depth, cwp_weight)
+        },
+    )
+}
+
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
 /// COMPOUND_AVERAGE and the supplied `cwpWeight`, then applies the final § 4.8
 /// `Clip1`.
