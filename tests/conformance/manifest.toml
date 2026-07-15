@@ -1440,7 +1440,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-2frame-lr-switchable-768x256-8bit.ivf"
-description = "Procedural 525-byte AVM mixed luma loop-restoration fixture. Both frames select RESTORE_SWITCHABLE and contain None, PC-Wiener, and Wiener NS units; splot consumes the switchable LR-unit syntax before failing closed at rectangular non-DC intra luma."
+description = "Procedural 525-byte AVM mixed luma loop-restoration fixture. Both frames select RESTORE_SWITCHABLE and contain None, PC-Wiener, and Wiener NS units; splot and AVM produce byte-identical raw I420 SHA-256 21fa88e1e7aa47c2dacff85a6586266dfd1898a492917916a9261f4fcb743566."
 expect = "clean"
 
 [[vector]]

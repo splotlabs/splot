@@ -162,34 +162,6 @@ impl TemporalMotionField {
         }
     }
 
-    pub(crate) fn merge_tile_from(
-        &mut self,
-        source: &Self,
-        mi_rows: core::ops::Range<usize>,
-        mi_cols: core::ops::Range<usize>,
-    ) {
-        let rows = mi_rows.start >> 1..mi_rows.end.div_ceil(2).min(self.height8);
-        let cols = mi_cols.start >> 1..mi_cols.end.div_ceil(2).min(self.width8);
-        for row in rows {
-            for col in cols.clone() {
-                let Some(target) = temporal_grid_index(self.width8, self.height8, row, col) else {
-                    continue;
-                };
-                let Some(source_index) =
-                    temporal_grid_index(source.width8, source.height8, row, col)
-                else {
-                    continue;
-                };
-                let Some(source_cell) = source.cells.get(source_index).copied() else {
-                    continue;
-                };
-                if let Some(target_cell) = self.cells.get_mut(target) {
-                    *target_cell = source_cell;
-                }
-            }
-        }
-    }
-
     fn cell(&self, y8: usize, x8: usize) -> Option<TemporalMotionCell> {
         self.cells
             .get(temporal_grid_index(self.width8, self.height8, y8, x8)?)

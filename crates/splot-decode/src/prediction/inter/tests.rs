@@ -1197,6 +1197,31 @@ fn multi_tile_inter_fixture_decodes_bit_exact() {
 }
 
 #[test]
+fn multi_tile_lr_fixture_decodes_bit_exact() {
+    for threads in [1usize, 4] {
+        let options = DecodeOptions::default();
+        let context = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))
+            .expect("context");
+        let plan = context
+            .plan_bytes(MULTI_TILE_LR_FIXTURE, options)
+            .expect("plan");
+        let frames = context
+            .pool()
+            .install(|| decode_frames_from_plan(MULTI_TILE_LR_FIXTURE, &options, &plan))
+            .expect("decode");
+        assert_yuv420_8bit_frames(&frames, 768, 256);
+        assert_eq!(
+            frame_hashes(&frames),
+            [
+                "40567c0d82f8c0c50e4ce59fd4630ec6dd1049e4405321992e7c40f9047630b2",
+                "5bdc64e0d79ebbfea730882ad0c6f678307c764d91e20fa1902fb8cc8738bffe"
+            ],
+            "multi-tile LR output must match the pinned avmdec frames"
+        );
+    }
+}
+
+#[test]
 fn grid_fixture_decodes_avm_bit_exact() {
     let frames = decode_fixture(GRID_INTER_FIXTURE);
     assert_eq!(frames.len(), 2, "key frame + one 2-D-grid inter frame");
