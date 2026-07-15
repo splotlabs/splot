@@ -262,6 +262,74 @@ fn chroma_ccso_uses_frame_subsampling_for_yuv422() {
 }
 
 #[test]
+fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
+    let luma_width = 18;
+    let luma_height = 128;
+    let curr_luma = asymmetric_luma(luma_width, luma_height);
+    let grid = full_grid(luma_width, luma_height);
+    let params = edge_plane(4, false, 2, 36);
+
+    for &(plane, sub_x, sub_y) in &[(0usize, 0usize, 0usize), (1, 1, 1), (2, 1, 1)] {
+        let width = luma_width >> sub_x;
+        let height = luma_height >> sub_y;
+        let stripe_start = 56 >> sub_y;
+        let stripe_end = 120 >> sub_y;
+        let source: Vec<u16> = (0..width * height)
+            .map(|index| ((index * 17 + plane * 29) & 255) as u16)
+            .collect();
+        let mut expected = StripePlane::from_samples(width, height, 0, source.clone()).unwrap();
+        let mut actual = StripePlane::from_samples(
+            width,
+            height,
+            stripe_start,
+            source[stripe_start * width..stripe_end * width].to_vec(),
+        )
+        .unwrap();
+        let prepared =
+            prepare_ccso_plane(plane, &params, &grid, BitDepth::Eight, (sub_x, sub_y)).unwrap();
+
+        ccso_apply(
+            &mut expected,
+            &PlaneView {
+                samples: &curr_luma,
+                width: luma_width,
+                frame_height: luma_height,
+                stride: luma_width,
+                origin_y: 0,
+                height: luma_height,
+            },
+            plane,
+            &prepared,
+            &grid,
+            None,
+        )
+        .unwrap();
+        ccso_apply(
+            &mut actual,
+            &PlaneView {
+                samples: &curr_luma,
+                width: luma_width,
+                frame_height: luma_height,
+                stride: luma_width,
+                origin_y: 0,
+                height: luma_height,
+            },
+            plane,
+            &prepared,
+            &grid,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            actual.samples(),
+            &expected.samples()[stripe_start * width..stripe_end * width],
+            "plane {plane}"
+        );
+    }
+}
+
+#[test]
 fn ccso_offset_lut_rejects_out_of_range_offset_index() {
     let mut params = edge_plane(0, false, 2, 36);
     params.ccso_offset_idx[7] = 8;

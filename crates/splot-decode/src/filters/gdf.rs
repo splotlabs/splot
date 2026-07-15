@@ -8,14 +8,14 @@ use splot_core::span::ByteOffset;
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_BIAS, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
 };
-use splot_parallel::prelude::*;
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId,
-    ReconSample, loop_restoration_source_sample,
+    BitDepth, LoopRestorationSource, LoopRestorationSourceBounds, PlaneId, ReconSample,
+    loop_restoration_source_sample,
 };
 
 use crate::Result;
+use crate::filters::source::{FramePlane, StripePlane};
 use crate::filters::wienerns_lr::wienerns_lr_selectable_transform_record_error_reason;
 use crate::support::reusable_scratch::with_reusable_scratch;
 
@@ -61,21 +61,18 @@ fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Opti
     (end > y).then_some(end)
 }
 
-fn gdf_stripe_bands<'a, T>(
+pub(crate) fn stripe_ranges(
     core: &FrameHeaderCore,
-    samples: &'a mut [T],
-    stride: usize,
     luma_height: usize,
     offset: ByteOffset,
-) -> Result<Vec<(usize, &'a mut [T])>> {
-    if luma_height == 0 || stride == 0 {
+) -> Result<Vec<(usize, usize)>> {
+    if luma_height == 0 {
         return Err(gdf_filter_error(
             offset,
             "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
         ));
     }
-    let mut bands = Vec::new();
-    let mut tail = samples;
+    let mut ranges = Vec::new();
     let mut y = 0;
     while y < luma_height {
         let (tile_start, tile_end) = core
@@ -96,28 +93,10 @@ fn gdf_stripe_bands<'a, T>(
                 "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
             )
         })?;
-        let sample_count = end
-            .checked_sub(y)
-            .and_then(|rows| rows.checked_mul(stride))
-            .filter(|&count| count <= tail.len())
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
-                )
-            })?;
-        let (samples, rest) = tail.split_at_mut(sample_count);
-        bands.push((y, samples));
-        tail = rest;
+        ranges.push((y, end));
         y = end;
     }
-    if !tail.is_empty() {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
-        ));
-    }
-    Ok(bands)
+    Ok(ranges)
 }
 
 #[derive(Default)]
@@ -201,23 +180,24 @@ impl GdfBlockGrid {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn apply_frame<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
+#[derive(Clone, Copy)]
+struct GdfConfig {
+    per_block: bool,
+    qp_idx: usize,
+    ref_dst_idx: usize,
+    pix_scale: i32,
+    max_sample: i32,
+}
+
+fn gdf_config(
     core: &FrameHeaderCore,
-    curr_luma: &[u16],
-    cdef_luma: &[u16],
     block_grid: Option<&GdfBlockGrid>,
-    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
-    luma_width: usize,
-    luma_height: usize,
     bit_depth: BitDepth,
-    disable_loopfilters_across_tiles: bool,
     reference: Option<GdfReferenceContext>,
     offset: ByteOffset,
-) -> Result<()> {
+) -> Result<Option<GdfConfig>> {
     let Some(gdf) = core.gdf_params.as_ref().filter(|gdf| gdf.gdf_frame_enable) else {
-        return Ok(());
+        return Ok(None);
     };
     let Some(per_block) = gdf.gdf_per_block else {
         return Err(gdf_filter_error(
@@ -250,37 +230,6 @@ pub(crate) fn apply_frame<T: ReconSample>(
         gdf.gdf_pic_qc_idx,
         offset,
     )?;
-    let pix_scale = i32::from(gdf.gdf_pic_scale_idx.unwrap_or(0)) + 1;
-    let max_sample = i32::from(bit_depth.max_sample());
-    let expected_samples = luma_width.checked_mul(luma_height).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    if curr_luma.len() != expected_samples || cdef_luma.len() != expected_samples {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        ));
-    }
-    let base_luma: Vec<u16> = workspace
-        .samples(PlaneId::Y)
-        .map_err(|_| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-            )
-        })?
-        .iter()
-        .map(|sample| sample.to_u16())
-        .collect();
-    if base_luma.len() != expected_samples {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        ));
-    }
     let ref_dst_idx = if frame_is_intra {
         GDF_INTRA_REF_DST
     } else {
@@ -291,44 +240,97 @@ pub(crate) fn apply_frame<T: ReconSample>(
             )
         })?)
     };
+    Ok(Some(GdfConfig {
+        per_block,
+        qp_idx,
+        ref_dst_idx,
+        pix_scale: i32::from(gdf.gdf_pic_scale_idx.unwrap_or(0)) + 1,
+        max_sample: i32::from(bit_depth.max_sample()),
+    }))
+}
 
-    let band_segments = if disable_loopfilters_across_tiles {
-        gdf_band_segments(core, luma_width, offset)?
-    } else {
-        vec![(0, luma_width)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_stripe<T: ReconSample>(
+    core: &FrameHeaderCore,
+    deblocked_luma: FramePlane<'_, T>,
+    cdef_luma: &StripePlane,
+    post_lr_luma: &mut StripePlane,
+    block_grid: Option<&GdfBlockGrid>,
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
+    bit_depth: BitDepth,
+    disable_loopfilters_across_tiles: bool,
+    reference: Option<GdfReferenceContext>,
+    offset: ByteOffset,
+) -> Result<()> {
+    let Some(config) = gdf_config(core, block_grid, bit_depth, reference, offset)? else {
+        return Ok(());
     };
-    let (luma, _, _) = workspace.as_frame_mut().into_planes();
-    let stride = luma.stride_samples();
-    if stride != luma_width || luma.samples().len() != expected_samples {
+    let width = post_lr_luma.width();
+    let frame_height = post_lr_luma.frame_height();
+    let y = post_lr_luma.origin_y();
+    let sample_count = post_lr_luma.samples().len();
+    let height = sample_count.checked_div(width).filter(|&height| {
+        height >= 2 && height.is_multiple_of(2) && height.checked_mul(width) == Some(sample_count)
+    });
+    let Some(height) = height else {
         return Err(gdf_filter_error(
             offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_publish",
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        ));
+    };
+    let end_y = y.checked_add(height).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    let (tile_start, tile_end) = core
+        .tile_info
+        .as_ref()
+        .map_or(Ok((0, frame_height - 1)), |tile| {
+            tile_axis_bounds(&tile.mi_row_starts, y, frame_height, offset)
+        })?;
+    let tile_end = tile_end.checked_add(1).ok_or_else(|| {
+        gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
+        )
+    })?;
+    if gdf_stripe_end_for_tile(y, tile_start, tile_end) != Some(end_y)
+        || deblocked_luma.width() != width
+        || deblocked_luma.frame_height() != frame_height
+        || cdef_luma.width() != width
+        || cdef_luma.frame_height() != frame_height
+        || cdef_luma.origin_y() != y
+        || cdef_luma.samples().len() != sample_count
+    {
+        return Err(gdf_filter_error(
+            offset,
+            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
         ));
     }
-    let stripes = gdf_stripe_bands(core, luma.into_samples(), stride, luma_height, offset)?;
-    let stripe_count = stripes.len();
-    let compute_stripe = |scratch: &mut GdfScratch, (y, stripe): (usize, &mut [T])| -> Result<()> {
-        let height = stripe.len() / stride;
-        if height < 2 || !height.is_multiple_of(2) {
-            return Err(gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            ));
-        }
-        let stripe_row = gdf_stripe_row(core, y, luma_height, offset)?;
+    let band_segments = if disable_loopfilters_across_tiles {
+        gdf_band_segments(core, width, offset)?
+    } else {
+        vec![(0, width)]
+    };
+    let stripe_row = gdf_stripe_row(core, y, frame_height, offset)?;
+
+    with_reusable_scratch(&GDF_SCRATCH, |scratch| {
         for &(segment_x, segment_width) in &band_segments {
             let stripe_block = GdfBlock {
                 x: segment_x,
                 y,
                 width: segment_width,
                 height,
-                frame_width: luma_width,
-                frame_height: luma_height,
+                frame_width: width,
+                frame_height,
+                base_origin_y: y,
                 bit_depth,
-                qp_idx,
-                ref_dst_idx,
-                pix_scale,
-                max_sample,
+                qp_idx: config.qp_idx,
+                ref_dst_idx: config.ref_dst_idx,
+                pix_scale: config.pix_scale,
+                max_sample: config.max_sample,
             };
             let bounds = source_bounds(
                 core,
@@ -336,9 +338,9 @@ pub(crate) fn apply_frame<T: ReconSample>(
                 disable_loopfilters_across_tiles,
                 offset,
             )?;
-            let source = GdfSource::materialize::<T>(
+            let source = GdfSource::materialize_stripe(
                 &mut scratch.source,
-                curr_luma,
+                deblocked_luma,
                 cdef_luma,
                 &bounds,
                 &stripe_block,
@@ -389,10 +391,10 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     )
                 })?;
                 for x in (segment_x..segment_end).step_by(MI_SIZE) {
-                    let width = MI_SIZE.min(segment_end - x);
-                    if width < 2
+                    let block_width = MI_SIZE.min(segment_end - x);
+                    if block_width < 2
                         || block_height < 2
-                        || !width.is_multiple_of(2)
+                        || !block_width.is_multiple_of(2)
                         || !block_height.is_multiple_of(2)
                     {
                         return Err(gdf_filter_error(
@@ -400,7 +402,7 @@ pub(crate) fn apply_frame<T: ReconSample>(
                             "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
                         ));
                     }
-                    let block_enabled = if per_block {
+                    let block_enabled = if config.per_block {
                         block_grid
                             .and_then(|grid| grid.enabled(stripe_row, x))
                             .ok_or_else(|| {
@@ -412,82 +414,59 @@ pub(crate) fn apply_frame<T: ReconSample>(
                     } else {
                         true
                     };
-                    let mut block = if block_enabled {
-                        compute_block(
+                    let block = GdfBlock {
+                        x,
+                        y: block_y,
+                        width: block_width,
+                        height: block_height,
+                        ..stripe_block
+                    };
+                    let mut output = if block_enabled {
+                        compute_block::<u16>(
                             &source,
-                            &base_luma,
+                            post_lr_luma.samples(),
                             classes,
                             class_cols,
-                            GdfBlock {
-                                x,
-                                y: block_y,
-                                width,
-                                height: block_height,
-                                ..stripe_block
-                            },
+                            block,
                             offset,
                         )?
                     } else {
-                        let copied = copy_base_block::<T>(
-                            &base_luma,
-                            luma_width,
+                        let copied = copy_base_block::<u16>(
+                            post_lr_luma.samples(),
+                            width,
+                            y,
                             x,
                             block_y,
-                            width,
+                            block_width,
                             block_height,
                             offset,
                         )?;
-                        let mut block = [T::default(); MI_SIZE * MI_SIZE];
+                        let mut block = [0; MI_SIZE * MI_SIZE];
                         block[..copied.len()].copy_from_slice(&copied);
                         block
                     };
                     preserve_lossless_luma_samples(
                         lossless_grid,
-                        &base_luma,
-                        luma_width,
+                        post_lr_luma.samples(),
+                        width,
+                        y,
                         x,
                         block_y,
-                        width,
+                        block_width,
                         block_height,
-                        &mut block,
+                        &mut output,
                         offset,
                     )?;
                     for row in 0..block_height {
-                        let src = &block[row * width..(row + 1) * width];
-                        let start = (local_y + row) * stride + x;
-                        let dst = &mut stripe[start..start + width];
-                        dst.copy_from_slice(src);
+                        let src = &output[row * block_width..(row + 1) * block_width];
+                        let start = (local_y + row) * width + x;
+                        post_lr_luma.samples_mut()[start..start + block_width].copy_from_slice(src);
                     }
                 }
             }
         }
         Ok(())
-    };
-    if splot_parallel::on_worker_pool() {
-        let timer = crate::timing::start();
-        let tally = crate::timing::WorkerTally::new();
-        let result = stripes.into_par_iter().try_for_each(|stripe| {
-            tally.note_worker();
-            with_reusable_scratch(&GDF_SCRATCH, |scratch| compute_stripe(scratch, stripe))
-        });
-        crate::timing::report_detail(
-            "gdf_stripes",
-            timer,
-            &format!(
-                "units={} threads={} workers_used={}",
-                stripe_count,
-                splot_parallel::current_pool_width(),
-                tally.workers_used()
-            ),
-        );
-        result
-    } else {
-        with_reusable_scratch(&GDF_SCRATCH, |scratch| {
-            stripes
-                .into_iter()
-                .try_for_each(|stripe| compute_stripe(scratch, stripe))
-        })
-    }
+    })
 }
 
 fn gdf_stripe_row(
@@ -526,6 +505,7 @@ fn gdf_stripe_row_for_tile_end(y: usize, tile_end_y: usize, offset: ByteOffset) 
 fn copy_base_block<T: ReconSample>(
     base_luma: &[u16],
     stride: usize,
+    origin_y: usize,
     x: usize,
     y: usize,
     width: usize,
@@ -542,6 +522,7 @@ fn copy_base_block<T: ReconSample>(
     for row in 0..height {
         let start = y
             .checked_add(row)
+            .and_then(|sample_y| sample_y.checked_sub(origin_y))
             .and_then(|sample_y| sample_y.checked_mul(stride))
             .and_then(|row_start| row_start.checked_add(x))
             .ok_or_else(|| {
@@ -582,6 +563,7 @@ struct GdfBlock {
     height: usize,
     frame_width: usize,
     frame_height: usize,
+    base_origin_y: usize,
     bit_depth: BitDepth,
     qp_idx: usize,
     ref_dst_idx: usize,
@@ -695,6 +677,7 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     base_luma: &[u16],
     luma_width: usize,
+    origin_y: usize,
     x: usize,
     y: usize,
     width: usize,
@@ -713,7 +696,8 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
                 continue;
             }
             let src = sample_y
-                .checked_mul(luma_width)
+                .checked_sub(origin_y)
+                .and_then(|row| row.checked_mul(luma_width))
                 .and_then(|start| start.checked_add(sample_x))
                 .and_then(|index| base_luma.get(index).copied())
                 .ok_or_else(|| {
@@ -965,7 +949,29 @@ struct GdfSource<'a> {
     origin_y: isize,
 }
 
+enum GdfSourceRow<'a, T> {
+    Frame(&'a [T]),
+    Stripe(&'a [u16]),
+}
+
+impl<T: ReconSample> GdfSourceRow<'_, T> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Frame(row) => row.len(),
+            Self::Stripe(row) => row.len(),
+        }
+    }
+
+    fn get(&self, index: usize) -> Option<u16> {
+        match self {
+            Self::Frame(row) => row.get(index).map(|sample| sample.to_u16()),
+            Self::Stripe(row) => row.get(index).copied(),
+        }
+    }
+}
+
 impl<'a> GdfSource<'a> {
+    #[cfg(test)]
     fn materialize<T: ReconSample>(
         samples: &'a mut Vec<u16>,
         curr_luma: &[u16],
@@ -973,6 +979,39 @@ impl<'a> GdfSource<'a> {
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
         offset: ByteOffset,
+    ) -> Result<Self> {
+        Self::materialize_rows::<u16, T>(samples, bounds, block, offset, |source, y| {
+            let plane = match source {
+                LoopRestorationSource::CurrFrame => curr_luma,
+                LoopRestorationSource::CdefFrame => cdef_luma,
+            };
+            let start = y.checked_mul(block.frame_width)?;
+            plane
+                .get(start..start.checked_add(block.frame_width)?)
+                .map(GdfSourceRow::Stripe)
+        })
+    }
+
+    fn materialize_stripe<T: ReconSample>(
+        samples: &'a mut Vec<u16>,
+        deblocked_luma: FramePlane<'_, T>,
+        cdef_luma: &StripePlane,
+        bounds: &LoopRestorationSourceBounds,
+        block: &GdfBlock,
+        offset: ByteOffset,
+    ) -> Result<Self> {
+        Self::materialize_rows::<T, T>(samples, bounds, block, offset, |source, y| match source {
+            LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow::Frame),
+            LoopRestorationSource::CdefFrame => cdef_luma.row(y).map(GdfSourceRow::Stripe),
+        })
+    }
+
+    fn materialize_rows<'b, S: ReconSample, T: ReconSample>(
+        samples: &'a mut Vec<u16>,
+        bounds: &LoopRestorationSourceBounds,
+        block: &GdfBlock,
+        offset: ByteOffset,
+        source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
     ) -> Result<Self> {
         let width = block
             .width
@@ -1044,18 +1083,9 @@ impl<'a> GdfSource<'a> {
             if right.x >= block.frame_width || left.y >= block.frame_height {
                 return Err(source_error());
             }
-            let source = match left.source {
-                LoopRestorationSource::CurrFrame => curr_luma,
-                LoopRestorationSource::CdefFrame => cdef_luma,
-            };
-            let row_start = left
-                .y
-                .checked_mul(block.frame_width)
+            let source_row = source_row(left.source, left.y)
+                .filter(|row| row.len() == block.frame_width)
                 .ok_or_else(source_error)?;
-            let row_end = row_start
-                .checked_add(block.frame_width)
-                .ok_or_else(source_error)?;
-            let source_row = source.get(row_start..row_end).ok_or_else(source_error)?;
             for col in 0..width {
                 let x = origin_x
                     .checked_add(isize::try_from(col).map_err(|_| {
@@ -1071,7 +1101,7 @@ impl<'a> GdfSource<'a> {
                         )
                     })?;
                 let x = x.clamp(left.x as isize, right.x as isize) as usize;
-                let sample = source_row.get(x).copied().ok_or_else(source_error)?;
+                let sample = source_row.get(x).ok_or_else(source_error)?;
                 samples[row * width + col] = T::try_from_u16(sample)
                     .map_err(|_| source_error())?
                     .to_u16();
@@ -1375,9 +1405,13 @@ fn finish_gdf_sample(
         err * block.pix_scale,
         12 - u32::from(block.bit_depth.bits()),
     );
-    let base_index = (block.y + row) * block.frame_width + block.x + col;
-    let base = base_luma
-        .get(base_index)
+    let base = block
+        .y
+        .checked_add(row)
+        .and_then(|y| y.checked_sub(block.base_origin_y))
+        .and_then(|y| y.checked_mul(block.frame_width))
+        .and_then(|index| index.checked_add(block.x + col))
+        .and_then(|index| base_luma.get(index))
         .copied()
         .map(i32::from)
         .unwrap_or_default();
@@ -1557,7 +1591,7 @@ mod tests {
     fn disabled_gdf_unit_copies_base_samples() {
         let base: Vec<u16> = (0..64).collect();
 
-        let result = copy_base_block::<u8>(&base, 8, 4, 2, 4, 4, ByteOffset::new(0));
+        let result = copy_base_block::<u8>(&base, 8, 0, 4, 2, 4, 4, ByteOffset::new(0));
         assert!(result.is_ok());
         let Ok(copied) = result else {
             return;
@@ -1569,7 +1603,7 @@ mod tests {
                 20, 21, 22, 23, 28, 29, 30, 31, 36, 37, 38, 39, 44, 45, 46, 47
             ]
         );
-        assert!(copy_base_block::<u8>(&base[..60], 8, 4, 6, 4, 4, ByteOffset::new(0)).is_err());
+        assert!(copy_base_block::<u8>(&base[..60], 8, 0, 4, 6, 4, 4, ByteOffset::new(0)).is_err());
     }
 
     #[test]
@@ -1597,6 +1631,7 @@ mod tests {
             height: 56,
             frame_width,
             frame_height,
+            base_origin_y: 0,
             bit_depth: BitDepth::Ten,
             qp_idx: 0,
             ref_dst_idx: 0,
@@ -1733,6 +1768,7 @@ mod tests {
             Some(&grid),
             &base,
             8,
+            0,
             4,
             4,
             8,
@@ -1778,6 +1814,7 @@ mod tests {
             height: 4,
             frame_width,
             frame_height,
+            base_origin_y: 0,
             bit_depth: BitDepth::Ten,
             qp_idx: 0,
             ref_dst_idx: 0,
@@ -1907,6 +1944,7 @@ mod tests {
                             height: 1,
                             frame_width: 4,
                             frame_height: 1,
+                            base_origin_y: 0,
                             bit_depth,
                             qp_idx,
                             ref_dst_idx,

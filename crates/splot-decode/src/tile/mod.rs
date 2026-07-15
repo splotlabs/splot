@@ -4,4 +4,3 @@
 //! Tile and block-local decoder state.
 
 pub(crate) mod block_context;
-pub(crate) mod plane_bands;

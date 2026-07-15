@@ -37,6 +37,68 @@ fn cdef_general_intra_frame<T: ReconSample>(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
+fn cdef_general_intra_frame_indexed<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    strengths: &[CdefFrameParams],
+    grid: &CdefUnitGrid,
+    skip_grid: Option<&CdefSkipGrid>,
+    lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
+    mi_grid: (usize, usize),
+    bit_depth: BitDepth,
+) -> Result<(), CdefError> {
+    let height = workspace
+        .plane(PlaneId::Y)
+        .map_err(|_| CdefError::Workspace)?
+        .storage_size()
+        .height();
+    let frame = cdef_stripe(
+        workspace,
+        Some(strengths),
+        Some(grid),
+        skip_grid,
+        lossless_grid,
+        mi_grid,
+        bit_depth,
+        0,
+        height,
+    )?;
+    let CdefFrame {
+        filtered_y,
+        filtered_u,
+        filtered_v,
+        ..
+    } = frame;
+    for (plane, filtered) in [
+        (PlaneId::Y, Some(filtered_y)),
+        (PlaneId::U, filtered_u),
+        (PlaneId::V, filtered_v),
+    ] {
+        let Some(filtered) = filtered else {
+            continue;
+        };
+        let end = filtered.end_y().ok_or(CdefError::Geometry)?;
+        for y in filtered.origin_y()..end {
+            for (x, &sample) in filtered
+                .row(y)
+                .ok_or(CdefError::Workspace)?
+                .iter()
+                .enumerate()
+            {
+                workspace
+                    .set_reconstructed_sample(
+                        plane,
+                        x,
+                        y,
+                        T::try_from_u16(sample).map_err(|_| CdefError::Workspace)?,
+                    )
+                    .map_err(|_| CdefError::Workspace)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn tap_reach_covers_direction_table() {
     let max_offset = CDEF_DIRECTIONS
@@ -312,7 +374,7 @@ fn interior_fast_path_matches_per_sample_reference() {
             ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
         }
     }
-    let snap = PlaneSnapshot::capture(&ws, PlaneId::Y, 64, 64).unwrap();
+    let snap = FramePlane::new(&ws, PlaneId::Y).unwrap();
     for dir in 0..8usize {
         for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
             let ctx = CdefFilterCtx {
@@ -331,7 +393,7 @@ fn interior_fast_path_matches_per_sample_reference() {
                 frame_sub_y: 1,
             };
             let (_, rect, samples, stride) =
-                compute_cdef_filter_plane::<u8>(PlaneId::Y, &snap, &ctx)
+                compute_cdef_filter_plane::<u8, u8>(PlaneId::Y, snap, &ctx)
                     .unwrap()
                     .unwrap();
             let offsets = CdefTapOffsets::for_direction(ctx.dir);
@@ -340,7 +402,7 @@ fn interior_fast_path_matches_per_sample_reference() {
                     let x = rect.x() + j;
                     let y = rect.y() + i;
                     let center = snap.get(x as isize, y as isize).unwrap();
-                    let taps = gather_taps(&snap, &offsets, x, y, 64, 64, center);
+                    let taps = gather_taps(snap, &offsets, x, y, 64, 64, center);
                     let expected = cdef_filter_sample(
                         &taps,
                         ctx.pri_str,
@@ -389,12 +451,86 @@ fn zero_strengths_elide_all_writes() {
 #[test]
 fn snapshot_get_bounds() {
     let ws = workspace_8bit(16, 16, 50);
-    let snap = PlaneSnapshot::capture(&ws, PlaneId::Y, 16, 16).unwrap();
+    let snap = FramePlane::new(&ws, PlaneId::Y).unwrap();
     assert_eq!(snap.get(0, 0), Some(50));
     assert_eq!(snap.get(15, 15), Some(50));
     assert_eq!(snap.get(-1, 0), None, "negative x off-frame");
     assert_eq!(snap.get(16, 0), None, "x past width off-frame");
     assert_eq!(snap.get(0, 16), None, "y past height off-frame");
+}
+
+#[test]
+fn stripe_frames_match_full_frame_across_restoration_boundaries() {
+    let mut full = workspace_8bit(128, 128, 0);
+    let mut striped = workspace_8bit(128, 128, 0);
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let size = full.plane(plane).unwrap().storage_size();
+        for y in 0..size.height() {
+            for x in 0..size.width() {
+                let sample = ((x * 7 + y * 13 + plane.index() * 31) & 255) as u8;
+                full.set_reconstructed_sample(plane, x, y, sample).unwrap();
+                striped
+                    .set_reconstructed_sample(plane, x, y, sample)
+                    .unwrap();
+            }
+        }
+    }
+    let params = CdefFrameParams {
+        y_pri: 4,
+        y_sec: 3,
+        uv_pri: 2,
+        uv_sec: 4,
+        damping: 4,
+    };
+    let grid = constant_cdef_grid(32, 32, 0).unwrap();
+    cdef_general_intra_frame_indexed(
+        &mut full,
+        &[params],
+        &grid,
+        None,
+        None,
+        (32, 32),
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let frames = [(0, 56), (56, 120), (120, 128)]
+        .into_iter()
+        .map(|(start, end)| {
+            cdef_stripe(
+                &striped,
+                Some(&[params]),
+                Some(&grid),
+                None,
+                None,
+                (32, 32),
+                BitDepth::Eight,
+                start,
+                end,
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let mut actual = Vec::new();
+        for frame in &frames {
+            let filtered = match plane {
+                PlaneId::Y => Some(&frame.filtered_y),
+                PlaneId::U => frame.filtered_u.as_ref(),
+                PlaneId::V => frame.filtered_v.as_ref(),
+            }
+            .unwrap();
+            actual.extend_from_slice(filtered.samples());
+        }
+        let expected = full
+            .samples(plane)
+            .unwrap()
+            .iter()
+            .copied()
+            .map(u16::from)
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected, "plane {plane:?}");
+    }
 }
 
 fn workspace_chroma_ripple(row_varying: bool) -> CurrentFrameWorkspace<u8> {
