@@ -3,11 +3,13 @@
 
 //! Shared transform-block reconstruction setup.
 
+#[cfg(test)]
+use splot_recon::inverse_transform_2d_outer;
 use splot_recon::math::round2_i32;
 use splot_recon::{
     BitDepth, CurrentFrameSurface, DequantBlockParams, DpcmDirection, IntraRectBlockSize,
     InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform, ac_quantizer,
-    dc_quantizer, dequant_coefficient, dequantize_block, inverse_transform_2d_outer,
+    dc_quantizer, dequant_coefficient, dequantize_block, inverse_transform_2d_outer_adjusted,
     secondary_inverse_transform, tx_class,
 };
 
@@ -192,9 +194,14 @@ pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
         if let Some(secondary) = secondary.as_ref() {
             secondary_inverse_transform(dequant, secondary)?;
         }
-        let residual = &mut scratch.residual[..setup.samples];
-        inverse_transform_2d_outer(&setup.transform, dequant, residual)?;
-        sink.add_residual_rect_block(plane_id, x, y, block_size, residual)?;
+        let residual = &mut scratch.residual[..setup.adjusted];
+        inverse_transform_2d_outer_adjusted(
+            &setup.transform,
+            dequant,
+            residual,
+            &mut scratch.dequant_pair,
+        )?;
+        sink.add_adjusted_residual_rect_block(plane_id, x, y, block_size, residual)?;
         Ok(())
     })
 }

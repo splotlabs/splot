@@ -28,8 +28,10 @@
 //! secondary transform, the § 7.14.4 dequantization process, residual addition,
 //! and runtime decode wiring.
 
+#[cfg(test)]
+use crate::inverse_transform_2d::inverse_transform_2d;
 use crate::inverse_transform_2d::{
-    InverseTransform2d, InverseTransform2dDim, inverse_transform_2d,
+    InverseTransform2d, InverseTransform2dDim, inverse_transform_2d_with_scratch,
 };
 use crate::transform_params::{TransformPass, get_transform_1d_type, transform_shift};
 use crate::{BitDepth, ReconError, Result};
@@ -226,24 +228,7 @@ pub fn inverse_transform_2d_outer(
     dequant: &[i32],
     residual: &mut [i32],
 ) -> Result<()> {
-    let (log2_w, log2_h) = (params.log2_width, params.log2_height);
-    if !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_w)
-        || !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_h)
-        || (params.lossless
-            && !params.plane_tx_type_is_idtx
-            && (log2_w != MIN_LOG2_DIM || log2_h != MIN_LOG2_DIM))
-    {
-        return Err(ReconError::InvalidInverseTransform2dShape {
-            log2_w,
-            log2_h,
-            lossless: params.lossless,
-        });
-    }
-
-    let adj_w = 1usize << log2_w.min(5);
-    let adj_h = 1usize << log2_h.min(5);
-    let orig_w = 1usize << log2_w;
-    let orig_h = 1usize << log2_h;
+    let (adj_w, adj_h, orig_w, orig_h) = transform_dimensions(params)?;
     let adj_pels = adj_w * adj_h;
     let orig_pels = orig_w * orig_h;
     if dequant.len() != adj_pels || residual.len() != orig_pels {
@@ -255,13 +240,83 @@ pub fn inverse_transform_2d_outer(
         });
     }
 
-    let mut scratch = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
-    let adj = &mut scratch[..adj_pels];
+    let mut adjusted = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
+    let mut transform_scratch = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
+    let adj = &mut adjusted[..adj_pels];
+    inverse_transform_2d_outer_adjusted_inner(
+        params,
+        dequant,
+        adj,
+        &mut transform_scratch,
+        adj_w,
+        adj_h,
+    )?;
+
+    let w_factor = orig_w / adj_w;
+    let h_factor = orig_h / adj_h;
+    for oi in 0..orig_h {
+        let src_row = (oi / h_factor) * adj_w;
+        let dst_row = oi * orig_w;
+        for oj in 0..orig_w {
+            residual[dst_row + oj] = adj[src_row + oj / w_factor];
+        }
+    }
+    Ok(())
+}
+
+/// Applies AV2 § 7.15.4 through the adjusted-size residual, before the final
+/// sample-duplication expansion for a 64-sample transform side.
+///
+/// `dequant` and `residual` must each contain the adjusted `adjW * adjH`
+/// samples. The caller supplies one reusable 32x32 matrix-transform scratch
+/// block and applies the § 7.15.4 duplication when writing an original-size
+/// output.
+///
+/// # Errors
+/// Returns the same shape and transform errors as [`inverse_transform_2d_outer`],
+/// [`ReconError::InverseTransform2dBufferMismatch`] when `dequant` or `residual`
+/// does not match the adjusted size.
+#[inline]
+pub fn inverse_transform_2d_outer_adjusted(
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; 32 * 32],
+) -> Result<()> {
+    let (adj_w, adj_h, _, _) = transform_dimensions(params)?;
+    let adj_pels = adj_w * adj_h;
+    if dequant.len() != adj_pels || residual.len() != adj_pels {
+        return Err(ReconError::InverseTransform2dBufferMismatch {
+            expected: adj_pels,
+            dequant_len: dequant.len(),
+            residual_len: residual.len(),
+        });
+    }
+    inverse_transform_2d_outer_adjusted_inner(
+        params,
+        dequant,
+        residual,
+        transform_scratch,
+        adj_w,
+        adj_h,
+    )
+}
+
+fn inverse_transform_2d_outer_adjusted_inner(
+    params: &InverseTransform2dOuter,
+    dequant: &[i32],
+    residual: &mut [i32],
+    transform_scratch: &mut [i32; MAX_ADJ_DIM * MAX_ADJ_DIM],
+    adj_w: usize,
+    adj_h: usize,
+) -> Result<()> {
+    let (log2_w, log2_h) = (params.log2_width, params.log2_height);
+    let adj_pels = adj_w * adj_h;
 
     if params.lossless && params.plane_tx_type_is_idtx {
         let shift = u32::from(adj_pels > 256) + u32::from(adj_pels > 1024);
         let down = 3 - shift; // shift is 0..=2, so down is 1..=3.
-        for (out, &coeff) in adj.iter_mut().zip(dequant.iter()) {
+        for (out, &coeff) in residual.iter_mut().zip(dequant.iter()) {
             *out = coeff >> down;
         }
     } else {
@@ -275,23 +330,35 @@ pub fn inverse_transform_2d_outer(
             col_shift: params.col_shift,
             bit_depth: params.bit_depth,
         };
-        inverse_transform_2d(&inner, dequant, adj)?;
+        inverse_transform_2d_with_scratch(&inner, dequant, residual, transform_scratch)?;
     }
 
     if let Some(direction) = params.dpcm {
-        apply_dpcm(adj, adj_w, adj_h, direction);
-    }
-
-    let w_factor = orig_w / adj_w;
-    let h_factor = orig_h / adj_h;
-    for oi in 0..orig_h {
-        let src_row = (oi / h_factor) * adj_w;
-        let dst_row = oi * orig_w;
-        for oj in 0..orig_w {
-            residual[dst_row + oj] = adj[src_row + oj / w_factor];
-        }
+        apply_dpcm(residual, adj_w, adj_h, direction);
     }
     Ok(())
+}
+
+fn transform_dimensions(params: &InverseTransform2dOuter) -> Result<(usize, usize, usize, usize)> {
+    let (log2_w, log2_h) = (params.log2_width, params.log2_height);
+    if !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_w)
+        || !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_h)
+        || (params.lossless
+            && !params.plane_tx_type_is_idtx
+            && (log2_w != MIN_LOG2_DIM || log2_h != MIN_LOG2_DIM))
+    {
+        return Err(ReconError::InvalidInverseTransform2dShape {
+            log2_w,
+            log2_h,
+            lossless: params.lossless,
+        });
+    }
+    Ok((
+        1usize << log2_w.min(MAX_ADJ_LOG2_DIM),
+        1usize << log2_h.min(MAX_ADJ_LOG2_DIM),
+        1usize << log2_w,
+        1usize << log2_h,
+    ))
 }
 
 /// AV2 § 7.15.4 DPCM cumulative sum over the `w * h` row-major `res` block. Uses

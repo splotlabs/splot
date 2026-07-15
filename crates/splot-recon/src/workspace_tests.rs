@@ -7,9 +7,11 @@ use super::*;
 use splot_core::headers::sequence::SuperblockSize;
 
 use crate::{
-    BitDepth, DecodedFrameHash, DecodedFrameHashInput, IntraDcEdge, IntraDcEdges, OutputIndex,
+    BitDepth, DecodedFrameHash, DecodedFrameHashInput, DpcmDirection, IntraDcEdge, IntraDcEdges,
+    InverseTransform1dType, InverseTransform2dDim, InverseTransform2dOuter, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
-    apply_intra_ibp_dc_rect, predict_intra_dc_rect_into, reconstruct_add_residual,
+    apply_intra_ibp_dc_rect, inverse_transform_2d_outer, inverse_transform_2d_outer_adjusted,
+    predict_intra_dc_rect_into, reconstruct_add_residual,
 };
 
 fn size(width: usize, height: usize) -> PlaneSize {
@@ -406,6 +408,94 @@ where
 fn surface_add_residual_matches_buffer_reference_u8_and_u16() {
     assert_surface_add_residual_matches_reference::<u8>(BitDepth::Eight);
     assert_surface_add_residual_matches_reference::<u16>(BitDepth::Ten);
+}
+
+fn assert_adjusted_transform_surface_matches_expanded(params: InverseTransform2dOuter) {
+    let adjusted_width = 1usize << params.log2_width.min(5);
+    let adjusted_height = 1usize << params.log2_height.min(5);
+    let adjusted_samples = adjusted_width * adjusted_height;
+    let original_samples = (1usize << params.log2_width) * (1usize << params.log2_height);
+    let block_size = rect_block(params.log2_width as u8, params.log2_height as u8);
+
+    let mut dequant = [0i32; 32 * 32];
+    for (index, coefficient) in dequant[..adjusted_samples].iter_mut().enumerate() {
+        *coefficient = (index as i32 * 17 % 65) - 32;
+    }
+    dequant[0] = 128;
+    let mut expanded = [0i32; 64 * 64];
+    inverse_transform_2d_outer(
+        &params,
+        &dequant[..adjusted_samples],
+        &mut expanded[..original_samples],
+    )
+    .unwrap();
+    let mut adjusted = [0i32; 32 * 32];
+    let mut transform_scratch = [i32::MAX; 32 * 32];
+    inverse_transform_2d_outer_adjusted(
+        &params,
+        &dequant[..adjusted_samples],
+        &mut adjusted[..adjusted_samples],
+        &mut transform_scratch,
+    )
+    .unwrap();
+
+    let info = monochrome_info(BitDepth::Eight, 65, 65);
+    let mut expanded_frame = CurrentFrameWorkspace::<u8>::new(info, 128).unwrap();
+    let mut adjusted_frame = CurrentFrameWorkspace::<u8>::new(info, 128).unwrap();
+    CurrentFrameSurface::Frame(&mut expanded_frame)
+        .add_residual_rect_block(PlaneId::Y, 3, 3, block_size, &expanded[..original_samples])
+        .unwrap();
+    CurrentFrameSurface::Frame(&mut adjusted_frame)
+        .add_adjusted_residual_rect_block(
+            PlaneId::Y,
+            3,
+            3,
+            block_size,
+            &adjusted[..adjusted_samples],
+        )
+        .unwrap();
+    assert_eq!(
+        adjusted_frame.samples(PlaneId::Y).unwrap(),
+        expanded_frame.samples(PlaneId::Y).unwrap()
+    );
+}
+
+#[test]
+fn adjusted_transform_surface_matches_expanded_outer_for_every_shape() {
+    let dct = InverseTransform2dDim::Kernel(InverseTransform1dType::Dct);
+    for log2_width in 2..=6 {
+        for log2_height in 2..=6 {
+            let dpcm = if (log2_width + log2_height) % 2 == 0 {
+                Some(DpcmDirection::Vertical)
+            } else {
+                Some(DpcmDirection::Horizontal)
+            };
+            assert_adjusted_transform_surface_matches_expanded(
+                InverseTransform2dOuter::resolve(
+                    0,
+                    log2_width,
+                    log2_height,
+                    false,
+                    false,
+                    BitDepth::Eight,
+                    dpcm,
+                )
+                .unwrap(),
+            );
+            assert_adjusted_transform_surface_matches_expanded(InverseTransform2dOuter {
+                log2_width,
+                log2_height,
+                lossless: true,
+                plane_tx_type_is_idtx: true,
+                row_type: dct,
+                col_type: dct,
+                row_shift: 0,
+                col_shift: 0,
+                bit_depth: BitDepth::Eight,
+                dpcm: None,
+            });
+        }
+    }
 }
 
 #[test]

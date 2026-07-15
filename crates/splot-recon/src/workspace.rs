@@ -406,6 +406,52 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             .add(|row, column| residual[row * source_stride + column])
     }
 
+    /// Adds an adjusted-size signed residual block directly to reconstructed
+    /// samples, applying the AV2 § 7.15.4 sample duplication for a 64-sample
+    /// transform side while writing.
+    ///
+    /// The complete adjusted source and original target geometry and every
+    /// prediction sample are validated before the first sample is changed.
+    /// Frame-edge overhang is clipped using the original block stride, while
+    /// row targets reject blocks crossing their exclusive band.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for an absent plane, an adjusted source length
+    /// other than `min(width, 32) * min(height, 32)`, invalid target geometry,
+    /// cross-band access, or an existing prediction sample outside the active
+    /// bit depth.
+    #[inline]
+    pub fn add_adjusted_residual_rect_block(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: &[i32],
+    ) -> Result<()> {
+        if size.log2_width() < 6 && size.log2_height() < 6 {
+            return self.add_residual_rect_block(plane, x, y, size, residual);
+        }
+        let width_shift = usize::from(size.log2_width() == 6);
+        let height_shift = usize::from(size.log2_height() == 6);
+        let adjusted_width = size.width() >> width_shift;
+        let adjusted_height = size.height() >> height_shift;
+        let expected = adjusted_width * adjusted_height;
+        if residual.len() != expected {
+            return Err(ReconError::WorkspaceWriteLengthMismatch {
+                plane,
+                expected,
+                actual: residual.len(),
+            });
+        }
+        let rect = block_rect(x, y, size)?;
+        let source_stride = size.width();
+        self.residual_rect_target(plane, rect, source_stride)?
+            .add(|row, column| {
+                residual[(row >> height_shift) * adjusted_width + (column >> width_shift)]
+            })
+    }
+
     /// Adds one constant signed residual directly to a rectangular block.
     ///
     /// Target geometry and every prediction sample are validated before the
