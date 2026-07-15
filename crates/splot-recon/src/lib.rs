@@ -175,8 +175,10 @@ pub use wienerns_filter::{
     wiener_ns_filter_luma_block_padded, wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
-    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFrameWorkspace, InterIntraMode,
-    IntraPredictionScratchBuffer, WorkspaceRectRows, wedge_mask_plane_sample,
+    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRowBand, CurrentFrameRowBand,
+    CurrentFrameRowBands, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
+    IntraPredictionScratch, IntraPredictionScratchBuffer, WorkspaceRectRows,
+    wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

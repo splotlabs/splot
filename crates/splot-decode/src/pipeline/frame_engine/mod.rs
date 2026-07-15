@@ -39,7 +39,7 @@ pub(crate) enum FrameSetup<'a, T: ReconSample> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_frame<T: inter::DeferredReconSample>(
+pub(crate) fn decode_frame<T: ReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],

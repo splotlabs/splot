@@ -10,6 +10,7 @@
 use super::*;
 
 use crate::support::reusable_scratch::with_reusable_scratch;
+use std::sync::{Mutex, MutexGuard};
 
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
@@ -17,23 +18,51 @@ const TX_4X4: usize = 0;
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
-const MAX_RETAINED_INTER_RESIDUAL_LISTS: usize = 64;
+const MAX_RETAINED_INTER_RESIDUAL_LISTS: usize = 128;
 const MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS: usize = 16 * 1024;
 
 #[derive(Default)]
 struct InterResidualRecycler {
     block_lists: Vec<Vec<InterResidualBlock>>,
     block_slots: usize,
-    chroma_reads: Option<Vec<InterChromaURead>>,
+}
+
+impl InterResidualRecycler {
+    fn take(&mut self) -> Vec<InterResidualBlock> {
+        let blocks = self.block_lists.pop().unwrap_or_default();
+        self.block_slots = self.block_slots.saturating_sub(blocks.capacity());
+        blocks
+    }
+
+    fn recycle_empty(&mut self, blocks: Vec<InterResidualBlock>) {
+        let capacity = blocks.capacity();
+        if capacity == 0
+            || capacity > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS
+            || self.block_lists.len() == MAX_RETAINED_INTER_RESIDUAL_LISTS
+            || self.block_slots > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS - capacity
+            || self.block_lists.try_reserve(1).is_err()
+        {
+            return;
+        }
+        self.block_slots += capacity;
+        self.block_lists.push(blocks);
+    }
 }
 
 std::thread_local! {
-    static INTER_RESIDUAL_RECYCLER: std::cell::RefCell<InterResidualRecycler> =
-        const { std::cell::RefCell::new(InterResidualRecycler {
-            block_lists: Vec::new(),
-            block_slots: 0,
-            chroma_reads: None,
-        }) };
+    static INTER_RESIDUAL_CHROMA_READS: std::cell::RefCell<Option<Vec<InterChromaURead>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+static INTER_RESIDUAL_RECYCLER: Mutex<InterResidualRecycler> = Mutex::new(InterResidualRecycler {
+    block_lists: Vec::new(),
+    block_slots: 0,
+});
+
+fn lock_inter_residual_recycler() -> MutexGuard<'static, InterResidualRecycler> {
+    INTER_RESIDUAL_RECYCLER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,8 +94,8 @@ struct RecycledInterChromaReads {
 
 impl RecycledInterChromaReads {
     fn take() -> Self {
-        let entries = with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
-            recycler.chroma_reads.take().unwrap_or_default()
+        let entries = with_reusable_scratch(&INTER_RESIDUAL_CHROMA_READS, |entries| {
+            entries.take().unwrap_or_default()
         });
         Self { entries }
     }
@@ -76,40 +105,23 @@ impl Drop for RecycledInterChromaReads {
     fn drop(&mut self) {
         let mut entries = core::mem::take(&mut self.entries);
         entries.clear();
-        with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
-            let entries = match recycler.chroma_reads.take() {
+        with_reusable_scratch(&INTER_RESIDUAL_CHROMA_READS, |cached| {
+            let entries = match cached.take() {
                 Some(cached) if cached.capacity() > entries.capacity() => cached,
                 _ => entries,
             };
-            recycler.chroma_reads = Some(entries);
+            *cached = Some(entries);
         });
     }
 }
 
 fn take_inter_residual_blocks() -> Vec<InterResidualBlock> {
-    with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
-        let blocks = recycler.block_lists.pop().unwrap_or_default();
-        recycler.block_slots = recycler.block_slots.saturating_sub(blocks.capacity());
-        blocks
-    })
+    lock_inter_residual_recycler().take()
 }
 
 fn recycle_inter_residual_blocks(mut blocks: Vec<InterResidualBlock>) {
     blocks.clear();
-    let capacity = blocks.capacity();
-    if capacity == 0 || capacity > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS {
-        return;
-    }
-    with_reusable_scratch(&INTER_RESIDUAL_RECYCLER, |recycler| {
-        if recycler.block_lists.len() == MAX_RETAINED_INTER_RESIDUAL_LISTS
-            || recycler.block_slots > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS - capacity
-            || recycler.block_lists.try_reserve(1).is_err()
-        {
-            return;
-        }
-        recycler.block_slots += capacity;
-        recycler.block_lists.push(blocks);
-    });
+    lock_inter_residual_recycler().recycle_empty(blocks);
 }
 
 impl Drop for InterResidual {

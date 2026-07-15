@@ -14,6 +14,8 @@
 use core::mem;
 use core::ops::Range;
 
+use splot_core::headers::sequence::SuperblockSize;
+
 use crate::intra_basic::predict_paeth_sample;
 use crate::intra_dc_math::validate_sample_type;
 use crate::intra_directional::predict_intra_cardinal_directional_rect_into;
@@ -54,7 +56,7 @@ pub struct CurrentFrameWorkspace<T: ReconSample> {
     y: CurrentFramePlane<T>,
     u: Option<CurrentFramePlane<T>>,
     v: Option<CurrentFramePlane<T>>,
-    intra_prediction_scratch: [Vec<T>; 2],
+    intra_prediction_scratch: IntraPredictionScratch<T>,
 }
 
 /// Selects one of the two reusable current-frame intra-prediction buffers.
@@ -65,6 +67,379 @@ pub enum IntraPredictionScratchBuffer {
     /// Secondary prediction storage used while blending two predictors.
     Secondary,
 }
+
+/// Two reusable prediction buffers owned by one reconstruction task.
+///
+/// A workspace keeps one instance for the existing ordered reconstruction API.
+/// Parallel row reconstruction can instead keep one instance per task without
+/// sharing scratch storage between workers.
+#[derive(Debug, Eq, PartialEq)]
+pub struct IntraPredictionScratch<T: ReconSample> {
+    buffers: [Vec<T>; 2],
+}
+
+impl<T: ReconSample> IntraPredictionScratch<T> {
+    /// Creates empty reusable prediction buffers.
+    pub const fn new() -> Self {
+        Self {
+            buffers: [Vec::new(), Vec::new()],
+        }
+    }
+
+    /// Takes one initialized prediction buffer from this scratch owner.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if `sample_count` exceeds the largest AV2 intra
+    /// block or the buffer cannot reserve enough storage.
+    pub fn take_buffer(
+        &mut self,
+        slot: IntraPredictionScratchBuffer,
+        plane: PlaneId,
+        sample_count: usize,
+        fill: T,
+    ) -> Result<Vec<T>> {
+        if sample_count > MAX_INTRA_PREDICTION_SAMPLES {
+            return Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
+                sample_count,
+                max_sample_count: MAX_INTRA_PREDICTION_SAMPLES,
+            });
+        }
+        let mut buffer = mem::take(self.buffer_mut(slot));
+        buffer.clear();
+        if buffer.capacity() < sample_count {
+            buffer.try_reserve_exact(sample_count).map_err(|_| {
+                ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "intra prediction scratch",
+                }
+            })?;
+        }
+        buffer.resize(sample_count, fill);
+        Ok(buffer)
+    }
+
+    /// Returns a prediction buffer to this scratch owner for reuse.
+    pub fn recycle_buffer(&mut self, slot: IntraPredictionScratchBuffer, mut buffer: Vec<T>) {
+        buffer.clear();
+        *self.buffer_mut(slot) = buffer;
+    }
+
+    fn buffer_mut(&mut self, slot: IntraPredictionScratchBuffer) -> &mut Vec<T> {
+        match slot {
+            IntraPredictionScratchBuffer::Primary => &mut self.buffers[0],
+            IntraPredictionScratchBuffer::Secondary => &mut self.buffers[1],
+        }
+    }
+}
+
+impl<T: ReconSample> Default for IntraPredictionScratch<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Exclusive full-width plane storage for one superblock row.
+///
+/// `rect` uses global plane coordinates while `samples` starts at that
+/// rectangle's first row. The storage contains whole stride rows and aliases no
+/// other band returned by the same [`CurrentFrameRowBands`] iterator.
+#[derive(Debug)]
+pub struct CurrentFramePlaneRowBand<'a, T: ReconSample> {
+    plane: PlaneId,
+    storage_size: PlaneSize,
+    stride_samples: usize,
+    rect: PlaneRect,
+    samples: &'a mut [T],
+}
+
+impl<T: ReconSample> CurrentFramePlaneRowBand<'_, T> {
+    /// Returns the complete frame-plane storage size.
+    pub const fn storage_size(&self) -> PlaneSize {
+        self.storage_size
+    }
+
+    /// Returns this full-width band's rectangle in global plane coordinates.
+    pub const fn rect(&self) -> PlaneRect {
+        self.rect
+    }
+
+    /// Returns the frame-plane stride in samples.
+    pub const fn stride_samples(&self) -> usize {
+        self.stride_samples
+    }
+
+    /// Returns this band's exclusive backing rows.
+    ///
+    /// Callers own bit-depth range enforcement, as with
+    /// [`PlaneMut::samples_mut`].
+    pub fn samples_mut(&mut self) -> &mut [T] {
+        self.samples
+    }
+
+    fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
+        ensure_rect_in_storage(self.plane, self.storage_size, rect)?;
+        self.ensure_rect(rect)?;
+        let local = PlaneRect::new(
+            rect.x() - self.rect.x(),
+            rect.y() - self.rect.y(),
+            rect.width(),
+            rect.height(),
+        )?;
+        Ok(PlaneRef::from_parts(self.samples, self.stride_samples, local).visible_rows())
+    }
+
+    fn write_rect(
+        &mut self,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+        max_sample: u16,
+    ) -> Result<()> {
+        let rect = clamp_rect_to_storage(self.plane, self.storage_size, rect)?;
+        self.ensure_rect(rect)?;
+        let local_y = rect.y() - self.rect.y();
+        write_rect_to_samples(
+            self.plane,
+            self.samples,
+            self.stride_samples,
+            rect,
+            rect.x() - self.rect.x(),
+            local_y,
+            samples,
+            row_stride_samples,
+            max_sample,
+        )
+    }
+
+    fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
+        if rect_is_within(rect, self.rect) {
+            Ok(())
+        } else {
+            Err(ReconError::WorkspaceRowBandRectOutOfBounds {
+                plane: self.plane,
+                band: self.rect,
+                rect,
+            })
+        }
+    }
+}
+
+/// Exclusive Y/U/V plane bands for one full-width superblock row.
+#[derive(Debug)]
+pub struct CurrentFrameRowBand<'a, T: ReconSample> {
+    info: DecodedFrameInfo,
+    y: CurrentFramePlaneRowBand<'a, T>,
+    u: Option<CurrentFramePlaneRowBand<'a, T>>,
+    v: Option<CurrentFramePlaneRowBand<'a, T>>,
+}
+
+impl<'a, T: ReconSample> CurrentFrameRowBand<'a, T> {
+    /// Returns the decoded-frame metadata for this row band.
+    pub const fn info(&self) -> DecodedFrameInfo {
+        self.info
+    }
+
+    /// Returns the luma rectangle in global plane coordinates.
+    pub const fn luma_rect(&self) -> PlaneRect {
+        self.y.rect
+    }
+
+    /// Splits this row band into its disjoint per-plane bands.
+    pub fn into_planes(
+        self,
+    ) -> (
+        CurrentFramePlaneRowBand<'a, T>,
+        Option<CurrentFramePlaneRowBand<'a, T>>,
+        Option<CurrentFramePlaneRowBand<'a, T>>,
+    ) {
+        (self.y, self.u, self.v)
+    }
+
+    fn plane(&self, plane: PlaneId) -> Result<&CurrentFramePlaneRowBand<'a, T>> {
+        select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())
+    }
+
+    fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlaneRowBand<'a, T>> {
+        select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
+    }
+}
+
+/// Checked reconstruction target backed by a whole frame or one exclusive row band.
+#[derive(Debug)]
+pub enum CurrentFrameSurface<'surface, 'storage, T: ReconSample> {
+    /// Existing ordered reconstruction over the complete current frame.
+    Frame(&'surface mut CurrentFrameWorkspace<T>),
+    /// Row-local reconstruction over one exclusive full-width superblock band.
+    Row(&'surface mut CurrentFrameRowBand<'storage, T>),
+}
+
+impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
+    /// Returns the decoded-frame metadata for this target.
+    pub const fn info(&self) -> DecodedFrameInfo {
+        match self {
+            Self::Frame(workspace) => workspace.info(),
+            Self::Row(row) => row.info(),
+        }
+    }
+
+    /// Returns the complete frame-plane storage size.
+    ///
+    /// # Errors
+    /// Returns [`ReconError::MissingWorkspacePlane`] for absent chroma planes.
+    pub fn plane_storage_size(&self, plane: PlaneId) -> Result<PlaneSize> {
+        match self {
+            Self::Frame(workspace) => Ok(workspace.plane(plane)?.storage_size()),
+            Self::Row(row) => Ok(row.plane(plane)?.storage_size()),
+        }
+    }
+
+    /// Iterates over a checked target-local rectangle using global coordinates.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, the rectangle exceeds
+    /// frame storage, or a row target would read outside its exclusive band.
+    pub fn rect_rows(&self, plane: PlaneId, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
+        match self {
+            Self::Frame(workspace) => workspace.rect_rows(plane, rect),
+            Self::Row(row) => row.plane(plane)?.rect_rows(rect),
+        }
+    }
+
+    /// Writes row-strided samples into a checked target rectangle.
+    ///
+    /// Frame-edge overhang is clipped exactly as for
+    /// [`CurrentFrameWorkspace::write_rect`]. A row target rejects any clipped
+    /// rectangle crossing its exclusive band before mutating samples.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for absent planes, invalid target or source
+    /// geometry, cross-band access, or samples outside the active bit depth.
+    pub fn write_rect(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        match self {
+            Self::Frame(workspace) => {
+                workspace.write_rect(plane, rect, samples, row_stride_samples)
+            }
+            Self::Row(row) => {
+                let max_sample = row.info.bit_depth().max_sample();
+                row.plane_mut(plane)?
+                    .write_rect(rect, samples, row_stride_samples, max_sample)
+            }
+        }
+    }
+
+    /// Writes one contiguous rectangular prediction block.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] under the same conditions as [`Self::write_rect`]
+    /// or when `samples` does not exactly match the requested block size.
+    pub fn write_rect_block(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        samples: &[T],
+    ) -> Result<()> {
+        let rect = checked_sample_block_rect(plane, x, y, size, samples.len())?;
+        self.write_rect(plane, rect, samples, size.width())
+    }
+}
+
+/// Allocation-free iterator over exclusive full-width superblock-row bands.
+#[derive(Debug)]
+pub struct CurrentFrameRowBands<'a, T: ReconSample> {
+    info: DecodedFrameInfo,
+    y: CurrentFramePlaneRowBands<'a, T>,
+    u: Option<CurrentFramePlaneRowBands<'a, T>>,
+    v: Option<CurrentFramePlaneRowBands<'a, T>>,
+}
+
+impl<'a, T: ReconSample> Iterator for CurrentFrameRowBands<'a, T> {
+    type Item = CurrentFrameRowBand<'a, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let y = self.y.next()?;
+        let u = self.u.as_mut().and_then(Iterator::next);
+        let v = self.v.as_mut().and_then(Iterator::next);
+        Some(CurrentFrameRowBand {
+            info: self.info,
+            y,
+            u,
+            v,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.y.size_hint()
+    }
+}
+
+impl<T: ReconSample> ExactSizeIterator for CurrentFrameRowBands<'_, T> {}
+
+#[derive(Debug)]
+struct CurrentFramePlaneRowBands<'a, T: ReconSample> {
+    plane: PlaneId,
+    storage_size: PlaneSize,
+    stride_samples: usize,
+    rows_per_band: usize,
+    next_y: usize,
+    rest: Option<&'a mut [T]>,
+}
+
+impl<'a, T: ReconSample> CurrentFramePlaneRowBands<'a, T> {
+    fn new(plane: &'a mut CurrentFramePlane<T>, rows_per_band: usize) -> Self {
+        Self {
+            plane: plane.plane,
+            storage_size: plane.storage_size,
+            stride_samples: plane.stride_samples,
+            rows_per_band,
+            next_y: 0,
+            rest: Some(&mut plane.samples),
+        }
+    }
+}
+
+impl<'a, T: ReconSample> Iterator for CurrentFramePlaneRowBands<'a, T> {
+    type Item = CurrentFramePlaneRowBand<'a, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let rest = self.rest.take()?;
+        if rest.is_empty() {
+            return None;
+        }
+        let remaining_rows = rest.len() / self.stride_samples;
+        let rows = remaining_rows.min(self.rows_per_band);
+        let samples = rows * self.stride_samples;
+        let (band, tail) = rest.split_at_mut(samples);
+        self.rest = Some(tail);
+        let rect = PlaneRect::new(0, self.next_y, self.storage_size.width(), rows).ok()?;
+        self.next_y += rows;
+        Some(CurrentFramePlaneRowBand {
+            plane: self.plane,
+            storage_size: self.storage_size,
+            stride_samples: self.stride_samples,
+            rect,
+            samples: band,
+        })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let rows = self
+            .rest
+            .as_deref()
+            .map_or(0, |rest| rest.len() / self.stride_samples);
+        let remaining = rows.div_ceil(self.rows_per_band);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: ReconSample> ExactSizeIterator for CurrentFramePlaneRowBands<'_, T> {}
 
 const MAX_INTRA_PREDICTION_SAMPLES: usize = 64 * 64;
 
@@ -117,7 +492,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             y,
             u,
             v,
-            intra_prediction_scratch: [Vec::new(), Vec::new()],
+            intra_prediction_scratch: IntraPredictionScratch::new(),
         })
     }
 
@@ -133,17 +508,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// monochrome workspaces.
     #[inline]
     pub fn plane(&self, plane: PlaneId) -> Result<&CurrentFramePlane<T>> {
-        match plane {
-            PlaneId::Y => Ok(&self.y),
-            PlaneId::U => self
-                .u
-                .as_ref()
-                .ok_or(ReconError::MissingWorkspacePlane { plane }),
-            PlaneId::V => self
-                .v
-                .as_ref()
-                .ok_or(ReconError::MissingWorkspacePlane { plane }),
-        }
+        select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())
     }
 
     /// Borrows the workspace as an immutable [`FrameRef`] without copying.
@@ -167,6 +532,29 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             self.u.as_mut().map(CurrentFramePlane::as_plane_mut),
             self.v.as_mut().map(CurrentFramePlane::as_plane_mut),
         )
+    }
+
+    /// Partitions all frame planes into exclusive full-width superblock rows.
+    ///
+    /// Luma bands are 64, 128, or 256 rows according to `sb_size`. Chroma band
+    /// heights follow the frame's vertical subsampling, and the final band on
+    /// each plane is clipped to its storage height. The returned plane slices
+    /// borrow the existing workspace storage without copying pixels.
+    pub fn sb_row_bands(&mut self, sb_size: SuperblockSize) -> CurrentFrameRowBands<'_, T> {
+        let luma_rows = superblock_side(sb_size);
+        let chroma_rows = luma_rows >> self.info.pixel_format().subsampling_y();
+        CurrentFrameRowBands {
+            info: self.info,
+            y: CurrentFramePlaneRowBands::new(&mut self.y, luma_rows),
+            u: self
+                .u
+                .as_mut()
+                .map(|plane| CurrentFramePlaneRowBands::new(plane, chroma_rows)),
+            v: self
+                .v
+                .as_mut()
+                .map(|plane| CurrentFramePlaneRowBands::new(plane, chroma_rows)),
+        }
     }
 
     /// Returns all backing samples for `plane`, including padding if present.
@@ -421,40 +809,17 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         sample_count: usize,
         fill: T,
     ) -> Result<Vec<T>> {
-        if sample_count > MAX_INTRA_PREDICTION_SAMPLES {
-            return Err(ReconError::WorkspaceIntraPredictionScratchTooLarge {
-                sample_count,
-                max_sample_count: MAX_INTRA_PREDICTION_SAMPLES,
-            });
-        }
-        let mut buffer = mem::take(match slot {
-            IntraPredictionScratchBuffer::Primary => &mut self.intra_prediction_scratch[0],
-            IntraPredictionScratchBuffer::Secondary => &mut self.intra_prediction_scratch[1],
-        });
-        buffer.clear();
-        if buffer.capacity() < sample_count {
-            buffer.try_reserve_exact(sample_count).map_err(|_| {
-                ReconError::WorkspaceAllocationFailed {
-                    plane,
-                    context: "intra prediction scratch",
-                }
-            })?;
-        }
-        buffer.resize(sample_count, fill);
-        Ok(buffer)
+        self.intra_prediction_scratch
+            .take_buffer(slot, plane, sample_count, fill)
     }
 
     /// Returns an intra-prediction buffer to its reusable workspace slot.
     pub fn recycle_intra_prediction_buffer(
         &mut self,
         slot: IntraPredictionScratchBuffer,
-        mut buffer: Vec<T>,
+        buffer: Vec<T>,
     ) {
-        buffer.clear();
-        *match slot {
-            IntraPredictionScratchBuffer::Primary => &mut self.intra_prediction_scratch[0],
-            IntraPredictionScratchBuffer::Secondary => &mut self.intra_prediction_scratch[1],
-        } = buffer;
+        self.intra_prediction_scratch.recycle_buffer(slot, buffer);
     }
 
     /// Freezes the workspace into an immutable decoded frame.
@@ -470,17 +835,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     }
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
-        match plane {
-            PlaneId::Y => Ok(&mut self.y),
-            PlaneId::U => self
-                .u
-                .as_mut()
-                .ok_or(ReconError::MissingWorkspacePlane { plane }),
-            PlaneId::V => self
-                .v
-                .as_mut()
-                .ok_or(ReconError::MissingWorkspacePlane { plane }),
-        }
+        select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
     }
 }
 
@@ -619,7 +974,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// outside the plane storage.
     pub fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
         self.ensure_rect(rect)?;
-        Ok(WorkspaceRectRows::new(self, rect))
+        Ok(PlaneRef::from_parts(&self.samples, self.stride_samples, rect).visible_rows())
     }
 
     fn fill_rect(&mut self, rect: PlaneRect, sample: T) -> Result<()> {
@@ -645,54 +1000,17 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         // Reconstruction writes only in-frame samples. Partial frame-edge
         // overhang is dropped; an out-of-frame origin remains an error.
         let rect = self.clamp_rect_to_storage(rect)?;
-        if row_stride_samples < rect.width() {
-            return Err(ReconError::WorkspaceWriteStrideTooSmall {
-                plane: self.plane,
-                stride_samples: row_stride_samples,
-                width: rect.width(),
-            });
-        }
-
-        let expected = required_row_strided_samples(rect, row_stride_samples)?;
-        if samples.len() < expected {
-            return Err(ReconError::WorkspaceWriteLengthMismatch {
-                plane: self.plane,
-                expected,
-                actual: samples.len(),
-            });
-        }
-
-        if rect.width() == 0 || rect.height() == 0 {
-            return Ok(());
-        }
-        let target_base = self.row_range(rect.y(), rect.x(), rect.width())?.start;
-        let last_row = rect.y() + rect.height() - 1;
-        self.row_range(last_row, rect.x(), rect.width())?;
-
-        for row_index in 0..rect.height() {
-            let source_row_start = row_index.checked_mul(row_stride_samples).ok_or(
-                ReconError::ArithmeticOverflow {
-                    context: "current-frame workspace source row offset",
-                },
-            )?;
-            let target_start = target_base + row_index * self.stride_samples;
-            let source_row = &samples[source_row_start..source_row_start + rect.width()];
-            if source_row.iter().any(|sample| sample.to_u16() > max_sample) {
-                for (column, &sample) in source_row.iter().enumerate() {
-                    validate_sample_value(self.plane, target_start + column, sample, max_sample)?;
-                }
-            }
-        }
-
-        for row_index in 0..rect.height() {
-            let source_row_start = row_index * row_stride_samples;
-            let target_start = target_base + row_index * self.stride_samples;
-            let target_range = target_start..target_start + rect.width();
-            let source_range = source_row_start..source_row_start + rect.width();
-            // splot-copy-ok: write caller samples into owned current-frame workspace plane storage
-            self.samples[target_range].copy_from_slice(&samples[source_range]);
-        }
-        Ok(())
+        write_rect_to_samples(
+            self.plane,
+            &mut self.samples,
+            self.stride_samples,
+            rect,
+            rect.x(),
+            rect.y(),
+            samples,
+            row_stride_samples,
+            max_sample,
+        )
     }
 
     fn predict_intra_paeth_rect(&mut self, rect: PlaneRect) -> Result<()> {
@@ -860,35 +1178,11 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// Returns [`ReconError::WorkspaceRectOutOfBounds`] when `rect` starts outside
     /// storage.
     fn clamp_rect_to_storage(&self, rect: PlaneRect) -> Result<PlaneRect> {
-        let storage_width = self.storage_size.width();
-        let storage_height = self.storage_size.height();
-        if rect.x() >= storage_width || rect.y() >= storage_height {
-            return Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect,
-            });
-        }
-        let max_width = storage_width - rect.x();
-        let max_height = storage_height - rect.y();
-        let width = rect.width().min(max_width);
-        let height = rect.height().min(max_height);
-        if width == rect.width() && height == rect.height() {
-            return Ok(rect);
-        }
-        PlaneRect::new(rect.x(), rect.y(), width, height)
+        clamp_rect_to_storage(self.plane, self.storage_size, rect)
     }
 
     fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
-        if rect.is_within(self.storage_size) {
-            Ok(())
-        } else {
-            Err(ReconError::WorkspaceRectOutOfBounds {
-                plane: self.plane,
-                storage: self.storage_size,
-                rect,
-            })
-        }
+        ensure_rect_in_storage(self.plane, self.storage_size, rect)
     }
 
     #[inline]
@@ -979,6 +1273,14 @@ fn chroma_plane_geometry(
     )))
 }
 
+const fn superblock_side(sb_size: SuperblockSize) -> usize {
+    match sb_size {
+        SuperblockSize::Block64x64 => 64,
+        SuperblockSize::Block128x128 => 128,
+        SuperblockSize::Block256x256 => 256,
+    }
+}
+
 /// Validates a caller-supplied per-sample buffer against a block's rectangular
 /// sample count, then resolves the target rectangle.
 fn checked_sample_block_rect(
@@ -1000,6 +1302,154 @@ fn checked_sample_block_rect(
 
 fn block_rect(x: usize, y: usize, size: IntraRectBlockSize) -> Result<PlaneRect> {
     PlaneRect::new(x, y, size.width(), size.height())
+}
+
+fn select_plane<'a, P>(
+    plane: PlaneId,
+    y: &'a P,
+    u: Option<&'a P>,
+    v: Option<&'a P>,
+) -> Result<&'a P> {
+    match plane {
+        PlaneId::Y => Ok(y),
+        PlaneId::U => u.ok_or(ReconError::MissingWorkspacePlane { plane }),
+        PlaneId::V => v.ok_or(ReconError::MissingWorkspacePlane { plane }),
+    }
+}
+
+fn select_plane_mut<'a, P>(
+    plane: PlaneId,
+    y: &'a mut P,
+    u: Option<&'a mut P>,
+    v: Option<&'a mut P>,
+) -> Result<&'a mut P> {
+    match plane {
+        PlaneId::Y => Ok(y),
+        PlaneId::U => u.ok_or(ReconError::MissingWorkspacePlane { plane }),
+        PlaneId::V => v.ok_or(ReconError::MissingWorkspacePlane { plane }),
+    }
+}
+
+fn clamp_rect_to_storage(plane: PlaneId, storage: PlaneSize, rect: PlaneRect) -> Result<PlaneRect> {
+    if rect.x() >= storage.width() || rect.y() >= storage.height() {
+        return Err(ReconError::WorkspaceRectOutOfBounds {
+            plane,
+            storage,
+            rect,
+        });
+    }
+    let width = rect.width().min(storage.width() - rect.x());
+    let height = rect.height().min(storage.height() - rect.y());
+    if width == rect.width() && height == rect.height() {
+        Ok(rect)
+    } else {
+        PlaneRect::new(rect.x(), rect.y(), width, height)
+    }
+}
+
+fn ensure_rect_in_storage(plane: PlaneId, storage: PlaneSize, rect: PlaneRect) -> Result<()> {
+    if rect.is_within(storage) {
+        Ok(())
+    } else {
+        Err(ReconError::WorkspaceRectOutOfBounds {
+            plane,
+            storage,
+            rect,
+        })
+    }
+}
+
+fn rect_is_within(rect: PlaneRect, bounds: PlaneRect) -> bool {
+    let Some(x) = rect.x().checked_sub(bounds.x()) else {
+        return false;
+    };
+    let Some(y) = rect.y().checked_sub(bounds.y()) else {
+        return false;
+    };
+    x.checked_add(rect.width())
+        .is_some_and(|right| right <= bounds.width())
+        && y.checked_add(rect.height())
+            .is_some_and(|bottom| bottom <= bounds.height())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_rect_to_samples<T: ReconSample>(
+    plane: PlaneId,
+    target: &mut [T],
+    target_stride_samples: usize,
+    rect: PlaneRect,
+    local_x: usize,
+    local_y: usize,
+    samples: &[T],
+    row_stride_samples: usize,
+    max_sample: u16,
+) -> Result<()> {
+    if row_stride_samples < rect.width() {
+        return Err(ReconError::WorkspaceWriteStrideTooSmall {
+            plane,
+            stride_samples: row_stride_samples,
+            width: rect.width(),
+        });
+    }
+    let expected = required_row_strided_samples(rect, row_stride_samples)?;
+    if samples.len() < expected {
+        return Err(ReconError::WorkspaceWriteLengthMismatch {
+            plane,
+            expected,
+            actual: samples.len(),
+        });
+    }
+
+    let target_base = local_y
+        .checked_mul(target_stride_samples)
+        .and_then(|start| start.checked_add(local_x))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "current-frame workspace target row offset",
+        })?;
+    let last_row_offset = (rect.height() - 1)
+        .checked_mul(target_stride_samples)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "current-frame workspace target row span",
+        })?;
+    let last_target_end = target_base
+        .checked_add(last_row_offset)
+        .and_then(|start| start.checked_add(rect.width()))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "current-frame workspace target sample span",
+        })?;
+    if last_target_end > target.len() {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: last_target_end,
+            actual: target.len(),
+        });
+    }
+
+    let global_target_base = rect
+        .y()
+        .checked_mul(target_stride_samples)
+        .and_then(|start| start.checked_add(rect.x()))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "current-frame workspace global target row offset",
+        })?;
+    for row_index in 0..rect.height() {
+        let source_start = row_index * row_stride_samples;
+        let source_row = &samples[source_start..source_start + rect.width()];
+        if source_row.iter().any(|sample| sample.to_u16() > max_sample) {
+            let global_start = global_target_base + row_index * target_stride_samples;
+            for (column, &sample) in source_row.iter().enumerate() {
+                validate_sample_value(plane, global_start + column, sample, max_sample)?;
+            }
+        }
+    }
+
+    for row_index in 0..rect.height() {
+        let source_start = row_index * row_stride_samples;
+        let target_start = target_base + row_index * target_stride_samples;
+        // splot-copy-ok: write caller samples into exclusive current-frame target storage
+        target[target_start..target_start + rect.width()]
+            .copy_from_slice(&samples[source_start..source_start + rect.width()]);
+    }
+    Ok(())
 }
 
 fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> Result<usize> {

@@ -89,7 +89,7 @@ pub(crate) use partition_traversal::LrUnitRestorationType;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
-    DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+    DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -97,8 +97,8 @@ pub(crate) use partition_traversal::{
 #[cfg(test)]
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
-    GeneralIntraMultiblockError, GeneralIntraMultiblockOutput, chroma_subsampling,
-    decode_general_intra_multiblock_tree_with_lr_source_blocks, frame_mi_dimensions,
+    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
+    chroma_subsampling, frame_mi_dimensions,
 };
 
 pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";

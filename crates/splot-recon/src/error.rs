@@ -191,6 +191,16 @@ pub enum ReconError {
         /// Rectangle that exceeded `storage`.
         rect: PlaneRect,
     },
+    /// A current-frame row surface rectangle crossed its exclusive row band.
+    #[error("current-frame workspace {} rectangle x={} y={} width={} height={} is outside row band x={} y={} width={} height={}", .plane.name(), .rect.x(), .rect.y(), .rect.width(), .rect.height(), .band.x(), .band.y(), .band.width(), .band.height())]
+    WorkspaceRowBandRectOutOfBounds {
+        /// Plane whose row-band bounds were checked.
+        plane: PlaneId,
+        /// Exclusive row band assigned to the surface.
+        band: PlaneRect,
+        /// Rectangle that crossed `band`.
+        rect: PlaneRect,
+    },
     /// A caller-provided workspace write stride was too small.
     #[error("current-frame workspace {} write stride {stride_samples} samples is smaller than write width {width}", .plane.name())]
     WorkspaceWriteStrideTooSmall {

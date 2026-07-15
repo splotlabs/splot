@@ -3,8 +3,8 @@
 
 //! The owned, local Rayon worker pool ([`WorkerPool`]).
 use core::num::NonZeroUsize;
-use std::cell::Cell;
-use std::sync::Arc;
+use std::cell::{Cell, RefCell};
+use std::sync::{Arc, Weak};
 
 use rayon::ThreadPool;
 
@@ -15,6 +15,7 @@ const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
 
 std::thread_local! {
     static ON_SPLOT_WORKER: Cell<bool> = const { Cell::new(false) };
+    static INSTALLED_POOL: RefCell<Weak<ThreadPool>> = const { RefCell::new(Weak::new()) };
 }
 
 /// A codec context's single owned worker pool, wrapping a *local* Rayon
@@ -24,6 +25,22 @@ pub struct WorkerPool {
     inner: Arc<ThreadPool>,
     requested: ThreadCount,
     threads: NonZeroUsize,
+}
+
+/// A borrowed scope for nonblocking tasks that are ready to run.
+pub struct TaskScope<'handle, 'scope> {
+    inner: &'handle rayon::ScopeFifo<'scope>,
+}
+
+impl<'scope> TaskScope<'_, 'scope> {
+    /// Spawns a ready task. The task may spawn successors into the same scope.
+    pub fn spawn<F>(&self, task: F)
+    where
+        F: for<'next> FnOnce(&TaskScope<'next, 'scope>) + Send + 'scope,
+    {
+        self.inner
+            .spawn_fifo(move |inner| task(&TaskScope { inner }));
+    }
 }
 
 impl WorkerPool {
@@ -42,8 +59,13 @@ impl WorkerPool {
             .start_handler(|_| ON_SPLOT_WORKER.with(|active| active.set(true)))
             .stack_size(WORKER_STACK_SIZE_BYTES)
             .build()?;
+        let inner = Arc::new(inner);
+        let installed = Arc::downgrade(&inner);
+        inner.broadcast(|_| {
+            INSTALLED_POOL.with(|current| current.replace(Weak::clone(&installed)));
+        });
         Ok(Self {
-            inner: Arc::new(inner),
+            inner,
             requested: thread_count,
             threads,
         })
@@ -97,6 +119,21 @@ pub fn on_worker_pool() -> bool {
     ON_SPLOT_WORKER.get()
 }
 
+/// Runs ready tasks on the current splot worker pool and waits for completion.
+///
+/// # Errors
+/// Returns [`ParallelError::NotOnWorkerPool`] outside [`WorkerPool::install`].
+pub fn ready_task_scope<'scope, F, R>(f: F) -> Result<R, ParallelError>
+where
+    F: for<'handle> FnOnce(&TaskScope<'handle, 'scope>) -> R + Send,
+    R: Send,
+{
+    let pool = INSTALLED_POOL
+        .with(|installed| installed.borrow().upgrade())
+        .ok_or(ParallelError::NotOnWorkerPool)?;
+    Ok(pool.scope_fifo(|inner| f(&TaskScope { inner })))
+}
+
 /// Returns whether the calling thread is a worker of an installed pool that
 /// has more than one thread.
 ///
@@ -137,6 +174,8 @@ pub fn current_pool_width() -> usize {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
     use super::*;
     use rayon::prelude::*;
 
@@ -193,6 +232,13 @@ mod tests {
     }
 
     #[test]
+    fn ready_task_scope_is_available_on_every_owned_worker() {
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        let results = pool.inner.broadcast(|_| ready_task_scope(|_| ()));
+        assert!(results.into_iter().all(|result| result.is_ok()));
+    }
+
+    #[test]
     fn install_runs_work_on_local_pool() {
         let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
         let all_on_pool = pool.install(|| {
@@ -208,5 +254,60 @@ mod tests {
                 .all(|on_pool| on_pool)
         });
         assert!(all_on_pool);
+    }
+
+    #[test]
+    fn ready_tasks_borrow_mutable_state_and_complete() {
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        let mut values = [1, 2, 3, 4];
+        let result = pool.install(|| {
+            ready_task_scope(|scope| {
+                for value in &mut values {
+                    scope.spawn(move |_| *value *= 2);
+                }
+                42
+            })
+        });
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(values, [2, 4, 6, 8]);
+    }
+
+    fn spawn_successors<'scope>(
+        scope: &TaskScope<'_, 'scope>,
+        visits: &'scope AtomicUsize,
+        remaining: usize,
+    ) {
+        scope.spawn(move |scope| {
+            visits.fetch_add(1, Ordering::Relaxed);
+            if remaining > 0 {
+                spawn_successors(scope, visits, remaining - 1);
+            }
+        });
+    }
+
+    #[test]
+    fn ready_tasks_spawn_successors_on_owned_pool() {
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        let visits = AtomicUsize::new(0);
+        let all_on_pool = AtomicBool::new(true);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                spawn_successors(scope, &visits, 7);
+                scope.spawn(|_| {
+                    all_on_pool.store(on_worker_pool(), Ordering::Relaxed);
+                });
+            })
+            .unwrap();
+        });
+        assert_eq!(visits.load(Ordering::Relaxed), 8);
+        assert!(all_on_pool.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn ready_task_scope_rejects_unowned_thread() {
+        assert!(matches!(
+            ready_task_scope(|_| ()),
+            Err(ParallelError::NotOnWorkerPool)
+        ));
     }
 }

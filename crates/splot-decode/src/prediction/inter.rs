@@ -96,7 +96,7 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_frame<T: DeferredReconSample>(
+pub(crate) fn decode_inter_frame<T: ReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -670,7 +670,7 @@ fn compound_is_joint_context_from_order_hints(
 }
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
-    sink: &mut mc::WorkspaceSink<'_, impl ReconSample>,
+    sink: &mut mc::WorkspaceSink<'_, '_, impl ReconSample>,
     residual: &InterResidual,
     qindex: u32,
     luma_use_tcq: bool,
@@ -752,7 +752,7 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 }
 
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, T>,
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
     u: &InterResidualBlock,
     v: &InterResidualBlock,
     qindex: u32,
@@ -780,7 +780,7 @@ fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
 }
 
 fn read_inter_residual_prediction<T: ReconSample>(
-    sink: &mc::WorkspaceSink<'_, T>,
+    sink: &mc::WorkspaceSink<'_, '_, T>,
     block: &InterResidualBlock,
 ) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
     let rect = inter_residual_block_rect(block)?;
@@ -792,7 +792,7 @@ fn read_inter_residual_prediction<T: ReconSample>(
 }
 
 fn write_inter_residual_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, T>,
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
     block: &InterResidualBlock,
     samples: &[T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -1636,7 +1636,7 @@ pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
 mod single_ref;
 
-pub(crate) use block::{DeferredReconSample, decode_inter_blocks};
+pub(crate) use block::decode_inter_blocks;
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::TemporalMotionField;
 

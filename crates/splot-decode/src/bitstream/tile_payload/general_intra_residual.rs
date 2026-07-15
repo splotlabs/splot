@@ -178,20 +178,13 @@ impl FrameQuantizerSnapshot {
         }
     }
 
-    pub(crate) fn install(
+    pub(crate) fn install_frame(
         &self,
-        segment_id: usize,
-    ) -> (
-        FrameQuantizerDeltasScope,
-        FrameQmScope,
-        FrameUserQmScope,
-        FrameQmSegmentScope,
-    ) {
+    ) -> (FrameQuantizerDeltasScope, FrameQmScope, FrameUserQmScope) {
         (
             FrameQuantizerDeltasScope::install(self.deltas),
             FrameQmScope::install(self.qm),
             FrameUserQmScope::install(self.user_qm.clone()),
-            FrameQmSegmentScope::install(segment_id),
         )
     }
 }

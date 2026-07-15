@@ -82,6 +82,11 @@ fn all_variants() -> Vec<ReconError> {
             storage: sz(64, 48),
             rect: rc(1, 2, 3, 4),
         },
+        ReconError::WorkspaceRowBandRectOutOfBounds {
+            plane: PlaneId::Y,
+            band: rc(0, 64, 128, 32),
+            rect: rc(4, 60, 8, 16),
+        },
         ReconError::WorkspaceWriteStrideTooSmall {
             plane: PlaneId::U,
             stride_samples: 3,
@@ -390,7 +395,7 @@ fn all_variants() -> Vec<ReconError> {
 
 /// Golden `Display` rendering of each [`all_variants`] entry, in the same order,
 /// captured from the pre-`thiserror` hand-written `Display` impl.
-const EXPECTED: [&str; 88] = [
+const EXPECTED: [&str; 89] = [
     "unsupported AV2 bit_depth_idc 7; expected 0 or 1",
     "unsupported AV2 chroma_format_idc 9; expected 0 through 3",
     "plane width must be greater than zero",
@@ -408,6 +413,7 @@ const EXPECTED: [&str; 88] = [
     "failed to allocate current-frame workspace U plane samples",
     "current-frame workspace plane V is not present",
     "current-frame workspace U rectangle x=1 y=2 width=3 height=4 is outside storage 64x48",
+    "current-frame workspace Y rectangle x=4 y=60 width=8 height=16 is outside row band x=0 y=64 width=128 height=32",
     "current-frame workspace U write stride 3 samples is smaller than write width 7",
     "current-frame workspace V write buffer is too small: expected at least 100 samples, got 90",
     "current-frame workspace U copy source 4x8 does not match target 5x9",
@@ -496,5 +502,5 @@ fn display_matches_pre_migration_messages() {
 
 #[test]
 fn variant_count_is_locked() {
-    assert_eq!(all_variants().len(), 88);
+    assert_eq!(all_variants().len(), 89);
 }

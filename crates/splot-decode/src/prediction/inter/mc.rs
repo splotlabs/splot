@@ -23,7 +23,7 @@ mod refinemv;
 pub(crate) mod sink;
 pub(crate) use optflow::CompoundMotionGrid;
 use optflow::MotionCell;
-pub(crate) use sink::{BlockReconWindow, WorkspaceSink};
+pub(crate) use sink::WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
     let sub_x = pixel_format.subsampling_x() as u32;
@@ -407,7 +407,7 @@ impl CompoundBlockMetadata {
     pub(super) fn publish<T: ReconSample>(
         &self,
         samples: &[T],
-        sink: &mut WorkspaceSink<'_, T>,
+        sink: &mut WorkspaceSink<'_, '_, T>,
     ) -> Result<()> {
         let mut sample_start = 0usize;
         for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
@@ -449,27 +449,21 @@ pub(crate) struct CompoundBlockOutput<T: 'static> {
 
 impl<T: 'static> Drop for CompoundBlockOutput<T> {
     fn drop(&mut self) {
-        let samples = std::mem::take(&mut self.samples);
-        MC_SAMPLES_RECYCLER.with(|cell| {
-            let mut slot = cell.borrow_mut();
-            if slot.is_none() {
-                *slot = Some(Box::new(samples));
-            }
-        });
+        recycle_mc_samples(&mut self.samples);
     }
 }
 
 impl<T: ReconSample> CompoundBlockOutput<T> {
     pub(crate) fn publish(
         mut self,
-        sink: &mut WorkspaceSink<'_, T>,
+        sink: &mut WorkspaceSink<'_, '_, T>,
     ) -> Result<Option<CompoundMotionGrid>> {
         self.metadata.publish(&self.samples, sink)?;
         Ok(self.metadata.motion.take())
     }
 }
 pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     offset: ByteOffset,
 ) -> Result<()> {
@@ -477,7 +471,7 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
 }
 
 pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     optflow_unit_size: usize,
     offset: ByteOffset,
@@ -490,7 +484,7 @@ pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample
 }
 
 pub(crate) fn motion_compensate_inter_block_with_motion_grid_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
@@ -499,7 +493,7 @@ pub(crate) fn motion_compensate_inter_block_with_motion_grid_into<T: ReconSample
 }
 
 fn motion_compensate_inter_block<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
@@ -566,7 +560,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
 }
 
 fn motion_compensate_single_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     reference: &DecodedFrame<T>,
     rect: McBlockRect,
     mv: Mv,
@@ -582,9 +576,9 @@ fn motion_compensate_single_block_into<T: ReconSample>(
 }
 
 fn motion_compensate_planes<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     has_chroma: bool,
-    mut predict: impl FnMut(&mut WorkspaceSink<'_, T>, PlaneId, u32, u32) -> Result<()>,
+    mut predict: impl FnMut(&mut WorkspaceSink<'_, '_, T>, PlaneId, u32, u32) -> Result<()>,
 ) -> Result<()> {
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
         if plane != PlaneId::Y && !has_chroma {
@@ -596,7 +590,7 @@ fn motion_compensate_planes<T: ReconSample>(
 }
 
 fn motion_compensate_compound_average_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
@@ -605,24 +599,14 @@ fn motion_compensate_compound_average_block_into<T: ReconSample>(
 }
 
 pub(crate) fn predict_compound_average_block<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<CompoundBlockOutput<T>> {
     let sample_count =
         compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
-    let mut samples: Vec<T> = MC_SAMPLES_RECYCLER.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(any) = slot.take() {
-            match any.downcast::<Vec<T>>() {
-                Ok(vec) => *vec,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
-    });
+    let mut samples = take_mc_samples();
     samples.clear();
     samples.resize(sample_count, T::default());
     let metadata =
@@ -631,7 +615,7 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
 }
 
 pub(super) fn predict_compound_average_block_into<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
@@ -737,7 +721,7 @@ fn compound_output_sample_count(
 }
 
 fn compound_luma_diff_weighted_mask<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
@@ -758,7 +742,7 @@ fn compound_luma_diff_weighted_mask<T: ReconSample>(
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     reference: &DecodedFrame<T>,
     block: InterBlockParams<'_, T>,
     mv: Mv,
@@ -795,7 +779,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn predict_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
@@ -816,7 +800,7 @@ fn predict_plane<T: ReconSample>(
         sub_y,
         offset,
         |rect, predicted, stride| {
-            sink.write_u16_rect(plane, rect, predicted, stride)?;
+            sink::write_u16_rect(sink, plane, rect, predicted, stride)?;
             Ok(())
         },
     )
@@ -888,7 +872,7 @@ fn with_plane_prediction<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn predict_warp_plane<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, T>,
+    sink: &mut WorkspaceSink<'_, '_, T>,
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,
@@ -1006,7 +990,7 @@ fn predict_warp_plane<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn predict_compound_plane_output<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     reference0: &DecodedFrame<T>,
     reference1: &DecodedFrame<T>,
     plane: PlaneId,
@@ -1089,8 +1073,38 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static SUBPEL_PREDICTION_BUFFER: std::cell::Cell<Option<Vec<u16>>> =
         const { std::cell::Cell::new(None) };
-    static MC_SAMPLES_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> =
-        std::cell::RefCell::new(None);
+    static MC_SAMPLES_RECYCLER: std::cell::RefCell<[Option<Box<dyn std::any::Any>>; 2]> =
+        std::cell::RefCell::new([None, None]);
+}
+
+fn take_mc_samples<T: 'static>() -> Vec<T> {
+    MC_SAMPLES_RECYCLER.with(|cell| {
+        let mut samples = Vec::new();
+        if let Some(cached) = cell
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+            .find_map(|any| any.downcast_mut::<Vec<T>>())
+        {
+            std::mem::swap(&mut samples, cached);
+        }
+        samples
+    })
+}
+
+fn recycle_mc_samples<T: 'static>(samples: &mut Vec<T>) {
+    MC_SAMPLES_RECYCLER.with(|cell| {
+        let mut slots = cell.borrow_mut();
+        if let Some(cached) = slots
+            .iter_mut()
+            .flatten()
+            .find_map(|any| any.downcast_mut::<Vec<T>>())
+        {
+            std::mem::swap(samples, cached);
+        } else if let Some(slot) = slots.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(Box::new(std::mem::take(samples)));
+        }
+    });
 }
 
 fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {
@@ -1139,7 +1153,7 @@ impl Drop for CompoundPlanePrediction {
 }
 
 fn compound_plane_prediction_for_block<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -1172,7 +1186,7 @@ fn compound_plane_prediction_for_block<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn compound_plane_prediction<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     reference0: &DecodedFrame<T>,
     reference1: &DecodedFrame<T>,
     plane: PlaneId,
@@ -1282,7 +1296,7 @@ fn compound_plane_prediction<T: ReconSample>(
 /// invalid shear / sub-8x8, or translational when the list has no samples), then
 /// feed the two § 7.13.3.16 `Preds[refList]` intermediates to the compound blend.
 fn compound_warp_plane_prediction<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
@@ -1334,7 +1348,7 @@ struct CompoundRefIntermediate {
 
 #[allow(clippy::too_many_arguments)]
 fn compound_ref_intermediate<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     reference: &DecodedFrame<T>,
     plane: PlaneId,
     rect: McBlockRect,

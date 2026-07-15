@@ -5,15 +5,15 @@
 
 use super::lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitActivity, WienerNsLrUnitFilter};
 use super::lr_syntax::read_loop_restoration_for_call;
-use super::state_publication::publish_intra_leaf_state;
+use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state};
 use super::{
     BLOCK_8X32, BlockSize, ChromaRefGeometry, DecodeBlockFrontier, DecodeLimitName, DecodeLimits,
     DecodeTileWorkUnit, GeneralIntraLeafMode, IsCflContext, PartitionAllowedInput,
     PartitionContextInput, PartitionSubsize, PartitionTreeType, PartitionType,
-    ReadPartitionDecision, SquareSplitContextInput, SymbolDecoder, TileBlockDecodedState,
-    TileFscModeState, TileIntraJointModeState, TileIntraYModeFacts, TileIntraYModeState,
-    TileLumaPaletteState, TileMiSizeState, TileMiSizeStateError, TilePartitionBounds,
-    TilePartitionBruState, TilePartitionCall, TilePartitionContextState, TilePartitionFrameFacts,
+    ReadPartitionDecision, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
+    TileIntraJointModeState, TileIntraYModeFacts, TileIntraYModeState, TileLumaPaletteState,
+    TileMiSizeState, TileMiSizeStateError, TilePartitionBounds, TilePartitionBruState,
+    TilePartitionCall, TilePartitionContextState, TilePartitionFrameFacts,
     TilePartitionFrontierStep, TilePartitionTraversalCursor, TilePartitionTraversalError,
     TilePartitionTraversalInput, TilePartitionTraversalPlan, TilePartitionTraversalUnsupported,
     TileUseDipState, TileUsesMrlsState, TileUvCflState, call_in_frame, checked_mul, child_calls,
@@ -176,111 +176,123 @@ pub(crate) struct GeneralIntraPartitionTreeOutput<'payload> {
     pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
 }
 
+/// Parser-owned superblock-row boundary for `INFRA-DECODE-PARALLEL-STAGES`.
+pub(crate) struct GeneralIntraPartitionTreeCursor<'payload> {
+    frame: TilePartitionFrameFacts,
+    symbols: SymbolDecoder<'payload>,
+    lr_activity: WienerNsLrUnitActivity,
+    tile_bounds: TilePartitionBounds,
+    y_modes: TileIntraYModeState,
+    sb_size4: usize,
+    sb_mask: usize,
+    next_sb_row: usize,
+    mi_row_end: usize,
+    mi_col_start: usize,
+    mi_col_end: usize,
+    limits: DecodeLimits,
+    step_count: u64,
+    sdp_state: SdpPartitionState,
+    stack: Vec<TilePartitionStackEntry>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum TilePartitionStackEntry {
     Partition(TilePartitionCall),
     ExtendedSdpChromaBlock(TilePartitionCall),
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum GeneralIntraTreeWalkError<E> {
-    #[error("partition tree walk traversal failed: {0}")]
-    Traversal(#[from] TilePartitionTraversalError),
-    #[error("partition tree walk MI-size update failed: {0}")]
-    MiSize(TileMiSizeStateError),
-    #[error("partition tree walk leaf-block decode failed")]
-    Leaf(E),
-}
+impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
+    pub(crate) fn new(
+        work_unit: &DecodeTileWorkUnit<'payload>,
+        frame: TilePartitionFrameFacts,
+        limits: DecodeLimits,
+    ) -> Result<Self, TilePartitionTraversalError> {
+        ensure_supported_traversal_frame(frame, false)?;
+        let symbols = symbol_decoder_for_work_unit(work_unit)?;
+        let lr_activity = WienerNsLrUnitActivity::retaining_source_blocks();
+        let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
+        let y_modes = TileIntraYModeState::new(frame.mi_rows, frame.mi_cols)?;
+        let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
+        let next_sb_row = work_unit.mi_row_range().start as usize;
+        let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
+        let mi_col_start = work_unit.mi_col_range().start as usize;
+        let mi_col_end = (work_unit.mi_col_range().end as usize).min(frame.mi_cols);
+        Ok(Self {
+            frame,
+            symbols,
+            lr_activity,
+            tile_bounds,
+            y_modes,
+            sb_size4,
+            sb_mask: sb_size4.saturating_sub(1),
+            next_sb_row,
+            mi_row_end,
+            mi_col_start,
+            mi_col_end,
+            limits,
+            step_count: 0,
+            sdp_state: SdpPartitionState::default(),
+            stack: Vec::new(),
+        })
+    }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_general_intra_partition_tree<'payload, E, F>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
-    frame: TilePartitionFrameFacts,
-    mi_size_state: &mut TileMiSizeState,
-    joint_modes: &mut TileIntraJointModeState,
-    uses_mrls: &mut TileUsesMrlsState,
-    use_dip: &mut TileUseDipState,
-    fsc_modes: &mut TileFscModeState,
-    palette_y: &mut TileLumaPaletteState,
-    uv_cfls: &mut TileUvCflState,
-    limits: DecodeLimits,
-    retain_lr_source_blocks: bool,
-    mut on_leaf: F,
-) -> Result<GeneralIntraPartitionTreeOutput<'payload>, GeneralIntraTreeWalkError<E>>
-where
-    F: FnMut(
-        &mut DecodeTileWorkUnit<'payload>,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        &TileIntraJointModeState,
-        &TileUsesMrlsState,
-        &TileUseDipState,
-        &TileFscModeState,
-        &TileLumaPaletteState,
-        IsCflContext,
-        &mut TileBlockDecodedState,
-    ) -> Result<GeneralIntraLeafMode, E>,
-{
-    ensure_supported_traversal_frame(frame, false)?;
-
-    let mut symbols = symbol_decoder_for_work_unit(work_unit)?;
-    let mut lr_activity = if retain_lr_source_blocks {
-        WienerNsLrUnitActivity::retaining_source_blocks()
-    } else {
-        WienerNsLrUnitActivity::default()
-    };
-    let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
-    let mut y_modes = TileIntraYModeState::new(frame.mi_rows, frame.mi_cols)
-        .map_err(TilePartitionTraversalError::from)?;
-    let sb_size4 = frame
-        .sb_size
-        .num_4x4_wide()
-        .map_err(TilePartitionTraversalError::from)?
-        .max(1);
-    let mi_row_start = work_unit.mi_row_range().start as usize;
-    let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
-    let mi_col_start = work_unit.mi_col_range().start as usize;
-    let mi_col_end = (work_unit.mi_col_range().end as usize).min(frame.mi_cols);
-    let mut block_decoded = TileBlockDecodedState::new(
-        frame.num_planes,
-        usize::from(frame.subsampling_x),
-        usize::from(frame.subsampling_y),
-        sb_size4,
-        mi_col_end,
-        mi_row_end,
-    )
-    .map_err(TilePartitionTraversalError::from)?;
-    let sb_mask = sb_size4.saturating_sub(1);
-    let mut step_count: u64 = 0;
-    let mut sdp_state = SdpPartitionState::default();
-    let mut stack = Vec::new();
-
-    let mut sb_row = mi_row_start;
-    while sb_row < mi_row_end {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn decode_next_sb_row_with_publication<E, C, F, P>(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit<'payload>,
+        mi_size_state: &mut TileMiSizeState,
+        joint_modes: &mut TileIntraJointModeState,
+        uses_mrls: &mut TileUsesMrlsState,
+        use_dip: &mut TileUseDipState,
+        fsc_modes: &mut TileFscModeState,
+        palette_y: &mut TileLumaPaletteState,
+        uv_cfls: &mut TileUvCflState,
+        on_leaf: &mut F,
+        on_published: &mut P,
+    ) -> Result<Option<usize>, GeneralIntraTreeWalkError<E>>
+    where
+        F: FnMut(
+            &mut DecodeTileWorkUnit<'payload>,
+            &mut SymbolDecoder<'payload>,
+            &DecodeBlockFrontier,
+            &TileIntraJointModeState,
+            &TileUsesMrlsState,
+            &TileUseDipState,
+            &TileFscModeState,
+            &TileLumaPaletteState,
+            IsCflContext,
+            DecodedLeafPublication,
+        ) -> Result<(GeneralIntraLeafMode, C), E>,
+        P: FnMut(DecodedLeafPublication, C),
+    {
+        if self.next_sb_row >= self.mi_row_end {
+            return Ok(None);
+        }
+        let sb_row = self.next_sb_row;
         mi_size_state.clear_left_context();
-        let mut sb_col = mi_col_start;
-        while sb_col < mi_col_end {
-            block_decoded.clear_superblock(sb_row, sb_col);
-            let root = TilePartitionCall::root(sb_row, sb_col, frame.sb_size, frame.has_chroma);
-            stack.clear();
-            stack.push(TilePartitionStackEntry::Partition(root));
-            while let Some(entry) = stack.pop() {
+        let mut sb_col = self.mi_col_start;
+        while sb_col < self.mi_col_end {
+            let root =
+                TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, self.frame.has_chroma);
+            self.stack.clear();
+            self.stack.push(TilePartitionStackEntry::Partition(root));
+            while let Some(entry) = self.stack.pop() {
                 let (call, forced_extended_sdp_chroma_block) = match entry {
                     TilePartitionStackEntry::Partition(call) => (call, false),
                     TilePartitionStackEntry::ExtendedSdpChromaBlock(call) => (call, true),
                 };
-                step_count += 1;
-                limits
-                    .ensure(DecodeLimitName::MaxTilePartitionSteps, step_count)
+                self.step_count += 1;
+                self.limits
+                    .ensure(DecodeLimitName::MaxTilePartitionSteps, self.step_count)
                     .map_err(TilePartitionTraversalError::from)?;
-                if !call_in_frame(frame, call) {
+                if !call_in_frame(self.frame, call) {
                     continue;
                 }
-                if !forced_extended_sdp_chroma_block && is_intra_sdp_shared_root(frame, call) {
-                    stack.push(TilePartitionStackEntry::Partition(
+                if !forced_extended_sdp_chroma_block && is_intra_sdp_shared_root(self.frame, call) {
+                    self.stack.push(TilePartitionStackEntry::Partition(
                         call.with_tree_type(PartitionTreeType::ChromaPart),
                     ));
-                    stack.push(TilePartitionStackEntry::Partition(
+                    self.stack.push(TilePartitionStackEntry::Partition(
                         call.with_tree_type(PartitionTreeType::LumaPart),
                     ));
                     continue;
@@ -290,39 +302,40 @@ where
                         (call, call.b_size, false, true)
                     } else {
                         read_loop_restoration_for_call(
-                            frame,
+                            self.frame,
                             call,
-                            tile_bounds,
+                            self.tile_bounds,
                             work_unit.cdf_mut().tile_cdfs_mut(),
-                            &mut symbols,
-                            &mut lr_activity,
-                            limits,
+                            &mut self.symbols,
+                            &mut self.lr_activity,
+                            self.limits,
                         )?;
 
                         let step = read_frontier_partition_step(
                             call,
-                            frame,
-                            tile_bounds,
+                            self.frame,
+                            self.tile_bounds,
                             mi_size_state.context_state(),
-                            &mut sdp_state,
+                            &mut self.sdp_state,
                             work_unit.cdf_mut().tile_cdfs_mut(),
-                            &mut symbols,
+                            &mut self.symbols,
                         )?;
                         let call = step.call;
                         let partition = step.partition();
 
                         let sub_size = valid_subsize(partition, call.b_size)?;
                         let chroma_offset =
-                            updated_chroma_offset(call, partition, sub_size, frame)?;
+                            updated_chroma_offset(call, partition, sub_size, self.frame)?;
                         if partition != PartitionType::None {
                             let children =
-                                child_calls(call, partition, sub_size, frame, chroma_offset)?;
+                                child_calls(call, partition, sub_size, self.frame, chroma_offset)?;
                             if step.using_extended_sdp() {
-                                stack.push(TilePartitionStackEntry::ExtendedSdpChromaBlock(
-                                    extended_sdp_chroma_call(frame, call),
-                                ));
+                                self.stack
+                                    .push(TilePartitionStackEntry::ExtendedSdpChromaBlock(
+                                        extended_sdp_chroma_call(self.frame, call),
+                                    ));
                             }
-                            stack.extend(
+                            self.stack.extend(
                                 children
                                     .as_slice()
                                     .iter()
@@ -340,24 +353,27 @@ where
                     };
                 if partition_is_none {
                     let stored_luma_y_mode = if call.tree_type == PartitionTreeType::ChromaPart {
-                        y_modes.y_mode_facts_at(call.r, call.c)
+                        self.y_modes.y_mode_facts_at(call.r, call.c)
                     } else {
                         None
                     };
                     let frontier = decode_block_frontier(
                         call,
-                        frame,
+                        self.frame,
                         sub_size,
                         chroma_offset,
                         stored_luma_y_mode,
-                        &symbols,
+                        &self.symbols,
                     );
-                    let chroma_ref = frontier.chroma_ref_geometry();
-                    let is_cfl_ctx =
-                        is_cfl_context_for_chroma_ref(uv_cfls, tile_bounds, chroma_ref);
-                    let leaf_mode = on_leaf(
+                    let is_cfl_ctx = is_cfl_context_for_chroma_ref(
+                        uv_cfls,
+                        self.tile_bounds,
+                        frontier.chroma_ref_geometry(),
+                    );
+                    let decoded_leaf = DecodedLeafPublication::new(call, sub_size, self.sb_mask);
+                    let (leaf_mode, command) = on_leaf(
                         work_unit,
-                        &mut symbols,
+                        &mut self.symbols,
                         &frontier,
                         joint_modes,
                         uses_mrls,
@@ -365,38 +381,50 @@ where
                         fsc_modes,
                         palette_y,
                         is_cfl_ctx,
-                        &mut block_decoded,
+                        decoded_leaf,
                     )
                     .map_err(GeneralIntraTreeWalkError::Leaf)?;
                     publish_intra_leaf_state(
-                        frame,
+                        self.frame,
                         call,
                         &frontier,
                         leaf_mode,
                         sub_size,
-                        sb_mask,
                         joint_modes,
                         fsc_modes,
                         use_dip,
                         uses_mrls,
                         palette_y,
                         uv_cfls,
-                        &mut y_modes,
-                        &mut block_decoded,
+                        &mut self.y_modes,
                         mi_size_state,
                     )?;
+                    on_published(decoded_leaf, command);
                 }
             }
-            sb_col += sb_size4;
+            sb_col += self.sb_size4;
         }
-        sb_row += sb_size4;
+        self.next_sb_row += self.sb_size4;
+        Ok(Some(sb_row))
     }
 
-    Ok(GeneralIntraPartitionTreeOutput {
-        symbols,
-        active_source_blocks: lr_activity.active_source_blocks,
-        unit_filters: lr_activity.unit_filters,
-    })
+    pub(crate) fn into_output(self) -> GeneralIntraPartitionTreeOutput<'payload> {
+        GeneralIntraPartitionTreeOutput {
+            symbols: self.symbols,
+            active_source_blocks: self.lr_activity.active_source_blocks,
+            unit_filters: self.lr_activity.unit_filters,
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum GeneralIntraTreeWalkError<E> {
+    #[error("partition tree walk traversal failed: {0}")]
+    Traversal(#[from] TilePartitionTraversalError),
+    #[error("partition tree walk MI-size update failed: {0}")]
+    MiSize(TileMiSizeStateError),
+    #[error("partition tree walk leaf-block decode failed")]
+    Leaf(E),
 }
 
 fn read_frontier_partition_step(
@@ -501,6 +529,147 @@ pub(super) fn is_intra_sdp_shared_root(
         && frame.frame_is_intra
         && call.tree_type == PartitionTreeType::Shared
         && call.b_size.index() == BLOCK_64X64
+}
+
+#[cfg(test)]
+mod row_cursor_tests {
+    #![allow(clippy::unwrap_used)]
+
+    use splot_core::symbol::CdfUpdateMode;
+
+    use super::*;
+    use crate::bitstream::tile_payload::make_test_work_unit;
+
+    type ParserStates = (
+        TileMiSizeState,
+        TileIntraJointModeState,
+        TileUsesMrlsState,
+        TileUseDipState,
+        TileFscModeState,
+        TileLumaPaletteState,
+        TileUvCflState,
+    );
+
+    fn frame() -> TilePartitionFrameFacts {
+        TilePartitionFrameFacts::new(
+            64,
+            64,
+            9,
+            3,
+            true,
+            true,
+            true,
+            false,
+            false,
+            false,
+            super::super::TilePartitionLoopRestorationState::NoSyntax,
+            super::super::PartitionFeatureFlags::new(true, true),
+            4,
+            true,
+            super::super::TilePartitionBruState::Active,
+        )
+        .unwrap()
+    }
+
+    fn parser_states(frame: TilePartitionFrameFacts) -> ParserStates {
+        let sb_size4 = frame.sb_size.num_4x4_wide().unwrap();
+        (
+            TileMiSizeState::new(frame.mi_rows, frame.mi_cols, frame.sb_size).unwrap(),
+            TileIntraJointModeState::new(frame.mi_rows, frame.mi_cols).unwrap(),
+            TileUsesMrlsState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
+            TileUseDipState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
+            TileFscModeState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
+            TileLumaPaletteState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
+            TileUvCflState::new(frame.mi_rows, frame.mi_cols).unwrap(),
+        )
+    }
+
+    fn leaf_mode() -> GeneralIntraLeafMode {
+        GeneralIntraLeafMode::luma(0, super::super::IntraYMode::DC_PRED, 0, 0, 0).with_uv_cfl(false)
+    }
+
+    #[test]
+    fn cursor_yields_each_superblock_row_once() {
+        let payload = [0_u8; 4096];
+        let frame = frame();
+        let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
+        let mut states = parser_states(frame);
+        let mut rows = Vec::new();
+        let mut cursor =
+            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        loop {
+            let row = cursor
+                .decode_next_sb_row_with_publication(
+                    &mut work,
+                    &mut states.0,
+                    &mut states.1,
+                    &mut states.2,
+                    &mut states.3,
+                    &mut states.4,
+                    &mut states.5,
+                    &mut states.6,
+                    &mut |_, _, _, _, _, _, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                    &mut |_, ()| {},
+                )
+                .unwrap();
+            let Some(row) = row else { break };
+            rows.push(row);
+        }
+        assert_eq!(rows, [0, 8, 16, 24, 32, 40, 48, 56]);
+        assert!(
+            cursor
+                .decode_next_sb_row_with_publication(
+                    &mut work,
+                    &mut states.0,
+                    &mut states.1,
+                    &mut states.2,
+                    &mut states.3,
+                    &mut states.4,
+                    &mut states.5,
+                    &mut states.6,
+                    &mut |_, _, _, _, _, _, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
+                    &mut |_, ()| {},
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn publication_hook_keeps_prefix_before_later_leaf_error() {
+        let payload = [0_u8; 4096];
+        let frame = frame();
+        let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
+        let mut states = parser_states(frame);
+        let mut cursor =
+            GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
+        let mut calls = 0;
+        let mut published = Vec::new();
+
+        let result = cursor.decode_next_sb_row_with_publication(
+            &mut work,
+            &mut states.0,
+            &mut states.1,
+            &mut states.2,
+            &mut states.3,
+            &mut states.4,
+            &mut states.5,
+            &mut states.6,
+            &mut |_, _, _, _, _, _, _, _, _, _| {
+                calls += 1;
+                if calls == 2 {
+                    Err("malformed second leaf")
+                } else {
+                    Ok((leaf_mode(), calls))
+                }
+            },
+            &mut |_, command| published.push(command),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(calls, 2);
+        assert_eq!(published, [1]);
+    }
 }
 
 pub(crate) fn extended_sdp_allowed_for_child(

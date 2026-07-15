@@ -8,6 +8,7 @@
 
 use core::ops::Range;
 use std::collections::TryReserveError;
+use std::sync::{Mutex, MutexGuard};
 
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_recon::PlaneId;
@@ -17,7 +18,9 @@ use crate::tile::block_context::ChromaSampling;
 
 const PLANE_COUNT: usize = 3;
 const MAX_ADJUSTED_TX_EXTENT: usize = 32;
-const MAX_RETAINED_COEFF_BUFFERS: usize = 64;
+const MAX_RETAINED_COEFF_BUFFERS_PER_WORKER: usize = 64;
+const MAX_RETAINED_SHARED_QUANT_BUFFERS: usize = 2_560;
+const MAX_RETAINED_COEFF_BUFFER_CAPACITY: usize = MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT;
 static ZERO_QUANT_SIGN: [i32; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT] =
     [0; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
@@ -36,20 +39,66 @@ thread_local! {
         }) };
 }
 
+type SharedQuantBuffers = Mutex<Vec<Vec<i32>>>;
+
+static TRANSFORM_COEFF_QUANT_BUFFERS: SharedQuantBuffers = Mutex::new(Vec::new());
+
+fn lock_transform_coeff_quant_buffers(
+    buffers: &SharedQuantBuffers,
+) -> MutexGuard<'_, Vec<Vec<i32>>> {
+    buffers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn take_zeroed_buffer<T: Default + Copy>(
     buffers: &mut Vec<Vec<T>>,
     len: usize,
 ) -> Result<Vec<T>, TryReserveError> {
-    let mut buffer = buffers.pop().unwrap_or_default();
+    zero_buffer(buffers.pop().unwrap_or_default(), len)
+}
+
+fn zero_buffer<T: Default + Copy>(
+    mut buffer: Vec<T>,
+    len: usize,
+) -> Result<Vec<T>, TryReserveError> {
     buffer.clear();
     buffer.try_reserve_exact(len)?;
     buffer.resize(len, T::default());
     Ok(buffer)
 }
 
+fn take_zeroed_quant_buffer_from(
+    buffers: &SharedQuantBuffers,
+    len: usize,
+) -> Result<Vec<i32>, TryReserveError> {
+    let mut buffers = lock_transform_coeff_quant_buffers(buffers);
+    let index = buffers
+        .iter()
+        .enumerate()
+        .filter(|(_, buffer)| buffer.capacity() >= len)
+        .min_by_key(|(_, buffer)| buffer.capacity())
+        .or_else(|| {
+            buffers
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, buffer)| buffer.capacity())
+        })
+        .map(|(index, _)| index);
+    let buffer = index
+        .map(|index| buffers.swap_remove(index))
+        .unwrap_or_default();
+    drop(buffers);
+    zero_buffer(buffer, len)
+}
+
+fn take_zeroed_quant_buffer(len: usize) -> Result<Vec<i32>, TryReserveError> {
+    take_zeroed_quant_buffer_from(&TRANSFORM_COEFF_QUANT_BUFFERS, len)
+}
+
 fn recycle_buffer<T>(buffers: &mut Vec<Vec<T>>, mut buffer: Vec<T>) {
     if buffer.capacity() == 0
-        || buffers.len() == MAX_RETAINED_COEFF_BUFFERS
+        || buffers.len() == MAX_RETAINED_COEFF_BUFFERS_PER_WORKER
         || buffers.try_reserve(1).is_err()
     {
         return;
@@ -58,10 +107,27 @@ fn recycle_buffer<T>(buffers: &mut Vec<Vec<T>>, mut buffer: Vec<T>) {
     buffers.push(buffer);
 }
 
+fn recycle_coeff_quant_into(buffers: &SharedQuantBuffers, buffer: Vec<i32>) {
+    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_COEFF_BUFFER_CAPACITY {
+        return;
+    }
+    let mut buffer = buffer;
+    buffer.clear();
+    let mut buffers = lock_transform_coeff_quant_buffers(buffers);
+    if buffers.len() < MAX_RETAINED_SHARED_QUANT_BUFFERS && buffers.try_reserve(1).is_ok() {
+        buffers.push(buffer);
+    } else if let Some((index, smallest)) = buffers
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, retained)| retained.capacity())
+        && buffer.capacity() > smallest.capacity()
+    {
+        buffers[index] = buffer;
+    }
+}
+
 pub(crate) fn recycle_coeff_quant(buffer: Vec<i32>) {
-    with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-        recycle_buffer(&mut buffers.signed, buffer);
-    });
+    recycle_coeff_quant_into(&TRANSFORM_COEFF_QUANT_BUFFERS, buffer);
 }
 
 impl Drop for super::general_intra_residual::LumaCoeffBlock {
@@ -92,17 +158,18 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
-        let (level, quant) = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-            let level = take_zeroed_buffer(&mut buffers.levels, allocation.coeff_count)?;
-            let quant = match take_zeroed_buffer(&mut buffers.signed, allocation.coeff_count) {
-                Ok(quant) => quant,
-                Err(error) => {
-                    recycle_buffer(&mut buffers.levels, level);
-                    return Err(error);
-                }
-            };
-            Ok((level, quant))
+        let level = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+            take_zeroed_buffer(&mut buffers.levels, allocation.coeff_count)
         })?;
+        let quant = match take_zeroed_quant_buffer(allocation.coeff_count) {
+            Ok(quant) => quant,
+            Err(error) => {
+                with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
+                    recycle_buffer(&mut buffers.levels, level);
+                });
+                return Err(error.into());
+            }
+        };
         Ok(Self {
             width,
             height,
@@ -233,8 +300,8 @@ impl Drop for TransformCoeffBlockState {
         with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
             recycle_buffer(&mut buffers.levels, level);
             recycle_buffer(&mut buffers.signed, quant_sign);
-            recycle_buffer(&mut buffers.signed, quant);
         });
+        recycle_coeff_quant(quant);
     }
 }
 

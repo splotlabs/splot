@@ -8,7 +8,6 @@ use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockS
 use splot_core::symbol::SymbolDecoder;
 
 use super::DecodeTileWorkUnit;
-use super::block_decoded_state::TileBlockDecodedState;
 use super::intra_joint_modes::{
     IsCflContext, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
     TileIntraJointModeStateError, TileLumaPaletteState, TileLumaPaletteStateError, TileUseDipState,
@@ -19,14 +18,14 @@ use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
 use super::partition_size::BlockSize;
+pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
-    DecodeBlockFrontier, GeneralIntraLeafMode, GeneralIntraPartitionTreeOutput,
-    GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier, TilePartitionBruState,
-    TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
+    DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
+    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier,
+    TilePartitionBruState, TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
     TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
     TilePartitionTraversalError, TilePartitionTraversalInput, TilePartitionTraversalPlan,
-    WienerNsLrSourceBlock, WienerNsLrUnitFilter, consume_tile_loop_restoration_root_frontier,
-    decode_general_intra_partition_tree, plan_tile_partition_traversal_cursor,
+    consume_tile_loop_restoration_root_frontier, plan_tile_partition_traversal_cursor,
 };
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
 
@@ -87,128 +86,91 @@ pub(crate) enum GeneralIntraMultiblockError<E> {
     Walk(GeneralIntraTreeWalkError<E>),
 }
 
-pub(crate) struct GeneralIntraMultiblockOutput<'payload> {
-    pub(crate) symbols: SymbolDecoder<'payload>,
-    pub(crate) active_source_blocks: Vec<WienerNsLrSourceBlock>,
-    pub(crate) unit_filters: Vec<WienerNsLrUnitFilter>,
+pub(crate) struct GeneralIntraMultiblockCursor<'payload> {
+    tree: GeneralIntraPartitionTreeCursor<'payload>,
+    mi_size_state: TileMiSizeState,
+    joint_modes: TileIntraJointModeState,
+    uses_mrls: TileUsesMrlsState,
+    use_dip: TileUseDipState,
+    fsc_modes: TileFscModeState,
+    palette_y: TileLumaPaletteState,
+    uv_cfls: TileUvCflState,
 }
 
-#[allow(dead_code)]
-pub(crate) fn decode_general_intra_multiblock_tree<'payload, E, F>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: DecodeLimits,
-    on_leaf: F,
-) -> Result<SymbolDecoder<'payload>, GeneralIntraMultiblockError<E>>
-where
-    F: FnMut(
-        &mut DecodeTileWorkUnit<'payload>,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        &TileIntraJointModeState,
-        &TileUsesMrlsState,
-        &TileUseDipState,
-        &TileFscModeState,
-        &TileLumaPaletteState,
-        IsCflContext,
-        &mut TileBlockDecodedState,
-    ) -> Result<GeneralIntraLeafMode, E>,
-{
-    Ok(decode_general_intra_multiblock_tree_impl(
-        work_unit, sequence, core, limits, false, on_leaf,
-    )?
-    .symbols)
-}
+impl<'payload> GeneralIntraMultiblockCursor<'payload> {
+    pub(crate) fn new(
+        work_unit: &DecodeTileWorkUnit<'payload>,
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        limits: DecodeLimits,
+    ) -> Result<Self, TilePartitionFrontierError> {
+        let frame = minimal_partition_frame_facts(sequence, core)?;
+        let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
+        let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
+        let joint_modes = TileIntraJointModeState::new(mi_rows, mi_cols)?;
+        let sb_size4 = frame
+            .sb_size()
+            .num_4x4_wide()
+            .map_err(TilePartitionTraversalError::from)?
+            .max(1);
+        let uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols, sb_size4)?;
+        let use_dip = TileUseDipState::new(mi_rows, mi_cols, sb_size4)?;
+        let fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)?;
+        let palette_y = TileLumaPaletteState::new(mi_rows, mi_cols, sb_size4)?;
+        let uv_cfls = TileUvCflState::new(mi_rows, mi_cols)?;
+        let tree = GeneralIntraPartitionTreeCursor::new(work_unit, frame, limits)?;
+        Ok(Self {
+            tree,
+            mi_size_state,
+            joint_modes,
+            uses_mrls,
+            use_dip,
+            fsc_modes,
+            palette_y,
+            uv_cfls,
+        })
+    }
 
-pub(crate) fn decode_general_intra_multiblock_tree_with_lr_source_blocks<'payload, E, F>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: DecodeLimits,
-    on_leaf: F,
-) -> Result<GeneralIntraMultiblockOutput<'payload>, GeneralIntraMultiblockError<E>>
-where
-    F: FnMut(
-        &mut DecodeTileWorkUnit<'payload>,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        &TileIntraJointModeState,
-        &TileUsesMrlsState,
-        &TileUseDipState,
-        &TileFscModeState,
-        &TileLumaPaletteState,
-        IsCflContext,
-        &mut TileBlockDecodedState,
-    ) -> Result<GeneralIntraLeafMode, E>,
-{
-    decode_general_intra_multiblock_tree_impl(work_unit, sequence, core, limits, true, on_leaf)
-}
+    pub(crate) fn decode_next_sb_row<E, C, F, P>(
+        &mut self,
+        work_unit: &mut DecodeTileWorkUnit<'payload>,
+        on_leaf: &mut F,
+        on_published: &mut P,
+    ) -> Result<Option<usize>, GeneralIntraMultiblockError<E>>
+    where
+        F: FnMut(
+            &mut DecodeTileWorkUnit<'payload>,
+            &mut SymbolDecoder<'payload>,
+            &DecodeBlockFrontier,
+            &TileIntraJointModeState,
+            &TileUsesMrlsState,
+            &TileUseDipState,
+            &TileFscModeState,
+            &TileLumaPaletteState,
+            IsCflContext,
+            DecodedLeafPublication,
+        ) -> Result<(GeneralIntraLeafMode, C), E>,
+        P: FnMut(DecodedLeafPublication, C),
+    {
+        self.tree
+            .decode_next_sb_row_with_publication(
+                work_unit,
+                &mut self.mi_size_state,
+                &mut self.joint_modes,
+                &mut self.uses_mrls,
+                &mut self.use_dip,
+                &mut self.fsc_modes,
+                &mut self.palette_y,
+                &mut self.uv_cfls,
+                on_leaf,
+                on_published,
+            )
+            .map_err(GeneralIntraMultiblockError::Walk)
+    }
 
-fn decode_general_intra_multiblock_tree_impl<'payload, E, F>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: DecodeLimits,
-    retain_lr_source_blocks: bool,
-    on_leaf: F,
-) -> Result<GeneralIntraMultiblockOutput<'payload>, GeneralIntraMultiblockError<E>>
-where
-    F: FnMut(
-        &mut DecodeTileWorkUnit<'payload>,
-        &mut SymbolDecoder<'payload>,
-        &DecodeBlockFrontier,
-        &TileIntraJointModeState,
-        &TileUsesMrlsState,
-        &TileUseDipState,
-        &TileFscModeState,
-        &TileLumaPaletteState,
-        IsCflContext,
-        &mut TileBlockDecodedState,
-    ) -> Result<GeneralIntraLeafMode, E>,
-{
-    let frame = minimal_partition_frame_facts(sequence, core)?;
-    let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    let mut mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())
-        .map_err(TilePartitionFrontierError::from)?;
-    let mut joint_modes =
-        TileIntraJointModeState::new(mi_rows, mi_cols).map_err(TilePartitionFrontierError::from)?;
-    let sb_size4 = frame
-        .sb_size()
-        .num_4x4_wide()
-        .map_err(TilePartitionTraversalError::from)
-        .map_err(TilePartitionFrontierError::from)?
-        .max(1);
-    let mut uses_mrls = TileUsesMrlsState::new(mi_rows, mi_cols, sb_size4)
-        .map_err(TilePartitionFrontierError::from)?;
-    let mut use_dip = TileUseDipState::new(mi_rows, mi_cols, sb_size4)
-        .map_err(TilePartitionFrontierError::from)?;
-    let mut fsc_modes = TileFscModeState::new(mi_rows, mi_cols, sb_size4)
-        .map_err(TilePartitionFrontierError::from)?;
-    let mut palette_y = TileLumaPaletteState::new(mi_rows, mi_cols, sb_size4)
-        .map_err(TilePartitionFrontierError::from)?;
-    let mut uv_cfls =
-        TileUvCflState::new(mi_rows, mi_cols).map_err(TilePartitionFrontierError::from)?;
-    let output: GeneralIntraPartitionTreeOutput<'payload> = decode_general_intra_partition_tree(
-        work_unit,
-        frame,
-        &mut mi_size_state,
-        &mut joint_modes,
-        &mut uses_mrls,
-        &mut use_dip,
-        &mut fsc_modes,
-        &mut palette_y,
-        &mut uv_cfls,
-        limits,
-        retain_lr_source_blocks,
-        on_leaf,
-    )
-    .map_err(GeneralIntraMultiblockError::Walk)?;
-    Ok(GeneralIntraMultiblockOutput {
-        symbols: output.symbols,
-        active_source_blocks: output.active_source_blocks,
-        unit_filters: output.unit_filters,
-    })
+    pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
+        self.tree.into_output()
+    }
 }
 
 fn plan_tile_partition_frontier<'payload>(

@@ -222,7 +222,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 /// current-frame reads) into `sink`: motion compensation, then residual add.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
-    sink: &mut mc::WorkspaceSink<'_, T>,
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
     placed: &PlacedInterBlock,
     use_refinemv: bool,
     refinemv_switchable: bool,

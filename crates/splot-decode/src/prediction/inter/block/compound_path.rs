@@ -7,8 +7,9 @@ use splot_recon::wedge_mask_plane_sample;
 use super::super::compound::{
     CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
 };
-use super::super::find_mv_stack::OrderHintMvContext;
+use super::super::find_mv_stack::{OrderHintMvContext, TemporalMotionBlock};
 use super::super::read_mv::apply_inter_mvd_sign_pair;
+use super::temporal::temporal_motion_block;
 use super::*;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
@@ -49,21 +50,17 @@ pub(super) fn read_reference_mode(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_compound_inter_block<T: DeferredReconSample>(
+pub(super) fn decode_compound_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    deferred: &mut super::deferred_recon::DeferredInterRecon<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
     temporal_context: Option<&TemporalMvContext>,
     order_hints: OrderHintMvContext<'_>,
     tip_ref_pair: Option<(i8, i8)>,
-    motion_field: &mut TemporalMotionField,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
     ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
@@ -91,11 +88,11 @@ pub(super) fn decode_compound_inter_block<T: DeferredReconSample>(
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<GeneralIntraLeafMode> {
+) -> Result<(
+    GeneralIntraLeafMode,
+    super::deferred_recon::InterReconCommand<T>,
+)> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs, tile_offset)?;
     let ref_distance_nonnegative = compound_ref_distance_signs(
@@ -603,19 +600,14 @@ pub(super) fn decode_compound_inter_block<T: DeferredReconSample>(
     if let Some(params) = warp_models[1] {
         warp_param_bank.update(compound.ref_frame1, params);
     }
-    reconstruct_resolved_compound_inter_block(
+    parse_resolved_compound_inter_block(
         work_unit,
         symbols,
         coeff_ctx,
         sequence,
         core,
         frontier,
-        deferred,
-        temporal_context,
-        workspace,
-        block_decoded,
         mv_grid,
-        motion_field,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
@@ -644,9 +636,6 @@ pub(super) fn decode_compound_inter_block<T: DeferredReconSample>(
         sb_h4,
         residual_tool_policy,
         block_qindex,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
         tile_offset,
     )
 }
@@ -830,19 +819,14 @@ pub(super) struct ResolvedCompoundBlock {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn reconstruct_resolved_compound_inter_block<T: DeferredReconSample>(
+pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    deferred: &mut super::deferred_recon::DeferredInterRecon<T>,
-    temporal_context: Option<&TemporalMvContext>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
-    motion_field: &mut TemporalMotionField,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -861,11 +845,11 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: DeferredReconSample>(
     sb_h4: usize,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<GeneralIntraLeafMode> {
+) -> Result<(
+    GeneralIntraLeafMode,
+    super::deferred_recon::InterReconCommand<T>,
+)> {
     let ResolvedCompoundBlock {
         syntax: compound,
         blend: compound_blend,
@@ -1012,68 +996,20 @@ pub(super) fn reconstruct_resolved_compound_inter_block<T: DeferredReconSample>(
         .mark_inter(),
         tile_offset,
     )?;
-    if super::deferred_recon::deferable_placed_geometry(&placed, frontier) {
-        deferred.push(
-            placed,
-            super::deferred_recon::PendingKind::Compound {
-                syntax: compound,
-                warp_params,
-                mi_row,
-                mi_col,
-                use_refinemv,
-                refinemv_switchable,
-            },
-            block_qindex,
-            tile_offset,
-        );
-        return Ok(non_intra_leaf_mode(frontier));
-    }
-    super::deferred_recon::flush_deferred(
-        deferred,
-        workspace,
-        motion_field,
-        temporal_context,
-        reference,
-        ref_frame_idx,
-        sequence,
-        core,
-        mi_rows,
-        mi_cols,
-        core.display_order_hint().unwrap_or(0),
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
-    )?;
-    let motion_grid = super::prediction::reconstruct_placed_inter_block(
-        workspace,
-        &placed,
-        use_refinemv,
-        refinemv_switchable,
-        block_decoded,
-        ref_frame_idx,
-        reference,
+    let command = super::deferred_recon::InterReconCommand::new(
+        placed,
+        super::deferred_recon::PendingKind::Compound {
+            syntax: compound,
+            warp_params,
+            mi_row,
+            mi_col,
+            use_refinemv,
+            refinemv_switchable,
+        },
         block_qindex,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
-        sequence_enables_ibp(sequence),
         tile_offset,
-    )?;
-    record_compound_temporal_motion(
-        motion_field,
-        reference,
-        ref_frame_idx,
-        &placed,
-        compound,
-        warp_params,
-        motion_grid.as_ref(),
-        mi_row,
-        mi_col,
-        mi_rows,
-        mi_cols,
-        core.display_order_hint().unwrap_or(0),
-    )?;
-    Ok(non_intra_leaf_mode(frontier))
+    );
+    Ok((non_intra_leaf_mode(frontier), command))
 }
 
 const fn compound_deblock_sub_pu_size(
@@ -1096,8 +1032,8 @@ const fn compound_deblock_sub_pu_size(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_compound_temporal_motion<T: ReconSample>(
-    motion_field: &mut TemporalMotionField,
+pub(super) fn append_compound_temporal_motion<T: ReconSample>(
+    records: &mut Vec<TemporalMotionBlock>,
     reference: &InterReferenceState<'_, T>,
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
@@ -1143,8 +1079,7 @@ pub(super) fn record_compound_temporal_motion<T: ReconSample>(
                 [false, true] => (compound.ref_frame1, None, [mvs[1], Mv::ZERO]),
                 _ => (compound.ref_frame0, Some(compound.ref_frame1), mvs),
             };
-            record_temporal_motion_block(
-                motion_field,
+            records.push(temporal_motion_block(
                 reference,
                 ref_frame_idx,
                 mi_row + y / 4,
@@ -1159,7 +1094,7 @@ pub(super) fn record_compound_temporal_motion<T: ReconSample>(
                 mvs[0],
                 mvs[1],
                 [None, None],
-            );
+            ));
         }
     }
     Ok(())
@@ -1202,19 +1137,15 @@ fn wedge_temporal_allowed_lists(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decode_skip_mode_inter_block<T: DeferredReconSample>(
+pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    deferred: &mut super::deferred_recon::DeferredInterRecon<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block_decoded: &TileBlockDecodedState,
     mv_grid: &mut NeighbourMvGrid,
     temporal_context: Option<&TemporalMvContext>,
-    motion_field: &mut TemporalMotionField,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
     ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
@@ -1237,11 +1168,11 @@ pub(super) fn decode_skip_mode_inter_block<T: DeferredReconSample>(
     drl_reorder: DrlReorder,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<GeneralIntraLeafMode> {
+) -> Result<(
+    GeneralIntraLeafMode,
+    super::deferred_recon::InterReconCommand<T>,
+)> {
     let current = compound_current_order_hint(core, tile_offset)?;
     let ref_order_hints = if num_total_refs > 1 {
         Some((
@@ -1300,19 +1231,14 @@ pub(super) fn decode_skip_mode_inter_block<T: DeferredReconSample>(
         mv1: candidate.mvs[1],
         use_optflow: false,
     };
-    reconstruct_resolved_compound_inter_block(
+    parse_resolved_compound_inter_block(
         work_unit,
         symbols,
         coeff_ctx,
         sequence,
         core,
         frontier,
-        deferred,
-        temporal_context,
-        workspace,
-        block_decoded,
         mv_grid,
-        motion_field,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
@@ -1344,9 +1270,6 @@ pub(super) fn decode_skip_mode_inter_block<T: DeferredReconSample>(
         sb_h4,
         residual_tool_policy,
         block_qindex,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
         tile_offset,
     )
 }

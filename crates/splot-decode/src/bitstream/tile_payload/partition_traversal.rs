@@ -6,7 +6,6 @@
 use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig};
 
 use super::DecodeTileWorkUnit;
-use super::block_decoded_state::TileBlockDecodedState;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
@@ -43,9 +42,10 @@ pub(crate) use lr_syntax::consume_tile_loop_restoration_root_frontier;
 #[cfg(test)]
 use lr_syntax::{WienerNsUnitFilterState, read_wiener_ns_unit_filter};
 use partition_children::child_calls;
+pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use tree_walk::{
-    GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    decode_general_intra_partition_tree, plan_tile_partition_traversal_cursor,
+    GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
+    plan_tile_partition_traversal_cursor,
 };
 #[cfg(test)]
 use tree_walk::{

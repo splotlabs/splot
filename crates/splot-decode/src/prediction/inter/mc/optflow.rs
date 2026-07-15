@@ -226,7 +226,7 @@ fn normalized_sad(pred0: &[u16], pred1: &[u16], bit_depth: splot_recon::BitDepth
 }
 
 pub(super) fn compound_motion_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     unit_size: Option<usize>,
     refinemv: Option<CompoundMotionGrid>,
@@ -406,7 +406,7 @@ pub(super) fn compound_motion_grid<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     reference: &DecodedFrame<T>,
     rect: McBlockRect,
     mv: Mv,
@@ -464,7 +464,7 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
 }
 
 pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
     sub_x: u32,
