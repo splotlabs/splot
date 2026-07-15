@@ -286,12 +286,8 @@ struct ReadyReconRow<'a, T: ReconSample> {
     band: Option<splot_recon::CurrentFrameRowBand<'a, T>>,
 }
 
-const fn select_prepass_superblock(
-    dependency: ReconDependency,
-    has_entries: bool,
-    footprints_contained: bool,
-) -> bool {
-    matches!(dependency, ReconDependency::ReferenceOnly) && has_entries && footprints_contained
+const fn select_prepass_entry(dependency: ReconDependency, footprint_contained: bool) -> bool {
+    matches!(dependency, ReconDependency::ReferenceOnly) && footprint_contained
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -323,22 +319,20 @@ fn precompute_recon_row<T: ReconSample>(
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
             break;
         };
-        let footprints_contained = entries.iter().all(|entry| {
-            matches!(
-                entry.command.as_ref(),
-                Some(ReconCommand::Inter(command))
-                    if command.prepass_write_is_contained(superblock.origin, sb_h4, info)
-            )
-        });
-        let safe = select_prepass_superblock(
-            superblock.dependency,
-            !entries.is_empty(),
-            footprints_contained,
-        );
-        if !safe {
-            continue;
-        }
         for entry in entries {
+            let safe = entry.command.as_ref().is_some_and(|command| {
+                select_prepass_entry(
+                    command.dependency(),
+                    matches!(
+                        command,
+                        ReconCommand::Inter(command)
+                            if command.prepass_write_is_contained(superblock.origin, sb_h4, info)
+                    ),
+                )
+            });
+            if !safe {
+                break;
+            }
             let command = match entry.command.take() {
                 Some(ReconCommand::Inter(command)) => command,
                 command => {
@@ -1093,20 +1087,20 @@ mod ready_row_tests {
     }
 
     #[test]
-    fn mixed_superblocks_are_skipped_and_reference_rows_resume_exactly_once() {
-        assert!(!select_prepass_superblock(
-            ReconDependency::CurrentFrame,
-            true,
-            true
-        ));
-        let selected = [
+    fn mixed_superblock_prepass_stops_at_first_dependency() {
+        let dependencies = [
             ReconDependency::ReferenceOnly,
             ReconDependency::CurrentFrame,
             ReconDependency::ReferenceOnly,
-        ]
-        .map(|dependency| select_prepass_superblock(dependency, true, true));
-        assert_eq!(selected, [true, false, true]);
-        assert_eq!(selected.into_iter().filter(|selected| *selected).count(), 2);
+        ];
+        let selected = dependencies
+            .into_iter()
+            .map(|dependency| select_prepass_entry(dependency, true))
+            .take_while(|selected| *selected)
+            .count();
+
+        assert_eq!(selected, 1);
+        assert!(!select_prepass_entry(ReconDependency::ReferenceOnly, false));
     }
 
     #[test]
