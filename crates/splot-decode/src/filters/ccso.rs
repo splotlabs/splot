@@ -241,13 +241,17 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
     config: &CcsoFrameConfig,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
 ) -> Result<(), CcsoError> {
-    for (plane, prepared) in config.planes.iter().enumerate() {
+    let luma = frame_view(frame.deblocked(PlaneId::Y).ok_or(CcsoError::Workspace)?);
+    let destinations = [
+        Some(&mut frame.filtered_y),
+        frame.filtered_u.as_mut(),
+        frame.filtered_v.as_mut(),
+    ];
+    for (plane, (prepared, destination)) in config.planes.iter().zip(destinations).enumerate() {
         let Some(prepared) = prepared else {
             continue;
         };
-        let plane_id = plane_id(plane);
-        let luma = frame_view(frame.deblocked(PlaneId::Y).ok_or(CcsoError::Workspace)?);
-        let destination = frame.filtered_mut(plane_id).ok_or(CcsoError::Workspace)?;
+        let destination = destination.ok_or(CcsoError::Workspace)?;
         ccso_apply(destination, &luma, plane, prepared, grid, lossless_grid)?;
     }
     Ok(())

@@ -147,14 +147,6 @@ impl<'a, T: ReconSample> CdefFrame<'a, T> {
             PlaneId::V => self.deblocked_v,
         }
     }
-
-    pub(crate) fn filtered_mut(&mut self, plane: PlaneId) -> Option<&mut StripePlane> {
-        match plane {
-            PlaneId::Y => Some(&mut self.filtered_y),
-            PlaneId::U => self.filtered_u.as_mut(),
-            PlaneId::V => self.filtered_v.as_mut(),
-        }
-    }
 }
 
 struct CdefBlockLookup<'a> {
@@ -287,8 +279,12 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
                         frame.deblocked(PlaneId::V),
                     )?;
                     for (plane, rect, samples, width) in output.into_iter().flatten() {
-                        frame
-                            .filtered_mut(plane)
+                        let filtered = match plane {
+                            PlaneId::Y => Some(&mut frame.filtered_y),
+                            PlaneId::U => frame.filtered_u.as_mut(),
+                            PlaneId::V => frame.filtered_v.as_mut(),
+                        };
+                        filtered
                             .ok_or(CdefError::Workspace)?
                             .write_rect(rect, &samples, width)
                             .ok_or(CdefError::Workspace)?;
