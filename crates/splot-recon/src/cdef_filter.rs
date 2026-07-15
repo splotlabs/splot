@@ -342,25 +342,60 @@ fn cdef_filter_block_interior_rows<const W: usize>(
             let output_row = cdef_output_row::<W>(out, i)?;
             for j in 0..W {
                 let center = i32::from(center_row[j]);
-                let mut sum = 0i32;
-                let mut max = center;
-                let mut min = center;
-                for (k, (pri_by_sign, sec_by_sign)) in pri_rows.iter().zip(&sec_rows).enumerate() {
-                    for (pri_row, sec_by_dir) in pri_by_sign.iter().zip(sec_by_sign) {
-                        let p = i32::from(pri_row[j]);
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
-                        max = max.max(p);
-                        min = min.min(p);
-                        for sec_row in sec_by_dir {
-                            let s = i32::from(sec_row[j]);
-                            sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
-                            max = max.max(s);
-                            min = min.min(s);
-                        }
-                    }
-                }
+                let p00 = i32::from(pri_rows[0][0][j]);
+                let p01 = i32::from(pri_rows[0][1][j]);
+                let p10 = i32::from(pri_rows[1][0][j]);
+                let p11 = i32::from(pri_rows[1][1][j]);
+                let s000 = i32::from(sec_rows[0][0][0][j]);
+                let s001 = i32::from(sec_rows[0][0][1][j]);
+                let s010 = i32::from(sec_rows[0][1][0][j]);
+                let s011 = i32::from(sec_rows[0][1][1][j]);
+                let s100 = i32::from(sec_rows[1][0][0][j]);
+                let s101 = i32::from(sec_rows[1][0][1][j]);
+                let s110 = i32::from(sec_rows[1][1][0][j]);
+                let s111 = i32::from(sec_rows[1][1][1][j]);
+                let sum = pri_taps[0]
+                    * (constrain_with_adj(p00 - center, filter.pri_str, pri_adj)
+                        + constrain_with_adj(p01 - center, filter.pri_str, pri_adj))
+                    + pri_taps[1]
+                        * (constrain_with_adj(p10 - center, filter.pri_str, pri_adj)
+                            + constrain_with_adj(p11 - center, filter.pri_str, pri_adj))
+                    + sec_taps[0]
+                        * (constrain_with_adj(s000 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj(s001 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj(s010 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj(s011 - center, filter.sec_str, sec_adj))
+                    + sec_taps[1]
+                        * (constrain_with_adj(s100 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj(s101 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj(s110 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj(s111 - center, filter.sec_str, sec_adj));
+                let min = center
+                    .min(p00)
+                    .min(p01)
+                    .min(p10)
+                    .min(p11)
+                    .min(s000)
+                    .min(s001)
+                    .min(s010)
+                    .min(s011)
+                    .min(s100)
+                    .min(s101)
+                    .min(s110)
+                    .min(s111);
+                let max = center
+                    .max(p00)
+                    .max(p01)
+                    .max(p10)
+                    .max(p11)
+                    .max(s000)
+                    .max(s001)
+                    .max(s010)
+                    .max(s011)
+                    .max(s100)
+                    .max(s101)
+                    .max(s110)
+                    .max(s111);
                 let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
                 output_row[j] = rounded.clamp(min, max) as u16;
             }
@@ -730,7 +765,7 @@ mod tests {
 
     #[test]
     fn block_interior_kernel_matches_per_sample_filter() {
-        for (coeff_shift, max_sample) in [(0u32, 255u32), (2, 1023)] {
+        for (coeff_shift, max_sample) in [(0u32, 255u32), (2, 1023), (4, 4095)] {
             let mut state = 0x1234_5678u32 ^ (coeff_shift * 77);
             let mut pad = [0u16; CDEF_PADDED_AREA];
             for cell in &mut pad {
