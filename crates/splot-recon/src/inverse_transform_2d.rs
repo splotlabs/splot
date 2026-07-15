@@ -119,6 +119,16 @@ pub fn inverse_transform_2d(
     dequant: &[i32],
     residual: &mut [i32],
 ) -> Result<()> {
+    let mut intermediate = [0i32; MAX_DIM * MAX_DIM];
+    inverse_transform_2d_with_scratch(params, dequant, residual, &mut intermediate)
+}
+
+pub(super) fn inverse_transform_2d_with_scratch(
+    params: &InverseTransform2d,
+    dequant: &[i32],
+    residual: &mut [i32],
+    intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+) -> Result<()> {
     let (log2_w, log2_h) = (params.log2_width, params.log2_height);
     if !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_w)
         || !(MIN_LOG2_DIM..=MAX_LOG2_DIM).contains(&log2_h)
@@ -141,10 +151,10 @@ pub fn inverse_transform_2d(
             residual_len: residual.len(),
         });
     }
+    let intermediate = &mut intermediate[..expected];
 
     let odd_ratio = log2_w.abs_diff(log2_h) % 2 == 1;
 
-    let mut intermediate = [0i32; MAX_DIM * MAX_DIM];
     let mut buf_in = [0i32; MAX_DIM];
     let mut buf_out = [0i32; MAX_DIM];
 
