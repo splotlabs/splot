@@ -145,6 +145,58 @@ fn inter_residual_reconstruction_clips_bottom_edge_overhang() {
 }
 
 #[test]
+fn inter_residual_bit_depth_mismatch_is_atomic_and_all_zero_is_noop() {
+    let mut workspace =
+        new_general_intra_workspace::<u16>(4, 4, BitDepth::Eight, PixelFormat::Monochrome).unwrap();
+    workspace
+        .write_rect_block(
+            PlaneId::Y,
+            0,
+            0,
+            IntraRectBlockSize::new(2, 2).unwrap(),
+            &[20; 16],
+        )
+        .unwrap();
+    let before = workspace.samples(PlaneId::Y).unwrap().to_vec();
+    let mut block = all_zero_luma_block();
+    block.all_zero = false;
+    block.quant = vec![0; 16];
+    assert!(matches!(
+        reconstruct_inter_block_residual_rect_into(
+            &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+            &block,
+            PlaneId::Y,
+            0,
+            0,
+            2,
+            2,
+            80,
+            false,
+            false,
+            BitDepth::Ten,
+        ),
+        Err(GeneralIntraResidualError::UnexpectedBranch)
+    ));
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before);
+
+    reconstruct_inter_block_residual_rect_into(
+        &mut crate::prediction::inter::mc::WorkspaceSink::Frame(&mut workspace),
+        &all_zero_luma_block(),
+        PlaneId::U,
+        usize::MAX,
+        usize::MAX,
+        2,
+        2,
+        80,
+        false,
+        false,
+        BitDepth::Ten,
+    )
+    .unwrap();
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), before);
+}
+
+#[test]
 fn intra_residual_error_does_not_publish_or_lose_scratch_storage() {
     let mut workspace =
         new_general_intra_workspace::<u8>(8, 8, BitDepth::Eight, PixelFormat::Yuv420).unwrap();

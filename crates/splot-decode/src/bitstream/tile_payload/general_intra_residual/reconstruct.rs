@@ -4,8 +4,10 @@
 //! Shared transform-block reconstruction setup.
 
 use splot_recon::{
-    BitDepth, DequantBlockParams, DpcmDirection, InverseTransform2dOuter, PlaneId, ReconSample,
-    SecondaryInverseTransform, ac_quantizer, dc_quantizer, dequantize_block, tx_class,
+    BitDepth, CurrentFrameSurface, DequantBlockParams, DpcmDirection, IntraRectBlockSize,
+    InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform, ac_quantizer,
+    dc_quantizer, dequantize_block, inverse_transform_2d_outer, secondary_inverse_transform,
+    tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
@@ -122,7 +124,7 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
     super::reconstruct_general_intra_block_rect_with_prediction_core(
         &block.quant,
         prediction,
-        super::ReconstructionOutput::Reusable(out),
+        out,
         qindex,
         plane_id,
         log2_width,
@@ -138,26 +140,24 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt<
-    T: ReconSample,
->(
+pub(crate) fn reconstruct_inter_coeff_block_residual_rect_into<T: ReconSample>(
+    sink: &mut CurrentFrameSurface<'_, '_, T>,
     block: &LumaCoeffBlock,
-    prediction: &[T],
-    out: &mut [T],
-    qindex: u32,
     plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
     use_tcq: bool,
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(), GeneralIntraResidualError> {
+    let log2_width = u32::from(block_size.log2_width());
+    let log2_height = u32::from(block_size.log2_height());
     let secondary =
         resolve_secondary_inverse_transform(block, log2_width, log2_height, bit_depth, None)?;
-    super::reconstruct_general_intra_block_rect_with_prediction_core(
-        &block.quant,
-        prediction,
-        super::ReconstructionOutput::Fixed(out),
+    let setup = reconstruct_block_setup(
+        block_size.sample_count(),
         qindex,
         plane_id,
         log2_width,
@@ -166,10 +166,26 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_slice_a
         use_tcq && block.use_tcq,
         use_ddt,
         block.lossless,
-        secondary.as_ref(),
         None,
         bit_depth,
-    )
+    )?;
+    if block.quant.len() != setup.adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: setup.adjusted,
+            actual: block.quant.len(),
+        });
+    }
+    super::with_residual_scratch(|scratch| {
+        let dequant = &mut scratch.dequant[..setup.adjusted];
+        dequantize_block(&setup.params, &block.quant, dequant)?;
+        if let Some(secondary) = secondary.as_ref() {
+            secondary_inverse_transform(dequant, secondary)?;
+        }
+        let residual = &mut scratch.residual[..setup.samples];
+        inverse_transform_2d_outer(&setup.transform, dequant, residual)?;
+        sink.add_residual_rect_block(plane_id, x, y, block_size, residual)?;
+        Ok(())
+    })
 }
 
 fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {

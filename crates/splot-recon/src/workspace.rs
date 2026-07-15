@@ -349,6 +349,106 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         let rect = checked_sample_block_rect(plane, x, y, size, samples.len())?;
         self.write_rect(plane, rect, samples, size.width())
     }
+
+    /// Adds a contiguous signed residual block directly to reconstructed samples.
+    ///
+    /// The complete source and target geometry and every prediction sample are
+    /// validated before the first sample is changed. Frame-edge overhang is
+    /// clipped, while row targets reject blocks crossing their exclusive band.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for an absent plane, invalid source or target
+    /// geometry, cross-band access, or an existing prediction sample outside
+    /// the active bit depth.
+    #[inline]
+    pub fn add_residual_rect_block(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+        residual: &[i32],
+    ) -> Result<()> {
+        let bit_depth = self.info().bit_depth();
+        let rect = checked_sample_block_rect(plane, x, y, size, residual.len())?;
+        let max_sample = bit_depth.max_sample();
+        let (target, target_stride, target_base, rect) = match self {
+            Self::Frame(workspace) => {
+                let target = workspace.plane_mut(plane)?;
+                let rect = target.clamp_rect_to_storage(rect)?;
+                let stride = target.stride_samples;
+                let base = rect
+                    .y()
+                    .checked_mul(stride)
+                    .and_then(|start| start.checked_add(rect.x()))
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "current-frame residual target row offset",
+                    })?;
+                (&mut target.samples[..], stride, base, rect)
+            }
+            Self::Row(row) => {
+                let target = row.plane_mut(plane)?;
+                let rect = clamp_rect_to_storage(target.plane, target.storage_size, rect)?;
+                target.ensure_rect(rect)?;
+                let stride = target.stride_samples;
+                let base = (rect.y() - target.rect.y())
+                    .checked_mul(stride)
+                    .and_then(|start| start.checked_add(rect.x() - target.rect.x()))
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "current-frame residual target row offset",
+                    })?;
+                (&mut *target.samples, stride, base, rect)
+            }
+        };
+        let last_target_end = (rect.height() - 1)
+            .checked_mul(target_stride)
+            .and_then(|offset| target_base.checked_add(offset))
+            .and_then(|start| start.checked_add(rect.width()))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "current-frame residual target sample span",
+            })?;
+        if last_target_end > target.len() {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: last_target_end,
+                actual: target.len(),
+            });
+        }
+        for row_index in 0..rect.height() {
+            let target_start = target_base + row_index * target_stride;
+            for (column, sample) in target[target_start..target_start + rect.width()]
+                .iter()
+                .enumerate()
+            {
+                let value = sample.to_u16();
+                if value > max_sample {
+                    return Err(ReconError::ReconstructPredictionOutOfRange {
+                        sample_index: row_index * size.width() + column,
+                        value,
+                        max: max_sample,
+                    });
+                }
+            }
+        }
+
+        let max = i32::from(max_sample);
+        for row_index in 0..rect.height() {
+            let target_start = target_base + row_index * target_stride;
+            let residual_start = row_index * size.width();
+            for (sample, &residual) in target[target_start..target_start + rect.width()]
+                .iter_mut()
+                .zip(&residual[residual_start..residual_start + rect.width()])
+            {
+                let value = i32::from(sample.to_u16())
+                    .saturating_add(residual)
+                    .clamp(0, max) as u16;
+                // The surface's validated bit depth makes this infallible for
+                // the sealed u8/u16 sample implementations.
+                debug_assert!(value <= T::MAX_VALUE);
+                *sample = T::try_from_u16(value)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Allocation-free iterator over exclusive full-width superblock-row bands.

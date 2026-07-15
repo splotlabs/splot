@@ -9,7 +9,7 @@ use splot_core::headers::sequence::SuperblockSize;
 use crate::{
     BitDepth, DecodedFrameHash, DecodedFrameHashInput, IntraDcEdge, IntraDcEdges, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
-    apply_intra_ibp_dc_rect, predict_intra_dc_rect_into,
+    apply_intra_ibp_dc_rect, predict_intra_dc_rect_into, reconstruct_add_residual,
 };
 
 fn size(width: usize, height: usize) -> PlaneSize {
@@ -374,6 +374,131 @@ fn row_surface_clips_frame_edge_and_rejects_cross_band_access_atomically() {
             .iter()
             .all(|&sample| sample == 3)
     );
+}
+
+fn assert_surface_add_residual_matches_reference<T>(bit_depth: BitDepth)
+where
+    T: ReconSample + core::fmt::Debug + Eq,
+{
+    let mut workspace =
+        CurrentFrameWorkspace::<T>::new(monochrome_info(bit_depth, 4, 4), T::default()).unwrap();
+    let prediction = core::array::from_fn::<_, 16, _>(|index| {
+        T::try_from_u16([0, 1, 127, 254, 255][index % 5].min(bit_depth.max_sample())).unwrap()
+    });
+    let residual =
+        core::array::from_fn::<_, 16, _>(|index| [i32::MIN, -2, 0, 2, i32::MAX][index % 5]);
+    workspace
+        .write_rect(PlaneId::Y, rect(0, 0, 4, 4), &prediction, 4)
+        .unwrap();
+    let mut expected = [T::default(); 16];
+    reconstruct_add_residual(&prediction, &residual, bit_depth, &mut expected).unwrap();
+
+    CurrentFrameSurface::Frame(&mut workspace)
+        .add_residual_rect_block(PlaneId::Y, 0, 0, rect_block(2, 2), &residual)
+        .unwrap();
+
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &expected);
+    assert_eq!(expected[0].to_u16(), 0);
+    assert_eq!(expected[4].to_u16(), bit_depth.max_sample());
+}
+
+#[test]
+fn surface_add_residual_matches_buffer_reference_u8_and_u16() {
+    assert_surface_add_residual_matches_reference::<u8>(BitDepth::Eight);
+    assert_surface_add_residual_matches_reference::<u16>(BitDepth::Ten);
+}
+
+#[test]
+fn row_surface_add_residual_matches_clipped_frame_stride_and_is_atomic() {
+    let info = monochrome_info(BitDepth::Eight, 8, 67);
+    let mut frame = CurrentFrameWorkspace::<u8>::new(info, 50).unwrap();
+    let mut rows = CurrentFrameWorkspace::<u8>::new(info, 50).unwrap();
+    let residual = core::array::from_fn::<_, 16, _>(|index| index as i32 + 1);
+    CurrentFrameSurface::Frame(&mut frame)
+        .add_residual_rect_block(PlaneId::Y, 6, 65, rect_block(2, 2), &residual)
+        .unwrap();
+    {
+        let mut row_band = rows
+            .sb_row_bands(SuperblockSize::Block64x64)
+            .nth(1)
+            .unwrap();
+        CurrentFrameSurface::Row(&mut row_band)
+            .add_residual_rect_block(PlaneId::Y, 6, 65, rect_block(2, 2), &residual)
+            .unwrap();
+    }
+
+    assert_eq!(
+        rows.samples(PlaneId::Y).unwrap(),
+        frame.samples(PlaneId::Y).unwrap()
+    );
+    assert_eq!(frame.reconstructed_sample(PlaneId::Y, 6, 65).unwrap(), 51);
+    assert_eq!(frame.reconstructed_sample(PlaneId::Y, 7, 65).unwrap(), 52);
+    assert_eq!(frame.reconstructed_sample(PlaneId::Y, 6, 66).unwrap(), 55);
+    assert_eq!(frame.reconstructed_sample(PlaneId::Y, 7, 66).unwrap(), 56);
+    assert_eq!(frame.reconstructed_sample(PlaneId::Y, 5, 65).unwrap(), 50);
+
+    {
+        let mut row_band = rows
+            .sb_row_bands(SuperblockSize::Block64x64)
+            .nth(1)
+            .unwrap();
+        assert!(matches!(
+            CurrentFrameSurface::Row(&mut row_band).add_residual_rect_block(
+                PlaneId::Y,
+                0,
+                63,
+                rect_block(2, 2),
+                &residual,
+            ),
+            Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
+        ));
+    }
+    assert_eq!(
+        rows.samples(PlaneId::Y).unwrap(),
+        frame.samples(PlaneId::Y).unwrap()
+    );
+}
+
+#[test]
+fn surface_add_residual_rejects_inputs_atomically() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 4, 4), 20).unwrap();
+    assert!(matches!(
+        CurrentFrameSurface::Frame(&mut workspace).add_residual_rect_block(
+            PlaneId::Y,
+            0,
+            0,
+            rect_block(2, 2),
+            &[1; 15],
+        ),
+        Err(ReconError::WorkspaceWriteLengthMismatch { .. })
+    ));
+    assert!(
+        workspace
+            .samples(PlaneId::Y)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 20)
+    );
+
+    workspace.as_frame_mut().y_mut().samples_mut()[15] = 300;
+    assert!(matches!(
+        CurrentFrameSurface::Frame(&mut workspace).add_residual_rect_block(
+            PlaneId::Y,
+            0,
+            0,
+            rect_block(2, 2),
+            &[1; 16],
+        ),
+        Err(ReconError::ReconstructPredictionOutOfRange {
+            sample_index: 15,
+            value: 300,
+            max: 255,
+        })
+    ));
+    let mut expected = [20; 16];
+    expected[15] = 300;
+    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), expected);
 }
 
 #[test]

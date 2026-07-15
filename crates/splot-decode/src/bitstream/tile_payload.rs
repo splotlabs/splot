@@ -71,7 +71,7 @@ pub(crate) use general_intra_residual::{
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt,
+    reconstruct_inter_coeff_block_residual_rect_into,
 };
 pub(crate) use input::{
     FrameCandidateCdfFacts, FrameCandidateCoeffFacts, FrameCandidateTileBoundaryError,
