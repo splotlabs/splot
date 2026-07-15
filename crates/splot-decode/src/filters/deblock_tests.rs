@@ -116,16 +116,28 @@ fn sub_pu_filter_dimensions_follow_filt_max_size() {
 
 #[test]
 fn explicit_sub_pu_dimensions_follow_pass_and_chroma_subsampling() {
-    let mut grid = edge_test_grid(false);
-    let info = grid.cells[4].as_mut().unwrap();
+    let mut info = MiBlockInfo {
+        base_row: 0,
+        base_col: 0,
+        luma_prediction: prediction(0, 0, 3),
+        chroma_prediction: prediction(0, 0, 3),
+        chroma_base_row: 0,
+        chroma_base_col: 0,
+        luma_tx: 3,
+        chroma_tx: None,
+        sub_pu_size: None,
+        qindex: 100,
+        skip: false,
+        lossless: false,
+    };
 
     info.sub_pu_size = Some(DeblockSubPuSize::square(8));
-    assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 4);
-    assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
+    assert_eq!(sub_pu_dimension(&info, 1, 0, 1, 1), 4);
+    assert_eq!(sub_pu_dimension(&info, 1, 1, 1, 1), 4);
 
     info.sub_pu_size = Some(DeblockSubPuSize::new(16, 8));
-    assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 8);
-    assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
+    assert_eq!(sub_pu_dimension(&info, 1, 0, 1, 1), 8);
+    assert_eq!(sub_pu_dimension(&info, 1, 1, 1, 1), 4);
 }
 
 #[test]
@@ -245,38 +257,55 @@ fn tip_deblocking_handles_yuv422_and_yuv444_chroma_geometry() {
     }
 }
 
-fn edge_test_grid(curr_skip: bool) -> MiGrid {
-    let mut cells = vec![None; 4 * 16];
-    cells[4] = Some(MiBlockInfo {
-        base_row: 0,
-        base_col: 2,
-        luma_prediction: prediction(0, 2, 3),
-        chroma_prediction: prediction(0, 2, 3),
-        chroma_base_row: 0,
-        chroma_base_col: 2,
-        luma_tx: 3,
-        chroma_tx: None,
-        sub_pu_size: None,
-        qindex: 100,
-        skip: false,
-        lossless: false,
-    });
-    cells[5] = Some(MiBlockInfo {
-        base_row: 0,
-        base_col: 0,
-        luma_prediction: prediction(0, 0, 3),
-        chroma_prediction: prediction(0, 0, 3),
-        chroma_base_row: 0,
-        chroma_base_col: 0,
-        luma_tx: 3,
-        chroma_tx: None,
-        sub_pu_size: None,
-        qindex: 100,
-        skip: curr_skip,
-        lossless: false,
-    });
+fn edge_test_grid(curr_skip: bool) -> MiGrid<'static> {
+    edge_test_grid_with_metadata(curr_skip, false)
+}
+
+fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> MiGrid<'static> {
+    let qindex = if prediction_boundary { 215 } else { 100 };
+    let blocks = Box::leak(Box::new([
+        DeblockBlock {
+            r: 0,
+            c: if prediction_boundary { 0 } else { 2 },
+            luma_prediction: prediction(0, 2, 3),
+            chroma_prediction: prediction(0, 2, 3),
+            chroma_base_r: 0,
+            chroma_base_c: 2,
+            n4w: 1,
+            n4h: 1,
+            luma_tx: 3,
+            chroma_tx: None,
+            sub_pu_size: None,
+            chroma_transform_only: false,
+            qindex,
+            skip: false,
+            lossless: false,
+        },
+        DeblockBlock {
+            r: 0,
+            c: 0,
+            luma_prediction: prediction(0, 0, 3),
+            chroma_prediction: prediction(0, 0, 3),
+            chroma_base_r: 0,
+            chroma_base_c: 0,
+            n4w: 1,
+            n4h: 1,
+            luma_tx: 3,
+            chroma_tx: None,
+            sub_pu_size: None,
+            chroma_transform_only: false,
+            qindex,
+            skip: curr_skip,
+            lossless: false,
+        },
+    ]));
+    let mut cells = vec![MiCell::default(); 4 * 16];
+    cells[4].base = 0;
+    cells[5].base = 1;
     MiGrid {
         mi_cols: 16,
+        base_blocks: blocks,
+        overlay_blocks: &[],
         cells,
         candidates: vec![0; 4 * 16],
     }
@@ -870,8 +899,9 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
         skip: false,
         lossless: false,
     };
-    let mut grid = build_mi_grid(&luma, 8, 8).unwrap();
-    overlay_mi_grid(&mut grid, &[metadata, transform], 8, 8);
+    let grid = build_mi_grid(&luma, 8, 8).unwrap();
+    let chroma = [metadata, transform];
+    let grid = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
 
     let inherited = grid.get(1, 3).unwrap();
     assert_eq!(
@@ -929,8 +959,9 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
         skip: false,
         lossless: true,
     };
-    let mut grid = build_mi_grid(&luma, 8, 8).unwrap();
-    overlay_mi_grid(&mut grid, &[ordinary], 8, 8);
+    let grid = build_mi_grid(&luma, 8, 8).unwrap();
+    let chroma = [ordinary];
+    let grid = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
 
     let info = grid.get(1, 3).unwrap();
     assert_eq!(
@@ -973,8 +1004,10 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     assert_eq!((record.chroma_base_r, record.chroma_base_c), (6, 4));
     assert!(!record.chroma_transform_only);
 
-    let mut grid = build_mi_grid(&deblock_blocks(16, 16), 16, 16).unwrap();
-    overlay_mi_grid(&mut grid, &[record], 16, 16);
+    let luma = deblock_blocks(16, 16);
+    let grid = build_mi_grid(&luma, 16, 16).unwrap();
+    let chroma = [record];
+    let grid = overlay_mi_grid(&grid, &chroma, 16, 16).unwrap();
     let info = grid.get(6, 4).unwrap();
     assert_eq!(
         (info.chroma_prediction.base_r, info.chroma_prediction.base_c),
@@ -1096,13 +1129,7 @@ fn tile_boundary_filtering_obeys_sequence_flag() {
 
 #[test]
 fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
-    let mut grid = edge_test_grid(true);
-    for index in [4, 5] {
-        let info = grid.cells[index].as_mut().unwrap();
-        info.base_row = 0;
-        info.base_col = 0;
-        info.qindex = 215;
-    }
+    let grid = edge_test_grid_with_metadata(true, true);
     let run = |allow_df_sub_pu| {
         let mut workspace = yuv420_workspace(64, 16, 100);
         fill_rect(&mut workspace, PlaneId::Y, 20..64, 0..16, 108);

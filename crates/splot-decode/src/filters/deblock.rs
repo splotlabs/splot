@@ -166,15 +166,17 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
         if plane != 0 && !filter.apply_deblocking_filter[plane + 1] {
             continue;
         }
-        let chroma_grid = (plane != 0).then(|| {
-            let mut chroma_grid = grid.clone();
-            overlay_mi_grid(&mut chroma_grid, chroma_blocks[plane - 1], mi_rows, mi_cols);
-            chroma_grid
-        });
-        let plane_grid = match chroma_grid.as_ref() {
-            Some(chroma_grid) => chroma_grid,
-            None => &grid,
+        let chroma_grid = if plane != 0 {
+            Some(overlay_mi_grid(
+                &grid,
+                chroma_blocks[plane - 1],
+                mi_rows,
+                mi_cols,
+            )?)
+        } else {
+            None
         };
+        let plane_grid = chroma_grid.as_ref().unwrap_or(&grid);
         for pass in 0..2usize {
             let Some(plane_pass) =
                 PlanePass::active(plane, pass, filter, quant_deltas, bit_depth, pixel_format)
@@ -1352,16 +1354,50 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
     }
 }
 
+const NO_BLOCK_INDEX: u32 = u32::MAX;
+
+#[derive(Clone, Copy)]
+struct MiCell {
+    base: u32,
+    overlay: u32,
+    chroma_transform: u32,
+}
+
+impl Default for MiCell {
+    fn default() -> Self {
+        Self {
+            base: NO_BLOCK_INDEX,
+            overlay: NO_BLOCK_INDEX,
+            chroma_transform: NO_BLOCK_INDEX,
+        }
+    }
+}
+
 #[derive(Clone)]
-struct MiGrid {
+struct MiGrid<'a> {
     mi_cols: usize,
-    cells: Vec<Option<MiBlockInfo>>,
+    base_blocks: &'a [DeblockBlock],
+    overlay_blocks: &'a [DeblockBlock],
+    cells: Vec<MiCell>,
     candidates: Vec<u8>,
 }
 
-impl MiGrid {
+impl MiGrid<'_> {
     fn get(&self, row: usize, col: usize) -> Option<MiBlockInfo> {
-        self.cells.get(row * self.mi_cols + col).copied().flatten()
+        let cell = self.cells.get(row * self.mi_cols + col)?;
+        let block = if cell.overlay != NO_BLOCK_INDEX {
+            self.overlay_blocks.get(cell.overlay as usize)?
+        } else {
+            self.base_blocks.get(cell.base as usize)?
+        };
+        let mut info = MiBlockInfo::from_block(*block);
+        if cell.chroma_transform != NO_BLOCK_INDEX {
+            let transform = self.overlay_blocks.get(cell.chroma_transform as usize)?;
+            info.chroma_base_row = transform.chroma_base_r;
+            info.chroma_base_col = transform.chroma_base_c;
+            info.chroma_tx = transform.chroma_tx;
+        }
+        Some(info)
     }
 
     fn is_candidate(&self, row: usize, col: usize, pass: usize, allow_sub_pu: bool) -> bool {
@@ -1369,7 +1405,7 @@ impl MiGrid {
         let Some(cell) = self.cells.get(index) else {
             return true;
         };
-        if cell.is_none() {
+        if cell.base == NO_BLOCK_INDEX && cell.overlay == NO_BLOCK_INDEX {
             return true;
         }
         let tx_candidate = if pass == 0 {
@@ -1386,7 +1422,7 @@ fn build_mi_grid(
     blocks: &[DeblockBlock],
     mi_rows: usize,
     mi_cols: usize,
-) -> Result<MiGrid, DeblockError> {
+) -> Result<MiGrid<'_>, DeblockError> {
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
@@ -1394,19 +1430,19 @@ fn build_mi_grid(
     cells
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Workspace)?;
-    cells.resize(count, None);
+    cells.resize(count, MiCell::default());
     let mut candidates = Vec::new();
     candidates
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Workspace)?;
     candidates.resize(count, 0);
 
-    for block in blocks {
-        let info = MiBlockInfo::from_block(*block);
+    for (block_index, block) in blocks.iter().enumerate() {
+        let block_index = mi_block_index(block_index)?;
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
                 if rr < mi_rows && cc < mi_cols {
-                    cells[rr * mi_cols + cc] = Some(info);
+                    cells[rr * mi_cols + cc].base = block_index;
                 }
             }
         }
@@ -1414,38 +1450,60 @@ fn build_mi_grid(
     }
     Ok(MiGrid {
         mi_cols,
+        base_blocks: blocks,
+        overlay_blocks: &[],
         cells,
         candidates,
     })
 }
 
-fn overlay_mi_grid(grid: &mut MiGrid, blocks: &[DeblockBlock], mi_rows: usize, mi_cols: usize) {
-    for block in blocks.iter().filter(|block| !block.chroma_transform_only) {
-        let info = MiBlockInfo::from_block(*block);
+fn overlay_mi_grid<'a>(
+    base: &MiGrid<'a>,
+    blocks: &'a [DeblockBlock],
+    mi_rows: usize,
+    mi_cols: usize,
+) -> Result<MiGrid<'a>, DeblockError> {
+    let mut grid = base.clone();
+    grid.overlay_blocks = blocks;
+    for (block_index, block) in blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| !block.chroma_transform_only)
+    {
+        let block_index = mi_block_index(block_index)?;
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
                 if rr < mi_rows && cc < mi_cols {
-                    grid.cells[rr * mi_cols + cc] = Some(info);
+                    grid.cells[rr * mi_cols + cc].overlay = block_index;
                 }
             }
         }
         mark_block_candidates(&mut grid.candidates, block, mi_rows, mi_cols);
     }
-    for block in blocks.iter().filter(|block| block.chroma_transform_only) {
+    for (block_index, block) in blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, block)| block.chroma_transform_only)
+    {
+        let block_index = mi_block_index(block_index)?;
         for rr in block.r..block.r + block.n4h {
             for cc in block.c..block.c + block.n4w {
-                if rr < mi_rows
-                    && cc < mi_cols
-                    && let Some(info) = grid.cells[rr * mi_cols + cc].as_mut()
-                {
-                    info.chroma_base_row = block.chroma_base_r;
-                    info.chroma_base_col = block.chroma_base_c;
-                    info.chroma_tx = block.chroma_tx;
+                if rr < mi_rows && cc < mi_cols {
+                    grid.cells[rr * mi_cols + cc].chroma_transform = block_index;
                 }
             }
         }
         mark_block_candidates(&mut grid.candidates, block, mi_rows, mi_cols);
     }
+    Ok(grid)
+}
+
+fn mi_block_index(index: usize) -> Result<u32, DeblockError> {
+    let index = u32::try_from(index).map_err(|_| DeblockError::Workspace)?;
+    if index == NO_BLOCK_INDEX {
+        return Err(DeblockError::Workspace);
+    }
+    Ok(index)
 }
 
 fn mark_block_candidates(
