@@ -158,6 +158,180 @@ where
     Ok(())
 }
 
+/// Source windows for fast padded chroma Wiener NS filtering.
+pub struct WienerNsChromaPaddedSource<'a, T> {
+    /// Padded chroma plane samples.
+    pub chroma_samples: &'a [T],
+    /// Stride of `chroma_samples`.
+    pub chroma_stride: usize,
+    /// Padded luma plane samples (`Wiener_Ns_Config_Y` reach).
+    pub luma_samples: &'a [T],
+    /// Stride of `luma_samples`.
+    pub luma_stride: usize,
+}
+
+/// Reusable scratch buffers for fast padded chroma Wiener NS filtering.
+#[derive(Default)]
+pub struct WienerNsChromaScratch<T> {
+    /// Memoized or pre-downsampled luma values.
+    pub ds_luma: Vec<u16>,
+    /// Intermediate filtered samples.
+    pub filtered: Vec<T>,
+}
+
+/// Applies AV2 § 7.20.3 chroma Wiener NS filtering directly from pre-padded source slices.
+pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
+    output: &mut [T],
+    params: &WienerNsChromaFilter<'_>,
+    source: &WienerNsChromaPaddedSource<'_, T>,
+    scratch: &mut WienerNsChromaScratch<T>,
+) -> Result<()> {
+    if params.subsampling_x != 1
+        || params.subsampling_y != 1
+        || params.cfl_ds_filter_index > 1
+        || source.chroma_samples.len() < (params.height + 4).saturating_mul(source.chroma_stride)
+        || source.luma_samples.len() < (params.height.saturating_mul(2) + 8).saturating_mul(source.luma_stride)
+    {
+        return wiener_ns_filter_chroma_block(
+            output,
+            params,
+            |x, y| {
+                let col = x - (params.x as isize - 2);
+                let row = y - (params.y as isize - 2);
+                if col >= 0 && row >= 0 && (col as usize) < source.chroma_stride {
+                    source.chroma_samples.get((row as usize) * source.chroma_stride + (col as usize)).copied().unwrap_or_default()
+                } else {
+                    T::default()
+                }
+            },
+            |x, y| {
+                let col = x - (params.x as isize * 2 - 4);
+                let row = y - (params.y as isize * 2 - 4);
+                if col >= 0 && row >= 0 && (col as usize) < source.luma_stride {
+                    source.luma_samples.get((row as usize) * source.luma_stride + (col as usize)).copied().unwrap_or_default()
+                } else {
+                    T::default()
+                }
+            },
+        );
+    }
+
+    validate_sample_type::<T>(params.bit_depth)?;
+    let _context = validate_chroma_params(output.len(), params)?;
+    let max_val = params.bit_depth.max_sample() as i32;
+
+    let ds_width = params.width + 4;
+    let ds_height = params.height + 4;
+    let ds_cells = ds_width * ds_height;
+    if scratch.ds_luma.len() < ds_cells {
+        scratch.ds_luma.resize(ds_cells, 0);
+    }
+    let ds_luma = &mut scratch.ds_luma[..ds_cells];
+    let lstride = source.luma_stride;
+
+    if params.cfl_ds_filter_index == 0 {
+        for dr in 0..ds_height {
+            let lrow0 = (2 * dr) * lstride;
+            let lrow1 = (2 * dr + 1) * lstride;
+            let dst_row = dr * ds_width;
+            for dc in 0..ds_width {
+                let lcol = 2 * dc;
+                let v00 = source.luma_samples[lrow0 + lcol].to_u16();
+                let v01 = source.luma_samples[lrow0 + lcol + 1].to_u16();
+                let v10 = source.luma_samples[lrow1 + lcol].to_u16();
+                let v11 = source.luma_samples[lrow1 + lcol + 1].to_u16();
+                ds_luma[dst_row + dc] = (v00 + v01 + v10 + v11) >> 2;
+            }
+        }
+    } else {
+        for dr in 0..ds_height {
+            let lrow0 = (2 * dr) * lstride;
+            let lrow1 = (2 * dr + 1) * lstride;
+            let dst_row = dr * ds_width;
+            for dc in 0..ds_width {
+                let lcol = 2 * dc;
+                let v00 = source.luma_samples[lrow0 + lcol].to_u16();
+                let v10 = source.luma_samples[lrow1 + lcol].to_u16();
+                ds_luma[dst_row + dc] = (v00 + v10) >> 1;
+            }
+        }
+    }
+
+    let sample_count = params.width * params.height;
+    scratch.filtered.clear();
+    scratch.filtered.reserve(sample_count);
+
+    let chroma_stride = source.chroma_stride;
+    let cv0 = i32::from(params.coeffs[0]);
+    let cv1 = i32::from(params.coeffs[1]);
+    let cv2 = i32::from(params.coeffs[2]);
+    let cv3 = i32::from(params.coeffs[3]);
+    let cv4 = i32::from(params.coeffs[4]);
+    let cv5 = i32::from(params.coeffs[5]);
+
+    let lv0 = i32::from(params.coeffs[6]);
+    let lv1 = i32::from(params.coeffs[7]);
+    let lv2 = i32::from(params.coeffs[8]);
+    let lv3 = i32::from(params.coeffs[9]);
+    let lv4 = i32::from(params.coeffs[10]);
+    let lv5 = i32::from(params.coeffs[11]);
+    let lv6 = i32::from(params.coeffs[12]);
+    let lv7 = i32::from(params.coeffs[13]);
+    let lv8 = i32::from(params.coeffs[14]);
+    let lv9 = i32::from(params.coeffs[15]);
+    let lv10 = i32::from(params.coeffs[16]);
+    let lv11 = i32::from(params.coeffs[17]);
+
+    for r in 0..params.height {
+        let row_c = (r + 2) * chroma_stride;
+        let row_ds = (r + 2) * ds_width;
+        for c in 0..params.width {
+            let base_c = row_c + (c + 2);
+            let m = i32::from(source.chroma_samples[base_c].to_u16());
+            let m2 = 2 * m;
+
+            let diff0 = i32::from(source.chroma_samples[base_c + chroma_stride].to_u16()) + i32::from(source.chroma_samples[base_c - chroma_stride].to_u16()) - m2;
+            let diff1 = i32::from(source.chroma_samples[base_c + 1].to_u16()) + i32::from(source.chroma_samples[base_c - 1].to_u16()) - m2;
+            let diff2 = i32::from(source.chroma_samples[base_c + chroma_stride + 1].to_u16()) + i32::from(source.chroma_samples[base_c - chroma_stride - 1].to_u16()) - m2;
+            let diff3 = i32::from(source.chroma_samples[base_c - chroma_stride + 1].to_u16()) + i32::from(source.chroma_samples[base_c + chroma_stride - 1].to_u16()) - m2;
+            let diff4 = i32::from(source.chroma_samples[base_c + 2 * chroma_stride].to_u16()) + i32::from(source.chroma_samples[base_c - 2 * chroma_stride].to_u16()) - m2;
+            let diff5 = i32::from(source.chroma_samples[base_c + 2].to_u16()) + i32::from(source.chroma_samples[base_c - 2].to_u16()) - m2;
+
+            let mut sum = cv0 * diff0 + cv1 * diff1 + cv2 * diff2 + cv3 * diff3 + cv4 * diff4 + cv5 * diff5;
+
+            let base_ds = row_ds + (c + 2);
+            let m_l = i32::from(ds_luma[base_ds]);
+            if lv0 != 0 { sum += lv0 * (i32::from(ds_luma[base_ds + ds_width]) - m_l); }
+            if lv1 != 0 { sum += lv1 * (i32::from(ds_luma[base_ds - ds_width]) - m_l); }
+            if lv2 != 0 { sum += lv2 * (i32::from(ds_luma[base_ds + 1]) - m_l); }
+            if lv3 != 0 { sum += lv3 * (i32::from(ds_luma[base_ds - 1]) - m_l); }
+            if lv4 != 0 { sum += lv4 * (i32::from(ds_luma[base_ds + ds_width + 1]) - m_l); }
+            if lv5 != 0 { sum += lv5 * (i32::from(ds_luma[base_ds - ds_width - 1]) - m_l); }
+            if lv6 != 0 { sum += lv6 * (i32::from(ds_luma[base_ds - ds_width + 1]) - m_l); }
+            if lv7 != 0 { sum += lv7 * (i32::from(ds_luma[base_ds + ds_width - 1]) - m_l); }
+            if lv8 != 0 { sum += lv8 * (i32::from(ds_luma[base_ds + 2 * ds_width]) - m_l); }
+            if lv9 != 0 { sum += lv9 * (i32::from(ds_luma[base_ds - 2 * ds_width]) - m_l); }
+            if lv10 != 0 { sum += lv10 * (i32::from(ds_luma[base_ds + 2]) - m_l); }
+            if lv11 != 0 { sum += lv11 * (i32::from(ds_luma[base_ds - 2]) - m_l); }
+
+            let s = (m << WIENER_NS_PREC_BITS) + sum;
+            let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, max_val) as u16;
+            scratch.filtered.push(T::try_from_u16(value)?);
+        }
+    }
+
+    for row_index in 0..params.height {
+        let src_start = row_index * params.width;
+        let src_end = src_start + params.width;
+        let dst_start = row_index * params.output_stride;
+        let dst_end = dst_start + params.width;
+        // splot-copy-ok: publish fail-atomic Wiener NS scratch row into caller output
+        output[dst_start..dst_end].copy_from_slice(&scratch.filtered[src_start..src_end]);
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ChromaFilterContext {
     sample_count: usize,

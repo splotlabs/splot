@@ -440,7 +440,7 @@ pub(crate) fn cdef_general_intra_frame_indexed<T: ReconSample>(
                         )?;
                         for (plane, rect, samples, width) in output.into_iter().flatten() {
                             workspace
-                                .write_rect(plane, rect, &samples, width)
+                                .write_rect_trusted(plane, rect, &samples, width)
                                 .map_err(|_| CdefError::Workspace)?;
                         }
                     }
@@ -630,6 +630,27 @@ fn compute_cdef_filter_plane<T: ReconSample>(
 
     let mut filtered_block = [T::default(); 64];
     if interior {
+        let filter = CdefBlockFilter {
+            pri_str: ctx.pri_str,
+            sec_str: ctx.sec_str,
+            damping: ctx.damping,
+            dir: ctx.dir,
+            coeff_shift: ctx.coeff_shift,
+        };
+        let start = (y0 - CDEF_TAP_REACH) * snap.width + (x0 - CDEF_TAP_REACH);
+        if let Some(src) = snap.samples.get(start..) {
+            if splot_recon::cdef_filter_block_interior_stride(
+                src,
+                snap.width,
+                w,
+                h,
+                &filter,
+                &mut filtered_block,
+            ) {
+                let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
+                return Ok(Some((plane, rect, filtered_block, w)));
+            }
+        }
         let mut pad = [0u16; CDEF_PADDED_AREA];
         for r in 0..h + 2 * CDEF_TAP_REACH {
             let start = (y0 - CDEF_TAP_REACH + r) * snap.width + (x0 - CDEF_TAP_REACH);
@@ -643,13 +664,6 @@ fn compute_cdef_filter_plane<T: ReconSample>(
                 .ok_or(CdefError::Workspace)?;
             dst.copy_from_slice(src);
         }
-        let filter = CdefBlockFilter {
-            pri_str: ctx.pri_str,
-            sec_str: ctx.sec_str,
-            damping: ctx.damping,
-            dir: ctx.dir,
-            coeff_shift: ctx.coeff_shift,
-        };
         let mut out = [0u16; 64];
         cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
         for (dst, &filtered) in filtered_block.iter_mut().zip(&out).take(w * h) {

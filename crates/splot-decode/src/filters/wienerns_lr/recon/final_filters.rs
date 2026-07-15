@@ -15,7 +15,7 @@ use splot_recon::{
     WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     loop_restoration_source_sample, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass,
-    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded_into,
 };
 
 use super::{MI_SIZE, WienerNsLrReconSink};
@@ -66,6 +66,7 @@ struct LrSourceScratch<T> {
     secondary: Vec<T>,
     cell_subclasses: Vec<usize>,
     subclasses: Vec<usize>,
+    chroma_scratch: splot_recon::WienerNsChromaScratch<T>,
 }
 
 impl<T> LrSourceScratch<T> {
@@ -75,6 +76,8 @@ impl<T> LrSourceScratch<T> {
             self.secondary.capacity(),
             self.cell_subclasses.capacity(),
             self.subclasses.capacity(),
+            self.chroma_scratch.ds_luma.capacity(),
+            self.chroma_scratch.filtered.capacity(),
         ]
         .into_iter()
         .all(|capacity| capacity <= MAX_RETAINED_LR_SCRATCH_ELEMENTS)
@@ -441,6 +444,7 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         self.samples.get(start..).map(|tail| (tail, self.stride))
     }
 
+    #[allow(dead_code)]
     fn get_abs(&self, x: isize, y: isize) -> T {
         let col = x.saturating_sub(self.origin_x);
         let row = y.saturating_sub(self.origin_y);
@@ -997,11 +1001,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 WIENER_NS_CHROMA_TAP_RADIUS * 2,
             )
             .map_err(|_| luma_lr_filter_error(offset))?;
-            wiener_ns_filter_chroma_block(
+            let padded_source = splot_recon::WienerNsChromaPaddedSource {
+                chroma_samples: chroma_window.samples,
+                chroma_stride: chroma_window.stride,
+                luma_samples: luma_window.samples,
+                luma_stride: luma_window.stride,
+            };
+            splot_recon::wiener_ns_filter_chroma_block_padded_into(
                 &mut output,
                 &params,
-                |x, y| chroma_window.get_abs(x, y),
-                |x, y| luma_window.get_abs(x, y),
+                &padded_source,
+                &mut scratch.chroma_scratch,
             )
             .map_err(|_| luma_lr_filter_error(offset))
         })?;

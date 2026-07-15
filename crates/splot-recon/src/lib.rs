@@ -57,7 +57,7 @@ mod y4m;
 pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
     CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction, cdef_filter_block_interior,
-    cdef_filter_sample,
+    cdef_filter_block_interior_stride, cdef_filter_sample,
 };
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
 pub use deblock_filter::{
@@ -167,7 +167,8 @@ pub use warp_prediction::{
 };
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
-    WienerNsChromaFilter, wiener_ns_filter_chroma_block,
+    WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
+    wiener_ns_filter_chroma_block, wiener_ns_filter_chroma_block_padded_into,
 };
 pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,

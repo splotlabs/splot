@@ -257,37 +257,95 @@ pub struct CdefBlockFilter {
     pub coeff_shift: u32,
 }
 
-fn cdef_padded_row<const W: usize>(
-    pad: &[u16; CDEF_PADDED_AREA],
-    center_index: usize,
-    relative_offset: isize,
-) -> Option<&[u16; W]> {
-    let start = center_index.checked_add_signed(relative_offset)?;
-    let end = start.checked_add(W)?;
-    pad.get(start..end)?.try_into().ok()
+#[inline(always)]
+const fn constrain_non_zero(diff: i32, threshold: i32, damping_adj: i32) -> i32 {
+    let abs = diff.abs();
+    let reduced = threshold - (abs >> damping_adj);
+    let magnitude = if reduced < 0 {
+        0
+    } else if reduced > abs {
+        abs
+    } else {
+        reduced
+    };
+    if diff < 0 { -magnitude } else { magnitude }
 }
 
-fn cdef_output_row<const W: usize>(out: &mut [u16; 64], row: usize) -> Option<&mut [u16; W]> {
-    let start = row.checked_mul(W)?;
-    let end = start.checked_add(W)?;
-    out.get_mut(start..end)?.try_into().ok()
+#[derive(Copy, Clone)]
+struct CdefDyDx {
+    pri: [[(isize, isize); 2]; 2],
+    sec: [[[(isize, isize); 2]; 2]; 2],
 }
 
-fn cdef_filter_block_interior_rows<const W: usize>(
-    pad: &[u16; CDEF_PADDED_AREA],
+const CDEF_DY_DX: [CdefDyDx; 8] = {
+    let mut table = [CdefDyDx {
+        pri: [[(0, 0); 2]; 2],
+        sec: [[[(0, 0); 2]; 2]; 2],
+    }; 8];
+    let mut d = 0;
+    while d < 8 {
+        let mut k = 0;
+        while k < 2 {
+            let mut si = 0;
+            while si < 2 {
+                let sign = if si == 0 { -1 } else { 1 };
+                table[d].pri[k][si] = (
+                    (sign * CDEF_DIRECTIONS[d][k][0]) as isize,
+                    (sign * CDEF_DIRECTIONS[d][k][1]) as isize,
+                );
+                let mut di = 0;
+                while di < 2 {
+                    let doff = if di == 0 { 6 } else { 2 };
+                    let sd = (d + doff) & 7;
+                    table[d].sec[k][si][di] = (
+                        (sign * CDEF_DIRECTIONS[sd][k][0]) as isize,
+                        (sign * CDEF_DIRECTIONS[sd][k][1]) as isize,
+                    );
+                    di += 1;
+                }
+                si += 1;
+            }
+            k += 1;
+        }
+        d += 1;
+    }
+    table
+};
+
+#[inline(always)]
+fn cdef_offsets_for_stride(stride: usize, dir: usize) -> ([[isize; 2]; 2], [[[isize; 2]; 2]; 2]) {
+    let entry = &CDEF_DY_DX[dir & 7];
+    let mut pri = [[0isize; 2]; 2];
+    let mut sec = [[[0isize; 2]; 2]; 2];
+    for k in 0..2 {
+        for si in 0..2 {
+            let (dy, dx) = entry.pri[k][si];
+            pri[k][si] = dy * stride as isize + dx;
+            for di in 0..2 {
+                let (sdy, sdx) = entry.sec[k][si][di];
+                sec[k][si][di] = sdy * stride as isize + sdx;
+            }
+        }
+    }
+    (pri, sec)
+}
+
+fn cdef_filter_block_interior_stride_rows<const W: usize, T: crate::format::ReconSample>(
+    src: &[u16],
+    stride: usize,
     h: usize,
     filter: &CdefBlockFilter,
     pri_rel: &[[isize; 2]; 2],
     sec_rel: &[[[isize; 2]; 2]; 2],
-    out: &mut [u16; 64],
-) -> Option<()> {
+    out: &mut [T; 64],
+) {
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
     let sec_taps = CDEF_SEC_TAPS[tap_row];
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
 
-    let c_base = (2 * CDEF_PADDED_SIDE + 2) as isize;
+    let c_base = (2 * stride + 2) as isize;
     let p00_base = c_base + pri_rel[0][0];
     let p01_base = c_base + pri_rel[0][1];
     let p10_base = c_base + pri_rel[1][0];
@@ -302,317 +360,207 @@ fn cdef_filter_block_interior_rows<const W: usize>(
     let s110_base = c_base + sec_rel[1][1][0];
     let s111_base = c_base + sec_rel[1][1][1];
 
-    let max_row_offset = (h - 1) * CDEF_PADDED_SIDE;
-    let bases = [
-        c_base, p00_base, p01_base, p10_base, p11_base, s000_base, s001_base, s010_base, s011_base,
-        s100_base, s101_base, s110_base, s111_base,
-    ];
-    for &base in &bases {
-        assert!(base >= 0);
-        assert!(base as usize + max_row_offset + W <= CDEF_PADDED_AREA);
-    }
-
     if filter.pri_str != 0 && filter.sec_str != 0 {
         for i in 0..h {
-            let row_offset = i * CDEF_PADDED_SIDE;
-            let c_idx = c_base as usize + row_offset;
-            let p00_idx = p00_base as usize + row_offset;
-            let p01_idx = p01_base as usize + row_offset;
-            let p10_idx = p10_base as usize + row_offset;
-            let p11_idx = p11_base as usize + row_offset;
+            let row_offset = i * stride;
+            let c_idx = (c_base as usize) + row_offset;
+            let p00_idx = (p00_base as usize) + row_offset;
+            let p01_idx = (p01_base as usize) + row_offset;
+            let p10_idx = (p10_base as usize) + row_offset;
+            let p11_idx = (p11_base as usize) + row_offset;
 
-            let s000_idx = s000_base as usize + row_offset;
-            let s001_idx = s001_base as usize + row_offset;
-            let s010_idx = s010_base as usize + row_offset;
-            let s011_idx = s011_base as usize + row_offset;
-            let s100_idx = s100_base as usize + row_offset;
-            let s101_idx = s101_base as usize + row_offset;
-            let s110_idx = s110_base as usize + row_offset;
-            let s111_idx = s111_base as usize + row_offset;
+            let s000_idx = (s000_base as usize) + row_offset;
+            let s001_idx = (s001_base as usize) + row_offset;
+            let s010_idx = (s010_base as usize) + row_offset;
+            let s011_idx = (s011_base as usize) + row_offset;
+            let s100_idx = (s100_base as usize) + row_offset;
+            let s101_idx = (s101_base as usize) + row_offset;
+            let s110_idx = (s110_base as usize) + row_offset;
+            let s111_idx = (s111_base as usize) + row_offset;
 
-            let c_row: &[u16; W] = match (&pad[c_idx..c_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p00_row: &[u16; W] = match (&pad[p00_idx..p00_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p01_row: &[u16; W] = match (&pad[p01_idx..p01_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p10_row: &[u16; W] = match (&pad[p10_idx..p10_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p11_row: &[u16; W] = match (&pad[p11_idx..p11_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-
-            let s000_row: &[u16; W] = match (&pad[s000_idx..s000_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s001_row: &[u16; W] = match (&pad[s001_idx..s001_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s010_row: &[u16; W] = match (&pad[s010_idx..s010_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s011_row: &[u16; W] = match (&pad[s011_idx..s011_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s100_row: &[u16; W] = match (&pad[s100_idx..s100_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s101_row: &[u16; W] = match (&pad[s101_idx..s101_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s110_row: &[u16; W] = match (&pad[s110_idx..s110_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s111_row: &[u16; W] = match (&pad[s111_idx..s111_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-
-            let output_row = cdef_output_row::<W>(out, i)?;
-
+            let out_row_base = i * W;
             for j in 0..W {
-                let center = i32::from(c_row[j]);
+                let center = i32::from(src[c_idx + j]);
                 let mut sum = 0i32;
                 let mut max = center;
                 let mut min = center;
 
-                {
-                    let p0 = i32::from(p00_row[j]);
-                    sum += pri_taps[0] * constrain_with_adj(p0 - center, filter.pri_str, pri_adj);
-                    max = max.max(p0);
-                    min = min.min(p0);
+                let p0 = i32::from(src[p00_idx + j]);
+                sum += pri_taps[0] * constrain_non_zero(p0 - center, filter.pri_str, pri_adj);
+                max = max.max(p0);
+                min = min.min(p0);
 
-                    let s0 = i32::from(s000_row[j]);
-                    sum += sec_taps[0] * constrain_with_adj(s0 - center, filter.sec_str, sec_adj);
-                    max = max.max(s0);
-                    min = min.min(s0);
+                let s0 = i32::from(src[s000_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s0 - center, filter.sec_str, sec_adj);
+                max = max.max(s0);
+                min = min.min(s0);
 
-                    let s1 = i32::from(s001_row[j]);
-                    sum += sec_taps[0] * constrain_with_adj(s1 - center, filter.sec_str, sec_adj);
-                    max = max.max(s1);
-                    min = min.min(s1);
+                let s1 = i32::from(src[s001_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s1 - center, filter.sec_str, sec_adj);
+                max = max.max(s1);
+                min = min.min(s1);
 
-                    let p1 = i32::from(p01_row[j]);
-                    sum += pri_taps[0] * constrain_with_adj(p1 - center, filter.pri_str, pri_adj);
-                    max = max.max(p1);
-                    min = min.min(p1);
+                let p1 = i32::from(src[p01_idx + j]);
+                sum += pri_taps[0] * constrain_non_zero(p1 - center, filter.pri_str, pri_adj);
+                max = max.max(p1);
+                min = min.min(p1);
 
-                    let s2 = i32::from(s010_row[j]);
-                    sum += sec_taps[0] * constrain_with_adj(s2 - center, filter.sec_str, sec_adj);
-                    max = max.max(s2);
-                    min = min.min(s2);
+                let s2 = i32::from(src[s010_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s2 - center, filter.sec_str, sec_adj);
+                max = max.max(s2);
+                min = min.min(s2);
 
-                    let s3 = i32::from(s011_row[j]);
-                    sum += sec_taps[0] * constrain_with_adj(s3 - center, filter.sec_str, sec_adj);
-                    max = max.max(s3);
-                    min = min.min(s3);
-                }
+                let s3 = i32::from(src[s011_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s3 - center, filter.sec_str, sec_adj);
+                max = max.max(s3);
+                min = min.min(s3);
 
-                {
-                    let p0 = i32::from(p10_row[j]);
-                    sum += pri_taps[1] * constrain_with_adj(p0 - center, filter.pri_str, pri_adj);
-                    max = max.max(p0);
-                    min = min.min(p0);
+                let p2 = i32::from(src[p10_idx + j]);
+                sum += pri_taps[1] * constrain_non_zero(p2 - center, filter.pri_str, pri_adj);
+                max = max.max(p2);
+                min = min.min(p2);
 
-                    let s0 = i32::from(s100_row[j]);
-                    sum += sec_taps[1] * constrain_with_adj(s0 - center, filter.sec_str, sec_adj);
-                    max = max.max(s0);
-                    min = min.min(s0);
+                let s4 = i32::from(src[s100_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s4 - center, filter.sec_str, sec_adj);
+                max = max.max(s4);
+                min = min.min(s4);
 
-                    let s1 = i32::from(s101_row[j]);
-                    sum += sec_taps[1] * constrain_with_adj(s1 - center, filter.sec_str, sec_adj);
-                    max = max.max(s1);
-                    min = min.min(s1);
+                let s5 = i32::from(src[s101_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s5 - center, filter.sec_str, sec_adj);
+                max = max.max(s5);
+                min = min.min(s5);
 
-                    let p1 = i32::from(p11_row[j]);
-                    sum += pri_taps[1] * constrain_with_adj(p1 - center, filter.pri_str, pri_adj);
-                    max = max.max(p1);
-                    min = min.min(p1);
+                let p3 = i32::from(src[p11_idx + j]);
+                sum += pri_taps[1] * constrain_non_zero(p3 - center, filter.pri_str, pri_adj);
+                max = max.max(p3);
+                min = min.min(p3);
 
-                    let s2 = i32::from(s110_row[j]);
-                    sum += sec_taps[1] * constrain_with_adj(s2 - center, filter.sec_str, sec_adj);
-                    max = max.max(s2);
-                    min = min.min(s2);
+                let s6 = i32::from(src[s110_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s6 - center, filter.sec_str, sec_adj);
+                max = max.max(s6);
+                min = min.min(s6);
 
-                    let s3 = i32::from(s111_row[j]);
-                    sum += sec_taps[1] * constrain_with_adj(s3 - center, filter.sec_str, sec_adj);
-                    max = max.max(s3);
-                    min = min.min(s3);
-                }
+                let s7 = i32::from(src[s111_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s7 - center, filter.sec_str, sec_adj);
+                max = max.max(s7);
+                min = min.min(s7);
 
                 let rounded = center + ((8 + sum - i32::from(sum < 0)) >> 4);
-                output_row[j] = rounded.clamp(min, max) as u16;
+                let val = rounded.clamp(min, max) as u16;
+                let _ = T::try_from_u16(val).map(|v| out[out_row_base + j] = v);
             }
         }
     } else if filter.pri_str != 0 {
         for i in 0..h {
-            let row_offset = i * CDEF_PADDED_SIDE;
-            let c_idx = c_base as usize + row_offset;
-            let p00_idx = p00_base as usize + row_offset;
-            let p01_idx = p01_base as usize + row_offset;
-            let p10_idx = p10_base as usize + row_offset;
-            let p11_idx = p11_base as usize + row_offset;
+            let row_offset = i * stride;
+            let c_idx = (c_base as usize) + row_offset;
+            let p00_idx = (p00_base as usize) + row_offset;
+            let p01_idx = (p01_base as usize) + row_offset;
+            let p10_idx = (p10_base as usize) + row_offset;
+            let p11_idx = (p11_base as usize) + row_offset;
 
-            let c_row: &[u16; W] = match (&pad[c_idx..c_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p00_row: &[u16; W] = match (&pad[p00_idx..p00_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p01_row: &[u16; W] = match (&pad[p01_idx..p01_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p10_row: &[u16; W] = match (&pad[p10_idx..p10_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let p11_row: &[u16; W] = match (&pad[p11_idx..p11_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-
-            let output_row = cdef_output_row::<W>(out, i)?;
-
+            let out_row_base = i * W;
             for j in 0..W {
-                let center = i32::from(c_row[j]);
+                let center = i32::from(src[c_idx + j]);
                 let mut sum = 0i32;
 
-                let p0 = i32::from(p00_row[j]);
-                sum += pri_taps[0] * constrain_with_adj(p0 - center, filter.pri_str, pri_adj);
-                let p1 = i32::from(p01_row[j]);
-                sum += pri_taps[0] * constrain_with_adj(p1 - center, filter.pri_str, pri_adj);
+                let p0 = i32::from(src[p00_idx + j]);
+                sum += pri_taps[0] * constrain_non_zero(p0 - center, filter.pri_str, pri_adj);
+                let p1 = i32::from(src[p01_idx + j]);
+                sum += pri_taps[0] * constrain_non_zero(p1 - center, filter.pri_str, pri_adj);
 
-                let p2 = i32::from(p10_row[j]);
-                sum += pri_taps[1] * constrain_with_adj(p2 - center, filter.pri_str, pri_adj);
-                let p3 = i32::from(p11_row[j]);
-                sum += pri_taps[1] * constrain_with_adj(p3 - center, filter.pri_str, pri_adj);
+                let p2 = i32::from(src[p10_idx + j]);
+                sum += pri_taps[1] * constrain_non_zero(p2 - center, filter.pri_str, pri_adj);
+                let p3 = i32::from(src[p11_idx + j]);
+                sum += pri_taps[1] * constrain_non_zero(p3 - center, filter.pri_str, pri_adj);
 
-                output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+                let val = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+                let _ = T::try_from_u16(val).map(|v| out[out_row_base + j] = v);
             }
         }
     } else if filter.sec_str != 0 {
         for i in 0..h {
-            let row_offset = i * CDEF_PADDED_SIDE;
-            let c_idx = c_base as usize + row_offset;
-            let s000_idx = s000_base as usize + row_offset;
-            let s001_idx = s001_base as usize + row_offset;
-            let s010_idx = s010_base as usize + row_offset;
-            let s011_idx = s011_base as usize + row_offset;
-            let s100_idx = s100_base as usize + row_offset;
-            let s101_idx = s101_base as usize + row_offset;
-            let s110_idx = s110_base as usize + row_offset;
-            let s111_idx = s111_base as usize + row_offset;
+            let row_offset = i * stride;
+            let c_idx = (c_base as usize) + row_offset;
+            let s000_idx = (s000_base as usize) + row_offset;
+            let s001_idx = (s001_base as usize) + row_offset;
+            let s010_idx = (s010_base as usize) + row_offset;
+            let s011_idx = (s011_base as usize) + row_offset;
+            let s100_idx = (s100_base as usize) + row_offset;
+            let s101_idx = (s101_base as usize) + row_offset;
+            let s110_idx = (s110_base as usize) + row_offset;
+            let s111_idx = (s111_base as usize) + row_offset;
 
-            let c_row: &[u16; W] = match (&pad[c_idx..c_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s000_row: &[u16; W] = match (&pad[s000_idx..s000_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s001_row: &[u16; W] = match (&pad[s001_idx..s001_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s010_row: &[u16; W] = match (&pad[s010_idx..s010_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s011_row: &[u16; W] = match (&pad[s011_idx..s011_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s100_row: &[u16; W] = match (&pad[s100_idx..s100_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s101_row: &[u16; W] = match (&pad[s101_idx..s101_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s110_row: &[u16; W] = match (&pad[s110_idx..s110_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-            let s111_row: &[u16; W] = match (&pad[s111_idx..s111_idx + W]).try_into() {
-                Ok(r) => r,
-                Err(_) => return None,
-            };
-
-            let output_row = cdef_output_row::<W>(out, i)?;
-
+            let out_row_base = i * W;
             for j in 0..W {
-                let center = i32::from(c_row[j]);
+                let center = i32::from(src[c_idx + j]);
                 let mut sum = 0i32;
 
-                let s0 = i32::from(s000_row[j]);
-                sum += sec_taps[0] * constrain_with_adj(s0 - center, filter.sec_str, sec_adj);
-                let s1 = i32::from(s001_row[j]);
-                sum += sec_taps[0] * constrain_with_adj(s1 - center, filter.sec_str, sec_adj);
-                let s2 = i32::from(s010_row[j]);
-                sum += sec_taps[0] * constrain_with_adj(s2 - center, filter.sec_str, sec_adj);
-                let s3 = i32::from(s011_row[j]);
-                sum += sec_taps[0] * constrain_with_adj(s3 - center, filter.sec_str, sec_adj);
+                let s0 = i32::from(src[s000_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s0 - center, filter.sec_str, sec_adj);
+                let s1 = i32::from(src[s001_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s1 - center, filter.sec_str, sec_adj);
+                let s2 = i32::from(src[s010_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s2 - center, filter.sec_str, sec_adj);
+                let s3 = i32::from(src[s011_idx + j]);
+                sum += sec_taps[0] * constrain_non_zero(s3 - center, filter.sec_str, sec_adj);
 
-                let s4 = i32::from(s100_row[j]);
-                sum += sec_taps[1] * constrain_with_adj(s4 - center, filter.sec_str, sec_adj);
-                let s5 = i32::from(s101_row[j]);
-                sum += sec_taps[1] * constrain_with_adj(s5 - center, filter.sec_str, sec_adj);
-                let s6 = i32::from(s110_row[j]);
-                sum += sec_taps[1] * constrain_with_adj(s6 - center, filter.sec_str, sec_adj);
-                let s7 = i32::from(s111_row[j]);
-                sum += sec_taps[1] * constrain_with_adj(s7 - center, filter.sec_str, sec_adj);
+                let s4 = i32::from(src[s100_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s4 - center, filter.sec_str, sec_adj);
+                let s5 = i32::from(src[s101_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s5 - center, filter.sec_str, sec_adj);
+                let s6 = i32::from(src[s110_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s6 - center, filter.sec_str, sec_adj);
+                let s7 = i32::from(src[s111_idx + j]);
+                sum += sec_taps[1] * constrain_non_zero(s7 - center, filter.sec_str, sec_adj);
 
-                output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+                let val = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
+                let _ = T::try_from_u16(val).map(|v| out[out_row_base + j] = v);
             }
         }
     } else {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let output_row = cdef_output_row::<W>(out, i)?;
-            *output_row = *center_row;
+            let row_offset = i * stride;
+            let c_idx = (c_base as usize) + row_offset;
+            let out_row_base = i * W;
+            for j in 0..W {
+                let val = src[c_idx + j];
+                let _ = T::try_from_u16(val).map(|v| out[out_row_base + j] = v);
+            }
         }
     }
-    Some(())
+}
+
+/// AV2 § 7.18.3 CDEF filter for one fully-interior block over any strided sample buffer.
+pub fn cdef_filter_block_interior_stride<T: crate::format::ReconSample>(
+    src: &[u16],
+    stride: usize,
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [T; 64],
+) -> bool {
+    let w = w.min(8);
+    let h = h.min(8);
+    let needed = (h.saturating_add(3)).saturating_mul(stride).saturating_add(12);
+    if src.len() < needed || stride < 12 {
+        return false;
+    }
+    let (pri_rel, sec_rel) = cdef_offsets_for_stride(stride, filter.dir);
+    match w {
+        8 => {
+            cdef_filter_block_interior_stride_rows::<8, T>(src, stride, h, filter, &pri_rel, &sec_rel, out);
+            true
+        }
+        4 => {
+            cdef_filter_block_interior_stride_rows::<4, T>(src, stride, h, filter, &pri_rel, &sec_rel, out);
+            true
+        }
+        _ => false,
+    }
 }
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
-///
-/// `pad` holds the `CDEF_PADDED_SIDE x CDEF_PADDED_SIDE` row-major
-/// neighbourhood in native `u16` sample storage, widened to `i32` per tap. Its
-/// `(w x h)` output block starts at row 2, column 2; the
-/// caller guarantees every tap position is inside the § 5.20.9.3 filter region
-/// (`CdefAvailable` everywhere), which is what makes the per-tap availability
-/// guard of [`cdef_filter_sample`] statically true. Bit-exact with calling
-/// [`cdef_filter_sample`] per sample on all-available taps.
-///
-/// Filtered samples are written in native `u16` storage to `out[i * w + j]`
-/// for `i in 0..h`, `j in 0..w`; `w` and `h` are clamped to 8. Every tap index
-/// provably stays inside the scratch: the center index is at least
-/// `2 * CDEF_PADDED_SIDE + 2` and the largest tap displacement is
-/// `2 * CDEF_PADDED_SIDE + 2` in either
-/// direction.
 pub fn cdef_filter_block_interior(
     pad: &[u16; CDEF_PADDED_AREA],
     w: usize,
@@ -620,32 +568,12 @@ pub fn cdef_filter_block_interior(
     filter: &CdefBlockFilter,
     out: &mut [u16; 64],
 ) {
-    let w = w.min(8);
-    let h = h.min(8);
-
-    let rel = |dir: usize, k: usize, sign: i32| -> isize {
-        (sign * CDEF_DIRECTIONS[dir & 7][k][0]) as isize * CDEF_PADDED_SIDE as isize
-            + (sign * CDEF_DIRECTIONS[dir & 7][k][1]) as isize
-    };
-    let mut pri_rel = [[0isize; 2]; 2];
-    let mut sec_rel = [[[0isize; 2]; 2]; 2];
-    for k in 0..2 {
-        for (sign_index, sign) in [-1i32, 1].into_iter().enumerate() {
-            pri_rel[k][sign_index] = rel(filter.dir, k, sign);
-            for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
-                sec_rel[k][sign_index][dir_off_index] = rel(filter.dir + dir_off, k, sign);
-            }
-        }
-    }
-
-    let row_result = match w {
-        8 => cdef_filter_block_interior_rows::<8>(pad, h, filter, &pri_rel, &sec_rel, out),
-        4 => cdef_filter_block_interior_rows::<4>(pad, h, filter, &pri_rel, &sec_rel, out),
-        _ => None,
-    };
-    if row_result.is_some() {
+    if cdef_filter_block_interior_stride(pad, CDEF_PADDED_SIDE, w, h, filter, out) {
         return;
     }
+    let w = w.min(8);
+    let h = h.min(8);
+    let (pri_rel, sec_rel) = cdef_offsets_for_stride(CDEF_PADDED_SIDE, filter.dir);
 
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
@@ -686,8 +614,6 @@ pub fn cdef_filter_block_interior(
                 out[i * w + j] = rounded.clamp(min, max) as u16;
             }
         }
-    // Either tap family alone has total weight 12, so its rounded result cannot
-    // leave the neighbour range and the min/max clamp is redundant.
     } else if filter.pri_str != 0 {
         for i in 0..h {
             for j in 0..w {

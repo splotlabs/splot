@@ -259,6 +259,22 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             .write_rect(rect, samples, row_stride_samples, max)
     }
 
+    /// Writes a rectangular block of samples directly into workspace plane storage
+    /// without per-sample bounds checking against `max_sample`.
+    ///
+    /// The caller guarantees that `samples` are already valid for the active bit depth
+    /// (e.g., produced by an internal loop filter or prediction step).
+    pub fn write_rect_trusted(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        self.plane_mut(plane)?
+            .write_rect_trusted(rect, samples, row_stride_samples)
+    }
+
     /// Copies an already reconstructed source rectangle within one workspace plane.
     ///
     /// The source rectangle is snapped into scratch storage before target writes,
@@ -690,6 +706,48 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 
             // splot-copy-ok: write caller samples into owned current-frame workspace plane storage
             self.samples[target_range].copy_from_slice(source_row);
+        }
+        Ok(())
+    }
+
+    fn write_rect_trusted(
+        &mut self,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        let rect = self.clamp_rect_to_storage(rect)?;
+        if row_stride_samples < rect.width() {
+            return Err(ReconError::WorkspaceWriteStrideTooSmall {
+                plane: self.plane,
+                stride_samples: row_stride_samples,
+                width: rect.width(),
+            });
+        }
+
+        let expected = required_row_strided_samples(rect, row_stride_samples)?;
+        if samples.len() < expected {
+            return Err(ReconError::WorkspaceWriteLengthMismatch {
+                plane: self.plane,
+                expected,
+                actual: samples.len(),
+            });
+        }
+
+        if rect.width() == 0 || rect.height() == 0 {
+            return Ok(());
+        }
+        let target_base = self.row_range(rect.y(), rect.x(), rect.width())?.start;
+        let last_row = rect.y() + rect.height() - 1;
+        self.row_range(last_row, rect.x(), rect.width())?;
+
+        for row_index in 0..rect.height() {
+            let source_row_start = row_index * row_stride_samples;
+            let target_start = target_base + row_index * self.stride_samples;
+            let target_range = target_start..target_start + rect.width();
+            let source_range = source_row_start..source_row_start + rect.width();
+            // splot-copy-ok: write trusted caller samples into owned current-frame workspace plane storage
+            self.samples[target_range].copy_from_slice(&samples[source_range]);
         }
         Ok(())
     }

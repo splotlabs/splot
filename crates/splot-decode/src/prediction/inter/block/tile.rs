@@ -359,6 +359,7 @@ fn decode_tile_chunk<T: DeferredReconSample>(
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
+        let t_state = crate::timing::start();
         let mut coeff_ctx =
             TileCoeffContextState::new_chroma(mi_rows, mi_cols, chroma).map_err(|_| {
                 inter_cap!(
@@ -420,6 +421,8 @@ fn decode_tile_chunk<T: DeferredReconSample>(
             .is_some_and(|inter| inter.enable_refmvbank)
             .then(super::super::find_mv_stack::RefMvBank::new);
         let mut warp_param_bank = super::super::find_mv_stack::WarpParamBank::new();
+        crate::timing::report("tile_state_new", t_state);
+        let t_walk = crate::timing::start();
         let walk = decode_general_intra_multiblock_tree_with_lr_source_blocks(
             tile,
             sequence,
@@ -493,6 +496,8 @@ fn decode_tile_chunk<T: DeferredReconSample>(
             },
         )
         .map_err(|error| map_inter_multiblock_error(error, tile_offset))?;
+        crate::timing::report("tile_walk", t_walk);
+        let t_flush = crate::timing::start();
         deferred_recon::flush_deferred(
             &mut deferred,
             workspace,
@@ -509,6 +514,7 @@ fn decode_tile_chunk<T: DeferredReconSample>(
             residual_use_ddt,
             bit_depth,
         )?;
+        crate::timing::report("tile_flush_deferred", t_flush);
         let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
             symbols,
             active_source_blocks: tile_source_blocks,

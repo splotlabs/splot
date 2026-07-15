@@ -449,7 +449,7 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
 #[inline]
 fn filter_padded_luma_segment<T: ReconSample>(
     filtered: &mut Vec<T>,
-    acc: &mut [i32],
+    _acc: &mut [i32],
     rows: &[&[T]; 2 * WIENER_NS_LUMA_TAP_RADIUS + 1],
     center: &[T],
     c0: usize,
@@ -461,9 +461,6 @@ fn filter_padded_luma_segment<T: ReconSample>(
     let coeffs = params
         .coeffs_by_class
         .get(subclass)
-        .ok_or_else(|| luma_segment_error(params.width))?;
-    let seg = acc
-        .get_mut(c0..c0 + len)
         .ok_or_else(|| luma_segment_error(params.width))?;
     let center_seg = center
         .get(c0..c0 + len)
@@ -483,27 +480,52 @@ fn filter_padded_luma_segment<T: ReconSample>(
     }
 
     assert_eq!(center_seg.len(), len);
-    assert_eq!(seg.len(), len);
     for j in 0..WIENER_NS_LUMA_COEFFS {
         assert_eq!(plus_slices[j].len(), len);
         assert_eq!(minus_slices[j].len(), len);
     }
 
-    let center_scale = 2 * sum_coeff;
-    for i in 0..len {
-        let mut sum = 0i32;
-        for j in 0..WIENER_NS_LUMA_COEFFS {
-            let tp = i32::from(plus_slices[j][i].to_u16());
-            let tm = i32::from(minus_slices[j][i].to_u16());
-            sum += coeff_vals[j] * (tp + tm);
-        }
-        let center_val = i32::from(center_seg[i].to_u16());
-        seg[i] = (center_val << WIENER_NS_PREC_BITS) + sum - center_scale * center_val;
-    }
+    let p0 = plus_slices[0]; let m0 = minus_slices[0]; let cv0 = coeff_vals[0];
+    let p1 = plus_slices[1]; let m1 = minus_slices[1]; let cv1 = coeff_vals[1];
+    let p2 = plus_slices[2]; let m2 = minus_slices[2]; let cv2 = coeff_vals[2];
+    let p3 = plus_slices[3]; let m3 = minus_slices[3]; let cv3 = coeff_vals[3];
+    let p4 = plus_slices[4]; let m4 = minus_slices[4]; let cv4 = coeff_vals[4];
+    let p5 = plus_slices[5]; let m5 = minus_slices[5]; let cv5 = coeff_vals[5];
+    let p6 = plus_slices[6]; let m6 = minus_slices[6]; let cv6 = coeff_vals[6];
+    let p7 = plus_slices[7]; let m7 = minus_slices[7]; let cv7 = coeff_vals[7];
+    let p8 = plus_slices[8]; let m8 = minus_slices[8]; let cv8 = coeff_vals[8];
+    let p9 = plus_slices[9]; let m9 = minus_slices[9]; let cv9 = coeff_vals[9];
+    let p10 = plus_slices[10]; let m10 = minus_slices[10]; let cv10 = coeff_vals[10];
+    let p11 = plus_slices[11]; let m11 = minus_slices[11]; let cv11 = coeff_vals[11];
+    let p12 = plus_slices[12]; let m12 = minus_slices[12]; let cv12 = coeff_vals[12];
+    let p13 = plus_slices[13]; let m13 = minus_slices[13]; let cv13 = coeff_vals[13];
+    let p14 = plus_slices[14]; let m14 = minus_slices[14]; let cv14 = coeff_vals[14];
+    let p15 = plus_slices[15]; let m15 = minus_slices[15]; let cv15 = coeff_vals[15];
 
-    for &s in seg.iter() {
-        let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
-        filtered.push(T::try_from_u16(value as u16)?);
+    let center_scale = 2 * sum_coeff;
+    let max_val = i32::from(max_sample);
+    filtered.reserve(len);
+    for i in 0..len {
+        let sum = cv0 * (i32::from(p0[i].to_u16()) + i32::from(m0[i].to_u16()))
+                + cv1 * (i32::from(p1[i].to_u16()) + i32::from(m1[i].to_u16()))
+                + cv2 * (i32::from(p2[i].to_u16()) + i32::from(m2[i].to_u16()))
+                + cv3 * (i32::from(p3[i].to_u16()) + i32::from(m3[i].to_u16()))
+                + cv4 * (i32::from(p4[i].to_u16()) + i32::from(m4[i].to_u16()))
+                + cv5 * (i32::from(p5[i].to_u16()) + i32::from(m5[i].to_u16()))
+                + cv6 * (i32::from(p6[i].to_u16()) + i32::from(m6[i].to_u16()))
+                + cv7 * (i32::from(p7[i].to_u16()) + i32::from(m7[i].to_u16()))
+                + cv8 * (i32::from(p8[i].to_u16()) + i32::from(m8[i].to_u16()))
+                + cv9 * (i32::from(p9[i].to_u16()) + i32::from(m9[i].to_u16()))
+                + cv10 * (i32::from(p10[i].to_u16()) + i32::from(m10[i].to_u16()))
+                + cv11 * (i32::from(p11[i].to_u16()) + i32::from(m11[i].to_u16()))
+                + cv12 * (i32::from(p12[i].to_u16()) + i32::from(m12[i].to_u16()))
+                + cv13 * (i32::from(p13[i].to_u16()) + i32::from(m13[i].to_u16()))
+                + cv14 * (i32::from(p14[i].to_u16()) + i32::from(m14[i].to_u16()))
+                + cv15 * (i32::from(p15[i].to_u16()) + i32::from(m15[i].to_u16()));
+        let center_val = i32::from(center_seg[i].to_u16());
+        let s = (center_val << WIENER_NS_PREC_BITS) + sum - center_scale * center_val;
+        let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, max_val) as u16;
+        filtered.push(T::try_from_u16(value)?);
     }
     Ok(())
 }
