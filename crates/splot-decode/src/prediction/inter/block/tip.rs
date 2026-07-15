@@ -617,16 +617,14 @@ pub(super) fn reconstruct<T: ReconSample>(
             tile_offset,
         )?;
     }
-    temporal_records
-        .try_reserve_exact(unit_count)
-        .map_err(|_| {
-            inter_cap!(
-                "inter_tip_temporal_record_allocation",
-                tile_offset,
-                "inter.tip.temporal_record_allocation",
-                "7.22"
-            )
-        })?;
+    temporal_records.try_reserve(unit_count).map_err(|_| {
+        inter_cap!(
+            "inter_tip_temporal_record_allocation",
+            tile_offset,
+            "inter.tip.temporal_record_allocation",
+            "7.22"
+        )
+    })?;
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     for unit in scratch.units.drain(..) {
         let stored_mvs = if let Some(metadata) = unit.metadata {

@@ -18,7 +18,7 @@ const TX_4X4: usize = 0;
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
-const MAX_RETAINED_INTER_RESIDUAL_LISTS: usize = 64;
+const MAX_RETAINED_INTER_RESIDUAL_LISTS: usize = 128;
 const MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS: usize = 16 * 1024;
 
 #[derive(Default)]

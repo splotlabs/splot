@@ -227,33 +227,37 @@ struct ReconRowEntry<T: ReconSample> {
     error: Option<crate::DecodeError>,
 }
 
-struct ReconSuperblock<Entry> {
+struct ReconSuperblock {
     origin: [usize; 2],
     dependency: ReconDependency,
-    entries: Vec<Entry>,
+    entries: Range<usize>,
 }
 
 fn push_recon_entry<Entry>(
-    superblocks: &mut Vec<ReconSuperblock<Entry>>,
+    superblocks: &mut Vec<ReconSuperblock>,
+    entries: &mut Vec<Entry>,
     origin: [usize; 2],
     dependency: ReconDependency,
     entry: Entry,
 ) {
+    let entry_index = entries.len();
+    entries.push(entry);
     if let Some(superblock) = superblocks.last_mut().filter(|sb| sb.origin == origin) {
         superblock.dependency = superblock.dependency.max(dependency);
-        superblock.entries.push(entry);
+        superblock.entries.end = entries.len();
     } else {
         superblocks.push(ReconSuperblock {
             origin,
             dependency,
-            entries: vec![entry],
+            entries: entry_index..entries.len(),
         });
     }
 }
 
 struct ReconRow<T: ReconSample> {
     ordinal: usize,
-    superblocks: Vec<ReconSuperblock<ReconRowEntry<T>>>,
+    superblocks: Vec<ReconSuperblock>,
+    entries: Vec<ReconRowEntry<T>>,
     temporal: Vec<TemporalMotionBlock>,
     terminal: Option<crate::DecodeError>,
 }
@@ -264,6 +268,7 @@ impl<T: ReconSample> ReconRow<T> {
         let dependency = command.dependency();
         push_recon_entry(
             &mut self.superblocks,
+            &mut self.entries,
             origin,
             dependency,
             ReconRowEntry {
@@ -314,9 +319,11 @@ fn precompute_recon_row<T: ReconSample>(
     let _quantizer_scopes = quantizer.install_frame();
     let info = band.info();
     let mut scratch = deferred_recon::InterReconScratch::default();
-    let mut stopped = false;
-    for superblock in &mut row.superblocks {
-        let footprints_contained = superblock.entries.iter().all(|entry| {
+    'superblocks: for superblock in &mut row.superblocks {
+        let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
+            break;
+        };
+        let footprints_contained = entries.iter().all(|entry| {
             matches!(
                 entry.command.as_ref(),
                 Some(ReconCommand::Inter(command))
@@ -325,19 +332,18 @@ fn precompute_recon_row<T: ReconSample>(
         });
         let safe = select_prepass_superblock(
             superblock.dependency,
-            !superblock.entries.is_empty(),
+            !entries.is_empty(),
             footprints_contained,
         );
-        if !safe || stopped {
+        if !safe {
             continue;
         }
-        for entry in &mut superblock.entries {
+        for entry in entries {
             let command = match entry.command.take() {
                 Some(ReconCommand::Inter(command)) => command,
                 command => {
                     entry.command = command;
-                    stopped = true;
-                    break;
+                    break 'superblocks;
                 }
             };
             let start = row.temporal.len();
@@ -365,8 +371,7 @@ fn precompute_recon_row<T: ReconSample>(
                 Err(error) => {
                     row.temporal.truncate(start);
                     entry.error = Some(error);
-                    stopped = true;
-                    break;
+                    break 'superblocks;
                 }
             }
         }
@@ -412,24 +417,31 @@ fn replay_recon_row<T: ReconSample>(
     let _quantizer_scopes = quantizer.install_frame();
     let ReconRow {
         superblocks,
+        mut entries,
         temporal,
         ..
     } = row;
     for superblock in superblocks {
+        let superblock_entries = entries.get_mut(superblock.entries.clone()).ok_or_else(|| {
+            inter_cap!(
+                "inter_row_replay_entry_range",
+                tile_offset,
+                "inter.row.task_capacity",
+                SPEC_MODE_INFO
+            )
+        })?;
         debug_assert!(
-            superblock
-                .entries
+            superblock_entries
                 .iter()
                 .all(|entry| entry.publication.superblock_origin() == superblock.origin)
         );
         let fully_precomputed = superblock.dependency == ReconDependency::ReferenceOnly
-            && !superblock.entries.is_empty()
-            && superblock
-                .entries
+            && !superblock_entries.is_empty()
+            && superblock_entries
                 .iter()
                 .all(|entry| entry.command.is_none() && entry.error.is_none());
         if fully_precomputed {
-            let (Some(first), Some(last)) = (superblock.entries.first(), superblock.entries.last())
+            let (Some(first), Some(last)) = (superblock_entries.first(), superblock_entries.last())
             else {
                 continue;
             };
@@ -446,14 +458,14 @@ fn replay_recon_row<T: ReconSample>(
             super::temporal::commit_temporal_motion_blocks(motion_field, records);
             continue;
         }
-        for mut entry in superblock.entries {
+        for entry in superblock_entries {
             entry
                 .publication
                 .prepare_block_decoded(block_decoded, current_superblock);
             if let Some(error) = entry.error.take() {
                 return Err(error);
             }
-            if let Some(command) = entry.command {
+            if let Some(command) = entry.command.take() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
                         command.reconstruct(workspace, block_decoded)?;
@@ -478,7 +490,7 @@ fn replay_recon_row<T: ReconSample>(
                     )?,
                 }
             } else {
-                let records = temporal.get(entry.temporal).ok_or_else(|| {
+                let records = temporal.get(entry.temporal.clone()).ok_or_else(|| {
                     inter_cap!(
                         "inter_row_replay_temporal_range",
                         tile_offset,
@@ -647,6 +659,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut walk = Some(walk);
         let mut parser_ordinal = 0usize;
         let mut recon_ordinal = 0usize;
+        let mut entry_capacity = 0usize;
+        let mut superblock_capacity = 0usize;
         let mut tile_walk_output = None;
         let tile_rows = tile.mi_row_range();
         let tile_first_band = tile_rows.start as usize / sb_h4;
@@ -654,7 +668,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
             let _quantizer_scopes = quantizer.install_frame();
             let mut recon_row = ReconRow {
                 ordinal: parser_ordinal,
-                superblocks: Vec::new(),
+                superblocks: Vec::with_capacity(superblock_capacity),
+                entries: Vec::with_capacity(entry_capacity),
                 temporal: Vec::new(),
                 terminal: None,
             };
@@ -734,6 +749,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 ));
                 return ParserStep::Last(recon_row);
             };
+            entry_capacity = entry_capacity.max(recon_row.entries.capacity());
+            superblock_capacity = superblock_capacity.max(recon_row.superblocks.capacity());
             match decoded_row {
                 Ok(Some(_)) => ParserStep::More(recon_row),
                 Err(error) => {
@@ -777,7 +794,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 }
             }
         };
-        let parallel_prepass = splot_parallel::on_multiworker_pool()
+        let parallel_prepass = splot_parallel::current_pool_width() >= 4
             && !super::intrabc::global_intrabc_enabled(core.intrabc);
         if parallel_prepass {
             let sb_size = match sb_h4 {
@@ -825,9 +842,12 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     ParserStep::More(ready)
                 }
             };
+            let timer = crate::timing::start();
+            let tally = crate::timing::WorkerTally::new();
             let mut prepared = run_ready_row_prepass_parallel(
                 parse_ready,
                 |ready| {
+                    tally.note_worker();
                     precompute_recon_row(
                         ready,
                         &block_decoded,
@@ -862,6 +882,20 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     SPEC_MODE_INFO
                 ),
             })?;
+            if timer.is_some() {
+                crate::timing::report_detail(
+                    "inter_row_prepass",
+                    timer,
+                    &format!(
+                        "units={} threads={} workers_used={} max_pending={} max_active={}",
+                        prepared.rows.len(),
+                        splot_parallel::current_pool_width(),
+                        tally.workers_used(),
+                        prepared.max_pending,
+                        prepared.max_active
+                    ),
+                );
+            }
             let active_limit = splot_parallel::current_pool_width().saturating_sub(1);
             if prepared.max_pending > READY_ROW_CAPACITY || prepared.max_active > active_limit {
                 return Err(inter_cap!(
@@ -986,11 +1020,31 @@ mod ready_row_tests {
     #[test]
     fn recon_entries_are_bucketed_by_contiguous_superblock_without_reordering() {
         let mut superblocks = Vec::new();
-        push_recon_entry(&mut superblocks, [0, 0], ReconDependency::ReferenceOnly, 0);
-        push_recon_entry(&mut superblocks, [0, 0], ReconDependency::CurrentFrame, 1);
-        push_recon_entry(&mut superblocks, [0, 16], ReconDependency::ReferenceOnly, 2);
+        let mut entries = Vec::new();
         push_recon_entry(
             &mut superblocks,
+            &mut entries,
+            [0, 0],
+            ReconDependency::ReferenceOnly,
+            0,
+        );
+        push_recon_entry(
+            &mut superblocks,
+            &mut entries,
+            [0, 0],
+            ReconDependency::CurrentFrame,
+            1,
+        );
+        push_recon_entry(
+            &mut superblocks,
+            &mut entries,
+            [0, 16],
+            ReconDependency::ReferenceOnly,
+            2,
+        );
+        push_recon_entry(
+            &mut superblocks,
+            &mut entries,
             [0, 0],
             ReconDependency::GlobalIntrabcFence,
             3,
@@ -1006,7 +1060,14 @@ mod ready_row_tests {
         assert_eq!(
             superblocks
                 .iter()
-                .flat_map(|superblock| superblock.entries.iter().copied())
+                .map(|superblock| superblock.entries.clone())
+                .collect::<Vec<_>>(),
+            [0..2, 2..3, 3..4]
+        );
+        assert_eq!(
+            superblocks
+                .iter()
+                .flat_map(|superblock| entries[superblock.entries.clone()].iter().copied())
                 .collect::<Vec<_>>(),
             [0, 1, 2, 3]
         );
@@ -1015,12 +1076,13 @@ mod ready_row_tests {
     #[test]
     fn recon_superblock_retains_the_strongest_dependency() {
         let mut superblocks = Vec::new();
+        let mut entries = Vec::new();
         for dependency in [
             ReconDependency::ReferenceOnly,
             ReconDependency::GlobalIntrabcFence,
             ReconDependency::CurrentFrame,
         ] {
-            push_recon_entry(&mut superblocks, [0, 0], dependency, ());
+            push_recon_entry(&mut superblocks, &mut entries, [0, 0], dependency, ());
         }
 
         assert_eq!(superblocks.len(), 1);

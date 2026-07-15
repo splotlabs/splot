@@ -10,6 +10,16 @@ use splot_recon::{
     wedge_mask_plane_sample,
 };
 
+fn compound_recycler_box<T: 'static>() -> Option<*const ()> {
+    MC_SAMPLES_RECYCLER.with(|cell| {
+        cell.borrow()
+            .iter()
+            .flatten()
+            .find(|any| any.is::<Vec<T>>())
+            .map(|any| std::ptr::from_ref::<dyn std::any::Any>(&**any).cast::<()>())
+    })
+}
+
 #[test]
 fn motion_compensation_planes_follow_output_chroma_format() {
     assert_eq!(
@@ -24,6 +34,36 @@ fn motion_compensation_planes_follow_output_chroma_format() {
         mc_planes(PixelFormat::Yuv444),
         [(PlaneId::Y, 0, 0), (PlaneId::U, 0, 0), (PlaneId::V, 0, 0)]
     );
+}
+
+#[test]
+fn compound_sample_recycler_keeps_its_box_and_sample_storage() {
+    MC_SAMPLES_RECYCLER.with(|cell| *cell.borrow_mut() = [None, None]);
+
+    let mut samples = take_mc_samples::<u16>();
+    samples.resize(64, 0);
+    let storage = samples.as_ptr();
+    recycle_mc_samples(&mut samples);
+    assert!(samples.is_empty());
+    let recycler_box = compound_recycler_box::<u16>().expect("u16 recycler box");
+
+    let mut reused = take_mc_samples::<u16>();
+    assert_eq!(reused.as_ptr(), storage);
+    assert_eq!(compound_recycler_box::<u16>(), Some(recycler_box));
+    recycle_mc_samples(&mut reused);
+
+    let mut u8_samples = take_mc_samples::<u8>();
+    u8_samples.resize(32, 0);
+    let u8_storage = u8_samples.as_ptr();
+    recycle_mc_samples(&mut u8_samples);
+    let mut u16_samples = take_mc_samples::<u16>();
+    let mut u8_samples = take_mc_samples::<u8>();
+    assert_eq!(u16_samples.as_ptr(), storage);
+    assert_eq!(u8_samples.as_ptr(), u8_storage);
+    recycle_mc_samples(&mut u16_samples);
+    recycle_mc_samples(&mut u8_samples);
+
+    MC_SAMPLES_RECYCLER.with(|cell| *cell.borrow_mut() = [None, None]);
 }
 
 #[test]

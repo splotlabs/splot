@@ -449,13 +449,7 @@ pub(crate) struct CompoundBlockOutput<T: 'static> {
 
 impl<T: 'static> Drop for CompoundBlockOutput<T> {
     fn drop(&mut self) {
-        let samples = std::mem::take(&mut self.samples);
-        MC_SAMPLES_RECYCLER.with(|cell| {
-            let mut slot = cell.borrow_mut();
-            if slot.is_none() {
-                *slot = Some(Box::new(samples));
-            }
-        });
+        recycle_mc_samples(&mut self.samples);
     }
 }
 
@@ -612,17 +606,7 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
 ) -> Result<CompoundBlockOutput<T>> {
     let sample_count =
         compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
-    let mut samples: Vec<T> = MC_SAMPLES_RECYCLER.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(any) = slot.take() {
-            match any.downcast::<Vec<T>>() {
-                Ok(vec) => *vec,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
-    });
+    let mut samples = take_mc_samples();
     samples.clear();
     samples.resize(sample_count, T::default());
     let metadata =
@@ -1089,8 +1073,38 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static SUBPEL_PREDICTION_BUFFER: std::cell::Cell<Option<Vec<u16>>> =
         const { std::cell::Cell::new(None) };
-    static MC_SAMPLES_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> =
-        std::cell::RefCell::new(None);
+    static MC_SAMPLES_RECYCLER: std::cell::RefCell<[Option<Box<dyn std::any::Any>>; 2]> =
+        std::cell::RefCell::new([None, None]);
+}
+
+fn take_mc_samples<T: 'static>() -> Vec<T> {
+    MC_SAMPLES_RECYCLER.with(|cell| {
+        let mut samples = Vec::new();
+        if let Some(cached) = cell
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+            .find_map(|any| any.downcast_mut::<Vec<T>>())
+        {
+            std::mem::swap(&mut samples, cached);
+        }
+        samples
+    })
+}
+
+fn recycle_mc_samples<T: 'static>(samples: &mut Vec<T>) {
+    MC_SAMPLES_RECYCLER.with(|cell| {
+        let mut slots = cell.borrow_mut();
+        if let Some(cached) = slots
+            .iter_mut()
+            .flatten()
+            .find_map(|any| any.downcast_mut::<Vec<T>>())
+        {
+            std::mem::swap(samples, cached);
+        } else if let Some(slot) = slots.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(Box::new(std::mem::take(samples)));
+        }
+    });
 }
 
 fn take_compound_prediction_buffers(len: usize) -> [Vec<i32>; 2] {

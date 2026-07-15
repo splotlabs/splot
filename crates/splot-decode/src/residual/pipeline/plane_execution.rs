@@ -20,9 +20,7 @@ use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 use super::transform_units::tx_size_log2;
 use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
 
-const MAX_RETAINED_PARSED_RESIDUAL_LISTS: usize = 64;
-const MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS: usize =
-    MAX_RETAINED_PARSED_RESIDUAL_LISTS * super::plan::MAX_RESIDUAL_PLANES;
+const MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS: usize = 128 * super::plan::MAX_RESIDUAL_PLANES;
 
 pub(crate) struct ParsedGeneralIntraResidual {
     planes: RecycledParsedResidualPlanes,
@@ -66,7 +64,6 @@ impl ParsedResidualPlaneRecycler {
         let capacity = planes.capacity();
         if capacity == 0
             || capacity > MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS
-            || self.lists.len() == MAX_RETAINED_PARSED_RESIDUAL_LISTS
             || self.slots > MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS - capacity
             || self.lists.try_reserve(1).is_err()
         {
@@ -729,11 +726,16 @@ mod recycler_tests {
     #[test]
     fn parsed_residual_plane_recycler_is_bounded() {
         let mut recycler = ParsedResidualPlaneRecycler::default();
-        for _ in 0..=MAX_RETAINED_PARSED_RESIDUAL_LISTS {
+        for _ in 0..=MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS {
             recycler.recycle_empty(Vec::with_capacity(1));
         }
-        assert_eq!(recycler.lists.len(), MAX_RETAINED_PARSED_RESIDUAL_LISTS);
-        assert!(recycler.slots <= MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS);
+        assert_eq!(
+            recycler.lists.len(),
+            MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS
+        );
+        assert_eq!(recycler.slots, MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS);
+        assert_eq!(recycler.take().capacity(), 1);
+        assert_eq!(recycler.slots, MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS - 1);
 
         let mut recycler = ParsedResidualPlaneRecycler::default();
         recycler.recycle_empty(Vec::with_capacity(
