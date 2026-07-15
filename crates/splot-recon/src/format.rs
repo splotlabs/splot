@@ -207,6 +207,10 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
     /// letting reference readers borrow plane storage without a widening
     /// copy; `None` for narrower storage types.
     fn u16_slice(samples: &[Self]) -> Option<&[u16]>;
+
+    /// Reinterprets a mutable sample slice as `u16` storage when this type is
+    /// `u16`; `None` for narrower storage types.
+    fn u16_slice_mut(samples: &mut [Self]) -> Option<&mut [u16]>;
 }
 
 impl ReconSample for u8 {
@@ -227,6 +231,10 @@ impl ReconSample for u8 {
     fn u16_slice(_samples: &[Self]) -> Option<&[u16]> {
         None
     }
+
+    fn u16_slice_mut(_samples: &mut [Self]) -> Option<&mut [u16]> {
+        None
+    }
 }
 
 impl ReconSample for u16 {
@@ -241,6 +249,10 @@ impl ReconSample for u16 {
         Ok(value)
     }
     fn u16_slice(samples: &[Self]) -> Option<&[u16]> {
+        Some(samples)
+    }
+
+    fn u16_slice_mut(samples: &mut [Self]) -> Option<&mut [u16]> {
         Some(samples)
     }
 }

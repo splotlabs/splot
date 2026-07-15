@@ -816,6 +816,74 @@ fn compound_intermediate_into_matches_owned_copy_and_filtered() {
 }
 
 #[test]
+fn compound_average_into_matches_materialized_second_predictor() {
+    let ref_w = 24usize;
+    let ref_h = 24usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 73 + (index / ref_w) * 29) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let base = SubpelPredictParams {
+        interp: InterpolationFilter::EightTap,
+        w: 7,
+        h: 5,
+        start_x: 6 << SCALE_SUBPEL_BITS,
+        start_y: 7 << SCALE_SUBPEL_BITS,
+        step_x: 1 << SCALE_SUBPEL_BITS,
+        step_y: 1 << SCALE_SUBPEL_BITS,
+        first_x: 0,
+        first_y: 0,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 - 1,
+        bit_depth: BitDepth::Ten,
+    };
+    let cases = [
+        base,
+        SubpelPredictParams {
+            start_x: base.start_x + (5 << 6),
+            ..base
+        },
+        SubpelPredictParams {
+            start_y: base.start_y + (11 << 6),
+            ..base
+        },
+        SubpelPredictParams {
+            start_x: -(3 << 6),
+            start_y: base.start_y + (9 << 6),
+            step_x: 896,
+            step_y: 1152,
+            ..base
+        },
+    ];
+    let pred0 = (0..base.w * base.h)
+        .map(|index| ((index * 131 + 47) % 1024) as i32 * 16)
+        .collect::<Vec<_>>();
+
+    for params in cases {
+        let pred1 = subpel_predict_block_compound_intermediate(&view, &params).unwrap();
+        for cwp_weight in [8, 12] {
+            let expected =
+                blend_compound_average_weighted(&pred0, &pred1, params.bit_depth, cwp_weight)
+                    .unwrap();
+            let mut actual = vec![0; pred0.len()];
+            subpel_predict_block_compound_average_into(
+                &view,
+                &params,
+                &pred0,
+                cwp_weight,
+                &mut actual,
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "{params:?}, cwp_weight={cwp_weight}");
+        }
+    }
+}
+
+#[test]
 fn one_axis_compound_intermediates_match_independent_reference() {
     let ref_w = 24usize;
     let ref_h = 24usize;
