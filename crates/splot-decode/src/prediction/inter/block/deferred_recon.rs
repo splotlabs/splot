@@ -1,91 +1,27 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Deferred parallel reconstruction of pure inter blocks.
-//!
-//! The ordered walk parses every symbol and updates all parse-visible state
-//! in raster order, but the reconstruction of a *pure* inter block — motion
-//! compensation plus residual add — reads only reference frames and its own
-//! rect, so it can run out of order. The walk queues those blocks here and
-//! flushes the queue whenever a block that reads current-frame pixels
-//! (intra, intraBC, BAWP, inter-intra) is reached, and at the end of the
-//! walk. A flush renders every queued block into a [`BlockReconWindow`] on
-//! the worker pool, publishes the windows into the frame workspace, and
-//! applies the temporal-motion records in block order. Any job error falls
-//! back to re-running that block inline against the frame workspace, so
-//! failures surface exactly as they would on the ordered path.
+//! Owned inter reconstruction commands and consumer-local scratch.
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
-
-use std::sync::{Mutex, MutexGuard};
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
-use splot_parallel::prelude::*;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
+use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::compound::CompoundBlockSyntax;
-use super::super::find_mv_stack::{TemporalMotionField, TemporalMvContext};
-use super::super::mc::{BlockReconWindow, CompoundMotionGrid, WorkspaceSink};
+use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField, TemporalMvContext};
+use super::super::mc::WorkspaceSink;
 use super::super::{InterReferenceState, PlacedInterBlock};
-use super::compound_path::record_compound_temporal_motion;
-use super::prediction::reconstruct_pure_inter_block;
-use super::tip::{self, TipReconstructScratch, apply_tip_temporal_records};
+use super::compound_path::append_compound_temporal_motion;
+use super::temporal::{commit_temporal_motion_blocks, temporal_motion_block};
+use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{
-    DecodeBlockFrontier, FrameQuantizerSnapshot, current_frame_qm_segment_id,
+    FrameQmSegmentScope, TileBlockDecodedState, current_frame_qm_segment_id,
 };
-static BLOCK_RECON_U8_STORAGE: Mutex<Vec<Vec<Vec<u8>>>> = Mutex::new(Vec::new());
-static BLOCK_RECON_U16_STORAGE: Mutex<Vec<Vec<Vec<u16>>>> = Mutex::new(Vec::new());
 
-fn lock_storage<T>(storage: &Mutex<Vec<Vec<Vec<T>>>>) -> MutexGuard<'_, Vec<Vec<Vec<T>>>> {
-    storage
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn take_storage<T>(storage: &Mutex<Vec<Vec<Vec<T>>>>) -> Vec<Vec<T>> {
-    lock_storage(storage).pop().unwrap_or_default()
-}
-
-fn recycle_storage<T>(storage: &Mutex<Vec<Vec<Vec<T>>>>, buffers: Vec<Vec<T>>) {
-    let mut storage = lock_storage(storage);
-    if storage.len() < splot_parallel::current_pool_width() {
-        storage.push(buffers);
-    }
-}
-
-/// Decoded sample storage with a type-safe deferred-window recycler.
-pub(crate) trait DeferredReconSample: ReconSample {
-    /// Takes retained block-window storage.
-    fn take_deferred_storage() -> Vec<Vec<Self>>;
-
-    /// Returns block-window storage to the shared recycler.
-    fn recycle_deferred_storage(storage: Vec<Vec<Self>>);
-}
-
-impl DeferredReconSample for u8 {
-    fn take_deferred_storage() -> Vec<Vec<Self>> {
-        take_storage(&BLOCK_RECON_U8_STORAGE)
-    }
-
-    fn recycle_deferred_storage(storage: Vec<Vec<Self>>) {
-        recycle_storage(&BLOCK_RECON_U8_STORAGE, storage);
-    }
-}
-
-impl DeferredReconSample for u16 {
-    fn take_deferred_storage() -> Vec<Vec<Self>> {
-        take_storage(&BLOCK_RECON_U16_STORAGE)
-    }
-
-    fn recycle_deferred_storage(storage: Vec<Vec<Self>>) {
-        recycle_storage(&BLOCK_RECON_U16_STORAGE, storage);
-    }
-}
-
-/// How a queued block reconstructs and which temporal record it produces.
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PendingKind {
     Single,
@@ -101,7 +37,7 @@ pub(super) enum PendingKind {
 }
 
 #[derive(Debug)]
-struct PendingBlock<T: ReconSample> {
+pub(super) struct InterReconCommand<T: ReconSample> {
     placed: PlacedInterBlock,
     kind: PendingKind,
     segment_id: usize,
@@ -110,104 +46,16 @@ struct PendingBlock<T: ReconSample> {
     tip_scratch: Option<TipReconstructScratch<T>>,
 }
 
-#[derive(Debug)]
-struct CompoundOutput {
-    grid: Option<CompoundMotionGrid>,
-    syntax: CompoundBlockSyntax,
-    warp_params: [Option<[i32; 6]>; 2],
-    mi_row: usize,
-    mi_col: usize,
+#[derive(Debug, Default)]
+pub(super) struct InterReconScratch<T: ReconSample> {
+    tip: Vec<TipReconstructScratch<T>>,
+    temporal: Vec<TemporalMotionBlock>,
 }
 
-#[derive(Debug)]
-enum JobOutput {
-    Single,
-    Compound(CompoundOutput),
-    Tip,
-}
-
-type JobResult<T> = std::result::Result<(BlockReconWindow<T>, JobOutput), Vec<T>>;
-
-/// Queue of pure inter blocks whose reconstruction is deferred to a flush.
-#[derive(Debug)]
-pub(super) struct DeferredInterRecon<T: DeferredReconSample> {
-    pending: Vec<PendingBlock<T>>,
-    storage: Vec<Vec<T>>,
-    results: Vec<JobResult<T>>,
-    tip_scratch: Vec<TipReconstructScratch<T>>,
-}
-
-impl<T: DeferredReconSample> DeferredInterRecon<T> {
-    pub(super) fn new() -> Self {
-        Self {
-            pending: Vec::new(),
-            storage: T::take_deferred_storage(),
-            results: Vec::new(),
-            tip_scratch: Vec::new(),
-        }
-    }
-
-    pub(super) fn push(
-        &mut self,
-        placed: PlacedInterBlock,
-        kind: PendingKind,
-        qindex: u32,
-        tile_offset: ByteOffset,
-    ) {
-        let tip_scratch = if matches!(kind, PendingKind::Tip) {
-            Some(self.take_tip_scratch())
-        } else {
-            None
-        };
-        self.pending.push(PendingBlock {
-            segment_id: current_frame_qm_segment_id(),
-            placed,
-            kind,
-            qindex,
-            tile_offset,
-            tip_scratch,
-        });
-    }
-
-    pub(super) fn take_tip_scratch(&mut self) -> TipReconstructScratch<T> {
-        self.tip_scratch.pop().unwrap_or_default()
-    }
-
-    pub(super) fn recycle_tip_scratch(&mut self, scratch: TipReconstructScratch<T>) {
-        self.tip_scratch.push(scratch);
-    }
-}
-
-impl<T: DeferredReconSample> Drop for DeferredInterRecon<T> {
-    fn drop(&mut self) {
-        for buffer in &mut self.storage {
-            buffer.clear();
-        }
-        T::recycle_deferred_storage(core::mem::take(&mut self.storage));
-    }
-}
-
-/// A block is deferable only when every one of its reads and writes stays
-/// inside its own luma-shaped rect: plain leaves whose chroma reference
-/// geometry equals the luma geometry. Sub-8x8 group leaves and SDP
-/// luma/chroma parts share pixels with siblings and stay on the ordered path.
-pub(super) fn deferable_placed_geometry(
-    placed: &PlacedInterBlock,
-    frontier: &DecodeBlockFrontier,
-) -> bool {
-    !frontier.is_luma_part()
-        && !frontier.is_chroma_part()
-        && !placed.sub8x8_chroma
-        && placed.chroma_luma_x == placed.luma_x
-        && placed.chroma_luma_y == placed.luma_y
-        && placed.chroma_luma_w == placed.luma_w
-        && placed.chroma_luma_h == placed.luma_h
-}
-
-struct FlushShared<'a, 'r, T: ReconSample> {
+struct ReconShared<'a, 'r, T: ReconSample> {
     reference: &'a InterReferenceState<'r, T>,
     ref_frame_idx: &'a [u32],
-    temporal_context: Option<&'a TemporalMvContext>,
+    temporal_context: &'a TemporalMvContext,
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
     luma_use_tcq: bool,
@@ -215,296 +63,557 @@ struct FlushShared<'a, 'r, T: ReconSample> {
     bit_depth: BitDepth,
 }
 
-fn execute<T: ReconSample>(
-    block: &mut PendingBlock<T>,
-    sink: &mut WorkspaceSink<'_, T>,
-    shared: &FlushShared<'_, '_, T>,
-) -> Result<JobOutput> {
-    match block.kind {
-        PendingKind::Single => reconstruct_pure_inter_block(
-            sink,
-            &block.placed,
-            false,
-            false,
-            shared.ref_frame_idx,
-            shared.reference,
-            block.qindex,
-            shared.luma_use_tcq,
-            shared.residual_use_ddt,
-            shared.bit_depth,
-            block.tile_offset,
+const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
+    bawp || interintra
+}
+
+impl<T: ReconSample> InterReconCommand<T> {
+    pub(super) fn new(
+        placed: PlacedInterBlock,
+        kind: PendingKind,
+        qindex: u32,
+        tile_offset: ByteOffset,
+    ) -> Self {
+        Self {
+            placed,
+            kind,
+            segment_id: current_frame_qm_segment_id(),
+            qindex,
+            tile_offset,
+            tip_scratch: None,
+        }
+    }
+
+    pub(super) fn reads_current_frame(&self) -> bool {
+        reads_current_frame(
+            self.placed.block.bawp.enabled,
+            self.placed.block.interintra.is_some(),
         )
-        .map(|_| JobOutput::Single),
-        PendingKind::Compound {
-            syntax,
-            warp_params,
-            mi_row,
-            mi_col,
-            use_refinemv,
-            refinemv_switchable,
-        } => reconstruct_pure_inter_block(
-            sink,
-            &block.placed,
-            use_refinemv,
-            refinemv_switchable,
-            shared.ref_frame_idx,
-            shared.reference,
-            block.qindex,
-            shared.luma_use_tcq,
-            shared.residual_use_ddt,
-            shared.bit_depth,
-            block.tile_offset,
-        )
-        .map(|grid| {
-            JobOutput::Compound(CompoundOutput {
-                grid,
-                syntax,
-                warp_params,
-                mi_row,
-                mi_col,
+    }
+
+    pub(super) fn prepass_write_is_contained(
+        &self,
+        superblock_origin: [usize; 2],
+        sb_h4: usize,
+        info: DecodedFrameInfo,
+    ) -> bool {
+        if self.reads_current_frame() {
+            return false;
+        }
+        let Some(origin_y) = superblock_origin[0].checked_mul(4) else {
+            return false;
+        };
+        let Some(origin_x) = superblock_origin[1].checked_mul(4) else {
+            return false;
+        };
+        let Some(side) = sb_h4.checked_mul(4) else {
+            return false;
+        };
+        let luma = info.coded_luma_size();
+        if !clipped_rect_is_inside_band(
+            self.placed.luma_x,
+            self.placed.luma_y,
+            self.placed.luma_w,
+            self.placed.luma_h,
+            origin_x,
+            origin_y,
+            side,
+            side,
+            luma.width(),
+            luma.height(),
+        ) {
+            return false;
+        }
+        if self.placed.predict_chroma
+            && !clipped_rect_is_inside_band(
+                self.placed.chroma_luma_x,
+                self.placed.chroma_luma_y,
+                self.placed.chroma_luma_w,
+                self.placed.chroma_luma_h,
+                origin_x,
+                origin_y,
+                side,
+                side,
+                luma.width(),
+                luma.height(),
+            )
+        {
+            return false;
+        }
+        self.placed.block.residual.as_ref().is_none_or(|residual| {
+            residual.blocks.iter().all(|block| {
+                let (sub_x, sub_y, storage) = match block.plane {
+                    PlaneId::Y => (0, 0, Some(luma)),
+                    PlaneId::U | PlaneId::V => {
+                        let format = info.pixel_format();
+                        (
+                            usize::from(format.subsampling_x()),
+                            usize::from(format.subsampling_y()),
+                            format.chroma_size(luma).ok().flatten(),
+                        )
+                    }
+                };
+                let Some(storage) = storage else {
+                    return false;
+                };
+                let Some(width) = 1usize.checked_shl(block.log2_width) else {
+                    return false;
+                };
+                let Some(height) = 1usize.checked_shl(block.log2_height) else {
+                    return false;
+                };
+                clipped_rect_is_inside_band(
+                    block.x,
+                    block.y,
+                    width,
+                    height,
+                    origin_x >> sub_x,
+                    origin_y >> sub_y,
+                    side >> sub_x,
+                    side >> sub_y,
+                    storage.width(),
+                    storage.height(),
+                )
             })
-        }),
-        PendingKind::Tip => {
-            let scratch = block.tip_scratch.as_mut().ok_or_else(|| {
+        })
+    }
+
+    fn refinemv(&self) -> (bool, bool) {
+        match self.kind {
+            PendingKind::Compound {
+                use_refinemv,
+                refinemv_switchable,
+                ..
+            } => (use_refinemv, refinemv_switchable),
+            PendingKind::Single | PendingKind::Tip => (false, false),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_ordered(
+        &mut self,
+        sink: &mut WorkspaceSink<'_, '_, T>,
+        block_decoded: &TileBlockDecodedState,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        shared: &ReconShared<'_, '_, T>,
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+    ) -> Result<()> {
+        let _segment_scope = FrameQmSegmentScope::install(self.segment_id);
+        if matches!(self.kind, PendingKind::Tip) {
+            let allow_unit_parallelism = matches!(sink, WorkspaceSink::Frame(_));
+            let scratch = self.tip_scratch.as_mut().ok_or_else(|| {
                 super::super::unsupported_at(
-                    "inter_deferred_missing_tip_scratch",
-                    block.tile_offset,
+                    "inter_recon_missing_tip_scratch",
+                    self.tile_offset,
                     "missing tip scratch buffer",
                     "7.10.6",
                 )
             })?;
             tip::reconstruct(
                 scratch,
+                temporal_records,
                 sink,
-                &block.placed,
-                shared.temporal_context.ok_or_else(|| {
-                    super::super::unsupported_at(
-                        "inter_deferred_missing_temporal_context",
-                        block.tile_offset,
-                        "missing required input: inter.tip.temporal_context",
-                        "7.10.6",
-                    )
-                })?,
+                allow_unit_parallelism,
+                &self.placed,
+                shared.temporal_context,
                 shared.sequence,
                 shared.core,
                 shared.ref_frame_idx,
                 shared.reference,
-                block.qindex,
+                self.qindex,
                 shared.luma_use_tcq,
                 shared.residual_use_ddt,
                 shared.bit_depth,
-                block.tile_offset,
+                self.tile_offset,
             )?;
-            Ok(JobOutput::Tip)
+            return Ok(());
         }
-    }
-}
 
-fn run_windowed<T: ReconSample>(
-    block: &mut PendingBlock<T>,
-    workspace: &CurrentFrameWorkspace<T>,
-    snapshot: &FrameQuantizerSnapshot,
-    shared: &FlushShared<'_, '_, T>,
-    samples: Vec<T>,
-) -> JobResult<T> {
-    let mut samples = samples;
-    let Ok(mut window) = BlockReconWindow::for_block_with_storage(
-        workspace,
-        block.placed.motion_compensation_rect(),
-        &mut samples,
-    ) else {
-        return Err(samples);
-    };
-    let _scopes = snapshot.install(block.segment_id);
-    match execute(block, &mut WorkspaceSink::Window(&mut window), shared) {
-        Ok(output) => Ok((window, output)),
-        Err(_) => Err(window.into_samples()),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_output<T: ReconSample>(
-    output: JobOutput,
-    block: &PendingBlock<T>,
-    workspace: &CurrentFrameWorkspace<T>,
-    motion_field: &mut TemporalMotionField,
-    shared: &FlushShared<'_, '_, T>,
-    mi_rows: usize,
-    mi_cols: usize,
-    current_order_hint: u32,
-) -> Result<()> {
-    match output {
-        JobOutput::Single => Ok(()),
-        JobOutput::Compound(compound) => record_compound_temporal_motion(
-            motion_field,
-            shared.reference,
-            shared.ref_frame_idx,
-            &block.placed,
-            compound.syntax,
-            compound.warp_params,
-            compound.grid.as_ref(),
-            compound.mi_row,
-            compound.mi_col,
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-        ),
-        JobOutput::Tip => {
-            let coded = workspace.info().coded_luma_size();
-            let scratch = block.tip_scratch.as_ref().ok_or_else(|| {
-                super::super::unsupported_at(
-                    "inter_deferred_missing_tip_scratch",
-                    block.tile_offset,
-                    "missing tip scratch buffer",
-                    "7.10.6",
-                )
-            })?;
-            apply_tip_temporal_records(
-                motion_field,
-                shared.reference,
-                shared.ref_frame_idx,
-                coded.height().div_ceil(4),
-                coded.width().div_ceil(4),
-                shared.core.display_order_hint().unwrap_or(0),
-                scratch.records(),
-            );
-            Ok(())
-        }
-    }
-}
-
-/// Reconstructs and publishes every queued block, in queue order for all
-/// order-observable effects.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn flush_deferred<T: DeferredReconSample>(
-    deferred: &mut DeferredInterRecon<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    motion_field: &mut TemporalMotionField,
-    temporal_context: Option<&TemporalMvContext>,
-    reference: &InterReferenceState<'_, T>,
-    ref_frame_idx: &[u32],
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    mi_rows: usize,
-    mi_cols: usize,
-    current_order_hint: u32,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
-) -> Result<()> {
-    if deferred.pending.is_empty() {
-        return Ok(());
-    }
-    let DeferredInterRecon {
-        pending,
-        storage,
-        results,
-        tip_scratch,
-    } = deferred;
-    let result = (|| {
-        let snapshot = FrameQuantizerSnapshot::capture();
-        let shared = FlushShared {
-            reference,
-            ref_frame_idx,
-            temporal_context,
-            sequence,
-            core,
-            luma_use_tcq,
-            residual_use_ddt,
-            bit_depth,
-        };
-        if pending.len() == 1 {
-            let block = &mut pending[0];
-            let _scopes = snapshot.install(block.segment_id);
-            let output = execute(block, &mut WorkspaceSink::Frame(workspace), &shared)?;
-            return apply_output(
-                output,
-                block,
+        let (use_refinemv, refinemv_switchable) = self.refinemv();
+        let grid = match sink {
+            WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
                 workspace,
-                motion_field,
-                &shared,
-                mi_rows,
-                mi_cols,
-                current_order_hint,
-            );
-        }
-
-        let batch_size = splot_parallel::current_pool_width()
-            .min(pending.len())
-            .max(1);
-        if storage.len() < batch_size {
-            storage.resize_with(batch_size, Vec::new);
-        }
-        results.reserve(batch_size);
-        for blocks in pending.chunks_mut(batch_size) {
-            let slots = &mut storage[..blocks.len()];
-            results.clear();
-            {
-                let frame: &CurrentFrameWorkspace<T> = workspace;
-                slots
-                    .par_iter_mut()
-                    .zip(blocks.par_iter_mut())
-                    .map(|(samples, block)| {
-                        run_windowed(block, frame, &snapshot, &shared, core::mem::take(samples))
-                    })
-                    .collect_into_vec(results);
+                &self.placed,
+                use_refinemv,
+                refinemv_switchable,
+                block_decoded,
+                shared.ref_frame_idx,
+                shared.reference,
+                self.qindex,
+                shared.luma_use_tcq,
+                shared.residual_use_ddt,
+                shared.bit_depth,
+                super::sequence_enables_ibp(shared.sequence),
+                self.tile_offset,
+            )?,
+            WorkspaceSink::Row(row) => {
+                let mut sink = WorkspaceSink::Row(&mut **row);
+                super::prediction::reconstruct_pure_inter_block(
+                    &mut sink,
+                    &self.placed,
+                    use_refinemv,
+                    refinemv_switchable,
+                    shared.ref_frame_idx,
+                    shared.reference,
+                    self.qindex,
+                    shared.luma_use_tcq,
+                    shared.residual_use_ddt,
+                    shared.bit_depth,
+                    self.tile_offset,
+                )?
             }
-            let mut first_error = None;
-            for ((block, result), samples) in blocks.iter_mut().zip(results.drain(..)).zip(slots) {
-                if first_error.is_some() {
-                    *samples = match result {
-                        Ok((window, _)) => window.into_samples(),
-                        Err(storage) => storage,
-                    };
-                    continue;
-                }
-                let output = match result {
-                    Ok((window, output)) => {
-                        let published = window.publish(workspace);
-                        *samples = window.into_samples();
-                        if let Err(error) = published {
-                            first_error = Some(error);
-                            continue;
-                        }
-                        output
-                    }
-                    Err(storage) => {
-                        *samples = storage;
-                        let _scopes = snapshot.install(block.segment_id);
-                        match execute(block, &mut WorkspaceSink::Frame(workspace), &shared) {
-                            Ok(output) => output,
-                            Err(error) => {
-                                first_error = Some(error);
-                                continue;
-                            }
-                        }
-                    }
-                };
-                if let Err(error) = apply_output(
-                    output,
-                    block,
-                    workspace,
-                    motion_field,
-                    &shared,
+        };
+        match self.kind {
+            PendingKind::Single => {
+                let block = &self.placed.block;
+                temporal_records.push(temporal_motion_block(
+                    shared.reference,
+                    shared.ref_frame_idx,
+                    self.placed.luma_y / 4,
+                    self.placed.luma_x / 4,
+                    self.placed.luma_w / 4,
+                    self.placed.luma_h / 4,
                     mi_rows,
                     mi_cols,
                     current_order_hint,
-                ) {
-                    first_error = Some(error);
-                }
+                    block.ref_frame0,
+                    block.ref_frame1,
+                    block.mv,
+                    block.mv1,
+                    block.warp_params,
+                ));
+                Ok(())
             }
-            if let Some(error) = first_error {
-                return Err(error);
-            }
-        }
-        Ok(())
-    })();
-    for block in pending.iter_mut() {
-        if let Some(scratch) = block.tip_scratch.take() {
-            tip_scratch.push(scratch);
+            PendingKind::Compound {
+                syntax,
+                warp_params,
+                mi_row,
+                mi_col,
+                ..
+            } => append_compound_temporal_motion(
+                temporal_records,
+                shared.reference,
+                shared.ref_frame_idx,
+                &self.placed,
+                syntax,
+                warp_params,
+                grid.as_ref(),
+                mi_row,
+                mi_col,
+                mi_rows,
+                mi_cols,
+                current_order_hint,
+            ),
+            PendingKind::Tip => Ok(()),
         }
     }
-    pending.clear();
-    results.clear();
-    result
+}
+
+impl<T: ReconSample> InterReconScratch<T> {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reconstruct_logged(
+        &mut self,
+        mut command: InterReconCommand<T>,
+        sink: &mut WorkspaceSink<'_, '_, T>,
+        block_decoded: &TileBlockDecodedState,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        temporal_context: &TemporalMvContext,
+        reference: &InterReferenceState<'_, T>,
+        ref_frame_idx: &[u32],
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+        luma_use_tcq: bool,
+        residual_use_ddt: bool,
+        bit_depth: BitDepth,
+    ) -> Result<()> {
+        if matches!(command.kind, PendingKind::Tip) {
+            command.tip_scratch = Some(self.tip.pop().unwrap_or_default());
+        }
+        let result = command.reconstruct_ordered(
+            sink,
+            block_decoded,
+            temporal_records,
+            &ReconShared {
+                reference,
+                ref_frame_idx,
+                temporal_context,
+                sequence,
+                core,
+                luma_use_tcq,
+                residual_use_ddt,
+                bit_depth,
+            },
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+        );
+        if let Some(scratch) = command.tip_scratch.take() {
+            self.tip.push(scratch);
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn reconstruct(
+        &mut self,
+        command: InterReconCommand<T>,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &TileBlockDecodedState,
+        motion_field: &mut TemporalMotionField,
+        temporal_context: &TemporalMvContext,
+        reference: &InterReferenceState<'_, T>,
+        ref_frame_idx: &[u32],
+        sequence: &SequenceHeader,
+        core: &FrameHeaderCore,
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+        luma_use_tcq: bool,
+        residual_use_ddt: bool,
+        bit_depth: BitDepth,
+    ) -> Result<()> {
+        let mut temporal = core::mem::take(&mut self.temporal);
+        temporal.clear();
+        let result = self.reconstruct_logged(
+            command,
+            &mut WorkspaceSink::Frame(workspace),
+            block_decoded,
+            &mut temporal,
+            temporal_context,
+            reference,
+            ref_frame_idx,
+            sequence,
+            core,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            luma_use_tcq,
+            residual_use_ddt,
+            bit_depth,
+        );
+        if result.is_ok() {
+            commit_temporal_motion_blocks(motion_field, &temporal);
+        }
+        temporal.clear();
+        self.temporal = temporal;
+        result
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn clipped_rect_is_inside_band(
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    band_x: usize,
+    band_y: usize,
+    band_w: usize,
+    band_h: usize,
+    storage_w: usize,
+    storage_h: usize,
+) -> bool {
+    let Some(end_x) = x.checked_add(width) else {
+        return false;
+    };
+    let Some(end_y) = y.checked_add(height) else {
+        return false;
+    };
+    let Some(band_end_x) = band_x.checked_add(band_w) else {
+        return false;
+    };
+    let Some(band_end_y) = band_y.checked_add(band_h) else {
+        return false;
+    };
+    width != 0
+        && height != 0
+        && x < storage_w
+        && y < storage_h
+        && x >= band_x
+        && y >= band_y
+        && end_x.min(storage_w) <= band_end_x.min(storage_w)
+        && end_y.min(storage_h) <= band_end_y.min(storage_h)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use splot_core::span::ByteOffset;
+    use splot_recon::{
+        BitDepth, DecodedFrameInfo, InterpolationFilter, OutputIndex, PixelFormat, PlaneId,
+        PlaneRect, PlaneSize,
+    };
+
+    use super::{InterReconCommand, PendingKind};
+    use crate::bitstream::tile_payload::LumaCoeffBlock;
+    use crate::prediction::inter::{
+        BawpSyntax, InterBlock, InterResidual, InterResidualBlock, Mv, PlacedInterBlock, mc,
+    };
+
+    fn assert_send<T: Send>() {}
+
+    #[test]
+    fn inter_recon_command_is_send() {
+        assert_send::<InterReconCommand<u8>>();
+        assert_send::<InterReconCommand<u16>>();
+    }
+
+    #[test]
+    fn current_frame_dependency_is_limited_to_bawp_and_interintra() {
+        assert!(!super::reads_current_frame(false, false));
+        assert!(super::reads_current_frame(true, false));
+        assert!(super::reads_current_frame(false, true));
+        assert!(super::reads_current_frame(true, true));
+    }
+
+    fn info(width: usize, height: usize, format: PixelFormat) -> DecodedFrameInfo {
+        let size = PlaneSize::new(width, height).expect("frame size");
+        DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            format,
+            size,
+            PlaneRect::new(0, 0, width, height).expect("visible rect"),
+        )
+        .expect("frame info")
+    }
+
+    fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand<u8> {
+        InterReconCommand::new(
+            PlacedInterBlock {
+                luma_x: x,
+                luma_y: y,
+                luma_w: width,
+                luma_h: height,
+                chroma_luma_x: x,
+                chroma_luma_y: y,
+                chroma_luma_w: width,
+                chroma_luma_h: height,
+                predict_chroma: false,
+                sub8x8_chroma: false,
+                interintra_chroma: false,
+                block: InterBlock {
+                    ref_frame0: 0,
+                    ref_frame1: None,
+                    mv: Mv::ZERO,
+                    mv1: Mv::ZERO,
+                    interp: InterpolationFilter::EightTap,
+                    warp_params: [None, None],
+                    bawp: BawpSyntax::default(),
+                    interintra: None,
+                    compound_blend: mc::CompoundBlend::default(),
+                    optflow_distances: None,
+                    residual: None,
+                },
+            },
+            PendingKind::Single,
+            0,
+            ByteOffset::new(0),
+        )
+    }
+
+    fn residual(
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        log2_width: u32,
+        log2_height: u32,
+    ) -> InterResidual {
+        InterResidual {
+            blocks: vec![InterResidualBlock {
+                plane,
+                x,
+                y,
+                tx_size: 0,
+                log2_width,
+                log2_height,
+                coeffs: LumaCoeffBlock {
+                    all_zero: true,
+                    eob: 0,
+                    quant: Vec::new(),
+                    intra_ist: None,
+                    cctx_type: None,
+                    plane_tx_type: 0,
+                    use_tcq: false,
+                    lossless: false,
+                },
+            }],
+        }
+    }
+
+    #[test]
+    fn footprint_accepts_contained_chroma_sub8_and_partial_edge() {
+        for format in [
+            PixelFormat::Monochrome,
+            PixelFormat::Yuv420,
+            PixelFormat::Yuv422,
+            PixelFormat::Yuv444,
+        ] {
+            let mut full = command(0, 0, 64, 64);
+            full.placed.predict_chroma = format != PixelFormat::Monochrome;
+            full.placed.sub8x8_chroma = true;
+            full.placed.chroma_luma_x = 4;
+            full.placed.chroma_luma_y = 4;
+            full.placed.chroma_luma_w = 60;
+            full.placed.chroma_luma_h = 60;
+            assert!(full.prepass_write_is_contained([0, 0], 16, info(128, 128, format)));
+        }
+
+        let edge = command(64, 64, 4, 4);
+        assert!(edge.prepass_write_is_contained(
+            [16, 16],
+            16,
+            info(65, 65, PixelFormat::Monochrome)
+        ));
+    }
+
+    #[test]
+    fn footprint_rejects_cross_sb_and_residual_bottom_by_one() {
+        let crossing = command(63, 0, 2, 8);
+        assert!(!crossing.prepass_write_is_contained(
+            [0, 0],
+            16,
+            info(128, 128, PixelFormat::Monochrome)
+        ));
+
+        let mut residual_crossing = command(0, 0, 64, 64);
+        residual_crossing.placed.block.residual = Some(residual(PlaneId::Y, 0, 63, 1, 1));
+        assert!(!residual_crossing.prepass_write_is_contained(
+            [0, 0],
+            16,
+            info(128, 128, PixelFormat::Monochrome)
+        ));
+    }
+
+    #[test]
+    fn footprint_checks_native_chroma_plane_bounds() {
+        for (format, plane_height) in [
+            (PixelFormat::Yuv420, 32usize),
+            (PixelFormat::Yuv422, 64usize),
+            (PixelFormat::Yuv444, 64usize),
+        ] {
+            let log2_height = plane_height.ilog2();
+            let mut exact = command(0, 0, 64, 64);
+            exact.placed.block.residual = Some(residual(PlaneId::U, 0, 0, 1, log2_height));
+            assert!(exact.prepass_write_is_contained([0, 0], 16, info(128, 128, format)));
+
+            let mut crossing = command(0, 0, 64, 64);
+            crossing.placed.block.residual = Some(residual(PlaneId::V, 0, plane_height - 1, 1, 1));
+            assert!(!crossing.prepass_write_is_contained([0, 0], 16, info(128, 128, format)));
+        }
+
+        let mut monochrome = command(0, 0, 64, 64);
+        monochrome.placed.block.residual = Some(residual(PlaneId::U, 0, 0, 1, 1));
+        assert!(!monochrome.prepass_write_is_contained(
+            [0, 0],
+            16,
+            info(128, 128, PixelFormat::Monochrome)
+        ));
+    }
 }

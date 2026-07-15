@@ -15,7 +15,8 @@ use crate::bitstream::tile_payload::{
 };
 use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE, plan_luma_prediction};
 use crate::residual::pipeline::{
-    GeneralIntraResidualPlan, RectChromaPlan, RectLumaPlan, ResidualPipelineUnsupported,
+    GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
+    ResidualPipelineUnsupported,
 };
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
@@ -25,6 +26,44 @@ const MI_SIZE: usize = 4;
 const ANGLE_STEP: i32 = 3;
 pub(crate) const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
 const WAIP_WH_RATIO_THRESHOLDS: [(usize, i32); 4] = [(2, 61), (4, 73), (8, 82), (16, 86)];
+
+pub(crate) struct GeneralIntraReconCommand {
+    residual: ParsedGeneralIntraResidual,
+    qindex: u32,
+    intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    luma_transform_type_context: LumaTransformTypeContext,
+    segment_id: u8,
+    tile_offset: ByteOffset,
+}
+
+impl GeneralIntraReconCommand {
+    pub(crate) fn reconstruct<T: ReconSample>(
+        self,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
+    ) -> Result<()> {
+        let _qm_segment_scope = crate::bitstream::tile_payload::FrameQmSegmentScope::install(
+            usize::from(self.segment_id),
+        );
+        self.reconstruct_with_installed_quantizer(workspace, block_decoded)
+    }
+
+    fn reconstruct_with_installed_quantizer<T: ReconSample>(
+        self,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
+    ) -> Result<()> {
+        self.residual
+            .reconstruct(
+                workspace,
+                block_decoded,
+                self.qindex,
+                self.intra_edge,
+                self.luma_transform_type_context,
+            )
+            .map_err(|error| general_intra_residual_error(error, self.tile_offset))
+    }
+}
 
 macro_rules! general_intra_at {
     ($reason:expr, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
@@ -111,7 +150,7 @@ fn record_chroma_smooth(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
+pub(crate) fn parse_one_general_intra_block(
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
@@ -126,8 +165,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
     segment_id: u8,
-    block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
-    workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -139,7 +176,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
     mi_rows: usize,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
-) -> Result<GeneralIntraLeafMode> {
+) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let _qm_segment_scope =
         crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(segment_id));
     let geometry_error = || {
@@ -232,7 +269,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             && fsc_modes
                 .fsc_mode_at(frontier.r, frontier.c)
                 .is_some_and(|mode| mode != 0);
-        return decode_one_general_intra_chroma_part_block::<T>(
+        return parse_one_general_intra_chroma_part_block(
             intra_edge,
             work_unit,
             symbols,
@@ -243,8 +280,6 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             cfl_ds_filter_index,
             sb_mib,
             lossless,
-            block_decoded,
-            workspace,
             coeff_ctx,
             deblock_blocks,
             chroma_deblock_blocks,
@@ -253,6 +288,7 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             qindex,
             transform_tool_residual_policy,
             block_ctx,
+            segment_id,
             tile_offset,
         );
     }
@@ -362,13 +398,12 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         || modes.uses_active_mrl()
         || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib, lossless)
     {
-        let leaf = decode_one_general_intra_rect_block::<T>(
+        let (leaf, command) = parse_one_general_intra_rect_block(
             intra_edge,
             work_unit,
             symbols,
             frontier.has_chroma,
             &modes,
-            workspace,
             coeff_ctx,
             deblock_blocks,
             chroma_deblock_blocks,
@@ -380,15 +415,15 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
             transform_tool_residual_policy,
             luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
             block_ctx,
-            block_decoded,
             cfl_ds_filter_index,
             sb_mib,
+            segment_id,
             tile_offset,
         )?;
         if frontier.has_chroma {
             record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
         }
-        return Ok(leaf);
+        return Ok((leaf, command));
     }
 
     let chroma_plan = if frontier.has_chroma {
@@ -412,14 +447,12 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         lossless,
     )
     .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
-    execute_general_intra_residual_plan(
+    let command = parse_general_intra_residual_plan(
         residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
-        workspace,
         block_ctx,
-        block_decoded,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
@@ -430,16 +463,17 @@ pub(crate) fn decode_one_general_intra_block<T: ReconSample>(
         qindex,
         lossless,
         intra_edge,
+        segment_id,
         tile_offset,
     )?;
     if frontier.has_chroma {
         record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
     }
-    Ok(leaf_mode_for_block(&modes, frontier.has_chroma))
+    Ok((leaf_mode_for_block(&modes, frontier.has_chroma), command))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
+fn parse_one_general_intra_chroma_part_block(
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
@@ -450,8 +484,6 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     lossless: bool,
-    block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
-    workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -460,8 +492,9 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     qindex: u32,
     transform_tool_residual_policy: TransformToolResidualPolicy,
     block_ctx: BlockCtx,
+    segment_id: u8,
     tile_offset: ByteOffset,
-) -> Result<GeneralIntraLeafMode> {
+) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let (y_mode, angle_delta_y) = frontier
         .stored_luma_y_mode()
         .zip(frontier.stored_luma_angle_delta_y())
@@ -507,14 +540,12 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
     .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
-    execute_general_intra_residual_plan(
+    let command = parse_general_intra_residual_plan(
         residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
-        workspace,
         block_ctx,
-        block_decoded,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
@@ -525,6 +556,7 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         qindex,
         lossless,
         intra_edge,
+        segment_id,
         tile_offset,
     )?;
     record_chroma_smooth(
@@ -532,17 +564,16 @@ fn decode_one_general_intra_chroma_part_block<T: ReconSample>(
         block_ctx,
         chroma.supported_chroma_mode(y_mode),
     );
-    Ok(GeneralIntraLeafMode::chroma(chroma.is_cfl()))
+    Ok((GeneralIntraLeafMode::chroma(chroma.is_cfl()), command))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_one_general_intra_rect_block<T: ReconSample>(
+fn parse_one_general_intra_rect_block(
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     has_chroma: bool,
     modes: &GeneralIntraBlockModes,
-    workspace: &mut CurrentFrameWorkspace<T>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
@@ -554,11 +585,11 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
     transform_tool_residual_policy: TransformToolResidualPolicy,
     luma_tx_partition_context: Option<LumaTransformPartitionContext>,
     block_ctx: BlockCtx,
-    block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    segment_id: u8,
     tile_offset: ByteOffset,
-) -> Result<GeneralIntraLeafMode> {
+) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)
         .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
     let chroma_plan = if has_chroma {
@@ -579,14 +610,12 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         lossless,
     )
     .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
-    execute_general_intra_residual_plan(
+    let command = parse_general_intra_residual_plan(
         residual_plan,
         work_unit,
         symbols,
         coeff_ctx,
-        workspace,
         block_ctx,
-        block_decoded,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
@@ -597,9 +626,10 @@ fn decode_one_general_intra_rect_block<T: ReconSample>(
         qindex,
         lossless,
         intra_edge,
+        segment_id,
         tile_offset,
     )?;
-    Ok(leaf_mode_for_block(modes, has_chroma))
+    Ok((leaf_mode_for_block(modes, has_chroma), command))
 }
 
 fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
@@ -1407,14 +1437,12 @@ pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i3
 }
 
 #[allow(clippy::needless_pass_by_value, clippy::too_many_arguments)]
-fn execute_general_intra_residual_plan<T: ReconSample>(
+fn parse_general_intra_residual_plan(
     residual_plan: GeneralIntraResidualPlan,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
-    workspace: &mut CurrentFrameWorkspace<T>,
     block_ctx: BlockCtx,
-    block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -1425,8 +1453,9 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
     qindex: u32,
     lossless: bool,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
+    segment_id: u8,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<GeneralIntraReconCommand> {
     let block = block_ctx.block();
     let mut deblock = crate::residual::pipeline::DeblockRecorder {
         blocks: deblock_blocks,
@@ -1439,23 +1468,26 @@ fn execute_general_intra_residual_plan<T: ReconSample>(
         qindex,
         lossless,
     };
-    residual_plan
-        .execute(
+    let residual = residual_plan
+        .parse(
             work_unit,
             symbols,
             coeff_ctx,
-            workspace,
-            block_decoded,
             uv_mode,
             luma_transform_type_context,
             luma_tx_partition_context,
             transform_tool_residual_policy,
-            qindex,
-            intra_edge,
             &mut deblock,
         )
         .map_err(|error| general_intra_residual_error(error, tile_offset))?;
-    Ok(())
+    Ok(GeneralIntraReconCommand {
+        residual,
+        qindex,
+        intra_edge,
+        luma_transform_type_context,
+        segment_id,
+        tile_offset,
+    })
 }
 
 #[derive(Clone, Copy)]

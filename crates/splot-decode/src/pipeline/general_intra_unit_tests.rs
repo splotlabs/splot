@@ -7,6 +7,13 @@ use super::*;
 use crate::bitstream::tile_payload::{CflIndex, CflParams, GeneralIntraChromaBlockMode};
 use crate::prediction::intra::IntraLumaPlan;
 
+#[test]
+fn general_intra_recon_command_is_send() {
+    fn assert_send<T: Send>() {}
+
+    assert_send::<GeneralIntraReconCommand>();
+}
+
 fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
     ctx_with_bit_depth(row4, col4, width4, height4, BitDepth::Ten)
 }

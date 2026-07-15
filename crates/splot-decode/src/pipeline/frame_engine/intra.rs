@@ -6,7 +6,7 @@
 //! An intra frame runs the same shared block walk as inter frames
 //! ([`decode_inter_blocks`]) with a null reference set (`num_total_refs == 0`), so
 //! every block takes the `is_inter == 0` arm and reconstructs through the shared
-//! [`crate::pipeline::general_intra::decode_one_general_intra_block`] callback. The
+//! general-intra block parser. The
 //! frame-level loop filters run through the same shared `into_filtered_frame` sink
 //! as the inter path (deblock, then CDEF over the walk-parsed strength grid, then
 //! CCSO and loop-restoration), so intra and inter share one final-filter stage.
@@ -14,7 +14,9 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReferenceFrameStore};
+use splot_recon::{
+    BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample, ReferenceFrameStore,
+};
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope, FrameQuantizerDeltasScope};
 use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
@@ -23,12 +25,12 @@ use crate::pipeline::{
     unsupported_at,
 };
 use crate::prediction::inter::{
-    DeferredReconSample, InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
+    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_intra_frame<T: DeferredReconSample>(
+pub(crate) fn decode_intra_frame<T: ReconSample>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],

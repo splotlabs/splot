@@ -116,15 +116,15 @@ fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
 
 #[test]
 fn inter_residual_recycler_reuses_lists_without_cross_block_state() {
-    INTER_RESIDUAL_RECYCLER.with(|slot| *slot.borrow_mut() = InterResidualRecycler::default());
-
-    let mut blocks = take_inter_residual_blocks();
+    let mut recycler = InterResidualRecycler::default();
+    let mut blocks = recycler.take();
     blocks.reserve(8);
     let blocks_capacity = blocks.capacity();
     let blocks_pointer = blocks.as_ptr();
-    drop(InterResidual { blocks });
+    blocks.clear();
+    recycler.recycle_empty(blocks);
 
-    let reused_blocks = take_inter_residual_blocks();
+    let reused_blocks = recycler.take();
     assert!(reused_blocks.is_empty());
     assert_eq!(reused_blocks.capacity(), blocks_capacity);
     assert!(core::ptr::eq(reused_blocks.as_ptr(), blocks_pointer));
@@ -151,32 +151,22 @@ fn inter_residual_recycler_reuses_lists_without_cross_block_state() {
 }
 
 #[test]
-fn inter_residual_recycler_is_bounded_and_reentrant() {
-    INTER_RESIDUAL_RECYCLER.with(|slot| *slot.borrow_mut() = InterResidualRecycler::default());
+fn inter_residual_recycler_is_bounded() {
+    let mut recycler = InterResidualRecycler::default();
     for _ in 0..=MAX_RETAINED_INTER_RESIDUAL_LISTS {
         let blocks = Vec::with_capacity(1);
-        recycle_inter_residual_blocks(blocks);
+        recycler.recycle_empty(blocks);
     }
-    INTER_RESIDUAL_RECYCLER.with(|slot| {
-        let recycler = slot.borrow();
-        assert_eq!(
-            recycler.block_lists.len(),
-            MAX_RETAINED_INTER_RESIDUAL_LISTS
-        );
-        assert!(recycler.block_slots <= MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS);
-    });
+    assert_eq!(
+        recycler.block_lists.len(),
+        MAX_RETAINED_INTER_RESIDUAL_LISTS
+    );
+    assert!(recycler.block_slots <= MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS);
 
-    INTER_RESIDUAL_RECYCLER.with(|slot| *slot.borrow_mut() = InterResidualRecycler::default());
+    let mut recycler = InterResidualRecycler::default();
     let oversized = Vec::with_capacity(MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS + 1);
-    recycle_inter_residual_blocks(oversized);
-    INTER_RESIDUAL_RECYCLER.with(|slot| assert!(slot.borrow().block_lists.is_empty()));
-
-    INTER_RESIDUAL_RECYCLER.with(|slot| {
-        let _borrow = slot.borrow_mut();
-        let blocks = Vec::with_capacity(1);
-        recycle_inter_residual_blocks(blocks);
-    });
-    INTER_RESIDUAL_RECYCLER.with(|slot| assert!(slot.borrow().block_lists.is_empty()));
+    recycler.recycle_empty(oversized);
+    assert!(recycler.block_lists.is_empty());
 }
 
 #[test]

@@ -67,7 +67,7 @@ pub(super) fn reference_area_bounds(
 }
 
 pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     offset: ByteOffset,
 ) -> Result<CompoundMotionGrid> {
@@ -112,7 +112,7 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
 }
 
 fn search_refinemv<T: ReconSample>(
-    sink: &WorkspaceSink<'_, T>,
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     rect: McBlockRect,
     offset: ByteOffset,

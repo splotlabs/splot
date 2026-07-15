@@ -6,6 +6,8 @@ use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
 use splot_recon::{DecodedFrame, PixelFormat, ReconError};
 
+use super::super::find_mv_stack::TemporalMotionBlock;
+
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
@@ -63,13 +65,6 @@ impl<'a, T: ReconSample> TipPrediction<'a, T> {
 pub(super) struct TipReconstructScratch<T: ReconSample> {
     units: Vec<TipUnit>,
     output_samples: Vec<T>,
-    records: Vec<TipTemporalRecord>,
-}
-
-impl<T: ReconSample> TipReconstructScratch<T> {
-    pub(super) fn records(&self) -> &[TipTemporalRecord] {
-        &self.records
-    }
 }
 
 const fn tip_uses_two_references(weight: i16) -> bool {
@@ -213,7 +208,7 @@ const fn prediction_unit_size(width: usize, height: usize, enable_tip_refinemv: 
 }
 
 fn compute_parallel_outputs<T: ReconSample>(
-    sink: &mc::WorkspaceSink<'_, T>,
+    sink: &mc::WorkspaceSink<'_, '_, T>,
     units: &mut [TipUnit],
     output_samples: &mut [T],
     output_stride: usize,
@@ -400,53 +395,11 @@ pub(crate) fn tip_allowed_for_block_indices(
 }
 
 #[allow(clippy::too_many_arguments)]
-/// One TIP prediction unit's temporal-motion contribution, recorded by the
-/// caller once the unit's (possibly optical-flow refined) MVs are known.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct TipTemporalRecord {
-    pub(super) mi_row: usize,
-    pub(super) mi_col: usize,
-    pub(super) n4w: usize,
-    pub(super) n4h: usize,
-    pub(super) ref_frame0: i8,
-    pub(super) ref_frame1: Option<i8>,
-    pub(super) mvs: [Mv; 2],
-}
-
-pub(super) fn apply_tip_temporal_records<T: ReconSample>(
-    motion_field: &mut TemporalMotionField,
-    reference: &InterReferenceState<'_, T>,
-    ref_frame_idx: &[u32],
-    frame_mi_rows: usize,
-    frame_mi_cols: usize,
-    current_order_hint: u32,
-    records: &[TipTemporalRecord],
-) {
-    for record in records {
-        super::temporal::record_temporal_motion_block(
-            motion_field,
-            reference,
-            ref_frame_idx,
-            record.mi_row,
-            record.mi_col,
-            record.n4w,
-            record.n4h,
-            frame_mi_rows,
-            frame_mi_cols,
-            current_order_hint,
-            record.ref_frame0,
-            record.ref_frame1,
-            record.mvs[0],
-            record.mvs[1],
-            [None, None],
-        );
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
-    sink: &mut mc::WorkspaceSink<'_, T>,
+    temporal_records: &mut Vec<TemporalMotionBlock>,
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    allow_unit_parallelism: bool,
     placed: &PlacedInterBlock,
     temporal: &TemporalMvContext,
     sequence: &SequenceHeader,
@@ -545,6 +498,8 @@ pub(super) fn reconstruct<T: ReconSample>(
                     ],
                 ));
     let frame_size = sink.info().coded_luma_size();
+    let frame_mi_rows = frame_size.height().div_ceil(4);
+    let frame_mi_cols = frame_size.width().div_ceil(4);
     let block_w = placed
         .luma_w
         .min(frame_size.width().saturating_sub(placed.luma_x));
@@ -560,7 +515,6 @@ pub(super) fn reconstruct<T: ReconSample>(
         })?;
     scratch.units.clear();
     scratch.output_samples.clear();
-    scratch.records.clear();
     scratch.units.try_reserve_exact(unit_count).map_err(|_| {
         inter_cap!(
             "inter_tip_unit_allocation",
@@ -639,7 +593,8 @@ pub(super) fn reconstruct<T: ReconSample>(
             });
         }
     }
-    let parallel_output = two_references && splot_parallel::on_worker_pool();
+    let parallel_output =
+        allow_unit_parallelism && two_references && splot_parallel::on_worker_pool();
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))
@@ -662,14 +617,16 @@ pub(super) fn reconstruct<T: ReconSample>(
             tile_offset,
         )?;
     }
-    scratch.records.try_reserve_exact(unit_count).map_err(|_| {
-        inter_cap!(
-            "inter_tip_temporal_record_allocation",
-            tile_offset,
-            "inter.tip.temporal_record_allocation",
-            "7.22"
-        )
-    })?;
+    temporal_records
+        .try_reserve_exact(unit_count)
+        .map_err(|_| {
+            inter_cap!(
+                "inter_tip_temporal_record_allocation",
+                tile_offset,
+                "inter.tip.temporal_record_allocation",
+                "7.22"
+            )
+        })?;
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     for unit in scratch.units.drain(..) {
         let stored_mvs = if let Some(metadata) = unit.metadata {
@@ -696,15 +653,22 @@ pub(super) fn reconstruct<T: ReconSample>(
             mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
             unit.mvs
         };
-        scratch.records.push(TipTemporalRecord {
-            mi_row: unit.rect.luma_y / 4,
-            mi_col: unit.rect.luma_x / 4,
-            n4w: unit.rect.luma_w.div_ceil(4),
-            n4h: unit.rect.luma_h.div_ceil(4),
-            ref_frame0: references.past_ref,
-            ref_frame1: two_references.then_some(references.future_ref),
-            mvs: stored_mvs,
-        });
+        temporal_records.push(super::temporal::temporal_motion_block(
+            reference,
+            ref_frame_idx,
+            unit.rect.luma_y / 4,
+            unit.rect.luma_x / 4,
+            unit.rect.luma_w.div_ceil(4),
+            unit.rect.luma_h.div_ceil(4),
+            frame_mi_rows,
+            frame_mi_cols,
+            core.display_order_hint().unwrap_or(0),
+            references.past_ref,
+            two_references.then_some(references.future_ref),
+            stored_mvs[0],
+            stored_mvs[1],
+            [None, None],
+        ));
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
@@ -818,9 +782,12 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         },
     };
     let mut scratch = TipReconstructScratch::default();
+    let mut temporal_records = Vec::new();
     reconstruct(
         &mut scratch,
+        &mut temporal_records,
         &mut mc::WorkspaceSink::Frame(&mut workspace),
+        true,
         &placed,
         &temporal,
         sequence,
@@ -833,16 +800,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         bit_depth,
         offset,
     )?;
-    let coded = workspace.info().coded_luma_size();
-    apply_tip_temporal_records(
-        &mut motion_field,
-        reference,
-        ref_frame_idx,
-        coded.height().div_ceil(4),
-        coded.width().div_ceil(4),
-        core.display_order_hint().unwrap_or(0),
-        scratch.records(),
-    );
+    super::temporal::commit_temporal_motion_blocks(&mut motion_field, &temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params

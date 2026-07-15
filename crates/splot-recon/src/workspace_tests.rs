@@ -4,6 +4,8 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
+use splot_core::headers::sequence::SuperblockSize;
+
 use crate::{
     BitDepth, DecodedFrameHash, DecodedFrameHashInput, IntraDcEdge, IntraDcEdges, OutputIndex,
     PixelFormat, ReferenceFrameStore, ReferenceSlot, Y4mFrameRate, Y4mWriter,
@@ -105,6 +107,273 @@ fn yuv420_info(width: usize, height: usize) -> DecodedFrameInfo {
         size(width, height),
         rect(0, 0, width, height),
     )
+}
+
+fn pixel_format_info(pixel_format: PixelFormat, width: usize, height: usize) -> DecodedFrameInfo {
+    info(
+        BitDepth::Eight,
+        pixel_format,
+        size(width, height),
+        rect(0, 0, width, height),
+    )
+}
+
+fn band_rects(pixel_format: PixelFormat) -> Vec<(PlaneRect, Option<PlaneRect>, Option<PlaneRect>)> {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(pixel_format_info(pixel_format, 10, 130), 0).unwrap();
+    workspace
+        .sb_row_bands(SuperblockSize::Block64x64)
+        .map(|band| {
+            let y_rect = band.luma_rect();
+            let (_, u, v) = band.into_planes();
+            (
+                y_rect,
+                u.as_ref().map(CurrentFramePlaneRowBand::rect),
+                v.as_ref().map(CurrentFramePlaneRowBand::rect),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn workspace_sb_row_bands_preserve_plane_geometry() {
+    let y = [rect(0, 0, 10, 64), rect(0, 64, 10, 64), rect(0, 128, 10, 2)];
+    let chroma_420 = [rect(0, 0, 5, 32), rect(0, 32, 5, 32), rect(0, 64, 5, 1)];
+    let chroma_422 = [rect(0, 0, 5, 64), rect(0, 64, 5, 64), rect(0, 128, 5, 2)];
+
+    assert_eq!(
+        band_rects(PixelFormat::Monochrome),
+        y.map(|rect| (rect, None, None))
+    );
+    assert_eq!(
+        band_rects(PixelFormat::Yuv420),
+        y.into_iter()
+            .zip(chroma_420)
+            .map(|(y, uv)| (y, Some(uv), Some(uv)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        band_rects(PixelFormat::Yuv422),
+        y.into_iter()
+            .zip(chroma_422)
+            .map(|(y, uv)| (y, Some(uv), Some(uv)))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        band_rects(PixelFormat::Yuv444),
+        y.map(|rect| (rect, Some(rect), Some(rect)))
+    );
+}
+
+#[test]
+fn workspace_sb_row_bands_follow_every_superblock_size() {
+    for (sb_size, expected) in [
+        (SuperblockSize::Block64x64, vec![64, 64, 64, 64, 44]),
+        (SuperblockSize::Block128x128, vec![128, 128, 44]),
+        (SuperblockSize::Block256x256, vec![256, 44]),
+    ] {
+        let mut workspace =
+            CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 300), 0).unwrap();
+        let heights = workspace
+            .sb_row_bands(sb_size)
+            .map(|band| band.luma_rect().height())
+            .collect::<Vec<_>>();
+
+        assert_eq!(heights, expected);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn workspace_sb_row_bands_are_disjoint_and_keep_global_origins() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(8, 130), 0).unwrap();
+    let bands = workspace
+        .sb_row_bands(SuperblockSize::Block64x64)
+        .collect::<Vec<_>>();
+
+    std::thread::scope(|scope| {
+        for band in bands {
+            scope.spawn(move || {
+                let (y, u, v) = band.into_planes();
+                for mut plane in [Some(y), u, v].into_iter().flatten() {
+                    let rect = plane.rect();
+                    let stride = plane.stride_samples();
+                    for (local_y, row) in plane.samples_mut().chunks_mut(stride).enumerate() {
+                        row.fill(u8::try_from(rect.y() + local_y).unwrap());
+                    }
+                }
+            });
+        }
+    });
+
+    for y in 0..130 {
+        assert_eq!(
+            workspace.reconstructed_sample(PlaneId::Y, 3, y).unwrap(),
+            u8::try_from(y).unwrap()
+        );
+    }
+    for y in 0..65 {
+        let expected = u8::try_from(y).unwrap();
+        assert_eq!(
+            workspace.reconstructed_sample(PlaneId::U, 2, y).unwrap(),
+            expected
+        );
+        assert_eq!(
+            workspace.reconstructed_sample(PlaneId::V, 2, y).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn intra_prediction_scratch_is_task_local_and_reusable() {
+    let mut first = IntraPredictionScratch::<u8>::new();
+    let mut second = IntraPredictionScratch::<u8>::new();
+    let first_buffer = first
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64, 7)
+        .unwrap();
+    let first_pointer = first_buffer.as_ptr();
+    first.recycle_buffer(IntraPredictionScratchBuffer::Primary, first_buffer);
+
+    let second_buffer = second
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 64, 9)
+        .unwrap();
+    assert_ne!(second_buffer.as_ptr(), first_pointer);
+    assert_eq!(second_buffer, vec![9; 64]);
+
+    let first_buffer = first
+        .take_buffer(IntraPredictionScratchBuffer::Primary, PlaneId::Y, 16, 11)
+        .unwrap();
+    assert_eq!(first_buffer.as_ptr(), first_pointer);
+    assert_eq!(first_buffer, vec![11; 16]);
+}
+
+fn assert_row_surface_matches_frame<T>(bit_depth: BitDepth, pixel_format: PixelFormat)
+where
+    T: ReconSample + core::fmt::Debug + Eq,
+{
+    let frame_info = info(bit_depth, pixel_format, size(9, 67), rect(0, 0, 9, 67));
+    let mut frame_workspace = CurrentFrameWorkspace::<T>::new(frame_info, T::default()).unwrap();
+    let mut row_workspace = CurrentFrameWorkspace::<T>::new(frame_info, T::default()).unwrap();
+    let mut row_band = row_workspace
+        .sb_row_bands(SuperblockSize::Block64x64)
+        .nth(1)
+        .unwrap();
+    let planes = if pixel_format == PixelFormat::Monochrome {
+        &[(PlaneId::Y, 0_u8)][..]
+    } else {
+        &[
+            (PlaneId::Y, 0_u8),
+            (PlaneId::U, pixel_format.subsampling_y()),
+            (PlaneId::V, pixel_format.subsampling_y()),
+        ][..]
+    };
+    {
+        let mut frame_surface = CurrentFrameSurface::Frame(&mut frame_workspace);
+        let mut row_surface = CurrentFrameSurface::Row(&mut row_band);
+
+        assert_eq!(row_surface.info(), frame_surface.info());
+        for &(plane, sub_y) in planes {
+            let storage = row_surface.plane_storage_size(plane).unwrap();
+            assert_eq!(frame_surface.plane_storage_size(plane).unwrap(), storage);
+            let y = 64 >> sub_y;
+            let target = rect(0, y, storage.width(), storage.height() - y);
+            let base = if bit_depth == BitDepth::Ten { 600 } else { 40 };
+            let samples = (0..target.width() * target.height())
+                .map(|index| T::try_from_u16(base + u16::try_from(index % 31).unwrap()).unwrap())
+                .collect::<Vec<_>>();
+
+            frame_surface
+                .write_rect(plane, target, &samples, target.width())
+                .unwrap();
+            row_surface
+                .write_rect(plane, target, &samples, target.width())
+                .unwrap();
+            assert_eq!(
+                row_surface
+                    .rect_rows(plane, target)
+                    .unwrap()
+                    .flatten()
+                    .copied()
+                    .collect::<Vec<_>>(),
+                samples
+            );
+        }
+        if pixel_format == PixelFormat::Monochrome {
+            assert!(matches!(
+                row_surface.plane_storage_size(PlaneId::U),
+                Err(ReconError::MissingWorkspacePlane { plane: PlaneId::U })
+            ));
+        }
+    }
+    for &(plane, _) in planes {
+        assert_eq!(
+            row_workspace.samples(plane).unwrap(),
+            frame_workspace.samples(plane).unwrap()
+        );
+    }
+}
+
+#[test]
+fn row_surface_matches_frame_for_every_pixel_format_and_sample_type() {
+    for pixel_format in [
+        PixelFormat::Monochrome,
+        PixelFormat::Yuv420,
+        PixelFormat::Yuv422,
+        PixelFormat::Yuv444,
+    ] {
+        assert_row_surface_matches_frame::<u8>(BitDepth::Eight, pixel_format);
+        assert_row_surface_matches_frame::<u16>(BitDepth::Ten, pixel_format);
+    }
+}
+
+#[test]
+fn row_surface_clips_frame_edge_and_rejects_cross_band_access_atomically() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(9, 67), 3).unwrap();
+    let mut row_band = workspace
+        .sb_row_bands(SuperblockSize::Block64x64)
+        .nth(1)
+        .unwrap();
+    {
+        let mut surface = CurrentFrameSurface::Row(&mut row_band);
+
+        let cross_band = rect(0, 63, 4, 4);
+        assert!(matches!(
+            surface.write_rect_block(PlaneId::Y, 0, 63, rect_block(2, 2), &[9; 16]),
+            Err(ReconError::WorkspaceRowBandRectOutOfBounds {
+                plane: PlaneId::Y,
+                band,
+                rect: rejected,
+            }) if band == rect(0, 64, 9, 3) && rejected == cross_band
+        ));
+        assert!(matches!(
+            surface.rect_rows(PlaneId::U, rect(0, 31, 2, 2)),
+            Err(ReconError::WorkspaceRowBandRectOutOfBounds {
+                plane: PlaneId::U,
+                ..
+            })
+        ));
+
+        surface
+            .write_rect(PlaneId::Y, rect(7, 65, 4, 4), &[8; 16], 4)
+            .unwrap();
+    }
+
+    assert_eq!(
+        workspace.reconstructed_sample(PlaneId::Y, 0, 63).unwrap(),
+        3
+    );
+    for y in 65..67 {
+        assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 7, y).unwrap(), 8);
+        assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 8, y).unwrap(), 8);
+    }
+    assert!(
+        workspace
+            .samples(PlaneId::U)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 3)
+    );
 }
 
 #[test]

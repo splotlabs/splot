@@ -7,6 +7,7 @@
 
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformPartitionContext,
@@ -17,12 +18,14 @@ use crate::bitstream::tile_payload::{
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
 use super::transform_units::tx_size_log2;
-use super::{
-    DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, RecycledVec, ResidualPlanePlan, chroma_pair,
-};
+use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
+
+const MAX_RETAINED_PARSED_RESIDUAL_LISTS: usize = 64;
+const MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS: usize =
+    MAX_RETAINED_PARSED_RESIDUAL_LISTS * super::plan::MAX_RESIDUAL_PLANES;
 
 pub(crate) struct ParsedGeneralIntraResidual {
-    planes: RecycledVec<ParsedResidualPlane>,
+    planes: RecycledParsedResidualPlanes,
 }
 
 pub(super) struct ParsedResidualPlane {
@@ -46,9 +49,73 @@ pub(super) struct ParsedTransformUnit {
     pub(super) palette_color_map: Option<Vec<u8>>,
 }
 
-std::thread_local! {
-    static PARSED_RESIDUAL_PLANES: std::cell::Cell<Option<Vec<ParsedResidualPlane>>> =
-        const { std::cell::Cell::new(None) };
+#[derive(Default)]
+struct ParsedResidualPlaneRecycler {
+    lists: Vec<Vec<ParsedResidualPlane>>,
+    slots: usize,
+}
+
+impl ParsedResidualPlaneRecycler {
+    fn take(&mut self) -> Vec<ParsedResidualPlane> {
+        let planes = self.lists.pop().unwrap_or_default();
+        self.slots = self.slots.saturating_sub(planes.capacity());
+        planes
+    }
+
+    fn recycle_empty(&mut self, planes: Vec<ParsedResidualPlane>) {
+        let capacity = planes.capacity();
+        if capacity == 0
+            || capacity > MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS
+            || self.lists.len() == MAX_RETAINED_PARSED_RESIDUAL_LISTS
+            || self.slots > MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS - capacity
+            || self.lists.try_reserve(1).is_err()
+        {
+            return;
+        }
+        self.slots += capacity;
+        self.lists.push(planes);
+    }
+}
+
+static PARSED_RESIDUAL_PLANES: Mutex<ParsedResidualPlaneRecycler> =
+    Mutex::new(ParsedResidualPlaneRecycler {
+        lists: Vec::new(),
+        slots: 0,
+    });
+
+fn lock_parsed_residual_planes() -> MutexGuard<'static, ParsedResidualPlaneRecycler> {
+    PARSED_RESIDUAL_PLANES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+struct RecycledParsedResidualPlanes {
+    entries: Vec<ParsedResidualPlane>,
+}
+
+impl RecycledParsedResidualPlanes {
+    fn take(capacity: usize) -> Self {
+        let mut entries = lock_parsed_residual_planes().take();
+        entries.clear();
+        entries.reserve(capacity);
+        Self { entries }
+    }
+
+    fn push(&mut self, plane: ParsedResidualPlane) {
+        self.entries.push(plane);
+    }
+
+    fn drain(&mut self) -> std::vec::Drain<'_, ParsedResidualPlane> {
+        self.entries.drain(..)
+    }
+}
+
+impl Drop for RecycledParsedResidualPlanes {
+    fn drop(&mut self) {
+        let mut entries = core::mem::take(&mut self.entries);
+        entries.clear();
+        lock_parsed_residual_planes().recycle_empty(entries);
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -59,41 +126,6 @@ pub(super) enum CctxRole {
 }
 
 impl GeneralIntraResidualPlan {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn execute<T: ReconSample>(
-        &self,
-        work_unit: &mut DecodeTileWorkUnit<'_>,
-        symbols: &mut SymbolDecoder<'_>,
-        coeff_ctx: &mut TileCoeffContextState,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        block_decoded: &mut TileBlockDecodedState,
-        uv_mode: usize,
-        luma_transform_type_context: LumaTransformTypeContext,
-        luma_tx_partition_context: Option<LumaTransformPartitionContext>,
-        transform_tool_residual_policy: TransformToolResidualPolicy,
-        qindex: u32,
-        intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
-        deblock: &mut DeblockRecorder<'_>,
-    ) -> core::result::Result<(), GeneralIntraResidualError> {
-        self.parse(
-            work_unit,
-            symbols,
-            coeff_ctx,
-            uv_mode,
-            luma_transform_type_context,
-            luma_tx_partition_context,
-            transform_tool_residual_policy,
-            deblock,
-        )?
-        .reconstruct(
-            workspace,
-            block_decoded,
-            qindex,
-            intra_edge,
-            luma_transform_type_context,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn parse(
         &self,
@@ -108,7 +140,7 @@ impl GeneralIntraResidualPlan {
     ) -> core::result::Result<ParsedGeneralIntraResidual, GeneralIntraResidualError> {
         let mut u_nonzero = false;
         let mut pending_u = false;
-        let mut planes = RecycledVec::take(&PARSED_RESIDUAL_PLANES, self.planes.len());
+        let mut planes = RecycledParsedResidualPlanes::take(self.planes.len());
         for &plane in self.planes.iter() {
             let eob_u_nonzero = plane.plane_id == PlaneId::V && u_nonzero;
             if chroma_pair::can_hold_for_cctx_pair(plane, work_unit) {
@@ -422,7 +454,7 @@ impl ParsedGeneralIntraResidual {
         let mut pending_u = None;
         let mut deferred = Vec::new();
         let mut planes = self.planes;
-        for plane in planes.drain(..) {
+        for plane in planes.drain() {
             match plane.cctx_role {
                 CctxRole::HoldU => {
                     pending_u = Some(plane);
@@ -674,5 +706,39 @@ const fn transform_tool_policy_for_plane(
             active_chroma,
         },
         _ => policy,
+    }
+}
+
+#[cfg(test)]
+mod recycler_tests {
+    use super::*;
+
+    #[test]
+    fn parsed_residual_plane_recycler_reuses_storage() {
+        let mut recycler = ParsedResidualPlaneRecycler::default();
+        let planes = Vec::with_capacity(8);
+        let capacity = planes.capacity();
+        let pointer = planes.as_ptr();
+        recycler.recycle_empty(planes);
+
+        let reused = recycler.take();
+        assert_eq!(reused.capacity(), capacity);
+        assert!(core::ptr::eq(reused.as_ptr(), pointer));
+    }
+
+    #[test]
+    fn parsed_residual_plane_recycler_is_bounded() {
+        let mut recycler = ParsedResidualPlaneRecycler::default();
+        for _ in 0..=MAX_RETAINED_PARSED_RESIDUAL_LISTS {
+            recycler.recycle_empty(Vec::with_capacity(1));
+        }
+        assert_eq!(recycler.lists.len(), MAX_RETAINED_PARSED_RESIDUAL_LISTS);
+        assert!(recycler.slots <= MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS);
+
+        let mut recycler = ParsedResidualPlaneRecycler::default();
+        recycler.recycle_empty(Vec::with_capacity(
+            MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS + 1,
+        ));
+        assert!(recycler.lists.is_empty());
     }
 }

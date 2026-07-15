@@ -196,7 +196,7 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
-    sink: &mut crate::prediction::inter::mc::WorkspaceSink<'_, T>,
+    sink: &mut crate::prediction::inter::mc::WorkspaceSink<'_, '_, T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
     x: usize,

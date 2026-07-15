@@ -14,6 +14,9 @@ pub enum ParallelError {
         #[from]
         source: rayon::ThreadPoolBuildError,
     },
+    /// A ready-task scope was started outside a splot worker.
+    #[error("ready-task scope requires a splot worker pool")]
+    NotOnWorkerPool,
 }
 
 /// An error returned when parsing a [`crate::ThreadCount`] from a string.

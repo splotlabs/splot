@@ -17,15 +17,25 @@ const CURRENT_FRAME_INTRA_EDGE_CAPACITY: usize = 64;
 /// Iterator over checked workspace rectangle rows.
 #[derive(Clone, Debug)]
 pub struct WorkspaceRectRows<'a, T: ReconSample> {
-    plane: &'a CurrentFramePlane<T>,
+    samples: &'a [T],
+    stride_samples: usize,
     rect: PlaneRect,
     next_row: usize,
 }
 
 impl<'a, T: ReconSample> WorkspaceRectRows<'a, T> {
-    pub(super) const fn new(plane: &'a CurrentFramePlane<T>, rect: PlaneRect) -> Self {
+    pub(super) fn new(plane: &'a CurrentFramePlane<T>, rect: PlaneRect) -> Self {
+        Self::from_samples(&plane.samples, plane.stride_samples, rect)
+    }
+
+    pub(super) const fn from_samples(
+        samples: &'a [T],
+        stride_samples: usize,
+        rect: PlaneRect,
+    ) -> Self {
         Self {
-            plane,
+            samples,
+            stride_samples,
             rect,
             next_row: 0,
         }
@@ -41,10 +51,10 @@ impl<'a, T: ReconSample> Iterator for WorkspaceRectRows<'a, T> {
         }
 
         let row = self.rect.y() + self.next_row;
-        let start = row * self.plane.stride_samples + self.rect.x();
+        let start = row * self.stride_samples + self.rect.x();
         let end = start + self.rect.width();
         self.next_row += 1;
-        Some(&self.plane.samples[start..end])
+        Some(&self.samples[start..end])
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

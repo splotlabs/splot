@@ -32,6 +32,7 @@ use crate::bitstream::tile_payload::{
 pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
 use plan::{MAX_RESIDUAL_PLANES, coeff_plane, rect_tx_size_from_log2};
+pub(crate) use plane_execution::ParsedGeneralIntraResidual;
 #[cfg(test)]
 use plane_execution::{
     CctxRole, ParsedResidualPlane, ParsedResidualPlaneKind, ParsedTransformUnit,

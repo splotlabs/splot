@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
+use splot_core::headers::sequence::SuperblockSize;
 use splot_recon::{
     DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneSize,
     wedge_mask_plane_sample,
@@ -97,91 +98,6 @@ fn compound_and_warp_copy_non420_chroma_at_native_resolution() {
 }
 
 #[test]
-fn deferred_window_uses_444_chroma_coordinates() {
-    let reference = flat_frame_with_format(PixelFormat::Yuv444, 16, 16, 40, 90, 120);
-    let mut workspace = workspace_with_format(PixelFormat::Yuv444, 16, 16);
-    let block_rect = rect(4, 4, 8, 8);
-    let mut window = BlockReconWindow::for_block(&workspace, block_rect).expect("4:4:4 window");
-
-    motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Window(&mut window),
-        InterBlockParams::single(
-            &reference,
-            block_rect,
-            Mv::ZERO,
-            InterpolationFilter::EightTap,
-        ),
-        ByteOffset::new(0),
-    )
-    .expect("4:4:4 deferred prediction");
-    window
-        .publish(&mut workspace)
-        .expect("publish 4:4:4 window");
-
-    assert_eq!(workspace.reconstructed_sample(PlaneId::U, 4, 4), Ok(90));
-    assert_eq!(workspace.reconstructed_sample(PlaneId::V, 11, 11), Ok(120));
-    assert_eq!(workspace.reconstructed_sample(PlaneId::U, 2, 2), Ok(0));
-}
-
-#[test]
-fn deferred_window_plane_writes_are_isolated() {
-    let mut workspace = workspace_with_format(PixelFormat::Yuv444, 8, 8);
-    let mut window =
-        BlockReconWindow::for_block(&workspace, rect(0, 0, 8, 8)).expect("plane-isolation window");
-    let written = PlaneRect::new(2, 3, 2, 2).expect("written chroma rect");
-    WorkspaceSink::Window(&mut window)
-        .write_rect(PlaneId::U, written, &[11, 12, 99, 21, 22], 3)
-        .expect("strided chroma write");
-
-    let rows = WorkspaceSink::Window(&mut window)
-        .rect_rows(PlaneId::U, written)
-        .expect("written chroma rows")
-        .map(<[u8]>::to_vec)
-        .collect::<Vec<_>>();
-    assert_eq!(rows, [vec![11, 12], vec![21, 22]]);
-    window
-        .publish(&mut workspace)
-        .expect("publish isolated plane");
-
-    let decoded = workspace.freeze().expect("freeze isolated plane");
-    for plane in [PlaneId::Y, PlaneId::V] {
-        assert!(
-            visible_samples(&decoded, plane)
-                .iter()
-                .all(|&sample| sample == 0)
-        );
-    }
-    assert_eq!(visible_samples(&decoded, PlaneId::U)[3 * 8 + 2], 11);
-    assert_eq!(visible_samples(&decoded, PlaneId::U)[4 * 8 + 3], 22);
-}
-
-#[test]
-fn deferred_window_reuses_and_clears_sample_storage() {
-    let workspace = workspace_with_format(PixelFormat::Yuv444, 16, 16);
-    let mut window =
-        BlockReconWindow::for_block(&workspace, rect(0, 0, 8, 8)).expect("initial deferred window");
-    WorkspaceSink::Window(&mut window)
-        .write_rect(
-            PlaneId::Y,
-            PlaneRect::new(0, 0, 8, 8).expect("luma rect"),
-            &[7; 64],
-            8,
-        )
-        .expect("fill initial deferred window");
-    let storage = window.into_samples();
-    let allocation = storage.as_ptr();
-
-    let mut storage = storage;
-    let window =
-        BlockReconWindow::for_block_with_storage(&workspace, rect(0, 0, 4, 4), &mut storage)
-            .expect("reused deferred window");
-    let storage = window.into_samples();
-
-    assert_eq!(storage.as_ptr(), allocation);
-    assert!(storage.iter().all(|&sample| sample == 0));
-}
-
-#[test]
 fn dispatcher_zero_mv_copies_single_reference_planes() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);
@@ -240,6 +156,45 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
 }
 
 #[test]
+fn dispatcher_row_surface_matches_frame_for_bottom_band() {
+    let reference = flat_frame(9, 68, 40, 90, 120);
+    let block = InterBlockParams::single(
+        &reference,
+        rect(0, 64, 9, 4),
+        Mv::ZERO,
+        InterpolationFilter::EightTap,
+    );
+    let mut frame_workspace = workspace(9, 68);
+    motion_compensate_inter_block_into(
+        &mut WorkspaceSink::Frame(&mut frame_workspace),
+        block,
+        ByteOffset::new(0),
+    )
+    .expect("frame-backed bottom-band prediction");
+
+    let mut row_workspace = workspace(9, 68);
+    let mut row_band = row_workspace
+        .sb_row_bands(SuperblockSize::Block64x64)
+        .nth(1)
+        .expect("bottom row band");
+    motion_compensate_inter_block_into(
+        &mut WorkspaceSink::Row(&mut row_band),
+        block,
+        ByteOffset::new(0),
+    )
+    .expect("row-backed bottom-band prediction");
+
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            row_workspace.samples(plane).expect("row surface samples"),
+            frame_workspace
+                .samples(plane)
+                .expect("frame surface samples")
+        );
+    }
+}
+
+#[test]
 fn dispatcher_clips_single_prediction_at_frame_edge() {
     let reference = patterned_frame(8, 8);
     let mut workspace = workspace(8, 8);
@@ -270,56 +225,19 @@ fn dispatcher_clips_single_prediction_at_frame_edge() {
 }
 
 #[test]
-fn deferred_window_rejects_edge_overhang_without_partial_write() {
-    let reference = patterned_frame(8, 8);
-    let mut workspace = workspace(8, 8);
-    let block_rect = rect(4, 4, 8, 8);
-    let mut window = BlockReconWindow::for_block(&workspace, block_rect).expect("edge window");
-
-    let err = motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Window(&mut window),
-        InterBlockParams::single(
-            &reference,
-            block_rect,
-            Mv::ZERO,
-            InterpolationFilter::EightTap,
-        ),
-        ByteOffset::new(0),
-    )
-    .expect_err("overhanging deferred prediction must be retried inline");
-    assert!(matches!(
-        err,
-        crate::error::DecodeError::Reconstruction {
-            source: ReconError::WorkspaceRectOutOfBounds { .. }
-        }
-    ));
-    window
-        .publish(&mut workspace)
-        .expect("publish untouched edge window");
-    let decoded = workspace.freeze().expect("freeze untouched workspace");
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        assert!(
-            visible_samples(&decoded, plane)
-                .iter()
-                .all(|&sample| sample == 0)
-        );
-    }
-}
-
-#[test]
 fn converted_prediction_write_is_fail_atomic() {
     let mut workspace = workspace(8, 8);
     let mut samples = vec![7; 64];
     samples[63] = 256;
 
-    let err = WorkspaceSink::Frame(&mut workspace)
-        .write_u16_rect(
-            PlaneId::Y,
-            PlaneRect::new(0, 0, 8, 8).expect("full plane"),
-            &samples,
-            8,
-        )
-        .expect_err("unrepresentable late sample must reject the whole write");
+    let err = super::sink::write_u16_rect(
+        &mut WorkspaceSink::Frame(&mut workspace),
+        PlaneId::Y,
+        PlaneRect::new(0, 0, 8, 8).expect("full plane"),
+        &samples,
+        8,
+    )
+    .expect_err("unrepresentable late sample must reject the whole write");
     assert!(matches!(
         err,
         ReconError::SampleValueUnsupportedStorage { value: 256, .. }
@@ -347,9 +265,14 @@ fn converted_prediction_write_is_fail_atomic() {
     let mut samples = vec![900; 64];
     samples[63] = 1024;
 
-    let err = WorkspaceSink::Frame(&mut workspace)
-        .write_u16_rect(PlaneId::Y, plane_rect, &samples, 8)
-        .expect_err("out-of-range late sample must reject the whole write");
+    let err = super::sink::write_u16_rect(
+        &mut WorkspaceSink::Frame(&mut workspace),
+        PlaneId::Y,
+        plane_rect,
+        &samples,
+        8,
+    )
+    .expect_err("out-of-range late sample must reject the whole write");
     assert!(matches!(
         err,
         ReconError::SampleOutOfRange {
@@ -363,38 +286,6 @@ fn converted_prediction_write_is_fail_atomic() {
         workspace
             .rect_rows(PlaneId::Y, plane_rect)
             .expect("untouched ten-bit luma rows")
-            .flatten()
-            .all(|&sample| sample == 0)
-    );
-    let mut window =
-        BlockReconWindow::for_block(&workspace, rect(0, 0, 8, 8)).expect("ten-bit deferred window");
-
-    let err = WorkspaceSink::Window(&mut window)
-        .write_u16_rect(PlaneId::Y, plane_rect, &samples, 8)
-        .expect_err("out-of-range late sample must reject the whole deferred write");
-    assert!(matches!(
-        err,
-        ReconError::SampleOutOfRange {
-            sample_index: 63,
-            value: 1024,
-            max: 1023,
-            ..
-        }
-    ));
-    assert!(
-        WorkspaceSink::Window(&mut window)
-            .rect_rows(PlaneId::Y, plane_rect)
-            .expect("untouched deferred rows")
-            .flatten()
-            .all(|&sample| sample == 0)
-    );
-    window
-        .publish(&mut workspace)
-        .expect("publish untouched deferred window");
-    assert!(
-        workspace
-            .rect_rows(PlaneId::Y, plane_rect)
-            .expect("untouched workspace rows")
             .flatten()
             .all(|&sample| sample == 0)
     );

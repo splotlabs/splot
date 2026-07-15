@@ -92,6 +92,14 @@ impl TileBlockDecodedState {
         })
     }
 
+    pub(crate) const fn num_planes(&self) -> usize {
+        self.num_planes
+    }
+
+    pub(crate) const fn subsampling(&self, plane: usize) -> (usize, usize) {
+        plane_subsampling(plane, self.subsampling_x, self.subsampling_y)
+    }
+
     pub(crate) fn clear_superblock(&mut self, r: usize, c: usize) {
         for plane in 0..self.num_planes {
             let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);

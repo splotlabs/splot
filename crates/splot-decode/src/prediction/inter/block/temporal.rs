@@ -39,8 +39,7 @@ fn temporal_ref_order_hint<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn record_temporal_motion_block<T: ReconSample>(
-    motion_field: &mut TemporalMotionField,
+pub(super) fn temporal_motion_block<T: ReconSample>(
     reference: &InterReferenceState<'_, T>,
     ref_frame_idx: &[u32],
     mi_row: usize,
@@ -55,8 +54,8 @@ pub(super) fn record_temporal_motion_block<T: ReconSample>(
     mv0: Mv,
     mv1: Mv,
     warp_params: [Option<[i32; 6]>; 2],
-) {
-    motion_field.record_block(TemporalMotionBlock {
+) -> TemporalMotionBlock {
+    TemporalMotionBlock {
         mi_row,
         mi_col,
         n4w,
@@ -72,5 +71,53 @@ pub(super) fn record_temporal_motion_block<T: ReconSample>(
         ],
         mvs: [mv0, mv1],
         warp_params,
-    });
+    }
+}
+
+pub(super) fn commit_temporal_motion_blocks(
+    motion_field: &mut TemporalMotionField,
+    blocks: &[TemporalMotionBlock],
+) {
+    for &block in blocks {
+        motion_field.record_block(block);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    fn block(order_hint: u32, mv: Mv) -> TemporalMotionBlock {
+        TemporalMotionBlock {
+            mi_row: 0,
+            mi_col: 0,
+            n4w: 2,
+            n4h: 2,
+            mi_rows: 2,
+            mi_cols: 2,
+            current_order_hint: 0,
+            ref_order_hints: [Some(order_hint), None],
+            mvs: [mv, Mv::ZERO],
+            warp_params: [None, None],
+        }
+    }
+
+    #[test]
+    fn ordered_log_commit_matches_direct_recording_and_preserves_last_write() {
+        let first = block(1, Mv { row: 8, col: 16 });
+        let second = block(2, Mv { row: 24, col: 32 });
+        let mut direct = TemporalMotionField::new(2, 2).expect("direct field");
+        direct.record_block(first);
+        direct.record_block(second);
+
+        let mut logged = TemporalMotionField::new(2, 2).expect("logged field");
+        commit_temporal_motion_blocks(&mut logged, &[first, second]);
+        assert_eq!(logged, direct);
+
+        let mut reversed = TemporalMotionField::new(2, 2).expect("reversed field");
+        commit_temporal_motion_blocks(&mut reversed, &[second, first]);
+        assert_ne!(reversed, direct);
+    }
 }
