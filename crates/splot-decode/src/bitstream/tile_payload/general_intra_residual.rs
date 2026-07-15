@@ -62,7 +62,7 @@ pub(crate) use luma_transform_partition::{
 use reconstruct::reconstruct_block_setup;
 pub(crate) use reconstruct::{
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
-    reconstruct_general_intra_coeff_block_rect_with_prediction_slice_and_ddt,
+    reconstruct_inter_coeff_block_residual_rect_into,
 };
 
 const TX_4X4: usize = 0;
@@ -2211,7 +2211,7 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
     reconstruct_general_intra_block_rect_with_prediction_core(
         quant,
         prediction,
-        ReconstructionOutput::Reusable(&mut out),
+        &mut out,
         qindex,
         plane_id,
         log2_width,
@@ -2227,16 +2227,11 @@ pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: Re
     Ok(out)
 }
 
-enum ReconstructionOutput<'a, T> {
-    Reusable(&'a mut Vec<T>),
-    Fixed(&'a mut [T]),
-}
-
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
     quant: &[i32],
     prediction: &[T],
-    output: ReconstructionOutput<'_, T>,
+    out: &mut Vec<T>,
     qindex: u32,
     plane_id: PlaneId,
     log2_width: u32,
@@ -2268,14 +2263,8 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             actual: quant.len(),
         });
     }
-    let out = match output {
-        ReconstructionOutput::Reusable(out) => {
-            out.clear();
-            out.resize(setup.samples, T::default());
-            out.as_mut_slice()
-        }
-        ReconstructionOutput::Fixed(out) => out,
-    };
+    out.clear();
+    out.resize(setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let dequant_scratch = &mut scratch.dequant[..setup.adjusted];
         let residual_scratch = &mut scratch.residual[..setup.samples];
@@ -2287,7 +2276,7 @@ fn reconstruct_general_intra_block_rect_with_prediction_core<T: ReconSample>(
             secondary,
             dequant_scratch,
             residual_scratch,
-            out,
+            out.as_mut_slice(),
         )
     })
     .map_err(|source| GeneralIntraResidualError::Reconstruct { source })?;
