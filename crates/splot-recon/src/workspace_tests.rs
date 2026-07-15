@@ -460,6 +460,58 @@ fn row_surface_add_residual_matches_clipped_frame_stride_and_is_atomic() {
 }
 
 #[test]
+fn constant_residual_matches_block_for_clipped_frame_and_row_surface() {
+    let info = monochrome_info(BitDepth::Eight, 8, 67);
+    let mut block = CurrentFrameWorkspace::<u8>::new(info, 50).unwrap();
+    let mut frame = CurrentFrameWorkspace::<u8>::new(info, 50).unwrap();
+    let mut rows = CurrentFrameWorkspace::<u8>::new(info, 50).unwrap();
+    CurrentFrameSurface::Frame(&mut block)
+        .add_residual_rect_block(PlaneId::Y, 6, 65, rect_block(2, 2), &[7; 16])
+        .unwrap();
+    CurrentFrameSurface::Frame(&mut frame)
+        .add_constant_residual_rect_block(PlaneId::Y, 6, 65, rect_block(2, 2), 7)
+        .unwrap();
+    {
+        let mut row_band = rows
+            .sb_row_bands(SuperblockSize::Block64x64)
+            .nth(1)
+            .unwrap();
+        CurrentFrameSurface::Row(&mut row_band)
+            .add_constant_residual_rect_block(PlaneId::Y, 6, 65, rect_block(2, 2), 7)
+            .unwrap();
+    }
+    assert_eq!(
+        frame.samples(PlaneId::Y).unwrap(),
+        block.samples(PlaneId::Y).unwrap()
+    );
+    assert_eq!(
+        rows.samples(PlaneId::Y).unwrap(),
+        block.samples(PlaneId::Y).unwrap()
+    );
+
+    {
+        let mut row_band = rows
+            .sb_row_bands(SuperblockSize::Block64x64)
+            .nth(1)
+            .unwrap();
+        assert!(matches!(
+            CurrentFrameSurface::Row(&mut row_band).add_constant_residual_rect_block(
+                PlaneId::Y,
+                0,
+                63,
+                rect_block(2, 2),
+                7,
+            ),
+            Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
+        ));
+    }
+    assert_eq!(
+        rows.samples(PlaneId::Y).unwrap(),
+        block.samples(PlaneId::Y).unwrap()
+    );
+}
+
+#[test]
 fn surface_add_residual_rejects_inputs_atomically() {
     let mut workspace =
         CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 4, 4), 20).unwrap();
