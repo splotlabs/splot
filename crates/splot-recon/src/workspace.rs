@@ -185,11 +185,7 @@ impl<T: ReconSample> CurrentFramePlaneRowBand<'_, T> {
             rect.width(),
             rect.height(),
         )?;
-        Ok(WorkspaceRectRows::from_samples(
-            self.samples,
-            self.stride_samples,
-            local,
-        ))
+        Ok(PlaneRef::from_parts(self.samples, self.stride_samples, local).visible_rows())
     }
 
     fn write_rect(
@@ -978,7 +974,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// outside the plane storage.
     pub fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
         self.ensure_rect(rect)?;
-        Ok(WorkspaceRectRows::new(self, rect))
+        Ok(PlaneRef::from_parts(&self.samples, self.stride_samples, rect).visible_rows())
     }
 
     fn fill_rect(&mut self, rect: PlaneRect, sample: T) -> Result<()> {

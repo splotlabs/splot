@@ -106,7 +106,7 @@ fn transform_state_errors_return_buffers_for_reuse() {
 }
 
 #[test]
-fn transform_block_scratch_remains_thread_local() {
+fn transform_block_recycler_is_thread_local() {
     clear_transform_coeff_buffers();
     drop(TransformCoeffBlockState::new(4, 4).unwrap());
     assert_eq!(transform_coeff_buffer_counts(), (1, 0));

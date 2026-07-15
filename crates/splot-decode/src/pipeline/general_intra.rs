@@ -150,7 +150,7 @@ fn record_chroma_smooth(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn parse_one_general_intra_block(
+pub(crate) fn decode_one_general_intra_block(
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,

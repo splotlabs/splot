@@ -910,7 +910,7 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        let (leaf, command) = crate::pipeline::general_intra::parse_one_general_intra_block(
+        let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
             work_unit,
             symbols,
             frontier,
