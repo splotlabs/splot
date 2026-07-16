@@ -492,6 +492,8 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
         lossless,
     } = input;
     let plane = base_config.plane;
+    let context_x4 = state.local_x4(plane, state_context.x4)?;
+    let context_y4 = state.local_y4(plane, state_context.y4)?;
     let pass = apply_nonzero_coeff_ordinary_pass_with_derived_base(
         cdfs,
         symbols,
@@ -504,8 +506,8 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_state_context(
                 plane_type: state_context.plane_type,
                 above_dc: state.above_dc(plane)?,
                 left_dc: state.left_dc(plane)?,
-                x4: state_context.x4,
-                y4: state_context.y4,
+                x4: context_x4,
+                y4: context_y4,
                 w4: state_context.w4,
                 h4: state_context.h4,
             },

@@ -210,14 +210,7 @@ impl InterLumaTxTypeMap {
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {
-        let rel_row = row.checked_sub(self.row)?;
-        let rel_col = col.checked_sub(self.col)?;
-        if rel_row >= self.rows || rel_col >= self.cols {
-            return None;
-        }
-        rel_row
-            .checked_mul(self.cols)
-            .and_then(|start| start.checked_add(rel_col))
+        crate::support::rect_index(row, col, (self.row, self.col), (self.rows, self.cols))
     }
 }
 

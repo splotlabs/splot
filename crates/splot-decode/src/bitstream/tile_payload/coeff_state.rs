@@ -334,6 +334,8 @@ impl TransformCoeffBlockAllocation {
 pub(crate) struct TileCoeffContextState {
     mi_rows: usize,
     mi_cols: usize,
+    plane_row_start: [usize; PLANE_COUNT],
+    plane_col_start: [usize; PLANE_COUNT],
     plane_rows: [usize; PLANE_COUNT],
     plane_cols: [usize; PLANE_COUNT],
     above_level: [Vec<u32>; PLANE_COUNT],
@@ -367,34 +369,54 @@ impl TileCoeffContextState {
         Self::new_with_chroma_sampling(mi_rows, mi_cols, ChromaSampling::Yuv444)
     }
 
-    pub(crate) fn new_chroma(
+    pub(crate) fn new_with_chroma_sampling(
+        mi_rows: usize,
+        mi_cols: usize,
+        chroma: ChromaSampling,
+    ) -> Result<Self, TileCoeffStateError> {
+        Self::new_with_chroma_sampling_at(0, 0, mi_rows, mi_cols, chroma)
+    }
+
+    pub(crate) fn new_chroma_at(
+        mi_row_start: usize,
+        mi_col_start: usize,
         mi_rows: usize,
         mi_cols: usize,
         chroma: ChromaFormatIdc,
     ) -> Result<Self, TileCoeffStateError> {
-        Self::new_with_chroma_sampling(
+        Self::new_with_chroma_sampling_at(
+            mi_row_start,
+            mi_col_start,
             mi_rows,
             mi_cols,
             ChromaSampling::from_chroma_format_idc(chroma),
         )
     }
 
-    pub(crate) fn new_with_chroma_sampling(
+    fn new_with_chroma_sampling_at(
+        mi_row_start: usize,
+        mi_col_start: usize,
         mi_rows: usize,
         mi_cols: usize,
         chroma: ChromaSampling,
     ) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(mi_rows, mi_cols)?;
+        let mut plane_row_start = [0; PLANE_COUNT];
+        let mut plane_col_start = [0; PLANE_COUNT];
         let mut plane_rows = [0; PLANE_COUNT];
         let mut plane_cols = [0; PLANE_COUNT];
         for (index, plane) in PLANES.iter().copied().enumerate() {
             let (sub_x, sub_y) = chroma.subsampling(plane);
+            plane_row_start[index] = mi_row_start >> sub_y;
+            plane_col_start[index] = mi_col_start >> sub_x;
             plane_rows[index] = subsampled_context_len(mi_rows, sub_y)?;
             plane_cols[index] = subsampled_context_len(mi_cols, sub_x)?;
         }
         Ok(Self {
             mi_rows,
             mi_cols,
+            plane_row_start,
+            plane_col_start,
             plane_rows,
             plane_cols,
             above_level: zeroed_plane_lines(allocation.above_len)?,
@@ -430,6 +452,28 @@ impl TileCoeffContextState {
         Ok(&self.left_dc[validate_plane(plane)?])
     }
 
+    pub(crate) fn local_x4(&self, plane: usize, x4: usize) -> Result<usize, TileCoeffStateError> {
+        let plane = validate_plane(plane)?;
+        x4.checked_sub(self.plane_col_start[plane]).ok_or(
+            TileCoeffStateError::ContextCoordinateBeforeTile {
+                axis: "column",
+                coordinate: x4,
+                tile_start: self.plane_col_start[plane],
+            },
+        )
+    }
+
+    pub(crate) fn local_y4(&self, plane: usize, y4: usize) -> Result<usize, TileCoeffStateError> {
+        let plane = validate_plane(plane)?;
+        y4.checked_sub(self.plane_row_start[plane]).ok_or(
+            TileCoeffStateError::ContextCoordinateBeforeTile {
+                axis: "row",
+                coordinate: y4,
+                tile_start: self.plane_row_start[plane],
+            },
+        )
+    }
+
     pub(crate) fn update_after_coeffs(
         &mut self,
         input: CoeffContextUpdate,
@@ -442,8 +486,10 @@ impl TileCoeffContextState {
         if input.h4 == 0 {
             return Err(TileCoeffStateError::EmptyContextRange { axis: "rows" });
         }
-        let above = edge_clamped_range("above", input.x4, input.w4, self.plane_cols[plane])?;
-        let left = edge_clamped_range("left", input.y4, input.h4, self.plane_rows[plane])?;
+        let x4 = self.local_x4(plane, input.x4)?;
+        let y4 = self.local_y4(plane, input.y4)?;
+        let above = edge_clamped_range("above", x4, input.w4, self.plane_cols[plane])?;
+        let left = edge_clamped_range("left", y4, input.h4, self.plane_rows[plane])?;
 
         fill_context_line(
             &mut self.above_level[plane],
@@ -469,12 +515,12 @@ impl TileCoeffContextState {
         let plane = validate_plane(input.plane)?;
         validate_subsampling("x", input.sub_x)?;
         validate_subsampling("y", input.sub_y)?;
-        let above_start = shifted(input.c, input.sub_x)?;
-        let left_start = shifted(input.r, input.sub_y)?;
+        let above_start = self.local_x4(plane, shifted(input.c, input.sub_x)?)?;
+        let left_start = self.local_y4(plane, shifted(input.r, input.sub_y)?)?;
         let above_unshifted_end = checked_coordinate_add("column", input.c, input.w4)?;
         let left_unshifted_end = checked_coordinate_add("row", input.r, input.h4)?;
-        let above_end = shifted(above_unshifted_end, input.sub_x)?;
-        let left_end = shifted(left_unshifted_end, input.sub_y)?;
+        let above_end = self.local_x4(plane, shifted(above_unshifted_end, input.sub_x)?)?;
+        let left_end = self.local_y4(plane, shifted(left_unshifted_end, input.sub_y)?)?;
         let above = edge_clamped_existing_range(
             "above reset",
             above_start,
@@ -556,6 +602,12 @@ pub(crate) struct CoeffContextReset {
 pub(crate) enum TileCoeffStateError {
     #[error("coefficient context state dimensions must be nonzero, got {mi_rows}x{mi_cols}")]
     EmptyTileDimensions { mi_rows: usize, mi_cols: usize },
+    #[error("coefficient context {axis} {coordinate} precedes tile-local start {tile_start}")]
+    ContextCoordinateBeforeTile {
+        axis: &'static str,
+        coordinate: usize,
+        tile_start: usize,
+    },
     #[error("invalid adjusted transform {axis} {value}; expected 1..={MAX_ADJUSTED_TX_EXTENT}")]
     InvalidAdjustedTransformExtent { axis: &'static str, value: usize },
     #[error("{operation} overflow: left {left}, right {right}")]

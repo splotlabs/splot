@@ -26,16 +26,38 @@ pub(crate) struct GdfState {
     sb_per_gdf: usize,
     grid_rows: usize,
     grid_cols: usize,
+    row_start: usize,
+    col_start: usize,
+    local_rows: usize,
+    local_cols: usize,
     values: Vec<u8>,
 }
 
 impl GdfState {
-    pub(crate) fn try_clone_for_tile(&self, tile_offset: ByteOffset) -> Result<Self> {
+    pub(crate) fn for_tile(
+        &self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<Self> {
+        if !self.active {
+            return Ok(Self::inactive());
+        }
+        let unit_mi = self.block_size / 4;
+        let row_start = mi_rows.start / unit_mi;
+        let col_start = mi_cols.start / unit_mi;
+        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
+        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
+        let local_rows = row_end.saturating_sub(row_start);
+        let local_cols = col_end.saturating_sub(col_start);
+        let len = local_rows
+            .checked_mul(local_cols)
+            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
         let mut values = Vec::new();
         values
-            .try_reserve_exact(self.values.len())
+            .try_reserve_exact(len)
             .map_err(|_| gdf_error(tile_offset, GDF_GRID_REASON))?;
-        values.extend_from_slice(&self.values);
+        values.resize(len, 2);
         Ok(Self {
             active: self.active,
             block_size: self.block_size,
@@ -43,6 +65,10 @@ impl GdfState {
             sb_per_gdf: self.sb_per_gdf,
             grid_rows: self.grid_rows,
             grid_cols: self.grid_cols,
+            row_start,
+            col_start,
+            local_rows,
+            local_cols,
             values,
         })
     }
@@ -115,6 +141,10 @@ impl GdfState {
             sb_per_gdf,
             grid_rows,
             grid_cols,
+            row_start: 0,
+            col_start: 0,
+            local_rows: grid_rows,
+            local_cols: grid_cols,
             values: vec![2; cells],
         })
     }
@@ -127,6 +157,10 @@ impl GdfState {
             sb_per_gdf: 0,
             grid_rows: 0,
             grid_cols: 0,
+            row_start: 0,
+            col_start: 0,
+            local_rows: 0,
+            local_cols: 0,
             values: Vec::new(),
         }
     }
@@ -160,10 +194,12 @@ impl GdfState {
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {
-        if row >= self.grid_rows || col >= self.grid_cols {
-            return None;
-        }
-        row.checked_mul(self.grid_cols)?.checked_add(col)
+        crate::support::rect_index(
+            row,
+            col,
+            (self.row_start, self.col_start),
+            (self.local_rows, self.local_cols),
+        )
     }
 
     pub(crate) fn merge_tile(
@@ -179,7 +215,6 @@ impl GdfState {
             || self.sb_per_gdf != tile.sb_per_gdf
             || self.grid_rows != tile.grid_rows
             || self.grid_cols != tile.grid_cols
-            || self.values.len() != tile.values.len()
         {
             return Err(gdf_error(tile_offset, GDF_GRID_REASON));
         }
@@ -194,7 +229,10 @@ impl GdfState {
                 let index = self
                     .index(row, col)
                     .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
-                self.values[index] = tile.values[index];
+                let tile_index = tile
+                    .index(row, col)
+                    .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+                self.values[index] = tile.values[tile_index];
             }
         }
         Ok(())

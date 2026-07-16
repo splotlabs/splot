@@ -113,6 +113,10 @@ pub(crate) struct DeltaQState {
 pub(crate) struct CdefState {
     rows: usize,
     cols: usize,
+    row_start: usize,
+    col_start: usize,
+    local_rows: usize,
+    local_cols: usize,
     values: Vec<Option<usize>>,
     sb_size4: usize,
 }
@@ -281,15 +285,33 @@ impl DeltaQState {
 }
 
 impl CdefState {
-    pub(crate) fn try_clone_for_tile(&self, tile_offset: ByteOffset) -> Result<Self> {
-        let mut values = Vec::new();
-        values.try_reserve_exact(self.values.len()).map_err(|_| {
+    pub(crate) fn for_tile(
+        &self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<Self> {
+        let row_start = mi_rows.start / CDEF_UNIT_MI;
+        let col_start = mi_cols.start / CDEF_UNIT_MI;
+        let row_end = mi_rows.end.div_ceil(CDEF_UNIT_MI).min(self.rows);
+        let col_end = mi_cols.end.div_ceil(CDEF_UNIT_MI).min(self.cols);
+        let local_rows = row_end.saturating_sub(row_start);
+        let local_cols = col_end.saturating_sub(col_start);
+        let len = local_rows.checked_mul(local_cols).ok_or_else(|| {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
         })?;
-        values.extend_from_slice(&self.values);
+        let mut values = Vec::new();
+        values.try_reserve_exact(len).map_err(|_| {
+            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
+        })?;
+        values.resize(len, None);
         Ok(Self {
             rows: self.rows,
             cols: self.cols,
+            row_start,
+            col_start,
+            local_rows,
+            local_cols,
             values,
             sb_size4: self.sb_size4,
         })
@@ -309,6 +331,10 @@ impl CdefState {
         Ok(Self {
             rows,
             cols,
+            row_start: 0,
+            col_start: 0,
+            local_rows: rows,
+            local_cols: cols,
             values: vec![None; values_len],
             sb_size4: intra_delta_q_sb_size4(sequence, tile_offset)?,
         })
@@ -451,8 +477,16 @@ impl CdefState {
         let start_unit_col = mi_col / CDEF_UNIT_MI;
         let unit_rows = n4h.div_ceil(CDEF_UNIT_MI).max(1);
         let unit_cols = n4w.div_ceil(CDEF_UNIT_MI).max(1);
-        for row in start_unit_row..start_unit_row.saturating_add(unit_rows).min(self.rows) {
-            for col in start_unit_col..start_unit_col.saturating_add(unit_cols).min(self.cols) {
+        for row in start_unit_row
+            ..start_unit_row
+                .saturating_add(unit_rows)
+                .min(self.row_start.saturating_add(self.local_rows))
+        {
+            for col in start_unit_col
+                ..start_unit_col
+                    .saturating_add(unit_cols)
+                    .min(self.col_start.saturating_add(self.local_cols))
+            {
                 let index = self.index(row, col, tile_offset)?;
                 self.values[index] = Some(strength);
             }
@@ -466,13 +500,19 @@ impl CdefState {
     }
 
     fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
-        if row >= self.rows || col >= self.cols {
+        let row = row.checked_sub(self.row_start).ok_or_else(|| {
+            selectable_decode_error(tile_offset, selectable_reason!("cdef_index_bounds"))
+        })?;
+        let col = col.checked_sub(self.col_start).ok_or_else(|| {
+            selectable_decode_error(tile_offset, selectable_reason!("cdef_index_bounds"))
+        })?;
+        if row >= self.local_rows || col >= self.local_cols {
             return Err(selectable_decode_error(
                 tile_offset,
                 selectable_reason!("cdef_index_bounds"),
             ));
         }
-        row.checked_mul(self.cols)
+        row.checked_mul(self.local_cols)
             .and_then(|start| start.checked_add(col))
             .ok_or_else(|| {
                 selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
@@ -489,7 +529,8 @@ impl CdefState {
         if self.rows != tile.rows
             || self.cols != tile.cols
             || self.sb_size4 != tile.sb_size4
-            || self.values.len() != tile.values.len()
+            || tile.row_start != mi_rows.start / CDEF_UNIT_MI
+            || tile.col_start != mi_cols.start / CDEF_UNIT_MI
         {
             return Err(selectable_decode_error(
                 tile_offset,
@@ -501,7 +542,8 @@ impl CdefState {
         for row in mi_rows.start / CDEF_UNIT_MI..row_end {
             for col in mi_cols.start / CDEF_UNIT_MI..col_end {
                 let index = self.index(row, col, tile_offset)?;
-                self.values[index] = tile.values[index];
+                let tile_index = tile.index(row, col, tile_offset)?;
+                self.values[index] = tile.values[tile_index];
             }
         }
         Ok(())

@@ -28,6 +28,8 @@ type PlaneBuffers = [Vec<usize>; PLANE_COUNT];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
+    row_start: usize,
+    col_start: usize,
     mi_rows: usize,
     mi_cols: usize,
     mi_sizes: PlaneBuffers,
@@ -66,6 +68,8 @@ impl TileMiSizeState {
     }
 
     pub(crate) fn new(
+        row_start: usize,
+        col_start: usize,
         mi_rows: usize,
         mi_cols: usize,
         sb_size: BlockSize,
@@ -79,6 +83,8 @@ impl TileMiSizeState {
                 right: mi_cols,
             })?;
         Ok(Self {
+            row_start,
+            col_start,
             mi_rows,
             mi_cols,
             mi_sizes: filled_planes(allocation.padded_grid_cells, BLOCK_256X256_INDEX)?,
@@ -113,7 +119,9 @@ impl TileMiSizeState {
     }
 
     pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
-        TilePartitionContextState::new(
+        TilePartitionContextState::new_at(
+            self.row_start,
+            self.col_start,
             self.mi_sizes[LUMA_PLANE].as_slice(),
             self.mi_size_stride,
             [
@@ -171,7 +179,25 @@ impl TileMiSizeState {
                 base: c,
                 offset: width,
             })?;
-        if r >= self.mi_rows || c >= self.mi_cols {
+        let local_r =
+            r.checked_sub(self.row_start)
+                .ok_or(TileMiSizeStateError::BlockStartOutOfBounds {
+                    plane,
+                    r,
+                    c,
+                    mi_rows: self.mi_rows,
+                    mi_cols: self.mi_cols,
+                })?;
+        let local_c =
+            c.checked_sub(self.col_start)
+                .ok_or(TileMiSizeStateError::BlockStartOutOfBounds {
+                    plane,
+                    r,
+                    c,
+                    mi_rows: self.mi_rows,
+                    mi_cols: self.mi_cols,
+                })?;
+        if local_r >= self.mi_rows || local_c >= self.mi_cols {
             return Err(TileMiSizeStateError::BlockStartOutOfBounds {
                 plane,
                 r,
@@ -183,7 +209,9 @@ impl TileMiSizeState {
         let plane_grid = &self.mi_sizes[plane];
         let rows = plane_grid.len() / self.mi_size_stride;
         let cols = self.mi_size_stride;
-        if row_end > rows || col_end > cols {
+        let local_row_end = row_end.saturating_sub(self.row_start);
+        let local_col_end = col_end.saturating_sub(self.col_start);
+        if local_row_end > rows || local_col_end > cols {
             return Err(TileMiSizeStateError::BlockOutOfBounds {
                 plane,
                 r,
@@ -195,10 +223,10 @@ impl TileMiSizeState {
             });
         }
         Ok(TileMiSizeRegion {
-            r,
-            c,
-            row_end,
-            col_end,
+            r: local_r,
+            c: local_c,
+            row_end: local_row_end,
+            col_end: local_col_end,
         })
     }
 }

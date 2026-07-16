@@ -93,6 +93,19 @@ fn record_block_clips_to_the_grid() {
 }
 
 #[test]
+fn grid_origin_keeps_only_tile_cells() {
+    let mut state = TileSegmentIdState::new(4, 5).unwrap().with_origin(16, 32);
+    assert_eq!(state.grid.cells.len(), 20);
+
+    state.record_block(17, 34, 2, 2, 7);
+
+    assert_eq!(state.cell(17, 34), Some(7));
+    assert_eq!(state.cell(18, 35), Some(7));
+    assert_eq!(state.cell(15, 34), None);
+    assert_eq!(state.cell(17, 37), None);
+}
+
+#[test]
 fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
     let state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
 

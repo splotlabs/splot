@@ -43,6 +43,8 @@ impl NeighbourSample {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MiGrid<T> {
+    row_start: usize,
+    col_start: usize,
     rows: usize,
     cols: usize,
     cells: Vec<T>,
@@ -68,7 +70,19 @@ impl<T: Copy> MiGrid<T> {
         let mut cells = Vec::new();
         cells.try_reserve_exact(len).map_err(allocation)?;
         cells.resize(len, default);
-        Ok(Self { rows, cols, cells })
+        Ok(Self {
+            row_start: 0,
+            col_start: 0,
+            rows,
+            cols,
+            cells,
+        })
+    }
+
+    fn with_origin(mut self, row_start: usize, col_start: usize) -> Self {
+        self.row_start = row_start;
+        self.col_start = col_start;
+        self
     }
 
     fn cell(&self, row: usize, col: usize) -> Option<T> {
@@ -82,14 +96,14 @@ impl<T: Copy> MiGrid<T> {
             let Some(row) = r.checked_add(y) else {
                 break;
             };
-            if row >= self.rows {
+            if row >= self.row_start.saturating_add(self.rows) {
                 break;
             }
             for x in 0..n4w {
                 let Some(col) = c.checked_add(x) else {
                     break;
                 };
-                if col >= self.cols {
+                if col >= self.col_start.saturating_add(self.cols) {
                     break;
                 }
                 if let Some(index) = self.cell_index(row, col) {
@@ -100,10 +114,12 @@ impl<T: Copy> MiGrid<T> {
     }
 
     fn cell_index(&self, row: usize, col: usize) -> Option<usize> {
-        if row >= self.rows || col >= self.cols {
-            return None;
-        }
-        row.checked_mul(self.cols)?.checked_add(col)
+        crate::support::rect_index(
+            row,
+            col,
+            (self.row_start, self.col_start),
+            (self.rows, self.cols),
+        )
     }
 }
 
@@ -126,6 +142,23 @@ macro_rules! mi_grid_new {
             |source| $err::Allocation { source },
             $precheck,
         )
+    };
+}
+
+macro_rules! impl_grid_origin {
+    ($($state:ty),+ $(,)?) => {
+        $(
+            impl $state {
+                pub(crate) fn with_origin(
+                    mut self,
+                    row_start: usize,
+                    col_start: usize,
+                ) -> Self {
+                    self.grid = self.grid.with_origin(row_start, col_start);
+                    self
+                }
+            }
+        )+
     };
 }
 
@@ -856,6 +889,17 @@ impl TileIntraYModeState {
         self.grid.cell(row, col).flatten()
     }
 }
+
+impl_grid_origin!(
+    TileFscModeState,
+    TileIntraJointModeState,
+    TileIntraYModeState,
+    TileLumaPaletteState,
+    TileSegmentIdState,
+    TileUseDipState,
+    TileUsesMrlsState,
+    TileUvCflState,
+);
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TileIntraYModeStateError {

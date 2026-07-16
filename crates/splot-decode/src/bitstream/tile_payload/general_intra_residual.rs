@@ -1095,15 +1095,33 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         )?;
     }
 
-    let above_level_or = or_u32(context.above_level(plane).map_err(coeff_ctx_err)?, x4, w4);
-    let left_level_or = or_u32(context.left_level(plane).map_err(coeff_ctx_err)?, y4, h4);
+    let context_x4 = context.local_x4(plane, x4).map_err(coeff_ctx_err)?;
+    let context_y4 = context.local_y4(plane, y4).map_err(coeff_ctx_err)?;
+    let above_level_or = or_u32(
+        context.above_level(plane).map_err(coeff_ctx_err)?,
+        context_x4,
+        w4,
+    );
+    let left_level_or = or_u32(
+        context.left_level(plane).map_err(coeff_ctx_err)?,
+        context_y4,
+        h4,
+    );
     let txb_skip_intra_inter = usize::from(is_inter || txb_skip_fsc_mode);
     let selector = match plane {
         1 | 2 => {
             let above_nz = above_level_or != 0
-                || or_u8(context.above_dc(plane).map_err(coeff_ctx_err)?, x4, w4) != 0;
+                || or_u8(
+                    context.above_dc(plane).map_err(coeff_ctx_err)?,
+                    context_x4,
+                    w4,
+                ) != 0;
             let left_nz = left_level_or != 0
-                || or_u8(context.left_dc(plane).map_err(coeff_ctx_err)?, y4, h4) != 0;
+                || or_u8(
+                    context.left_dc(plane).map_err(coeff_ctx_err)?,
+                    context_y4,
+                    h4,
+                ) != 0;
             if plane == 2 {
                 TileCdfSelector::VTxbSkip {
                     coeff_cdf_q_ctx,
