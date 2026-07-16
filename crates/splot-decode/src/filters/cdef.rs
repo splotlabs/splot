@@ -268,12 +268,16 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
 
         let mut r = luma_start / MI_SIZE;
         let r_end = luma_end.div_ceil(MI_SIZE).min(mi_rows);
+        // Each interior block's gather overwrites exactly the padded region the
+        // kernel reads, so one stripe-scoped scratch is reused without re-zeroing.
+        let mut pad = [0u16; CDEF_PADDED_AREA];
         while r < r_end {
             let mut c = 0;
             while c < mi_cols {
                 if let Some(ctx) = lookup.at(r, c)? {
-                    let output = compute_cdef_block::<T, u16>(
+                    let output = compute_cdef_block::<T>(
                         &ctx,
+                        &mut pad,
                         frame.deblocked(PlaneId::Y).ok_or(CdefError::Workspace)?,
                         frame.deblocked(PlaneId::U),
                         frame.deblocked(PlaneId::V),
@@ -298,9 +302,9 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     Ok(frame)
 }
 
-type CdefPlaneOutput<T> = (PlaneId, PlaneRect, [T; 64], usize);
+type CdefPlaneOutput = (PlaneId, PlaneRect, [u16; 64], usize);
 
-type CdefBlockOutput<T> = [Option<CdefPlaneOutput<T>>; 3];
+type CdefBlockOutput = [Option<CdefPlaneOutput>; 3];
 
 struct CdefBlockCtx {
     r: usize,
@@ -343,12 +347,13 @@ impl CdefBlockCtx {
     }
 }
 
-fn compute_cdef_block<S: ReconSample, T: ReconSample>(
+fn compute_cdef_block<S: ReconSample>(
     ctx: &CdefBlockCtx,
+    pad: &mut [u16; CDEF_PADDED_AREA],
     luma_snap: FramePlane<'_, S>,
     u_snap: Option<FramePlane<'_, S>>,
     v_snap: Option<FramePlane<'_, S>>,
-) -> Result<CdefBlockOutput<T>, CdefError> {
+) -> Result<CdefBlockOutput, CdefError> {
     let x0 = ctx.c << MI_SIZE_LOG2;
     let y0 = ctx.r << MI_SIZE_LOG2;
     let block_w = 8.min(luma_snap.width().saturating_sub(x0));
@@ -361,8 +366,31 @@ fn compute_cdef_block<S: ReconSample, T: ReconSample>(
     let uv_pri = ctx.params.uv_pri << ctx.coeff_shift;
     let uv_sec = ctx.params.uv_sec << ctx.coeff_shift;
 
+    let luma_inside_x = (ctx.mi_cols * MI_SIZE).min(luma_snap.width());
+    let luma_inside_y = (ctx.mi_rows * MI_SIZE).min(luma_snap.frame_height());
+    let luma_interior = x0 >= CDEF_TAP_REACH
+        && y0 >= CDEF_TAP_REACH
+        && x0 + block_w - 1 + CDEF_TAP_REACH < luma_inside_x
+        && y0 + block_h - 1 + CDEF_TAP_REACH < luma_inside_y;
+    // Gather the luma pad up front when the luma plane will be filtered: that same
+    // padded neighbourhood feeds both the direction search and the kernel, removing
+    // the separate direction-only read of the 8x8 block from the source plane.
+    let luma_pad_ready = luma_interior && !ctx.luma_lossless && (sec_str != 0 || pri_base != 0);
+    if luma_pad_ready {
+        gather_interior_pad(luma_snap, pad, x0, y0, block_w, block_h)?;
+    }
+
     let (y_dir, var) = if pri_base == 0 && uv_pri == 0 {
         (0, 0)
+    } else if luma_pad_ready {
+        let mut block = [[0i32; 8]; 8];
+        for (i, row) in block.iter_mut().enumerate() {
+            let base = (i + CDEF_TAP_REACH) * CDEF_PADDED_SIDE + CDEF_TAP_REACH;
+            for (j, cell) in row.iter_mut().enumerate() {
+                *cell = (i32::from(pad[base + j]) >> ctx.coeff_shift) - 128;
+            }
+        }
+        cdef_direction(&block)
     } else {
         let mut block = [[0i32; 8]; 8];
         for (i, row) in block.iter_mut().enumerate() {
@@ -395,32 +423,36 @@ fn compute_cdef_block<S: ReconSample, T: ReconSample>(
     let uv_damping = ctx.params.damping + ctx.coeff_shift as i32 - 1;
     let uv_filter = ctx.filter_ctx(uv_pri, uv_sec, uv_damping, uv_dir, 1);
 
-    let plane_out = |identity: bool, plane, snap, filter: &CdefFilterCtx| {
-        if identity {
-            Ok(None)
-        } else {
-            compute_cdef_filter_plane::<S, T>(plane, snap, filter)
-        }
-    };
     let y_zero = pri_str == 0 && sec_str == 0;
     let uv_zero = uv_pri == 0 && uv_sec == 0;
-    let output = [
-        plane_out(
-            y_zero || ctx.luma_lossless,
+    let y_out = if y_zero || ctx.luma_lossless {
+        None
+    } else if luma_pad_ready {
+        Some(filter_interior_pad(
             PlaneId::Y,
-            luma_snap,
+            pad,
+            x0,
+            y0,
+            block_w,
+            block_h,
             &y_filter,
-        )?,
-        u_snap
-            .map(|snap| plane_out(uv_zero || ctx.chroma_lossless, PlaneId::U, snap, &uv_filter))
-            .transpose()?
-            .flatten(),
-        v_snap
-            .map(|snap| plane_out(uv_zero || ctx.chroma_lossless, PlaneId::V, snap, &uv_filter))
-            .transpose()?
-            .flatten(),
-    ];
-    Ok(output)
+        )?)
+    } else {
+        compute_cdef_filter_plane::<S>(PlaneId::Y, luma_snap, &y_filter, pad)?
+    };
+    let u_out = match u_snap {
+        Some(snap) if !(uv_zero || ctx.chroma_lossless) => {
+            compute_cdef_filter_plane::<S>(PlaneId::U, snap, &uv_filter, pad)?
+        }
+        _ => None,
+    };
+    let v_out = match v_snap {
+        Some(snap) if !(uv_zero || ctx.chroma_lossless) => {
+            compute_cdef_filter_plane::<S>(PlaneId::V, snap, &uv_filter, pad)?
+        }
+        _ => None,
+    };
+    Ok([y_out, u_out, v_out])
 }
 
 struct CdefFilterCtx {
@@ -439,11 +471,12 @@ struct CdefFilterCtx {
     frame_sub_y: usize,
 }
 
-fn compute_cdef_filter_plane<S: ReconSample, T: ReconSample>(
+fn compute_cdef_filter_plane<S: ReconSample>(
     plane: PlaneId,
     snap: FramePlane<'_, S>,
     ctx: &CdefFilterCtx,
-) -> Result<Option<CdefPlaneOutput<T>>, CdefError> {
+    pad: &mut [u16; CDEF_PADDED_AREA],
+) -> Result<Option<CdefPlaneOutput>, CdefError> {
     let sub_x = if ctx.sub > 0 { ctx.frame_sub_x } else { 0 };
     let sub_y = if ctx.sub > 0 { ctx.frame_sub_y } else { 0 };
     let x0 = (ctx.c * MI_SIZE) >> sub_x;
@@ -461,61 +494,86 @@ fn compute_cdef_filter_plane<S: ReconSample, T: ReconSample>(
         && x0 + w - 1 + CDEF_TAP_REACH < inside_x
         && y0 + h - 1 + CDEF_TAP_REACH < inside_y;
 
-    let mut filtered_block = [T::default(); 64];
     if interior {
-        let mut pad = [0u16; CDEF_PADDED_AREA];
-        for r in 0..h + 2 * CDEF_TAP_REACH {
-            let src = snap
-                .row(y0 - CDEF_TAP_REACH + r)
-                .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
-                .ok_or(CdefError::Workspace)?;
-            let dst_start = r * CDEF_PADDED_SIDE;
-            let dst = pad
-                .get_mut(dst_start..dst_start + src.len())
-                .ok_or(CdefError::Workspace)?;
-            for (dst, src) in dst.iter_mut().zip(src) {
-                *dst = src.to_u16();
-            }
-        }
-        let filter = CdefBlockFilter {
-            pri_str: ctx.pri_str,
-            sec_str: ctx.sec_str,
-            damping: ctx.damping,
-            dir: ctx.dir,
-            coeff_shift: ctx.coeff_shift,
-        };
-        let mut out = [0u16; 64];
-        cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
-        for (dst, &filtered) in filtered_block.iter_mut().zip(&out).take(w * h) {
-            *dst = T::try_from_u16(filtered).map_err(|_| CdefError::Workspace)?;
-        }
-    } else {
-        let offsets = CdefTapOffsets::for_direction(ctx.dir);
-        for i in 0..h {
-            for j in 0..w {
-                let center = snap
-                    .get((x0 + j) as isize, (y0 + i) as isize)
-                    .ok_or(CdefError::Geometry)?;
-                let taps = gather_taps(snap, &offsets, x0 + j, y0 + i, inside_x, inside_y, center);
-                let filtered = cdef_filter_sample(
-                    &taps,
-                    ctx.pri_str,
-                    ctx.sec_str,
-                    ctx.damping,
-                    ctx.coeff_shift,
-                );
-                filtered_block[i * w + j] = storage_sample::<T>(filtered, ctx.max_sample)?;
-            }
+        gather_interior_pad(snap, pad, x0, y0, w, h)?;
+        return Ok(Some(filter_interior_pad(plane, pad, x0, y0, w, h, ctx)?));
+    }
+
+    let mut filtered_block = [0u16; 64];
+    let offsets = CdefTapOffsets::for_direction(ctx.dir);
+    for i in 0..h {
+        for j in 0..w {
+            let center = snap
+                .get((x0 + j) as isize, (y0 + i) as isize)
+                .ok_or(CdefError::Geometry)?;
+            let taps = gather_taps(snap, &offsets, x0 + j, y0 + i, inside_x, inside_y, center);
+            let filtered = cdef_filter_sample(
+                &taps,
+                ctx.pri_str,
+                ctx.sec_str,
+                ctx.damping,
+                ctx.coeff_shift,
+            );
+            filtered_block[i * w + j] = storage_sample(filtered, ctx.max_sample)?;
         }
     }
     let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
     Ok(Some((plane, rect, filtered_block, w)))
 }
 
-fn storage_sample<T: ReconSample>(filtered: i32, max_sample: i32) -> Result<T, CdefError> {
+/// Gathers the `w`x`h` block plus a two-sample border from `snap` into `pad`, in the
+/// `CDEF_PADDED_SIDE`-wide layout [`cdef_filter_block_interior`] indexes. The caller
+/// guarantees the bordered region is inside the filter region (interior block), so the
+/// gather covers exactly the samples the kernel reads and `pad` needs no re-zeroing.
+fn gather_interior_pad<S: ReconSample>(
+    snap: FramePlane<'_, S>,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+) -> Result<(), CdefError> {
+    for r in 0..h + 2 * CDEF_TAP_REACH {
+        let src = snap
+            .row(y0 - CDEF_TAP_REACH + r)
+            .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
+            .ok_or(CdefError::Workspace)?;
+        let dst_start = r * CDEF_PADDED_SIDE;
+        let dst = pad
+            .get_mut(dst_start..dst_start + src.len())
+            .ok_or(CdefError::Workspace)?;
+        for (dst, src) in dst.iter_mut().zip(src) {
+            *dst = src.to_u16();
+        }
+    }
+    Ok(())
+}
+
+fn filter_interior_pad(
+    plane: PlaneId,
+    pad: &[u16; CDEF_PADDED_AREA],
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    ctx: &CdefFilterCtx,
+) -> Result<CdefPlaneOutput, CdefError> {
+    let filter = CdefBlockFilter {
+        pri_str: ctx.pri_str,
+        sec_str: ctx.sec_str,
+        damping: ctx.damping,
+        dir: ctx.dir,
+        coeff_shift: ctx.coeff_shift,
+    };
+    let mut filtered_block = [0u16; 64];
+    cdef_filter_block_interior(pad, w, h, &filter, &mut filtered_block);
+    let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
+    Ok((plane, rect, filtered_block, w))
+}
+
+fn storage_sample(filtered: i32, max_sample: i32) -> Result<u16, CdefError> {
     let clipped = filtered.clamp(0, max_sample);
-    T::try_from_u16(u16::try_from(clipped).map_err(|_| CdefError::Geometry)?)
-        .map_err(|_| CdefError::Workspace)
+    u16::try_from(clipped).map_err(|_| CdefError::Geometry)
 }
 
 const CDEF_TAP_REACH: usize = 2;
