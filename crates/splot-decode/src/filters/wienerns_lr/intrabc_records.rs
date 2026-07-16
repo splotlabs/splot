@@ -365,8 +365,8 @@ impl From<IntrabcBlockVector> for Mv {
 pub(crate) struct TileIntrabcPreludeState {
     mi_rows: usize,
     mi_cols: usize,
-    row_start: usize,
-    col_start: usize,
+    origin_row: usize,
+    origin_col: usize,
     tile_rows: usize,
     tile_cols: usize,
     sb_size4: usize,
@@ -389,19 +389,37 @@ struct IntrabcBlockFacts {
 }
 
 impl TileIntrabcPreludeState {
-    #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
-        row_start: usize,
-        col_start: usize,
-        tile_rows: usize,
-        tile_cols: usize,
         sequence: &SequenceHeader,
         frame_is_intra_only: bool,
         tile_offset: ByteOffset,
     ) -> Result<Self> {
-        let values_len = tile_rows.checked_mul(tile_cols).ok_or_else(|| {
+        Self::new_for_tile(
+            mi_rows,
+            mi_cols,
+            0..mi_rows,
+            0..mi_cols,
+            sequence,
+            frame_is_intra_only,
+            tile_offset,
+        )
+    }
+
+    pub(crate) fn new_for_tile(
+        mi_rows: usize,
+        mi_cols: usize,
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
+        sequence: &SequenceHeader,
+        frame_is_intra_only: bool,
+        tile_offset: ByteOffset,
+    ) -> Result<Self> {
+        let rows = tile_rows.end.saturating_sub(tile_rows.start);
+        let cols = tile_cols.end.saturating_sub(tile_cols.start);
+        let values_len = rows.checked_mul(cols).ok_or_else(|| {
             wienerns_lr_selectable_transform_record_error_reason(
                 tile_offset,
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_grid_overflow",
@@ -420,10 +438,10 @@ impl TileIntrabcPreludeState {
         Ok(Self {
             mi_rows,
             mi_cols,
-            row_start,
-            col_start,
-            tile_rows,
-            tile_cols,
+            origin_row: tile_rows.start,
+            origin_col: tile_cols.start,
+            tile_rows: rows,
+            tile_cols: cols,
             sb_size4,
             values: vec![None; values_len],
             bank: IntrabcRefMvBank::new(sb_size4),
@@ -486,15 +504,12 @@ impl TileIntrabcPreludeState {
             return;
         }
         let sb_row = row / self.sb_size4 * self.sb_size4;
-        if sb_row == 0 {
+        if sb_row <= self.origin_row {
             return;
         }
         let sb_col = col / self.sb_size4 * self.sb_size4;
-        let sb_width = self.sb_size4.min(
-            self.col_start
-                .saturating_add(self.tile_cols)
-                .saturating_sub(sb_col),
-        );
+        let tile_col_end = self.origin_col.saturating_add(self.tile_cols);
+        let sb_width = self.sb_size4.min(tile_col_end.saturating_sub(sb_col));
         let mut offset = 0usize;
         let mut hits = 0usize;
         while offset < sb_width && hits < BANK_SB_ABOVE_ROW_MAX_HITS {
@@ -578,19 +593,15 @@ impl TileIntrabcPreludeState {
         n4h: usize,
         tile_offset: ByteOffset,
     ) -> Result<IntrabcMiArea> {
-        let mut area =
-            IntrabcMiArea::clipped(row, col, n4w, n4h, self.mi_rows, self.mi_cols, tile_offset)?;
-        area.rows.start = area.rows.start.max(self.row_start);
-        area.rows.end = area
-            .rows
-            .end
-            .min(self.row_start.saturating_add(self.tile_rows));
-        area.cols.start = area.cols.start.max(self.col_start);
-        area.cols.end = area
-            .cols
-            .end
-            .min(self.col_start.saturating_add(self.tile_cols));
-        Ok(area)
+        IntrabcMiArea::clipped(
+            row,
+            col,
+            n4w,
+            n4h,
+            self.origin_row.saturating_add(self.tile_rows),
+            self.origin_col.saturating_add(self.tile_cols),
+            tile_offset,
+        )
     }
 
     fn neighbor_context(
@@ -663,10 +674,10 @@ impl TileIntrabcPreludeState {
         ];
         let mut accepted = 0usize;
         for (r, c) in candidates.into_iter().flatten() {
-            if r < self.row_start
-                || c < self.col_start
-                || r >= self.row_start.saturating_add(self.tile_rows)
-                || c >= self.col_start.saturating_add(self.tile_cols)
+            if r < self.origin_row
+                || c < self.origin_col
+                || r >= self.origin_row.saturating_add(self.tile_rows)
+                || c >= self.origin_col.saturating_add(self.tile_cols)
             {
                 continue;
             }
@@ -693,26 +704,22 @@ impl TileIntrabcPreludeState {
     }
 
     fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
-        let Some(row) = row.checked_sub(self.row_start) else {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
-            ));
-        };
-        let Some(col) = col.checked_sub(self.col_start) else {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
-            ));
-        };
-        if row >= self.tile_rows || col >= self.tile_cols {
+        if row < self.origin_row
+            || col < self.origin_col
+            || row >= self.origin_row.saturating_add(self.tile_rows)
+            || col >= self.origin_col.saturating_add(self.tile_cols)
+        {
             return Err(wienerns_lr_selectable_transform_record_error_reason(
                 tile_offset,
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
             ));
         }
-        row.checked_mul(self.tile_cols)
-            .and_then(|start| start.checked_add(col))
+        row.checked_sub(self.origin_row)
+            .and_then(|row| row.checked_mul(self.tile_cols))
+            .and_then(|start| {
+                col.checked_sub(self.origin_col)
+                    .and_then(|col| start.checked_add(col))
+            })
             .ok_or_else(|| {
                 wienerns_lr_selectable_transform_record_error_reason(
                     tile_offset,
@@ -756,13 +763,19 @@ impl TileIntrabcPreludeState {
     }
 
     fn facts_at(&self, row: usize, col: usize) -> Option<IntrabcBlockFacts> {
-        let row = row.checked_sub(self.row_start)?;
-        let col = col.checked_sub(self.col_start)?;
-        if row >= self.tile_rows || col >= self.tile_cols {
+        if row < self.origin_row
+            || col < self.origin_col
+            || row >= self.origin_row.saturating_add(self.tile_rows)
+            || col >= self.origin_col.saturating_add(self.tile_cols)
+        {
             return None;
         }
         self.values
-            .get(row.checked_mul(self.tile_cols)?.checked_add(col)?)
+            .get(
+                row.checked_sub(self.origin_row)?
+                    .checked_mul(self.tile_cols)?
+                    .checked_add(col.checked_sub(self.origin_col)?)?,
+            )
             .copied()
             .flatten()
     }

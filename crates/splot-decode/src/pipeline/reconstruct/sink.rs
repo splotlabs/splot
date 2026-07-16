@@ -148,48 +148,43 @@ pub(crate) fn reconstruct_general_intra_luma_palette_block_into<T: ReconSample>(
             actual: color_map.len(),
         });
     }
-    let mut prediction = Vec::with_capacity(color_map.len());
-    for &color_index in color_map {
-        let sample =
-            palette
-                .sample(color_index)
-                .ok_or(GeneralIntraResidualError::PaletteColorIndex {
-                    color_index: usize::from(color_index),
-                    palette_size: palette.size(),
-                })?;
-        prediction.push(T::try_from_u16(sample)?);
-    }
-    if block.all_zero {
-        return workspace
-            .write_rect_block(PlaneId::Y, x, y, block_size, &prediction)
-            .map_err(Into::into);
-    }
-    let mut out = workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Secondary,
+    let mut prediction = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Primary,
         PlaneId::Y,
         block_size.sample_count(),
         T::default(),
     )?;
-    let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+    let fill_result = prediction.iter_mut().zip(color_map).try_for_each(
+        |(output, &color_index)| -> core::result::Result<(), GeneralIntraResidualError> {
+            let sample = palette.sample(color_index).ok_or(
+                GeneralIntraResidualError::PaletteColorIndex {
+                    color_index: usize::from(color_index),
+                    palette_size: palette.size(),
+                },
+            )?;
+            *output = T::try_from_u16(sample)?;
+            Ok(())
+        },
+    );
+    if let Err(error) = fill_result {
+        workspace
+            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
+        return Err(error);
+    }
+    write_intra_prediction_block(
+        workspace,
         block,
-        &prediction,
-        &mut out,
-        qindex,
+        prediction,
         PlaneId::Y,
-        log2_width,
-        log2_height,
+        x,
+        y,
+        block_size,
+        qindex,
         use_tcq,
         Some(luma_context),
         None,
         bit_depth,
     )
-    .and_then(|()| {
-        workspace
-            .write_rect_block(PlaneId::Y, x, y, block_size, &out)
-            .map_err(Into::into)
-    });
-    workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, out);
-    result
 }
 
 #[allow(clippy::too_many_arguments)]

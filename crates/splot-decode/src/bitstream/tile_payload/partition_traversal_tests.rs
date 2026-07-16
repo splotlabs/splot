@@ -1044,13 +1044,11 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
         WienerNsLrSourceBlock {
             restoration_type: LrUnitRestorationType::WienerNonsep,
             plane: 0,
-            row: 0,
-            col: 0,
             unit_row: 0,
             unit_col: 0,
+            unit_filter_index: None,
             tile_mi_row_start: 0,
             tile_mi_row_end: 64,
-            tile_mi_col_start: 0,
             tile_mi_col_end: 64,
             x: 0,
             y: 0,
@@ -1060,7 +1058,6 @@ fn root_lr_frontier_reports_active_frame_level_wiener_ns_unit() {
             luma_end_x: 255,
             luma_start_y: 0,
             luma_end_y: 255,
-            frame_luma_end_y: 255,
             luma_stripe_start_y: 0,
             luma_stripe_end_y: 55,
         }
@@ -1135,7 +1132,7 @@ fn active_lr_source_blocks_track_stripe_bounds() {
     let second_stripe = root
         .active_source_blocks()
         .iter()
-        .find(|block| block.row == 14 && block.col == 0)
+        .find(|block| block.y == 56 && block.x == 0)
         .unwrap();
     assert_eq!(second_stripe.y, 56);
     assert_eq!(second_stripe.luma_stripe_start_y, 56);

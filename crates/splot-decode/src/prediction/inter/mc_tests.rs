@@ -67,6 +67,71 @@ fn compound_sample_recycler_keeps_its_box_and_sample_storage() {
 }
 
 #[test]
+fn compound_sample_recycler_keeps_two_same_type_buffers() {
+    MC_SAMPLES_RECYCLER.with(|cell| *cell.borrow_mut() = [None, None]);
+    let mut first = take_mc_samples::<u16>();
+    let mut second = take_mc_samples::<u16>();
+    first.resize(64, 0);
+    second.resize(32, 0);
+    let pointers = [first.as_ptr(), second.as_ptr()];
+    recycle_mc_samples(&mut first);
+    recycle_mc_samples(&mut second);
+
+    let mut reused_first = take_mc_samples::<u16>();
+    let mut reused_second = take_mc_samples::<u16>();
+    assert_eq!([reused_first.as_ptr(), reused_second.as_ptr()], pointers);
+    recycle_mc_samples(&mut reused_first);
+    recycle_mc_samples(&mut reused_second);
+    MC_SAMPLES_RECYCLER.with(|cell| *cell.borrow_mut() = [None, None]);
+}
+
+#[test]
+fn mc_worker_scratch_reuses_all_installed_buffers() {
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+    let mut scratch = McScratch::default();
+    let use_buffers = || {
+        let compound = COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+            let mut buffers = slot.take().unwrap_or_default();
+            buffers[0].resize(64, 0);
+            let pointer = buffers[0].as_ptr() as usize;
+            slot.set(Some(buffers));
+            pointer
+        });
+        let initial = INITIAL_LUMA_PREDICTIONS.with(|slot| {
+            let mut samples = slot.take().unwrap_or_default();
+            samples.resize(64, 0);
+            let pointer = samples.as_ptr() as usize;
+            slot.set(Some(samples));
+            pointer
+        });
+        let subpel = SUBPEL_PREDICTION_BUFFER.with(|slot| {
+            let mut samples = slot.take().unwrap_or_default();
+            samples.resize(64, 0);
+            let pointer = samples.as_ptr() as usize;
+            slot.set(Some(samples));
+            pointer
+        });
+        let mut output = take_mc_samples::<u16>();
+        output.resize(64, 0);
+        let output_pointer = output.as_ptr() as usize;
+        recycle_mc_samples(&mut output);
+        [compound, initial, subpel, output_pointer]
+    };
+
+    let first = scratch.with_installed(use_buffers);
+    let second = scratch.with_installed(use_buffers);
+
+    assert_eq!(second, first);
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+}
+
+#[test]
 fn dispatcher_copies_non420_reference_planes() {
     for format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let reference = flat_frame_with_format(format, 8, 8, 40, 90, 120);

@@ -201,17 +201,7 @@ fn full_frame_state(
     frame_is_intra_only: bool,
     tile_offset: ByteOffset,
 ) -> crate::Result<TileIntrabcPreludeState> {
-    TileIntrabcPreludeState::new(
-        mi_rows,
-        mi_cols,
-        0,
-        0,
-        mi_rows,
-        mi_cols,
-        sequence,
-        frame_is_intra_only,
-        tile_offset,
-    )
+    TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, frame_is_intra_only, tile_offset)
 }
 
 fn state() -> TileIntrabcPreludeState {
@@ -1224,4 +1214,27 @@ fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
     }
     assert!(state.value(0, 1, no_off()).unwrap().is_none());
     assert!(state.value(1, 2, no_off()).unwrap().is_none());
+}
+
+#[test]
+fn tile_local_state_translates_absolute_coordinates() {
+    let (sequence, _core) = selectable_fixture();
+    let mut state =
+        TileIntrabcPreludeState::new_for_tile(12, 16, 4..8, 8..12, &sequence, true, no_off())
+            .unwrap();
+    assert_eq!(state.values.len(), 16);
+
+    state
+        .record_block(5, 9, 2, 2, frontier_skip_neighbour(), no_off())
+        .unwrap();
+
+    for row in 5..7 {
+        for col in 9..11 {
+            assert!(state.value(row, col, no_off()).unwrap().is_some());
+        }
+    }
+    assert!(state.facts_at(4, 8).is_none());
+    assert!(state.facts_at(5, 8).is_none());
+    assert!(state.value(3, 9, no_off()).is_err());
+    assert!(state.value(5, 12, no_off()).is_err());
 }

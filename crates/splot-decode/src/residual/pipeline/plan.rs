@@ -20,8 +20,9 @@ use super::{
 // (`docs/spec/av2/1.0.0/09-additional-tables/09-02-conversion-tables.md`).
 const MAX_RESIDUAL_BLOCK_AXIS_N4: usize = 64;
 const MAX_RESIDUAL_CHUNKS_PER_AXIS: usize = MAX_RESIDUAL_BLOCK_AXIS_N4 / CHUNK_64_N4;
-pub(super) const MAX_RESIDUAL_PLANES: usize =
-    MAX_RESIDUAL_CHUNKS_PER_AXIS * MAX_RESIDUAL_CHUNKS_PER_AXIS * (1 + CHROMA_PLANES.len());
+const MAX_RESIDUAL_CHUNKS: usize = MAX_RESIDUAL_CHUNKS_PER_AXIS * MAX_RESIDUAL_CHUNKS_PER_AXIS;
+pub(super) const MAX_DEFERRED_CHROMA_PLANES: usize = MAX_RESIDUAL_CHUNKS * CHROMA_PLANES.len();
+pub(super) const MAX_RESIDUAL_PLANES: usize = MAX_RESIDUAL_CHUNKS + MAX_DEFERRED_CHROMA_PLANES;
 
 std::thread_local! {
     static RESIDUAL_PLANE_PLANS: std::cell::Cell<Option<Vec<ResidualPlanePlan>>> =

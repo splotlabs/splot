@@ -11,10 +11,11 @@ use splot_recon::{
     PlaneSize,
 };
 
+use super::interintra::InterIntraScratch;
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::warp::extend_warp_base_position;
 use super::{
-    chroma_smooth_grid_dimensions, inter_skip_txfm_ctx, leaf_uses_general_intra,
+    chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
     predict_interintra_planes, read_inter_intra_syntax_enabled, validate_segment_id,
 };
 use crate::bitstream::tile_payload::{
@@ -135,18 +136,22 @@ fn shared_chroma_size_disables_compound_prediction() -> TestResult {
 }
 
 #[test]
-fn chroma_smooth_grid_dimensions_follow_chroma_sampling() {
+fn chroma_smooth_tile_ranges_follow_chroma_sampling() {
     assert_eq!(
-        chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv420),
-        (9, 10)
+        chroma_smooth_tile_ranges(0..17, 0..19, ChromaFormatIdc::Yuv420),
+        (0..9, 0..10)
     );
     assert_eq!(
-        chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv422),
-        (17, 10)
+        chroma_smooth_tile_ranges(0..17, 0..19, ChromaFormatIdc::Yuv422),
+        (0..17, 0..10)
     );
     assert_eq!(
-        chroma_smooth_grid_dimensions(17, 19, ChromaFormatIdc::Yuv444),
-        (17, 19)
+        chroma_smooth_tile_ranges(0..17, 0..19, ChromaFormatIdc::Yuv444),
+        (0..17, 0..19)
+    );
+    assert_eq!(
+        chroma_smooth_tile_ranges(5..17, 7..19, ChromaFormatIdc::Yuv420),
+        (2..9, 3..10)
     );
 }
 
@@ -248,7 +253,9 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
     let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
     let placed = placed_luma_block(0, 0, 8, 8, InterIntraMode::Smooth);
 
-    let planes = predict_interintra_planes(
+    let mut scratch = InterIntraScratch::default();
+    predict_interintra_planes(
+        &mut scratch,
         &workspace,
         &placed,
         &block_decoded,
@@ -257,13 +264,14 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
         BitDepth::Eight,
         ByteOffset::new(0),
     )?;
+    let planes = scratch.planes().collect::<Vec<_>>();
 
     assert_eq!(planes.len(), 1);
-    assert_eq!(planes[0].plane, PlaneId::Y);
-    assert_eq!(planes[0].samples.len(), 64);
+    assert_eq!(planes[0].0.plane, PlaneId::Y);
+    assert_eq!(planes[0].1.len(), 64);
     assert!(
         planes[0]
-            .samples
+            .1
             .iter()
             .all(|sample| (127..=129).contains(sample))
     );
@@ -281,7 +289,9 @@ fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
         let mut placed = placed_luma_block(0, 0, 8, 8, InterIntraMode::Smooth);
         placed.interintra_chroma = true;
 
-        let planes = predict_interintra_planes(
+        let mut scratch = InterIntraScratch::default();
+        predict_interintra_planes(
+            &mut scratch,
             &workspace,
             &placed,
             &block_decoded,
@@ -290,13 +300,93 @@ fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
             BitDepth::Eight,
             ByteOffset::new(0),
         )?;
+        let planes = scratch.planes().collect::<Vec<_>>();
 
         assert_eq!(planes.len(), 3);
-        for plane in &planes[1..] {
+        for (plane, samples) in &planes[1..] {
             assert_eq!((plane.sub_x, plane.sub_y), chroma_subsampling);
-            assert_eq!(plane.samples.len(), chroma_samples);
+            assert_eq!(samples.len(), chroma_samples);
         }
     }
+    Ok(())
+}
+
+#[test]
+fn interintra_chroma_fallback_edges_use_each_planes_neighbour() -> TestResult {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(frame_info(8, 16, PixelFormat::Yuv420)?, 128)?;
+    for (plane, y, value, width) in [
+        (PlaneId::Y, 7, 10, 8),
+        (PlaneId::U, 3, 20, 4),
+        (PlaneId::V, 3, 30, 4),
+    ] {
+        workspace.fill_rect(plane, PlaneRect::new(0, y, width, 1)?, value)?;
+    }
+    let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
+    let mut placed = placed_luma_block(0, 8, 8, 8, InterIntraMode::Horizontal);
+    placed.interintra_chroma = true;
+    let mut scratch = InterIntraScratch::default();
+
+    predict_interintra_planes(
+        &mut scratch,
+        &workspace,
+        &placed,
+        &block_decoded,
+        InterIntraMode::Horizontal,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(0),
+    )?;
+    let planes = scratch.planes().collect::<Vec<_>>();
+
+    assert_eq!(planes.len(), 3);
+    for ((plane, samples), expected) in planes.iter().zip([10, 20, 30]) {
+        assert!(
+            samples.iter().all(|sample| *sample == expected),
+            "{plane:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
+    let workspace = CurrentFrameWorkspace::<u8>::new(monochrome_info(8, 8)?, 128)?;
+    let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
+    let placed = placed_luma_block(0, 0, 8, 8, InterIntraMode::Vertical);
+    let mut scratch = InterIntraScratch::default();
+
+    for _ in 0..2 {
+        predict_interintra_planes(
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Vertical,
+            false,
+            BitDepth::Eight,
+            ByteOffset::new(0),
+        )?;
+        assert!(
+            scratch
+                .storage_identity()
+                .iter()
+                .all(|(_, capacity)| *capacity > 0)
+        );
+    }
+    let warmed = scratch.storage_identity();
+    predict_interintra_planes(
+        &mut scratch,
+        &workspace,
+        &placed,
+        &block_decoded,
+        InterIntraMode::Vertical,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(0),
+    )?;
+
+    assert_eq!(scratch.storage_identity(), warmed);
     Ok(())
 }
 

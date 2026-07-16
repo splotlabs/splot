@@ -10,13 +10,14 @@
 //! §7.13.2.15/16 neighbour smoothness comes from a tile-wide per-MI grid.
 
 use splot_recon::{CurrentFrameWorkspace, PlaneId, ReconSample};
+use std::ops::Range;
 
 use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 
 pub(crate) struct TileSmoothGrid {
-    row_start: usize,
-    col_start: usize,
+    origin_row: usize,
+    origin_col: usize,
     mi_rows: usize,
     mi_cols: usize,
     cells: Vec<bool>,
@@ -29,35 +30,34 @@ pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 impl TileSmoothGrid {
     #[cfg(test)]
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        Self::new_at(0, 0, mi_rows, mi_cols)
+        Self::new_for_tile(0..mi_rows, 0..mi_cols)
     }
 
-    pub(crate) fn new_at(
-        row_start: usize,
-        col_start: usize,
-        mi_rows: usize,
-        mi_cols: usize,
-    ) -> Option<Self> {
-        let cells = mi_rows.checked_mul(mi_cols)?;
+    pub(crate) fn new_for_tile(mi_rows: Range<usize>, mi_cols: Range<usize>) -> Option<Self> {
+        let rows = mi_rows.end.checked_sub(mi_rows.start)?;
+        let cols = mi_cols.end.checked_sub(mi_cols.start)?;
+        let cells = rows.checked_mul(cols)?;
         Some(Self {
-            row_start,
-            col_start,
-            mi_rows,
-            mi_cols,
+            origin_row: mi_rows.start,
+            origin_col: mi_cols.start,
+            mi_rows: rows,
+            mi_cols: cols,
             cells: vec![false; cells],
         })
     }
 
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
+        let row_start = r.max(self.origin_row);
+        let col_start = c.max(self.origin_col);
         let row_end = r
             .saturating_add(n4h)
-            .min(self.row_start.saturating_add(self.mi_rows));
+            .min(self.origin_row.saturating_add(self.mi_rows));
         let col_end = c
             .saturating_add(n4w)
-            .min(self.col_start.saturating_add(self.mi_cols));
-        for row in r.max(self.row_start)..row_end {
-            for col in c.max(self.col_start)..col_end {
-                self.cells[(row - self.row_start) * self.mi_cols + col - self.col_start] = smooth;
+            .min(self.origin_col.saturating_add(self.mi_cols));
+        for row in row_start..row_end {
+            for col in col_start..col_end {
+                self.cells[(row - self.origin_row) * self.mi_cols + col - self.origin_col] = smooth;
             }
         }
     }
@@ -72,10 +72,10 @@ impl TileSmoothGrid {
             return false;
         }
         let (col, row) = (col as usize, row as usize);
-        let Some(col) = col.checked_sub(self.col_start) else {
+        let Some(col) = col.checked_sub(self.origin_col) else {
             return false;
         };
-        let Some(row) = row.checked_sub(self.row_start) else {
+        let Some(row) = row.checked_sub(self.origin_row) else {
             return false;
         };
         if col >= self.mi_cols || row >= self.mi_rows {

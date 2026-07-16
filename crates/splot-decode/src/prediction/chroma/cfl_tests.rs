@@ -53,10 +53,13 @@ fn derived_alpha() -> CflParams {
 
 #[test]
 fn cfl_reconstruction_supports_non_420_chroma_geometry() {
+    let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
+    let mut retained = None;
     for pixel_format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let mut frame = workspace(pixel_format);
 
         reconstruct_general_intra_chroma_cfl_block_into(
+            &mut scratch,
             &mut frame,
             &zero_block(),
             PlaneId::U,
@@ -75,6 +78,14 @@ fn cfl_reconstruction_supports_non_420_chroma_geometry() {
         .unwrap();
 
         assert_eq!(frame.reconstructed_sample(PlaneId::U, 0, 0).unwrap(), 128);
+        let storage = (
+            scratch.cfl_luma_ac.as_ptr(),
+            scratch.cfl_prediction.as_ptr(),
+        );
+        if let Some(previous) = retained {
+            assert_eq!(storage, previous);
+        }
+        retained = Some(storage);
     }
 }
 
@@ -104,7 +115,20 @@ fn cfl_luma_sample_uses_422_and_444_filters() {
 fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
     let frame = workspace_sized(PixelFormat::Yuv420, 128, 128);
 
-    let bottom_extended = mhccp_references(&frame, PlaneId::U, 32, 0, 16, 4, 0, 16, 0, 1).unwrap();
+    let bottom_extended = mhccp_references(
+        &frame,
+        PlaneId::U,
+        32,
+        0,
+        16,
+        4,
+        0,
+        16,
+        0,
+        1,
+        &mut Default::default(),
+    )
+    .unwrap();
     assert_eq!(
         (
             bottom_extended.width,
@@ -115,7 +139,20 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         (18, 8, 0, 2)
     );
 
-    let right_extended = mhccp_references(&frame, PlaneId::U, 0, 4, 4, 16, 0, 16, 1, 0).unwrap();
+    let right_extended = mhccp_references(
+        &frame,
+        PlaneId::U,
+        0,
+        4,
+        4,
+        16,
+        0,
+        16,
+        1,
+        0,
+        &mut Default::default(),
+    )
+    .unwrap();
     assert_eq!(
         (
             right_extended.width,
@@ -126,8 +163,20 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         (8, 18, 2, 0)
     );
 
-    let threshold_not_extended =
-        mhccp_references(&frame, PlaneId::U, 8, 0, 8, 2, 0, 16, 0, 1).unwrap();
+    let threshold_not_extended = mhccp_references(
+        &frame,
+        PlaneId::U,
+        8,
+        0,
+        8,
+        2,
+        0,
+        16,
+        0,
+        1,
+        &mut Default::default(),
+    )
+    .unwrap();
     assert_eq!(threshold_not_extended.height, 2);
 }
 
@@ -135,7 +184,20 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
 fn mhccp_reference_extensions_use_non_420_subsampling() {
     for pixel_format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let frame = workspace_sized(pixel_format, 128, 128);
-        let refs = mhccp_references(&frame, PlaneId::U, 32, 0, 16, 8, 0, 16, 0, 1).unwrap();
+        let refs = mhccp_references(
+            &frame,
+            PlaneId::U,
+            32,
+            0,
+            16,
+            8,
+            0,
+            16,
+            0,
+            1,
+            &mut Default::default(),
+        )
+        .unwrap();
 
         assert_eq!(
             (refs.width, refs.height, refs.above, refs.left),

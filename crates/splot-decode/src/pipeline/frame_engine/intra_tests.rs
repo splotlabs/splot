@@ -67,6 +67,7 @@ fn decode_intra_fixture_with_core_on_threads(
     mutate(&mut core);
     context.pool().install(|| {
         decode_intra_frame::<u8>(
+            &mut crate::prediction::inter::InterDecodeScratch::default(),
             &plan,
             &candidate,
             Q80_FIXTURE,

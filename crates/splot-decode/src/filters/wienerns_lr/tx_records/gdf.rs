@@ -24,12 +24,10 @@ pub(crate) struct GdfState {
     block_size: usize,
     sb_size4: usize,
     sb_per_gdf: usize,
-    grid_rows: usize,
-    grid_cols: usize,
     row_start: usize,
     col_start: usize,
-    local_rows: usize,
-    local_cols: usize,
+    grid_rows: usize,
+    grid_cols: usize,
     values: Vec<u8>,
 }
 
@@ -48,10 +46,10 @@ impl GdfState {
         let col_start = mi_cols.start / unit_mi;
         let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
         let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
-        let local_rows = row_end.saturating_sub(row_start);
-        let local_cols = col_end.saturating_sub(col_start);
-        let len = local_rows
-            .checked_mul(local_cols)
+        let grid_rows = row_end.saturating_sub(row_start);
+        let grid_cols = col_end.saturating_sub(col_start);
+        let len = grid_rows
+            .checked_mul(grid_cols)
             .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
         let mut values = Vec::new();
         values
@@ -63,12 +61,10 @@ impl GdfState {
             block_size: self.block_size,
             sb_size4: self.sb_size4,
             sb_per_gdf: self.sb_per_gdf,
-            grid_rows: self.grid_rows,
-            grid_cols: self.grid_cols,
             row_start,
             col_start,
-            local_rows,
-            local_cols,
+            grid_rows,
+            grid_cols,
             values,
         })
     }
@@ -139,12 +135,10 @@ impl GdfState {
             block_size,
             sb_size4,
             sb_per_gdf,
-            grid_rows,
-            grid_cols,
             row_start: 0,
             col_start: 0,
-            local_rows: grid_rows,
-            local_cols: grid_cols,
+            grid_rows,
+            grid_cols,
             values: vec![2; cells],
         })
     }
@@ -155,12 +149,10 @@ impl GdfState {
             block_size: 0,
             sb_size4: 0,
             sb_per_gdf: 0,
-            grid_rows: 0,
-            grid_cols: 0,
             row_start: 0,
             col_start: 0,
-            local_rows: 0,
-            local_cols: 0,
+            grid_rows: 0,
+            grid_cols: 0,
             values: Vec::new(),
         }
     }
@@ -194,11 +186,13 @@ impl GdfState {
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {
-        crate::support::rect_index(
+        crate::tile::local_grid_index(
             row,
             col,
-            (self.row_start, self.col_start),
-            (self.local_rows, self.local_cols),
+            self.row_start,
+            self.col_start,
+            self.grid_rows,
+            self.grid_cols,
         )
     }
 
@@ -213,8 +207,8 @@ impl GdfState {
             || self.block_size != tile.block_size
             || self.sb_size4 != tile.sb_size4
             || self.sb_per_gdf != tile.sb_per_gdf
-            || self.grid_rows != tile.grid_rows
-            || self.grid_cols != tile.grid_cols
+            || self.row_start != 0
+            || self.col_start != 0
         {
             return Err(gdf_error(tile_offset, GDF_GRID_REASON));
         }
@@ -224,6 +218,15 @@ impl GdfState {
         let unit_mi = self.block_size / 4;
         let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
         let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
+        let expected_row_start = mi_rows.start / unit_mi;
+        let expected_col_start = mi_cols.start / unit_mi;
+        if tile.row_start != expected_row_start
+            || tile.col_start != expected_col_start
+            || tile.grid_rows != row_end.saturating_sub(expected_row_start)
+            || tile.grid_cols != col_end.saturating_sub(expected_col_start)
+        {
+            return Err(gdf_error(tile_offset, GDF_GRID_REASON));
+        }
         for row in mi_rows.start / unit_mi..row_end {
             for col in mi_cols.start / unit_mi..col_end {
                 let index = self
@@ -241,6 +244,9 @@ impl GdfState {
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<GdfBlockGrid>> {
         if !self.active {
             return Ok(None);
+        }
+        if self.row_start != 0 || self.col_start != 0 {
+            return Err(gdf_error(tile_offset, GDF_GRID_REASON));
         }
         GdfBlockGrid::new(self.block_size, self.grid_rows, self.grid_cols, self.values)
             .map(Some)

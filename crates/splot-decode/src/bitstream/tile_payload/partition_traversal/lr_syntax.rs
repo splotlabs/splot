@@ -274,6 +274,15 @@ fn read_lr_units_for_plane(
                 }
             };
             if restoration_type.is_active() {
+                let unit_filter_index = lr_activity
+                    .unit_filters
+                    .last()
+                    .filter(|filter| {
+                        filter.plane == plane
+                            && filter.unit_row == unit_row
+                            && filter.unit_col == unit_col
+                    })
+                    .map(|_| lr_activity.unit_filters.len() - 1);
                 record_active_wiener_ns_source_blocks_for_unit(
                     LrSourceBlockDerivation {
                         restoration_type,
@@ -281,6 +290,7 @@ fn read_lr_units_for_plane(
                         unit_size,
                         unit_row,
                         unit_col,
+                        unit_filter_index,
                         frame,
                         tile_bounds,
                         sub_x,

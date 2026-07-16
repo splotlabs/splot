@@ -86,6 +86,14 @@ impl<T: ReconSample> IntraPredictionScratch<T> {
         }
     }
 
+    /// Creates two reusable prediction buffers with equal initial capacity.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buffers: core::array::from_fn(|_| Vec::with_capacity(capacity)),
+        }
+    }
+
     /// Takes one initialized prediction buffer from this scratch owner.
     ///
     /// # Errors
@@ -1311,6 +1319,20 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         source: PlaneRect,
         target: PlaneRect,
     ) -> Result<()> {
+        self.copy_rect_within_plane_into(plane, source, target, &mut Vec::new())
+    }
+
+    /// Copies a workspace rectangle using caller-owned reusable scratch storage.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::copy_rect_within_plane`].
+    pub fn copy_rect_within_plane_into(
+        &mut self,
+        plane: PlaneId,
+        source: PlaneRect,
+        target: PlaneRect,
+        scratch: &mut Vec<T>,
+    ) -> Result<()> {
         let source_plane = self.plane(plane)?;
         source_plane.ensure_rect(source)?;
         source_plane.ensure_rect(target)?;
@@ -1329,7 +1351,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 .ok_or(ReconError::ArithmeticOverflow {
                     context: "current-frame workspace copy sample count",
                 })?;
-        let mut scratch = Vec::new();
+        scratch.clear();
         scratch.try_reserve_exact(sample_count).map_err(|_| {
             ReconError::WorkspaceAllocationFailed {
                 plane,
@@ -1341,7 +1363,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
             scratch.extend_from_slice(row);
         }
 
-        self.write_rect(plane, target, &scratch, source.width())
+        self.write_rect(plane, target, scratch, source.width())
     }
 
     /// Writes a contiguous square prediction block into `plane`.
@@ -1468,6 +1490,11 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         buffer: Vec<T>,
     ) {
         self.intra_prediction_scratch.recycle_buffer(slot, buffer);
+    }
+
+    /// Exchanges reusable intra-prediction storage with a reconstruction task.
+    pub fn swap_intra_prediction_scratch(&mut self, scratch: &mut IntraPredictionScratch<T>) {
+        mem::swap(&mut self.intra_prediction_scratch, scratch);
     }
 
     /// Freezes the workspace into an immutable decoded frame.

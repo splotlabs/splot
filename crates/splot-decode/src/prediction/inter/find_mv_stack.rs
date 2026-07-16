@@ -207,27 +207,26 @@ pub(crate) enum NeighbourYMode {
 }
 
 pub(crate) struct NeighbourMvGrid {
-    origin: (usize, usize),
-    size: (usize, usize),
+    origin_row: usize,
+    origin_col: usize,
+    mi_rows: usize,
+    mi_cols: usize,
     cells: Vec<Option<NeighbourCell>>,
 }
 
 impl NeighbourMvGrid {
-    #[cfg(test)]
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        Self::new_at(0, 0, mi_rows, mi_cols)
-    }
-
-    pub(crate) fn new_at(
-        row_start: usize,
-        col_start: usize,
-        mi_rows: usize,
-        mi_cols: usize,
+    pub(crate) fn new_for_tile(
+        mi_rows: core::ops::Range<usize>,
+        mi_cols: core::ops::Range<usize>,
     ) -> Option<Self> {
-        let cells = mi_rows.checked_mul(mi_cols)?;
+        let rows = mi_rows.end.checked_sub(mi_rows.start)?;
+        let cols = mi_cols.end.checked_sub(mi_cols.start)?;
+        let cells = rows.checked_mul(cols)?;
         Some(Self {
-            origin: (row_start, col_start),
-            size: (mi_rows, mi_cols),
+            origin_row: mi_rows.start,
+            origin_col: mi_cols.start,
+            mi_rows: rows,
+            mi_cols: cols,
             cells: vec![None; cells],
         })
     }
@@ -388,21 +387,22 @@ impl NeighbourMvGrid {
             tip_size_16x16,
             precision,
         };
-        for rr in r.max(self.origin.0)..r.saturating_add(n4h) {
-            if rr >= self.origin.0.saturating_add(self.size.0) {
-                break;
-            }
-            for cc in c.max(self.origin.1)..c.saturating_add(n4w) {
-                if cc >= self.origin.1.saturating_add(self.size.1) {
-                    break;
-                }
+        let row_end = r
+            .saturating_add(n4h)
+            .min(self.origin_row.saturating_add(self.mi_rows));
+        let col_end = c
+            .saturating_add(n4w)
+            .min(self.origin_col.saturating_add(self.mi_cols));
+        for rr in r.max(self.origin_row)..row_end {
+            for cc in c.max(self.origin_col)..col_end {
                 let mut cell = cell;
                 if motion_mode.is_warp()
                     && let Some(params) = warp_params
                 {
                     cell.sub_mv = warp_sub_mv_at(params, r, c, rr, cc);
                 }
-                self.cells[(rr - self.origin.0) * self.size.1 + cc - self.origin.1] = Some(cell);
+                self.cells[(rr - self.origin_row) * self.mi_cols + cc - self.origin_col] =
+                    Some(cell);
             }
         }
     }
@@ -499,14 +499,14 @@ impl NeighbourMvGrid {
             tip_size_16x16: false,
             precision,
         };
-        for rr in r.max(self.origin.0)..r.saturating_add(n4h) {
-            if rr >= self.origin.0.saturating_add(self.size.0) {
-                break;
-            }
-            for cc in c.max(self.origin.1)..c.saturating_add(n4w) {
-                if cc >= self.origin.1.saturating_add(self.size.1) {
-                    break;
-                }
+        let row_end = r
+            .saturating_add(n4h)
+            .min(self.origin_row.saturating_add(self.mi_rows));
+        let col_end = c
+            .saturating_add(n4w)
+            .min(self.origin_col.saturating_add(self.mi_cols));
+        for rr in r.max(self.origin_row)..row_end {
+            for cc in c.max(self.origin_col)..col_end {
                 let mut cell = cell;
                 if let Some(params) = warp_params[0] {
                     cell.sub_mv = warp_sub_mv_at(params, r, c, rr, cc);
@@ -514,56 +514,23 @@ impl NeighbourMvGrid {
                 if let Some(params) = warp_params[1] {
                     cell.sub_mv1 = warp_sub_mv_at(params, r, c, rr, cc);
                 }
-                self.cells[(rr - self.origin.0) * self.size.1 + cc - self.origin.1] = Some(cell);
+                self.cells[(rr - self.origin_row) * self.mi_cols + cc - self.origin_col] =
+                    Some(cell);
             }
         }
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_block_with_newmv_lists(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        ref_frame0: i8,
-        ref_frame1: i8,
-        list0_is_newmv: bool,
-        list1_is_newmv: bool,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-    ) {
-        self.record_compound_block(
-            r,
-            c,
-            n4w,
-            n4h,
-            ref_frame0,
-            ref_frame1,
-            list0_is_newmv,
-            list1_is_newmv,
-            mv,
-            mv,
-            skip,
-            interp_filter,
-            use_amvd,
-            false,
-            CWP_EQUAL,
-            false,
-            BlockPrecisionRecord::default(),
-            [None, None],
-        );
     }
 
     fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
         if r < 0 || c < 0 {
             return None;
         }
-        let index = crate::support::rect_index(r as usize, c as usize, self.origin, self.size)?;
-        self.cells[index]
+        let (r, c) = (r as usize, c as usize);
+        let r = r.checked_sub(self.origin_row)?;
+        let c = c.checked_sub(self.origin_col)?;
+        if r >= self.mi_rows || c >= self.mi_cols {
+            return None;
+        }
+        self.cells[r * self.mi_cols + c]
     }
     pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
         matches!(self.get(r, c), Some(cell) if cell.ref_frame0 != TIP_REF_FRAME)
@@ -1673,7 +1640,7 @@ fn seed_walk_from_row_above(
     let cand_row = sb_row as i32 - 1;
     let mut cand_col = sb_col as i32;
     let mut row_hits = 0;
-    while (cand_col as usize) < grid.origin.1.saturating_add(grid.size.1)
+    while (cand_col as usize) < grid.origin_col.saturating_add(grid.mi_cols)
         && (cand_col as usize) < sb_col + sb_size4
         && row_hits < 4
     {

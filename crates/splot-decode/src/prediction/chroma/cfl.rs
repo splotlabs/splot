@@ -31,13 +31,9 @@ const CFL_ALPHA_SCALE: i32 = 32;
 const CFL_DERIVED_ALPHA_SHIFT: u8 = 8;
 const NUM_REF_SAM_CFL: usize = 8;
 
-std::thread_local! {
-    static CFL_LUMA_AC_RECYCLER: std::cell::RefCell<Vec<i32>> = const { std::cell::RefCell::new(Vec::new()) };
-    static CFL_PRED_RECYCLER: std::cell::RefCell<Option<Box<dyn std::any::Any>>> = const { std::cell::RefCell::new(None) };
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
@@ -53,6 +49,12 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let crate::pipeline::general_intra::GeneralIntraReconScratch {
+        cfl_luma_ac,
+        cfl_prediction,
+        mhccp_refs,
+        ..
+    } = scratch;
     let block_size = IntraRectBlockSize::new(
         u8::try_from(log2_width).unwrap_or(u8::MAX),
         u8::try_from(log2_height).unwrap_or(u8::MAX),
@@ -63,10 +65,30 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
         block_size.sample_count(),
         T::default(),
     )?;
+    let width = 1usize << log2_width;
+    let height = 1usize << log2_height;
+    let luma_ac = if cfl_params.index == CflIndex::Multi {
+        None
+    } else {
+        prepare_cfl_luma_ac_into(
+            workspace,
+            x,
+            y,
+            width,
+            height,
+            cfl_ds_filter_index,
+            sb_mib,
+            bit_depth,
+            cfl_luma_ac,
+        )?;
+        Some(cfl_luma_ac.as_slice())
+    };
     let result = reconstruct_general_intra_chroma_cfl_block(
         workspace,
         block,
         &mut out,
+        cfl_prediction,
+        mhccp_refs,
         plane_id,
         x,
         y,
@@ -79,7 +101,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
         num4_above_right,
         num4_below_left,
         bit_depth,
-        None,
+        luma_ac,
     )
     .and_then(|()| {
         workspace
@@ -92,6 +114,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     u_block: &LumaCoeffBlock,
     v_block: &LumaCoeffBlock,
@@ -107,9 +130,14 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
     v_neighbours: (usize, usize),
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let crate::pipeline::general_intra::GeneralIntraReconScratch {
+        cfl_luma_ac,
+        cfl_prediction,
+        mhccp_refs,
+        ..
+    } = scratch;
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
-    let mut owned_luma_ac = CFL_LUMA_AC_RECYCLER.with(std::cell::RefCell::take);
     let luma_ac = if cfl_params.index == CflIndex::Multi {
         None
     } else {
@@ -122,9 +150,9 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             cfl_ds_filter_index,
             sb_mib,
             bit_depth,
-            &mut owned_luma_ac,
+            cfl_luma_ac,
         )?;
-        Some(&*owned_luma_ac)
+        Some(cfl_luma_ac.as_slice())
     };
     let block_size = IntraRectBlockSize::new(
         u8::try_from(log2_width).unwrap_or(u8::MAX),
@@ -148,11 +176,13 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             return Err(source.into());
         }
     };
-    let run = |plane_id, block, (num4_above_right, num4_below_left), out: &mut Vec<T>| {
+    let mut run = |plane_id, block, (num4_above_right, num4_below_left), out: &mut Vec<T>| {
         reconstruct_general_intra_chroma_cfl_block(
             workspace,
             block,
             out,
+            cfl_prediction,
+            mhccp_refs,
             plane_id,
             x,
             y,
@@ -182,12 +212,6 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
         });
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, u_out);
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Secondary, v_out);
-    CFL_LUMA_AC_RECYCLER.with(|cell| {
-        let mut recycler = cell.borrow_mut();
-        if recycler.capacity() < owned_luma_ac.capacity() {
-            *recycler = owned_luma_ac;
-        }
-    });
     result
 }
 
@@ -196,6 +220,8 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     out: &mut Vec<T>,
+    prediction: &mut Vec<T>,
+    reference_scratch: &mut [Vec<u16>; 2],
     plane_id: PlaneId,
     x: usize,
     y: usize,
@@ -213,19 +239,7 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
 
-    let mut prediction: Vec<T> = CFL_PRED_RECYCLER.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(any) = slot.take() {
-            match any.downcast::<Vec<T>>() {
-                Ok(vec) => *vec,
-                Err(_) => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        }
-    });
-
-    let res = (|| {
+    {
         if cfl_params.index == CflIndex::Multi {
             mhccp_prediction_into(
                 workspace,
@@ -240,7 +254,8 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
                 num4_above_right,
                 num4_below_left,
                 bit_depth,
-                &mut prediction,
+                prediction,
+                reference_scratch,
             )
         } else {
             cfl_prediction_into(
@@ -255,17 +270,17 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
                 sb_mib,
                 bit_depth,
                 luma_ac,
-                &mut prediction,
+                prediction,
             )
         }?;
 
         if block.all_zero {
-            out.copy_from_slice(&prediction);
+            out.copy_from_slice(prediction);
             Ok(())
         } else {
             reconstruct_general_intra_coeff_block_rect_with_prediction_into(
                 block,
-                &prediction,
+                prediction,
                 out,
                 qindex,
                 plane_id,
@@ -277,13 +292,7 @@ fn reconstruct_general_intra_chroma_cfl_block<T: ReconSample>(
                 bit_depth,
             )
         }
-    })();
-
-    CFL_PRED_RECYCLER.with(|cell| {
-        *cell.borrow_mut() = Some(Box::new(prediction));
-    });
-
-    res
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -322,23 +331,7 @@ fn cfl_prediction_into<T: ReconSample>(
     };
     prediction.clear();
     prediction.resize(width.saturating_mul(height), dc);
-    let mut owned_luma_ac = CFL_LUMA_AC_RECYCLER.with(std::cell::RefCell::take);
-    let luma_ac = if let Some(luma_ac) = luma_ac {
-        luma_ac
-    } else {
-        prepare_cfl_luma_ac_into(
-            workspace,
-            x,
-            y,
-            width,
-            height,
-            cfl_ds_filter_index,
-            sb_mib,
-            bit_depth,
-            &mut owned_luma_ac,
-        )?;
-        &owned_luma_ac
-    };
+    let luma_ac = luma_ac.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
     apply_cfl_prediction(
         workspace,
         plane_id,
@@ -353,12 +346,6 @@ fn cfl_prediction_into<T: ReconSample>(
         luma_ac,
         prediction,
     )?;
-    CFL_LUMA_AC_RECYCLER.with(|cell| {
-        let mut recycler = cell.borrow_mut();
-        if recycler.capacity() < owned_luma_ac.capacity() {
-            *recycler = owned_luma_ac;
-        }
-    });
     Ok(())
 }
 
@@ -473,6 +460,7 @@ fn mhccp_prediction_into<T: ReconSample>(
     num4_below_left: usize,
     bit_depth: BitDepth,
     prediction: &mut Vec<T>,
+    reference_scratch: &mut [Vec<u16>; 2],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let Some(mh_dir) = cfl_params.mh_dir else {
         return Err(
@@ -499,41 +487,48 @@ fn mhccp_prediction_into<T: ReconSample>(
         sb_mib,
         num4_above_right,
         num4_below_left,
+        reference_scratch,
     )?;
-    let params = derive_mhccp_params(&refs, mh_dir, bit_depth);
-    let max = i32::from(bit_depth.max_sample());
-    let mid = 1i32 << (u32::from(bit_depth.bits()) - 1);
-    prediction.clear();
-    prediction.reserve(width.saturating_mul(height));
-    for row in 0..height {
-        for col in 0..width {
-            let center_index = (refs.above + row) * refs.width + refs.left + col;
-            let center = i32::from(refs.luma[center_index]);
-            let linear = match mh_dir {
-                0 => center,
-                1 => {
-                    let top_row = refs.above.saturating_add(row).saturating_sub(1);
-                    i32::from(refs.luma[top_row * refs.width + refs.left + col])
+    let result = (|| {
+        let params = derive_mhccp_params(&refs, mh_dir, bit_depth);
+        let max = i32::from(bit_depth.max_sample());
+        let mid = 1i32 << (u32::from(bit_depth.bits()) - 1);
+        prediction.clear();
+        prediction.reserve(width.saturating_mul(height));
+        for row in 0..height {
+            for col in 0..width {
+                let center_index = (refs.above + row) * refs.width + refs.left + col;
+                let center = i32::from(refs.luma[center_index]);
+                let linear = match mh_dir {
+                    0 => center,
+                    1 => {
+                        let top_row = refs.above.saturating_add(row).saturating_sub(1);
+                        i32::from(refs.luma[top_row * refs.width + refs.left + col])
+                    }
+                    _ => {
+                        let left_col = refs.left.saturating_add(col).saturating_sub(1);
+                        i32::from(refs.luma[(refs.above + row) * refs.width + left_col])
+                    }
+                };
+                let vector = [
+                    linear,
+                    round2_i32(center.saturating_mul(center), u32::from(bit_depth.bits())),
+                    mid,
+                ];
+                let mut predicted = 0i32;
+                for k in 0..MHCCP_PARAM_COUNT {
+                    predicted = predicted
+                        .saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
                 }
-                _ => {
-                    let left_col = refs.left.saturating_add(col).saturating_sub(1);
-                    i32::from(refs.luma[(refs.above + row) * refs.width + left_col])
-                }
-            };
-            let vector = [
-                linear,
-                round2_i32(center.saturating_mul(center), u32::from(bit_depth.bits())),
-                mid,
-            ];
-            let mut predicted = 0i32;
-            for k in 0..MHCCP_PARAM_COUNT {
-                predicted =
-                    predicted.saturating_add(mul_fixed32_adapt(params[k], vector[k], MHCCP_BITS));
+                prediction.push(T::try_from_u16(predicted.clamp(0, max) as u16)?);
             }
-            prediction.push(T::try_from_u16(predicted.clamp(0, max) as u16)?);
         }
-    }
-    Ok(())
+        Ok(())
+    })();
+    let MhccpRefs { luma, chroma, .. } = refs;
+    reference_scratch[0] = luma;
+    reference_scratch[1] = chroma;
+    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -785,6 +780,7 @@ fn mhccp_references<T: ReconSample>(
     sb_mib: usize,
     num4_above_right: usize,
     num4_below_left: usize,
+    reference_scratch: &mut [Vec<u16>; 2],
 ) -> core::result::Result<MhccpRefs, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
     let sub_x = usize::from(pixel_format.subsampling_x());
@@ -840,8 +836,12 @@ fn mhccp_references<T: ReconSample>(
         );
     }
 
-    let mut luma = vec![0u16; ref_width.saturating_mul(ref_height)];
-    let mut chroma = vec![0u16; ref_width.saturating_mul(ref_height)];
+    let sample_count = ref_width.saturating_mul(ref_height);
+    let [luma, chroma] = reference_scratch;
+    luma.clear();
+    luma.resize(sample_count, 0);
+    chroma.clear();
+    chroma.resize(sample_count, 0);
     for row in 0..ref_height {
         for col in 0..ref_width {
             let chroma_x = x + col - left;
@@ -871,8 +871,8 @@ fn mhccp_references<T: ReconSample>(
         height: ref_height,
         above,
         left,
-        luma,
-        chroma,
+        luma: core::mem::take(luma),
+        chroma: core::mem::take(chroma),
     })
 }
 

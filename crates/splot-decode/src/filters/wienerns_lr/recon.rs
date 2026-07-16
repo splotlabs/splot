@@ -26,15 +26,11 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     cfl_ds_filter_index: u8,
     luma_width: usize,
     luma_height: usize,
-    deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    filter_records: super::FrameFilterRecords,
     cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
-    tx_skip_records: Vec<super::WienerNsLrTxSkipTransformRecord>,
-    lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-    lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
     lossless_grid: Option<crate::filters::lossless::LosslessBlockGrid>,
 }
@@ -115,27 +111,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             cfl_ds_filter_index: 0,
             luma_width,
             luma_height,
-            deblock_blocks: Vec::new(),
-            chroma_deblock_blocks: [Vec::new(), Vec::new()],
+            filter_records: super::FrameFilterRecords::default(),
             cdef_grid: None,
             ccso_grid: None,
             gdf_grid: None,
             tx_skip_grid: None,
-            tx_skip_records: Vec::new(),
-            lr_source_blocks: Vec::new(),
-            lr_unit_filters: Vec::new(),
             gdf_reference: None,
             lossless_grid: None,
         }
     }
 
-    pub(crate) fn set_deblock_blocks(
-        &mut self,
-        luma: Vec<crate::filters::deblock::DeblockBlock>,
-        chroma: [Vec<crate::filters::deblock::DeblockBlock>; 2],
-    ) {
-        self.deblock_blocks = luma;
-        self.chroma_deblock_blocks = chroma;
+    pub(crate) fn set_filter_records(&mut self, records: super::FrameFilterRecords) {
+        self.filter_records = records;
     }
 
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
@@ -154,27 +141,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.cfl_ds_filter_index = index;
     }
 
-    pub(crate) fn set_tx_skip_records(
-        &mut self,
-        records: Vec<super::WienerNsLrTxSkipTransformRecord>,
-    ) {
-        self.tx_skip_records = records;
-    }
-
-    pub(crate) fn set_lr_source_blocks(
-        &mut self,
-        blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-    ) {
-        self.lr_source_blocks = blocks;
-    }
-
-    pub(crate) fn set_lr_unit_filters(
-        &mut self,
-        filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
-    ) {
-        self.lr_unit_filters = filters;
-    }
-
     pub(crate) const fn set_gdf_reference_context(
         &mut self,
         context: Option<crate::filters::gdf::GdfReferenceContext>,
@@ -188,7 +154,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         offset: ByteOffset,
-    ) -> Result<DecodedFrame<T>> {
+    ) -> Result<(DecodedFrame<T>, super::FrameFilterRecords)> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if core
@@ -200,10 +166,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
                     mi_rows,
                     mi_cols,
-                    &self.deblock_blocks,
+                    &self.filter_records.deblock_blocks,
                     [
-                        &self.chroma_deblock_blocks[0],
-                        &self.chroma_deblock_blocks[1],
+                        &self.filter_records.chroma_deblock_blocks[0],
+                        &self.filter_records.chroma_deblock_blocks[1],
                     ],
                 )
                 .map_err(|_| {
@@ -223,10 +189,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         {
             crate::filters::deblock::deblock_general_intra_frame(
                 &mut self.workspace,
-                &self.deblock_blocks,
+                &self.filter_records.deblock_blocks,
                 [
-                    &self.chroma_deblock_blocks[0],
-                    &self.chroma_deblock_blocks[1],
+                    &self.filter_records.chroma_deblock_blocks[0],
+                    &self.filter_records.chroma_deblock_blocks[1],
                 ],
                 mi_rows,
                 mi_cols,
@@ -246,8 +212,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         crate::timing::report("filter_deblock", deblock_timer);
         let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
         let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(core);
-        let lr_source_blocks = core::mem::take(&mut self.lr_source_blocks);
-        let lr_unit_filters = core::mem::take(&mut self.lr_unit_filters);
+        let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
+        let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, plane_ends) =
             final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
         let [y_end, u_end] = plane_ends;
@@ -390,7 +356,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let filtered_workspace = filtered_workspace
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        Ok(filtered_workspace.freeze()?)
+        self.filter_records.lr_source_blocks = lr_source_blocks;
+        self.filter_records.lr_unit_filters = lr_unit_filters;
+        Ok((filtered_workspace.freeze()?, self.filter_records))
     }
 
     fn validate_filter_stripe(
@@ -441,6 +409,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     && plane.num_filter_classes.unwrap_or(1) > 1)
             })
         }) && self
+            .filter_records
             .lr_source_blocks
             .iter()
             .any(|block| block.plane == PlaneId::Y.index());
@@ -459,7 +428,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let grid = super::derive_wienerns_lr_tx_skip_grid_retention(
             mi_rows,
             mi_cols,
-            &self.tx_skip_records,
+            &self.filter_records.tx_skip_records,
         )
         .map_err(|_| {
             wienerns_lr_selectable_transform_record_error_reason(

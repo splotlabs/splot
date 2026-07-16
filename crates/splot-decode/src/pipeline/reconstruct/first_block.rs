@@ -20,10 +20,7 @@ use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
     SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };
-
-std::thread_local! {
-    static PAETH_RECYCLER: std::cell::RefCell<Vec<Box<dyn std::any::Any>>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+use crate::pipeline::general_intra::RecycledIntraSamples;
 
 const MI_SIZE: usize = 4;
 
@@ -252,22 +249,41 @@ fn dip_reference_edges<T: ReconSample>(
     num4_below_left: usize,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
-) -> core::result::Result<(Vec<T>, Vec<T>, T), GeneralIntraResidualError> {
+) -> core::result::Result<
+    (RecycledIntraSamples<T>, RecycledIntraSamples<T>, T),
+    GeneralIntraResidualError,
+> {
     let above_len = width + (width >> 2);
     let left_len = height + (height >> 2);
     let above = if availability.above {
-        collect_available_dip_above_edge(workspace, x, y, width, above_len, num4_above_right)?
+        collect_available_dip_edge(
+            workspace,
+            DipEdge::Above,
+            x,
+            y,
+            width,
+            above_len,
+            num4_above_right,
+        )?
     } else if availability.left {
-        vec![left_seed(workspace, x, y)?; above_len]
+        RecycledIntraSamples::filled(above_len, left_seed(workspace, x, y)?)
     } else {
-        vec![noneighbour_above::<T>(bit_depth); above_len]
+        RecycledIntraSamples::filled(above_len, noneighbour_above::<T>(bit_depth))
     };
     let left = if availability.left {
-        collect_available_dip_left_edge(workspace, x, y, height, left_len, num4_below_left)?
+        collect_available_dip_edge(
+            workspace,
+            DipEdge::Left,
+            x,
+            y,
+            height,
+            left_len,
+            num4_below_left,
+        )?
     } else if availability.above {
-        vec![above_seed(workspace, x, y)?; left_len]
+        RecycledIntraSamples::filled(left_len, above_seed(workspace, x, y)?)
     } else {
-        vec![noneighbour_left::<T>(bit_depth); left_len]
+        RecycledIntraSamples::filled(left_len, noneighbour_left::<T>(bit_depth))
     };
     let top_left = match (availability.above, availability.left) {
         (true, true) => {
@@ -286,66 +302,61 @@ fn dip_reference_edges<T: ReconSample>(
     Ok((left, above, top_left))
 }
 
-fn collect_available_dip_above_edge<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    x: usize,
-    y: usize,
-    width: usize,
-    edge_len: usize,
-    num4_above_right: usize,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    let sample_y = y
-        .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let storage_width = workspace.plane(PlaneId::Y)?.storage_size().width();
-    let readable = width
-        .saturating_add(num4_above_right.saturating_mul(MI_SIZE))
-        .min(edge_len);
-    let mut edge = Vec::with_capacity(edge_len);
-    for offset in 0..readable {
-        let Some(sample_x) = x.checked_add(offset) else {
-            break;
-        };
-        if sample_x >= storage_width {
-            break;
-        }
-        edge.push(workspace.reconstructed_sample(PlaneId::Y, sample_x, sample_y)?);
-    }
-    extend_edge_with_last(edge, edge_len)
+#[derive(Clone, Copy)]
+enum DipEdge {
+    Above,
+    Left,
 }
 
-fn collect_available_dip_left_edge<T: ReconSample>(
+#[allow(clippy::too_many_arguments)]
+fn collect_available_dip_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
+    direction: DipEdge,
     x: usize,
     y: usize,
-    height: usize,
+    initial_len: usize,
     edge_len: usize,
-    num4_below_left: usize,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
-    let sample_x = x
-        .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let storage_height = workspace.plane(PlaneId::Y)?.storage_size().height();
-    let readable = height
-        .saturating_add(num4_below_left.saturating_mul(MI_SIZE))
+    extra_units: usize,
+) -> core::result::Result<RecycledIntraSamples<T>, GeneralIntraResidualError> {
+    let fixed = match direction {
+        DipEdge::Above => y,
+        DipEdge::Left => x,
+    }
+    .checked_sub(1)
+    .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+    let storage_size = workspace.plane(PlaneId::Y)?.storage_size();
+    let storage_len = match direction {
+        DipEdge::Above => storage_size.width(),
+        DipEdge::Left => storage_size.height(),
+    };
+    let start = match direction {
+        DipEdge::Above => x,
+        DipEdge::Left => y,
+    };
+    let readable = initial_len
+        .saturating_add(extra_units.saturating_mul(MI_SIZE))
         .min(edge_len);
-    let mut edge = Vec::with_capacity(edge_len);
+    let mut edge = RecycledIntraSamples::with_capacity(edge_len);
     for offset in 0..readable {
-        let Some(sample_y) = y.checked_add(offset) else {
+        let Some(variable) = start.checked_add(offset) else {
             break;
         };
-        if sample_y >= storage_height {
+        if variable >= storage_len {
             break;
         }
+        let (sample_x, sample_y) = match direction {
+            DipEdge::Above => (variable, fixed),
+            DipEdge::Left => (fixed, variable),
+        };
         edge.push(workspace.reconstructed_sample(PlaneId::Y, sample_x, sample_y)?);
     }
     extend_edge_with_last(edge, edge_len)
 }
 
 fn extend_edge_with_last<T: ReconSample>(
-    mut edge: Vec<T>,
+    mut edge: RecycledIntraSamples<T>,
     edge_len: usize,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<RecycledIntraSamples<T>, GeneralIntraResidualError> {
     let last = edge
         .last()
         .copied()
@@ -439,6 +450,7 @@ fn paeth_reference_edges_into<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
@@ -460,20 +472,8 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
     let above_samples = availability.above.then(|| edges.above_samples()).flatten();
     let left_samples = availability.left.then(|| edges.left_samples()).flatten();
 
-    let mut above: Vec<T> = PAETH_RECYCLER.with(|cell| {
-        cell.borrow_mut()
-            .pop()
-            .and_then(|any| any.downcast::<Vec<T>>().ok().map(|b| *b))
-            .unwrap_or_default()
-    });
-    let mut left: Vec<T> = PAETH_RECYCLER.with(|cell| {
-        cell.borrow_mut()
-            .pop()
-            .and_then(|any| any.downcast::<Vec<T>>().ok().map(|b| *b))
-            .unwrap_or_default()
-    });
-
-    let res = (|| {
+    let [above, left] = &mut scratch.paeth_edges;
+    {
         let top_left = paeth_reference_edges_into(
             workspace,
             plane_id,
@@ -484,8 +484,8 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             bit_depth,
             above_samples,
             left_samples,
-            &mut above,
-            &mut left,
+            above,
+            left,
         )?;
         let mut prediction = workspace.take_intra_prediction_buffer(
             IntraPredictionScratchBuffer::Primary,
@@ -496,7 +496,7 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
         predict_intra_paeth_rect_into(
             bit_depth,
             block_size,
-            IntraPaethEdges::new(&left, &above, top_left),
+            IntraPaethEdges::new(left, above, top_left),
             &mut prediction,
             width,
         )?;
@@ -504,17 +504,5 @@ pub(crate) fn reconstruct_general_intra_luma_paeth_neighbour_block_into<T: Recon
             workspace, block, prediction, plane_id, x, y, block_size, qindex, use_tcq, None, None,
             bit_depth,
         )
-    })();
-
-    PAETH_RECYCLER.with(|cell| {
-        let mut recycler = cell.borrow_mut();
-        if recycler.len() < 8 {
-            recycler.push(Box::new(above));
-        }
-        if recycler.len() < 8 {
-            recycler.push(Box::new(left));
-        }
-    });
-
-    res
+    }
 }

@@ -82,6 +82,7 @@ impl IntraLumaPlan {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         luma: &LumaCoeffBlock,
         block_ctx: BlockCtx,
@@ -201,6 +202,7 @@ impl IntraLumaPlan {
             }
             Self::PaethNeighbour => {
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_paeth_neighbour_block_into(
+                    scratch,
                     workspace, luma, PlaneId::Y, x, y, log2_side, log2_side, qindex, use_tcq,
                     crate::pipeline::reconstruct::IntraEdgeAvailability {
                         above: neighbours.has_above(),

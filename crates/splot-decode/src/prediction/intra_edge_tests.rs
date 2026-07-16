@@ -17,6 +17,17 @@ fn grid_records_and_reads_cells() {
 }
 
 #[test]
+fn tile_local_grid_translates_absolute_coordinates() {
+    let mut grid = TileYSmoothGrid::new_for_tile(4..8, 8..12).unwrap();
+    grid.record(5, 9, 2, 2, true);
+    assert!(grid.at(9, 5));
+    assert!(grid.at(10, 6));
+    assert!(!grid.at(8, 4));
+    assert!(!grid.at(7, 5));
+    assert_eq!(grid.block_smoothness(10, 6), (true, true));
+}
+
+#[test]
 fn one_sided_spec_ors_smoothness_without_ibp() {
     let spec = one_sided_read_edge_spec(false, true, 45, false);
     assert!(spec.above);

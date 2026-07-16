@@ -312,6 +312,39 @@ fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
 }
 
 #[test]
+fn maximum_444_cfl_plan_fits_deferred_plane_capacity() {
+    let block = BlockRect::new(0, 0, 64, 64);
+    let tx = TxShape::from_luma_4x4(block.width4(), block.height4()).expect("test tx shape");
+    let ctx = BlockCtx::new(block, tx, 64, 64, BitDepth::Ten, ChromaSampling::Yuv444);
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx,
+        RectLumaPlan::Dc { use_tcq: true },
+        Some(RectChromaPlan::Cfl {
+            params: CflParams {
+                index: crate::bitstream::tile_payload::CflIndex::DerivedAlpha,
+                alpha_u: 0,
+                alpha_v: 0,
+                mh_dir: None,
+            },
+            cfl_ds_filter_index: 0,
+            sb_mib: 16,
+        }),
+        false,
+        None,
+        false,
+    )
+    .expect("maximum CFL rect plan");
+
+    assert_eq!(
+        plan.planes
+            .iter()
+            .filter(|plane| plane.defer_reconstruction)
+            .count(),
+        plan::MAX_DEFERRED_CHROMA_PLANES
+    );
+}
+
+#[test]
 fn non_cfl_chroma_keeps_chunk_interleaving() {
     let block = BlockRect::new(0, 0, 32, 16);
     let ctx = ctx(block, BitDepth::Ten);

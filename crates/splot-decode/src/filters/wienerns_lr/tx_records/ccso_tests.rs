@@ -88,12 +88,10 @@ fn ccso_state_rejects_out_of_grid_access() {
 fn ccso_tile_merge_copies_only_the_owned_region() {
     let offset = ByteOffset::new(0);
     let mut frame = CcsoState::active(4, [true, false, false], [false; CCSO_PLANES], (1, 2, 2));
-    let mut left = frame.for_tile(0..16, 0..16, offset).unwrap();
-    let mut right = frame.for_tile(0..16, 16..32, offset).unwrap();
-    assert_eq!(left.blocks[0].len(), 1);
-    assert_eq!(right.blocks[0].len(), 1);
-    left.blocks[0][0] = 1;
-    right.blocks[0][0] = 1;
+    let mut left = frame.try_for_tile(0..16, 0..16, offset).unwrap();
+    let mut right = frame.try_for_tile(0..16, 16..32, offset).unwrap();
+    left.blocks[0] = vec![1];
+    right.blocks[0] = vec![1];
 
     frame.merge_tile(&left, 0..16, 0..16, offset).unwrap();
     frame.merge_tile(&right, 0..16, 16..32, offset).unwrap();

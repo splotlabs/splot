@@ -44,13 +44,11 @@ pub(crate) struct WienerNsLrUnitSelection {
 pub(crate) struct WienerNsLrSourceBlock {
     pub(crate) restoration_type: LrUnitRestorationType,
     pub(crate) plane: usize,
-    pub(crate) row: usize,
-    pub(crate) col: usize,
     pub(crate) unit_row: usize,
     pub(crate) unit_col: usize,
+    pub(crate) unit_filter_index: Option<usize>,
     pub(crate) tile_mi_row_start: usize,
     pub(crate) tile_mi_row_end: usize,
-    pub(crate) tile_mi_col_start: usize,
     pub(crate) tile_mi_col_end: usize,
     pub(crate) x: usize,
     pub(crate) y: usize,
@@ -60,7 +58,6 @@ pub(crate) struct WienerNsLrSourceBlock {
     pub(crate) luma_end_x: usize,
     pub(crate) luma_start_y: usize,
     pub(crate) luma_end_y: usize,
-    pub(crate) frame_luma_end_y: usize,
     pub(crate) luma_stripe_start_y: usize,
     pub(crate) luma_stripe_end_y: usize,
 }
@@ -88,25 +85,24 @@ impl WienerNsLrSourceBlock {
         self.filter_domain_key() == next.filter_domain_key()
     }
 
-    pub(crate) fn vertical_merge_key(&self) -> ([usize; 15], usize, usize) {
+    pub(crate) fn vertical_merge_key(&self) -> ([usize; 14], usize, usize) {
         (self.filter_domain_key(), self.x, self.width)
     }
 
-    fn filter_domain_key(&self) -> [usize; 15] {
+    fn filter_domain_key(&self) -> [usize; 14] {
         [
             self.restoration_type as usize,
             self.plane,
             self.unit_row,
             self.unit_col,
+            self.unit_filter_index.unwrap_or(usize::MAX),
             self.tile_mi_row_start,
             self.tile_mi_row_end,
-            self.tile_mi_col_start,
             self.tile_mi_col_end,
             self.luma_start_x,
             self.luma_end_x,
             self.luma_start_y,
             self.luma_end_y,
-            self.frame_luma_end_y,
             self.luma_stripe_start_y,
             self.luma_stripe_end_y,
         ]
@@ -244,6 +240,7 @@ pub(super) struct LrSourceBlockDerivation {
     pub(super) unit_size: usize,
     pub(super) unit_row: usize,
     pub(super) unit_col: usize,
+    pub(super) unit_filter_index: Option<usize>,
     pub(super) frame: TilePartitionFrameFacts,
     pub(super) tile_bounds: TilePartitionBounds,
     pub(super) sub_x: usize,
@@ -392,11 +389,6 @@ fn lr_source_block_for(
         checked_mul("lr_luma_end_y", luma_end_y_mi, MI_SIZE)?,
         1,
     )?;
-    let frame_luma_end_y = checked_sub(
-        "lr_frame_luma_end_y",
-        checked_mul("lr_frame_luma_end_y", input.frame.mi_rows, MI_SIZE)?,
-        1,
-    )?;
     let local_row = checked_sub("lr_source_local_row", row, input.tile_bounds.mi_row_start)?;
     let luma_y = checked_mul("lr_source_luma_y", local_row, MI_SIZE)?;
     let stripe_num = checked_add("lr_source_stripe_num", luma_y, 8)? / 64;
@@ -417,13 +409,11 @@ fn lr_source_block_for(
     Ok(WienerNsLrSourceBlock {
         restoration_type: input.restoration_type,
         plane: input.plane,
-        row,
-        col,
         unit_row: input.unit_row,
         unit_col: input.unit_col,
+        unit_filter_index: input.unit_filter_index,
         tile_mi_row_start: input.tile_bounds.mi_row_start,
         tile_mi_row_end: input.tile_bounds.mi_row_end,
-        tile_mi_col_start: input.tile_bounds.mi_col_start,
         tile_mi_col_end: input.tile_bounds.mi_col_end,
         x,
         y,
@@ -433,7 +423,6 @@ fn lr_source_block_for(
         luma_end_x,
         luma_start_y,
         luma_end_y,
-        frame_luma_end_y,
         luma_stripe_start_y,
         luma_stripe_end_y,
     })

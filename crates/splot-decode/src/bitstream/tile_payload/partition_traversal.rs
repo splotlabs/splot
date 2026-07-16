@@ -62,12 +62,12 @@ pub(crate) const BLOCK_32X8: usize = 22;
 #[allow(clippy::struct_field_names)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePartitionContextState<'a> {
-    row_start: usize,
-    col_start: usize,
     mi_sizes: &'a [usize],
     mi_size_stride: usize,
     left_mi_sizes: [&'a [usize]; 2],
     above_mi_sizes: [&'a [usize]; 2],
+    origin_row: usize,
+    origin_col: usize,
 }
 
 impl<'a> TilePartitionContextState<'a> {
@@ -79,31 +79,31 @@ impl<'a> TilePartitionContextState<'a> {
         above_mi_sizes: [&'a [usize]; 2],
     ) -> Self {
         Self::new_at(
-            0,
-            0,
             mi_sizes,
             mi_size_stride,
             left_mi_sizes,
             above_mi_sizes,
+            0,
+            0,
         )
     }
 
     #[must_use]
     pub(crate) const fn new_at(
-        row_start: usize,
-        col_start: usize,
         mi_sizes: &'a [usize],
         mi_size_stride: usize,
         left_mi_sizes: [&'a [usize]; 2],
         above_mi_sizes: [&'a [usize]; 2],
+        origin_row: usize,
+        origin_col: usize,
     ) -> Self {
         Self {
-            row_start,
-            col_start,
             mi_sizes,
             mi_size_stride,
             left_mi_sizes,
             above_mi_sizes,
+            origin_row,
+            origin_col,
         }
     }
 }

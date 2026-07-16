@@ -323,10 +323,16 @@ pub(crate) fn luma_all_zero_context(
     state: &TileCoeffContextState,
     input: LumaAllZeroContextInput,
 ) -> Result<usize, CoeffLoopContextError> {
-    let x4 = state.local_x4(LUMA_PLANE, input.x4)?;
-    let y4 = state.local_y4(LUMA_PLANE, input.y4)?;
-    let above = bounded_or(state.above_level(LUMA_PLANE)?, x4, input.w4);
-    let left = bounded_or(state.left_level(LUMA_PLANE)?, y4, input.h4);
+    let above = bounded_or(
+        state.above_level(LUMA_PLANE)?,
+        state.local_x4(LUMA_PLANE, input.x4)?,
+        input.w4,
+    );
+    let left = bounded_or(
+        state.left_level(LUMA_PLANE)?,
+        state.local_y4(LUMA_PLANE, input.y4)?,
+        input.h4,
+    );
     Ok(txb_skip_ctx_luma(
         above,
         left,
@@ -339,18 +345,16 @@ pub(crate) fn v_all_zero_context(
     state: &TileCoeffContextState,
     input: VAllZeroContextInput,
 ) -> Result<usize, CoeffLoopContextError> {
-    let x4 = state.local_x4(V_PLANE, input.x4)?;
-    let y4 = state.local_y4(V_PLANE, input.y4)?;
     let above = bounded_or_level_dc(
         state.above_level(V_PLANE)?,
         state.above_dc(V_PLANE)?,
-        x4,
+        state.local_x4(V_PLANE, input.x4)?,
         input.w4,
     );
     let left = bounded_or_level_dc(
         state.left_level(V_PLANE)?,
         state.left_dc(V_PLANE)?,
-        y4,
+        state.local_y4(V_PLANE, input.y4)?,
         input.h4,
     );
     Ok(v_txb_skip_ctx(

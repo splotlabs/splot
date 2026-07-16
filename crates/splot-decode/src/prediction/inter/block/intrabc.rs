@@ -12,7 +12,9 @@ use crate::filters::wienerns_lr::intrabc_records::{
     derive_intrabc_luma_prediction_geometry,
 };
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use crate::prediction::inter::{InterResidual, Mv, mc};
+use crate::prediction::inter::{
+    InterResidual, InterResidualBlock, InterResidualReconScratch, Mv, mc,
+};
 use crate::{Result, prediction::inter::add_inter_residual_to_workspace};
 
 pub(super) struct IntrabcReconPrediction {
@@ -166,14 +168,18 @@ impl IntrabcReconCommand {
 
     pub(super) fn reconstruct<T: ReconSample>(
         self,
+        residual_scratch: &mut InterResidualReconScratch<T>,
+        residual_blocks: &[InterResidualBlock],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(usize::from(self.segment_id));
-        self.reconstruct_with_installed_quantizer(workspace)
+        self.reconstruct_with_installed_quantizer(residual_scratch, residual_blocks, workspace)
     }
 
     fn reconstruct_with_installed_quantizer<T: ReconSample>(
         self,
+        residual_scratch: &mut InterResidualReconScratch<T>,
+        residual_blocks: &[InterResidualBlock],
         workspace: &mut CurrentFrameWorkspace<T>,
     ) -> Result<()> {
         let prediction = self.prediction;
@@ -184,16 +190,20 @@ impl IntrabcReconCommand {
                 prediction.luma.scaling,
             )?;
         } else {
-            workspace
-                .copy_rect_within_plane(PlaneId::Y, prediction.luma.source, prediction.luma.target)
-                .map_err(|_| {
-                    inter_cap!(
-                        "inter_intrabc_copy",
-                        self.tile_offset,
-                        "inter.intrabc.copy",
-                        SPEC_MODE_INFO
-                    )
-                })?;
+            mc::intrabc_copy_plane_into(
+                workspace,
+                PlaneId::Y,
+                prediction.luma.source,
+                prediction.luma.target,
+            )
+            .map_err(|_| {
+                inter_cap!(
+                    "inter_intrabc_copy",
+                    self.tile_offset,
+                    "inter.intrabc.copy",
+                    SPEC_MODE_INFO
+                )
+            })?;
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
@@ -215,8 +225,10 @@ impl IntrabcReconCommand {
         }
         if let Some(residual) = self.residual.as_ref() {
             add_inter_residual_to_workspace(
+                residual_scratch,
                 &mut mc::WorkspaceSink::Frame(workspace),
                 residual,
+                residual_blocks,
                 self.qindex,
                 self.luma_use_tcq,
                 self.residual_use_ddt,

@@ -9,63 +9,14 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 
-use crate::support::reusable_scratch::with_reusable_scratch;
-use std::sync::{Mutex, MutexGuard};
-
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
 const TX_4X4: usize = 0;
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
-const MAX_RETAINED_INTER_RESIDUAL_LISTS: usize = 128;
-const MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS: usize = 16 * 1024;
 
-#[derive(Default)]
-struct InterResidualRecycler {
-    block_lists: Vec<Vec<InterResidualBlock>>,
-    block_slots: usize,
-}
-
-impl InterResidualRecycler {
-    fn take(&mut self) -> Vec<InterResidualBlock> {
-        let blocks = self.block_lists.pop().unwrap_or_default();
-        self.block_slots = self.block_slots.saturating_sub(blocks.capacity());
-        blocks
-    }
-
-    fn recycle_empty(&mut self, blocks: Vec<InterResidualBlock>) {
-        let capacity = blocks.capacity();
-        if capacity == 0
-            || capacity > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS
-            || self.block_lists.len() == MAX_RETAINED_INTER_RESIDUAL_LISTS
-            || self.block_slots > MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS - capacity
-            || self.block_lists.try_reserve(1).is_err()
-        {
-            return;
-        }
-        self.block_slots += capacity;
-        self.block_lists.push(blocks);
-    }
-}
-
-std::thread_local! {
-    static INTER_RESIDUAL_CHROMA_READS: std::cell::RefCell<Option<Vec<InterChromaURead>>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-static INTER_RESIDUAL_RECYCLER: Mutex<InterResidualRecycler> = Mutex::new(InterResidualRecycler {
-    block_lists: Vec::new(),
-    block_slots: 0,
-});
-
-fn lock_inter_residual_recycler() -> MutexGuard<'static, InterResidualRecycler> {
-    INTER_RESIDUAL_RECYCLER
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct InterLumaTxTypeMap {
     row: usize,
     col: usize,
@@ -85,49 +36,16 @@ struct InterChromaUnit {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct InterChromaURead {
     unit: InterChromaUnit,
+    block_index: usize,
+    uses_cctx: bool,
     u_nonzero: bool,
 }
 
-struct RecycledInterChromaReads {
-    entries: Vec<InterChromaURead>,
-}
-
-impl RecycledInterChromaReads {
-    fn take() -> Self {
-        let entries = with_reusable_scratch(&INTER_RESIDUAL_CHROMA_READS, |entries| {
-            entries.take().unwrap_or_default()
-        });
-        Self { entries }
-    }
-}
-
-impl Drop for RecycledInterChromaReads {
-    fn drop(&mut self) {
-        let mut entries = core::mem::take(&mut self.entries);
-        entries.clear();
-        with_reusable_scratch(&INTER_RESIDUAL_CHROMA_READS, |cached| {
-            let entries = match cached.take() {
-                Some(cached) if cached.capacity() > entries.capacity() => cached,
-                _ => entries,
-            };
-            *cached = Some(entries);
-        });
-    }
-}
-
-fn take_inter_residual_blocks() -> Vec<InterResidualBlock> {
-    lock_inter_residual_recycler().take()
-}
-
-fn recycle_inter_residual_blocks(mut blocks: Vec<InterResidualBlock>) {
-    blocks.clear();
-    lock_inter_residual_recycler().recycle_empty(blocks);
-}
-
-impl Drop for InterResidual {
-    fn drop(&mut self) {
-        recycle_inter_residual_blocks(core::mem::take(&mut self.blocks));
-    }
+#[derive(Default)]
+pub(crate) struct InterResidualParseScratch {
+    luma_tx_types: InterLumaTxTypeMap,
+    luma_tx_records: Vec<SelectableLumaTxRecord>,
+    chroma_reads: Vec<InterChromaURead>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -137,6 +55,7 @@ pub(crate) enum InterResidualLumaTxSizeMode {
 }
 
 impl InterLumaTxTypeMap {
+    #[cfg(test)]
     fn new(
         row: usize,
         col: usize,
@@ -144,21 +63,32 @@ impl InterLumaTxTypeMap {
         cols: usize,
         tile_offset: ByteOffset,
     ) -> Result<Self> {
+        let mut map = Self::default();
+        map.reset(row, col, rows, cols, tile_offset)?;
+        Ok(map)
+    }
+
+    fn reset(
+        &mut self,
+        row: usize,
+        col: usize,
+        rows: usize,
+        cols: usize,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
         let len = rows
             .checked_mul(cols)
             .ok_or_else(|| residual_geometry_error(tile_offset))?;
-        let mut values = Vec::new();
-        values
-            .try_reserve(len)
+        self.values
+            .try_reserve(len.saturating_sub(self.values.len()))
             .map_err(|_| residual_geometry_error(tile_offset))?;
-        values.resize(len, DCT_DCT);
-        Ok(Self {
-            row,
-            col,
-            rows,
-            cols,
-            values,
-        })
+        self.values.resize(len, DCT_DCT);
+        self.values.fill(DCT_DCT);
+        self.row = row;
+        self.col = col;
+        self.rows = rows;
+        self.cols = cols;
+        Ok(())
     }
 
     fn update(
@@ -210,7 +140,7 @@ impl InterLumaTxTypeMap {
     }
 
     fn index(&self, row: usize, col: usize) -> Option<usize> {
-        crate::support::rect_index(row, col, (self.row, self.col), (self.rows, self.cols))
+        crate::tile::local_grid_index(row, col, self.row, self.col, self.rows, self.cols)
     }
 }
 
@@ -219,6 +149,8 @@ pub(crate) fn read_inter_residual(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
+    scratch: &mut InterResidualParseScratch,
+    blocks: &mut Vec<InterResidualBlock>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
@@ -231,103 +163,115 @@ pub(crate) fn read_inter_residual(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
-    let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-    let width_chunks = (n4w >> 4).max(1);
-    let height_chunks = (n4h >> 4).max(1);
-    let multi_chunk = width_chunks > 1 || height_chunks > 1;
-    let mi_size_chunk = if multi_chunk {
-        BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error(tile_offset))?
-    } else {
-        frontier.b_size
-    };
-    let luma_tx_size = inter_residual_tx_size(
-        work_unit,
-        symbols,
-        frontier.b_size.index(),
-        lossless,
-        luma_tx_size_mode,
-        tile_offset,
-    )?;
-    let luma_tx_records = if inter_luma_tx_records_are_selectable(
-        residual_uses_selectable_tx_partitions(core),
-        lossless,
-    ) {
-        Some(derive_inter_luma_tx_records_for_block(
+    let block_start = blocks.len();
+    let result = (|| -> Result<()> {
+        let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+        let width_chunks = (n4w >> 4).max(1);
+        let height_chunks = (n4h >> 4).max(1);
+        let multi_chunk = width_chunks > 1 || height_chunks > 1;
+        let mi_size_chunk = if multi_chunk {
+            BlockSize::new(BLOCK_64X64).map_err(|_| residual_geometry_error(tile_offset))?
+        } else {
+            frontier.b_size
+        };
+        let luma_tx_size = inter_residual_tx_size(
             work_unit,
             symbols,
-            frontier,
-            (mi_rows, mi_cols),
-            0,
+            frontier.b_size.index(),
+            lossless,
+            luma_tx_size_mode,
             tile_offset,
-        )?)
-    } else {
-        None
-    };
-    let mut residual = InterResidual {
-        blocks: take_inter_residual_blocks(),
-    };
-    let mut luma_tx_types = InterLumaTxTypeMap::new(frontier.r, frontier.c, n4h, n4w, tile_offset)?;
+        )?;
+        let selectable_luma_tx = inter_luma_tx_records_are_selectable(
+            residual_uses_selectable_tx_partitions(core),
+            lossless,
+        );
+        scratch.luma_tx_records.clear();
+        if selectable_luma_tx {
+            derive_inter_luma_tx_records_for_block(
+                work_unit,
+                symbols,
+                frontier,
+                (mi_rows, mi_cols),
+                0,
+                tile_offset,
+                &mut scratch.luma_tx_records,
+            )?;
+        }
+        let luma_tx_records = selectable_luma_tx.then_some(scratch.luma_tx_records.as_slice());
+        scratch
+            .luma_tx_types
+            .reset(frontier.r, frontier.c, n4h, n4w, tile_offset)?;
 
-    for start_chunk_y in (0..height_chunks).step_by(2) {
-        for start_chunk_x in (0..width_chunks).step_by(2) {
-            let group_end_y = (start_chunk_y + 2).min(height_chunks);
-            let group_end_x = (start_chunk_x + 2).min(width_chunks);
-            for chunk_y in start_chunk_y..group_end_y {
-                for chunk_x in start_chunk_x..group_end_x {
-                    let luma_chunk_x = frontier.c + (chunk_x << 4);
-                    let luma_chunk_y = frontier.r + (chunk_y << 4);
-                    read_inter_residual_luma_chunk(
-                        work_unit,
-                        symbols,
-                        coeff_ctx,
-                        &mut residual.blocks,
-                        &mut luma_tx_types,
-                        luma_tx_records.as_deref(),
-                        luma_tx_size,
-                        frontier,
-                        luma_chunk_x,
-                        luma_chunk_y,
-                        n4w,
-                        n4h,
-                        residual_tool_policy,
-                        tile_offset,
-                    )?;
-                    let chroma_group = chroma_parse_group_start(
-                        chunk_x,
-                        chunk_y,
-                        width_chunks,
-                        height_chunks,
-                        subsampling_x,
-                        subsampling_y,
-                        lossless,
-                    );
-                    if let (true, Some((chroma_chunk_x, chroma_chunk_y))) =
-                        (frontier.has_chroma, chroma_group)
-                    {
-                        read_inter_residual_chroma_group(
+        for start_chunk_y in (0..height_chunks).step_by(2) {
+            for start_chunk_x in (0..width_chunks).step_by(2) {
+                let group_end_y = (start_chunk_y + 2).min(height_chunks);
+                let group_end_x = (start_chunk_x + 2).min(width_chunks);
+                for chunk_y in start_chunk_y..group_end_y {
+                    for chunk_x in start_chunk_x..group_end_x {
+                        let luma_chunk_x = frontier.c + (chunk_x << 4);
+                        let luma_chunk_y = frontier.r + (chunk_y << 4);
+                        read_inter_residual_luma_chunk(
                             work_unit,
                             symbols,
                             coeff_ctx,
-                            &mut residual.blocks,
-                            &luma_tx_types,
+                            blocks,
+                            &mut scratch.luma_tx_types,
+                            luma_tx_records,
+                            luma_tx_size,
                             frontier,
-                            mi_size_chunk,
-                            subsampling_x,
-                            subsampling_y,
-                            chroma_chunk_x,
-                            chroma_chunk_y,
-                            lossless,
-                            luma_tx_size_mode == InterResidualLumaTxSizeMode::Inter,
+                            luma_chunk_x,
+                            luma_chunk_y,
+                            n4w,
+                            n4h,
                             residual_tool_policy,
                             tile_offset,
                         )?;
+                        let chroma_group = chroma_parse_group_start(
+                            chunk_x,
+                            chunk_y,
+                            width_chunks,
+                            height_chunks,
+                            subsampling_x,
+                            subsampling_y,
+                            lossless,
+                        );
+                        if let (true, Some((chroma_chunk_x, chroma_chunk_y))) =
+                            (frontier.has_chroma, chroma_group)
+                        {
+                            read_inter_residual_chroma_group(
+                                work_unit,
+                                symbols,
+                                coeff_ctx,
+                                blocks,
+                                &scratch.luma_tx_types,
+                                &mut scratch.chroma_reads,
+                                frontier,
+                                mi_size_chunk,
+                                subsampling_x,
+                                subsampling_y,
+                                chroma_chunk_x,
+                                chroma_chunk_y,
+                                lossless,
+                                luma_tx_size_mode == InterResidualLumaTxSizeMode::Inter,
+                                residual_tool_policy,
+                                tile_offset,
+                            )?;
+                        }
                     }
                 }
             }
         }
-    }
 
-    Ok(residual)
+        Ok(())
+    })();
+    if let Err(error) = result {
+        blocks.truncate(block_start);
+        return Err(error);
+    }
+    Ok(InterResidual {
+        block_range: block_start..blocks.len(),
+    })
 }
 
 /// Returns the chroma group's top-left chunk position when `(chunk_x, chunk_y)`
@@ -446,7 +390,7 @@ fn read_inter_residual_luma_chunk(
                 tile_offset,
             )?;
             luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type, tile_offset)?;
-            push_inter_residual_block(
+            let _ = push_inter_residual_block(
                 blocks,
                 ReconPlaneId::Y,
                 x4,
@@ -514,7 +458,7 @@ fn read_inter_residual_luma_records_for_chunk(
             coeffs.plane_tx_type,
             tile_offset,
         )?;
-        push_inter_residual_block(
+        let _ = push_inter_residual_block(
             blocks,
             ReconPlaneId::Y,
             record.col,
@@ -538,6 +482,7 @@ fn read_inter_residual_chroma_group(
     coeff_ctx: &mut TileCoeffContextState,
     blocks: &mut Vec<InterResidualBlock>,
     luma_tx_types: &InterLumaTxTypeMap,
+    chroma_reads: &mut Vec<InterChromaURead>,
     frontier: &DecodeBlockFrontier,
     mi_size_chunk: BlockSize,
     subsampling_x: bool,
@@ -608,7 +553,7 @@ fn read_inter_residual_chroma_group(
     let base_y4 = chroma_ref.row() >> usize::from(subsampling_y);
     let lossless_uses_current_block =
         lossless && is_inter && (frontier.r != chroma_ref.row() || frontier.c != chroma_ref.col());
-    let mut u_reads = RecycledInterChromaReads::take();
+    chroma_reads.clear();
     let mut y4 = y_offset4;
     while y4 < y_offset4 + num4x4_h {
         let mut x4 = x_offset4;
@@ -645,7 +590,8 @@ fn read_inter_residual_chroma_group(
                 tile_offset,
             )?;
             let u_nonzero = !u.all_zero;
-            push_inter_residual_block(
+            let uses_cctx = u.cctx_type.unwrap_or(0) != 0;
+            let block_index = push_inter_residual_block(
                 blocks,
                 ReconPlaneId::U,
                 base_x4 + x4,
@@ -654,11 +600,15 @@ fn read_inter_residual_chroma_group(
                 u,
                 tile_offset,
             )?;
-            u_reads
-                .entries
+            chroma_reads
                 .try_reserve(1)
                 .map_err(|_| residual_geometry_error(tile_offset))?;
-            u_reads.entries.push(InterChromaURead { unit, u_nonzero });
+            chroma_reads.push(InterChromaURead {
+                unit,
+                block_index,
+                uses_cctx,
+                u_nonzero,
+            });
             x4 = x4
                 .checked_add(tx_w4)
                 .ok_or_else(|| residual_geometry_error(tile_offset))?;
@@ -668,7 +618,7 @@ fn read_inter_residual_chroma_group(
             .ok_or_else(|| residual_geometry_error(tile_offset))?;
     }
 
-    for read in u_reads.entries.iter().copied() {
+    for read in chroma_reads.iter().copied() {
         let start_x = (base_x4 + read.unit.x4) * MI_SIZE;
         let start_y = (base_y4 + read.unit.y4) * MI_SIZE;
         let v = read_inter_residual_plane(
@@ -686,7 +636,7 @@ fn read_inter_residual_chroma_group(
             residual_tool_policy,
             tile_offset,
         )?;
-        push_inter_residual_block(
+        let v_index = push_inter_residual_block(
             blocks,
             ReconPlaneId::V,
             base_x4 + read.unit.x4,
@@ -695,7 +645,29 @@ fn read_inter_residual_chroma_group(
             v,
             tile_offset,
         )?;
+        if read.uses_cctx {
+            record_inter_residual_chroma_pair(blocks, read.block_index, v_index, tile_offset)?;
+        }
     }
+    Ok(())
+}
+
+fn record_inter_residual_chroma_pair(
+    blocks: &mut [InterResidualBlock],
+    u_index: usize,
+    v_index: usize,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let delta = v_index
+        .checked_sub(u_index)
+        .and_then(|delta| i16::try_from(delta).ok())
+        .filter(|&delta| delta > 0)
+        .ok_or_else(|| residual_geometry_error(tile_offset))?;
+    let [u, v] = blocks
+        .get_disjoint_mut([u_index, v_index])
+        .map_err(|_| residual_geometry_error(tile_offset))?;
+    u.cctx_pair_delta = delta;
+    v.cctx_pair_delta = -delta;
     Ok(())
 }
 
@@ -707,7 +679,7 @@ fn push_inter_residual_block(
     tx_size: usize,
     coeffs: LumaCoeffBlock,
     tile_offset: ByteOffset,
-) -> Result<()> {
+) -> Result<usize> {
     let log2_width = tx_size_dimension("Tx_Width_Log2", &TX_WIDTH_LOG2, tx_size, tile_offset)?;
     let log2_height = tx_size_dimension("Tx_Height_Log2", &TX_HEIGHT_LOG2, tx_size, tile_offset)?;
     let log2_width = u32::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
@@ -721,6 +693,7 @@ fn push_inter_residual_block(
             SPEC_MODE_INFO
         )
     })?;
+    let index = blocks.len();
     blocks.push(InterResidualBlock {
         plane,
         x: x4 * MI_SIZE,
@@ -728,9 +701,10 @@ fn push_inter_residual_block(
         tx_size,
         log2_width,
         log2_height,
+        cctx_pair_delta: 0,
         coeffs,
     });
-    Ok(())
+    Ok(index)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -18,6 +18,7 @@ pub(crate) fn record_inter_deblock_geometry(
     block_size4: (usize, usize),
     chroma_format: ChromaFormatIdc,
     residual: Option<&InterResidual>,
+    residual_blocks: &[InterResidualBlock],
     sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
     qindex: u32,
     lossless: bool,
@@ -120,7 +121,10 @@ pub(crate) fn record_inter_deblock_geometry(
         }
         return Ok(());
     };
-    for block in &residual.blocks {
+    let blocks = residual
+        .blocks(residual_blocks)
+        .ok_or_else(|| super::residual::residual_geometry_error(tile_offset))?;
+    for block in blocks {
         match block.plane {
             ReconPlaneId::Y => {
                 let tx_w4 = (1usize << block.log2_width) / MI_SIZE;

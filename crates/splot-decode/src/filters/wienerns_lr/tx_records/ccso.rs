@@ -30,16 +30,14 @@ pub(crate) struct CcsoState {
     pub(crate) plane_enabled: [bool; CCSO_PLANES],
     pub(crate) sb_reuse: [bool; CCSO_PLANES],
     pub(crate) blocks: [Vec<u8>; CCSO_PLANES],
+    pub(crate) row_start: usize,
+    pub(crate) col_start: usize,
     pub(crate) grid_rows: usize,
     pub(crate) grid_cols: usize,
-    row_start: usize,
-    col_start: usize,
-    local_rows: usize,
-    local_cols: usize,
 }
 
 impl CcsoState {
-    pub(crate) fn for_tile(
+    pub(crate) fn try_for_tile(
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
@@ -55,20 +53,28 @@ impl CcsoState {
         let col_start = mi_cols.start / unit_mi;
         let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
         let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
-        let local_rows = row_end.saturating_sub(row_start);
-        let local_cols = col_end.saturating_sub(col_start);
-        let len = local_rows
-            .checked_mul(local_cols)
+        let grid_rows = row_end.saturating_sub(row_start);
+        let grid_cols = col_end.saturating_sub(col_start);
+        let len = grid_rows
+            .checked_mul(grid_cols)
             .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
-        let clone_blocks = |plane: usize| -> Result<Vec<u8>> {
+        let copy_region = |source: &[u8]| -> Result<Vec<u8>> {
             let mut blocks = Vec::new();
             blocks
                 .try_reserve_exact(len)
                 .map_err(|_| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
             for row in row_start..row_end {
-                let source_start = row * self.grid_cols + col_start;
+                let start = row
+                    .checked_mul(self.grid_cols)
+                    .and_then(|start| start.checked_add(col_start))
+                    .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+                let end = start
+                    .checked_add(grid_cols)
+                    .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
                 blocks.extend_from_slice(
-                    &self.blocks[plane][source_start..source_start + local_cols],
+                    source
+                        .get(start..end)
+                        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?,
                 );
             }
             Ok(blocks)
@@ -78,13 +84,15 @@ impl CcsoState {
             shift: self.shift,
             plane_enabled: self.plane_enabled,
             sb_reuse: self.sb_reuse,
-            blocks: [clone_blocks(0)?, clone_blocks(1)?, clone_blocks(2)?],
-            grid_rows: self.grid_rows,
-            grid_cols: self.grid_cols,
+            blocks: [
+                copy_region(&self.blocks[0])?,
+                copy_region(&self.blocks[1])?,
+                copy_region(&self.blocks[2])?,
+            ],
             row_start,
             col_start,
-            local_rows,
-            local_cols,
+            grid_rows,
+            grid_cols,
         })
     }
 
@@ -131,12 +139,10 @@ impl CcsoState {
             plane_enabled,
             sb_reuse,
             blocks: std::array::from_fn(|_| vec![0u8; cells]),
-            grid_rows,
-            grid_cols,
             row_start: 0,
             col_start: 0,
-            local_rows: grid_rows,
-            local_cols: grid_cols,
+            grid_rows,
+            grid_cols,
         }
     }
 
@@ -147,12 +153,10 @@ impl CcsoState {
             plane_enabled: [false; CCSO_PLANES],
             sb_reuse: [false; CCSO_PLANES],
             blocks: [Vec::new(), Vec::new(), Vec::new()],
-            grid_rows: 0,
-            grid_cols: 0,
             row_start: 0,
             col_start: 0,
-            local_rows: 0,
-            local_cols: 0,
+            grid_rows: 0,
+            grid_cols: 0,
         }
     }
 
@@ -236,11 +240,13 @@ impl CcsoState {
     }
 
     fn block_index(&self, unit_row: usize, unit_col: usize) -> Option<usize> {
-        crate::support::rect_index(
+        crate::tile::local_grid_index(
             unit_row,
             unit_col,
-            (self.row_start, self.col_start),
-            (self.local_rows, self.local_cols),
+            self.row_start,
+            self.col_start,
+            self.grid_rows,
+            self.grid_cols,
         )
     }
 
@@ -255,8 +261,8 @@ impl CcsoState {
             || self.shift != tile.shift
             || self.plane_enabled != tile.plane_enabled
             || self.sb_reuse != tile.sb_reuse
-            || self.grid_rows != tile.grid_rows
-            || self.grid_cols != tile.grid_cols
+            || self.row_start != 0
+            || self.col_start != 0
         {
             return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
         }
@@ -268,15 +274,24 @@ impl CcsoState {
             .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
         let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
         let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
+        let expected_row_start = mi_rows.start / unit_mi;
+        let expected_col_start = mi_cols.start / unit_mi;
+        if tile.row_start != expected_row_start
+            || tile.col_start != expected_col_start
+            || tile.grid_rows != row_end.saturating_sub(expected_row_start)
+            || tile.grid_cols != col_end.saturating_sub(expected_col_start)
+        {
+            return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+        }
         for row in mi_rows.start / unit_mi..row_end {
             for col in mi_cols.start / unit_mi..col_end {
                 let index = self
                     .block_index(row, col)
                     .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
-                let tile_index = tile
-                    .block_index(row, col)
-                    .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
                 for plane in 0..CCSO_PLANES {
+                    let tile_index = tile
+                        .block_index(row, col)
+                        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
                     self.blocks[plane][index] = tile.blocks[plane][tile_index];
                 }
             }
@@ -329,6 +344,9 @@ impl CcsoState {
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
         if !self.active {
             return Ok(None);
+        }
+        if self.row_start != 0 || self.col_start != 0 {
+            return Err(ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON));
         }
         CcsoUnitGrid::new(
             self.active,

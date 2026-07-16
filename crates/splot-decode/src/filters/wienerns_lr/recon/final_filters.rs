@@ -35,6 +35,8 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
+    static LR_OUTPUT_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
+        const { std::cell::Cell::new(None) };
 }
 
 const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
@@ -157,6 +159,20 @@ fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch
     })
 }
 
+fn with_lr_output_scratch<T: ReconSample, R>(f: impl FnOnce(&mut Vec<T>) -> R) -> R {
+    LR_OUTPUT_SCRATCH.with(|slot| {
+        let mut output = slot
+            .take()
+            .and_then(|output| output.downcast::<Vec<T>>().ok())
+            .unwrap_or_default();
+        let result = f(&mut output);
+        if output.capacity() <= MAX_RETAINED_LR_SCRATCH_ELEMENTS {
+            slot.set(Some(output));
+        }
+        result
+    })
+}
+
 fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
     wienerns_lr_selectable_transform_record_error_reason(
         offset,
@@ -238,14 +254,17 @@ fn lr_unit_filter_for_block<'a>(
     block: &WienerNsLrSourceBlock,
     offset: ByteOffset,
 ) -> Result<&'a WienerNsLrUnitFilter> {
-    filters
-        .iter()
-        .find(|filter| {
-            filter.plane == block.plane
-                && filter.unit_row == block.unit_row
-                && filter.unit_col == block.unit_col
-        })
-        .ok_or_else(|| luma_lr_filter_error(offset))
+    let filter = block
+        .unit_filter_index
+        .and_then(|index| filters.get(index))
+        .ok_or_else(|| luma_lr_filter_error(offset))?;
+    if filter.plane != block.plane
+        || filter.unit_row != block.unit_row
+        || filter.unit_col != block.unit_col
+    {
+        return Err(luma_lr_filter_error(offset));
+    }
+    Ok(filter)
 }
 
 #[cfg(test)]
@@ -312,7 +331,6 @@ fn clipped_lr_source_block(
     let luma_end_y = luma_height - 1;
     clipped.luma_end_x = clipped.luma_end_x.min(luma_end_x);
     clipped.luma_end_y = clipped.luma_end_y.min(luma_end_y);
-    clipped.frame_luma_end_y = clipped.frame_luma_end_y.min(luma_end_y);
     clipped.luma_stripe_end_y = clipped.luma_stripe_end_y.min(luma_end_y);
     if clipped.luma_start_x > clipped.luma_end_x
         || clipped.luma_start_y > clipped.luma_end_y
@@ -704,53 +722,56 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 .post_lr_y
                 .as_mut()
                 .ok_or_else(|| luma_lr_filter_error(offset))?;
-            let mut output = Vec::new();
-            for block in plane_blocks[PlaneId::Y.index()]
-                .iter()
-                .filter_map(|block| lr_block_in_rows(block, start_y, end_y))
-            {
-                let block = match block.restoration_type {
-                    LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
-                        offset,
-                        &block,
-                        frame.deblocked_y,
-                        &frame.cdef_y,
-                        qindex,
-                        filter_set_index,
-                        &mut output,
-                    )?,
-                    LrUnitRestorationType::WienerNonsep => {
-                        if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
-                            self.compute_luma_lr_block(
-                                offset,
-                                &block,
-                                frame.deblocked_y,
-                                &frame.cdef_y,
-                                qindex,
-                                *num_classes,
-                                filter_set_index,
-                                coeffs,
-                                &mut output,
-                            )?
-                        } else {
-                            let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, &block, offset)?];
-                            self.compute_luma_lr_block(
-                                offset,
-                                &block,
-                                frame.deblocked_y,
-                                &frame.cdef_y,
-                                qindex,
-                                1,
-                                0,
-                                &coeffs,
-                                &mut output,
-                            )?
+            with_lr_output_scratch(|output| -> Result<()> {
+                for block in plane_blocks[PlaneId::Y.index()]
+                    .iter()
+                    .filter_map(|block| lr_block_in_rows(block, start_y, end_y))
+                {
+                    let block = match block.restoration_type {
+                        LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
+                            offset,
+                            &block,
+                            frame.deblocked_y,
+                            &frame.cdef_y,
+                            qindex,
+                            filter_set_index,
+                            output,
+                        )?,
+                        LrUnitRestorationType::WienerNonsep => {
+                            if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
+                                self.compute_luma_lr_block(
+                                    offset,
+                                    &block,
+                                    frame.deblocked_y,
+                                    &frame.cdef_y,
+                                    qindex,
+                                    *num_classes,
+                                    filter_set_index,
+                                    coeffs,
+                                    output,
+                                )?
+                            } else {
+                                let coeffs =
+                                    [luma_lr_unit_coeffs(lr_unit_filters, &block, offset)?];
+                                self.compute_luma_lr_block(
+                                    offset,
+                                    &block,
+                                    frame.deblocked_y,
+                                    &frame.cdef_y,
+                                    qindex,
+                                    1,
+                                    0,
+                                    &coeffs,
+                                    output,
+                                )?
+                            }
                         }
-                    }
-                    LrUnitRestorationType::None => return Err(luma_lr_filter_error(offset)),
-                };
-                write_lr_block(post_lr_y, &block, &output, offset)?;
-            }
+                        LrUnitRestorationType::None => return Err(luma_lr_filter_error(offset)),
+                    };
+                    write_lr_block(post_lr_y, &block, output, offset)?;
+                }
+                Ok(())
+            })?;
         }
 
         for plane_id in [PlaneId::U, PlaneId::V] {
@@ -788,28 +809,30 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let end_y = post_lr
                 .end_y()
                 .ok_or_else(|| luma_lr_filter_error(offset))?;
-            let mut output = Vec::new();
-            for block in plane_blocks[plane_id.index()]
-                .iter()
-                .filter_map(|block| lr_block_in_rows(block, start_y, end_y))
-            {
-                if block.restoration_type != LrUnitRestorationType::WienerNonsep {
-                    return Err(luma_lr_filter_error(offset));
+            with_lr_output_scratch(|output| -> Result<()> {
+                for block in plane_blocks[plane_id.index()]
+                    .iter()
+                    .filter_map(|block| lr_block_in_rows(block, start_y, end_y))
+                {
+                    if block.restoration_type != LrUnitRestorationType::WienerNonsep {
+                        return Err(luma_lr_filter_error(offset));
+                    }
+                    let block = self.compute_chroma_lr_block(
+                        offset,
+                        plane_id,
+                        &block,
+                        lr_unit_filters,
+                        frame_coeffs.as_ref(),
+                        *curr,
+                        cdef,
+                        frame.deblocked_y,
+                        &frame.cdef_y,
+                        output,
+                    )?;
+                    write_lr_block(post_lr, &block, output, offset)?;
                 }
-                let block = self.compute_chroma_lr_block(
-                    offset,
-                    plane_id,
-                    &block,
-                    lr_unit_filters,
-                    frame_coeffs.as_ref(),
-                    *curr,
-                    cdef,
-                    frame.deblocked_y,
-                    &frame.cdef_y,
-                    &mut output,
-                )?;
-                write_lr_block(post_lr, &block, &output, offset)?;
-            }
+                Ok(())
+            })?;
         }
         Ok(frame)
     }

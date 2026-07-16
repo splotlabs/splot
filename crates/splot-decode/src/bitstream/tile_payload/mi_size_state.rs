@@ -6,6 +6,7 @@
 //! Feature tracking: `DECODE-TILE-MI-SIZE-STATE-BOUNDARY`.
 
 use std::collections::TryReserveError;
+use std::ops::Range;
 
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
@@ -28,8 +29,8 @@ type PlaneBuffers = [Vec<usize>; PLANE_COUNT];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
-    row_start: usize,
-    col_start: usize,
+    origin_row: usize,
+    origin_col: usize,
     mi_rows: usize,
     mi_cols: usize,
     mi_sizes: PlaneBuffers,
@@ -68,12 +69,20 @@ impl TileMiSizeState {
     }
 
     pub(crate) fn new(
-        row_start: usize,
-        col_start: usize,
         mi_rows: usize,
         mi_cols: usize,
         sb_size: BlockSize,
     ) -> Result<Self, TileMiSizeStateError> {
+        Self::new_for_tile(0..mi_rows, 0..mi_cols, sb_size)
+    }
+
+    pub(crate) fn new_for_tile(
+        row_range: Range<usize>,
+        col_range: Range<usize>,
+        sb_size: BlockSize,
+    ) -> Result<Self, TileMiSizeStateError> {
+        let mi_rows = row_range.end.saturating_sub(row_range.start);
+        let mi_cols = col_range.end.saturating_sub(col_range.start);
         let allocation = Self::allocation(mi_rows, mi_cols, sb_size)?;
         let _ = mi_rows
             .checked_mul(mi_cols)
@@ -83,8 +92,8 @@ impl TileMiSizeState {
                 right: mi_cols,
             })?;
         Ok(Self {
-            row_start,
-            col_start,
+            origin_row: row_range.start,
+            origin_col: col_range.start,
             mi_rows,
             mi_cols,
             mi_sizes: filled_planes(allocation.padded_grid_cells, BLOCK_256X256_INDEX)?,
@@ -120,8 +129,6 @@ impl TileMiSizeState {
 
     pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
         TilePartitionContextState::new_at(
-            self.row_start,
-            self.col_start,
             self.mi_sizes[LUMA_PLANE].as_slice(),
             self.mi_size_stride,
             [
@@ -132,6 +139,8 @@ impl TileMiSizeState {
                 self.above_mi_sizes[LUMA_PLANE].as_slice(),
                 self.above_mi_sizes[CHROMA_PLANE].as_slice(),
             ],
+            self.origin_row,
+            self.origin_col,
         )
     }
 
@@ -165,38 +174,38 @@ impl TileMiSizeState {
     ) -> Result<TileMiSizeRegion, TileMiSizeStateError> {
         let height = mi_size.num_4x4_high()?;
         let width = mi_size.num_4x4_wide()?;
-        let row_end = r
-            .checked_add(height)
-            .ok_or(TileMiSizeStateError::CoordinateOverflow {
-                coordinate: "row",
-                base: r,
-                offset: height,
-            })?;
-        let col_end = c
-            .checked_add(width)
-            .ok_or(TileMiSizeStateError::CoordinateOverflow {
-                coordinate: "col",
-                base: c,
-                offset: width,
-            })?;
-        let local_r =
-            r.checked_sub(self.row_start)
-                .ok_or(TileMiSizeStateError::BlockStartOutOfBounds {
-                    plane,
-                    r,
-                    c,
-                    mi_rows: self.mi_rows,
-                    mi_cols: self.mi_cols,
+        let absolute_row_end =
+            r.checked_add(height)
+                .ok_or(TileMiSizeStateError::CoordinateOverflow {
+                    coordinate: "row",
+                    base: r,
+                    offset: height,
                 })?;
-        let local_c =
-            c.checked_sub(self.col_start)
-                .ok_or(TileMiSizeStateError::BlockStartOutOfBounds {
-                    plane,
-                    r,
-                    c,
-                    mi_rows: self.mi_rows,
-                    mi_cols: self.mi_cols,
+        let absolute_col_end =
+            c.checked_add(width)
+                .ok_or(TileMiSizeStateError::CoordinateOverflow {
+                    coordinate: "col",
+                    base: c,
+                    offset: width,
                 })?;
+        let Some(local_r) = r.checked_sub(self.origin_row) else {
+            return Err(TileMiSizeStateError::BlockStartOutOfBounds {
+                plane,
+                r,
+                c,
+                mi_rows: self.mi_rows,
+                mi_cols: self.mi_cols,
+            });
+        };
+        let Some(local_c) = c.checked_sub(self.origin_col) else {
+            return Err(TileMiSizeStateError::BlockStartOutOfBounds {
+                plane,
+                r,
+                c,
+                mi_rows: self.mi_rows,
+                mi_cols: self.mi_cols,
+            });
+        };
         if local_r >= self.mi_rows || local_c >= self.mi_cols {
             return Err(TileMiSizeStateError::BlockStartOutOfBounds {
                 plane,
@@ -209,9 +218,9 @@ impl TileMiSizeState {
         let plane_grid = &self.mi_sizes[plane];
         let rows = plane_grid.len() / self.mi_size_stride;
         let cols = self.mi_size_stride;
-        let local_row_end = row_end.saturating_sub(self.row_start);
-        let local_col_end = col_end.saturating_sub(self.col_start);
-        if local_row_end > rows || local_col_end > cols {
+        let row_end = absolute_row_end.saturating_sub(self.origin_row);
+        let col_end = absolute_col_end.saturating_sub(self.origin_col);
+        if row_end > rows || col_end > cols {
             return Err(TileMiSizeStateError::BlockOutOfBounds {
                 plane,
                 r,
@@ -225,8 +234,8 @@ impl TileMiSizeState {
         Ok(TileMiSizeRegion {
             r: local_r,
             c: local_c,
-            row_end: local_row_end,
-            col_end: local_col_end,
+            row_end,
+            col_end,
         })
     }
 }

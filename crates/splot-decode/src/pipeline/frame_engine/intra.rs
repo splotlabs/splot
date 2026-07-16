@@ -31,6 +31,7 @@ use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_intra_frame<T: ReconSample>(
+    scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -139,6 +140,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
 
     let (frame_cdfs, filter_inputs) = decode_inter_blocks::<T>(
+        scratch,
         plan,
         candidate,
         bytes,
@@ -166,10 +168,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         frame_height,
         bit_depth,
     );
-    filter_sink.set_deblock_blocks(
-        filter_inputs.deblock_blocks,
-        filter_inputs.chroma_deblock_blocks,
-    );
+    filter_sink.set_filter_records(filter_inputs.records);
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     let ccso_grid = filter_inputs.ccso_grid.clone();
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
@@ -180,18 +179,16 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
             .as_ref()
             .map_or(0, |intra| intra.cfl_ds_filter_index),
     );
-    filter_sink.set_tx_skip_records(filter_inputs.tx_skip_records);
-    filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
-    filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let disable_loopfilters_across_tiles = sequence
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let frame = filter_sink.into_filtered_frame(
+    let (frame, filter_records) = filter_sink.into_filtered_frame(
         core,
         disable_loopfilters_across_tiles,
         deblock_quant_deltas(sequence, core),
         offset,
     )?;
+    scratch.recycle_frame_filter_records(filter_records);
     Ok((frame, frame_cdfs, ccso_grid))
 }
 

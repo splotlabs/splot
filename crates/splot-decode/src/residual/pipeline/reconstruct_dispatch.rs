@@ -165,6 +165,7 @@ impl ResidualPlanePlan {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct<T: ReconSample>(
         self,
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         coeffs: &crate::bitstream::tile_payload::LumaCoeffBlock,
         block_decoded: &TileBlockDecodedState,
@@ -194,6 +195,7 @@ impl ResidualPlanePlan {
                 )
             }
             ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => plan.reconstruct(
+                scratch,
                 workspace,
                 coeffs,
                 block_ctx,
@@ -619,6 +621,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::LumaRectPaeth { use_tcq } => {
                 let neighbours = block_ctx.neighbours(PlaneId::Y);
                 crate::pipeline::reconstruct::reconstruct_general_intra_luma_paeth_neighbour_block_into(
+                    scratch,
                     workspace,
                     coeffs,
                     PlaneId::Y,
@@ -738,6 +741,7 @@ impl ResidualPlanePlan {
             ResidualReconstructionPlan::Chroma { mode, dpcm } => {
                 let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_block_into(
+                    scratch,
                     workspace,
                     coeffs,
                     self.plane_id,
@@ -763,6 +767,7 @@ impl ResidualPlanePlan {
             } => {
                 let neighbours = self.plane_neighbours(block_ctx, block_decoded);
                 crate::pipeline::reconstruct::reconstruct_general_intra_chroma_cfl_block_into(
+                    scratch,
                     workspace,
                     coeffs,
                     self.plane_id,

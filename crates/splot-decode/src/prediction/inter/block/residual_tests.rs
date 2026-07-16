@@ -115,58 +115,40 @@ fn selectable_inter_luma_tx_records_skip_lossless_blocks() {
 }
 
 #[test]
-fn inter_residual_recycler_reuses_lists_without_cross_block_state() {
-    let mut recycler = InterResidualRecycler::default();
-    let mut blocks = recycler.take();
-    blocks.reserve(8);
-    let blocks_capacity = blocks.capacity();
-    let blocks_pointer = blocks.as_ptr();
-    blocks.clear();
-    recycler.recycle_empty(blocks);
-
-    let reused_blocks = recycler.take();
-    assert!(reused_blocks.is_empty());
-    assert_eq!(reused_blocks.capacity(), blocks_capacity);
-    assert!(core::ptr::eq(reused_blocks.as_ptr(), blocks_pointer));
-
-    let mut reads = RecycledInterChromaReads::take();
-    reads.entries.reserve(4);
-    reads.entries.push(InterChromaURead {
+fn inter_residual_parse_scratch_reuses_tile_local_storage() {
+    let offset = ByteOffset::new(0);
+    let mut scratch = InterResidualParseScratch::default();
+    scratch.luma_tx_types.reset(0, 0, 8, 8, offset).unwrap();
+    scratch.luma_tx_types.values[0] = V_DCT;
+    scratch.chroma_reads.reserve(4);
+    scratch.chroma_reads.push(InterChromaURead {
         unit: InterChromaUnit {
             x4: 1,
             y4: 2,
             tx_fills_block: false,
             chroma_inter_tx_type: DCT_DCT,
         },
+        block_index: 0,
+        uses_cctx: false,
         u_nonzero: true,
     });
-    let reads_capacity = reads.entries.capacity();
-    let reads_pointer = reads.entries.as_ptr();
-    drop(reads);
+    let luma_capacity = scratch.luma_tx_types.values.capacity();
+    let luma_pointer = scratch.luma_tx_types.values.as_ptr();
+    let chroma_capacity = scratch.chroma_reads.capacity();
+    let chroma_pointer = scratch.chroma_reads.as_ptr();
 
-    let reused_reads = RecycledInterChromaReads::take();
-    assert!(reused_reads.entries.is_empty());
-    assert_eq!(reused_reads.entries.capacity(), reads_capacity);
-    assert!(core::ptr::eq(reused_reads.entries.as_ptr(), reads_pointer));
-}
+    scratch.luma_tx_types.reset(4, 8, 4, 4, offset).unwrap();
+    scratch.chroma_reads.clear();
 
-#[test]
-fn inter_residual_recycler_is_bounded() {
-    let mut recycler = InterResidualRecycler::default();
-    for _ in 0..=MAX_RETAINED_INTER_RESIDUAL_LISTS {
-        let blocks = Vec::with_capacity(1);
-        recycler.recycle_empty(blocks);
-    }
-    assert_eq!(
-        recycler.block_lists.len(),
-        MAX_RETAINED_INTER_RESIDUAL_LISTS
-    );
-    assert!(recycler.block_slots <= MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS);
-
-    let mut recycler = InterResidualRecycler::default();
-    let oversized = Vec::with_capacity(MAX_RETAINED_INTER_RESIDUAL_BLOCK_SLOTS + 1);
-    recycler.recycle_empty(oversized);
-    assert!(recycler.block_lists.is_empty());
+    assert_eq!(scratch.luma_tx_types.values, vec![DCT_DCT; 16]);
+    assert_eq!(scratch.luma_tx_types.values.capacity(), luma_capacity);
+    assert!(core::ptr::eq(
+        scratch.luma_tx_types.values.as_ptr(),
+        luma_pointer
+    ));
+    assert!(scratch.chroma_reads.is_empty());
+    assert_eq!(scratch.chroma_reads.capacity(), chroma_capacity);
+    assert!(core::ptr::eq(scratch.chroma_reads.as_ptr(), chroma_pointer));
 }
 
 #[test]

@@ -54,6 +54,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
+    residual_scratch: &mut InterResidualParseScratch,
+    residual_blocks: &mut Vec<InterResidualBlock>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
@@ -91,7 +93,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<(
     GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand<T>,
+    super::deferred_recon::InterReconCommand,
 )> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs, tile_offset)?;
@@ -604,6 +606,8 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         work_unit,
         symbols,
         coeff_ctx,
+        residual_scratch,
+        residual_blocks,
         sequence,
         core,
         frontier,
@@ -823,6 +827,8 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
+    residual_scratch: &mut InterResidualParseScratch,
+    residual_blocks: &mut Vec<InterResidualBlock>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
@@ -848,7 +854,7 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<(
     GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand<T>,
+    super::deferred_recon::InterReconCommand,
 )> {
     let ResolvedCompoundBlock {
         syntax: compound,
@@ -900,6 +906,8 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
             work_unit,
             symbols,
             coeff_ctx,
+            residual_scratch,
+            residual_blocks,
             sequence,
             core,
             frontier,
@@ -930,6 +938,7 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc,
         residual.as_ref(),
+        residual_blocks,
         sub_pu_size,
         block_qindex,
         current_residual_lossless(work_unit),
@@ -1141,6 +1150,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
+    residual_scratch: &mut InterResidualParseScratch,
+    residual_blocks: &mut Vec<InterResidualBlock>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
@@ -1171,7 +1182,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<(
     GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand<T>,
+    super::deferred_recon::InterReconCommand,
 )> {
     let current = compound_current_order_hint(core, tile_offset)?;
     let ref_order_hints = if num_total_refs > 1 {
@@ -1235,6 +1246,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         work_unit,
         symbols,
         coeff_ctx,
+        residual_scratch,
+        residual_blocks,
         sequence,
         core,
         frontier,

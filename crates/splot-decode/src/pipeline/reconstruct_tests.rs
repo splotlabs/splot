@@ -341,6 +341,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     let block = all_zero_luma_block();
 
     reconstruct_general_intra_chroma_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut via_chroma,
         &block,
         PlaneId::U,
@@ -375,6 +376,7 @@ fn chroma_dc_dispatch_applies_ibp_when_sequence_enables_it() {
     )
     .unwrap();
     reconstruct_general_intra_chroma_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut without_ibp,
         &block,
         PlaneId::U,
@@ -1748,6 +1750,7 @@ fn cardinal_horizontal_follow_chroma_top_left_uses_no_neighbour_left_fallback() 
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     reconstruct_general_intra_chroma_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &all_zero_luma_block(),
         PlaneId::U,
@@ -1786,6 +1789,7 @@ fn d45_follow_chroma_top_left_uses_no_neighbour_above_fallback() {
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     reconstruct_general_intra_chroma_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &all_zero_luma_block(),
         PlaneId::U,
@@ -1820,6 +1824,7 @@ fn d113_chroma_top_left_uses_no_neighbour_middle_edges() {
         new_general_intra_workspace::<u8>(64, 64, BitDepth::Eight, PixelFormat::Yuv420).unwrap();
 
     reconstruct_general_intra_chroma_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &all_zero_luma_block(),
         PlaneId::U,
@@ -1956,6 +1961,7 @@ fn rect_paeth_8x16_uses_above_left_and_distinct_corner() {
     );
 
     reconstruct_general_intra_luma_paeth_neighbour_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &all_zero_luma_block(),
         PlaneId::Y,
@@ -2001,6 +2007,7 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
     assert_eq!(ws.reconstructed_sample(PlaneId::Y, 15, 0).unwrap(), left[0]);
 
     reconstruct_general_intra_luma_paeth_neighbour_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &all_zero_luma_block(),
         PlaneId::Y,
@@ -2114,6 +2121,7 @@ fn rect_paeth_8x16_adds_residual_onto_the_paeth_prediction() {
     .unwrap();
 
     reconstruct_general_intra_luma_paeth_neighbour_block_into(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &block,
         PlaneId::Y,

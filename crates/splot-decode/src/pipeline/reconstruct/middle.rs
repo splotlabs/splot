@@ -27,8 +27,9 @@ use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
     SupportedDirectionalLumaMode,
 };
+use crate::pipeline::general_intra::RecycledIntraSamples;
 
-const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 64 + 4;
+const TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY: usize = 128 + 3 + 4;
 
 struct TwoSidedMiddleIdifEdge<T: ReconSample> {
     samples: [T; TWO_SIDED_MIDDLE_IDIF_EDGE_CAPACITY],
@@ -486,7 +487,7 @@ fn build_top_row_left_only_middle_mrl_above_idif_edge<T: ReconSample>(
     y: usize,
     width: usize,
     mrl_index: usize,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let left_col = x
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
@@ -496,7 +497,9 @@ fn build_top_row_left_only_middle_mrl_above_idif_edge<T: ReconSample>(
         .checked_add(mrl_index)
         .and_then(|v| v.checked_add(4))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    Ok(vec![seed; len])
+    let mut edge = TwoSidedMiddleIdifEdge::new(len)?;
+    edge.fill(seed);
+    Ok(edge)
 }
 
 fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
@@ -505,7 +508,7 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
     y: usize,
     height: usize,
     mrl_index: usize,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let left_col = x
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
@@ -532,7 +535,7 @@ fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
     height: usize,
     mrl_index: usize,
     above_mrl_index: usize,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
@@ -552,7 +555,7 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
     mrl_index: usize,
     above_mrl_index: usize,
     have_left: bool,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let above_row = y
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
@@ -586,7 +589,7 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
     height: usize,
     mrl_index: usize,
     is_sb_boundary: bool,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let left_col = x
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
@@ -626,7 +629,7 @@ fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     mrl_index: usize,
     max_logical: i32,
     sample: impl Fn(i32) -> core::result::Result<T, GeneralIntraResidualError>,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let len = side
         .checked_add(mrl_index)
         .and_then(|v| v.checked_add(4))
@@ -634,7 +637,7 @@ fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     let mrl = i32::try_from(mrl_index)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let min_base = -1 - mrl;
-    let mut edge = vec![T::default(); len];
+    let mut edge = TwoSidedMiddleIdifEdge::new(len)?;
     for logical in min_base..=max_logical {
         let offset = usize::try_from(logical + mrl + 2)
             .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
@@ -697,10 +700,11 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
                 IntraDirectionalAngleEdges::above(above)
             } else if let Some(left) = left_samples {
                 let fill = *left.first().unwrap_or(&noneighbour_above::<T>(bit_depth));
-                synthesized_edge = vec![fill; width];
+                synthesized_edge = RecycledIntraSamples::filled(width, fill);
                 IntraDirectionalAngleEdges::above(&synthesized_edge)
             } else {
-                synthesized_edge = vec![noneighbour_above::<T>(bit_depth); width];
+                synthesized_edge =
+                    RecycledIntraSamples::filled(width, noneighbour_above::<T>(bit_depth));
                 IntraDirectionalAngleEdges::above(&synthesized_edge)
             }
         }
@@ -709,10 +713,11 @@ pub(crate) fn reconstruct_general_intra_cardinal_neighbour_block_into<T: ReconSa
                 IntraDirectionalAngleEdges::left(left)
             } else if let Some(above) = above_samples {
                 let fill = *above.first().unwrap_or(&noneighbour_left::<T>(bit_depth));
-                synthesized_edge = vec![fill; height];
+                synthesized_edge = RecycledIntraSamples::filled(height, fill);
                 IntraDirectionalAngleEdges::left(&synthesized_edge)
             } else {
-                synthesized_edge = vec![noneighbour_left::<T>(bit_depth); height];
+                synthesized_edge =
+                    RecycledIntraSamples::filled(height, noneighbour_left::<T>(bit_depth));
                 IntraDirectionalAngleEdges::left(&synthesized_edge)
             }
         }
@@ -755,7 +760,10 @@ fn build_directional_middle_edges<T: ReconSample>(
     have_above: bool,
     side: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
+) -> core::result::Result<
+    (RecycledIntraSamples<T>, RecycledIntraSamples<T>),
+    GeneralIntraResidualError,
+> {
     build_directional_middle_rect_edges(
         left_neighbour,
         above_neighbour,
@@ -778,9 +786,12 @@ fn build_directional_middle_rect_edges<T: ReconSample>(
     width: usize,
     height: usize,
     bit_depth: BitDepth,
-) -> core::result::Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
-    let mut left = Vec::with_capacity(height + 1);
-    let mut above = Vec::with_capacity(width + 1);
+) -> core::result::Result<
+    (RecycledIntraSamples<T>, RecycledIntraSamples<T>),
+    GeneralIntraResidualError,
+> {
+    let mut left = RecycledIntraSamples::with_capacity(height + 1);
+    let mut above = RecycledIntraSamples::with_capacity(width + 1);
     match (have_left, have_above) {
         (true, true) => {
             let Some(corner) = above_corner else {

@@ -9,13 +9,11 @@ fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
     WienerNsLrSourceBlock {
         restoration_type: crate::bitstream::tile_payload::LrUnitRestorationType::WienerNonsep,
         plane,
-        row: y / 4,
-        col: x / 4,
         unit_row: 0,
         unit_col: 0,
+        unit_filter_index: None,
         tile_mi_row_start: 0,
         tile_mi_row_end: 4,
-        tile_mi_col_start: 0,
         tile_mi_col_end: 4,
         x,
         y,
@@ -25,10 +23,32 @@ fn block(plane: usize, x: usize, y: usize) -> WienerNsLrSourceBlock {
         luma_end_x: 15,
         luma_start_y: 0,
         luma_end_y: 15,
-        frame_luma_end_y: 15,
         luma_stripe_start_y: 0,
         luma_stripe_end_y: 15,
     }
+}
+
+#[test]
+fn lr_unit_filter_lookup_uses_the_recorded_offset() {
+    let mut source = block(1, 0, 0);
+    let matching = WienerNsLrUnitFilter {
+        plane: 1,
+        unit_row: 0,
+        unit_col: 0,
+        coeff_count: WIENER_NS_CHROMA_COEFFS,
+        coeffs: [1; WIENER_NS_CHROMA_COEFFS],
+    };
+    let mut other = matching;
+    other.unit_col = 1;
+    let filters = [matching, other];
+
+    source.unit_filter_index = Some(1);
+    assert!(lr_unit_filter_for_block(&filters, &source, ByteOffset::new(0)).is_err());
+    source.unit_filter_index = Some(0);
+    assert_eq!(
+        lr_unit_filter_for_block(&filters, &source, ByteOffset::new(0)).unwrap(),
+        &matching
+    );
 }
 
 fn switchable_core() -> FrameHeaderCore {
@@ -416,4 +436,18 @@ fn lr_source_scratch_does_not_retain_oversized_buffers() {
         assert_eq!(scratch.primary.as_ptr(), allocation);
     });
     LR_SOURCE_SCRATCH.with(|slot| slot.set(None));
+}
+
+#[test]
+fn lr_output_scratch_reuses_storage_after_an_error() {
+    LR_OUTPUT_SCRATCH.with(|slot| slot.set(None));
+    let allocation = with_lr_output_scratch::<u16, _>(|output| {
+        output.try_reserve_exact(16).unwrap();
+        Err::<(), _>(output.as_ptr())
+    })
+    .unwrap_err();
+    with_lr_output_scratch::<u16, _>(|output| {
+        assert_eq!(output.as_ptr(), allocation);
+    });
+    LR_OUTPUT_SCRATCH.with(|slot| slot.set(None));
 }

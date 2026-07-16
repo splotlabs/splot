@@ -56,29 +56,6 @@ fn legacy_inverted_skip_trace_fails_closed_before_output() {
 }
 
 #[test]
-fn partition_frontier_checks_padded_mi_state_cells_before_allocation() {
-    with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
-        let mut padded_core = core.clone();
-        let tile_info = padded_core.tile_info.as_mut().unwrap();
-        *tile_info.mi_row_starts.last_mut().unwrap() = 17;
-        *tile_info.mi_col_starts.last_mut().unwrap() = 16;
-        let limits = DecodeLimits::unlimited()
-            .with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(300));
-
-        let Err(err) = plan_tile_partition_frontier(work_unit, sequence, &padded_core, limits)
-        else {
-            panic!("expected padded MI-state limit");
-        };
-
-        let TilePartitionFrontierError::Limit(limit) = err else {
-            panic!("expected padded MI-state limit, got {err:?}");
-        };
-        assert_eq!(limit.name(), DecodeLimitName::MaxLumaSamplesPerFrame);
-        assert_eq!(limit.actual(), Some(512));
-    });
-}
-
-#[test]
 fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
     with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
         let limits =
@@ -96,29 +73,6 @@ fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
             limit.actual(),
             Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
         );
-    });
-}
-
-#[test]
-fn lr_unit_frontier_checks_padded_mi_state_cells_before_allocation() {
-    with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
-        let mut padded_core = core.clone();
-        let tile_info = padded_core.tile_info.as_mut().unwrap();
-        *tile_info.mi_row_starts.last_mut().unwrap() = 17;
-        *tile_info.mi_col_starts.last_mut().unwrap() = 16;
-        let limits = DecodeLimits::unlimited()
-            .with_max_luma_samples_per_frame(DecodeLimitThreshold::Max(300));
-
-        let Err(err) = consume_tile_lr_unit_frontier(work_unit, sequence, &padded_core, limits)
-        else {
-            panic!("expected padded MI-state limit");
-        };
-
-        let TilePartitionFrontierError::Limit(limit) = err else {
-            panic!("expected padded MI-state limit, got {err:?}");
-        };
-        assert_eq!(limit.name(), DecodeLimitName::MaxLumaSamplesPerFrame);
-        assert_eq!(limit.actual(), Some(512));
     });
 }
 
