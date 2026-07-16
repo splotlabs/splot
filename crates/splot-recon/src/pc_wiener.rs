@@ -28,6 +28,10 @@ pub const PC_WIENER_NUM_FEATURES: usize = 4;
 /// Number of feature points in one dimension of AV2 § 7.20.4 `get_box_features`.
 pub const PC_WIENER_FEATURE_WINDOW_SIDE: usize = 6;
 
+/// Number of feature points in one § 7.20.4 `get_box_features` window.
+const PC_WIENER_WINDOW_POINTS: usize =
+    PC_WIENER_FEATURE_WINDOW_SIDE * PC_WIENER_FEATURE_WINDOW_SIDE;
+
 /// Number of entries in AV2 § 9.8 `Pc_Wiener_Lut_To_Class`.
 pub const PC_WIENER_LUT_INPUTS: usize = 4096;
 /// Number of AV2 § 9.8 PC-Wiener LUT classes.
@@ -266,6 +270,7 @@ where
         raw_tx_skip_sum,
         params.base_q_idx,
         params.bit_depth,
+        None,
     )
 }
 
@@ -583,17 +588,19 @@ fn build_padded_source_cache_into<T: ReconSample>(
         })?;
     for row in 0..geo.source_height {
         let base = (region_row + row) * source.stride + region_col;
-        for col in 0..geo.source_width {
-            let value = source.samples[base + col].to_u16();
-            if value > max_sample {
-                return Err(ReconError::PcWienerSourceSampleOutOfRange {
-                    x: geo.source_start_x + col as isize,
-                    y: geo.source_start_y + row as isize,
-                    value,
-                    max: max_sample,
-                });
-            }
-            source_cache.push(value);
+        let row_samples = &source.samples[base..base + geo.source_width];
+        let cached_start = source_cache.len();
+        source_cache.extend(row_samples.iter().map(|sample| sample.to_u16()));
+        if let Some(col) = source_cache[cached_start..]
+            .iter()
+            .position(|&value| value > max_sample)
+        {
+            return Err(ReconError::PcWienerSourceSampleOutOfRange {
+                x: geo.source_start_x + col as isize,
+                y: geo.source_start_y + row as isize,
+                value: source_cache[cached_start + col],
+                max: max_sample,
+            });
         }
     }
     Ok(())
@@ -618,60 +625,7 @@ where
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "PC-Wiener feature-grid allocation",
         })?;
-    for row in 0..geo.feature_height {
-        let y = coordinate_add(
-            geo.feature_start_y,
-            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
-                context: "PC-Wiener feature-grid row",
-            })?,
-            "PC-Wiener feature-grid y",
-        )?;
-        for col in 0..geo.feature_width {
-            let x = coordinate_add(
-                geo.feature_start_x,
-                isize::try_from(col).map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener feature-grid column",
-                })?,
-                "PC-Wiener feature-grid x",
-            )?;
-            let x = x.min(geo.block_end_plus_two);
-            let center_col = x
-                .checked_sub(geo.source_start_x)
-                .and_then(|col| usize::try_from(col).ok())
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "PC-Wiener source-grid center column",
-                })?;
-            let center_index = (row + 1) * geo.source_width + center_col;
-            let m = i32::from(source_cache[center_index]);
-            let up = i32::from(source_cache[center_index - geo.source_width]);
-            let down = i32::from(source_cache[center_index + geo.source_width]);
-            let upright = i32::from(source_cache[center_index - geo.source_width + 1]);
-            let downleft = i32::from(source_cache[center_index + geo.source_width - 1]);
-            let downright = i32::from(source_cache[center_index + geo.source_width + 1]);
-            let upleft = i32::from(source_cache[center_index - geo.source_width - 1]);
-            let values = [
-                0,
-                (up - 2 * m + down).abs(),
-                (upright - 2 * m + downleft).abs(),
-                (upleft - 2 * m + downright).abs(),
-            ];
-            let lookup = tx_skip_lookup(params, x, y)?;
-            let skip = tx_skip(lookup)?;
-            if !(0..=1).contains(&skip) {
-                return Err(ReconError::PcWienerInvalidTxSkip {
-                    x: lookup.x,
-                    y: lookup.y,
-                    row: lookup.row,
-                    col: lookup.col,
-                    value: skip,
-                });
-            }
-            cached.push(CachedPcWienerFeature {
-                values,
-                tx_skip: skip,
-            });
-        }
-    }
+    build_feature_grid(params, geo, source_cache, cached, &mut tx_skip)?;
 
     let cell_count = cell_cols
         .checked_mul(cell_rows)
@@ -683,6 +637,7 @@ where
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "PC-Wiener classification-grid allocation",
         })?;
+    let mut offsets_cache: QvalOffsetsCache = [None; PC_WIENER_WINDOW_POINTS + 1];
     for cell_row in 0..cell_rows {
         let feature_row =
             cell_row
@@ -696,7 +651,7 @@ where
                     context: "PC-Wiener classification-grid column",
                 },
             )?;
-            let mut raw_features = [0i32; PC_WIENER_NUM_FEATURES];
+            let mut sums = [0i32; 3];
             let mut raw_tx_skip_sum = 0i32;
             for row in 0..PC_WIENER_FEATURE_WINDOW_SIDE {
                 let start = feature_row
@@ -717,35 +672,173 @@ where
                         actual: cached.len(),
                     });
                 };
+                // Sources are validated <= max_sample (<= 4095) before this runs, so
+                // each |feature| <= 4 * 4095 and a 36-point i32 sum cannot overflow.
                 for feature in feature_row {
-                    for (dst, src) in raw_features.iter_mut().zip(feature.values) {
-                        *dst = dst.checked_add(src).ok_or(ReconError::ArithmeticOverflow {
-                            context: "PC-Wiener feature accumulation",
-                        })?;
-                    }
-                    raw_tx_skip_sum = raw_tx_skip_sum.checked_add(feature.tx_skip).ok_or(
-                        ReconError::ArithmeticOverflow {
-                            context: "PC-Wiener tx-skip accumulation",
-                        },
-                    )?;
+                    sums[0] += feature.values[0];
+                    sums[1] += feature.values[1];
+                    sums[2] += feature.values[2];
+                    raw_tx_skip_sum += feature.tx_skip;
                 }
             }
             classifications.push(finish_pc_wiener_classification(
-                raw_features,
+                [0, sums[0], sums[1], sums[2]],
                 raw_tx_skip_sum,
                 params.base_q_idx,
                 params.bit_depth,
+                Some(&mut offsets_cache),
             )?);
         }
     }
     Ok(())
 }
 
+/// Builds the row-major feature grid, splitting each row at the § 7.20.4
+/// `x = Min(BlockEndX + 2, x)` clip point: features left of it advance
+/// linearly through the source cache, features at or right of it repeat the
+/// clip-column value. `LrTxSkip` lookups are reused while `x >> 2` is
+/// unchanged; the grid holds one value per 4x4 cell, so repeats are identical.
+fn build_feature_grid<FT>(
+    params: &PcWienerClassifyParams,
+    geo: &ClassifyGridGeometry,
+    source_cache: &[u16],
+    cached: &mut Vec<CachedPcWienerFeature>,
+    tx_skip: &mut FT,
+) -> Result<()>
+where
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
+    let block_lo = usize_to_isize(params.block_start_x, "PC-Wiener tx-skip x bounds")?;
+    let block_hi = usize_to_isize(params.block_end_x, "PC-Wiener tx-skip x bounds")?;
+    let stripe_lo = usize_to_isize(
+        params.luma_stripe_start_y,
+        "PC-Wiener tx-skip stripe y bounds",
+    )?;
+    let stripe_hi = usize_to_isize(
+        params.luma_stripe_end_y,
+        "PC-Wiener tx-skip stripe y bounds",
+    )?;
+    let linear_cols = if geo.feature_start_x > geo.block_end_plus_two {
+        0
+    } else {
+        geo.block_end_plus_two
+            .checked_sub(geo.feature_start_x)
+            .and_then(|span| usize::try_from(span).ok())
+            .and_then(|span| span.checked_add(1))
+            .map_or(geo.feature_width, |cols| cols.min(geo.feature_width))
+    };
+    let clamped_center = geo
+        .block_end_plus_two
+        .checked_sub(geo.source_start_x)
+        .and_then(|col| usize::try_from(col).ok())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "PC-Wiener source-grid center column",
+        })?;
+    for row in 0..geo.feature_height {
+        let y = coordinate_add(
+            geo.feature_start_y,
+            isize::try_from(row).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "PC-Wiener feature-grid row",
+            })?,
+            "PC-Wiener feature-grid y",
+        )?;
+        let clipped_y = usize::try_from(y.clamp(stripe_lo, stripe_hi))
+            .map_err(|_| ReconError::PcWienerInvalidBounds {
+                field: "PC-Wiener tx-skip stripe y bounds",
+            })?
+            .clamp(params.tile_start_y, params.tile_end_y);
+        let skip_row = clipped_y >> 2;
+        let row_base = (row + 1) * geo.source_width;
+        let up = &source_cache[row_base - geo.source_width..row_base];
+        let cur = &source_cache[row_base..row_base + geo.source_width];
+        let down = &source_cache[row_base + geo.source_width..row_base + 2 * geo.source_width];
+        let mut run: Option<(usize, i32)> = None;
+        for col in 0..linear_cols {
+            let values = second_derivative_features(up, cur, down, col + 1);
+            let x = geo.feature_start_x + col as isize;
+            let skip = run_tx_skip(
+                tx_skip,
+                &mut run,
+                x.clamp(block_lo, block_hi) as usize,
+                clipped_y,
+                skip_row,
+            )?;
+            cached.push(CachedPcWienerFeature {
+                values,
+                tx_skip: skip,
+            });
+        }
+        if linear_cols < geo.feature_width {
+            let values = second_derivative_features(up, cur, down, clamped_center);
+            let skip = run_tx_skip(
+                tx_skip,
+                &mut run,
+                geo.block_end_plus_two.clamp(block_lo, block_hi) as usize,
+                clipped_y,
+                skip_row,
+            )?;
+            let feature = CachedPcWienerFeature {
+                values,
+                tx_skip: skip,
+            };
+            for _ in linear_cols..geo.feature_width {
+                cached.push(feature);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[inline]
+fn second_derivative_features(up: &[u16], cur: &[u16], down: &[u16], center: usize) -> [i32; 3] {
+    let m2 = 2 * i32::from(cur[center]);
+    [
+        (i32::from(up[center]) - m2 + i32::from(down[center])).abs(),
+        (i32::from(up[center + 1]) - m2 + i32::from(down[center - 1])).abs(),
+        (i32::from(up[center - 1]) - m2 + i32::from(down[center + 1])).abs(),
+    ]
+}
+
+fn run_tx_skip<FT>(
+    tx_skip: &mut FT,
+    run: &mut Option<(usize, i32)>,
+    x: usize,
+    y: usize,
+    row: usize,
+) -> Result<i32>
+where
+    FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
+{
+    let col = x >> 2;
+    if let Some((run_col, value)) = *run
+        && run_col == col
+    {
+        return Ok(value);
+    }
+    let value = tx_skip(PcWienerTxSkipLookup { x, y, row, col })?;
+    if !(0..=1).contains(&value) {
+        return Err(ReconError::PcWienerInvalidTxSkip {
+            x,
+            y,
+            row,
+            col,
+            value,
+        });
+    }
+    *run = Some((col, value));
+    Ok(value)
+}
+
+/// Lazily-populated `qval_given_tskip` offsets keyed by the raw window
+/// tx-skip sum, which grid classification bounds by the window point count.
+type QvalOffsetsCache = [Option<[i32; PC_WIENER_NUM_FEATURES]>; PC_WIENER_WINDOW_POINTS + 1];
+
 fn finish_pc_wiener_classification(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
     raw_tx_skip_sum: i32,
     base_q_idx: u32,
     bit_depth: BitDepth,
+    offsets_cache: Option<&mut QvalOffsetsCache>,
 ) -> Result<PcWienerClassification> {
     let scale_shift = u32::from(bit_depth.bits() - 8);
     let mut features = [0i32; PC_WIENER_NUM_FEATURES];
@@ -764,7 +857,21 @@ fn finish_pc_wiener_classification(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener tx-skip normalization",
         })?;
-    let lut_input = pc_wiener_lut_input(features, normalized_tx_skip, base_q_idx, bit_depth)?;
+    let slot = offsets_cache.and_then(|cache| {
+        usize::try_from(raw_tx_skip_sum)
+            .ok()
+            .and_then(|index| cache.get_mut(index))
+    });
+    let offsets = match slot {
+        Some(Some(cached)) => *cached,
+        Some(empty) => {
+            let computed = qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?;
+            *empty = Some(computed);
+            computed
+        }
+        None => qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?,
+    };
+    let lut_input = pc_wiener_lut_input(features, &offsets)?;
     let class = u8::try_from(PC_WIENER_LUT_TO_CLASS[usize::from(lut_input)]).map_err(|_| {
         ReconError::ArithmeticOverflow {
             context: "PC-Wiener LUT class",
@@ -992,21 +1099,42 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     }
 
     let mut filtered = Vec::with_capacity(sample_count);
+    let mut acc = vec![0i32; params.width];
     let max_sample = i32::from(max_sample);
     for row in 0..params.height {
-        for col in 0..params.width {
-            let window_base = row * stride + col;
-            let index = filtered.len();
-            let coeffs = &filters[params.subclasses[index]];
-            let center = i32::from(source.samples[window_base + center_offset].to_u16());
-            let mut sum = (center << PC_WIENER_PREC_BITS) + center * coeffs[12];
-            for i in 0..PC_WIENER_CONFIG.len() {
-                let positive = i32::from(source.samples[window_base + pos_offsets[i]].to_u16());
-                let negative = i32::from(source.samples[window_base + neg_offsets[i]].to_u16());
-                sum += (positive + negative) * coeffs[i];
+        let row_subclasses = &params.subclasses[row * params.width..(row + 1) * params.width];
+        let row_base = row * stride;
+        let mut c0 = 0usize;
+        while c0 < params.width {
+            let subclass = row_subclasses[c0];
+            let mut c1 = c0 + 1;
+            while c1 < params.width && row_subclasses[c1] == subclass {
+                c1 += 1;
             }
-            let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
-            filtered.push(T::try_from_u16(sample as u16)?);
+            let coeffs = &filters[subclass];
+            let len = c1 - c0;
+            let seg_base = row_base + c0;
+            let seg = &mut acc[..len];
+            let center = &source.samples[seg_base + center_offset..seg_base + center_offset + len];
+            for (a, &m) in seg.iter_mut().zip(center) {
+                let m = i32::from(m.to_u16());
+                *a = (m << PC_WIENER_PREC_BITS) + m * coeffs[12];
+            }
+            for i in 0..PC_WIENER_CONFIG.len() {
+                let coeff = coeffs[i];
+                let plus =
+                    &source.samples[seg_base + pos_offsets[i]..seg_base + pos_offsets[i] + len];
+                let minus =
+                    &source.samples[seg_base + neg_offsets[i]..seg_base + neg_offsets[i] + len];
+                for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
+                    *a += (i32::from(tp.to_u16()) + i32::from(tm.to_u16())) * coeff;
+                }
+            }
+            for &sum in seg.iter() {
+                let sample = round2_i32(sum, PC_WIENER_PREC_BITS).clamp(0, max_sample);
+                filtered.push(T::try_from_u16(sample as u16)?);
+            }
+            c0 = c1;
         }
     }
 
@@ -1112,9 +1240,11 @@ struct PcWienerFeatureValues {
     values: [i32; PC_WIENER_NUM_FEATURES],
 }
 
+/// One cached feature point: the three non-constant § 7.20.4 second-derivative
+/// features (feature `0` is identically zero) plus the point's `LrTxSkip`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CachedPcWienerFeature {
-    values: [i32; PC_WIENER_NUM_FEATURES],
+    values: [i32; 3],
     tx_skip: i32,
 }
 
@@ -1247,22 +1377,34 @@ fn tx_skip_lookup(
     })
 }
 
+/// Derives the four feature-indexed `get_qval_given_tskip` values for one
+/// classification's normalized tx-skip.
+fn qval_tx_skip_offsets(
+    qindex: u32,
+    tx_skip: i32,
+    bit_depth: BitDepth,
+) -> Result<[i32; PC_WIENER_NUM_FEATURES]> {
+    let terms = QvalTxSkipTerms::new(qindex, tx_skip, bit_depth)?;
+    let mut offsets = [0i32; PC_WIENER_NUM_FEATURES];
+    for (i, offset) in offsets.iter_mut().enumerate() {
+        *offset = qval_given_tx_skip(&terms, i)?;
+    }
+    Ok(offsets)
+}
+
 #[inline]
 fn pc_wiener_lut_input(
     features: [i32; PC_WIENER_NUM_FEATURES],
-    tx_skip: i32,
-    qindex: u32,
-    bit_depth: BitDepth,
+    qval_offsets: &[i32; PC_WIENER_NUM_FEATURES],
 ) -> Result<u16> {
-    let terms = QvalTxSkipTerms::new(qindex, tx_skip, bit_depth)?;
     let mut lut_input = 0i32;
     for (i, feature) in features.iter().enumerate() {
         let qval = round2_signed_i32(
-            feature.checked_add(qval_given_tx_skip(&terms, i)?).ok_or(
-                ReconError::ArithmeticOverflow {
+            feature
+                .checked_add(qval_offsets[i])
+                .ok_or(ReconError::ArithmeticOverflow {
                     context: "PC-Wiener feature qval",
-                },
-            )?,
+                })?,
             PC_WIENER_PREC_FEATURE,
         )
         .clamp(0, 255)
