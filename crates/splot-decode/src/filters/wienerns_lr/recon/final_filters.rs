@@ -513,14 +513,20 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
             samples.resize(samples.len().saturating_add(pre), left_value);
             if mid > 0 {
                 let mid_start = (x0 + pre as isize) as usize;
-                for index in mid_start..mid_start.saturating_add(mid) {
-                    let value = source_row
-                        .get(index)
-                        .ok_or(ReconError::BufferLengthMismatch {
-                            expected: mid_start.saturating_add(mid),
-                            actual: source_row.len(),
-                        })?;
-                    samples.push(T::try_from_u16(value)?);
+                let mid_end = mid_start.saturating_add(mid);
+                let missing = ReconError::BufferLengthMismatch {
+                    expected: mid_end,
+                    actual: source_row.len(),
+                };
+                match &source_row {
+                    LrSourceRow::Curr(row) => {
+                        samples.extend_from_slice(row.get(mid_start..mid_end).ok_or(missing)?);
+                    }
+                    LrSourceRow::Cdef(row) => {
+                        for &value in row.get(mid_start..mid_end).ok_or(missing)? {
+                            samples.push(T::try_from_u16(value)?);
+                        }
+                    }
                 }
             }
             let right_value = T::try_from_u16(source_row.get(right.x).ok_or(
