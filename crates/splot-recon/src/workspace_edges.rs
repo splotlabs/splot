@@ -14,9 +14,6 @@ use crate::{
 
 const CURRENT_FRAME_INTRA_EDGE_CAPACITY: usize = 64;
 
-/// Iterator over checked workspace rectangle rows.
-pub type WorkspaceRectRows<'a, T> = crate::views::PlaneRefRows<'a, T>;
-
 /// Owned edge samples read from a current-frame workspace.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CurrentFrameIntraEdges<T: ReconSample> {

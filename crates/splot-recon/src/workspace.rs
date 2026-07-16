@@ -13,6 +13,7 @@
 
 use core::mem;
 use core::ops::Range;
+use core::slice;
 
 use splot_core::headers::sequence::SuperblockSize;
 
@@ -24,7 +25,7 @@ use crate::{
     DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef, IntraCardinalDirection,
     IntraDirectionalAngleEdge, IntraPaethEdge, IntraRectBlockSize, IntraSmoothEdge,
     IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect,
-    PlaneRef, PlaneSize, ReconError, ReconSample, Result,
+    PlaneRef, PlaneRefRows, PlaneSize, ReconError, ReconSample, Result,
 };
 
 #[path = "workspace_edges.rs"]
@@ -35,8 +36,7 @@ mod workspace_interintra;
 mod workspace_intra_dc;
 #[path = "workspace_intra_directional_angle.rs"]
 mod workspace_intra_directional_angle;
-
-pub use workspace_edges::{CurrentFrameIntraEdges, WorkspaceRectRows};
+pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 
 /// Mutable current-frame reconstruction workspace.
@@ -185,7 +185,9 @@ impl<T: ReconSample> CurrentFramePlaneRowBand<'_, T> {
             rect.width(),
             rect.height(),
         )?;
-        Ok(PlaneRef::from_parts(self.samples, self.stride_samples, local).visible_rows())
+        Ok(WorkspaceRectRows::Strided(
+            PlaneRef::from_parts(self.samples, self.stride_samples, local).visible_rows(),
+        ))
     }
 
     fn write_rect(
@@ -212,15 +214,7 @@ impl<T: ReconSample> CurrentFramePlaneRowBand<'_, T> {
     }
 
     fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
-        if rect_is_within(rect, self.rect) {
-            Ok(())
-        } else {
-            Err(ReconError::WorkspaceRowBandRectOutOfBounds {
-                plane: self.plane,
-                band: self.rect,
-                rect,
-            })
-        }
+        ensure_surface_rect(self.plane, self.rect, rect)
     }
 }
 
@@ -232,6 +226,210 @@ pub struct CurrentFrameRowBand<'a, T: ReconSample> {
     u: Option<CurrentFramePlaneRowBand<'a, T>>,
     v: Option<CurrentFramePlaneRowBand<'a, T>>,
 }
+
+/// Exclusive rectangular plane storage assembled from disjoint row slices.
+#[derive(Debug)]
+pub struct CurrentFramePlaneRect<'a, T: ReconSample> {
+    plane: PlaneId,
+    storage_size: PlaneSize,
+    rect: PlaneRect,
+    rows: Vec<&'a mut [T]>,
+}
+
+impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
+    /// Returns the complete frame-plane storage size.
+    pub const fn storage_size(&self) -> PlaneSize {
+        self.storage_size
+    }
+
+    /// Returns this surface's rectangle in global plane coordinates.
+    pub const fn rect(&self) -> PlaneRect {
+        self.rect
+    }
+
+    fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
+        ensure_rect_in_storage(self.plane, self.storage_size, rect)?;
+        self.ensure_rect(rect)?;
+        let row_start = rect.y() - self.rect.y();
+        let row_end = row_start + rect.height();
+        Ok(WorkspaceRectRows::Sliced(CurrentFrameRectRows {
+            rows: self.rows[row_start..row_end].iter(),
+            x: rect.x() - self.rect.x(),
+            width: rect.width(),
+        }))
+    }
+
+    fn write_rect(
+        &mut self,
+        rect: PlaneRect,
+        samples: &[T],
+        row_stride_samples: usize,
+        max_sample: u16,
+    ) -> Result<()> {
+        let rect = clamp_rect_to_storage(self.plane, self.storage_size, rect)?;
+        self.ensure_rect(rect)?;
+        validate_write_source(
+            self.plane,
+            rect,
+            samples,
+            row_stride_samples,
+            self.storage_size.width(),
+            max_sample,
+        )?;
+        let row_start = rect.y() - self.rect.y();
+        let x = rect.x() - self.rect.x();
+        for (row, target) in self.rows[row_start..row_start + rect.height()]
+            .iter_mut()
+            .enumerate()
+        {
+            let source_start = row * row_stride_samples;
+            // splot-copy-ok: publish caller-owned samples into this exclusive rectangle.
+            target[x..x + rect.width()]
+                .copy_from_slice(&samples[source_start..source_start + rect.width()]);
+        }
+        Ok(())
+    }
+
+    fn ensure_rect(&self, rect: PlaneRect) -> Result<()> {
+        ensure_surface_rect(self.plane, self.rect, rect)
+    }
+
+    fn publish_into(&self, target: &mut CurrentFramePlane<T>, max_sample: u16) -> Result<()> {
+        if target.storage_size != self.storage_size {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: target.storage_size,
+                rect: self.rect,
+            });
+        }
+        target.ensure_rect(self.rect)?;
+        for (row, samples) in self.rows.iter().enumerate() {
+            let rect = PlaneRect::new(self.rect.x(), self.rect.y() + row, self.rect.width(), 1)?;
+            target.write_rect(rect, samples, self.rect.width(), max_sample)?;
+        }
+        Ok(())
+    }
+}
+
+fn ensure_surface_rect(plane: PlaneId, band: PlaneRect, rect: PlaneRect) -> Result<()> {
+    if rect_is_within(rect, band) {
+        Ok(())
+    } else {
+        Err(ReconError::WorkspaceRowBandRectOutOfBounds { plane, band, rect })
+    }
+}
+
+/// Exclusive Y/U/V storage for one rectangular current-frame region.
+#[derive(Debug)]
+pub struct CurrentFrameRect<'a, T: ReconSample> {
+    info: DecodedFrameInfo,
+    y: CurrentFramePlaneRect<'a, T>,
+    u: Option<CurrentFramePlaneRect<'a, T>>,
+    v: Option<CurrentFramePlaneRect<'a, T>>,
+}
+
+impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
+    /// Returns the decoded-frame metadata for this rectangle.
+    pub const fn info(&self) -> DecodedFrameInfo {
+        self.info
+    }
+
+    /// Returns the luma rectangle in global plane coordinates.
+    pub const fn luma_rect(&self) -> PlaneRect {
+        self.y.rect
+    }
+
+    fn plane(&self, plane: PlaneId) -> Result<&CurrentFramePlaneRect<'storage, T>> {
+        select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())
+    }
+
+    fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlaneRect<'storage, T>> {
+        select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
+    }
+
+    /// Publishes this completed rectangle into its matching current-frame workspace.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when plane geometry differs or a sample exceeds
+    /// the workspace bit depth.
+    pub fn publish_into(&self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
+        let max_sample = workspace.info.bit_depth().max_sample();
+        self.y.publish_into(&mut workspace.y, max_sample)?;
+        match (&self.u, &mut workspace.u) {
+            (Some(source), Some(target)) => source.publish_into(target, max_sample)?,
+            (None, None) => {}
+            (Some(_), None) => {
+                return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U });
+            }
+            (None, Some(_)) => {
+                return Err(ReconError::MissingChromaPlane { plane: PlaneId::U });
+            }
+        }
+        match (&self.v, &mut workspace.v) {
+            (Some(source), Some(target)) => source.publish_into(target, max_sample)?,
+            (None, None) => {}
+            (Some(_), None) => {
+                return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::V });
+            }
+            (None, Some(_)) => {
+                return Err(ReconError::MissingChromaPlane { plane: PlaneId::V });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Iterator over checked workspace rectangle rows.
+#[derive(Debug)]
+pub enum WorkspaceRectRows<'a, T: ReconSample> {
+    /// Rows backed by conventional stride-based plane storage.
+    Strided(PlaneRefRows<'a, T>),
+    /// Rows backed by individually partitioned rectangle slices.
+    Sliced(CurrentFrameRectRows<'a, T>),
+}
+
+impl<'a, T: ReconSample> Iterator for WorkspaceRectRows<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Strided(rows) => rows.next(),
+            Self::Sliced(rows) => rows.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self {
+            Self::Strided(rows) => rows.size_hint(),
+            Self::Sliced(rows) => rows.size_hint(),
+        }
+    }
+}
+
+impl<T: ReconSample> ExactSizeIterator for WorkspaceRectRows<'_, T> {}
+
+/// Iterator over rows borrowed from one rectangular surface.
+#[derive(Debug)]
+pub struct CurrentFrameRectRows<'a, T: ReconSample> {
+    rows: slice::Iter<'a, &'a mut [T]>,
+    x: usize,
+    width: usize,
+}
+
+impl<'a, T: ReconSample> Iterator for CurrentFrameRectRows<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let row = self.rows.next()?;
+        Some(&row[self.x..self.x + self.width])
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.rows.size_hint()
+    }
+}
+
+impl<T: ReconSample> ExactSizeIterator for CurrentFrameRectRows<'_, T> {}
 
 impl<'a, T: ReconSample> CurrentFrameRowBand<'a, T> {
     /// Returns the decoded-frame metadata for this row band.
@@ -271,45 +469,87 @@ pub enum CurrentFrameSurface<'surface, 'storage, T: ReconSample> {
     Frame(&'surface mut CurrentFrameWorkspace<T>),
     /// Row-local reconstruction over one exclusive full-width superblock band.
     Row(&'surface mut CurrentFrameRowBand<'storage, T>),
+    /// Reconstruction over one exclusive rectangular frame region.
+    Rect(&'surface mut CurrentFrameRect<'storage, T>),
 }
 
-struct CurrentFrameResidualTarget<'a, T: ReconSample> {
-    samples: &'a mut [T],
-    stride: usize,
-    base: usize,
-    rect: PlaneRect,
-    max_sample: u16,
+enum CurrentFrameResidualTarget<'surface, 'storage, T: ReconSample> {
+    Contiguous {
+        samples: &'surface mut [T],
+        stride: usize,
+        base: usize,
+        rect: PlaneRect,
+        max_sample: u16,
+    },
+    Sliced {
+        rows: &'surface mut [&'storage mut [T]],
+        x: usize,
+        rect: PlaneRect,
+        max_sample: u16,
+    },
 }
 
-impl<T: ReconSample> CurrentFrameResidualTarget<'_, T> {
+impl<T: ReconSample> CurrentFrameResidualTarget<'_, '_, T> {
     #[inline]
     fn add(self, mut residual_at: impl FnMut(usize, usize) -> i32) -> Result<()> {
-        let max = i32::from(self.max_sample);
-        for row in 0..self.rect.height() {
-            let target_start = self.base + row * self.stride;
-            for (column, sample) in self.samples[target_start..target_start + self.rect.width()]
-                .iter_mut()
-                .enumerate()
-            {
-                let value = i32::from(sample.to_u16())
-                    .saturating_add(residual_at(row, column))
-                    .clamp(0, max) as u16;
-                // The surface's validated bit depth makes this infallible for
-                // the sealed u8/u16 sample implementations.
-                debug_assert!(value <= T::MAX_VALUE);
-                *sample = T::try_from_u16(value)?;
+        match self {
+            Self::Contiguous {
+                samples,
+                stride,
+                base,
+                rect,
+                max_sample,
+            } => {
+                let max = i32::from(max_sample);
+                for row in 0..rect.height() {
+                    let target_start = base + row * stride;
+                    add_residual_row(
+                        &mut samples[target_start..target_start + rect.width()],
+                        row,
+                        max,
+                        &mut residual_at,
+                    )?;
+                }
+            }
+            Self::Sliced {
+                rows,
+                x,
+                rect,
+                max_sample,
+            } => {
+                let max = i32::from(max_sample);
+                for (row, target) in rows.iter_mut().enumerate() {
+                    add_residual_row(&mut target[x..x + rect.width()], row, max, &mut residual_at)?;
+                }
             }
         }
         Ok(())
     }
 }
 
-impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
+fn add_residual_row<T: ReconSample>(
+    samples: &mut [T],
+    row: usize,
+    max: i32,
+    residual_at: &mut impl FnMut(usize, usize) -> i32,
+) -> Result<()> {
+    for (column, sample) in samples.iter_mut().enumerate() {
+        let value = i32::from(sample.to_u16())
+            .saturating_add(residual_at(row, column))
+            .clamp(0, max) as u16;
+        debug_assert!(value <= T::MAX_VALUE);
+        *sample = T::try_from_u16(value)?;
+    }
+    Ok(())
+}
+
+impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
     /// Returns the decoded-frame metadata for this target.
-    pub const fn info(&self) -> DecodedFrameInfo {
+    pub fn info(&self) -> DecodedFrameInfo {
         match self {
             Self::Frame(workspace) => workspace.info(),
             Self::Row(row) => row.info(),
+            Self::Rect(rect) => rect.info(),
         }
     }
 
@@ -321,6 +561,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         match self {
             Self::Frame(workspace) => Ok(workspace.plane(plane)?.storage_size()),
             Self::Row(row) => Ok(row.plane(plane)?.storage_size()),
+            Self::Rect(rect) => Ok(rect.plane(plane)?.storage_size()),
         }
     }
 
@@ -333,6 +574,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
         match self {
             Self::Frame(workspace) => workspace.rect_rows(plane, rect),
             Self::Row(row) => row.plane(plane)?.rect_rows(rect),
+            Self::Rect(surface) => surface.plane(plane)?.rect_rows(rect),
         }
     }
 
@@ -359,6 +601,12 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
             Self::Row(row) => {
                 let max_sample = row.info.bit_depth().max_sample();
                 row.plane_mut(plane)?
+                    .write_rect(rect, samples, row_stride_samples, max_sample)
+            }
+            Self::Rect(surface) => {
+                let max_sample = surface.info.bit_depth().max_sample();
+                surface
+                    .plane_mut(plane)?
                     .write_rect(rect, samples, row_stride_samples, max_sample)
             }
         }
@@ -477,12 +725,12 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
     }
 
     #[inline]
-    fn residual_rect_target(
-        &mut self,
+    fn residual_rect_target<'borrow>(
+        &'borrow mut self,
         plane: PlaneId,
         rect: PlaneRect,
         source_stride: usize,
-    ) -> Result<CurrentFrameResidualTarget<'_, T>> {
+    ) -> Result<CurrentFrameResidualTarget<'borrow, 'storage, T>> {
         let max_sample = self.info().bit_depth().max_sample();
         let (target, target_stride, target_base, rect) = match self {
             Self::Frame(workspace) => {
@@ -510,6 +758,32 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                         context: "current-frame residual target row offset",
                     })?;
                 (&mut *target.samples, stride, base, rect)
+            }
+            Self::Rect(surface) => {
+                let target = surface.plane_mut(plane)?;
+                let rect = clamp_rect_to_storage(target.plane, target.storage_size, rect)?;
+                target.ensure_rect(rect)?;
+                let row_start = rect.y() - target.rect.y();
+                let x = rect.x() - target.rect.x();
+                let rows = &mut target.rows[row_start..row_start + rect.height()];
+                for (row, samples) in rows.iter().enumerate() {
+                    for (column, sample) in samples[x..x + rect.width()].iter().enumerate() {
+                        let value = sample.to_u16();
+                        if value > max_sample {
+                            return Err(ReconError::ReconstructPredictionOutOfRange {
+                                sample_index: row * source_stride + column,
+                                value,
+                                max: max_sample,
+                            });
+                        }
+                    }
+                }
+                return Ok(CurrentFrameResidualTarget::Sliced {
+                    rows,
+                    x,
+                    rect,
+                    max_sample,
+                });
             }
         };
         let last_target_end = (rect.height() - 1)
@@ -541,7 +815,7 @@ impl<T: ReconSample> CurrentFrameSurface<'_, '_, T> {
                 }
             }
         }
-        Ok(CurrentFrameResidualTarget {
+        Ok(CurrentFrameResidualTarget::Contiguous {
             samples: target,
             stride: target_stride,
             base: target_base,
@@ -640,6 +914,122 @@ impl<'a, T: ReconSample> Iterator for CurrentFramePlaneRowBands<'a, T> {
 }
 
 impl<T: ReconSample> ExactSizeIterator for CurrentFramePlaneRowBands<'_, T> {}
+
+fn partition_plane_rects<'a, T: ReconSample>(
+    plane: &'a mut CurrentFramePlane<T>,
+    rects: &[PlaneRect],
+) -> Result<Vec<CurrentFramePlaneRect<'a, T>>> {
+    let mut surfaces = Vec::new();
+    surfaces
+        .try_reserve_exact(rects.len())
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: plane.plane,
+            context: "rectangle surface descriptors",
+        })?;
+    for &rect in rects {
+        ensure_rect_in_storage(plane.plane, plane.storage_size, rect)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(rect.height()).map_err(|_| {
+            ReconError::WorkspaceAllocationFailed {
+                plane: plane.plane,
+                context: "rectangle surface rows",
+            }
+        })?;
+        surfaces.push(CurrentFramePlaneRect {
+            plane: plane.plane,
+            storage_size: plane.storage_size,
+            rect,
+            rows,
+        });
+    }
+    let mut order = Vec::new();
+    order
+        .try_reserve_exact(rects.len())
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: plane.plane,
+            context: "rectangle surface ordering",
+        })?;
+    order.extend(0..rects.len());
+    order.sort_unstable_by_key(|&index| (rects[index].x(), rects[index].y()));
+
+    for (y, row) in plane
+        .samples
+        .chunks_exact_mut(plane.stride_samples)
+        .enumerate()
+    {
+        let mut rest = row;
+        let mut consumed = 0usize;
+        for &index in &order {
+            let rect = rects[index];
+            if y < rect.y() || y >= rect.y() + rect.height() {
+                continue;
+            }
+            let skip = rect.x() - consumed;
+            let (_, after_skip) = rest.split_at_mut(skip);
+            let (surface_row, after_surface) = after_skip.split_at_mut(rect.width());
+            surfaces[index].rows.push(surface_row);
+            rest = after_surface;
+            consumed = rect.x() + rect.width();
+        }
+    }
+    Ok(surfaces)
+}
+
+fn subsampled_rects(
+    rects: &[PlaneRect],
+    shift_x: u8,
+    shift_y: u8,
+    storage: PlaneSize,
+) -> Result<Vec<PlaneRect>> {
+    let scale_x = 1usize << shift_x;
+    let scale_y = 1usize << shift_y;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(rects.len())
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::U,
+            context: "subsampled rectangle descriptors",
+        })?;
+    for rect in rects {
+        let right = rect
+            .x()
+            .checked_add(rect.width())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "rectangle surface chroma right edge",
+            })?;
+        let bottom = rect
+            .y()
+            .checked_add(rect.height())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "rectangle surface chroma bottom edge",
+            })?;
+        let x = rect.x() / scale_x;
+        let y = rect.y() / scale_y;
+        let right = right.div_ceil(scale_x).min(storage.width());
+        let bottom = bottom.div_ceil(scale_y).min(storage.height());
+        output.push(PlaneRect::new(x, y, right - x, bottom - y)?);
+    }
+    validate_disjoint_rects(&output)?;
+    Ok(output)
+}
+
+fn validate_disjoint_rects(rects: &[PlaneRect]) -> Result<()> {
+    for (index, &first) in rects.iter().enumerate() {
+        for &second in &rects[index + 1..] {
+            if rects_overlap(first, second) {
+                return Err(ReconError::WorkspaceRectSurfacesOverlap { first, second });
+            }
+        }
+    }
+    Ok(())
+}
+
+const fn rects_overlap(first: PlaneRect, second: PlaneRect) -> bool {
+    first.x() < second.x().saturating_add(second.width())
+        && second.x() < first.x().saturating_add(first.width())
+        && first.y() < second.y().saturating_add(second.height())
+        && second.y() < first.y().saturating_add(first.height())
+}
 
 const MAX_INTRA_PREDICTION_SAMPLES: usize = 64 * 64;
 
@@ -755,6 +1145,64 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 .as_mut()
                 .map(|plane| CurrentFramePlaneRowBands::new(plane, chroma_rows)),
         }
+    }
+
+    /// Partitions requested disjoint luma rectangles into exclusive Y/U/V surfaces.
+    ///
+    /// Each returned plane owns one mutable slice per row, so adjacent column
+    /// tiles can be sent to different workers without aliasing. Chroma bounds
+    /// are derived from the frame subsampling and clipped to coded storage.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when a rectangle exceeds luma storage, any luma
+    /// or derived chroma rectangles overlap, geometry overflows, or descriptor
+    /// allocation fails.
+    pub fn rect_surfaces(
+        &mut self,
+        luma_rects: &[PlaneRect],
+    ) -> Result<Vec<CurrentFrameRect<'_, T>>> {
+        let info = self.info;
+        validate_disjoint_rects(luma_rects)?;
+        for &rect in luma_rects {
+            ensure_rect_in_storage(PlaneId::Y, self.y.storage_size, rect)?;
+        }
+        let pixel_format = self.info.pixel_format();
+        let chroma_rects = self.u.as_ref().map(|plane| {
+            subsampled_rects(
+                luma_rects,
+                pixel_format.subsampling_x(),
+                pixel_format.subsampling_y(),
+                plane.storage_size,
+            )
+        });
+        let chroma_rects = chroma_rects.transpose()?;
+        let y = partition_plane_rects(&mut self.y, luma_rects)?;
+        let u = match (&mut self.u, chroma_rects.as_deref()) {
+            (Some(plane), Some(rects)) => Some(partition_plane_rects(plane, rects)?),
+            _ => None,
+        };
+        let v = match (&mut self.v, chroma_rects.as_deref()) {
+            (Some(plane), Some(rects)) => Some(partition_plane_rects(plane, rects)?),
+            _ => None,
+        };
+        let mut u = u.map(Vec::into_iter);
+        let mut v = v.map(Vec::into_iter);
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(y.len())
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "rectangle surfaces",
+            })?;
+        for y in y {
+            output.push(CurrentFrameRect {
+                info,
+                y,
+                u: u.as_mut().and_then(Iterator::next),
+                v: v.as_mut().and_then(Iterator::next),
+            });
+        }
+        Ok(output)
     }
 
     /// Returns all backing samples for `plane`, including padding if present.
@@ -1174,7 +1622,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
     /// outside the plane storage.
     pub fn rect_rows(&self, rect: PlaneRect) -> Result<WorkspaceRectRows<'_, T>> {
         self.ensure_rect(rect)?;
-        Ok(PlaneRef::from_parts(&self.samples, self.stride_samples, rect).visible_rows())
+        Ok(WorkspaceRectRows::Strided(
+            PlaneRef::from_parts(&self.samples, self.stride_samples, rect).visible_rows(),
+        ))
     }
 
     fn fill_rect(&mut self, rect: PlaneRect, sample: T) -> Result<()> {
@@ -1584,21 +2034,14 @@ fn write_rect_to_samples<T: ReconSample>(
     row_stride_samples: usize,
     max_sample: u16,
 ) -> Result<()> {
-    if row_stride_samples < rect.width() {
-        return Err(ReconError::WorkspaceWriteStrideTooSmall {
-            plane,
-            stride_samples: row_stride_samples,
-            width: rect.width(),
-        });
-    }
-    let expected = required_row_strided_samples(rect, row_stride_samples)?;
-    if samples.len() < expected {
-        return Err(ReconError::WorkspaceWriteLengthMismatch {
-            plane,
-            expected,
-            actual: samples.len(),
-        });
-    }
+    validate_write_source(
+        plane,
+        rect,
+        samples,
+        row_stride_samples,
+        target_stride_samples,
+        max_sample,
+    )?;
 
     let target_base = local_y
         .checked_mul(target_stride_samples)
@@ -1624,6 +2067,40 @@ fn write_rect_to_samples<T: ReconSample>(
         });
     }
 
+    for row_index in 0..rect.height() {
+        let source_start = row_index * row_stride_samples;
+        let target_start = target_base + row_index * target_stride_samples;
+        // splot-copy-ok: write caller samples into exclusive current-frame target storage
+        target[target_start..target_start + rect.width()]
+            .copy_from_slice(&samples[source_start..source_start + rect.width()]);
+    }
+    Ok(())
+}
+
+fn validate_write_source<T: ReconSample>(
+    plane: PlaneId,
+    rect: PlaneRect,
+    samples: &[T],
+    row_stride_samples: usize,
+    target_stride_samples: usize,
+    max_sample: u16,
+) -> Result<()> {
+    if row_stride_samples < rect.width() {
+        return Err(ReconError::WorkspaceWriteStrideTooSmall {
+            plane,
+            stride_samples: row_stride_samples,
+            width: rect.width(),
+        });
+    }
+    let expected = required_row_strided_samples(rect, row_stride_samples)?;
+    if samples.len() < expected {
+        return Err(ReconError::WorkspaceWriteLengthMismatch {
+            plane,
+            expected,
+            actual: samples.len(),
+        });
+    }
+
     let global_target_base = rect
         .y()
         .checked_mul(target_stride_samples)
@@ -1642,13 +2119,6 @@ fn write_rect_to_samples<T: ReconSample>(
         }
     }
 
-    for row_index in 0..rect.height() {
-        let source_start = row_index * row_stride_samples;
-        let target_start = target_base + row_index * target_stride_samples;
-        // splot-copy-ok: write caller samples into exclusive current-frame target storage
-        target[target_start..target_start + rect.width()]
-            .copy_from_slice(&samples[source_start..source_start + rect.width()]);
-    }
     Ok(())
 }
 

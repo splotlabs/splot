@@ -12,6 +12,7 @@
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconSample};
+use std::sync::Mutex;
 
 use crate::Result;
 
@@ -271,7 +272,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         let filter_timer = crate::timing::start();
-        let run_stripe = |&(start, end): &(usize, usize)| {
+        let run_stripe = |&(start, end): &(usize, usize)| -> Result<final_filters::FilteredStripe> {
             let mut cdef = crate::filters::cdef::cdef_stripe(
                 &self.workspace,
                 cdef_strengths.as_deref(),
@@ -324,16 +325,38 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             )?;
             Ok(frame.into_filtered())
         };
-        let results: Vec<Result<final_filters::FilteredStripe>> = if ranges.len() > 1
-            && splot_parallel::on_multiworker_pool()
-        {
-            let mut slots: Vec<Option<Result<final_filters::FilteredStripe>>> =
-                (0..ranges.len()).map(|_| None).collect();
+        let filtered_workspace = Mutex::new(CurrentFrameWorkspace::new(
+            self.workspace.info(),
+            T::default(),
+        )?);
+        let run_stripe_and_publish = |range: &(usize, usize)| {
+            let frame = run_stripe(range)?;
+            self.validate_filter_stripe(PlaneId::Y, &frame.y, offset)?;
+            if let Some(plane) = frame.u.as_ref() {
+                self.validate_filter_stripe(PlaneId::U, plane, offset)?;
+            }
+            if let Some(plane) = frame.v.as_ref() {
+                self.validate_filter_stripe(PlaneId::V, plane, offset)?;
+            }
+            let mut output = filtered_workspace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Self::publish_filter_stripe_to(&mut output, PlaneId::Y, &frame.y, offset)?;
+            if let Some(plane) = frame.u.as_ref() {
+                Self::publish_filter_stripe_to(&mut output, PlaneId::U, plane, offset)?;
+            }
+            if let Some(plane) = frame.v.as_ref() {
+                Self::publish_filter_stripe_to(&mut output, PlaneId::V, plane, offset)?;
+            }
+            Ok(())
+        };
+        if ranges.len() > 1 && splot_parallel::on_multiworker_pool() {
+            let mut slots: Vec<Option<Result<()>>> = (0..ranges.len()).map(|_| None).collect();
             let scheduled = splot_parallel::ready_task_scope(|scope| {
                 for (range, slot) in ranges.iter().zip(&mut slots) {
-                    let run_stripe = &run_stripe;
+                    let run_stripe_and_publish = &run_stripe_and_publish;
                     scope.spawn(move |_| {
-                        *slot = Some(run_stripe(range));
+                        *slot = Some(run_stripe_and_publish(range));
                     });
                 }
             });
@@ -344,40 +367,24 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
                     )
                 };
-                slots
-                    .into_iter()
-                    .map(|slot| slot.unwrap_or_else(|| Err(missing())))
-                    .collect()
+                for slot in slots {
+                    slot.unwrap_or_else(|| Err(missing()))?;
+                }
             } else {
-                ranges.iter().map(run_stripe).collect()
+                for range in &ranges {
+                    run_stripe_and_publish(range)?;
+                }
             }
         } else {
-            ranges.iter().map(run_stripe).collect()
-        };
-        let mut frames = Vec::with_capacity(results.len());
-        for result in results {
-            frames.push(result?);
+            for range in &ranges {
+                run_stripe_and_publish(range)?;
+            }
         }
         crate::timing::report("filter_stripes", filter_timer);
-        for frame in &frames {
-            self.validate_filter_stripe(PlaneId::Y, &frame.y, offset)?;
-            if let Some(plane) = frame.u.as_ref() {
-                self.validate_filter_stripe(PlaneId::U, plane, offset)?;
-            }
-            if let Some(plane) = frame.v.as_ref() {
-                self.validate_filter_stripe(PlaneId::V, plane, offset)?;
-            }
-        }
-        for frame in frames {
-            self.publish_filter_stripe(PlaneId::Y, &frame.y, offset)?;
-            if let Some(plane) = frame.u.as_ref() {
-                self.publish_filter_stripe(PlaneId::U, plane, offset)?;
-            }
-            if let Some(plane) = frame.v.as_ref() {
-                self.publish_filter_stripe(PlaneId::V, plane, offset)?;
-            }
-        }
-        Ok(self.workspace.freeze()?)
+        let filtered_workspace = filtered_workspace
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(filtered_workspace.freeze()?)
     }
 
     fn validate_filter_stripe(
@@ -458,8 +465,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         Ok(())
     }
 
-    fn publish_filter_stripe(
-        &mut self,
+    fn publish_filter_stripe_to(
+        workspace: &mut CurrentFrameWorkspace<T>,
         plane: PlaneId,
         stripe: &crate::filters::source::StripePlane,
         offset: ByteOffset,
@@ -471,12 +478,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             )
         };
         let end_y = stripe.end_y().ok_or_else(&error)?;
-        let size = self
-            .workspace
-            .plane(plane)
-            .map_err(|_| error())?
-            .storage_size();
-        let mut frame = self.workspace.as_frame_mut();
+        let size = workspace.plane(plane).map_err(|_| error())?.storage_size();
+        let mut frame = workspace.as_frame_mut();
         let view = frame.plane_mut(plane).ok_or_else(&error)?;
         let stride = view.stride_samples();
         if stripe.width() != size.width() || stripe.frame_height() != size.height() {

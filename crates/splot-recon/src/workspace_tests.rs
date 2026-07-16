@@ -378,6 +378,127 @@ fn row_surface_clips_frame_edge_and_rejects_cross_band_access_atomically() {
     );
 }
 
+#[test]
+fn rectangular_surfaces_write_adjacent_column_tiles_independently() {
+    let mut workspace = CurrentFrameWorkspace::<u8>::new(yuv420_info(8, 8), 3).unwrap();
+    let surfaces = workspace
+        .rect_surfaces(&[rect(0, 0, 4, 8), rect(4, 0, 4, 8)])
+        .unwrap();
+
+    for (index, mut tile) in surfaces.into_iter().enumerate() {
+        let value = 7 + index as u8;
+        let luma = tile.luma_rect();
+        let mut surface = CurrentFrameSurface::Rect(&mut tile);
+        surface
+            .write_rect(PlaneId::Y, luma, &[value; 32], 4)
+            .unwrap();
+        surface
+            .write_rect(PlaneId::U, rect(index * 2, 0, 2, 4), &[value; 8], 2)
+            .unwrap();
+        surface
+            .add_constant_residual_rect_block(PlaneId::Y, luma.x(), luma.y(), rect_block(2, 3), 1)
+            .unwrap();
+    }
+
+    for row in workspace.rect_rows(PlaneId::Y, rect(0, 0, 8, 8)).unwrap() {
+        assert_eq!(&row[..4], &[8; 4]);
+        assert_eq!(&row[4..], &[9; 4]);
+    }
+    for row in workspace.rect_rows(PlaneId::U, rect(0, 0, 4, 4)).unwrap() {
+        assert_eq!(&row[..2], &[7; 2]);
+        assert_eq!(&row[2..], &[8; 2]);
+    }
+}
+
+#[test]
+fn rectangular_surface_publishes_only_its_owned_region() {
+    let info = yuv420_info(8, 8);
+    let mut shadow = CurrentFrameWorkspace::<u8>::new(info, 0).unwrap();
+    let mut output = CurrentFrameWorkspace::<u8>::new(info, 3).unwrap();
+    let mut surfaces = shadow
+        .rect_surfaces(&[rect(0, 0, 4, 8), rect(4, 0, 4, 8)])
+        .unwrap();
+    {
+        let mut source = CurrentFrameSurface::Rect(&mut surfaces[1]);
+        source
+            .write_rect(PlaneId::Y, rect(4, 0, 4, 8), &[9; 32], 4)
+            .unwrap();
+        source
+            .write_rect(PlaneId::U, rect(2, 0, 2, 4), &[7; 8], 2)
+            .unwrap();
+        source
+            .write_rect(PlaneId::V, rect(2, 0, 2, 4), &[8; 8], 2)
+            .unwrap();
+    }
+
+    surfaces[1].publish_into(&mut output).unwrap();
+
+    for row in output.rect_rows(PlaneId::Y, rect(0, 0, 8, 8)).unwrap() {
+        assert_eq!(&row[..4], &[3; 4]);
+        assert_eq!(&row[4..], &[9; 4]);
+    }
+    for row in output.rect_rows(PlaneId::U, rect(0, 0, 4, 4)).unwrap() {
+        assert_eq!(&row[..2], &[3; 2]);
+        assert_eq!(&row[2..], &[7; 2]);
+    }
+    for row in output.rect_rows(PlaneId::V, rect(0, 0, 4, 4)).unwrap() {
+        assert_eq!(&row[..2], &[3; 2]);
+        assert_eq!(&row[2..], &[8; 2]);
+    }
+}
+
+#[test]
+fn rectangular_surface_rejects_cross_tile_access_before_writing() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
+    let mut surfaces = workspace
+        .rect_surfaces(&[rect(0, 0, 4, 4), rect(4, 0, 4, 4)])
+        .unwrap();
+    {
+        let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
+        assert!(matches!(
+            surface.write_rect(PlaneId::Y, rect(3, 0, 2, 1), &[9; 2], 2),
+            Err(ReconError::WorkspaceRowBandRectOutOfBounds { .. })
+        ));
+    }
+    drop(surfaces);
+    assert!(
+        workspace
+            .samples(PlaneId::Y)
+            .unwrap()
+            .iter()
+            .all(|&sample| sample == 3)
+    );
+}
+
+#[test]
+fn rectangular_surface_reports_plane_global_sample_index() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
+    let mut surfaces = workspace.rect_surfaces(&[rect(4, 1, 2, 2)]).unwrap();
+    let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
+
+    assert!(matches!(
+        surface.write_rect(PlaneId::Y, rect(4, 1, 2, 2), &[1, 2, 3, 300], 2),
+        Err(ReconError::SampleOutOfRange {
+            plane: PlaneId::Y,
+            sample_index: 21,
+            value: 300,
+            max: 255,
+        })
+    ));
+}
+
+#[test]
+fn rectangular_surface_partition_rejects_overlap() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
+    assert!(matches!(
+        workspace.rect_surfaces(&[rect(0, 0, 5, 4), rect(4, 0, 4, 4)]),
+        Err(ReconError::WorkspaceRectSurfacesOverlap { .. })
+    ));
+}
+
 fn assert_surface_add_residual_matches_reference<T>(bit_depth: BitDepth)
 where
     T: ReconSample + core::fmt::Debug + Eq,

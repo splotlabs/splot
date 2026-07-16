@@ -248,10 +248,9 @@ impl<T: ReconSample> InterReconCommand<T> {
                 super::sequence_enables_ibp(shared.sequence),
                 self.tile_offset,
             )?,
-            WorkspaceSink::Row(row) => {
-                let mut sink = WorkspaceSink::Row(&mut **row);
+            sink @ (WorkspaceSink::Row(_) | WorkspaceSink::Rect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
-                    &mut sink,
+                    sink,
                     &self.placed,
                     use_refinemv,
                     refinemv_switchable,
