@@ -53,3 +53,28 @@ fn unvisited_gdf_unit_fails_closed() {
 
     assert!(state.into_grid(ByteOffset::new(0)).is_err());
 }
+
+#[test]
+fn gdf_tile_merge_copies_only_the_owned_region() {
+    let offset = ByteOffset::new(0);
+    let mut frame = GdfState {
+        active: true,
+        block_size: 64,
+        sb_size4: 16,
+        sb_per_gdf: 1,
+        grid_rows: 1,
+        grid_cols: 2,
+        values: vec![2; 2],
+    };
+    // splot-copy-ok: test fixtures need independent tile-local state.
+    let mut left = frame.clone();
+    // splot-copy-ok: test fixtures need independent tile-local state.
+    let mut right = frame.clone();
+    left.values = vec![0, 1];
+    right.values = vec![1, 0];
+
+    frame.merge_tile(&left, 0..16, 0..16, offset).unwrap();
+    frame.merge_tile(&right, 0..16, 16..32, offset).unwrap();
+
+    assert_eq!(frame.values, [0, 0]);
+}

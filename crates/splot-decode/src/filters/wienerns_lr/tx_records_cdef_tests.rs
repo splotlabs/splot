@@ -67,3 +67,20 @@ fn cdef_fill_units_uses_cdef_aligned_origin_and_block_extent() {
     assert_eq!(state.value(2, 0, offset).unwrap(), None);
     assert_eq!(state.value(0, 2, offset).unwrap(), None);
 }
+
+#[test]
+fn cdef_tile_merge_copies_only_the_owned_region() {
+    let offset = ByteOffset::new(0);
+    let mut frame = cdef_state(1, 2, 16);
+    // splot-copy-ok: test fixtures need independent tile-local state.
+    let mut left = frame.clone();
+    // splot-copy-ok: test fixtures need independent tile-local state.
+    let mut right = frame.clone();
+    left.values = vec![Some(1), Some(7)];
+    right.values = vec![Some(8), Some(2)];
+
+    frame.merge_tile(&left, 0..16, 0..16, offset).unwrap();
+    frame.merge_tile(&right, 0..16, 16..32, offset).unwrap();
+
+    assert_eq!(frame.values, [Some(1), Some(2)]);
+}

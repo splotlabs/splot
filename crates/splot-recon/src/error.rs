@@ -201,6 +201,14 @@ pub enum ReconError {
         /// Rectangle that crossed `band`.
         rect: PlaneRect,
     },
+    /// Two requested current-frame rectangle surfaces overlap.
+    #[error("current-frame workspace rectangles x={} y={} width={} height={} and x={} y={} width={} height={} overlap", .first.x(), .first.y(), .first.width(), .first.height(), .second.x(), .second.y(), .second.width(), .second.height())]
+    WorkspaceRectSurfacesOverlap {
+        /// Earlier requested luma rectangle.
+        first: PlaneRect,
+        /// Later requested luma rectangle.
+        second: PlaneRect,
+    },
     /// A caller-provided workspace write stride was too small.
     #[error("current-frame workspace {} write stride {stride_samples} samples is smaller than write width {width}", .plane.name())]
     WorkspaceWriteStrideTooSmall {

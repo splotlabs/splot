@@ -6,6 +6,7 @@ use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tile::mi_width_log2;
+use std::ops::Range;
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector};
 use crate::error::Result;
@@ -34,6 +35,30 @@ pub(crate) struct CcsoState {
 }
 
 impl CcsoState {
+    pub(crate) fn try_clone_for_tile(&self, tile_offset: ByteOffset) -> Result<Self> {
+        let clone_blocks = |source: &[u8]| -> Result<Vec<u8>> {
+            let mut blocks = Vec::new();
+            blocks
+                .try_reserve_exact(source.len())
+                .map_err(|_| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+            blocks.extend_from_slice(source);
+            Ok(blocks)
+        };
+        Ok(Self {
+            active: self.active,
+            shift: self.shift,
+            plane_enabled: self.plane_enabled,
+            sb_reuse: self.sb_reuse,
+            blocks: [
+                clone_blocks(&self.blocks[0])?,
+                clone_blocks(&self.blocks[1])?,
+                clone_blocks(&self.blocks[2])?,
+            ],
+            grid_rows: self.grid_rows,
+            grid_cols: self.grid_cols,
+        })
+    }
+
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -178,6 +203,48 @@ impl CcsoState {
             return None;
         }
         unit_row.checked_mul(self.grid_cols)?.checked_add(unit_col)
+    }
+
+    pub(crate) fn merge_tile(
+        &mut self,
+        tile: &Self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        if self.active != tile.active
+            || self.shift != tile.shift
+            || self.plane_enabled != tile.plane_enabled
+            || self.sb_reuse != tile.sb_reuse
+            || self.grid_rows != tile.grid_rows
+            || self.grid_cols != tile.grid_cols
+            || self
+                .blocks
+                .iter()
+                .zip(&tile.blocks)
+                .any(|(frame, tile)| frame.len() != tile.len())
+        {
+            return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+        }
+        if !self.active {
+            return Ok(());
+        }
+        let unit_mi = 1usize
+            .checked_shl(self.shift)
+            .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
+        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
+        for row in mi_rows.start / unit_mi..row_end {
+            for col in mi_cols.start / unit_mi..col_end {
+                let index = self
+                    .block_index(row, col)
+                    .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+                for plane in 0..CCSO_PLANES {
+                    self.blocks[plane][index] = tile.blocks[plane][index];
+                }
+            }
+        }
+        Ok(())
     }
 
     fn load_reused_blocks(

@@ -80,8 +80,13 @@ fn apply_luma_lr(
         .apply_lr_stripe(core, ByteOffset::new(0), cdef, [blocks, &[], &[]], &[])
         .unwrap()
         .into_filtered();
-    sink.publish_filter_stripe(PlaneId::Y, &filtered.y, ByteOffset::new(0))
-        .unwrap();
+    WienerNsLrReconSink::publish_filter_stripe_to(
+        &mut sink.workspace,
+        PlaneId::Y,
+        &filtered.y,
+        ByteOffset::new(0),
+    )
+    .unwrap();
 }
 
 #[test]

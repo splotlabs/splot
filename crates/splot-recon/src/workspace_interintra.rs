@@ -343,6 +343,7 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ) -> Result<(crate::PlaneRect, &mut CurrentFramePlane<T>)> {
         let rect = checked_sample_block_rect(plane, x, y, size, intra_len)?;
         let target = self.plane_mut(plane)?;
+        let rect = target.clamp_rect_to_storage(rect)?;
         Ok((rect, target))
     }
 }
@@ -406,9 +407,9 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         mut mask_at: impl FnMut(usize, usize) -> Result<u16>,
     ) -> Result<()> {
         self.ensure_rect(rect)?;
-        for i in 0..size.height() {
+        for i in 0..rect.height() {
             let row_start = self.sample_index(rect.x(), rect.y() + i)?;
-            for j in 0..size.width() {
+            for j in 0..rect.width() {
                 let m = mask_at(i, j)?;
                 let pred0 = u32::from(intra[i * size.width() + j].to_u16());
                 let pred1 = u32::from(self.samples[row_start + j].to_u16());
@@ -484,6 +485,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::{BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize};
 
     #[test]
     fn ii_weights_table_matches_the_spec_end_points() {
@@ -514,5 +516,35 @@ mod tests {
             intra_mode_variant_weight(InterIntraMode::Smooth, 9, 4, 2),
             II_WEIGHTS_1D[8]
         );
+    }
+
+    #[test]
+    fn interintra_blend_clips_frame_edge_overhang() {
+        let storage = PlaneSize::new(8, 6).unwrap();
+        let visible = PlaneRect::new(0, 0, 8, 6).unwrap();
+        let info = DecodedFrameInfo::new(
+            OutputIndex::new(0),
+            BitDepth::Eight,
+            PixelFormat::Monochrome,
+            storage,
+            visible,
+        )
+        .unwrap();
+        let mut workspace = CurrentFrameWorkspace::new(info, 0u8).unwrap();
+        let size = IntraRectBlockSize::new(2, 2).unwrap();
+
+        workspace
+            .blend_smooth_interintra_rect(PlaneId::Y, 4, 4, size, InterIntraMode::Dc, &[100; 16])
+            .unwrap();
+
+        for y in 0..6 {
+            for x in 0..8 {
+                let expected = if y >= 4 && x >= 4 { 50 } else { 0 };
+                assert_eq!(
+                    workspace.reconstructed_sample(PlaneId::Y, x, y).unwrap(),
+                    expected
+                );
+            }
+        }
     }
 }

@@ -10,6 +10,7 @@ use splot_core::tables::conversion::{
     SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ, SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ, TX_HEIGHT, TX_WIDTH,
 };
 use splot_recon::{BitDepth, max_quantizer_index};
+use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, IntraIstSyntax, TileCdfSelector,
@@ -280,6 +281,20 @@ impl DeltaQState {
 }
 
 impl CdefState {
+    pub(crate) fn try_clone_for_tile(&self, tile_offset: ByteOffset) -> Result<Self> {
+        let mut values = Vec::new();
+        values.try_reserve_exact(self.values.len()).map_err(|_| {
+            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
+        })?;
+        values.extend_from_slice(&self.values);
+        Ok(Self {
+            rows: self.rows,
+            cols: self.cols,
+            values,
+            sb_size4: self.sb_size4,
+        })
+    }
+
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -462,6 +477,34 @@ impl CdefState {
             .ok_or_else(|| {
                 selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
             })
+    }
+
+    pub(crate) fn merge_tile(
+        &mut self,
+        tile: &Self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        if self.rows != tile.rows
+            || self.cols != tile.cols
+            || self.sb_size4 != tile.sb_size4
+            || self.values.len() != tile.values.len()
+        {
+            return Err(selectable_decode_error(
+                tile_offset,
+                selectable_reason!("cdef_grid_shape"),
+            ));
+        }
+        let row_end = mi_rows.end.div_ceil(CDEF_UNIT_MI).min(self.rows);
+        let col_end = mi_cols.end.div_ceil(CDEF_UNIT_MI).min(self.cols);
+        for row in mi_rows.start / CDEF_UNIT_MI..row_end {
+            for col in mi_cols.start / CDEF_UNIT_MI..col_end {
+                let index = self.index(row, col, tile_offset)?;
+                self.values[index] = tile.values[index];
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {

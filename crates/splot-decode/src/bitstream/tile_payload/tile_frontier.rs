@@ -131,12 +131,12 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         })
     }
 
-    pub(crate) fn decode_next_sb_row<E, C, F, P>(
+    pub(crate) fn decode_next_superblock<E, C, F, P>(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit<'payload>,
         on_leaf: &mut F,
         on_published: &mut P,
-    ) -> Result<Option<usize>, GeneralIntraMultiblockError<E>>
+    ) -> Result<Option<[usize; 2]>, GeneralIntraMultiblockError<E>>
     where
         F: FnMut(
             &mut DecodeTileWorkUnit<'payload>,
@@ -153,7 +153,7 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         P: FnMut(DecodedLeafPublication, C),
     {
         self.tree
-            .decode_next_sb_row_with_publication(
+            .decode_next_superblock_with_publication(
                 work_unit,
                 &mut self.mi_size_state,
                 &mut self.joint_modes,

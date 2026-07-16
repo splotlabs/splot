@@ -186,6 +186,7 @@ pub(crate) struct GeneralIntraPartitionTreeCursor<'payload> {
     sb_size4: usize,
     sb_mask: usize,
     next_sb_row: usize,
+    next_sb_col: usize,
     mi_row_end: usize,
     mi_col_start: usize,
     mi_col_end: usize,
@@ -226,6 +227,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             sb_size4,
             sb_mask: sb_size4.saturating_sub(1),
             next_sb_row,
+            next_sb_col: mi_col_start,
             mi_row_end,
             mi_col_start,
             mi_col_end,
@@ -237,7 +239,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn decode_next_sb_row_with_publication<E, C, F, P>(
+    pub(crate) fn decode_next_superblock_with_publication<E, C, F, P>(
         &mut self,
         work_unit: &mut DecodeTileWorkUnit<'payload>,
         mi_size_state: &mut TileMiSizeState,
@@ -249,7 +251,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         uv_cfls: &mut TileUvCflState,
         on_leaf: &mut F,
         on_published: &mut P,
-    ) -> Result<Option<usize>, GeneralIntraTreeWalkError<E>>
+    ) -> Result<Option<[usize; 2]>, GeneralIntraTreeWalkError<E>>
     where
         F: FnMut(
             &mut DecodeTileWorkUnit<'payload>,
@@ -269,143 +271,146 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             return Ok(None);
         }
         let sb_row = self.next_sb_row;
-        mi_size_state.clear_left_context();
-        let mut sb_col = self.mi_col_start;
-        while sb_col < self.mi_col_end {
-            let root =
-                TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, self.frame.has_chroma);
-            self.stack.clear();
-            self.stack.push(TilePartitionStackEntry::Partition(root));
-            while let Some(entry) = self.stack.pop() {
-                let (call, forced_extended_sdp_chroma_block) = match entry {
-                    TilePartitionStackEntry::Partition(call) => (call, false),
-                    TilePartitionStackEntry::ExtendedSdpChromaBlock(call) => (call, true),
-                };
-                self.step_count += 1;
-                self.limits
-                    .ensure(DecodeLimitName::MaxTilePartitionSteps, self.step_count)
-                    .map_err(TilePartitionTraversalError::from)?;
-                if !call_in_frame(self.frame, call) {
-                    continue;
-                }
-                if !forced_extended_sdp_chroma_block && is_intra_sdp_shared_root(self.frame, call) {
-                    self.stack.push(TilePartitionStackEntry::Partition(
-                        call.with_tree_type(PartitionTreeType::ChromaPart),
-                    ));
-                    self.stack.push(TilePartitionStackEntry::Partition(
-                        call.with_tree_type(PartitionTreeType::LumaPart),
-                    ));
-                    continue;
-                }
-                let (call, sub_size, chroma_offset, partition_is_none) =
-                    if forced_extended_sdp_chroma_block {
-                        (call, call.b_size, false, true)
-                    } else {
-                        read_loop_restoration_for_call(
-                            self.frame,
-                            call,
-                            self.tile_bounds,
-                            work_unit.cdf_mut().tile_cdfs_mut(),
-                            &mut self.symbols,
-                            &mut self.lr_activity,
-                            self.limits,
-                        )?;
+        let sb_col = self.next_sb_col;
+        if sb_col == self.mi_col_start {
+            mi_size_state.clear_left_context();
+        }
+        let root =
+            TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, self.frame.has_chroma);
+        self.stack.clear();
+        self.stack.push(TilePartitionStackEntry::Partition(root));
+        while let Some(entry) = self.stack.pop() {
+            let (call, forced_extended_sdp_chroma_block) = match entry {
+                TilePartitionStackEntry::Partition(call) => (call, false),
+                TilePartitionStackEntry::ExtendedSdpChromaBlock(call) => (call, true),
+            };
+            self.step_count += 1;
+            self.limits
+                .ensure(DecodeLimitName::MaxTilePartitionSteps, self.step_count)
+                .map_err(TilePartitionTraversalError::from)?;
+            if !call_in_frame(self.frame, call) {
+                continue;
+            }
+            if !forced_extended_sdp_chroma_block && is_intra_sdp_shared_root(self.frame, call) {
+                self.stack.push(TilePartitionStackEntry::Partition(
+                    call.with_tree_type(PartitionTreeType::ChromaPart),
+                ));
+                self.stack.push(TilePartitionStackEntry::Partition(
+                    call.with_tree_type(PartitionTreeType::LumaPart),
+                ));
+                continue;
+            }
+            let (call, sub_size, chroma_offset, partition_is_none) =
+                if forced_extended_sdp_chroma_block {
+                    (call, call.b_size, false, true)
+                } else {
+                    read_loop_restoration_for_call(
+                        self.frame,
+                        call,
+                        self.tile_bounds,
+                        work_unit.cdf_mut().tile_cdfs_mut(),
+                        &mut self.symbols,
+                        &mut self.lr_activity,
+                        self.limits,
+                    )?;
 
-                        let step = read_frontier_partition_step(
-                            call,
-                            self.frame,
-                            self.tile_bounds,
-                            mi_size_state.context_state(),
-                            &mut self.sdp_state,
-                            work_unit.cdf_mut().tile_cdfs_mut(),
-                            &mut self.symbols,
-                        )?;
-                        let call = step.call;
-                        let partition = step.partition();
-
-                        let sub_size = valid_subsize(partition, call.b_size)?;
-                        let chroma_offset =
-                            updated_chroma_offset(call, partition, sub_size, self.frame)?;
-                        if partition != PartitionType::None {
-                            let children =
-                                child_calls(call, partition, sub_size, self.frame, chroma_offset)?;
-                            if step.using_extended_sdp() {
-                                self.stack
-                                    .push(TilePartitionStackEntry::ExtendedSdpChromaBlock(
-                                        extended_sdp_chroma_call(self.frame, call),
-                                    ));
-                            }
-                            self.stack.extend(
-                                children
-                                    .as_slice()
-                                    .iter()
-                                    .rev()
-                                    .copied()
-                                    .map(TilePartitionStackEntry::Partition),
-                            );
-                        }
-                        (
-                            call,
-                            sub_size,
-                            chroma_offset,
-                            partition == PartitionType::None,
-                        )
-                    };
-                if partition_is_none {
-                    let stored_luma_y_mode = if call.tree_type == PartitionTreeType::ChromaPart {
-                        self.y_modes.y_mode_facts_at(call.r, call.c)
-                    } else {
-                        None
-                    };
-                    let frontier = decode_block_frontier(
+                    let step = read_frontier_partition_step(
                         call,
                         self.frame,
+                        self.tile_bounds,
+                        mi_size_state.context_state(),
+                        &mut self.sdp_state,
+                        work_unit.cdf_mut().tile_cdfs_mut(),
+                        &mut self.symbols,
+                    )?;
+                    let call = step.call;
+                    let partition = step.partition();
+
+                    let sub_size = valid_subsize(partition, call.b_size)?;
+                    let chroma_offset =
+                        updated_chroma_offset(call, partition, sub_size, self.frame)?;
+                    if partition != PartitionType::None {
+                        let children =
+                            child_calls(call, partition, sub_size, self.frame, chroma_offset)?;
+                        if step.using_extended_sdp() {
+                            self.stack
+                                .push(TilePartitionStackEntry::ExtendedSdpChromaBlock(
+                                    extended_sdp_chroma_call(self.frame, call),
+                                ));
+                        }
+                        self.stack.extend(
+                            children
+                                .as_slice()
+                                .iter()
+                                .rev()
+                                .copied()
+                                .map(TilePartitionStackEntry::Partition),
+                        );
+                    }
+                    (
+                        call,
                         sub_size,
                         chroma_offset,
-                        stored_luma_y_mode,
-                        &self.symbols,
-                    );
-                    let is_cfl_ctx = is_cfl_context_for_chroma_ref(
-                        uv_cfls,
-                        self.tile_bounds,
-                        frontier.chroma_ref_geometry(),
-                    );
-                    let decoded_leaf = DecodedLeafPublication::new(call, sub_size, self.sb_mask);
-                    let (leaf_mode, command) = on_leaf(
-                        work_unit,
-                        &mut self.symbols,
-                        &frontier,
-                        joint_modes,
-                        uses_mrls,
-                        use_dip,
-                        fsc_modes,
-                        palette_y,
-                        is_cfl_ctx,
-                        decoded_leaf,
+                        partition == PartitionType::None,
                     )
-                    .map_err(GeneralIntraTreeWalkError::Leaf)?;
-                    publish_intra_leaf_state(
-                        self.frame,
-                        call,
-                        &frontier,
-                        leaf_mode,
-                        sub_size,
-                        joint_modes,
-                        fsc_modes,
-                        use_dip,
-                        uses_mrls,
-                        palette_y,
-                        uv_cfls,
-                        &mut self.y_modes,
-                        mi_size_state,
-                    )?;
-                    on_published(decoded_leaf, command);
-                }
+                };
+            if partition_is_none {
+                let stored_luma_y_mode = if call.tree_type == PartitionTreeType::ChromaPart {
+                    self.y_modes.y_mode_facts_at(call.r, call.c)
+                } else {
+                    None
+                };
+                let frontier = decode_block_frontier(
+                    call,
+                    self.frame,
+                    sub_size,
+                    chroma_offset,
+                    stored_luma_y_mode,
+                    &self.symbols,
+                );
+                let is_cfl_ctx = is_cfl_context_for_chroma_ref(
+                    uv_cfls,
+                    self.tile_bounds,
+                    frontier.chroma_ref_geometry(),
+                );
+                let decoded_leaf = DecodedLeafPublication::new(call, sub_size, self.sb_mask);
+                let (leaf_mode, command) = on_leaf(
+                    work_unit,
+                    &mut self.symbols,
+                    &frontier,
+                    joint_modes,
+                    uses_mrls,
+                    use_dip,
+                    fsc_modes,
+                    palette_y,
+                    is_cfl_ctx,
+                    decoded_leaf,
+                )
+                .map_err(GeneralIntraTreeWalkError::Leaf)?;
+                publish_intra_leaf_state(
+                    self.frame,
+                    call,
+                    &frontier,
+                    leaf_mode,
+                    sub_size,
+                    joint_modes,
+                    fsc_modes,
+                    use_dip,
+                    uses_mrls,
+                    palette_y,
+                    uv_cfls,
+                    &mut self.y_modes,
+                    mi_size_state,
+                )?;
+                on_published(decoded_leaf, command);
             }
-            sb_col += self.sb_size4;
         }
-        self.next_sb_row += self.sb_size4;
-        Ok(Some(sb_row))
+        self.next_sb_col = self.next_sb_col.saturating_add(self.sb_size4);
+        if self.next_sb_col >= self.mi_col_end {
+            self.next_sb_col = self.mi_col_start;
+            self.next_sb_row = self.next_sb_row.saturating_add(self.sb_size4);
+        }
+        Ok(Some([sb_row, sb_col]))
     }
 
     pub(crate) fn into_output(self) -> GeneralIntraPartitionTreeOutput<'payload> {
@@ -589,17 +594,17 @@ mod row_cursor_tests {
     }
 
     #[test]
-    fn cursor_yields_each_superblock_row_once() {
+    fn cursor_yields_each_superblock_in_raster_order() {
         let payload = [0_u8; 4096];
         let frame = frame();
         let mut work = make_test_work_unit(&payload, CdfUpdateMode::Enabled);
         let mut states = parser_states(frame);
-        let mut rows = Vec::new();
+        let mut superblocks = Vec::new();
         let mut cursor =
             GeneralIntraPartitionTreeCursor::new(&work, frame, DecodeLimits::DEFAULT).unwrap();
         loop {
-            let row = cursor
-                .decode_next_sb_row_with_publication(
+            let superblock = cursor
+                .decode_next_superblock_with_publication(
                     &mut work,
                     &mut states.0,
                     &mut states.1,
@@ -612,27 +617,16 @@ mod row_cursor_tests {
                     &mut |_, ()| {},
                 )
                 .unwrap();
-            let Some(row) = row else { break };
-            rows.push(row);
+            let Some(superblock) = superblock else {
+                break;
+            };
+            superblocks.push(superblock);
         }
-        assert_eq!(rows, [0, 8, 16, 24, 32, 40, 48, 56]);
-        assert!(
-            cursor
-                .decode_next_sb_row_with_publication(
-                    &mut work,
-                    &mut states.0,
-                    &mut states.1,
-                    &mut states.2,
-                    &mut states.3,
-                    &mut states.4,
-                    &mut states.5,
-                    &mut states.6,
-                    &mut |_, _, _, _, _, _, _, _, _, _| Ok::<_, ()>((leaf_mode(), ())),
-                    &mut |_, ()| {},
-                )
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(superblocks.len(), 64);
+        assert_eq!(superblocks[0], [0, 0]);
+        assert_eq!(superblocks[7], [0, 56]);
+        assert_eq!(superblocks[8], [8, 0]);
+        assert_eq!(superblocks[63], [56, 56]);
     }
 
     #[test]
@@ -646,25 +640,30 @@ mod row_cursor_tests {
         let mut calls = 0;
         let mut published = Vec::new();
 
-        let result = cursor.decode_next_sb_row_with_publication(
-            &mut work,
-            &mut states.0,
-            &mut states.1,
-            &mut states.2,
-            &mut states.3,
-            &mut states.4,
-            &mut states.5,
-            &mut states.6,
-            &mut |_, _, _, _, _, _, _, _, _, _| {
-                calls += 1;
-                if calls == 2 {
-                    Err("malformed second leaf")
-                } else {
-                    Ok((leaf_mode(), calls))
-                }
-            },
-            &mut |_, command| published.push(command),
-        );
+        let result = loop {
+            let result = cursor.decode_next_superblock_with_publication(
+                &mut work,
+                &mut states.0,
+                &mut states.1,
+                &mut states.2,
+                &mut states.3,
+                &mut states.4,
+                &mut states.5,
+                &mut states.6,
+                &mut |_, _, _, _, _, _, _, _, _, _| {
+                    calls += 1;
+                    if calls == 2 {
+                        Err("malformed second leaf")
+                    } else {
+                        Ok((leaf_mode(), calls))
+                    }
+                },
+                &mut |_, command| published.push(command),
+            );
+            if !matches!(result, Ok(Some(_))) {
+                break result;
+            }
+        };
 
         assert!(result.is_err());
         assert_eq!(calls, 2);

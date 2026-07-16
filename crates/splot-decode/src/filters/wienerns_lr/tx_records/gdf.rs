@@ -5,6 +5,7 @@ use splot_core::headers::frame::{FrameHeaderCore, GdfGeometry, gdf_block_size};
 use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
+use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
     DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector, TileCdfSubset,
@@ -29,6 +30,23 @@ pub(crate) struct GdfState {
 }
 
 impl GdfState {
+    pub(crate) fn try_clone_for_tile(&self, tile_offset: ByteOffset) -> Result<Self> {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(self.values.len())
+            .map_err(|_| gdf_error(tile_offset, GDF_GRID_REASON))?;
+        values.extend_from_slice(&self.values);
+        Ok(Self {
+            active: self.active,
+            block_size: self.block_size,
+            sb_size4: self.sb_size4,
+            sb_per_gdf: self.sb_per_gdf,
+            grid_rows: self.grid_rows,
+            grid_cols: self.grid_cols,
+            values,
+        })
+    }
+
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -146,6 +164,40 @@ impl GdfState {
             return None;
         }
         row.checked_mul(self.grid_cols)?.checked_add(col)
+    }
+
+    pub(crate) fn merge_tile(
+        &mut self,
+        tile: &Self,
+        mi_rows: Range<usize>,
+        mi_cols: Range<usize>,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        if self.active != tile.active
+            || self.block_size != tile.block_size
+            || self.sb_size4 != tile.sb_size4
+            || self.sb_per_gdf != tile.sb_per_gdf
+            || self.grid_rows != tile.grid_rows
+            || self.grid_cols != tile.grid_cols
+            || self.values.len() != tile.values.len()
+        {
+            return Err(gdf_error(tile_offset, GDF_GRID_REASON));
+        }
+        if !self.active {
+            return Ok(());
+        }
+        let unit_mi = self.block_size / 4;
+        let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
+        let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
+        for row in mi_rows.start / unit_mi..row_end {
+            for col in mi_cols.start / unit_mi..col_end {
+                let index = self
+                    .index(row, col)
+                    .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+                self.values[index] = tile.values[index];
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<GdfBlockGrid>> {

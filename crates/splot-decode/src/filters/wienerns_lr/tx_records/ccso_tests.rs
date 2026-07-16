@@ -85,6 +85,23 @@ fn ccso_state_rejects_out_of_grid_access() {
 }
 
 #[test]
+fn ccso_tile_merge_copies_only_the_owned_region() {
+    let offset = ByteOffset::new(0);
+    let mut frame = CcsoState::active(4, [true, false, false], [false; CCSO_PLANES], (1, 2, 2));
+    // splot-copy-ok: test fixtures need independent tile-local state.
+    let mut left = frame.clone();
+    // splot-copy-ok: test fixtures need independent tile-local state.
+    let mut right = frame.clone();
+    left.blocks[0] = vec![1, 7];
+    right.blocks[0] = vec![8, 1];
+
+    frame.merge_tile(&left, 0..16, 0..16, offset).unwrap();
+    frame.merge_tile(&right, 0..16, 16..32, offset).unwrap();
+
+    assert_eq!(frame.blocks[0], [1, 1]);
+}
+
+#[test]
 fn first_sb_block_16x64_horz4_partition_matches_avm_tx_16x16() {
     use super::super::{
         MI_SIZE, SelectableLumaTxGrid, TX_PARTITION_HORZ, TX_PARTITION_HORZ4, apply_tx_partition,
