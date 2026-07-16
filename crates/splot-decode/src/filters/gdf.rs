@@ -253,7 +253,7 @@ fn gdf_config(
 pub(crate) fn apply_stripe<T: ReconSample>(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
-    cdef_luma: &StripePlane,
+    separate_cdef_luma: Option<&StripePlane>,
     post_lr_luma: &mut StripePlane,
     block_grid: Option<&GdfBlockGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
@@ -299,10 +299,12 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     if gdf_stripe_end_for_tile(y, tile_start, tile_end) != Some(end_y)
         || deblocked_luma.width() != width
         || deblocked_luma.frame_height() != frame_height
-        || cdef_luma.width() != width
-        || cdef_luma.frame_height() != frame_height
-        || cdef_luma.origin_y() != y
-        || cdef_luma.samples().len() != sample_count
+        || separate_cdef_luma.is_some_and(|cdef_luma| {
+            cdef_luma.width() != width
+                || cdef_luma.frame_height() != frame_height
+                || cdef_luma.origin_y() != y
+                || cdef_luma.samples().len() != sample_count
+        })
     {
         return Err(gdf_filter_error(
             offset,
@@ -338,6 +340,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 disable_loopfilters_across_tiles,
                 offset,
             )?;
+            let cdef_luma = separate_cdef_luma.unwrap_or(post_lr_luma);
             let source = GdfSource::materialize_stripe(
                 &mut scratch.source,
                 deblocked_luma,

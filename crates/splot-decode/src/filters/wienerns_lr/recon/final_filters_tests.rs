@@ -90,6 +90,36 @@ fn apply_luma_lr(
 }
 
 #[test]
+fn inactive_filter_planes_reuse_cdef_storage() {
+    let sink = lr_sink(&[0; 16 * 16]);
+    let cdef = crate::filters::cdef::cdef_stripe(
+        &sink.workspace,
+        None,
+        None,
+        None,
+        None,
+        (4, 4),
+        splot_recon::BitDepth::Eight,
+        0,
+        16,
+    )
+    .unwrap();
+    let cdef_ptr = cdef.filtered_y.samples().as_ptr();
+    let filtered = sink
+        .apply_lr_stripe(
+            &switchable_core(),
+            ByteOffset::new(0),
+            cdef,
+            [&[], &[], &[]],
+            &[],
+        )
+        .unwrap()
+        .into_filtered();
+
+    assert_eq!(filtered.y.samples().as_ptr(), cdef_ptr);
+}
+
+#[test]
 fn merges_contiguous_row_blocks_and_splits_on_filter_visible_fields() {
     let mut stripe_split = block(0, 8, 0);
     stripe_split.luma_stripe_end_y = 7;
