@@ -212,7 +212,16 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let symbols = symbol_decoder_for_work_unit(work_unit)?;
         let lr_activity = WienerNsLrUnitActivity::retaining_source_blocks();
         let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
-        let y_modes = TileIntraYModeState::new(frame.mi_rows, frame.mi_cols)?;
+        let tile_rows = tile_bounds
+            .mi_row_end
+            .min(frame.mi_rows)
+            .saturating_sub(tile_bounds.mi_row_start);
+        let tile_cols = tile_bounds
+            .mi_col_end
+            .min(frame.mi_cols)
+            .saturating_sub(tile_bounds.mi_col_start);
+        let y_modes = TileIntraYModeState::new(tile_rows, tile_cols)?
+            .with_origin(tile_bounds.mi_row_start, tile_bounds.mi_col_start);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
         let next_sb_row = work_unit.mi_row_range().start as usize;
         let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
@@ -496,11 +505,25 @@ pub(super) fn read_frontier_partition_decision(
     )?;
     let facts = partition_decision_facts(allowed)?;
     let partition_plane = partition_cdf_plane(call.tree_type);
+    let local_r = call.r.checked_sub(context.row_start).ok_or(
+        TilePartitionTraversalError::CoordinateUnderflow {
+            coordinate: "tile context row",
+            base: call.r,
+            offset: context.row_start,
+        },
+    )?;
+    let local_c = call.c.checked_sub(context.col_start).ok_or(
+        TilePartitionTraversalError::CoordinateUnderflow {
+            coordinate: "tile context column",
+            base: call.c,
+            offset: context.col_start,
+        },
+    )?;
     let partition_context = PartitionContextInput::new(
         call.b_size.index(),
         partition_plane,
-        call.r,
-        call.c,
+        local_r,
+        local_c,
         context.left_mi_sizes,
         context.above_mi_sizes,
     )?;
@@ -509,8 +532,8 @@ pub(super) fn read_frontier_partition_decision(
     let square_context = SquareSplitContextInput::new(
         call.b_size.index(),
         0,
-        call.r,
-        call.c,
+        local_r,
+        local_c,
         avail_u,
         avail_l,
         context.mi_sizes,

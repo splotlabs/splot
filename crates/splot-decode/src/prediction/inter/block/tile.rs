@@ -392,25 +392,38 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
     ) -> Result<Self> {
         let tile_offset = tile.tile_byte_span().start;
         let chroma = context.sequence.general.chroma_format_idc;
-        let coeff_ctx = TileCoeffContextState::new_chroma(context.mi_rows, context.mi_cols, chroma)
-            .map_err(|_| {
-                inter_cap!(
-                    "inter_coeff_context_state",
-                    tile_offset,
-                    "inter.residual_context_state",
-                    SPEC_MODE_INFO
-                )
-            })?;
+        let row_start = tile.mi_row_range().start as usize;
+        let col_start = tile.mi_col_range().start as usize;
+        let row_end = (tile.mi_row_range().end as usize).min(context.mi_rows);
+        let col_end = (tile.mi_col_range().end as usize).min(context.mi_cols);
+        let tile_rows = row_end.saturating_sub(row_start);
+        let tile_cols = col_end.saturating_sub(col_start);
+        let coeff_ctx = TileCoeffContextState::new_chroma_at(
+            row_start, col_start, tile_rows, tile_cols, chroma,
+        )
+        .map_err(|_| {
+            inter_cap!(
+                "inter_coeff_context_state",
+                tile_offset,
+                "inter.residual_context_state",
+                SPEC_MODE_INFO
+            )
+        })?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core, tile_offset)?;
-        let intrabc_state = TileIntrabcPreludeState::new(
+        let intrabc_state = TileIntrabcPreludeState::new_at(
             context.mi_rows,
             context.mi_cols,
+            row_start,
+            col_start,
+            tile_rows,
+            tile_cols,
             context.sequence,
             context.core.frame_is_intra == Some(true),
             tile_offset,
         )?;
-        let segment_id_state =
-            TileSegmentIdState::new(context.mi_rows, context.mi_cols).map_err(|_| {
+        let segment_id_state = TileSegmentIdState::new(tile_rows, tile_cols)
+            .map(|state| state.with_origin(row_start, col_start))
+            .map_err(|_| {
                 inter_missing!(
                     "inter_segment_id_grid",
                     tile_offset,
@@ -418,27 +431,42 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     SPEC_MODE_INFO
                 )
             })?;
-        let mv_grid = NeighbourMvGrid::new(context.mi_rows, context.mi_cols).ok_or_else(|| {
-            inter_cap!(
-                "inter_mv_grid",
-                tile_offset,
-                "inter.mv_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
-        let y_smooth =
-            crate::prediction::intra_edge::TileYSmoothGrid::new(context.mi_rows, context.mi_cols)
-                .ok_or_else(|| {
+        let mv_grid = NeighbourMvGrid::new_at(row_start, col_start, tile_rows, tile_cols)
+            .ok_or_else(|| {
                 inter_cap!(
-                    "inter_y_smooth_grid",
+                    "inter_mv_grid",
                     tile_offset,
-                    "inter.y_smooth_grid",
+                    "inter.mv_grid",
                     SPEC_MODE_INFO
                 )
             })?;
-        let chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new(
-            context.chroma_smooth_rows,
-            context.chroma_smooth_cols,
+        let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_at(
+            row_start, col_start, tile_rows, tile_cols,
+        )
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_y_smooth_grid",
+                tile_offset,
+                "inter.y_smooth_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
+        let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
+        let subsampling_x = usize::from(subsampling_x);
+        let subsampling_y = usize::from(subsampling_y);
+        let chroma_row_start = row_start >> subsampling_y;
+        let chroma_col_start = col_start >> subsampling_x;
+        let chroma_row_end = row_end
+            .div_ceil(1usize << subsampling_y)
+            .min(context.chroma_smooth_rows);
+        let chroma_col_end = col_end
+            .div_ceil(1usize << subsampling_x)
+            .min(context.chroma_smooth_cols);
+        let chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new_at(
+            chroma_row_start,
+            chroma_col_start,
+            chroma_row_end.saturating_sub(chroma_row_start),
+            chroma_col_end.saturating_sub(chroma_col_start),
         )
         .ok_or_else(|| {
             inter_cap!(
@@ -1185,9 +1213,9 @@ fn prepare_tile<T: ReconSample>(
     let mut parser = TileParser::new(
         tile,
         context,
-        cdef_state.try_clone_for_tile(tile_offset)?,
-        gdf_state.try_clone_for_tile(tile_offset)?,
-        ccso_state.try_clone_for_tile(tile_offset)?,
+        cdef_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        ccso_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
     )?;
     let mut sink = super::super::mc::WorkspaceSink::Rect(&mut surface);
     loop {
@@ -1474,6 +1502,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
     }
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
+        let tile_mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+        let tile_mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
         let mut inter_recon_scratch = deferred_recon::InterReconScratch::default();
         let mut block_decoded = tile_block_decoded(tile, &context)?;
         let mut current_block_decoded_superblock = None;
@@ -1489,9 +1519,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut parser = TileParser::new(
             tile,
             &context,
-            cdef_state.try_clone_for_tile(tile_offset)?,
-            gdf_state.try_clone_for_tile(tile_offset)?,
-            ccso_state.try_clone_for_tile(tile_offset)?,
+            cdef_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
+            gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
+            ccso_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
         )?;
         if parallel_prepass {
             let Some(rects) = superblock_rects.as_deref() else {
@@ -1667,9 +1697,19 @@ pub(super) fn decode_tiles<T: ReconSample>(
             active_source_blocks: tile_source_blocks,
             unit_filters: tile_unit_filters,
         } = parser.into_output()?;
-        cdef_state = tile_cdef_state;
-        gdf_state = tile_gdf_state;
-        ccso_state = tile_ccso_state;
+        cdef_state.merge_tile(
+            &tile_cdef_state,
+            tile_mi_rows.clone(),
+            tile_mi_cols.clone(),
+            tile_offset,
+        )?;
+        gdf_state.merge_tile(
+            &tile_gdf_state,
+            tile_mi_rows.clone(),
+            tile_mi_cols.clone(),
+            tile_offset,
+        )?;
+        ccso_state.merge_tile(&tile_ccso_state, tile_mi_rows, tile_mi_cols, tile_offset)?;
         active_source_blocks.extend(tile_source_blocks);
         unit_filters.extend(tile_unit_filters);
     }

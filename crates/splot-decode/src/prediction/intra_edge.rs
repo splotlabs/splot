@@ -15,6 +15,8 @@ use crate::bitstream::tile_payload::GeneralIntraResidualError;
 use crate::pipeline::reconstruct::{OneSidedEdgeFilter, TwoSidedMiddleEdgeFilters};
 
 pub(crate) struct TileSmoothGrid {
+    row_start: usize,
+    col_start: usize,
     mi_rows: usize,
     mi_cols: usize,
     cells: Vec<bool>,
@@ -25,9 +27,21 @@ pub(crate) type TileYSmoothGrid = TileSmoothGrid;
 pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 
 impl TileSmoothGrid {
+    #[cfg(test)]
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
+        Self::new_at(0, 0, mi_rows, mi_cols)
+    }
+
+    pub(crate) fn new_at(
+        row_start: usize,
+        col_start: usize,
+        mi_rows: usize,
+        mi_cols: usize,
+    ) -> Option<Self> {
         let cells = mi_rows.checked_mul(mi_cols)?;
         Some(Self {
+            row_start,
+            col_start,
             mi_rows,
             mi_cols,
             cells: vec![false; cells],
@@ -35,9 +49,15 @@ impl TileSmoothGrid {
     }
 
     pub(crate) fn record(&mut self, r: usize, c: usize, n4w: usize, n4h: usize, smooth: bool) {
-        for row in r..(r + n4h).min(self.mi_rows) {
-            for col in c..(c + n4w).min(self.mi_cols) {
-                self.cells[row * self.mi_cols + col] = smooth;
+        let row_end = r
+            .saturating_add(n4h)
+            .min(self.row_start.saturating_add(self.mi_rows));
+        let col_end = c
+            .saturating_add(n4w)
+            .min(self.col_start.saturating_add(self.mi_cols));
+        for row in r.max(self.row_start)..row_end {
+            for col in c.max(self.col_start)..col_end {
+                self.cells[(row - self.row_start) * self.mi_cols + col - self.col_start] = smooth;
             }
         }
     }
@@ -52,6 +72,12 @@ impl TileSmoothGrid {
             return false;
         }
         let (col, row) = (col as usize, row as usize);
+        let Some(col) = col.checked_sub(self.col_start) else {
+            return false;
+        };
+        let Some(row) = row.checked_sub(self.row_start) else {
+            return false;
+        };
         if col >= self.mi_cols || row >= self.mi_rows {
             return false;
         }
