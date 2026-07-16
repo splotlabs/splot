@@ -957,29 +957,6 @@ fn replay_recon_row<T: ReconSample>(
                 .iter()
                 .all(|entry| entry.publication.superblock_origin() == superblock.origin)
         );
-        let fully_precomputed = superblock.dependency == ReconDependency::ReferenceOnly
-            && !superblock_entries.is_empty()
-            && superblock_entries
-                .iter()
-                .all(|entry| entry.command.is_none() && entry.error.is_none());
-        if fully_precomputed {
-            let (Some(first), Some(last)) = (superblock_entries.first(), superblock_entries.last())
-            else {
-                continue;
-            };
-            let records = temporal
-                .get(first.temporal.start..last.temporal.end)
-                .ok_or_else(|| {
-                    inter_cap!(
-                        "inter_row_precomputed_temporal_range",
-                        tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
-                    )
-                })?;
-            super::temporal::commit_temporal_motion_blocks(motion_field, records);
-            continue;
-        }
         for entry in superblock_entries {
             entry
                 .publication
@@ -1924,18 +1901,5 @@ mod ready_row_tests {
         );
 
         assert_eq!(result, Err("reconstruction error"));
-    }
-
-    #[test]
-    fn prepass_error_excludes_sb_without_restoring_consumed_command() {
-        let command: Option<()> = None;
-        let error = Some("injected prepass error");
-        let fully_precomputed = command.is_none() && error.is_none();
-
-        assert!(!fully_precomputed);
-        assert!(
-            command.is_none(),
-            "the partially written command must not retry"
-        );
     }
 }

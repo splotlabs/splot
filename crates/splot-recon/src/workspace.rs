@@ -268,7 +268,14 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
     ) -> Result<()> {
         let rect = clamp_rect_to_storage(self.plane, self.storage_size, rect)?;
         self.ensure_rect(rect)?;
-        validate_write_source(self.plane, rect, samples, row_stride_samples, max_sample)?;
+        validate_write_source(
+            self.plane,
+            rect,
+            samples,
+            row_stride_samples,
+            self.storage_size.width(),
+            max_sample,
+        )?;
         let row_start = rect.y() - self.rect.y();
         let x = rect.x() - self.rect.x();
         for (row, target) in self.rows[row_start..row_start + rect.height()]
@@ -456,6 +463,7 @@ impl<'a, T: ReconSample> CurrentFrameRowBand<'a, T> {
 }
 
 /// Checked reconstruction target backed by a whole frame or one exclusive row band.
+#[derive(Debug)]
 pub enum CurrentFrameSurface<'surface, 'storage, T: ReconSample> {
     /// Existing ordered reconstruction over the complete current frame.
     Frame(&'surface mut CurrentFrameWorkspace<T>),
@@ -2026,7 +2034,14 @@ fn write_rect_to_samples<T: ReconSample>(
     row_stride_samples: usize,
     max_sample: u16,
 ) -> Result<()> {
-    validate_write_source(plane, rect, samples, row_stride_samples, max_sample)?;
+    validate_write_source(
+        plane,
+        rect,
+        samples,
+        row_stride_samples,
+        target_stride_samples,
+        max_sample,
+    )?;
 
     let target_base = local_y
         .checked_mul(target_stride_samples)
@@ -2067,6 +2082,7 @@ fn validate_write_source<T: ReconSample>(
     rect: PlaneRect,
     samples: &[T],
     row_stride_samples: usize,
+    target_stride_samples: usize,
     max_sample: u16,
 ) -> Result<()> {
     if row_stride_samples < rect.width() {
@@ -2087,7 +2103,7 @@ fn validate_write_source<T: ReconSample>(
 
     let global_target_base = rect
         .y()
-        .checked_mul(rect.width())
+        .checked_mul(target_stride_samples)
         .and_then(|start| start.checked_add(rect.x()))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "current-frame workspace global target row offset",
@@ -2096,7 +2112,7 @@ fn validate_write_source<T: ReconSample>(
         let source_start = row_index * row_stride_samples;
         let source_row = &samples[source_start..source_start + rect.width()];
         if source_row.iter().any(|sample| sample.to_u16() > max_sample) {
-            let global_start = global_target_base + row_index * rect.width();
+            let global_start = global_target_base + row_index * target_stride_samples;
             for (column, &sample) in source_row.iter().enumerate() {
                 validate_sample_value(plane, global_start + column, sample, max_sample)?;
             }

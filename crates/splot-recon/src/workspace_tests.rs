@@ -472,6 +472,24 @@ fn rectangular_surface_rejects_cross_tile_access_before_writing() {
 }
 
 #[test]
+fn rectangular_surface_reports_plane_global_sample_index() {
+    let mut workspace =
+        CurrentFrameWorkspace::<u16>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();
+    let mut surfaces = workspace.rect_surfaces(&[rect(4, 1, 2, 2)]).unwrap();
+    let mut surface = CurrentFrameSurface::Rect(&mut surfaces[0]);
+
+    assert!(matches!(
+        surface.write_rect(PlaneId::Y, rect(4, 1, 2, 2), &[1, 2, 3, 300], 2),
+        Err(ReconError::SampleOutOfRange {
+            plane: PlaneId::Y,
+            sample_index: 21,
+            value: 300,
+            max: 255,
+        })
+    ));
+}
+
+#[test]
 fn rectangular_surface_partition_rejects_overlap() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 0).unwrap();
