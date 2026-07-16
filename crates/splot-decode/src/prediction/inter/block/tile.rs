@@ -1806,18 +1806,8 @@ mod ready_row_tests {
 
     #[test]
     fn mixed_superblock_prepass_selects_every_independent_entry() {
-        let dependencies = [
-            ReconDependency::ReferenceOnly,
-            ReconDependency::CurrentFrame,
-            ReconDependency::ReferenceOnly,
-        ];
-        let selected = dependencies
-            .into_iter()
-            .map(|dependency| select_prepass_entry(dependency, true))
-            .filter(|selected| *selected)
-            .count();
-
-        assert_eq!(selected, 2);
+        assert!(select_prepass_entry(ReconDependency::ReferenceOnly, true));
+        assert!(!select_prepass_entry(ReconDependency::CurrentFrame, true));
         assert!(!select_prepass_entry(ReconDependency::ReferenceOnly, false));
     }
 

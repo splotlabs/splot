@@ -152,20 +152,29 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
-        self.tree
-            .decode_next_superblock_with_publication(
-                work_unit,
-                &mut self.mi_size_state,
-                &mut self.joint_modes,
-                &mut self.uses_mrls,
-                &mut self.use_dip,
-                &mut self.fsc_modes,
-                &mut self.palette_y,
-                &mut self.uv_cfls,
-                on_leaf,
-                on_published,
-            )
-            .map_err(GeneralIntraMultiblockError::Walk)
+        let Self {
+            tree,
+            mi_size_state,
+            joint_modes,
+            uses_mrls,
+            use_dip,
+            fsc_modes,
+            palette_y,
+            uv_cfls,
+        } = self;
+        tree.decode_next_superblock_with_publication(
+            work_unit,
+            mi_size_state,
+            joint_modes,
+            uses_mrls,
+            use_dip,
+            fsc_modes,
+            palette_y,
+            uv_cfls,
+            on_leaf,
+            on_published,
+        )
+        .map_err(GeneralIntraMultiblockError::Walk)
     }
 
     pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
