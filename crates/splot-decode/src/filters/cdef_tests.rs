@@ -392,8 +392,9 @@ fn interior_fast_path_matches_per_sample_reference() {
                 frame_sub_x: 1,
                 frame_sub_y: 1,
             };
+            let mut pad = [0u16; CDEF_PADDED_AREA];
             let (_, rect, samples, stride) =
-                compute_cdef_filter_plane::<u8, u8>(PlaneId::Y, snap, &ctx)
+                compute_cdef_filter_plane::<u8>(PlaneId::Y, snap, &ctx, &mut pad)
                     .unwrap()
                     .unwrap();
             let offsets = CdefTapOffsets::for_direction(ctx.dir);
