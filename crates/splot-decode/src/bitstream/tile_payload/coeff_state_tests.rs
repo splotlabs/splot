@@ -279,11 +279,26 @@ fn chroma_context_updates_clip_to_subsampled_plane_edges() {
     state.update_after_coeffs(update(1, 32, 0, 16, 8)).unwrap();
 
     let above = state.above_level(1).unwrap();
+    assert_eq!(above.len(), 44);
     assert!(above[32..44].iter().all(|&value| value == 4));
-    assert!(above[44..48].iter().all(|&value| value == 0));
     let left = state.left_level(1).unwrap();
+    assert_eq!(left.len(), 36);
     assert!(left[0..8].iter().all(|&value| value == 4));
-    assert!(left[36..40].iter().all(|&value| value == 0));
+}
+
+#[test]
+fn tile_coefficient_context_translates_absolute_coordinates() {
+    let mut state = TileCoeffContextState::new_for_tile_chroma(
+        4..8,
+        8..12,
+        splot_core::headers::sequence::ChromaFormatIdc::Yuv420,
+    )
+    .unwrap();
+    state.update_after_coeffs(update(0, 9, 5, 2, 2)).unwrap();
+    assert_eq!(state.above_level(0).unwrap(), &[0, 4, 4, 0]);
+    assert_eq!(state.left_level(0).unwrap(), &[0, 4, 4, 0]);
+    assert_eq!(state.above_level(1).unwrap().len(), 2);
+    assert_eq!(state.left_level(1).unwrap().len(), 2);
 }
 
 #[test]

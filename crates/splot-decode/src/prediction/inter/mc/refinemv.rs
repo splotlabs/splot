@@ -100,10 +100,13 @@ pub(super) fn compound_default_refinemv_motion_grid<T: ReconSample>(
             motion_cell(0, 0)?,
         ));
     }
-    let mut cells = Vec::with_capacity(cell_count);
+    let mut cells =
+        super::optflow::take_motion_cells(cell_count, MotionCell::from_refinemv(candidates));
+    let mut index = 0usize;
     for local_y in (0..block.rect.luma_h).step_by(REFINEMV_UNIT_SIZE) {
         for local_x in (0..block.rect.luma_w).step_by(REFINEMV_UNIT_SIZE) {
-            cells.push(motion_cell(local_x, local_y)?);
+            cells[index] = motion_cell(local_x, local_y)?;
+            index += 1;
         }
     }
     Ok(CompoundMotionGrid::from_refinemv(

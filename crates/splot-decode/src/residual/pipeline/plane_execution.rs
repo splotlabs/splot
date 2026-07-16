@@ -17,6 +17,7 @@ use crate::bitstream::tile_payload::{
 };
 use crate::pipeline::general_intra::inherited_chroma_angle_delta;
 
+use super::plan::MAX_DEFERRED_CHROMA_PLANES;
 use super::transform_units::tx_size_log2;
 use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
 
@@ -442,6 +443,7 @@ impl ParsedGeneralIntraResidual {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut TileBlockDecodedState,
         qindex: u32,
@@ -449,7 +451,7 @@ impl ParsedGeneralIntraResidual {
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let mut pending_u = None;
-        let mut deferred = Vec::new();
+        let mut deferred = RecycledParsedResidualPlanes::take(MAX_DEFERRED_CHROMA_PLANES);
         let mut planes = self.planes;
         for plane in planes.drain() {
             match plane.cctx_role {
@@ -462,6 +464,7 @@ impl ParsedGeneralIntraResidual {
                         .take()
                         .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
                     reconstruct_chroma_pair(
+                        scratch,
                         workspace,
                         block_decoded,
                         u,
@@ -477,11 +480,19 @@ impl ParsedGeneralIntraResidual {
             if plane.plane.defer_reconstruction {
                 deferred.push(plane);
             } else {
-                plane.reconstruct(workspace, block_decoded, qindex, intra_edge, luma_context)?;
+                plane.reconstruct(
+                    scratch,
+                    workspace,
+                    block_decoded,
+                    qindex,
+                    intra_edge,
+                    luma_context,
+                )?;
             }
         }
         if let Some(u) = pending_u {
             reconstruct_chroma_pair(
+                scratch,
                 workspace,
                 block_decoded,
                 u,
@@ -492,6 +503,7 @@ impl ParsedGeneralIntraResidual {
             )?;
         }
         reconstruct_deferred_planes(
+            scratch,
             workspace,
             block_decoded,
             deferred,
@@ -518,6 +530,7 @@ impl ParsedResidualPlane {
     #[allow(clippy::too_many_arguments)]
     fn reconstruct<T: ReconSample>(
         self,
+        scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut TileBlockDecodedState,
         qindex: u32,
@@ -529,6 +542,7 @@ impl ParsedResidualPlane {
                 coeffs,
                 palette_color_map,
             } => self.plane.reconstruct(
+                scratch,
                 workspace,
                 &coeffs,
                 block_decoded,
@@ -541,6 +555,7 @@ impl ParsedResidualPlane {
                 for unit in units {
                     let plan = self.plane.transform_unit_plan(&unit.block)?;
                     plan.reconstruct(
+                        scratch,
                         workspace,
                         &unit.block.coeffs,
                         block_decoded,
@@ -569,6 +584,7 @@ impl ParsedResidualPlane {
                         self.plane.transform_unit_plan(&unit.block)?
                     };
                     plan.reconstruct(
+                        scratch,
                         workspace,
                         &unit.block.coeffs,
                         block_decoded,
@@ -602,6 +618,7 @@ impl ParsedResidualPlane {
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_chroma_pair<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     u: ParsedResidualPlane,
@@ -613,6 +630,7 @@ fn reconstruct_chroma_pair<T: ReconSample>(
     let u = u.into_chroma_pair()?;
     let v = v.map(ParsedResidualPlane::into_chroma_pair).transpose()?;
     chroma_pair::reconstruct_chroma_pair_or_planes(
+        scratch,
         workspace,
         block_decoded,
         u,
@@ -625,15 +643,16 @@ fn reconstruct_chroma_pair<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_deferred_planes<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
-    deferred: Vec<ParsedResidualPlane>,
+    mut deferred: RecycledParsedResidualPlanes,
     qindex: u32,
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     luma_context: LumaTransformTypeContext,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let mut pending_u = None;
-    for plane in deferred {
+    for plane in deferred.drain() {
         if plane.plane.plane_id == PlaneId::U {
             pending_u = Some(plane);
             continue;
@@ -642,6 +661,7 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             && let Some(u) = pending_u.take()
         {
             reconstruct_chroma_pair(
+                scratch,
                 workspace,
                 block_decoded,
                 u,
@@ -652,10 +672,18 @@ fn reconstruct_deferred_planes<T: ReconSample>(
             )?;
             continue;
         }
-        plane.reconstruct(workspace, block_decoded, qindex, intra_edge, luma_context)?;
+        plane.reconstruct(
+            scratch,
+            workspace,
+            block_decoded,
+            qindex,
+            intra_edge,
+            luma_context,
+        )?;
     }
     if let Some(u) = pending_u {
         reconstruct_chroma_pair(
+            scratch,
             workspace,
             block_decoded,
             u,

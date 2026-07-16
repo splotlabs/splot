@@ -4,12 +4,13 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, PixelFormat,
-    PlaneId, PlaneRect, ReconError, ReconSample, ReferencePlaneView, SubpelPredictParams,
-    WARPED_BLOCK_SIZE, WarpPredictBlockParams, blend_compound_average_weighted_sample,
-    ext_warp_predict_unit, subpel_predict_block, subpel_predict_block_compound_average_into,
-    subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    subpel_predict_block_into, warp_predict_block_into, wedge_mask_plane_sample,
+    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, OptflowScratch,
+    PixelFormat, PlaneId, PlaneRect, ReconError, ReconSample, ReferencePlaneView,
+    SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
+    blend_compound_average_weighted_sample, ext_warp_predict_unit,
+    subpel_predict_block_compound_average_into, subpel_predict_block_compound_intermediate,
+    subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
+    warp_predict_block_into, wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
@@ -35,6 +36,10 @@ pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32)
     ]
 }
 pub(crate) const CWP_EQUAL: i16 = 8;
+const MAX_MC_BLOCK_DIM: usize = 128;
+const MAX_MC_BLOCK_SAMPLES: usize = MAX_MC_BLOCK_DIM * MAX_MC_BLOCK_DIM;
+const MAX_OPTICAL_FLOW_CELLS: usize = (MAX_MC_BLOCK_DIM / 4) * (MAX_MC_BLOCK_DIM / 4);
+const MAX_REFINEMV_PREDICTION_DIM: usize = MAX_MC_BLOCK_DIM + 8;
 
 fn copy_u16_samples<T: ReconSample>(samples: &[u16], output: &mut [T]) -> splot_recon::Result<()> {
     if samples.len() != output.len() {
@@ -50,14 +55,6 @@ fn copy_u16_samples<T: ReconSample>(samples: &[u16], output: &mut [T]) -> splot_
         *output = T::try_from_u16(sample)?;
     }
     Ok(())
-}
-
-fn pack_samples<T: ReconSample>(samples: &[u16]) -> splot_recon::Result<Vec<T>> {
-    let mut packed = Vec::with_capacity(samples.len());
-    for &sample in samples {
-        packed.push(T::try_from_u16(sample)?);
-    }
-    Ok(packed)
 }
 
 fn clip_and_pack_warp_samples<T: ReconSample, const N: usize>(
@@ -442,15 +439,37 @@ impl CompoundBlockMetadata {
     }
 }
 
-pub(crate) struct CompoundBlockOutput<T: 'static> {
-    metadata: CompoundBlockMetadata,
-    samples: Vec<T>,
+struct RecycledMcSamples<T: Send + 'static>(Vec<T>);
+
+impl<T: Send + 'static> RecycledMcSamples<T> {
+    fn take() -> Self {
+        Self(take_mc_samples())
+    }
 }
 
-impl<T: 'static> Drop for CompoundBlockOutput<T> {
-    fn drop(&mut self) {
-        recycle_mc_samples(&mut self.samples);
+impl<T: Send + 'static> std::ops::Deref for RecycledMcSamples<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
+}
+
+impl<T: Send + 'static> std::ops::DerefMut for RecycledMcSamples<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Send + 'static> Drop for RecycledMcSamples<T> {
+    fn drop(&mut self) {
+        recycle_mc_samples(&mut self.0);
+    }
+}
+
+pub(crate) struct CompoundBlockOutput<T: Send + 'static> {
+    metadata: CompoundBlockMetadata,
+    samples: RecycledMcSamples<T>,
 }
 
 impl<T: ReconSample> CompoundBlockOutput<T> {
@@ -606,7 +625,7 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
 ) -> Result<CompoundBlockOutput<T>> {
     let sample_count =
         compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
-    let mut samples = take_mc_samples();
+    let mut samples = RecycledMcSamples::take();
     samples.clear();
     samples.resize(sample_count, T::default());
     let metadata =
@@ -680,7 +699,7 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
                 block.warp_params,
                 sub_x,
                 sub_y,
-                luma_diff_weighted_mask.as_deref(),
+                luma_diff_weighted_mask.as_ref().map(|mask| mask.as_slice()),
                 motion.as_ref(),
                 offset,
                 plane_samples,
@@ -725,20 +744,23 @@ fn compound_luma_diff_weighted_mask<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
     motion: Option<&CompoundMotionGrid>,
     offset: ByteOffset,
-) -> Result<Option<Vec<u16>>> {
+) -> Result<Option<RecycledMcSamples<u16>>> {
     let CompoundBlend::DiffWeighted { inverse } = block.blend else {
         return Ok(None);
     };
     let prediction =
         compound_plane_prediction_for_block(sink, block, PlaneId::Y, 0, 0, motion, offset)?;
-    Ok(Some(diff_weighted_mask(
+    let mut mask = RecycledMcSamples::take();
+    diff_weighted_mask_into(
         &prediction.pred0,
         &prediction.pred1,
         sink.info().bit_depth(),
         prediction.block_w,
         prediction.block_h,
         inverse,
-    )?))
+        &mut mask,
+    )?;
+    Ok(Some(mask))
 }
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
@@ -1158,6 +1180,68 @@ struct CompoundPlanePrediction {
     recycle_buffers: bool,
 }
 
+pub(crate) struct McScratch {
+    compound_predictions: [Vec<i32>; 2],
+    initial_luma_predictions: Vec<u16>,
+    subpel_prediction: Vec<u16>,
+    samples: [Option<Box<dyn std::any::Any + Send>>; 2],
+    optflow: Option<OptflowScratch>,
+    motion_cells: [Option<Vec<MotionCell>>; 2],
+}
+
+impl Default for McScratch {
+    fn default() -> Self {
+        Self {
+            compound_predictions: core::array::from_fn(|_| {
+                Vec::with_capacity(MAX_MC_BLOCK_SAMPLES)
+            }),
+            initial_luma_predictions: Vec::with_capacity(
+                2 * MAX_REFINEMV_PREDICTION_DIM * MAX_REFINEMV_PREDICTION_DIM,
+            ),
+            subpel_prediction: Vec::with_capacity(MAX_MC_BLOCK_SAMPLES),
+            samples: [None, None],
+            optflow: Some(OptflowScratch::with_capacity(
+                4 * MAX_MC_BLOCK_SAMPLES,
+                MAX_OPTICAL_FLOW_CELLS,
+            )),
+            motion_cells: core::array::from_fn(|_| {
+                Some(Vec::with_capacity(MAX_OPTICAL_FLOW_CELLS))
+            }),
+        }
+    }
+}
+
+impl McScratch {
+    pub(crate) fn with_installed<R>(&mut self, f: impl FnOnce() -> R) -> R {
+        self.swap_with_thread_locals();
+        let result = f();
+        self.swap_with_thread_locals();
+        result
+    }
+
+    fn swap_with_thread_locals(&mut self) {
+        COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+            let mut active = slot.take().unwrap_or_default();
+            std::mem::swap(&mut active, &mut self.compound_predictions);
+            slot.set(Some(active));
+        });
+        INITIAL_LUMA_PREDICTIONS.with(|slot| {
+            let mut active = slot.take().unwrap_or_default();
+            std::mem::swap(&mut active, &mut self.initial_luma_predictions);
+            slot.set(Some(active));
+        });
+        SUBPEL_PREDICTION_BUFFER.with(|slot| {
+            let mut active = slot.take().unwrap_or_default();
+            std::mem::swap(&mut active, &mut self.subpel_prediction);
+            slot.set(Some(active));
+        });
+        MC_SAMPLES_RECYCLER.with(|slot| {
+            std::mem::swap(&mut *slot.borrow_mut(), &mut self.samples);
+        });
+        optflow::swap_thread_locals(&mut self.optflow, &mut self.motion_cells);
+    }
+}
+
 std::thread_local! {
     static COMPOUND_PREDICTION_BUFFERS: std::cell::Cell<Option<[Vec<i32>; 2]>> =
         const { std::cell::Cell::new(None) };
@@ -1165,37 +1249,17 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static SUBPEL_PREDICTION_BUFFER: std::cell::Cell<Option<Vec<u16>>> =
         const { std::cell::Cell::new(None) };
-    static MC_SAMPLES_RECYCLER: std::cell::RefCell<[Option<Box<dyn std::any::Any>>; 2]> =
+    static MC_SAMPLES_RECYCLER: std::cell::RefCell<[Option<Box<dyn std::any::Any + Send>>; 2]> =
         std::cell::RefCell::new([None, None]);
 }
 
-fn take_mc_samples<T: 'static>() -> Vec<T> {
-    MC_SAMPLES_RECYCLER.with(|cell| {
-        let mut samples = Vec::new();
-        if let Some(cached) = cell
-            .borrow_mut()
-            .iter_mut()
-            .flatten()
-            .find_map(|any| any.downcast_mut::<Vec<T>>())
-        {
-            std::mem::swap(&mut samples, cached);
-        }
-        samples
-    })
+fn take_mc_samples<T: Send + 'static>() -> Vec<T> {
+    MC_SAMPLES_RECYCLER.with(crate::support::reusable_scratch::take_reusable_vec)
 }
 
-fn recycle_mc_samples<T: 'static>(samples: &mut Vec<T>) {
+fn recycle_mc_samples<T: Send + 'static>(samples: &mut Vec<T>) {
     MC_SAMPLES_RECYCLER.with(|cell| {
-        let mut slots = cell.borrow_mut();
-        if let Some(cached) = slots
-            .iter_mut()
-            .flatten()
-            .find_map(|any| any.downcast_mut::<Vec<T>>())
-        {
-            std::mem::swap(samples, cached);
-        } else if let Some(slot) = slots.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(Box::new(std::mem::take(samples)));
-        }
+        crate::support::reusable_scratch::recycle_reusable_vec(cell, samples);
     });
 }
 
@@ -1838,22 +1902,58 @@ fn blend_compound_diff_weighted<T: ReconSample>(
     let CompoundBlend::DiffWeighted { inverse } = blend else {
         return blend_compound_average_weighted_samples(pred0, pred1, bit_depth, CWP_EQUAL, output);
     };
-    let max_sample = i32::from(bit_depth.max_sample());
-    let blend_shift = 6 + compound_inter_post_round();
-    let mask = if let Some(luma_mask) = luma_diff_weighted_mask {
-        subsample_diff_weighted_luma_mask(luma_mask, w, h, sub_x, sub_y)?
-    } else {
-        diff_weighted_mask(pred0, pred1, bit_depth, w, h, inverse)?
-    };
-    if mask.len() < output.len() {
-        return Err(ReconError::BufferLengthMismatch {
-            expected: output.len(),
-            actual: mask.len(),
+    if pred0.len() != pred1.len() {
+        return Err(ReconError::CompoundBlendLengthMismatch {
+            left_len: pred0.len(),
+            right_len: pred1.len(),
         });
     }
-    for (slot, ((&left, &right), &mask)) in
-        output.iter_mut().zip(pred0.iter().zip(pred1).zip(&mask))
+    let sample_count = w.checked_mul(h).ok_or(ReconError::ArithmeticOverflow {
+        context: "diff-weighted compound mask sample count",
+    })?;
+    if pred0.len() < sample_count || output.len() > sample_count {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: sample_count,
+            actual: pred0.len().min(output.len()),
+        });
+    }
+    let scales = luma_diff_weighted_mask
+        .map(|mask| diff_weighted_luma_mask_scales(mask, w, h, sub_x, sub_y))
+        .transpose()?;
+    let max_sample = i32::from(bit_depth.max_sample());
+    let blend_shift = 6 + compound_inter_post_round();
+    let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
+    for (index, (slot, (&left, &right))) in
+        output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
     {
+        let mask = if let (Some(luma_mask), Some((scale_x, scale_y, luma_w))) =
+            (luma_diff_weighted_mask, scales)
+        {
+            let x = index % w;
+            let y = index / w;
+            let mut sum = 0i32;
+            for dy in 0..scale_y {
+                for dx in 0..scale_x {
+                    sum += i32::from(luma_mask[(y * scale_y + dy) * luma_w + x * scale_x + dx]);
+                }
+            }
+            u16::try_from(round2_i32(sum, sub_x + sub_y)).map_err(|_| {
+                ReconError::ArithmeticOverflow {
+                    context: "diff-weighted chroma mask average",
+                }
+            })?
+        } else {
+            let diff = round2_i32(
+                i32::try_from(left.abs_diff(right)).unwrap_or(i32::MAX),
+                diff_round,
+            );
+            let base = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
+                ReconError::ArithmeticOverflow {
+                    context: "diff-weighted compound mask",
+                }
+            })?;
+            if inverse { 64 - base } else { base }
+        };
         let blended = round2_i32(
             i32::from(mask) * left + i32::from(64 - mask) * right,
             blend_shift,
@@ -1903,44 +2003,55 @@ fn blend_compound_wedge<T: ReconSample>(
     Ok(())
 }
 
-fn diff_weighted_mask(
+fn diff_weighted_mask_into(
     pred0: &[i32],
     pred1: &[i32],
     bit_depth: splot_recon::BitDepth,
     w: usize,
     h: usize,
     inverse: bool,
-) -> splot_recon::Result<Vec<u16>> {
+    mask: &mut Vec<u16>,
+) -> splot_recon::Result<()> {
     if pred0.len() != pred1.len() {
         return Err(ReconError::CompoundBlendLengthMismatch {
             left_len: pred0.len(),
             right_len: pred1.len(),
         });
     }
+    let sample_count = w.checked_mul(h).ok_or(ReconError::ArithmeticOverflow {
+        context: "diff-weighted compound mask sample count",
+    })?;
+    if pred0.len() < sample_count {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: sample_count,
+            actual: pred0.len(),
+        });
+    }
     let diff_round = u32::from(bit_depth.bits().saturating_sub(8)) + compound_inter_post_round();
-    let mut mask = Vec::with_capacity(w.saturating_mul(h));
-    for (&left, &right) in pred0.iter().zip(pred1.iter()).take(w.saturating_mul(h)) {
+    mask.clear();
+    mask.reserve(sample_count);
+    for (&left, &right) in pred0.iter().zip(pred1).take(sample_count) {
         let diff = round2_i32(
             i32::try_from(left.abs_diff(right)).unwrap_or(i32::MAX),
             diff_round,
         );
-        let base_mask = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
+        let base = u16::try_from((38 + diff / 16).clamp(0, 64)).map_err(|_| {
             ReconError::ArithmeticOverflow {
                 context: "diff-weighted compound mask",
             }
         })?;
-        mask.push(if inverse { 64 - base_mask } else { base_mask });
+        mask.push(if inverse { 64 - base } else { base });
     }
-    Ok(mask)
+    Ok(())
 }
 
-fn subsample_diff_weighted_luma_mask(
+fn diff_weighted_luma_mask_scales(
     luma_mask: &[u16],
     w: usize,
     h: usize,
     sub_x: u32,
     sub_y: u32,
-) -> splot_recon::Result<Vec<u16>> {
+) -> splot_recon::Result<(usize, usize, usize)> {
     let scale_x = 1usize
         .checked_shl(sub_x)
         .ok_or(ReconError::ArithmeticOverflow {
@@ -1973,26 +2084,7 @@ fn subsample_diff_weighted_luma_mask(
         });
     }
 
-    let mut out = Vec::with_capacity(w.saturating_mul(h));
-    for y in 0..h {
-        for x in 0..w {
-            let mut sum = 0i32;
-            for dy in 0..scale_y {
-                for dx in 0..scale_x {
-                    let mask_x = x * scale_x + dx;
-                    let mask_y = y * scale_y + dy;
-                    sum += i32::from(luma_mask[mask_y * luma_w + mask_x]);
-                }
-            }
-            let averaged = round2_i32(sum, sub_x + sub_y);
-            out.push(
-                u16::try_from(averaged).map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "diff-weighted chroma mask average",
-                })?,
-            );
-        }
-    }
-    Ok(out)
+    Ok((scale_x, scale_y, luma_w))
 }
 
 const fn compound_inter_post_round() -> u32 {
@@ -2066,6 +2158,18 @@ pub(crate) fn intrabc_predict_fractional_luma_into<T: ReconSample>(
     intrabc_predict_subpel_plane_into(workspace, PlaneId::Y, target, scaling)
 }
 
+pub(crate) fn intrabc_copy_plane_into<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    plane: PlaneId,
+    source: PlaneRect,
+    target: PlaneRect,
+) -> Result<()> {
+    let mut samples = RecycledMcSamples::take();
+    workspace
+        .copy_rect_within_plane_into(plane, source, target, &mut samples)
+        .map_err(Into::into)
+}
+
 pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
@@ -2074,9 +2178,31 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
 ) -> Result<()> {
     let storage = workspace.plane(plane)?.storage_size();
     let full = PlaneRect::new(0, 0, storage.width(), storage.height())?;
-    let mut samples: Vec<T> = Vec::with_capacity(storage.width().saturating_mul(storage.height()));
+    let sample_count =
+        storage
+            .width()
+            .checked_mul(storage.height())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IntrABC source plane sample count",
+            })?;
+    let mut samples = RecycledMcSamples::take();
+    samples.clear();
+    samples.resize(sample_count, T::default());
+    let mut start = 0usize;
     for row in workspace.rect_rows(plane, full)? {
-        samples.extend_from_slice(row);
+        let end = start
+            .checked_add(row.len())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IntrABC source plane row range",
+            })?;
+        let output = samples
+            .get_mut(start..end)
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: end,
+                actual: sample_count,
+            })?;
+        output.copy_from_slice(row);
+        start = end;
     }
     let view = ReferencePlaneView::new(&samples, storage.width(), storage.height())?;
     let params = crate::filters::wienerns_lr::recon::full_recon::intrabc_bilinear_params(
@@ -2085,10 +2211,28 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
         target.height(),
         workspace.info().bit_depth(),
     );
-    let predicted = subpel_predict_block(&view, &params)?;
-    let packed = pack_samples(&predicted)?;
-    workspace.write_rect(plane, target, &packed, target.width())?;
-    Ok(())
+    let prediction_len =
+        target
+            .width()
+            .checked_mul(target.height())
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "IntrABC prediction sample count",
+            })?;
+    SUBPEL_PREDICTION_BUFFER.with(|slot| {
+        let mut predicted = slot.take().unwrap_or_default();
+        predicted.resize(prediction_len, 0);
+        let result: Result<()> = (|| {
+            subpel_predict_block_into(&view, &params, &mut predicted)?;
+            let mut packed = RecycledMcSamples::take();
+            packed.clear();
+            packed.resize(prediction_len, T::default());
+            copy_u16_samples(&predicted[..prediction_len], &mut packed)?;
+            workspace.write_rect(plane, target, &packed, target.width())?;
+            Ok(())
+        })();
+        slot.set(Some(predicted));
+        result
+    })
 }
 
 pub(crate) fn reference_plane_view<T: ReconSample>(

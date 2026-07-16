@@ -26,6 +26,26 @@ pub(crate) fn recon_final_filter_sink<T: splot_recon::ReconSample>(
 }
 pub(crate) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 
+#[derive(Default)]
+pub(crate) struct FrameFilterRecords {
+    pub(crate) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
+    pub(crate) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    pub(crate) tx_skip_records: Vec<WienerNsLrTxSkipTransformRecord>,
+    pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+}
+
+impl FrameFilterRecords {
+    pub(crate) fn clear(&mut self) {
+        self.deblock_blocks.clear();
+        self.chroma_deblock_blocks[0].clear();
+        self.chroma_deblock_blocks[1].clear();
+        self.tx_skip_records.clear();
+        self.lr_source_blocks.clear();
+        self.lr_unit_filters.clear();
+    }
+}
+
 pub(crate) use self::diagnostics::{
     intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason,
 };

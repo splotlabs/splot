@@ -34,6 +34,40 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> Result<(Vec<T>, Vec<T>), GeneralIntraResidualError> {
+    let mut u_out = Vec::new();
+    let mut v_out = Vec::new();
+    reconstruct_general_intra_chroma_cctx_pair_into(
+        u_block,
+        u_prediction,
+        v_block,
+        v_prediction,
+        qindex,
+        log2_width,
+        log2_height,
+        cctx_type,
+        use_ddt,
+        bit_depth,
+        &mut u_out,
+        &mut v_out,
+    )?;
+    Ok((u_out, v_out))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_into<T: ReconSample>(
+    u_block: &LumaCoeffBlock,
+    u_prediction: &[T],
+    v_block: &LumaCoeffBlock,
+    v_prediction: &[T],
+    qindex: u32,
+    log2_width: u32,
+    log2_height: u32,
+    cctx_type: usize,
+    use_ddt: bool,
+    bit_depth: BitDepth,
+    u_out: &mut Vec<T>,
+    v_out: &mut Vec<T>,
+) -> Result<(), GeneralIntraResidualError> {
     let u_setup = reconstruct_block_setup(
         u_prediction.len(),
         qindex,
@@ -64,8 +98,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
         return Err(GeneralIntraResidualError::UnexpectedBranch);
     }
 
-    let mut u_out = vec![T::default(); u_setup.samples];
-    let mut v_out = vec![T::default(); v_setup.samples];
+    u_out.resize(u_setup.samples, T::default());
+    v_out.resize(v_setup.samples, T::default());
     with_residual_scratch(|scratch| {
         let u_dequant = &mut scratch.dequant[..u_setup.adjusted];
         let v_dequant = &mut scratch.dequant_pair[..v_setup.adjusted];
@@ -75,12 +109,12 @@ pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: Rec
 
         let residual = &mut scratch.residual[..u_setup.samples];
         inverse_transform_2d_outer(&u_setup.transform, u_dequant, residual)?;
-        reconstruct_add_residual(u_prediction, residual, bit_depth, &mut u_out)?;
+        reconstruct_add_residual(u_prediction, residual, bit_depth, u_out)?;
         inverse_transform_2d_outer(&v_setup.transform, v_dequant, residual)?;
-        reconstruct_add_residual(v_prediction, residual, bit_depth, &mut v_out)?;
+        reconstruct_add_residual(v_prediction, residual, bit_depth, v_out)?;
         Ok::<(), GeneralIntraResidualError>(())
     })?;
-    Ok((u_out, v_out))
+    Ok(())
 }
 
 pub(super) fn apply_cross_chroma_transform(

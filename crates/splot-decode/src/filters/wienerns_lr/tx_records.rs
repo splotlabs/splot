@@ -111,12 +111,10 @@ pub(crate) struct DeltaQState {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CdefState {
-    rows: usize,
-    cols: usize,
     row_start: usize,
     col_start: usize,
-    local_rows: usize,
-    local_cols: usize,
+    rows: usize,
+    cols: usize,
     values: Vec<Option<usize>>,
     sb_size4: usize,
 }
@@ -285,7 +283,7 @@ impl DeltaQState {
 }
 
 impl CdefState {
-    pub(crate) fn for_tile(
+    pub(crate) fn try_for_tile(
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
@@ -293,11 +291,17 @@ impl CdefState {
     ) -> Result<Self> {
         let row_start = mi_rows.start / CDEF_UNIT_MI;
         let col_start = mi_cols.start / CDEF_UNIT_MI;
-        let row_end = mi_rows.end.div_ceil(CDEF_UNIT_MI).min(self.rows);
-        let col_end = mi_cols.end.div_ceil(CDEF_UNIT_MI).min(self.cols);
-        let local_rows = row_end.saturating_sub(row_start);
-        let local_cols = col_end.saturating_sub(col_start);
-        let len = local_rows.checked_mul(local_cols).ok_or_else(|| {
+        let row_end = mi_rows
+            .end
+            .div_ceil(CDEF_UNIT_MI)
+            .min(self.row_start + self.rows);
+        let col_end = mi_cols
+            .end
+            .div_ceil(CDEF_UNIT_MI)
+            .min(self.col_start + self.cols);
+        let rows = row_end.saturating_sub(row_start);
+        let cols = col_end.saturating_sub(col_start);
+        let len = rows.checked_mul(cols).ok_or_else(|| {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
         })?;
         let mut values = Vec::new();
@@ -306,12 +310,10 @@ impl CdefState {
         })?;
         values.resize(len, None);
         Ok(Self {
-            rows: self.rows,
-            cols: self.cols,
             row_start,
             col_start,
-            local_rows,
-            local_cols,
+            rows,
+            cols,
             values,
             sb_size4: self.sb_size4,
         })
@@ -329,12 +331,10 @@ impl CdefState {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
         })?;
         Ok(Self {
-            rows,
-            cols,
             row_start: 0,
             col_start: 0,
-            local_rows: rows,
-            local_cols: cols,
+            rows,
+            cols,
             values: vec![None; values_len],
             sb_size4: intra_delta_q_sb_size4(sequence, tile_offset)?,
         })
@@ -379,7 +379,11 @@ impl CdefState {
 
         let unit_row = frontier.r / CDEF_UNIT_MI;
         let unit_col = frontier.c / CDEF_UNIT_MI;
-        if unit_row >= self.rows || unit_col >= self.cols {
+        if unit_row < self.row_start
+            || unit_col < self.col_start
+            || unit_row >= self.row_start + self.rows
+            || unit_col >= self.col_start + self.cols
+        {
             return Err(selectable_decode_error(
                 tile_offset,
                 selectable_reason!("cdef_bounds"),
@@ -477,16 +481,10 @@ impl CdefState {
         let start_unit_col = mi_col / CDEF_UNIT_MI;
         let unit_rows = n4h.div_ceil(CDEF_UNIT_MI).max(1);
         let unit_cols = n4w.div_ceil(CDEF_UNIT_MI).max(1);
-        for row in start_unit_row
-            ..start_unit_row
-                .saturating_add(unit_rows)
-                .min(self.row_start.saturating_add(self.local_rows))
-        {
-            for col in start_unit_col
-                ..start_unit_col
-                    .saturating_add(unit_cols)
-                    .min(self.col_start.saturating_add(self.local_cols))
-            {
+        let row_end = (self.row_start + self.rows).min(start_unit_row.saturating_add(unit_rows));
+        let col_end = (self.col_start + self.cols).min(start_unit_col.saturating_add(unit_cols));
+        for row in start_unit_row.max(self.row_start)..row_end {
+            for col in start_unit_col.max(self.col_start)..col_end {
                 let index = self.index(row, col, tile_offset)?;
                 self.values[index] = Some(strength);
             }
@@ -500,20 +498,21 @@ impl CdefState {
     }
 
     fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
-        let row = row.checked_sub(self.row_start).ok_or_else(|| {
+        let local_row = row.checked_sub(self.row_start).ok_or_else(|| {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_index_bounds"))
         })?;
-        let col = col.checked_sub(self.col_start).ok_or_else(|| {
+        let local_col = col.checked_sub(self.col_start).ok_or_else(|| {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_index_bounds"))
         })?;
-        if row >= self.local_rows || col >= self.local_cols {
+        if local_row >= self.rows || local_col >= self.cols {
             return Err(selectable_decode_error(
                 tile_offset,
                 selectable_reason!("cdef_index_bounds"),
             ));
         }
-        row.checked_mul(self.local_cols)
-            .and_then(|start| start.checked_add(col))
+        local_row
+            .checked_mul(self.cols)
+            .and_then(|start| start.checked_add(local_col))
             .ok_or_else(|| {
                 selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
             })
@@ -526,30 +525,39 @@ impl CdefState {
         mi_cols: Range<usize>,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        if self.rows != tile.rows
-            || self.cols != tile.cols
+        let expected_row_start = mi_rows.start / CDEF_UNIT_MI;
+        let expected_col_start = mi_cols.start / CDEF_UNIT_MI;
+        let row_end = mi_rows.end.div_ceil(CDEF_UNIT_MI).min(self.rows);
+        let col_end = mi_cols.end.div_ceil(CDEF_UNIT_MI).min(self.cols);
+        if self.row_start != 0
+            || self.col_start != 0
             || self.sb_size4 != tile.sb_size4
-            || tile.row_start != mi_rows.start / CDEF_UNIT_MI
-            || tile.col_start != mi_cols.start / CDEF_UNIT_MI
+            || tile.row_start != expected_row_start
+            || tile.col_start != expected_col_start
+            || tile.rows != row_end.saturating_sub(expected_row_start)
+            || tile.cols != col_end.saturating_sub(expected_col_start)
         {
             return Err(selectable_decode_error(
                 tile_offset,
                 selectable_reason!("cdef_grid_shape"),
             ));
         }
-        let row_end = mi_rows.end.div_ceil(CDEF_UNIT_MI).min(self.rows);
-        let col_end = mi_cols.end.div_ceil(CDEF_UNIT_MI).min(self.cols);
         for row in mi_rows.start / CDEF_UNIT_MI..row_end {
             for col in mi_cols.start / CDEF_UNIT_MI..col_end {
                 let index = self.index(row, col, tile_offset)?;
-                let tile_index = tile.index(row, col, tile_offset)?;
-                self.values[index] = tile.values[tile_index];
+                self.values[index] = tile.value(row, col, tile_offset)?;
             }
         }
         Ok(())
     }
 
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
+        if self.row_start != 0 || self.col_start != 0 {
+            return Err(selectable_decode_error(
+                tile_offset,
+                selectable_reason!("cdef_grid_shape"),
+            ));
+        }
         CdefUnitGrid::new(self.rows, self.cols, self.values).map_err(|_| {
             selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_shape"))
         })
@@ -690,13 +698,14 @@ impl SelectableLumaTxGrid {
         Ok(tx_size)
     }
 
-    fn records_for_region(
+    fn records_for_region_into(
         &self,
         row: usize,
         col: usize,
         rows: usize,
         cols: usize,
-    ) -> std::result::Result<Vec<SelectableLumaTxRecord>, SelectableTransformRecordError> {
+        records: &mut Vec<SelectableLumaTxRecord>,
+    ) -> std::result::Result<(), SelectableTransformRecordError> {
         let region_rows = self.rows.saturating_sub(row).min(rows);
         let region_cols = self.cols.saturating_sub(col).min(cols);
         let expected = region_rows.checked_mul(region_cols).ok_or(
@@ -717,23 +726,37 @@ impl SelectableLumaTxGrid {
             return Err(SelectableTransformRecordError::Incomplete { expected, actual });
         }
 
-        let mut records: Vec<_> = self
-            .records
-            .iter()
-            .copied()
-            .filter(|record| {
-                record.row >= row
-                    && record.col >= col
-                    && record.row < row + rows
-                    && record.col < col + cols
-            })
-            .collect();
+        records.clear();
+        records.try_reserve(self.records.len()).map_err(|_| {
+            SelectableTransformRecordError::Unsupported {
+                reason: "record-allocation",
+            }
+        })?;
+        records.extend(self.records.iter().copied().filter(|record| {
+            record.row >= row
+                && record.col >= col
+                && record.row < row + rows
+                && record.col < col + cols
+        }));
         let scan_order = self.cell(row, col)?.scan_order;
         if scan_order {
             records.sort_by_key(|record| (record.col, record.row));
         } else {
             records.sort_by_key(|record| (record.row, record.col));
         }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn records_for_region(
+        &self,
+        row: usize,
+        col: usize,
+        rows: usize,
+        cols: usize,
+    ) -> std::result::Result<Vec<SelectableLumaTxRecord>, SelectableTransformRecordError> {
+        let mut records = Vec::new();
+        self.records_for_region_into(row, col, rows, cols, &mut records)?;
         Ok(records)
     }
 
@@ -777,7 +800,8 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
     grid_size: (usize, usize),
     fsc_mode: u8,
     tile_offset: ByteOffset,
-) -> Result<Vec<SelectableLumaTxRecord>> {
+    records: &mut Vec<SelectableLumaTxRecord>,
+) -> Result<()> {
     with_selectable_tx_grid(grid_size.0, grid_size.1, |grid| {
         let b_size = frontier.b_size.index();
         if b_size == BLOCK_4X4 {
@@ -828,10 +852,9 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
             selectable_reason!("inter_region_width"),
             selectable_reason!("inter_region_height"),
         )?;
-        let records = grid
-            .records_for_region(frontier.r, frontier.c, extent.rows, extent.cols)
+        grid.records_for_region_into(frontier.r, frontier.c, extent.rows, extent.cols, records)
             .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-        Ok(records)
+        Ok(())
     })
     .map_err(|error| selectable_transform_record_error(error, tile_offset))?
 }

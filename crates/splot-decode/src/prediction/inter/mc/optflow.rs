@@ -41,13 +41,34 @@ enum MotionCells {
 std::thread_local! {
     static OPTFLOW_SCRATCH: std::cell::Cell<Option<OptflowScratch>> =
         const { std::cell::Cell::new(None) };
-    static OPTFLOW_MOTION_CELLS: std::cell::Cell<Option<Vec<MotionCell>>> =
-        const { std::cell::Cell::new(None) };
+    static OPTFLOW_MOTION_CELLS: std::cell::RefCell<[Option<Vec<MotionCell>>; 2]> =
+        const { std::cell::RefCell::new([None, None]) };
 }
 
-fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
+pub(super) fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
     OPTFLOW_MOTION_CELLS.with(|slot| {
-        let mut cells = slot.take().unwrap_or_default();
+        let mut slots = slot.borrow_mut();
+        let fitting = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cells)| {
+                cells
+                    .as_ref()
+                    .filter(|cells| cells.capacity() >= len)
+                    .map(|cells| (index, cells.capacity()))
+            })
+            .min_by_key(|&(_, capacity)| capacity)
+            .map(|(index, _)| index);
+        let fallback = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cells)| cells.as_ref().map(|cells| (index, cells.capacity())))
+            .max_by_key(|&(_, capacity)| capacity)
+            .map(|(index, _)| index);
+        let mut cells = fitting
+            .or(fallback)
+            .and_then(|index| slots[index].take())
+            .unwrap_or_default();
         cells.resize(len, value);
         cells
     })
@@ -56,11 +77,36 @@ fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
 fn recycle_motion_cells(mut cells: Vec<MotionCell>) {
     cells.clear();
     OPTFLOW_MOTION_CELLS.with(|slot| {
-        let cells = match slot.take() {
-            Some(cached) if cached.capacity() > cells.capacity() => cached,
-            _ => cells,
+        let mut slots = slot.borrow_mut();
+        if let Some(empty) = slots.iter_mut().find(|slot| slot.is_none()) {
+            *empty = Some(cells);
+            return;
+        }
+        let Some((smallest, capacity)) = slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cells)| cells.as_ref().map(|cells| (index, cells.capacity())))
+            .min_by_key(|&(_, capacity)| capacity)
+        else {
+            return;
         };
-        slot.set(Some(cells));
+        if cells.capacity() > capacity {
+            slots[smallest] = Some(cells);
+        }
+    });
+}
+
+pub(super) fn swap_thread_locals(
+    scratch: &mut Option<OptflowScratch>,
+    motion_cells: &mut [Option<Vec<MotionCell>>; 2],
+) {
+    OPTFLOW_SCRATCH.with(|slot| {
+        let mut active = slot.take();
+        std::mem::swap(&mut active, scratch);
+        slot.set(active);
+    });
+    OPTFLOW_MOTION_CELLS.with(|slot| {
+        std::mem::swap(&mut *slot.borrow_mut(), motion_cells);
     });
 }
 

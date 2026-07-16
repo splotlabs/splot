@@ -17,6 +17,17 @@ pub struct OptflowScratch {
     deltas: Vec<[[i32; 2]; 2]>,
 }
 
+impl OptflowScratch {
+    /// Creates reusable optical-flow storage with the requested capacities.
+    #[must_use]
+    pub fn with_capacity(sample_capacity: usize, delta_capacity: usize) -> Self {
+        Self {
+            samples: Vec::with_capacity(sample_capacity),
+            deltas: Vec::with_capacity(delta_capacity),
+        }
+    }
+}
+
 /// Derives the AV2 § 7.13.3.9 optical-flow motion-vector deltas for each
 /// `unit_size` square in a pair of clipped, row-major luma predictors.
 ///

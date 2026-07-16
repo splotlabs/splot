@@ -94,7 +94,7 @@ fn record_block_clips_to_the_grid() {
 
 #[test]
 fn grid_origin_keeps_only_tile_cells() {
-    let mut state = TileSegmentIdState::new(4, 5).unwrap().with_origin(16, 32);
+    let mut state = TileSegmentIdState::new_for_tile(16..20, 32..37).unwrap();
     assert_eq!(state.grid.cells.len(), 20);
 
     state.record_block(17, 34, 2, 2, 7);
@@ -327,4 +327,15 @@ fn segment_id_predictor_and_context() {
     assert_eq!(state.predictor_and_ctx(1, 1, true, true), (5, 2));
     state.record_block(1, 0, 1, 1, 3);
     assert_eq!(state.predictor_and_ctx(1, 1, true, true), (5, 1));
+}
+
+#[test]
+fn segment_id_state_translates_tile_coordinates() {
+    let mut state = TileSegmentIdState::new_for_tile(4..8, 8..12).unwrap();
+    state.record_block(4, 8, 2, 2, 3);
+    assert_eq!(state.cell(4, 8), Some(3));
+    assert_eq!(state.cell(5, 9), Some(3));
+    assert_eq!(state.cell(3, 8), None);
+    assert_eq!(state.cell(4, 7), None);
+    assert_eq!(state.predictor_and_ctx(5, 9, true, true), (3, 2));
 }

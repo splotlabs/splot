@@ -12,7 +12,7 @@ type PhasePositions = [Option<Position>; 3];
 pub(super) struct TrajectoryMotionField {
     width8: usize,
     height8: usize,
-    cells: Vec<Option<Mv>>,
+    pub(super) cells: Vec<Option<Mv>>,
 }
 
 impl TrajectoryMotionField {
@@ -23,6 +23,17 @@ impl TrajectoryMotionField {
             height8,
             cells,
         })
+    }
+
+    fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> Option<()> {
+        let width8 = mi_cols.div_ceil(2);
+        let height8 = mi_rows.div_ceil(2);
+        let cells = width8.checked_mul(height8)?;
+        self.width8 = width8;
+        self.height8 = height8;
+        self.cells.resize(cells, None);
+        self.cells.fill(None);
+        Some(())
     }
 
     fn index(&self, y8: usize, x8: usize) -> Option<usize> {
@@ -43,10 +54,11 @@ impl TrajectoryMotionField {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrajectoryState {
-    fields: Vec<TrajectoryMotionField>,
-    positions: Vec<Vec<PhasePositions>>,
-    projection_offsets: Vec<Option<i32>>,
+    pub(super) fields: Vec<TrajectoryMotionField>,
+    pub(super) positions: Vec<Vec<PhasePositions>>,
+    pub(super) projection_offsets: Vec<Option<i32>>,
     step: usize,
     unit_size8: usize,
 }
@@ -70,8 +82,55 @@ impl TrajectoryState {
         })
     }
 
+    pub(super) fn reset(
+        &mut self,
+        mi_dimensions: (usize, usize),
+        reference_count: usize,
+        step: usize,
+        unit_size8: usize,
+    ) -> Option<()> {
+        let width8 = mi_dimensions.1.div_ceil(2);
+        let height8 = mi_dimensions.0.div_ceil(2);
+        let cell_count = width8.checked_mul(height8)?;
+        self.fields
+            .resize_with(reference_count, || TrajectoryMotionField {
+                width8: 0,
+                height8: 0,
+                cells: Vec::new(),
+            });
+        for field in &mut self.fields {
+            field.reset(mi_dimensions.0, mi_dimensions.1)?;
+        }
+        self.positions.resize_with(reference_count, Vec::new);
+        for positions in &mut self.positions {
+            positions.resize(cell_count, [None; 3]);
+            positions.fill([None; 3]);
+        }
+        self.projection_offsets.resize(cell_count, None);
+        self.projection_offsets.fill(None);
+        self.step = step.clamp(1, 2);
+        self.unit_size8 = unit_size8.max(1);
+        Some(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_fields(fields: Vec<TrajectoryMotionField>) -> Self {
+        Self {
+            fields,
+            positions: Vec::new(),
+            projection_offsets: Vec::new(),
+            step: 1,
+            unit_size8: 1,
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn into_fields(self) -> Vec<TrajectoryMotionField> {
         self.fields
+    }
+
+    pub(super) fn fields(&self) -> &[TrajectoryMotionField] {
+        &self.fields
     }
 
     fn dimensions(&self) -> Option<(usize, usize)> {

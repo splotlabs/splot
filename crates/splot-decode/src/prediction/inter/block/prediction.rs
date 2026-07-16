@@ -93,8 +93,11 @@ pub(super) fn placed_inter_geometry(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
+    interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
+    residual_scratch: &mut super::super::InterResidualReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     placed: &PlacedInterBlock,
+    residual_blocks: &[InterResidualBlock],
     use_refinemv: bool,
     refinemv_switchable: bool,
     block_decoded: &TileBlockDecodedState,
@@ -108,21 +111,18 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
     let rect = placed.motion_compensation_rect();
-    let intra_predictions = placed
-        .block
-        .interintra
-        .map(|prediction| {
-            super::predict_interintra_planes(
-                workspace,
-                placed,
-                block_decoded,
-                prediction.mode(),
-                enable_ibp,
-                bit_depth,
-                tile_offset,
-            )
-        })
-        .transpose()?;
+    if let Some(prediction) = placed.block.interintra {
+        super::predict_interintra_planes(
+            interintra_scratch,
+            workspace,
+            placed,
+            block_decoded,
+            prediction.mode(),
+            enable_ibp,
+            bit_depth,
+            tile_offset,
+        )?;
+    }
     let block_params = super::super::resolve_inter_block_params(
         ref_frame_idx,
         reference,
@@ -167,8 +167,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    if let (Some(predictions), Some(interintra)) = (intra_predictions, placed.block.interintra) {
-        for prediction in predictions {
+    if let Some(interintra) = placed.block.interintra {
+        for (prediction, samples) in interintra_scratch.planes() {
             let blend = match interintra {
                 InterIntraPrediction::SmoothMask { mode } => workspace
                     .blend_smooth_interintra_rect(
@@ -177,7 +177,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                         prediction.y,
                         prediction.size,
                         mode,
-                        &prediction.samples,
+                        samples,
                     ),
                 InterIntraPrediction::WedgeMask { wedge_index, .. } => workspace
                     .blend_wedge_interintra_rect(
@@ -190,7 +190,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                         usize::from(wedge_index),
                         prediction.sub_x,
                         prediction.sub_y,
-                        &prediction.samples,
+                        samples,
                     ),
             };
             blend.map_err(|_| {
@@ -205,8 +205,10 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
+            residual_scratch,
             &mut mc::WorkspaceSink::Frame(workspace),
             residual,
+            residual_blocks,
             qindex,
             luma_use_tcq,
             residual_use_ddt,
@@ -223,7 +225,9 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
+    residual_scratch: &mut super::super::InterResidualReconScratch<T>,
     placed: &PlacedInterBlock,
+    residual_blocks: &[InterResidualBlock],
     use_refinemv: bool,
     refinemv_switchable: bool,
     ref_frame_idx: &[u32],
@@ -251,8 +255,10 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     )?;
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
+            residual_scratch,
             sink,
             residual,
+            residual_blocks,
             qindex,
             luma_use_tcq,
             residual_use_ddt,

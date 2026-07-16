@@ -8,7 +8,9 @@ use super::{
     warp_sub_mv_at,
 };
 use selection::projection_queue;
-use trajectory::{TrajectoryMotionField, TrajectoryState};
+#[cfg(test)]
+use trajectory::TrajectoryMotionField;
+use trajectory::TrajectoryState;
 
 mod selection;
 mod trajectory;
@@ -203,6 +205,7 @@ struct ProjectedTemporalMotionField {
 }
 
 impl ProjectedTemporalMotionField {
+    #[cfg(test)]
     fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
         Some(Self {
@@ -210,6 +213,16 @@ impl ProjectedTemporalMotionField {
             height8,
             cells,
         })
+    }
+
+    fn reset(&mut self, mi_rows: usize, mi_cols: usize) -> Option<()> {
+        self.width8 = mi_cols.div_ceil(2);
+        self.height8 = mi_rows.div_ceil(2);
+        let cells = self.width8.checked_mul(self.height8)?;
+        self.cells
+            .resize(cells, ProjectedTemporalMotionCell::default());
+        self.cells.fill(ProjectedTemporalMotionCell::default());
+        Some(())
     }
 
     fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
@@ -246,7 +259,10 @@ pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
     field: ProjectedTemporalMotionField,
-    trajectories: Option<Vec<TrajectoryMotionField>>,
+    projection_scratch: ProjectedTemporalMotionField,
+    average_scratch: ProjectedTemporalMotionField,
+    trajectories: Option<TrajectoryState>,
+    trajectory_scratch: Option<TrajectoryState>,
     tip: Option<TipReferencePair>,
 }
 
@@ -295,6 +311,31 @@ pub(crate) struct TemporalProjectionConfig {
 }
 
 impl TemporalMvContext {
+    pub(crate) fn empty() -> Self {
+        Self {
+            current_order_hint: 0,
+            ref_order_hints: Vec::new(),
+            field: ProjectedTemporalMotionField {
+                width8: 0,
+                height8: 0,
+                cells: Vec::new(),
+            },
+            projection_scratch: ProjectedTemporalMotionField {
+                width8: 0,
+                height8: 0,
+                cells: Vec::new(),
+            },
+            average_scratch: ProjectedTemporalMotionField {
+                width8: 0,
+                height8: 0,
+                cells: Vec::new(),
+            },
+            trajectories: None,
+            trajectory_scratch: None,
+            tip: None,
+        }
+    }
+
     #[cfg(test)]
     pub(super) fn with_tip_sample(
         mi_rows: usize,
@@ -310,7 +351,10 @@ impl TemporalMvContext {
             current_order_hint: 0,
             ref_order_hints: Vec::new(),
             field,
+            projection_scratch: ProjectedTemporalMotionField::new(0, 0)?,
+            average_scratch: ProjectedTemporalMotionField::new(0, 0)?,
             trajectories: None,
+            trajectory_scratch: None,
             tip: Some(references),
         })
     }
@@ -334,10 +378,11 @@ impl TemporalMvContext {
                     self.field.width8 * 2,
                 )?);
             }
-            self.trajectories = Some(fields);
+            self.trajectories = Some(TrajectoryState::from_fields(fields));
         }
         self.trajectories
             .as_mut()?
+            .fields
             .get_mut(reference)?
             .set(y8, x8, mv);
         Some(())
@@ -362,30 +407,79 @@ impl TemporalMvContext {
         ref_order_hint: &[u32],
         ref_motion_fields: &[Option<TemporalMotionField>],
     ) -> Option<Self> {
+        let mut context = Self::empty();
+        context.refresh_from_references(
+            mi_dimensions,
+            current_order_hint,
+            config,
+            ref_frame_idx,
+            ref_valid,
+            ref_order_hint,
+            ref_motion_fields,
+        )?;
+        Some(context)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn refresh_from_references(
+        &mut self,
+        mi_dimensions: (usize, usize),
+        current_order_hint: u32,
+        config: TemporalProjectionConfig,
+        ref_frame_idx: &[u32],
+        ref_valid: &[bool],
+        ref_order_hint: &[u32],
+        ref_motion_fields: &[Option<TemporalMotionField>],
+    ) -> Option<()> {
         let (mi_rows, mi_cols) = mi_dimensions;
-        let mut field = ProjectedTemporalMotionField::new(mi_rows, mi_cols)?;
-        let ref_order_hints = reference_order_hints(ref_frame_idx, ref_valid, ref_order_hint);
+        self.field.reset(mi_rows, mi_cols)?;
+        self.ref_order_hints.clear();
+        self.ref_order_hints
+            .extend(ref_frame_idx.iter().map(|&slot| {
+                ref_valid
+                    .get(slot as usize)
+                    .copied()
+                    .filter(|valid| *valid)
+                    .and_then(|_| ref_order_hint.get(slot as usize).copied())
+                    .filter(|&hint| hint != u32::MAX)
+            }));
         let projections = projection_queue(
             mi_dimensions,
             current_order_hint,
             config,
             ref_frame_idx,
-            &ref_order_hints,
+            &self.ref_order_hints,
             ref_motion_fields,
         );
         let mut trajectories = if config.enable_trajectory {
-            Some(TrajectoryState::new(
+            let mut trajectories = match self
+                .trajectories
+                .take()
+                .or_else(|| self.trajectory_scratch.take())
+            {
+                Some(trajectories) => trajectories,
+                None => TrajectoryState::new(
+                    mi_dimensions,
+                    self.ref_order_hints.len(),
+                    config.step,
+                    config.unit_size8,
+                )?,
+            };
+            trajectories.reset(
                 mi_dimensions,
-                ref_order_hints.len(),
+                self.ref_order_hints.len(),
                 config.step,
                 config.unit_size8,
-            )?)
+            )?;
+            Some(trajectories)
         } else {
+            self.trajectory_scratch = self.trajectories.take();
             None
         };
         for projection in projections {
             let slot = *ref_frame_idx.get(projection.ref_index)?;
-            let source_order_hint = ref_order_hints
+            let source_order_hint = self
+                .ref_order_hints
                 .get(projection.ref_index)
                 .copied()
                 .flatten()?;
@@ -404,21 +498,18 @@ impl TemporalMvContext {
                 projection.ref_index,
                 projection.side,
                 projection.target_ref,
-                &ref_order_hints,
+                &self.ref_order_hints,
                 trajectories.as_mut(),
-                &mut field,
+                &mut self.field,
             );
         }
         if let Some(trajectories) = trajectories.as_mut() {
             trajectories.fill_gaps();
         }
-        Some(Self {
-            current_order_hint,
-            ref_order_hints,
-            field,
-            trajectories: trajectories.map(TrajectoryState::into_fields),
-            tip: None,
-        })
+        self.current_order_hint = current_order_hint;
+        self.trajectories = trajectories;
+        self.tip = None;
+        Some(())
     }
 
     pub(crate) fn prepare_tip(
@@ -436,11 +527,14 @@ impl TemporalMvContext {
         } else {
             superblock_size8.max(1)
         };
-        let mut field = ProjectedTemporalMotionField {
-            width8: self.field.width8,
-            height8: self.field.height8,
-            cells: vec![ProjectedTemporalMotionCell::default(); self.field.cells.len()],
-        };
+        if self
+            .projection_scratch
+            .reset(self.field.height8 * 2, self.field.width8 * 2)
+            .is_none()
+        {
+            return false;
+        }
+        let field = &mut self.projection_scratch;
         for y8 in (0..field.height8).step_by(projection_step) {
             for x8 in (0..field.width8).step_by(projection_step) {
                 field.set(y8, x8, Mv::ZERO, references.ref_offset, false);
@@ -456,11 +550,17 @@ impl TemporalMvContext {
             }
         }
         if fill_holes {
-            fill_tip_holes(&mut field, projection_step, tmvp_unit_size8);
-            average_tip_motion(&mut field, projection_step, tmvp_unit_size8);
+            fill_tip_holes(field, projection_step, tmvp_unit_size8);
+            average_tip_motion(
+                field,
+                &mut self.average_scratch,
+                projection_step,
+                tmvp_unit_size8,
+            );
+            std::mem::swap(field, &mut self.average_scratch);
         }
-        fill_temporal_sampling_gaps(&mut field, projection_step, tmvp_unit_size8);
-        self.field = field;
+        fill_temporal_sampling_gaps(field, projection_step, tmvp_unit_size8);
+        std::mem::swap(&mut self.field, field);
         self.tip = Some(references);
         true
     }
@@ -567,7 +667,7 @@ impl TemporalMvContext {
         if let Some(mv) = self
             .trajectories
             .as_ref()
-            .and_then(|fields| fields.get(ref_index))
+            .and_then(|state| state.fields().get(ref_index))
             .and_then(|field| field.cell(y8, x8))
         {
             return Some(mv);
@@ -598,7 +698,7 @@ impl TemporalMvContext {
     ) -> Option<Mv> {
         let dst = usize::try_from(dst_ref).ok()?;
         let candidate = usize::try_from(candidate_ref).ok()?;
-        if let Some(fields) = self.trajectories.as_ref()
+        if let Some(fields) = self.trajectories.as_ref().map(TrajectoryState::fields)
             && let (Some(dst_mv), Some(candidate_trajectory)) = (
                 fields.get(dst)?.cell(y8, x8),
                 fields.get(candidate)?.cell(y8, x8),
@@ -623,7 +723,7 @@ impl TemporalMvContext {
         y8: usize,
         x8: usize,
     ) -> Option<[Mv; 2]> {
-        let fields = self.trajectories.as_ref()?;
+        let fields = self.trajectories.as_ref()?.fields();
         let candidate = usize::try_from(candidate_ref).ok()?;
         let candidate_trajectory = fields.get(candidate)?.cell(y8, x8)?;
         let mut derived = [Mv::ZERO; 2];
@@ -755,11 +855,17 @@ fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superbl
 }
 
 fn average_tip_motion(
-    field: &mut ProjectedTemporalMotionField,
+    field: &ProjectedTemporalMotionField,
+    averaged: &mut ProjectedTemporalMotionField,
     step: usize,
     superblock_size8: usize,
 ) {
-    let mut averaged = field.clone();
+    averaged.width8 = field.width8;
+    averaged.height8 = field.height8;
+    averaged
+        .cells
+        .resize(field.cells.len(), ProjectedTemporalMotionCell::default());
+    averaged.cells.copy_from_slice(&field.cells);
     for block_y in (0..field.height8).step_by(superblock_size8) {
         for block_x in (0..field.width8).step_by(superblock_size8) {
             let end_y = (block_y + superblock_size8).min(field.height8);
@@ -811,7 +917,6 @@ fn average_tip_motion(
             }
         }
     }
-    *field = averaged;
 }
 
 #[doc = "AV2 § 7.10.4 Weight_Div_Mult motion-vector average."]
@@ -1152,7 +1257,10 @@ mod tests {
             current_order_hint,
             ref_order_hints,
             field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
+            projection_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
+            average_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
             trajectories: None,
+            trajectory_scratch: None,
             tip: None,
         }
     }
@@ -1171,7 +1279,7 @@ mod tests {
         let mut dst = TrajectoryMotionField::new(2, 2).unwrap();
         dst.set(0, 0, Mv { row: 12, col: 240 });
         let mut context = tip_context(4, vec![Some(0), Some(9)], 2, 2);
-        context.trajectories = Some(vec![candidate, dst]);
+        context.trajectories = Some(TrajectoryState::from_fields(vec![candidate, dst]));
 
         assert_eq!(
             context.derive_spatial_mv(1, 0, Mv { row: -12, col: -67 }, 0, 0),
@@ -1195,7 +1303,7 @@ mod tests {
         let mut dst1 = TrajectoryMotionField::new(2, 2).unwrap();
         dst1.set(0, 0, Mv { row: -8, col: 100 });
         let mut context = tip_context(4, vec![Some(0), Some(9), Some(6)], 2, 2);
-        context.trajectories = Some(vec![candidate, dst0, dst1]);
+        context.trajectories = Some(TrajectoryState::from_fields(vec![candidate, dst0, dst1]));
 
         assert_eq!(
             context.derive_compound_spatial_mvs([1, 2], 0, Mv { row: -12, col: -67 }, 0, 0,),
@@ -1606,5 +1714,54 @@ mod tests {
                 ref_offset: 9,
             }
         );
+    }
+
+    #[test]
+    fn refresh_reuses_projected_and_trajectory_storage() {
+        let config = TemporalProjectionConfig {
+            frame_size: (64, 64),
+            step: 1,
+            unit_size8: 8,
+            enable_tip: false,
+            enable_trajectory: true,
+            reduced: false,
+        };
+        let ref_frame_idx = [0];
+        let ref_valid = [false];
+        let ref_order_hint = [u32::MAX];
+        let ref_motion_fields = [None];
+        let mut context = TemporalMvContext::from_references(
+            (16, 16),
+            0,
+            config,
+            &ref_frame_idx,
+            &ref_valid,
+            &ref_order_hint,
+            &ref_motion_fields,
+        )
+        .unwrap();
+        let field_ptr = context.field.cells.as_ptr();
+        let trajectories = context.trajectories.as_ref().unwrap();
+        let trajectory_ptr = trajectories.fields[0].cells.as_ptr();
+        let positions_ptr = trajectories.positions[0].as_ptr();
+        let offsets_ptr = trajectories.projection_offsets.as_ptr();
+
+        context
+            .refresh_from_references(
+                (16, 16),
+                1,
+                config,
+                &ref_frame_idx,
+                &ref_valid,
+                &ref_order_hint,
+                &ref_motion_fields,
+            )
+            .unwrap();
+
+        let trajectories = context.trajectories.as_ref().unwrap();
+        assert_eq!(context.field.cells.as_ptr(), field_ptr);
+        assert_eq!(trajectories.fields[0].cells.as_ptr(), trajectory_ptr);
+        assert_eq!(trajectories.positions[0].as_ptr(), positions_ptr);
+        assert_eq!(trajectories.projection_offsets.as_ptr(), offsets_ptr);
     }
 }

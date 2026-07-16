@@ -21,7 +21,7 @@ use splot_recon::{
 
 use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, GeneralIntraResidualError,
-    reconstruct_general_intra_chroma_cctx_pair_with_predictions,
+    reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::error::DecodeError;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
@@ -97,6 +97,7 @@ impl Mv {
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_inter_frame<T: ReconSample>(
+    scratch: &mut InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -268,6 +269,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
 
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let (frame_cdfs, filter_inputs) = decode_inter_blocks(
+        scratch,
         plan,
         candidate,
         bytes,
@@ -307,10 +309,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             &reference.ref_order_hint,
         ),
     ));
-    filter_sink.set_deblock_blocks(
-        filter_inputs.deblock_blocks,
-        filter_inputs.chroma_deblock_blocks,
-    );
+    filter_sink.set_filter_records(filter_inputs.records);
     filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
     let ccso_grid = filter_inputs.ccso_grid.clone();
     filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
@@ -321,18 +320,16 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             .as_ref()
             .map_or(0, |intra| intra.cfl_ds_filter_index),
     );
-    filter_sink.set_tx_skip_records(filter_inputs.tx_skip_records);
-    filter_sink.set_lr_source_blocks(filter_inputs.lr_source_blocks);
-    filter_sink.set_lr_unit_filters(filter_inputs.lr_unit_filters);
     let disable_loopfilters_across_tiles = sequence
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let frame = filter_sink.into_filtered_frame(
+    let (frame, filter_records) = filter_sink.into_filtered_frame(
         &core,
         disable_loopfilters_across_tiles,
         crate::pipeline::deblock_quant_deltas(sequence, &core),
         offset,
     )?;
+    scratch.recycle_frame_filter_records(filter_records);
 
     Ok((frame, core, frame_cdfs, ccso_grid, motion_field))
 }
@@ -669,9 +666,11 @@ fn compound_is_joint_context_from_order_hints(
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
 #[allow(clippy::too_many_arguments)]
-pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
-    sink: &mut mc::WorkspaceSink<'_, '_, impl ReconSample>,
+pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSample>(
+    scratch: &mut InterResidualReconScratch<T>,
+    sink: &mut mc::WorkspaceSink<'_, '_, T>,
     residual: &InterResidual,
+    residual_blocks: &[InterResidualBlock],
     qindex: u32,
     luma_use_tcq: bool,
     enable_inter_ddt: bool,
@@ -688,27 +687,38 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
         )
     };
     let use_ddt = enable_inter_ddt && !use_intrabc;
-    let mut paired = vec![false; residual.blocks.len()];
-    for (index, block) in residual.blocks.iter().enumerate() {
-        if paired[index] {
+    let blocks = residual.blocks(residual_blocks).ok_or_else(|| {
+        inter_missing!(
+            "inter_residual_block_range",
+            offset,
+            "inter.residual.block_range",
+            SPEC_MC
+        )
+    })?;
+    for (index, block) in blocks.iter().enumerate() {
+        if block.cctx_pair_delta < 0 {
             continue;
         }
         let cctx_type = block.coeffs.cctx_type.unwrap_or(0);
         if block.plane == ReconPlaneId::U && cctx_type != 0 {
-            let Some((v_index, v_block)) = find_inter_residual_chroma_pair(residual, block) else {
-                return Err(inter_missing!(
+            let v_block = inter_residual_chroma_pair(blocks, index, block).ok_or_else(|| {
+                inter_missing!(
                     "inter_residual_cctx_pair",
                     offset,
                     "inter.residual.cctx_pair",
                     SPEC_MC
-                ));
-            };
+                )
+            })?;
             reconstruct_inter_residual_chroma_cctx_pair(
-                sink, block, v_block, qindex, cctx_type, use_ddt, bit_depth,
+                scratch,
+                sink,
+                [block, v_block],
+                qindex,
+                cctx_type,
+                use_ddt,
+                bit_depth,
             )
             .map_err(map_recon)?;
-            paired[index] = true;
-            paired[v_index] = true;
             continue;
         }
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
@@ -726,20 +736,18 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace(
             bit_depth,
         )
         .map_err(map_recon)?;
-        paired[index] = true;
     }
     Ok(())
 }
 
-fn find_inter_residual_chroma_pair<'a>(
-    residual: &'a InterResidual,
+fn inter_residual_chroma_pair<'a>(
+    blocks: &'a [InterResidualBlock],
+    u_index: usize,
     u: &InterResidualBlock,
-) -> Option<(usize, &'a InterResidualBlock)> {
-    residual
-        .blocks
-        .iter()
-        .enumerate()
-        .find(|(_, block)| is_matching_inter_residual_v_block(u, block))
+) -> Option<&'a InterResidualBlock> {
+    let delta = usize::try_from(u.cctx_pair_delta).ok()?;
+    let v = blocks.get(u_index.checked_add(delta)?)?;
+    is_matching_inter_residual_v_block(u, v).then_some(v)
 }
 
 fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualBlock) -> bool {
@@ -752,43 +760,47 @@ fn is_matching_inter_residual_v_block(u: &InterResidualBlock, v: &InterResidualB
 }
 
 fn reconstruct_inter_residual_chroma_cctx_pair<T: ReconSample>(
+    scratch: &mut InterResidualReconScratch<T>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
-    u: &InterResidualBlock,
-    v: &InterResidualBlock,
+    [u, v]: [&InterResidualBlock; 2],
     qindex: u32,
     cctx_type: usize,
     use_ddt: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let u_prediction = read_inter_residual_prediction(sink, u)?;
-    let v_prediction = read_inter_residual_prediction(sink, v)?;
-    let (u_out, v_out) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
+    read_inter_residual_prediction(sink, u, &mut scratch.u_prediction)?;
+    read_inter_residual_prediction(sink, v, &mut scratch.v_prediction)?;
+    reconstruct_general_intra_chroma_cctx_pair_into(
         &u.coeffs,
-        &u_prediction,
+        &scratch.u_prediction,
         &v.coeffs,
-        &v_prediction,
+        &scratch.v_prediction,
         qindex,
         u.log2_width,
         u.log2_height,
         cctx_type,
         use_ddt,
         bit_depth,
+        &mut scratch.u_output,
+        &mut scratch.v_output,
     )?;
-    write_inter_residual_block(sink, u, &u_out)?;
-    write_inter_residual_block(sink, v, &v_out)?;
+    write_inter_residual_block(sink, u, &scratch.u_output)?;
+    write_inter_residual_block(sink, v, &scratch.v_output)?;
     Ok(())
 }
 
 fn read_inter_residual_prediction<T: ReconSample>(
     sink: &mc::WorkspaceSink<'_, '_, T>,
     block: &InterResidualBlock,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    prediction: &mut Vec<T>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let rect = inter_residual_block_rect(block)?;
-    let mut prediction = Vec::with_capacity(rect.width() * rect.height());
+    prediction.clear();
+    prediction.reserve(rect.width() * rect.height());
     for row in sink.rect_rows(block.plane, rect)? {
         prediction.extend_from_slice(row);
     }
-    Ok(prediction)
+    Ok(())
 }
 
 fn write_inter_residual_block<T: ReconSample>(
@@ -887,7 +899,24 @@ impl PlacedInterBlock {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidual {
-    pub(crate) blocks: Vec<InterResidualBlock>,
+    pub(crate) block_range: core::ops::Range<usize>,
+}
+
+impl InterResidual {
+    pub(crate) fn blocks<'a>(
+        &self,
+        arena: &'a [InterResidualBlock],
+    ) -> Option<&'a [InterResidualBlock]> {
+        arena.get(self.block_range.clone())
+    }
+}
+
+#[derive(Debug, Default)]
+pub(in crate::prediction::inter) struct InterResidualReconScratch<T: ReconSample> {
+    u_prediction: Vec<T>,
+    v_prediction: Vec<T>,
+    u_output: Vec<T>,
+    v_output: Vec<T>,
 }
 #[derive(Clone, Debug)]
 pub(crate) struct InterResidualBlock {
@@ -897,6 +926,7 @@ pub(crate) struct InterResidualBlock {
     pub(crate) tx_size: usize,
     pub(crate) log2_width: u32,
     pub(crate) log2_height: u32,
+    pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }
 pub(crate) struct InterReferenceState<'a, T: ReconSample> {
@@ -1636,7 +1666,7 @@ pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
 mod single_ref;
 
-pub(crate) use block::decode_inter_blocks;
+pub(crate) use block::{InterDecodeScratch, decode_inter_blocks};
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::TemporalMotionField;
 

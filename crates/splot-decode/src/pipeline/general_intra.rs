@@ -2,7 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, PlaneId, ReconSample,
+    BitDepth, CurrentFrameWorkspace, DpcmDirection, IntraCardinalDirection, IntraPredictionScratch,
+    PlaneId, ReconSample,
 };
 
 use super::*;
@@ -26,6 +27,103 @@ const MI_SIZE: usize = 4;
 const ANGLE_STEP: i32 = 3;
 pub(crate) const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
 const WAIP_WH_RATIO_THRESHOLDS: [(usize, i32); 4] = [(2, 61), (4, 73), (8, 82), (16, 86)];
+const HOT_INTRA_VECTOR_COUNT: usize = 4;
+const MAX_INTRA_BLOCK_SAMPLES: usize = 128 * 128;
+const MAX_INTRA_EDGE_SAMPLES: usize = 128 + 32;
+
+struct HotIntraVectors {
+    slots: [Option<Box<dyn std::any::Any + Send>>; HOT_INTRA_VECTOR_COUNT],
+}
+
+impl Default for HotIntraVectors {
+    fn default() -> Self {
+        Self {
+            slots: core::array::from_fn(|_| None),
+        }
+    }
+}
+
+impl HotIntraVectors {
+    fn with_sample_capacity<T: Send + 'static>(capacity: usize) -> Self {
+        Self {
+            slots: core::array::from_fn(|_| {
+                Some(Box::new(Vec::<T>::with_capacity(capacity)) as Box<dyn std::any::Any + Send>)
+            }),
+        }
+    }
+}
+
+std::thread_local! {
+    static HOT_INTRA_VECTORS: std::cell::RefCell<
+        [Option<Box<dyn std::any::Any + Send>>; HOT_INTRA_VECTOR_COUNT]
+    > = std::cell::RefCell::new(core::array::from_fn(|_| None));
+}
+
+pub(crate) struct RecycledIntraSamples<T: Send + 'static>(Vec<T>);
+
+impl<T: Clone + Send + 'static> RecycledIntraSamples<T> {
+    pub(crate) fn filled(len: usize, value: T) -> Self {
+        let mut samples =
+            HOT_INTRA_VECTORS.with(crate::support::reusable_scratch::take_reusable_vec);
+        samples.clear();
+        samples.resize(len, value);
+        Self(samples)
+    }
+
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        let mut samples =
+            HOT_INTRA_VECTORS.with(crate::support::reusable_scratch::take_reusable_vec);
+        samples.clear();
+        if samples.capacity() < capacity {
+            samples.reserve(capacity);
+        }
+        Self(samples)
+    }
+}
+
+impl<T: Send + 'static> std::ops::Deref for RecycledIntraSamples<T> {
+    type Target = Vec<T>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: Send + 'static> std::ops::DerefMut for RecycledIntraSamples<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Send + 'static> Drop for RecycledIntraSamples<T> {
+    fn drop(&mut self) {
+        HOT_INTRA_VECTORS.with(|cell| {
+            crate::support::reusable_scratch::recycle_reusable_vec(cell, &mut self.0);
+        });
+    }
+}
+
+pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
+    intra_prediction: IntraPredictionScratch<T>,
+    hot_vectors: HotIntraVectors,
+    pub(crate) cfl_luma_ac: Vec<i32>,
+    pub(crate) cfl_prediction: Vec<T>,
+    pub(crate) mhccp_refs: [Vec<u16>; 2],
+    pub(crate) paeth_edges: [Vec<T>; 2],
+}
+
+impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
+    fn default() -> Self {
+        Self {
+            intra_prediction: IntraPredictionScratch::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            hot_vectors: HotIntraVectors::with_sample_capacity::<T>(MAX_INTRA_EDGE_SAMPLES),
+            cfl_luma_ac: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            cfl_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            mhccp_refs: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
+            paeth_edges: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
+        }
+    }
+}
 
 pub(crate) struct GeneralIntraReconCommand {
     residual: ParsedGeneralIntraResidual,
@@ -39,22 +137,34 @@ pub(crate) struct GeneralIntraReconCommand {
 impl GeneralIntraReconCommand {
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
+        scratch: &mut GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
     ) -> Result<()> {
         let _qm_segment_scope = crate::bitstream::tile_payload::FrameQmSegmentScope::install(
             usize::from(self.segment_id),
         );
-        self.reconstruct_with_installed_quantizer(workspace, block_decoded)
+        workspace.swap_intra_prediction_scratch(&mut scratch.intra_prediction);
+        HOT_INTRA_VECTORS.with(|vectors| {
+            std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
+        });
+        let result = self.reconstruct_with_installed_quantizer(scratch, workspace, block_decoded);
+        HOT_INTRA_VECTORS.with(|vectors| {
+            std::mem::swap(&mut *vectors.borrow_mut(), &mut scratch.hot_vectors.slots);
+        });
+        workspace.swap_intra_prediction_scratch(&mut scratch.intra_prediction);
+        result
     }
 
     fn reconstruct_with_installed_quantizer<T: ReconSample>(
         self,
+        scratch: &mut GeneralIntraReconScratch<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &mut crate::bitstream::tile_payload::TileBlockDecodedState,
     ) -> Result<()> {
         self.residual
             .reconstruct(
+                scratch,
                 workspace,
                 block_decoded,
                 self.qindex,

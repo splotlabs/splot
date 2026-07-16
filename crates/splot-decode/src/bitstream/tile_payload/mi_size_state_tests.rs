@@ -16,7 +16,7 @@ fn block(index: usize) -> BlockSize {
 }
 
 fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
-    TileMiSizeState::new(0, 0, mi_rows, mi_cols, block(BLOCK_64X64)).unwrap()
+    TileMiSizeState::new(mi_rows, mi_cols, block(BLOCK_64X64)).unwrap()
 }
 
 impl TileMiSizeState {
@@ -81,14 +81,14 @@ fn non_square_padded_grid_uses_padded_columns_as_stride() {
 #[test]
 fn rejects_empty_dimensions() {
     assert!(matches!(
-        TileMiSizeState::new(0, 0, 0, 1, block(BLOCK_64X64)).unwrap_err(),
+        TileMiSizeState::new(0, 1, block(BLOCK_64X64)).unwrap_err(),
         TileMiSizeStateError::EmptyDimensions {
             mi_rows: 0,
             mi_cols: 1
         }
     ));
     assert!(matches!(
-        TileMiSizeState::new(0, 0, 1, 0, block(BLOCK_64X64)).unwrap_err(),
+        TileMiSizeState::new(1, 0, block(BLOCK_64X64)).unwrap_err(),
         TileMiSizeStateError::EmptyDimensions {
             mi_rows: 1,
             mi_cols: 0

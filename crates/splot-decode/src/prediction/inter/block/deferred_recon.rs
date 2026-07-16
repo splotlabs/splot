@@ -13,7 +13,9 @@ use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, Re
 use super::super::compound::CompoundBlockSyntax;
 use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField, TemporalMvContext};
 use super::super::mc::WorkspaceSink;
-use super::super::{InterReferenceState, PlacedInterBlock};
+use super::super::{
+    InterReferenceState, InterResidualBlock, InterResidualReconScratch, PlacedInterBlock,
+};
 use super::compound_path::append_compound_temporal_motion;
 use super::temporal::{commit_temporal_motion_blocks, temporal_motion_block};
 use super::tip::{self, TipReconstructScratch};
@@ -37,19 +39,23 @@ pub(super) enum PendingKind {
 }
 
 #[derive(Debug)]
-pub(super) struct InterReconCommand<T: ReconSample> {
+pub(super) struct InterReconCommand {
     placed: PlacedInterBlock,
     kind: PendingKind,
     segment_id: usize,
     qindex: u32,
     tile_offset: ByteOffset,
-    tip_scratch: Option<TipReconstructScratch<T>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
+#[repr(align(64))]
 pub(super) struct InterReconScratch<T: ReconSample> {
-    tip: Vec<TipReconstructScratch<T>>,
+    general_intra: crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
+    tip: TipReconstructScratch<T>,
     temporal: Vec<TemporalMotionBlock>,
+    interintra: super::interintra::InterIntraScratch<T>,
+    residual: InterResidualReconScratch<T>,
+    mc: super::super::mc::McScratch,
 }
 
 struct ReconShared<'a, 'r, T: ReconSample> {
@@ -67,7 +73,7 @@ const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
     bawp || interintra
 }
 
-impl<T: ReconSample> InterReconCommand<T> {
+impl InterReconCommand {
     pub(super) fn new(
         placed: PlacedInterBlock,
         kind: PendingKind,
@@ -80,7 +86,6 @@ impl<T: ReconSample> InterReconCommand<T> {
             segment_id: current_frame_qm_segment_id(),
             qindex,
             tile_offset,
-            tip_scratch: None,
         }
     }
 
@@ -91,11 +96,23 @@ impl<T: ReconSample> InterReconCommand<T> {
         )
     }
 
+    pub(super) fn temporal_record_capacity(&self) -> usize {
+        match self.kind {
+            PendingKind::Single => 1,
+            PendingKind::Compound { .. } | PendingKind::Tip => self
+                .placed
+                .luma_w
+                .div_ceil(8)
+                .saturating_mul(self.placed.luma_h.div_ceil(8)),
+        }
+    }
+
     pub(super) fn prepass_write_is_contained(
         &self,
         superblock_origin: [usize; 2],
         sb_h4: usize,
         info: DecodedFrameInfo,
+        residual_blocks: &[InterResidualBlock],
     ) -> bool {
         if self.reads_current_frame() {
             return false;
@@ -141,39 +158,41 @@ impl<T: ReconSample> InterReconCommand<T> {
             return false;
         }
         self.placed.block.residual.as_ref().is_none_or(|residual| {
-            residual.blocks.iter().all(|block| {
-                let (sub_x, sub_y, storage) = match block.plane {
-                    PlaneId::Y => (0, 0, Some(luma)),
-                    PlaneId::U | PlaneId::V => {
-                        let format = info.pixel_format();
-                        (
-                            usize::from(format.subsampling_x()),
-                            usize::from(format.subsampling_y()),
-                            format.chroma_size(luma).ok().flatten(),
-                        )
-                    }
-                };
-                let Some(storage) = storage else {
-                    return false;
-                };
-                let Some(width) = 1usize.checked_shl(block.log2_width) else {
-                    return false;
-                };
-                let Some(height) = 1usize.checked_shl(block.log2_height) else {
-                    return false;
-                };
-                clipped_rect_is_inside_band(
-                    block.x,
-                    block.y,
-                    width,
-                    height,
-                    origin_x >> sub_x,
-                    origin_y >> sub_y,
-                    side >> sub_x,
-                    side >> sub_y,
-                    storage.width(),
-                    storage.height(),
-                )
+            residual.blocks(residual_blocks).is_some_and(|blocks| {
+                blocks.iter().all(|block| {
+                    let (sub_x, sub_y, storage) = match block.plane {
+                        PlaneId::Y => (0, 0, Some(luma)),
+                        PlaneId::U | PlaneId::V => {
+                            let format = info.pixel_format();
+                            (
+                                usize::from(format.subsampling_x()),
+                                usize::from(format.subsampling_y()),
+                                format.chroma_size(luma).ok().flatten(),
+                            )
+                        }
+                    };
+                    let Some(storage) = storage else {
+                        return false;
+                    };
+                    let Some(width) = 1usize.checked_shl(block.log2_width) else {
+                        return false;
+                    };
+                    let Some(height) = 1usize.checked_shl(block.log2_height) else {
+                        return false;
+                    };
+                    clipped_rect_is_inside_band(
+                        block.x,
+                        block.y,
+                        width,
+                        height,
+                        origin_x >> sub_x,
+                        origin_y >> sub_y,
+                        side >> sub_x,
+                        side >> sub_y,
+                        storage.width(),
+                        storage.height(),
+                    )
+                })
             })
         })
     }
@@ -190,12 +209,16 @@ impl<T: ReconSample> InterReconCommand<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn reconstruct_ordered(
-        &mut self,
+    fn reconstruct_ordered<T: ReconSample>(
+        &self,
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
+        residual_blocks: &[InterResidualBlock],
         shared: &ReconShared<'_, '_, T>,
+        tip_scratch: &mut TipReconstructScratch<T>,
+        interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
+        residual_scratch: &mut InterResidualReconScratch<T>,
         mi_rows: usize,
         mi_cols: usize,
         current_order_hint: u32,
@@ -203,20 +226,14 @@ impl<T: ReconSample> InterReconCommand<T> {
         let _segment_scope = FrameQmSegmentScope::install(self.segment_id);
         if matches!(self.kind, PendingKind::Tip) {
             let allow_unit_parallelism = matches!(sink, WorkspaceSink::Frame(_));
-            let scratch = self.tip_scratch.as_mut().ok_or_else(|| {
-                super::super::unsupported_at(
-                    "inter_recon_missing_tip_scratch",
-                    self.tile_offset,
-                    "missing tip scratch buffer",
-                    "7.10.6",
-                )
-            })?;
             tip::reconstruct(
-                scratch,
+                tip_scratch,
+                residual_scratch,
                 temporal_records,
                 sink,
                 allow_unit_parallelism,
                 &self.placed,
+                residual_blocks,
                 shared.temporal_context,
                 shared.sequence,
                 shared.core,
@@ -234,8 +251,11 @@ impl<T: ReconSample> InterReconCommand<T> {
         let (use_refinemv, refinemv_switchable) = self.refinemv();
         let grid = match sink {
             WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
+                interintra_scratch,
+                residual_scratch,
                 workspace,
                 &self.placed,
+                residual_blocks,
                 use_refinemv,
                 refinemv_switchable,
                 block_decoded,
@@ -251,7 +271,9 @@ impl<T: ReconSample> InterReconCommand<T> {
             sink @ (WorkspaceSink::Row(_) | WorkspaceSink::Rect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
                     sink,
+                    residual_scratch,
                     &self.placed,
+                    residual_blocks,
                     use_refinemv,
                     refinemv_switchable,
                     shared.ref_frame_idx,
@@ -311,13 +333,30 @@ impl<T: ReconSample> InterReconCommand<T> {
 }
 
 impl<T: ReconSample> InterReconScratch<T> {
+    pub(super) fn general_intra_mut(
+        &mut self,
+    ) -> &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T> {
+        &mut self.general_intra
+    }
+
+    pub(super) fn reconstruct_intrabc(
+        &mut self,
+        command: super::intrabc::IntrabcReconCommand,
+        residual_blocks: &[InterResidualBlock],
+        workspace: &mut CurrentFrameWorkspace<T>,
+    ) -> Result<()> {
+        let Self { residual, mc, .. } = self;
+        mc.with_installed(|| command.reconstruct(residual, residual_blocks, workspace))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct_logged(
         &mut self,
-        mut command: InterReconCommand<T>,
+        command: &InterReconCommand,
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
+        residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
         reference: &InterReferenceState<'_, T>,
         ref_frame_idx: &[u32],
@@ -330,40 +369,47 @@ impl<T: ReconSample> InterReconScratch<T> {
         residual_use_ddt: bool,
         bit_depth: BitDepth,
     ) -> Result<()> {
-        if matches!(command.kind, PendingKind::Tip) {
-            command.tip_scratch = Some(self.tip.pop().unwrap_or_default());
-        }
-        let result = command.reconstruct_ordered(
-            sink,
-            block_decoded,
-            temporal_records,
-            &ReconShared {
-                reference,
-                ref_frame_idx,
-                temporal_context,
-                sequence,
-                core,
-                luma_use_tcq,
-                residual_use_ddt,
-                bit_depth,
-            },
-            mi_rows,
-            mi_cols,
-            current_order_hint,
-        );
-        if let Some(scratch) = command.tip_scratch.take() {
-            self.tip.push(scratch);
-        }
-        result
+        let Self {
+            tip,
+            interintra,
+            residual,
+            mc,
+            ..
+        } = self;
+        mc.with_installed(|| {
+            command.reconstruct_ordered(
+                sink,
+                block_decoded,
+                temporal_records,
+                residual_blocks,
+                &ReconShared {
+                    reference,
+                    ref_frame_idx,
+                    temporal_context,
+                    sequence,
+                    core,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    bit_depth,
+                },
+                tip,
+                interintra,
+                residual,
+                mi_rows,
+                mi_cols,
+                current_order_hint,
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reconstruct(
         &mut self,
-        command: InterReconCommand<T>,
+        command: &InterReconCommand,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
         motion_field: &mut TemporalMotionField,
+        residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
         reference: &InterReferenceState<'_, T>,
         ref_frame_idx: &[u32],
@@ -383,6 +429,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             &mut WorkspaceSink::Frame(workspace),
             block_decoded,
             &mut temporal,
+            residual_blocks,
             temporal_context,
             reference,
             ref_frame_idx,
@@ -449,7 +496,7 @@ mod tests {
         PlaneRect, PlaneSize,
     };
 
-    use super::{InterReconCommand, PendingKind};
+    use super::{InterReconCommand, InterReconScratch, PendingKind};
     use crate::bitstream::tile_payload::LumaCoeffBlock;
     use crate::prediction::inter::{
         BawpSyntax, InterBlock, InterResidual, InterResidualBlock, Mv, PlacedInterBlock, mc,
@@ -459,8 +506,12 @@ mod tests {
 
     #[test]
     fn inter_recon_command_is_send() {
-        assert_send::<InterReconCommand<u8>>();
-        assert_send::<InterReconCommand<u16>>();
+        assert_send::<InterReconCommand>();
+    }
+
+    #[test]
+    fn worker_reconstruction_scratch_is_cache_aligned() {
+        assert_eq!(core::mem::align_of::<InterReconScratch<u8>>(), 64);
     }
 
     #[test]
@@ -483,7 +534,7 @@ mod tests {
         .expect("frame info")
     }
 
-    fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand<u8> {
+    fn command(x: usize, y: usize, width: usize, height: usize) -> InterReconCommand {
         InterReconCommand::new(
             PlacedInterBlock {
                 luma_x: x,
@@ -518,31 +569,35 @@ mod tests {
     }
 
     fn residual(
+        blocks: &mut Vec<InterResidualBlock>,
         plane: PlaneId,
         x: usize,
         y: usize,
         log2_width: u32,
         log2_height: u32,
     ) -> InterResidual {
+        let start = blocks.len();
+        blocks.push(InterResidualBlock {
+            plane,
+            x,
+            y,
+            tx_size: 0,
+            log2_width,
+            log2_height,
+            cctx_pair_delta: 0,
+            coeffs: LumaCoeffBlock {
+                all_zero: true,
+                eob: 0,
+                quant: Vec::new(),
+                intra_ist: None,
+                cctx_type: None,
+                plane_tx_type: 0,
+                use_tcq: false,
+                lossless: false,
+            },
+        });
         InterResidual {
-            blocks: vec![InterResidualBlock {
-                plane,
-                x,
-                y,
-                tx_size: 0,
-                log2_width,
-                log2_height,
-                coeffs: LumaCoeffBlock {
-                    all_zero: true,
-                    eob: 0,
-                    quant: Vec::new(),
-                    intra_ist: None,
-                    cctx_type: None,
-                    plane_tx_type: 0,
-                    use_tcq: false,
-                    lossless: false,
-                },
-            }],
+            block_range: start..blocks.len(),
         }
     }
 
@@ -561,14 +616,15 @@ mod tests {
             full.placed.chroma_luma_y = 4;
             full.placed.chroma_luma_w = 60;
             full.placed.chroma_luma_h = 60;
-            assert!(full.prepass_write_is_contained([0, 0], 16, info(128, 128, format)));
+            assert!(full.prepass_write_is_contained([0, 0], 16, info(128, 128, format), &[]));
         }
 
         let edge = command(64, 64, 4, 4);
         assert!(edge.prepass_write_is_contained(
             [16, 16],
             16,
-            info(65, 65, PixelFormat::Monochrome)
+            info(65, 65, PixelFormat::Monochrome),
+            &[],
         ));
     }
 
@@ -578,15 +634,19 @@ mod tests {
         assert!(!crossing.prepass_write_is_contained(
             [0, 0],
             16,
-            info(128, 128, PixelFormat::Monochrome)
+            info(128, 128, PixelFormat::Monochrome),
+            &[],
         ));
 
         let mut residual_crossing = command(0, 0, 64, 64);
-        residual_crossing.placed.block.residual = Some(residual(PlaneId::Y, 0, 63, 1, 1));
+        let mut blocks = Vec::new();
+        residual_crossing.placed.block.residual =
+            Some(residual(&mut blocks, PlaneId::Y, 0, 63, 1, 1));
         assert!(!residual_crossing.prepass_write_is_contained(
             [0, 0],
             16,
-            info(128, 128, PixelFormat::Monochrome)
+            info(128, 128, PixelFormat::Monochrome),
+            &blocks,
         ));
     }
 
@@ -598,21 +658,31 @@ mod tests {
             (PixelFormat::Yuv444, 64usize),
         ] {
             let log2_height = plane_height.ilog2();
+            let mut blocks = Vec::new();
             let mut exact = command(0, 0, 64, 64);
-            exact.placed.block.residual = Some(residual(PlaneId::U, 0, 0, 1, log2_height));
-            assert!(exact.prepass_write_is_contained([0, 0], 16, info(128, 128, format)));
+            exact.placed.block.residual =
+                Some(residual(&mut blocks, PlaneId::U, 0, 0, 1, log2_height));
+            assert!(exact.prepass_write_is_contained([0, 0], 16, info(128, 128, format), &blocks,));
 
             let mut crossing = command(0, 0, 64, 64);
-            crossing.placed.block.residual = Some(residual(PlaneId::V, 0, plane_height - 1, 1, 1));
-            assert!(!crossing.prepass_write_is_contained([0, 0], 16, info(128, 128, format)));
+            crossing.placed.block.residual =
+                Some(residual(&mut blocks, PlaneId::V, 0, plane_height - 1, 1, 1));
+            assert!(!crossing.prepass_write_is_contained(
+                [0, 0],
+                16,
+                info(128, 128, format),
+                &blocks,
+            ));
         }
 
         let mut monochrome = command(0, 0, 64, 64);
-        monochrome.placed.block.residual = Some(residual(PlaneId::U, 0, 0, 1, 1));
+        let mut blocks = Vec::new();
+        monochrome.placed.block.residual = Some(residual(&mut blocks, PlaneId::U, 0, 0, 1, 1));
         assert!(!monochrome.prepass_write_is_contained(
             [0, 0],
             16,
-            info(128, 128, PixelFormat::Monochrome)
+            info(128, 128, PixelFormat::Monochrome),
+            &blocks,
         ));
     }
 }

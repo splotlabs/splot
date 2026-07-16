@@ -139,21 +139,33 @@ enum WarpInterMode {
 }
 
 pub(crate) struct InterFilterInputs {
-    pub(crate) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
-    pub(crate) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    pub(crate) records: crate::filters::wienerns_lr::FrameFilterRecords,
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
-    pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-    pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
-    pub(crate) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     pub(crate) motion_field: TemporalMotionField,
 }
 
-enum ReconCommand<T: ReconSample> {
+#[derive(Default)]
+pub(crate) struct InterDecodeScratch<T: ReconSample> {
+    tile: tile::TileDecodeScratch<T>,
+    temporal_context: Option<TemporalMvContext>,
+    frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+}
+
+impl<T: ReconSample> InterDecodeScratch<T> {
+    pub(crate) fn recycle_frame_filter_records(
+        &mut self,
+        records: crate::filters::wienerns_lr::FrameFilterRecords,
+    ) {
+        self.frame_filter_records = records;
+    }
+}
+
+enum ReconCommand {
     GeneralIntra(crate::pipeline::general_intra::GeneralIntraReconCommand),
     Intrabc(intrabc::IntrabcReconCommand),
-    Inter(deferred_recon::InterReconCommand<T>),
+    Inter(deferred_recon::InterReconCommand),
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -163,7 +175,7 @@ enum ReconDependency {
     GlobalIntrabcFence,
 }
 
-impl<T: ReconSample> ReconCommand<T> {
+impl ReconCommand {
     fn dependency(&self) -> ReconDependency {
         match self {
             Self::Intrabc(command) if command.requires_global_fence() => {
@@ -174,10 +186,18 @@ impl<T: ReconSample> ReconCommand<T> {
             Self::Inter(_) => ReconDependency::ReferenceOnly,
         }
     }
+
+    fn temporal_record_capacity(&self) -> usize {
+        match self {
+            Self::Inter(command) => command.temporal_record_capacity(),
+            Self::GeneralIntra(_) | Self::Intrabc(_) => 0,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_inter_blocks<T: ReconSample>(
+    scratch: &mut InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -287,23 +307,27 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             .as_ref()
             .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
     };
-    let mut temporal_context = TemporalMvContext::from_references(
-        (mi_rows, mi_cols),
-        current_order_hint,
-        temporal_config,
-        ref_frame_idx,
-        &reference.ref_valid,
-        &reference.ref_order_hint,
-        &reference.ref_motion_fields,
-    )
-    .ok_or_else(|| {
-        inter_cap!(
-            "inter_temporal_motion_context",
-            offset,
-            "inter.temporal_motion_context",
-            SPEC_MODE_INFO
+    let temporal_context = scratch
+        .temporal_context
+        .get_or_insert_with(TemporalMvContext::empty);
+    temporal_context
+        .refresh_from_references(
+            (mi_rows, mi_cols),
+            current_order_hint,
+            temporal_config,
+            ref_frame_idx,
+            &reference.ref_valid,
+            &reference.ref_order_hint,
+            &reference.ref_motion_fields,
         )
-    })?;
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_temporal_motion_context",
+                offset,
+                "inter.temporal_motion_context",
+                SPEC_MODE_INFO
+            )
+        })?;
     let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols).ok_or_else(|| {
         inter_cap!(
             "inter_temporal_motion_field",
@@ -328,9 +352,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         &reference.ref_ccso_unit_grids,
         first_tile_offset,
     )?;
-    let (chroma_smooth_rows, chroma_smooth_cols) =
-        chroma_smooth_grid_dimensions(mi_rows, mi_cols, sequence.general.chroma_format_idc);
-    tip::prepare_motion_field(&mut temporal_context, core, sb_h4);
+    tip::prepare_motion_field(temporal_context, core, sb_h4);
 
     let residual_tool_policy = if frame_is_intra {
         crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)
@@ -350,12 +372,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
 
     let limits = options.limits();
     let output = tile::decode_tiles(
+        &mut scratch.tile,
+        &mut scratch.frame_filter_records,
         work_units,
         sequence,
         core,
         limits,
-        chroma_smooth_rows,
-        chroma_smooth_cols,
         mi_rows,
         mi_cols,
         sb_h4,
@@ -365,7 +387,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         num_total_refs,
         reference_select,
         num_same_ref_compound,
-        &temporal_context,
+        temporal_context,
         reference,
         workspace,
         luma_use_tcq,
@@ -394,22 +416,13 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         gdf_state,
         ccso_state,
         motion_field,
-        deblock_blocks,
-        chroma_deblock_blocks,
-        tx_skip_records,
-        active_source_blocks,
-        unit_filters,
     } = output;
     frame_cdfs.frame_end_update_from_saved(&saved_cdfs);
     let filter_inputs = InterFilterInputs {
-        deblock_blocks,
-        chroma_deblock_blocks,
+        records: core::mem::take(&mut scratch.frame_filter_records),
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,
         ccso_grid: ccso_state.into_grid(first_tile_offset)?,
         gdf_grid: gdf_state.into_grid(first_tile_offset)?,
-        lr_source_blocks: active_source_blocks,
-        lr_unit_filters: unit_filters,
-        tx_skip_records,
         motion_field,
     };
     Ok((frame_cdfs, filter_inputs))
@@ -424,15 +437,23 @@ fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<us
     }
 }
 
-fn chroma_smooth_grid_dimensions(
-    mi_rows: usize,
-    mi_cols: usize,
+fn chroma_smooth_tile_ranges(
+    mi_rows: core::ops::Range<usize>,
+    mi_cols: core::ops::Range<usize>,
     chroma: splot_core::headers::sequence::ChromaFormatIdc,
-) -> (usize, usize) {
+) -> (core::ops::Range<usize>, core::ops::Range<usize>) {
     let (sub_x, sub_y) = chroma_subsampling(chroma);
     (
-        if sub_y { mi_rows.div_ceil(2) } else { mi_rows },
-        if sub_x { mi_cols.div_ceil(2) } else { mi_cols },
+        (mi_rows.start >> usize::from(sub_y))..if sub_y {
+            mi_rows.end.div_ceil(2)
+        } else {
+            mi_rows.end
+        },
+        (mi_cols.start >> usize::from(sub_x))..if sub_x {
+            mi_cols.end.div_ceil(2)
+        } else {
+            mi_cols.end
+        },
     )
 }
 
@@ -550,6 +571,8 @@ fn decode_block<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     coeff_ctx: &mut TileCoeffContextState,
+    residual_scratch: &mut InterResidualParseScratch,
+    residual_blocks: &mut Vec<InterResidualBlock>,
     gdf_state: &mut GdfState,
     cdef_state: &mut CdefState,
     ccso_state: &mut CcsoState,
@@ -591,7 +614,7 @@ fn decode_block<T: ReconSample>(
     frame_is_switch: bool,
     current_order_hint: u32,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, ReconCommand<T>)> {
+) -> Result<(GeneralIntraLeafMode, ReconCommand)> {
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
         inter_diag!(
             "inter_block_geometry",
@@ -843,6 +866,8 @@ fn decode_block<T: ReconSample>(
                     work_unit,
                     symbols,
                     coeff_ctx,
+                    residual_scratch,
+                    residual_blocks,
                     sequence,
                     core,
                     frontier,
@@ -864,6 +889,7 @@ fn decode_block<T: ReconSample>(
                 (n4w, n4h),
                 sequence.general.chroma_format_idc,
                 residual.as_ref(),
+                residual_blocks,
                 None,
                 block_qindex,
                 lossless,
@@ -1031,6 +1057,8 @@ fn decode_block<T: ReconSample>(
             work_unit,
             symbols,
             coeff_ctx,
+            residual_scratch,
+            residual_blocks,
             sequence,
             core,
             frontier,
@@ -1095,6 +1123,8 @@ fn decode_block<T: ReconSample>(
             work_unit,
             symbols,
             coeff_ctx,
+            residual_scratch,
+            residual_blocks,
             sequence,
             core,
             frontier,
@@ -1297,6 +1327,8 @@ fn decode_block<T: ReconSample>(
                 work_unit,
                 symbols,
                 coeff_ctx,
+                residual_scratch,
+                residual_blocks,
                 sequence,
                 core,
                 frontier,
@@ -1321,6 +1353,7 @@ fn decode_block<T: ReconSample>(
             (n4w, n4h),
             sequence.general.chroma_format_idc,
             residual.as_ref(),
+            residual_blocks,
             None,
             block_qindex,
             current_residual_lossless(work_unit),
@@ -1601,6 +1634,8 @@ fn decode_block<T: ReconSample>(
             work_unit,
             symbols,
             coeff_ctx,
+            residual_scratch,
+            residual_blocks,
             sequence,
             core,
             frontier,
@@ -1634,6 +1669,7 @@ fn decode_block<T: ReconSample>(
         (n4w, n4h),
         sequence.general.chroma_format_idc,
         residual.as_ref(),
+        residual_blocks,
         tip_ref.then_some(crate::filters::deblock::DeblockSubPuSize::square(
             if tip_uses_16x16_units { 16 } else { 8 },
         )),
@@ -1816,8 +1852,8 @@ use self::warp::{
 };
 
 use self::residual::{
-    InterResidualLumaTxSizeMode, read_inter_residual, reset_inter_skip_coeff_contexts,
-    transform_tool_residual_policy,
+    InterResidualLumaTxSizeMode, InterResidualParseScratch, read_inter_residual,
+    reset_inter_skip_coeff_contexts, transform_tool_residual_policy,
 };
 
 fn read_inter_intra_syntax(

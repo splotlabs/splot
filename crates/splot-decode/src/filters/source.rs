@@ -2,6 +2,51 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
+use std::sync::{Mutex, MutexGuard};
+
+const MAX_RETAINED_STRIPE_BUFFERS: usize = 128;
+const MAX_RETAINED_STRIPE_SAMPLES: usize = 4096 * 128;
+static STRIPE_SAMPLE_BUFFERS: Mutex<Vec<Vec<u16>>> = Mutex::new(Vec::new());
+
+fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
+    STRIPE_SAMPLE_BUFFERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn take_stripe_sample_buffer(sample_count: usize) -> Option<Vec<u16>> {
+    let mut buffers = lock_stripe_sample_buffers();
+    let index = buffers
+        .iter()
+        .enumerate()
+        .filter(|(_, buffer)| buffer.capacity() >= sample_count)
+        .min_by_key(|(_, buffer)| buffer.capacity())
+        .or_else(|| {
+            buffers
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, buffer)| buffer.capacity())
+        })
+        .map(|(index, _)| index);
+    let mut buffer = index
+        .map(|index| buffers.swap_remove(index))
+        .unwrap_or_default();
+    drop(buffers);
+    buffer.clear();
+    buffer.try_reserve_exact(sample_count).ok()?;
+    Some(buffer)
+}
+
+fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
+    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_STRIPE_SAMPLES {
+        return;
+    }
+    buffer.clear();
+    let mut buffers = lock_stripe_sample_buffers();
+    if buffers.len() < MAX_RETAINED_STRIPE_BUFFERS && buffers.try_reserve(1).is_ok() {
+        buffers.push(buffer);
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(crate) struct FramePlane<'a, T> {
@@ -93,10 +138,8 @@ impl StripePlane {
         if origin_y > end_y || end_y > source.frame_height() {
             return None;
         }
-        let mut samples = Vec::new();
-        samples
-            .try_reserve_exact(source.width().checked_mul(end_y - origin_y)?)
-            .ok()?;
+        let sample_count = source.width().checked_mul(end_y - origin_y)?;
+        let mut samples = take_stripe_sample_buffer(sample_count)?;
         for y in origin_y..end_y {
             samples.extend(source.row(y)?.iter().map(|value| value.to_u16()));
         }
@@ -113,11 +156,14 @@ impl StripePlane {
             .checked_sub(self.origin_y)?
             .checked_mul(self.width)?;
         let end = end_y.checked_sub(self.origin_y)?.checked_mul(self.width)?;
+        let source = self.samples.get(start..end)?;
+        let mut samples = take_stripe_sample_buffer(source.len())?;
+        samples.extend_from_slice(source);
         Some(Self {
             width: self.width,
             frame_height: self.frame_height,
             origin_y,
-            samples: self.samples.get(start..end)?.to_vec(),
+            samples,
         })
     }
 
@@ -172,5 +218,11 @@ impl StripePlane {
                 .copy_from_slice(src);
         }
         Some(())
+    }
+}
+
+impl Drop for StripePlane {
+    fn drop(&mut self) {
+        recycle_stripe_sample_buffer(core::mem::take(&mut self.samples));
     }
 }

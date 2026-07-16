@@ -27,6 +27,7 @@ use crate::pipeline::reconstruct::*;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block: &LumaCoeffBlock,
     plane_id: PlaneId,
@@ -105,6 +106,7 @@ pub(crate) fn reconstruct_general_intra_chroma_block_into<T: ReconSample>(
             bit_depth,
         ),
         SupportedChromaMode::Paeth => reconstruct_general_intra_luma_paeth_neighbour_block_into(
+            scratch,
             workspace,
             block,
             plane_id,

@@ -384,7 +384,11 @@ pub(crate) fn decode_key_frame(
     display_grain: Option<ActiveFilmGrain>,
 ) -> Result<PipelineFrame> {
     let core = parse_frame_core(frame_envelope, sequence)?;
+    let mut scratch_eight = inter::InterDecodeScratch::default();
+    let mut scratch_ten = inter::InterDecodeScratch::default();
     decode_key_frame_with_effects(
+        &mut scratch_eight,
+        &mut scratch_ten,
         bytes,
         options,
         plan,
@@ -401,6 +405,8 @@ pub(crate) fn decode_key_frame(
 
 #[allow(clippy::too_many_arguments)]
 fn decode_key_frame_with_effects(
+    scratch_eight: &mut inter::InterDecodeScratch<u8>,
+    scratch_ten: &mut inter::InterDecodeScratch<u16>,
     bytes: &[u8],
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
@@ -419,6 +425,7 @@ fn decode_key_frame_with_effects(
             BitDepthIdc::Eight => {
                 let (frame, core, frame_cdfs, ccso_grid, motion_field) =
                     frame_engine::decode_frame::<u8>(
+                        scratch_eight,
                         plan,
                         candidate,
                         bytes,
@@ -440,6 +447,7 @@ fn decode_key_frame_with_effects(
             BitDepthIdc::Ten => {
                 let (frame, core, frame_cdfs, ccso_grid, motion_field) =
                     frame_engine::decode_frame::<u16>(
+                        scratch_ten,
                         plan,
                         candidate,
                         bytes,
@@ -525,6 +533,8 @@ fn decode_frames_from_plan_impl(
     })?;
     let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
+    let mut decode_scratch_eight = inter::InterDecodeScratch::default();
+    let mut decode_scratch_ten = inter::InterDecodeScratch::default();
     let mut frames = Vec::new();
     let mut scheduler = OutputScheduler::new(num_ref_frames);
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
@@ -643,6 +653,7 @@ fn decode_frames_from_plan_impl(
                 );
                 let (frame, core, frame_cdfs, ccso_grid, motion_field) =
                     frame_engine::decode_frame::<u8>(
+                        &mut decode_scratch_eight,
                         plan,
                         key_candidate,
                         bytes,
@@ -676,6 +687,7 @@ fn decode_frames_from_plan_impl(
                 );
                 let (frame, core, frame_cdfs, ccso_grid, motion_field) =
                     frame_engine::decode_frame::<u16>(
+                        &mut decode_scratch_ten,
                         plan,
                         key_candidate,
                         bytes,
@@ -702,6 +714,8 @@ fn decode_frames_from_plan_impl(
         }
     } else {
         decode_key_frame_with_effects(
+            &mut decode_scratch_eight,
+            &mut decode_scratch_ten,
             bytes,
             options,
             plan,
@@ -1096,6 +1110,7 @@ fn decode_frames_from_plan_impl(
                         );
                         let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                             frame_engine::decode_frame(
+                                &mut decode_scratch_eight,
                                 plan,
                                 next_candidate,
                                 bytes,
@@ -1155,6 +1170,7 @@ fn decode_frames_from_plan_impl(
                         );
                         let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
                             frame_engine::decode_frame(
+                                &mut decode_scratch_ten,
                                 plan,
                                 next_candidate,
                                 bytes,
@@ -1448,6 +1464,8 @@ fn decode_frames_from_plan_impl(
                 )?;
                 let key_frame_timer = crate::timing::start();
                 let key_frame = decode_key_frame_with_effects(
+                    &mut decode_scratch_eight,
+                    &mut decode_scratch_ten,
                     bytes,
                     options,
                     plan,

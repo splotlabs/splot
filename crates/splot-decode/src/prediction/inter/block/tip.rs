@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::prediction::inter::InterResidualReconScratch;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
 use splot_recon::{DecodedFrame, PixelFormat, ReconError};
@@ -397,10 +398,12 @@ pub(crate) fn tip_allowed_for_block_indices(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
+    residual_scratch: &mut InterResidualReconScratch<T>,
     temporal_records: &mut Vec<TemporalMotionBlock>,
     sink: &mut mc::WorkspaceSink<'_, '_, T>,
     allow_unit_parallelism: bool,
     placed: &PlacedInterBlock,
+    residual_blocks: &[InterResidualBlock],
     temporal: &TemporalMvContext,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -670,8 +673,10 @@ pub(super) fn reconstruct<T: ReconSample>(
     }
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
+            residual_scratch,
             sink,
             residual,
+            residual_blocks,
             qindex,
             luma_use_tcq,
             residual_use_ddt,
@@ -780,13 +785,16 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         },
     };
     let mut scratch = TipReconstructScratch::default();
+    let mut residual_scratch = InterResidualReconScratch::default();
     let mut temporal_records = Vec::new();
     reconstruct(
         &mut scratch,
+        &mut residual_scratch,
         &mut temporal_records,
         &mut mc::WorkspaceSink::Frame(&mut workspace),
         true,
         &placed,
+        &[],
         &temporal,
         sequence,
         core,

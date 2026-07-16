@@ -40,6 +40,7 @@ pub(crate) enum FrameSetup<'a, T: ReconSample> {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_frame<T: ReconSample>(
+    scratch: &mut inter::InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
@@ -52,6 +53,7 @@ pub(crate) fn decode_frame<T: ReconSample>(
 ) -> Result<FrameDecodeOutput<T>> {
     match *setup {
         FrameSetup::Inter(reference) => inter::decode_inter_frame(
+            scratch,
             plan,
             candidate,
             bytes,
@@ -64,6 +66,7 @@ pub(crate) fn decode_frame<T: ReconSample>(
         ),
         FrameSetup::Intra => {
             let (frame, frame_cdfs, ccso_grid) = intra::decode_intra_frame::<T>(
+                scratch,
                 plan,
                 candidate,
                 bytes,

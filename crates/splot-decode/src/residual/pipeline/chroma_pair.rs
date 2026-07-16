@@ -43,6 +43,7 @@ pub(super) fn cctx_allowed(plane: ResidualPlanePlan) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     u: (ResidualPlanePlan, LumaCoeffBlock),
@@ -58,6 +59,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             return Err(GeneralIntraResidualError::UnexpectedBranch);
         }
         return u_plane.reconstruct(
+            scratch,
             workspace,
             &u_coeffs,
             block_decoded,
@@ -69,6 +71,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
     };
     if cctx_type == 0 {
         if reconstruct_cfl_pair(
+            scratch,
             workspace,
             block_decoded,
             (u_plane, &u_coeffs),
@@ -78,6 +81,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             return Ok(());
         }
         u_plane.reconstruct(
+            scratch,
             workspace,
             &u_coeffs,
             block_decoded,
@@ -87,6 +91,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
             luma_context,
         )?;
         return v_plane.reconstruct(
+            scratch,
             workspace,
             &v_coeffs,
             block_decoded,
@@ -97,6 +102,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
         );
     }
     reconstruct_chroma_cctx_pair(
+        scratch,
         workspace,
         block_decoded,
         (u_plane, u_coeffs),
@@ -109,6 +115,7 @@ pub(super) fn reconstruct_chroma_pair_or_planes<T: ReconSample>(
 }
 
 fn reconstruct_cfl_pair<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     u: (ResidualPlanePlan, &LumaCoeffBlock),
@@ -147,6 +154,7 @@ fn reconstruct_cfl_pair<T: ReconSample>(
     let u_neighbours = u_plane.plane_neighbours(u_plane.block_ctx, block_decoded);
     let v_neighbours = v_plane.plane_neighbours(v_plane.block_ctx, block_decoded);
     reconstruct_general_intra_chroma_cfl_pair_into(
+        scratch,
         workspace,
         u_coeffs,
         v_coeffs,
@@ -173,6 +181,7 @@ fn reconstruct_cfl_pair<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn reconstruct_chroma_cctx_pair<T: ReconSample>(
+    scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &TileBlockDecodedState,
     u: (ResidualPlanePlan, LumaCoeffBlock),
@@ -194,6 +203,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     }
     let u_prediction_block = prediction_only_coeff_block(&u_coeffs);
     u_plane.reconstruct(
+        scratch,
         workspace,
         &u_prediction_block,
         block_decoded,
@@ -205,6 +215,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
     let u_prediction = read_plane_prediction(workspace, u_plane)?;
     let v_prediction_block = prediction_only_coeff_block(&v_coeffs);
     v_plane.reconstruct(
+        scratch,
         workspace,
         &v_prediction_block,
         block_decoded,

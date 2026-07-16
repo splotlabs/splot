@@ -105,6 +105,7 @@ fn reconstruct_plan_samples(plan: IntraLumaPlan, above: u8) -> Vec<u8> {
     let mut ws = workspace_with_tile_boundary_edges(above);
     let block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 16, 16).unwrap();
     plan.reconstruct(
+        &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
         &mut ws,
         &all_zero_luma_block(),
         tile_top_block_ctx(),

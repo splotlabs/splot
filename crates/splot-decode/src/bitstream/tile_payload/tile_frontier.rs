@@ -67,8 +67,17 @@ pub(crate) fn consume_tile_lr_unit_frontier(
 ) -> Result<TileLoopRestorationRootFrontier, TilePartitionFrontierError> {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
-    let mi_size_state = TileMiSizeState::new(0, 0, mi_rows, mi_cols, frame.sb_size())?;
+    let tile_rows = work_unit.mi_row_range().start as usize
+        ..(work_unit.mi_row_range().end as usize).min(mi_rows);
+    let tile_cols = work_unit.mi_col_range().start as usize
+        ..(work_unit.mi_col_range().end as usize).min(mi_cols);
+    ensure_mi_size_allocation_within_limits(
+        tile_rows.end.saturating_sub(tile_rows.start),
+        tile_cols.end.saturating_sub(tile_cols.start),
+        frame.sb_size(),
+        limits,
+    )?;
+    let mi_size_state = TileMiSizeState::new_for_tile(tile_rows, tile_cols, frame.sb_size())?;
     let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
         work_unit,
         frame,
@@ -106,32 +115,29 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
     ) -> Result<Self, TilePartitionFrontierError> {
         let frame = minimal_partition_frame_facts(sequence, core)?;
         let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-        let row_start = work_unit.mi_row_range().start as usize;
-        let col_start = work_unit.mi_col_range().start as usize;
-        let tile_rows = (work_unit.mi_row_range().end as usize)
-            .min(mi_rows)
-            .saturating_sub(row_start);
-        let tile_cols = (work_unit.mi_col_range().end as usize)
-            .min(mi_cols)
-            .saturating_sub(col_start);
+        let tile_rows = work_unit.mi_row_range().start as usize
+            ..(work_unit.mi_row_range().end as usize).min(mi_rows);
+        let tile_cols = work_unit.mi_col_range().start as usize
+            ..(work_unit.mi_col_range().end as usize).min(mi_cols);
         let mi_size_state =
-            TileMiSizeState::new(row_start, col_start, tile_rows, tile_cols, frame.sb_size())?;
+            TileMiSizeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), frame.sb_size())?;
         let joint_modes =
-            TileIntraJointModeState::new(tile_rows, tile_cols)?.with_origin(row_start, col_start);
+            TileIntraJointModeState::new_for_tile(tile_rows.clone(), tile_cols.clone())?;
         let sb_size4 = frame
             .sb_size()
             .num_4x4_wide()
             .map_err(TilePartitionTraversalError::from)?
             .max(1);
-        let uses_mrls = TileUsesMrlsState::new(tile_rows, tile_cols, sb_size4)?
-            .with_origin(row_start, col_start);
+        let uses_mrls =
+            TileUsesMrlsState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
         let use_dip =
-            TileUseDipState::new(tile_rows, tile_cols, sb_size4)?.with_origin(row_start, col_start);
-        let fsc_modes = TileFscModeState::new(tile_rows, tile_cols, sb_size4)?
-            .with_origin(row_start, col_start);
-        let palette_y = TileLumaPaletteState::new(tile_rows, tile_cols, sb_size4)?
-            .with_origin(row_start, col_start);
-        let uv_cfls = TileUvCflState::new(tile_rows, tile_cols)?.with_origin(row_start, col_start);
+            TileUseDipState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
+        let fsc_modes =
+            TileFscModeState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
+        let palette_y =
+            TileLumaPaletteState::new_for_tile(tile_rows.clone(), tile_cols.clone(), sb_size4)?;
+        let uv_cfls = TileUvCflState::new(tile_rows.len(), tile_cols.len())?
+            .with_origin(tile_rows.start, tile_cols.start);
         let tree = GeneralIntraPartitionTreeCursor::new(work_unit, frame, limits)?;
         Ok(Self {
             tree,
@@ -211,9 +217,18 @@ fn plan_tile_partition_frontier<'payload>(
 > {
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
+    let tile_rows = work_unit.mi_row_range().start as usize
+        ..(work_unit.mi_row_range().end as usize).min(mi_rows);
+    let tile_cols = work_unit.mi_col_range().start as usize
+        ..(work_unit.mi_col_range().end as usize).min(mi_cols);
+    ensure_mi_size_allocation_within_limits(
+        tile_rows.end.saturating_sub(tile_rows.start),
+        tile_cols.end.saturating_sub(tile_cols.start),
+        frame.sb_size(),
+        limits,
+    )?;
 
-    let mi_size_state = TileMiSizeState::new(0, 0, mi_rows, mi_cols, frame.sb_size())?;
+    let mi_size_state = TileMiSizeState::new_for_tile(tile_rows, tile_cols, frame.sb_size())?;
     let cursor = plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
         work_unit,
         frame,

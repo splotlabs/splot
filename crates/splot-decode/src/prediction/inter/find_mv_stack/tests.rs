@@ -14,6 +14,50 @@ const N4_32: usize = 8;
 const SB_H4_64: usize = 16;
 const MI_DIM: usize = 16;
 
+impl NeighbourMvGrid {
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
+        Self::new_for_tile(0..mi_rows, 0..mi_cols)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_block_with_newmv_lists(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        ref_frame1: i8,
+        list0_is_newmv: bool,
+        list1_is_newmv: bool,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+    ) {
+        self.record_compound_block(
+            r,
+            c,
+            n4w,
+            n4h,
+            ref_frame0,
+            ref_frame1,
+            list0_is_newmv,
+            list1_is_newmv,
+            mv,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            false,
+            CWP_EQUAL,
+            false,
+            BlockPrecisionRecord::default(),
+            [None, None],
+        );
+    }
+}
+
 impl MvStack {
     fn num_mv_found(&self) -> usize {
         self.stack.len()
@@ -128,6 +172,33 @@ fn record_warp_inter(
         splot_recon::IDENTITY_WARP_PARAMS,
         BlockPrecisionRecord::default(),
     );
+}
+
+#[test]
+fn neighbour_mv_grid_translates_tile_coordinates() {
+    let mut grid = NeighbourMvGrid::new_for_tile(4..8, 8..12).unwrap();
+    grid.record_block(
+        5,
+        9,
+        2,
+        2,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        Mv { row: 4, col: 8 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+    assert_eq!(
+        grid.get(5, 9).map(|cell| cell.mv),
+        Some(Mv { row: 4, col: 8 })
+    );
+    assert_eq!(grid.get(6, 10).map(|cell| cell.base_r), Some(5));
+    assert_eq!(grid.get(3, 9), None);
+    assert_eq!(grid.get(5, 7), None);
 }
 
 #[test]
@@ -1809,7 +1880,7 @@ fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
 
 #[test]
 fn row_above_seed_walk_uses_tile_global_right_edge() {
-    let mut grid = NeighbourMvGrid::new_at(0, 16, 32, 16).unwrap();
+    let mut grid = NeighbourMvGrid::new_for_tile(0..32, 16..32).unwrap();
     let expected = Mv { row: 4, col: -12 };
     grid.record_block(
         15,

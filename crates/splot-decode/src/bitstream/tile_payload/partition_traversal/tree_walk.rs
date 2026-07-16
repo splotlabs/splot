@@ -212,16 +212,12 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         let symbols = symbol_decoder_for_work_unit(work_unit)?;
         let lr_activity = WienerNsLrUnitActivity::retaining_source_blocks();
         let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
-        let tile_rows = tile_bounds
-            .mi_row_end
-            .min(frame.mi_rows)
-            .saturating_sub(tile_bounds.mi_row_start);
-        let tile_cols = tile_bounds
-            .mi_col_end
-            .min(frame.mi_cols)
-            .saturating_sub(tile_bounds.mi_col_start);
-        let y_modes = TileIntraYModeState::new(tile_rows, tile_cols)?
-            .with_origin(tile_bounds.mi_row_start, tile_bounds.mi_col_start);
+        let tile_rows = work_unit.mi_row_range().start as usize
+            ..(work_unit.mi_row_range().end as usize).min(frame.mi_rows);
+        let tile_cols = work_unit.mi_col_range().start as usize
+            ..(work_unit.mi_col_range().end as usize).min(frame.mi_cols);
+        let y_modes = TileIntraYModeState::new(tile_rows.len(), tile_cols.len())?
+            .with_origin(tile_rows.start, tile_cols.start);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
         let next_sb_row = work_unit.mi_row_range().start as usize;
         let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
@@ -505,18 +501,18 @@ pub(super) fn read_frontier_partition_decision(
     )?;
     let facts = partition_decision_facts(allowed)?;
     let partition_plane = partition_cdf_plane(call.tree_type);
-    let local_r = call.r.checked_sub(context.row_start).ok_or(
+    let local_r = call.r.checked_sub(context.origin_row).ok_or(
         TilePartitionTraversalError::CoordinateUnderflow {
-            coordinate: "tile context row",
+            coordinate: "tile-local partition row",
             base: call.r,
-            offset: context.row_start,
+            offset: context.origin_row,
         },
     )?;
-    let local_c = call.c.checked_sub(context.col_start).ok_or(
+    let local_c = call.c.checked_sub(context.origin_col).ok_or(
         TilePartitionTraversalError::CoordinateUnderflow {
-            coordinate: "tile context column",
+            coordinate: "tile-local partition column",
             base: call.c,
-            offset: context.col_start,
+            offset: context.origin_col,
         },
     )?;
     let partition_context = PartitionContextInput::new(
@@ -602,7 +598,7 @@ mod row_cursor_tests {
     fn parser_states(frame: TilePartitionFrameFacts) -> ParserStates {
         let sb_size4 = frame.sb_size.num_4x4_wide().unwrap();
         (
-            TileMiSizeState::new(0, 0, frame.mi_rows, frame.mi_cols, frame.sb_size).unwrap(),
+            TileMiSizeState::new(frame.mi_rows, frame.mi_cols, frame.sb_size).unwrap(),
             TileIntraJointModeState::new(frame.mi_rows, frame.mi_cols).unwrap(),
             TileUsesMrlsState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
             TileUseDipState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),

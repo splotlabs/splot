@@ -320,6 +320,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
     );
     super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
     let (frame, ..) = super::decode_inter_frame(
+        &mut super::InterDecodeScratch::default(),
         &plan,
         inter_candidate,
         bytes,
@@ -489,41 +490,45 @@ fn inter_residual_cctx_pairs_chroma_blocks_and_applies_ddt() {
     )
     .unwrap();
 
-    let residual = super::InterResidual {
-        blocks: vec![
-            super::InterResidualBlock {
-                plane: PlaneId::U,
-                x: 0,
-                y: 0,
-                tx_size: 6,
-                log2_width: 3,
-                log2_height: 2,
-                coeffs: u_coeffs,
-            },
-            super::InterResidualBlock {
-                plane: PlaneId::Y,
-                x: 0,
-                y: 0,
-                tx_size: 0,
-                log2_width: 2,
-                log2_height: 2,
-                coeffs: all_zero_inter_coeff_block(),
-            },
-            super::InterResidualBlock {
-                plane: PlaneId::V,
-                x: 0,
-                y: 0,
-                tx_size: 6,
-                log2_width: 3,
-                log2_height: 2,
-                coeffs: v_coeffs,
-            },
-        ],
-    };
-
+    let residual_blocks = vec![
+        super::InterResidualBlock {
+            plane: PlaneId::U,
+            x: 0,
+            y: 0,
+            tx_size: 6,
+            log2_width: 3,
+            log2_height: 2,
+            cctx_pair_delta: 2,
+            coeffs: u_coeffs,
+        },
+        super::InterResidualBlock {
+            plane: PlaneId::Y,
+            x: 0,
+            y: 0,
+            tx_size: 0,
+            log2_width: 2,
+            log2_height: 2,
+            cctx_pair_delta: 0,
+            coeffs: all_zero_inter_coeff_block(),
+        },
+        super::InterResidualBlock {
+            plane: PlaneId::V,
+            x: 0,
+            y: 0,
+            tx_size: 6,
+            log2_width: 3,
+            log2_height: 2,
+            cctx_pair_delta: -2,
+            coeffs: v_coeffs,
+        },
+    ];
+    let residual = super::InterResidual { block_range: 0..3 };
+    let mut scratch = super::InterResidualReconScratch::default();
     super::add_inter_residual_to_workspace(
+        &mut scratch,
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
+        &residual_blocks,
         101,
         false,
         true,
@@ -575,21 +580,23 @@ fn intrabc_residual_keeps_adst_when_inter_ddt_is_enabled() {
     }
     let mut coeffs = luma_coeff_block(quant, 22, None);
     coeffs.plane_tx_type = 1;
-    let residual = super::InterResidual {
-        blocks: vec![super::InterResidualBlock {
-            plane: PlaneId::Y,
-            x: 0,
-            y: 0,
-            tx_size: 2,
-            log2_width: 4,
-            log2_height: 4,
-            coeffs,
-        }],
-    };
-
+    let residual_blocks = vec![super::InterResidualBlock {
+        plane: PlaneId::Y,
+        x: 0,
+        y: 0,
+        tx_size: 2,
+        log2_width: 4,
+        log2_height: 4,
+        cctx_pair_delta: 0,
+        coeffs,
+    }];
+    let residual = super::InterResidual { block_range: 0..1 };
+    let mut scratch = super::InterResidualReconScratch::default();
     super::add_inter_residual_to_workspace(
+        &mut scratch,
         &mut super::mc::WorkspaceSink::Frame(&mut workspace),
         &residual,
+        &residual_blocks,
         150,
         false,
         true,
