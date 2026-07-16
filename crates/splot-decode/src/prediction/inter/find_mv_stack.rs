@@ -1673,7 +1673,7 @@ fn seed_walk_from_row_above(
     let cand_row = sb_row as i32 - 1;
     let mut cand_col = sb_col as i32;
     let mut row_hits = 0;
-    while (cand_col as usize) < grid.size.1
+    while (cand_col as usize) < grid.origin.1.saturating_add(grid.size.1)
         && (cand_col as usize) < sb_col + sb_size4
         && row_hits < 4
     {

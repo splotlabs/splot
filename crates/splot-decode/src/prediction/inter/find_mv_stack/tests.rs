@@ -1808,6 +1808,32 @@ fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
 }
 
 #[test]
+fn row_above_seed_walk_uses_tile_global_right_edge() {
+    let mut grid = NeighbourMvGrid::new_at(0, 16, 32, 16).unwrap();
+    let expected = Mv { row: 4, col: -12 };
+    grid.record_block(
+        15,
+        16,
+        2,
+        1,
+        true,
+        0,
+        None,
+        NeighbourYMode::Other,
+        expected,
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+
+    let mut visited = Vec::new();
+    seed_walk_from_row_above(&grid, 16, 16, 16, |cell| visited.push(cell.mv));
+
+    assert_eq!(visited, [expected]);
+}
+
+#[test]
 fn corner_derivation_matches_the_hand_computed_model() {
     let mut grid = empty_grid();
     let mut record_cell = |r: usize, c: usize, mv: Mv| {

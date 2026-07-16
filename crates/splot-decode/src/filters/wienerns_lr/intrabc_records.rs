@@ -389,29 +389,8 @@ struct IntrabcBlockFacts {
 }
 
 impl TileIntrabcPreludeState {
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sequence: &SequenceHeader,
-        frame_is_intra_only: bool,
-        tile_offset: ByteOffset,
-    ) -> Result<Self> {
-        Self::new_at(
-            mi_rows,
-            mi_cols,
-            0,
-            0,
-            mi_rows,
-            mi_cols,
-            sequence,
-            frame_is_intra_only,
-            tile_offset,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new_at(
+    pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
         row_start: usize,

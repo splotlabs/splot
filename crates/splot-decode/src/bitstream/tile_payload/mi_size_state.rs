@@ -68,14 +68,6 @@ impl TileMiSizeState {
     }
 
     pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size: BlockSize,
-    ) -> Result<Self, TileMiSizeStateError> {
-        Self::new_at(0, 0, mi_rows, mi_cols, sb_size)
-    }
-
-    pub(crate) fn new_at(
         row_start: usize,
         col_start: usize,
         mi_rows: usize,

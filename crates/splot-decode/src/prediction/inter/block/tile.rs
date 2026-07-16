@@ -410,7 +410,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             )
         })?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core, tile_offset)?;
-        let intrabc_state = TileIntrabcPreludeState::new_at(
+        let intrabc_state = TileIntrabcPreludeState::new(
             context.mi_rows,
             context.mi_cols,
             row_start,

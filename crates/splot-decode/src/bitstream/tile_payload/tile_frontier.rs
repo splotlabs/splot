@@ -68,7 +68,7 @@ pub(crate) fn consume_tile_lr_unit_frontier(
     let frame = minimal_partition_frame_facts(sequence, core)?;
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
-    let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
+    let mi_size_state = TileMiSizeState::new(0, 0, mi_rows, mi_cols, frame.sb_size())?;
     let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
         work_unit,
         frame,
@@ -115,7 +115,7 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             .min(mi_cols)
             .saturating_sub(col_start);
         let mi_size_state =
-            TileMiSizeState::new_at(row_start, col_start, tile_rows, tile_cols, frame.sb_size())?;
+            TileMiSizeState::new(row_start, col_start, tile_rows, tile_cols, frame.sb_size())?;
         let joint_modes =
             TileIntraJointModeState::new(tile_rows, tile_cols)?.with_origin(row_start, col_start);
         let sb_size4 = frame
@@ -213,7 +213,7 @@ fn plan_tile_partition_frontier<'payload>(
     let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
     ensure_mi_size_allocation_within_limits(mi_rows, mi_cols, frame.sb_size(), limits)?;
 
-    let mi_size_state = TileMiSizeState::new(mi_rows, mi_cols, frame.sb_size())?;
+    let mi_size_state = TileMiSizeState::new(0, 0, mi_rows, mi_cols, frame.sb_size())?;
     let cursor = plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
         work_unit,
         frame,

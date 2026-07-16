@@ -602,7 +602,7 @@ mod row_cursor_tests {
     fn parser_states(frame: TilePartitionFrameFacts) -> ParserStates {
         let sb_size4 = frame.sb_size.num_4x4_wide().unwrap();
         (
-            TileMiSizeState::new(frame.mi_rows, frame.mi_cols, frame.sb_size).unwrap(),
+            TileMiSizeState::new(0, 0, frame.mi_rows, frame.mi_cols, frame.sb_size).unwrap(),
             TileIntraJointModeState::new(frame.mi_rows, frame.mi_cols).unwrap(),
             TileUsesMrlsState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
             TileUseDipState::new(frame.mi_rows, frame.mi_cols, sb_size4).unwrap(),
