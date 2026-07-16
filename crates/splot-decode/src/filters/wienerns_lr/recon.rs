@@ -311,11 +311,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 [y_runs, u_runs, v_runs],
                 &lr_unit_filters,
             )?;
+            let (separate_cdef_luma, output_luma) =
+                if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
+                    (Some(&frame.cdef_y), post_lr_y)
+                } else {
+                    (None, &mut frame.cdef_y)
+                };
             crate::filters::gdf::apply_stripe(
                 core,
                 frame.deblocked_y,
-                &frame.cdef_y,
-                &mut frame.post_lr_y,
+                separate_cdef_luma,
+                output_luma,
                 self.gdf_grid.as_ref(),
                 self.lossless_grid.as_ref(),
                 self.bit_depth,

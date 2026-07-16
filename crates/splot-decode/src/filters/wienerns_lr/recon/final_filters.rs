@@ -73,7 +73,7 @@ pub(crate) struct LrFrame<'a, T> {
     pub(crate) cdef_y: StripePlane,
     pub(crate) cdef_u: Option<StripePlane>,
     pub(crate) cdef_v: Option<StripePlane>,
-    pub(crate) post_lr_y: StripePlane,
+    pub(crate) post_lr_y: Option<StripePlane>,
     pub(crate) post_lr_u: Option<StripePlane>,
     pub(crate) post_lr_v: Option<StripePlane>,
 }
@@ -85,17 +85,28 @@ pub(crate) struct FilteredStripe {
 }
 
 impl<'a, T: ReconSample> LrFrame<'a, T> {
-    fn from_cdef(frame: CdefFrame<'a, T>) -> Option<Self> {
-        let post_lr_y = frame
-            .filtered_y
-            .copy_rows(frame.filtered_y.origin_y(), frame.filtered_y.end_y()?)?;
-        let post_lr_u = match frame.filtered_u.as_ref() {
-            Some(plane) => Some(plane.copy_rows(plane.origin_y(), plane.end_y()?)?),
-            None => None,
+    fn from_cdef(frame: CdefFrame<'a, T>, active_planes: [bool; 3]) -> Option<Self> {
+        let copy = |plane: &StripePlane| plane.copy_rows(plane.origin_y(), plane.end_y()?);
+        let post_lr_y = if active_planes[PlaneId::Y.index()] {
+            Some(copy(&frame.filtered_y)?)
+        } else {
+            None
         };
-        let post_lr_v = match frame.filtered_v.as_ref() {
-            Some(plane) => Some(plane.copy_rows(plane.origin_y(), plane.end_y()?)?),
-            None => None,
+        let post_lr_u = if active_planes[PlaneId::U.index()] {
+            match frame.filtered_u.as_ref() {
+                Some(plane) => Some(copy(plane)?),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let post_lr_v = if active_planes[PlaneId::V.index()] {
+            match frame.filtered_v.as_ref() {
+                Some(plane) => Some(copy(plane)?),
+                None => None,
+            }
+        } else {
+            None
         };
         Some(Self {
             deblocked_y: frame.deblocked_y,
@@ -112,9 +123,9 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
 
     pub(crate) fn into_filtered(self) -> FilteredStripe {
         FilteredStripe {
-            y: self.post_lr_y,
-            u: self.post_lr_u,
-            v: self.post_lr_v,
+            y: self.post_lr_y.unwrap_or(self.cdef_y),
+            u: self.post_lr_u.or(self.cdef_u),
+            v: self.post_lr_v.or(self.cdef_v),
         }
     }
 }
@@ -631,7 +642,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         plane_blocks: [&[WienerNsLrSourceBlock]; 3],
         lr_unit_filters: &[WienerNsLrUnitFilter],
     ) -> Result<LrFrame<'a, T>> {
-        let mut frame = LrFrame::from_cdef(cdef).ok_or_else(|| luma_lr_filter_error(offset))?;
+        let has_blocks = |plane: usize, stripe: Option<&StripePlane>| {
+            stripe.is_some_and(|stripe| {
+                stripe.end_y().is_some_and(|end_y| {
+                    plane_blocks[plane]
+                        .iter()
+                        .any(|block| lr_block_in_rows(block, stripe.origin_y(), end_y).is_some())
+                })
+            })
+        };
+        let active_planes = [
+            has_blocks(PlaneId::Y.index(), Some(&cdef.filtered_y)),
+            has_blocks(PlaneId::U.index(), cdef.filtered_u.as_ref()),
+            has_blocks(PlaneId::V.index(), cdef.filtered_v.as_ref()),
+        ];
+        let mut frame =
+            LrFrame::from_cdef(cdef, active_planes).ok_or_else(|| luma_lr_filter_error(offset))?;
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
@@ -643,6 +669,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     | FrameRestorationType::PcWiener
                     | FrameRestorationType::Switchable
             )
+            && active_planes[PlaneId::Y.index()]
         {
             let qindex = core
                 .quantization_params
@@ -668,10 +695,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             } else {
                 None
             };
-            let start_y = frame.post_lr_y.origin_y();
+            let start_y = frame.cdef_y.origin_y();
             let end_y = frame
-                .post_lr_y
+                .cdef_y
                 .end_y()
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let post_lr_y = frame
+                .post_lr_y
+                .as_mut()
                 .ok_or_else(|| luma_lr_filter_error(offset))?;
             let mut output = Vec::new();
             for block in plane_blocks[PlaneId::Y.index()]
@@ -718,11 +749,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     }
                     LrUnitRestorationType::None => return Err(luma_lr_filter_error(offset)),
                 };
-                write_lr_block(&mut frame.post_lr_y, &block, &output, offset)?;
+                write_lr_block(post_lr_y, &block, &output, offset)?;
             }
         }
 
         for plane_id in [PlaneId::U, PlaneId::V] {
+            if !active_planes[plane_id.index()] {
+                continue;
+            }
             let Some(plane) = lr_params.planes.get(plane_id.index()) else {
                 continue;
             };
