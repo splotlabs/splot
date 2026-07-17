@@ -35,7 +35,7 @@ fn encode_transform_symbols(sequence: &[(TileCdfSelector, u8)]) -> Vec<u8> {
     );
     for &(selector, value) in sequence {
         cdfs.with_row_mut(selector, |row| {
-            encoder.write_symbol(row, Symbol::new(value))
+            encoder.write_symbol_u16(row, Symbol::new(value))
         })
         .unwrap()
         .unwrap();

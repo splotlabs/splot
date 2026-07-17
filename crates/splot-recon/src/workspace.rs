@@ -620,6 +620,101 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
         }
     }
 
+    /// Writes row-strided `u16` prediction samples directly into this surface.
+    ///
+    /// Source geometry and every sample are validated before the first target
+    /// write, preserving the fail-atomic behavior of [`Self::write_rect`].
+    /// Frame-edge overhang is clipped, while row and rectangle targets reject
+    /// writes outside their exclusive region.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for absent planes, invalid source or target
+    /// geometry, samples unsupported by `T`, or values outside the active bit
+    /// depth.
+    pub fn write_u16_rect(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        samples: &[u16],
+        row_stride_samples: usize,
+    ) -> Result<()> {
+        let storage = self.plane_storage_size(plane)?;
+        let rect = clamp_rect_to_storage(plane, storage, rect)?;
+        self.rect_rows(plane, rect)?;
+        if row_stride_samples < rect.width() {
+            return Err(ReconError::WorkspaceWriteStrideTooSmall {
+                plane,
+                stride_samples: row_stride_samples,
+                width: rect.width(),
+            });
+        }
+        let expected = required_row_strided_samples(rect, row_stride_samples)?;
+        if samples.len() < expected {
+            return Err(ReconError::WorkspaceWriteLengthMismatch {
+                plane,
+                expected,
+                actual: samples.len(),
+            });
+        }
+        let max_sample = self.info().bit_depth().max_sample();
+        for (sample_index, &sample) in samples.iter().enumerate() {
+            T::try_from_u16(sample)?;
+            if sample > max_sample {
+                return Err(ReconError::SampleOutOfRange {
+                    plane,
+                    sample_index,
+                    value: sample,
+                    max: max_sample,
+                });
+            }
+        }
+
+        match self {
+            Self::Frame(workspace) => {
+                let target = workspace.plane_mut(plane)?;
+                write_u16_rect_to_samples(
+                    &mut target.samples,
+                    target.stride_samples,
+                    rect,
+                    rect.x(),
+                    rect.y(),
+                    samples,
+                    row_stride_samples,
+                )
+            }
+            Self::Row(row) => {
+                let target = row.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                write_u16_rect_to_samples(
+                    target.samples,
+                    target.stride_samples,
+                    rect,
+                    rect.x() - target.rect.x(),
+                    rect.y() - target.rect.y(),
+                    samples,
+                    row_stride_samples,
+                )
+            }
+            Self::Rect(surface) => {
+                let target = surface.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                let row_start = rect.y() - target.rect.y();
+                let x = rect.x() - target.rect.x();
+                for (row, target) in target.rows[row_start..row_start + rect.height()]
+                    .iter_mut()
+                    .enumerate()
+                {
+                    let source_start = row * row_stride_samples;
+                    copy_u16_samples(
+                        &mut target[x..x + rect.width()],
+                        &samples[source_start..source_start + rect.width()],
+                    )?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// Writes one contiguous rectangular prediction block.
     ///
     /// # Errors
@@ -2100,6 +2195,59 @@ fn write_rect_to_samples<T: ReconSample>(
         // splot-copy-ok: write caller samples into exclusive current-frame target storage
         target[target_start..target_start + rect.width()]
             .copy_from_slice(&samples[source_start..source_start + rect.width()]);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_u16_rect_to_samples<T: ReconSample>(
+    target: &mut [T],
+    target_stride_samples: usize,
+    rect: PlaneRect,
+    local_x: usize,
+    local_y: usize,
+    samples: &[u16],
+    row_stride_samples: usize,
+) -> Result<()> {
+    let target_base = local_y
+        .checked_mul(target_stride_samples)
+        .and_then(|start| start.checked_add(local_x))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "current-frame u16 target row offset",
+        })?;
+    let last_target_end = (rect.height() - 1)
+        .checked_mul(target_stride_samples)
+        .and_then(|offset| target_base.checked_add(offset))
+        .and_then(|start| start.checked_add(rect.width()))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "current-frame u16 target sample span",
+        })?;
+    if last_target_end > target.len() {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: last_target_end,
+            actual: target.len(),
+        });
+    }
+    for row in 0..rect.height() {
+        let source_start = row * row_stride_samples;
+        let target_start = target_base + row * target_stride_samples;
+        copy_u16_samples(
+            &mut target[target_start..target_start + rect.width()],
+            &samples[source_start..source_start + rect.width()],
+        )?;
+    }
+    Ok(())
+}
+
+fn copy_u16_samples<T: ReconSample>(target: &mut [T], samples: &[u16]) -> Result<()> {
+    if let Some(target) = T::u16_slice_mut(target) {
+        for (target, &sample) in target.iter_mut().zip(samples) {
+            *target = sample;
+        }
+        return Ok(());
+    }
+    for (target, &sample) in target.iter_mut().zip(samples) {
+        *target = T::try_from_u16(sample)?;
     }
     Ok(())
 }

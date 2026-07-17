@@ -93,10 +93,10 @@ fn coefficient_level_state_write_sets_levels_from_scan_entries() {
 
     assert_eq!(state.eob_read(), eob_read);
     let block = state.block();
-    let mut expected = vec![0; block.level().len()];
+    let mut expected = vec![0u8; block.level().len()];
     for read in &reads {
         let entry = read.entry();
-        expected[entry.row() * block.width() + entry.col()] = read.level();
+        expected[entry.row() * block.width() + entry.col()] = u8::try_from(read.level()).unwrap();
         assert_eq!(
             block.level_at(entry.row(), entry.col()).unwrap(),
             read.level()

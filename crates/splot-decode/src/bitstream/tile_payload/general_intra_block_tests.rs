@@ -484,7 +484,7 @@ fn active_palette_y_mode_reads_size_and_literal_colors() {
         (TileCdfSelector::PaletteYSize, 0),
     ] {
         tile.with_row_mut(selector, |row| {
-            encoder.write_symbol(row, Symbol::new(value))
+            encoder.write_symbol_u16(row, Symbol::new(value))
         })
         .unwrap()
         .unwrap();
@@ -535,14 +535,14 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
         (TileCdfSelector::UseDip { ctx: 2 }, 1),
     ] {
         tile.with_row_mut(selector, |row| {
-            encoder.write_symbol(row, Symbol::new(value))
+            encoder.write_symbol_u16(row, Symbol::new(value))
         })
         .unwrap()
         .unwrap();
     }
     encoder.write_literal(1, 1).unwrap();
     tile.with_row_mut(TileCdfSelector::DipMode, |row| {
-        encoder.write_symbol(row, Symbol::new(5))
+        encoder.write_symbol_u16(row, Symbol::new(5))
     })
     .unwrap()
     .unwrap();

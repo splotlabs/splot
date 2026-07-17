@@ -53,7 +53,7 @@ pub(crate) struct CoeffQuantStateWrite {
     sign: bool,
     read_quant: u32,
     quant: i32,
-    cul_level: u32,
+    cul_level: u8,
     dc_category: u8,
     tcq_state: usize,
     hr_level_avg: u32,
@@ -86,7 +86,7 @@ impl CoeffQuantStateWrite {
     }
 
     #[must_use]
-    pub(crate) const fn cul_level(self) -> u32 {
+    pub(crate) const fn cul_level(self) -> u8 {
         self.cul_level
     }
 
@@ -109,7 +109,7 @@ impl CoeffQuantStateWrite {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffQuantState {
     writes: Vec<CoeffQuantStateWrite>,
-    cul_level: u32,
+    cul_level: u8,
     dc_category: u8,
     tcq_state: usize,
     hr_level_avg: u32,
@@ -135,7 +135,7 @@ impl NonZeroCoeffQuantState {
     }
 
     #[must_use]
-    pub(crate) const fn cul_level(&self) -> u32 {
+    pub(crate) const fn cul_level(&self) -> u8 {
         self.cul_level
     }
 
@@ -320,7 +320,7 @@ pub(crate) struct CoeffQuantStateAccumulator {
     sum_abs1: u32,
     use_tcq: bool,
     lossless: bool,
-    cul_level: u32,
+    cul_level: u8,
     dc_category: u8,
     tcq_state: usize,
     hr_level_avg: u32,
@@ -357,7 +357,7 @@ impl CoeffQuantStateAccumulator {
         if entry.pos() == 0 && quant > 0 {
             self.dc_category = if sign { 1 } else { 2 };
         }
-        self.cul_level = 4.min(self.cul_level.saturating_add(quant));
+        self.cul_level = 4.min(u32::from(self.cul_level).saturating_add(quant)) as u8;
 
         if !self.lossless && self.use_tcq {
             let q0 = ((self.tcq_state >> 1) & 1) as u32;

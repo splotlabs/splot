@@ -56,13 +56,15 @@ mod y4m;
 
 pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
-    CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction, cdef_filter_block_interior,
-    cdef_filter_sample,
+    CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction, cdef_direction_padded,
+    cdef_filter_block_interior, cdef_filter_block_interior_to,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
 pub use deblock_filter::{
     DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
-    deblock_filter_choice, deblock_filter_max_width, deblock_sample_filter,
+    deblock_filter_choice, deblock_filter_choice_strided, deblock_filter_max_width,
+    deblock_sample_filter, deblock_sample_filter_strided, deblock_sample_filter_strided_4,
     deblock_side_threshold_index,
 };
 pub use dequant::{
@@ -154,9 +156,11 @@ pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
     blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample, subpel_predict_block,
-    subpel_predict_block_compound_average_into, subpel_predict_block_compound_intermediate,
-    subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
+    blend_compound_average_weighted_sample, subpel_predict_16x16_fullpel_horizontal_overlap_into,
+    subpel_predict_block, subpel_predict_block_compound_average_fullpel_strided_into,
+    subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
+    subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
+    subpel_predict_block_into,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,
@@ -173,7 +177,8 @@ pub use wienerns_chroma_filter::{
 pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,
     WienerNsLumaPaddedSource, WienerNsLumaScratch, wiener_ns_filter_luma_block,
-    wiener_ns_filter_luma_block_padded, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_luma_block_padded, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFramePlaneRowBand,

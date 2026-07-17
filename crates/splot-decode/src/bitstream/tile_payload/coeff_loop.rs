@@ -187,7 +187,7 @@ pub(crate) struct NonZeroCoeffEobContextInput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlock {
     eob: usize,
-    cul_level: u32,
+    cul_level: u8,
     dc_category: u8,
     block: TransformCoeffBlockState,
 }
@@ -198,7 +198,7 @@ impl AllZeroCoeffBlock {
         self.eob
     }
     #[must_use]
-    pub(crate) const fn cul_level(&self) -> u32 {
+    pub(crate) const fn cul_level(&self) -> u8 {
         self.cul_level
     }
     #[must_use]
@@ -604,7 +604,7 @@ fn bounded_or<T: Copy + Into<u32>>(values: &[T], start: usize, count: usize) -> 
     })
 }
 
-fn bounded_or_level_dc(level: &[u32], dc: &[u8], start: usize, count: usize) -> u32 {
+fn bounded_or_level_dc(level: &[u8], dc: &[u8], start: usize, count: usize) -> u32 {
     bounded_or(level, start, count) | bounded_or(dc, start, count)
 }
 

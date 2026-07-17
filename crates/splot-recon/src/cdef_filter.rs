@@ -87,47 +87,83 @@ const fn floor_log2(x: u32) -> u32 {
 /// the spec-bounded pre-shifted samples keep every directional cost in range.
 #[allow(clippy::needless_range_loop)]
 pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
-    let mut partial = [[0i32; 15]; 8];
+    let mut partial_hv = [[0i32; 8]; 2];
+    let mut partial_diag = [[0i32; 15]; 2];
+    let mut partial_alt = [[0i32; 11]; 4];
     for i in 0..8 {
         for j in 0..8 {
             let x = block[i][j];
-            partial[0][i + j] += x;
-            partial[1][i + j / 2] += x;
-            partial[2][i] += x;
-            partial[3][3 + i - j / 2] += x;
-            partial[4][7 + i - j] += x;
-            partial[5][3 - i / 2 + j] += x;
-            partial[6][j] += x;
-            partial[7][i / 2 + j] += x;
+            partial_diag[0][i + j] += x;
+            partial_alt[0][i + j / 2] += x;
+            partial_hv[0][i] += x;
+            partial_alt[1][3 + i - j / 2] += x;
+            partial_diag[1][7 + i - j] += x;
+            partial_alt[2][3 - i / 2 + j] += x;
+            partial_hv[1][j] += x;
+            partial_alt[3][i / 2 + j] += x;
         }
     }
+    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+}
 
-    let mut cost = [0i32; 8];
+/// AV2 § 7.18.2 CDEF direction process over the interior padded block layout.
+///
+/// The 8x8 luma block begins at row 2, column 2 of `pad`; `coeff_shift` is
+/// `BitDepth - 8`. The result matches [`cdef_direction`] without materializing
+/// the intermediate shifted 8x8 array.
+pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) -> (usize, i32) {
+    let mut partial_hv = [[0i32; 8]; 2];
+    let mut partial_diag = [[0i32; 15]; 2];
+    let mut partial_alt = [[0i32; 11]; 4];
     for i in 0..8 {
-        cost[2] += partial[2][i] * partial[2][i];
-        cost[6] += partial[6][i] * partial[6][i];
+        let row = (i + 2) * CDEF_PADDED_SIDE + 2;
+        for j in 0..8 {
+            let x = (i32::from(pad[row + j]) >> coeff_shift) - 128;
+            partial_diag[0][i + j] += x;
+            partial_alt[0][i + j / 2] += x;
+            partial_hv[0][i] += x;
+            partial_alt[1][3 + i - j / 2] += x;
+            partial_diag[1][7 + i - j] += x;
+            partial_alt[2][3 - i / 2 + j] += x;
+            partial_hv[1][j] += x;
+            partial_alt[3][i / 2 + j] += x;
+        }
+    }
+    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+}
+
+fn finish_cdef_direction(
+    partial_hv: &[[i32; 8]; 2],
+    partial_diag: &[[i32; 15]; 2],
+    partial_alt: &[[i32; 11]; 4],
+) -> (usize, i32) {
+    let mut cost = [0i32; 8];
+    for (&horizontal, &vertical) in partial_hv[0].iter().zip(&partial_hv[1]) {
+        cost[2] += horizontal * horizontal;
+        cost[6] += vertical * vertical;
     }
     cost[2] *= DIV_TABLE[8];
     cost[6] *= DIV_TABLE[8];
     for i in 0..7 {
-        cost[0] += (partial[0][i] * partial[0][i] + partial[0][14 - i] * partial[0][14 - i])
+        cost[0] += (partial_diag[0][i] * partial_diag[0][i]
+            + partial_diag[0][14 - i] * partial_diag[0][14 - i])
             * DIV_TABLE[i + 1];
-        cost[4] += (partial[4][i] * partial[4][i] + partial[4][14 - i] * partial[4][14 - i])
+        cost[4] += (partial_diag[1][i] * partial_diag[1][i]
+            + partial_diag[1][14 - i] * partial_diag[1][14 - i])
             * DIV_TABLE[i + 1];
     }
-    cost[0] += partial[0][7] * partial[0][7] * DIV_TABLE[8];
-    cost[4] += partial[4][7] * partial[4][7] * DIV_TABLE[8];
-    let mut i = 1;
-    while i < 8 {
+    cost[0] += partial_diag[0][7] * partial_diag[0][7] * DIV_TABLE[8];
+    cost[4] += partial_diag[1][7] * partial_diag[1][7] * DIV_TABLE[8];
+    for (n, partial) in partial_alt.iter().enumerate() {
+        let i = n * 2 + 1;
         for j in 0..5 {
-            cost[i] += partial[i][3 + j] * partial[i][3 + j];
+            cost[i] += partial[3 + j] * partial[3 + j];
         }
         cost[i] *= DIV_TABLE[8];
         for j in 0..3 {
-            cost[i] += (partial[i][j] * partial[i][j] + partial[i][10 - j] * partial[i][10 - j])
+            cost[i] += (partial[j] * partial[j] + partial[10 - j] * partial[10 - j])
                 * DIV_TABLE[2 * j + 2];
         }
-        i += 2;
     }
 
     let mut best_cost = 0i32;
@@ -257,66 +293,95 @@ pub struct CdefBlockFilter {
     pub coeff_shift: u32,
 }
 
+type CdefPrimaryStarts = [[usize; 2]; 2];
+type CdefSecondaryStarts = [[[usize; 2]; 2]; 2];
+
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
 fn cdef_padded_row<const W: usize>(
     pad: &[u16; CDEF_PADDED_AREA],
-    center_index: usize,
-    relative_offset: isize,
+    start: usize,
 ) -> Option<&[u16; W]> {
-    let start = center_index.checked_add_signed(relative_offset)?;
     let end = start.checked_add(W)?;
     pad.get(start..end)?.try_into().ok()
 }
 
-fn cdef_output_row<const W: usize>(out: &mut [u16; 64], row: usize) -> Option<&mut [u16; W]> {
-    let start = row.checked_mul(W)?;
-    let end = start.checked_add(W)?;
-    out.get_mut(start..end)?.try_into().ok()
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+fn cdef_output_row<const W: usize>(
+    out: &mut [u16],
+    stride: usize,
+    row: usize,
+) -> Option<&mut [u16; W]> {
+    out.get_mut(row.checked_mul(stride)?..)?.first_chunk_mut()
 }
 
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
 fn cdef_primary_rows<'a, const W: usize>(
     pad: &'a [u16; CDEF_PADDED_AREA],
-    center_index: usize,
-    relative_offsets: &[[isize; 2]; 2],
+    row_offset: usize,
+    starts: &CdefPrimaryStarts,
 ) -> Option<[[&'a [u16; W]; 2]; 2]> {
     Some([
         [
-            cdef_padded_row(pad, center_index, relative_offsets[0][0])?,
-            cdef_padded_row(pad, center_index, relative_offsets[0][1])?,
+            cdef_padded_row(pad, starts[0][0] + row_offset)?,
+            cdef_padded_row(pad, starts[0][1] + row_offset)?,
         ],
         [
-            cdef_padded_row(pad, center_index, relative_offsets[1][0])?,
-            cdef_padded_row(pad, center_index, relative_offsets[1][1])?,
+            cdef_padded_row(pad, starts[1][0] + row_offset)?,
+            cdef_padded_row(pad, starts[1][1] + row_offset)?,
         ],
     ])
 }
 
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
 fn cdef_secondary_rows<'a, const W: usize>(
     pad: &'a [u16; CDEF_PADDED_AREA],
-    center_index: usize,
-    relative_offsets: &[[[isize; 2]; 2]; 2],
+    row_offset: usize,
+    starts: &CdefSecondaryStarts,
 ) -> Option<[[[&'a [u16; W]; 2]; 2]; 2]> {
     Some([
         [
             [
-                cdef_padded_row(pad, center_index, relative_offsets[0][0][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[0][0][1])?,
+                cdef_padded_row(pad, starts[0][0][0] + row_offset)?,
+                cdef_padded_row(pad, starts[0][0][1] + row_offset)?,
             ],
             [
-                cdef_padded_row(pad, center_index, relative_offsets[0][1][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[0][1][1])?,
+                cdef_padded_row(pad, starts[0][1][0] + row_offset)?,
+                cdef_padded_row(pad, starts[0][1][1] + row_offset)?,
             ],
         ],
         [
             [
-                cdef_padded_row(pad, center_index, relative_offsets[1][0][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[1][0][1])?,
+                cdef_padded_row(pad, starts[1][0][0] + row_offset)?,
+                cdef_padded_row(pad, starts[1][0][1] + row_offset)?,
             ],
             [
-                cdef_padded_row(pad, center_index, relative_offsets[1][1][0])?,
-                cdef_padded_row(pad, center_index, relative_offsets[1][1][1])?,
+                cdef_padded_row(pad, starts[1][1][0] + row_offset)?,
+                cdef_padded_row(pad, starts[1][1][1] + row_offset)?,
             ],
         ],
     ])
+}
+
+fn cdef_tap_starts(
+    center: usize,
+    pri_rel: &[[isize; 2]; 2],
+    sec_rel: &[[[isize; 2]; 2]; 2],
+) -> Option<(CdefPrimaryStarts, CdefSecondaryStarts)> {
+    let mut pri = [[0usize; 2]; 2];
+    let mut sec = [[[0usize; 2]; 2]; 2];
+    for k in 0..2 {
+        for sign in 0..2 {
+            pri[k][sign] = center.checked_add_signed(pri_rel[k][sign])?;
+            for dir in 0..2 {
+                sec[k][sign][dir] = center.checked_add_signed(sec_rel[k][sign][dir])?;
+            }
+        }
+    }
+    Some((pri, sec))
 }
 
 fn cdef_filter_block_interior_rows<const W: usize>(
@@ -325,21 +390,24 @@ fn cdef_filter_block_interior_rows<const W: usize>(
     filter: &CdefBlockFilter,
     pri_rel: &[[isize; 2]; 2],
     sec_rel: &[[[isize; 2]; 2]; 2],
-    out: &mut [u16; 64],
+    out: &mut [u16],
+    out_stride: usize,
 ) -> Option<()> {
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
     let sec_taps = CDEF_SEC_TAPS[tap_row];
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
+    let center_start = 2 * CDEF_PADDED_SIDE + 2;
+    let (pri_starts, sec_starts) = cdef_tap_starts(center_start, pri_rel, sec_rel)?;
 
     if filter.pri_str != 0 && filter.sec_str != 0 {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let pri_rows = cdef_primary_rows::<W>(pad, center_index, pri_rel)?;
-            let sec_rows = cdef_secondary_rows::<W>(pad, center_index, sec_rel)?;
-            let output_row = cdef_output_row::<W>(out, i)?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let center_row = cdef_padded_row::<W>(pad, center_start + row_offset)?;
+            let pri_rows = cdef_primary_rows::<W>(pad, row_offset, &pri_starts)?;
+            let sec_rows = cdef_secondary_rows::<W>(pad, row_offset, &sec_starts)?;
+            let output_row = cdef_output_row::<W>(out, out_stride, i)?;
             for j in 0..W {
                 let center = i32::from(center_row[j]);
                 let p00 = i32::from(pri_rows[0][0][j]);
@@ -402,10 +470,10 @@ fn cdef_filter_block_interior_rows<const W: usize>(
         }
     } else if filter.pri_str != 0 {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let pri_rows = cdef_primary_rows::<W>(pad, center_index, pri_rel)?;
-            let output_row = cdef_output_row::<W>(out, i)?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let center_row = cdef_padded_row::<W>(pad, center_start + row_offset)?;
+            let pri_rows = cdef_primary_rows::<W>(pad, row_offset, &pri_starts)?;
+            let output_row = cdef_output_row::<W>(out, out_stride, i)?;
             for j in 0..W {
                 let center = i32::from(center_row[j]);
                 let mut sum = 0i32;
@@ -421,10 +489,10 @@ fn cdef_filter_block_interior_rows<const W: usize>(
         }
     } else if filter.sec_str != 0 {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let sec_rows = cdef_secondary_rows::<W>(pad, center_index, sec_rel)?;
-            let output_row = cdef_output_row::<W>(out, i)?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let center_row = cdef_padded_row::<W>(pad, center_start + row_offset)?;
+            let sec_rows = cdef_secondary_rows::<W>(pad, row_offset, &sec_starts)?;
+            let output_row = cdef_output_row::<W>(out, out_stride, i)?;
             for j in 0..W {
                 let center = i32::from(center_row[j]);
                 let mut sum = 0i32;
@@ -442,13 +510,85 @@ fn cdef_filter_block_interior_rows<const W: usize>(
         }
     } else {
         for i in 0..h {
-            let center_index = (i + 2) * CDEF_PADDED_SIDE + 2;
-            let center_row = cdef_padded_row::<W>(pad, center_index, 0)?;
-            let output_row = cdef_output_row::<W>(out, i)?;
+            let row_offset = i * CDEF_PADDED_SIDE;
+            let center_row = cdef_padded_row::<W>(pad, center_start + row_offset)?;
+            let output_row = cdef_output_row::<W>(out, out_stride, i)?;
             *output_row = *center_row;
         }
     }
     Some(())
+}
+
+fn cdef_relative_offsets(dir: usize) -> ([[isize; 2]; 2], [[[isize; 2]; 2]; 2]) {
+    let rel = |dir: usize, k: usize, sign: i32| -> isize {
+        (sign * CDEF_DIRECTIONS[dir & 7][k][0]) as isize * CDEF_PADDED_SIDE as isize
+            + (sign * CDEF_DIRECTIONS[dir & 7][k][1]) as isize
+    };
+    let mut pri_rel = [[0isize; 2]; 2];
+    let mut sec_rel = [[[0isize; 2]; 2]; 2];
+    for k in 0..2 {
+        for (sign_index, sign) in [-1i32, 1].into_iter().enumerate() {
+            pri_rel[k][sign_index] = rel(dir, k, sign);
+            for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
+                sec_rel[k][sign_index][dir_off_index] = rel(dir + dir_off, k, sign);
+            }
+        }
+    }
+    (pri_rel, sec_rel)
+}
+
+/// AV2 § 7.18.3 CDEF filter for one fully-interior block written to a strided output.
+///
+/// Returns `false` when the output geometry cannot hold the 8- or 4-sample-wide
+/// CDEF block. The padded input layout matches [`cdef_filter_block_interior`].
+pub fn cdef_filter_block_interior_to(
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16],
+    out_stride: usize,
+) -> bool {
+    let w = w.min(8);
+    if out_stride < w {
+        return false;
+    }
+    cdef_filter_block_interior_to_valid_stride(pad, w, h, filter, out, out_stride)
+}
+
+/// Variant of [`cdef_filter_block_interior_to`] for an already-validated output view.
+#[doc(hidden)]
+pub fn cdef_filter_block_interior_to_valid_stride(
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16],
+    out_stride: usize,
+) -> bool {
+    let (pri_rel, sec_rel) = cdef_relative_offsets(filter.dir);
+    match w.min(8) {
+        8 => cdef_filter_block_interior_rows::<8>(
+            pad,
+            h.min(8),
+            filter,
+            &pri_rel,
+            &sec_rel,
+            out,
+            out_stride,
+        ),
+        4 => cdef_filter_block_interior_rows::<4>(
+            pad,
+            h.min(8),
+            filter,
+            &pri_rel,
+            &sec_rel,
+            out,
+            out_stride,
+        ),
+        _ => None,
+    }
+    .is_some()
 }
 
 /// AV2 § 7.18.3 CDEF filter for one fully-interior block over a padded scratch.
@@ -477,24 +617,10 @@ pub fn cdef_filter_block_interior(
     let w = w.min(8);
     let h = h.min(8);
 
-    let rel = |dir: usize, k: usize, sign: i32| -> isize {
-        (sign * CDEF_DIRECTIONS[dir & 7][k][0]) as isize * CDEF_PADDED_SIDE as isize
-            + (sign * CDEF_DIRECTIONS[dir & 7][k][1]) as isize
-    };
-    let mut pri_rel = [[0isize; 2]; 2];
-    let mut sec_rel = [[[0isize; 2]; 2]; 2];
-    for k in 0..2 {
-        for (sign_index, sign) in [-1i32, 1].into_iter().enumerate() {
-            pri_rel[k][sign_index] = rel(filter.dir, k, sign);
-            for (dir_off_index, dir_off) in [6usize, 2].into_iter().enumerate() {
-                sec_rel[k][sign_index][dir_off_index] = rel(filter.dir + dir_off, k, sign);
-            }
-        }
-    }
-
+    let (pri_rel, sec_rel) = cdef_relative_offsets(filter.dir);
     let row_result = match w {
-        8 => cdef_filter_block_interior_rows::<8>(pad, h, filter, &pri_rel, &sec_rel, out),
-        4 => cdef_filter_block_interior_rows::<4>(pad, h, filter, &pri_rel, &sec_rel, out),
+        8 => cdef_filter_block_interior_rows::<8>(pad, h, filter, &pri_rel, &sec_rel, out, w),
+        4 => cdef_filter_block_interior_rows::<4>(pad, h, filter, &pri_rel, &sec_rel, out, w),
         _ => None,
     };
     if row_result.is_some() {
@@ -642,6 +768,28 @@ mod tests {
     }
 
     #[test]
+    fn padded_direction_matches_materialized_block() {
+        for coeff_shift in [0u32, 2, 4] {
+            let mut state = 0x9e37_79b9u32 ^ coeff_shift;
+            let mut pad = [0u16; CDEF_PADDED_AREA];
+            let mut block = [[0i32; 8]; 8];
+            for (i, row) in block.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    let sample = ((state >> 16) & ((256 << coeff_shift) - 1)) as u16;
+                    pad[(i + 2) * CDEF_PADDED_SIDE + j + 2] = sample;
+                    *cell = (i32::from(sample) >> coeff_shift) - 128;
+                }
+            }
+            assert_eq!(
+                cdef_direction_padded(&pad, coeff_shift),
+                cdef_direction(&block),
+                "coeff_shift={coeff_shift}"
+            );
+        }
+    }
+
+    #[test]
     fn constrain_with_adj_matches_cdef_constrain() {
         for threshold in [0, 1, 3, 8, 63, 256] {
             for damping in [3, 5, 8] {
@@ -785,6 +933,23 @@ mod tests {
                         for (w, h) in [(8usize, 8usize), (4, 8), (4, 4), (5, 3)] {
                             let mut out = [0u16; 64];
                             cdef_filter_block_interior(&pad, w, h, &filter, &mut out);
+                            if w == 4 || w == 8 {
+                                let mut strided = [u16::MAX; 104];
+                                assert!(cdef_filter_block_interior_to(
+                                    &pad,
+                                    w,
+                                    h,
+                                    &filter,
+                                    &mut strided,
+                                    13,
+                                ));
+                                for i in 0..h {
+                                    assert_eq!(
+                                        &strided[i * 13..i * 13 + w],
+                                        &out[i * w..i * w + w]
+                                    );
+                                }
+                            }
                             for i in 0..h {
                                 for j in 0..w {
                                     assert_eq!(
@@ -800,6 +965,20 @@ mod tests {
                 }
             }
         }
+
+        let pad = [128u16; CDEF_PADDED_AREA];
+        let filter = CdefBlockFilter {
+            pri_str: 4,
+            sec_str: 2,
+            damping: 3,
+            dir: 0,
+            coeff_shift: 0,
+        };
+        let mut out = [u16::MAX; 64];
+        assert!(!cdef_filter_block_interior_to(
+            &pad, 8, 8, &filter, &mut out, 7,
+        ));
+        assert!(out.iter().all(|&sample| sample == u16::MAX));
     }
 
     #[test]

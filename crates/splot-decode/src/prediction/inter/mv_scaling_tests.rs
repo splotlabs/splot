@@ -82,3 +82,47 @@ fn maximum_av2_geometry_and_mv_fit_scaling_state() {
     assert_eq!(scaling.last_x, 65_535);
     assert_eq!(scaling.last_y, 65_535);
 }
+
+#[test]
+fn unscaled_fast_path_matches_general_equation() {
+    let unit_scale = 1 << REF_SCALE_SHIFT;
+    for prescaled in [false, true] {
+        for subsampling in [0u32, 1] {
+            for plane_pos in [0, 1, 127, 2047, 65_535] {
+                for mv in [-65_535, -257, -1, 0, 1, 257, 65_535] {
+                    let actual = derive_plane_scaling_from_scale(
+                        plane_pos,
+                        plane_pos,
+                        mv,
+                        mv,
+                        subsampling,
+                        subsampling,
+                        unit_scale,
+                        unit_scale,
+                        65_535,
+                        65_535,
+                        prescaled,
+                    );
+                    let mv_offset = if prescaled {
+                        round2_signed_i32(mv, subsampling)
+                    } else {
+                        (2 * mv) >> subsampling
+                    };
+                    let half_sample = 1i32 << (SUBPEL_BITS - 1);
+                    let orig = (plane_pos << SUBPEL_BITS) + mv_offset + half_sample;
+                    let base = i64::from(orig) * i64::from(unit_scale)
+                        - i64::from(half_sample << REF_SCALE_SHIFT);
+                    let expected = scaling_value(
+                        round2_signed(base, REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS) + 32,
+                    );
+                    assert_eq!(
+                        (actual.start_x, actual.start_y),
+                        (expected, expected),
+                        "prescaled={prescaled} subsampling={subsampling} \
+                         plane_pos={plane_pos} mv={mv}"
+                    );
+                }
+            }
+        }
+    }
+}

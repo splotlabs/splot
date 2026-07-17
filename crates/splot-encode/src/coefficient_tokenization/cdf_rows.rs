@@ -9,117 +9,67 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoefficientTokenCdfRows {
-    txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    txb_skip_16x16: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    eob_pt_256: [[i32; 9]; COEFF_CDF_Q_CONTEXTS],
-    eob_extra: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
+    txb_skip: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    txb_skip_16x16: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    eob_pt_16: [[u16; 6]; COEFF_CDF_Q_CONTEXTS],
+    eob_pt_256: [[u16; 9]; COEFF_CDF_Q_CONTEXTS],
+    eob_extra: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob:
-        [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf:
-        [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    coeff_br_lf: [[[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    coeff_br_lf: [[[u16; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_eob_hf:
-        [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    coeff_br_hf: [[[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_hf: [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    coeff_br_hf: [[[u16; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_hf: [[[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob_16x16_full:
-        [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_16x16:
-        [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_eob_hf_16x16:
-        [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_hf_16x16:
-        [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_lf_eob_uv: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    dc_sign: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    chroma_u_txb_skip: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    chroma_eob_pt_16: [[u16; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_lf_eob_uv: [[u16; 6]; COEFF_CDF_Q_CONTEXTS],
     intra_tx_type_set1:
-        [[i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
-    sec_tx_type_intra: [[i32; SEC_TX_TYPE_CDF_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_SQR_COUNT],
+        [[u16; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
+    sec_tx_type_intra: [[u16; SEC_TX_TYPE_CDF_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_SQR_COUNT],
 }
 
-/// Builds the low-frequency `coeff_base_eob` bank `[q][ctx]` at the given `tx_size`
-/// slice from the generated `DEFAULT_COEFF_BASE_LF_EOB_CDF[q][txSz][ctx]` table. Total
-/// and panic-free: every index is a const within the table dimensions.
-const fn coeff_base_lf_eob_bank(
-    tx_size: usize,
-) -> [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
-    let mut bank = [[[0i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT];
-        COEFF_CDF_Q_CONTEXTS];
-    let mut q = 0;
-    while q < COEFF_CDF_Q_CONTEXTS {
-        let mut ctx = 0;
-        while ctx < COEFF_BASE_LF_EOB_CTX_COUNT {
-            bank[q][ctx] = DEFAULT_COEFF_BASE_LF_EOB_CDF[q][tx_size][ctx];
-            ctx += 1;
+macro_rules! coeff_eob_banks {
+    ($table:expr, $tx_size:expr, $row_len:expr, $ctx_count:expr) => {{
+        let mut bank = [[[0u16; $row_len]; $ctx_count]; COEFF_CDF_Q_CONTEXTS];
+        let mut q = 0;
+        while q < COEFF_CDF_Q_CONTEXTS {
+            let mut ctx = 0;
+            while ctx < $ctx_count {
+                bank[q][ctx] = ($table)[q][$tx_size][ctx];
+                ctx += 1;
+            }
+            q += 1;
         }
-        q += 1;
-    }
-    bank
+        bank
+    }};
 }
 
-/// Builds the HIGH-frequency `coeff_base_eob` bank `[q][ctx]` at the given `tx_size`
-/// slice from the generated `DEFAULT_COEFF_BASE_EOB_CDF[q][txSz][ctx]` table (4-symbol
-/// rows). Total and panic-free: every index is a const within the table dimensions.
-const fn coeff_base_eob_hf_bank(
-    tx_size: usize,
-) -> [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
-    let mut bank =
-        [[[0i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
-    let mut q = 0;
-    while q < COEFF_CDF_Q_CONTEXTS {
-        let mut ctx = 0;
-        while ctx < COEFF_BASE_EOB_CTX_COUNT {
-            bank[q][ctx] = DEFAULT_COEFF_BASE_EOB_CDF[q][tx_size][ctx];
-            ctx += 1;
+macro_rules! coeff_base_banks {
+    ($table:expr, $tx_size:expr, $row_len:expr, $ctx_count:expr) => {{
+        let mut bank = [[[0u16; $row_len]; $ctx_count]; COEFF_CDF_Q_CONTEXTS];
+        let mut q = 0;
+        while q < COEFF_CDF_Q_CONTEXTS {
+            let mut ctx = 0;
+            while ctx < $ctx_count {
+                bank[q][ctx] = ($table)[q][$tx_size][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
+                ctx += 1;
+            }
+            q += 1;
         }
-        q += 1;
-    }
-    bank
-}
-
-/// Builds the low-frequency non-EOB `coeff_base` bank `[q][ctx]` at the neutral TCQ
-/// context from the generated `DEFAULT_COEFF_BASE_LF_CDF[q][txSz][ctx][tcq]` table for
-/// the given `tx_size`. Total and panic-free: every index is a const within the table
-/// dimensions.
-const fn coeff_base_lf_bank(
-    tx_size: usize,
-) -> [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
-    let mut bank =
-        [[[0i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
-    let mut q = 0;
-    while q < COEFF_CDF_Q_CONTEXTS {
-        let mut ctx = 0;
-        while ctx < COEFF_BASE_LF_CTX_COUNT {
-            bank[q][ctx] =
-                DEFAULT_COEFF_BASE_LF_CDF[q][tx_size][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
-            ctx += 1;
-        }
-        q += 1;
-    }
-    bank
-}
-
-/// Builds the HIGH-frequency non-EOB `coeff_base` bank `[q][ctx]` at the neutral TCQ
-/// context from the generated `DEFAULT_COEFF_BASE_CDF[q][txSz][ctx][tcq]` table
-/// (4-symbol rows) for the given `tx_size`. Total and panic-free: every index is a
-/// const within the table dimensions.
-const fn coeff_base_hf_bank(
-    tx_size: usize,
-) -> [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
-    let mut bank = [[[0i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
-    let mut q = 0;
-    while q < COEFF_CDF_Q_CONTEXTS {
-        let mut ctx = 0;
-        while ctx < COEFF_BASE_CTX_COUNT {
-            bank[q][ctx] = DEFAULT_COEFF_BASE_CDF[q][tx_size][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
-            ctx += 1;
-        }
-        q += 1;
-    }
-    bank
+        bank
+    }};
 }
 
 impl CoefficientTokenCdfRows {
@@ -150,16 +100,56 @@ impl CoefficientTokenCdfRows {
                 DEFAULT_EOB_PT_256_CDF[3][EOB_CTX_LUMA_INTRA],
             ],
             eob_extra: DEFAULT_EOB_EXTRA_CDF,
-            coeff_base_lf_eob: coeff_base_lf_eob_bank(TX_SIZE_4X4_CTX),
-            coeff_base_lf: coeff_base_lf_bank(TX_SIZE_4X4_CTX),
+            coeff_base_lf_eob: coeff_eob_banks!(
+                DEFAULT_COEFF_BASE_LF_EOB_CDF,
+                TX_SIZE_4X4_CTX,
+                COEFF_BASE_LF_EOB_CDF_ROW_LEN,
+                COEFF_BASE_LF_EOB_CTX_COUNT
+            ),
+            coeff_base_lf: coeff_base_banks!(
+                DEFAULT_COEFF_BASE_LF_CDF,
+                TX_SIZE_4X4_CTX,
+                COEFF_BASE_LF_CDF_ROW_LEN,
+                COEFF_BASE_LF_CTX_COUNT
+            ),
             coeff_br_lf: DEFAULT_COEFF_BR_LF_CDF,
-            coeff_base_eob_hf: coeff_base_eob_hf_bank(TX_SIZE_4X4_CTX),
+            coeff_base_eob_hf: coeff_eob_banks!(
+                DEFAULT_COEFF_BASE_EOB_CDF,
+                TX_SIZE_4X4_CTX,
+                COEFF_BASE_EOB_CDF_ROW_LEN,
+                COEFF_BASE_EOB_CTX_COUNT
+            ),
             coeff_br_hf: DEFAULT_COEFF_BR_CDF,
-            coeff_base_hf: coeff_base_hf_bank(TX_SIZE_4X4_CTX),
-            coeff_base_lf_eob_16x16_full: coeff_base_lf_eob_bank(TX_SIZE_16X16_CTX),
-            coeff_base_lf_16x16: coeff_base_lf_bank(TX_SIZE_16X16_CTX),
-            coeff_base_eob_hf_16x16: coeff_base_eob_hf_bank(TX_SIZE_16X16_CTX),
-            coeff_base_hf_16x16: coeff_base_hf_bank(TX_SIZE_16X16_CTX),
+            coeff_base_hf: coeff_base_banks!(
+                DEFAULT_COEFF_BASE_CDF,
+                TX_SIZE_4X4_CTX,
+                COEFF_BASE_CDF_ROW_LEN,
+                COEFF_BASE_CTX_COUNT
+            ),
+            coeff_base_lf_eob_16x16_full: coeff_eob_banks!(
+                DEFAULT_COEFF_BASE_LF_EOB_CDF,
+                TX_SIZE_16X16_CTX,
+                COEFF_BASE_LF_EOB_CDF_ROW_LEN,
+                COEFF_BASE_LF_EOB_CTX_COUNT
+            ),
+            coeff_base_lf_16x16: coeff_base_banks!(
+                DEFAULT_COEFF_BASE_LF_CDF,
+                TX_SIZE_16X16_CTX,
+                COEFF_BASE_LF_CDF_ROW_LEN,
+                COEFF_BASE_LF_CTX_COUNT
+            ),
+            coeff_base_eob_hf_16x16: coeff_eob_banks!(
+                DEFAULT_COEFF_BASE_EOB_CDF,
+                TX_SIZE_16X16_CTX,
+                COEFF_BASE_EOB_CDF_ROW_LEN,
+                COEFF_BASE_EOB_CTX_COUNT
+            ),
+            coeff_base_hf_16x16: coeff_base_banks!(
+                DEFAULT_COEFF_BASE_CDF,
+                TX_SIZE_16X16_CTX,
+                COEFF_BASE_CDF_ROW_LEN,
+                COEFF_BASE_CTX_COUNT
+            ),
             dc_sign: [
                 DEFAULT_DC_SIGN_CDF[0][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
                 DEFAULT_DC_SIGN_CDF[1][LUMA_PLANE_TYPE][DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
@@ -193,7 +183,7 @@ impl CoefficientTokenCdfRows {
         }
     }
 
-    pub(crate) fn row_mut(&mut self, selector: CoefficientCdfRowSelector) -> Result<&mut [i32]> {
+    pub(crate) fn row_mut(&mut self, selector: CoefficientCdfRowSelector) -> Result<&mut [u16]> {
         match selector {
             CoefficientCdfRowSelector::TxbSkip {
                 coeff_cdf_q_ctx,

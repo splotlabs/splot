@@ -50,7 +50,7 @@ pub(crate) fn roundtrip_entropy_tokens(
     );
     for token in tokens.iter().copied() {
         encoder
-            .write_symbol(
+            .write_symbol_u16(
                 encode_cdfs.row_mut(token.selector())?,
                 Symbol::new(token.symbol()),
             )
@@ -75,7 +75,7 @@ pub(crate) fn roundtrip_entropy_tokens(
         })?;
     for token in tokens.iter().copied() {
         let decoded = decoder
-            .read_symbol(decode_cdfs.row_mut(token.selector())?)
+            .read_symbol_u16(decode_cdfs.row_mut(token.selector())?)
             .map_err(|source| Error::CoefficientTokenizationSymbolRead {
                 syntax: token.syntax_name(),
                 source,

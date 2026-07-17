@@ -237,7 +237,7 @@ pub(crate) fn roundtrip_intra_mode_tokens(tokens: &[IntraModeToken]) -> Result<I
     );
     for token in tokens.iter().copied() {
         encoder
-            .write_symbol(
+            .write_symbol_u16(
                 encode_cdfs.row_mut(token.selector())?,
                 Symbol::new(token.symbol()),
             )
@@ -262,7 +262,7 @@ pub(crate) fn roundtrip_intra_mode_tokens(tokens: &[IntraModeToken]) -> Result<I
         })?;
     for token in tokens.iter().copied() {
         let decoded = decoder
-            .read_symbol(decode_cdfs.row_mut(token.selector())?)
+            .read_symbol_u16(decode_cdfs.row_mut(token.selector())?)
             .map_err(|source| Error::IntraModeEmissionSymbolRead {
                 syntax: token.syntax_name(),
                 source,
@@ -290,9 +290,9 @@ pub(crate) fn roundtrip_intra_mode_tokens(tokens: &[IntraModeToken]) -> Result<I
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct IntraModeCdfRows {
-    y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
-    y_mode_index_tile_origin: [i32; Y_MODE_INDEX_CDF_ROW_LEN],
-    uv_mode_cfl_not_allowed_non_directional: [i32; UV_MODE_CDF_ROW_LEN],
+    y_mode_set: [u16; Y_MODE_SET_CDF_ROW_LEN],
+    y_mode_index_tile_origin: [u16; Y_MODE_INDEX_CDF_ROW_LEN],
+    uv_mode_cfl_not_allowed_non_directional: [u16; UV_MODE_CDF_ROW_LEN],
 }
 
 impl IntraModeCdfRows {
@@ -305,7 +305,7 @@ impl IntraModeCdfRows {
         }
     }
 
-    fn row_mut(&mut self, selector: IntraModeCdfRowSelector) -> Result<&mut [i32]> {
+    fn row_mut(&mut self, selector: IntraModeCdfRowSelector) -> Result<&mut [u16]> {
         match selector {
             IntraModeCdfRowSelector::YModeSet => Ok(self.y_mode_set.as_mut_slice()),
             IntraModeCdfRowSelector::YModeIndex {

@@ -92,7 +92,7 @@ fn reads_supported_block_symbol_rows() {
         let mut helper = decoder(CdfUpdateMode::Enabled);
 
         let expected = direct_tile
-            .with_row_mut(selector, |row| direct.read_symbol(row))
+            .with_row_mut(selector, |row| direct.read_symbol_u16(row))
             .unwrap()
             .unwrap();
         let actual = helper_tile

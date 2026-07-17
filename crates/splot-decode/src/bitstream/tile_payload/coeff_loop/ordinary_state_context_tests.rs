@@ -171,7 +171,7 @@ fn branch_state(payload: &[u8]) -> (TileCdfSubset, SymbolDecoder<'_>, TileCoeffC
 
 fn assert_luma_context_edges(
     context_state: &TileCoeffContextState,
-    cul_level: u32,
+    cul_level: u8,
     dc_category: u8,
 ) {
     assert_eq!(

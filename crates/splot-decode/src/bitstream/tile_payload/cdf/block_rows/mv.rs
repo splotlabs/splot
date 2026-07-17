@@ -26,24 +26,24 @@ const COL_MV_GREATER_BANKS: usize = 2;
 const COL_MV_INDEX_BANKS: usize = 4;
 const SHELL_OFFSET_OTHER_CLASS_BANKS: usize = 16;
 
-type JointShellSetCdfRows = [[i32; CDF_ROW_LEN]; MV_CONTEXTS];
-type JointShell0Class0CdfRows = [[i32; 6]; MV_CONTEXTS];
-type JointShell0Class1CdfRows = [[i32; 7]; MV_CONTEXTS];
-type JointShell1ClassCdfRows = [[i32; 7]; MV_CONTEXTS];
-type JointShell3ClassCdfRows = [[i32; 8]; MV_CONTEXTS];
-type JointShell4Class0CdfRows = [[i32; 8]; MV_CONTEXTS];
-type JointShell4Class1CdfRows = [[i32; 9]; MV_CONTEXTS];
-type JointShell5ClassCdfRows = [[i32; 9]; MV_CONTEXTS];
-type JointShell6ClassCdfRows = [[i32; 9]; MV_CONTEXTS];
-type JointShellLastTwoCdfRows = [[i32; CDF_ROW_LEN]; MV_CONTEXTS];
-type ShellOffsetLowClassCdfRows = [[[i32; CDF_ROW_LEN]; SHELL_OFFSET_LOW_CLASS_BANKS]; MV_CONTEXTS];
-type ShellOffsetClass2CdfRows = [[i32; CDF_ROW_LEN]; MV_CONTEXTS];
+type JointShellSetCdfRows = [[u16; CDF_ROW_LEN]; MV_CONTEXTS];
+type JointShell0Class0CdfRows = [[u16; 6]; MV_CONTEXTS];
+type JointShell0Class1CdfRows = [[u16; 7]; MV_CONTEXTS];
+type JointShell1ClassCdfRows = [[u16; 7]; MV_CONTEXTS];
+type JointShell3ClassCdfRows = [[u16; 8]; MV_CONTEXTS];
+type JointShell4Class0CdfRows = [[u16; 8]; MV_CONTEXTS];
+type JointShell4Class1CdfRows = [[u16; 9]; MV_CONTEXTS];
+type JointShell5ClassCdfRows = [[u16; 9]; MV_CONTEXTS];
+type JointShell6ClassCdfRows = [[u16; 9]; MV_CONTEXTS];
+type JointShellLastTwoCdfRows = [[u16; CDF_ROW_LEN]; MV_CONTEXTS];
+type ShellOffsetLowClassCdfRows = [[[u16; CDF_ROW_LEN]; SHELL_OFFSET_LOW_CLASS_BANKS]; MV_CONTEXTS];
+type ShellOffsetClass2CdfRows = [[u16; CDF_ROW_LEN]; MV_CONTEXTS];
 type ShellOffsetOtherClassCdfRows =
-    [[[i32; CDF_ROW_LEN]; SHELL_OFFSET_OTHER_CLASS_BANKS]; MV_CONTEXTS];
-type ColMvGreaterCdfRows = [[[i32; CDF_ROW_LEN]; COL_MV_GREATER_BANKS]; MV_CONTEXTS];
-type ColMvIndexCdfRows = [[[i32; CDF_ROW_LEN]; COL_MV_INDEX_BANKS]; MV_CONTEXTS];
-type AmvdJointCdfRows = [[i32; 5]; 1];
-type AmvdIndexCdfRows = [[i32; 9]; 2];
+    [[[u16; CDF_ROW_LEN]; SHELL_OFFSET_OTHER_CLASS_BANKS]; MV_CONTEXTS];
+type ColMvGreaterCdfRows = [[[u16; CDF_ROW_LEN]; COL_MV_GREATER_BANKS]; MV_CONTEXTS];
+type ColMvIndexCdfRows = [[[u16; CDF_ROW_LEN]; COL_MV_INDEX_BANKS]; MV_CONTEXTS];
+type AmvdJointCdfRows = [[u16; 5]; 1];
+type AmvdIndexCdfRows = [[u16; 9]; 2];
 
 macro_rules! visit_mv_cdf_rows {
     ($visit:ident) => {
@@ -181,7 +181,7 @@ impl MvCdfRows {
         }
     }
 
-    pub(crate) fn row(&self, selector: MvCdfSelector) -> Result<&[i32], TileCdfError> {
+    pub(crate) fn row(&self, selector: MvCdfSelector) -> Result<&[u16], TileCdfError> {
         match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row(
                 &self.joint_shell_set,
@@ -248,7 +248,7 @@ impl MvCdfRows {
         }
     }
 
-    pub(crate) fn row_mut(&mut self, selector: MvCdfSelector) -> Result<&mut [i32], TileCdfError> {
+    pub(crate) fn row_mut(&mut self, selector: MvCdfSelector) -> Result<&mut [u16], TileCdfError> {
         match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row_mut(
                 &mut self.joint_shell_set,
@@ -358,7 +358,7 @@ impl MvCdfRows {
         precision: usize,
         shell_set: usize,
         mv_ctx: usize,
-    ) -> Result<&[i32], TileCdfError> {
+    ) -> Result<&[u16], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
         joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_slice)
     }
@@ -368,7 +368,7 @@ impl MvCdfRows {
         precision: usize,
         shell_set: usize,
         mv_ctx: usize,
-    ) -> Result<&mut [i32], TileCdfError> {
+    ) -> Result<&mut [u16], TileCdfError> {
         checked_shell_class_axes(precision, shell_set, mv_ctx)?;
         joint_shell_class_row_match!(self, precision, shell_set, mv_ctx, as_mut_slice)
     }
@@ -417,22 +417,22 @@ fn checked_row<'a, T, const N: usize>(
 }
 
 fn checked_cdf_row<'a, const ROW_LEN: usize, const N: usize>(
-    rows: &'a [[i32; ROW_LEN]; N],
+    rows: &'a [[u16; ROW_LEN]; N],
     index: usize,
     index_name: &'static str,
     array: TileCdfArray,
-) -> Result<&'a [i32], TileCdfError> {
+) -> Result<&'a [u16], TileCdfError> {
     Ok(checked_row(rows, index, index_name, array)?.as_slice())
 }
 
 fn checked_cdf_bank_row<'a, const ROW_LEN: usize, const OUTER: usize, const INNER: usize>(
-    rows: &'a [[[i32; ROW_LEN]; INNER]; OUTER],
+    rows: &'a [[[u16; ROW_LEN]; INNER]; OUTER],
     outer: usize,
     outer_name: &'static str,
     inner: usize,
     inner_name: &'static str,
     array: TileCdfArray,
-) -> Result<&'a [i32], TileCdfError> {
+) -> Result<&'a [u16], TileCdfError> {
     let bank = checked_row(rows, outer, outer_name, array)?;
     checked_cdf_row(bank, inner, inner_name, array)
 }
@@ -452,22 +452,22 @@ fn checked_row_mut<'a, T, const N: usize>(
 }
 
 fn checked_cdf_row_mut<'a, const ROW_LEN: usize, const N: usize>(
-    rows: &'a mut [[i32; ROW_LEN]; N],
+    rows: &'a mut [[u16; ROW_LEN]; N],
     index: usize,
     index_name: &'static str,
     array: TileCdfArray,
-) -> Result<&'a mut [i32], TileCdfError> {
+) -> Result<&'a mut [u16], TileCdfError> {
     Ok(checked_row_mut(rows, index, index_name, array)?.as_mut_slice())
 }
 
 fn checked_cdf_bank_row_mut<'a, const ROW_LEN: usize, const OUTER: usize, const INNER: usize>(
-    rows: &'a mut [[[i32; ROW_LEN]; INNER]; OUTER],
+    rows: &'a mut [[[u16; ROW_LEN]; INNER]; OUTER],
     outer: usize,
     outer_name: &'static str,
     inner: usize,
     inner_name: &'static str,
     array: TileCdfArray,
-) -> Result<&'a mut [i32], TileCdfError> {
+) -> Result<&'a mut [u16], TileCdfError> {
     let bank = checked_row_mut(rows, outer, outer_name, array)?;
     checked_cdf_row_mut(bank, inner, inner_name, array)
 }

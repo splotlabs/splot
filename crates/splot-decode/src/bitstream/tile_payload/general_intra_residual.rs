@@ -568,10 +568,6 @@ pub(crate) enum GeneralIntraResidualError {
     CardinalModeInMiddleAnglePath,
 }
 
-fn or_u32(line: &[u32], start: usize, len: usize) -> u32 {
-    line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
-}
-
 fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
     line.iter().skip(start).take(len).fold(0, |acc, &v| acc | v)
 }
@@ -1100,16 +1096,16 @@ pub(crate) fn decode_general_intra_plane_coeffs(
 
     let local_x4 = context.local_x4(plane, x4).map_err(coeff_ctx_err)?;
     let local_y4 = context.local_y4(plane, y4).map_err(coeff_ctx_err)?;
-    let above_level_or = or_u32(
+    let above_level_or = u32::from(or_u8(
         context.above_level(plane).map_err(coeff_ctx_err)?,
         local_x4,
         w4,
-    );
-    let left_level_or = or_u32(
+    ));
+    let left_level_or = u32::from(or_u8(
         context.left_level(plane).map_err(coeff_ctx_err)?,
         local_y4,
         h4,
-    );
+    ));
     let txb_skip_intra_inter = usize::from(is_inter || txb_skip_fsc_mode);
     let selector = match plane {
         1 | 2 => {

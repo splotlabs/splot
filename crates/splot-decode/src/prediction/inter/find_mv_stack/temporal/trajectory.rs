@@ -6,18 +6,49 @@ use splot_recon::math::round2_signed_i32;
 use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_mv, temporal_grid_index};
 
 type Position = (usize, usize);
-type PhasePositions = [Option<Position>; 3];
+type PhasePositions = [PackedPosition; 3];
+
+const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
+const INVALID_TRAJECTORY_MV: Mv = Mv {
+    row: i32::MIN,
+    col: 0,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PackedPosition {
+    y: u16,
+    x: u16,
+}
+
+impl PackedPosition {
+    const INVALID: Self = Self {
+        y: u16::MAX,
+        x: u16::MAX,
+    };
+
+    fn new(position: Position) -> Option<Self> {
+        Some(Self {
+            y: u16::try_from(position.0).ok()?,
+            x: u16::try_from(position.1).ok()?,
+        })
+    }
+
+    fn unpack(self) -> Option<Position> {
+        (self != Self::INVALID).then_some((self.y as usize, self.x as usize))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrajectoryMotionField {
     width8: usize,
     height8: usize,
-    pub(super) cells: Vec<Option<Mv>>,
+    pub(super) cells: Vec<Mv>,
 }
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        let (width8, height8, cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        let (width8, height8, mut cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
+        cells.fill(INVALID_TRAJECTORY_MV);
         Some(Self {
             width8,
             height8,
@@ -31,8 +62,8 @@ impl TrajectoryMotionField {
         let cells = width8.checked_mul(height8)?;
         self.width8 = width8;
         self.height8 = height8;
-        self.cells.resize(cells, None);
-        self.cells.fill(None);
+        self.cells.resize(cells, INVALID_TRAJECTORY_MV);
+        self.cells.fill(INVALID_TRAJECTORY_MV);
         Some(())
     }
 
@@ -41,7 +72,10 @@ impl TrajectoryMotionField {
     }
 
     pub(super) fn cell(&self, y8: usize, x8: usize) -> Option<Mv> {
-        self.cells.get(self.index(y8, x8)?).copied().flatten()
+        self.cells
+            .get(self.index(y8, x8)?)
+            .copied()
+            .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
     }
 
     pub(super) fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
@@ -49,7 +83,7 @@ impl TrajectoryMotionField {
             return;
         };
         if let Some(cell) = self.cells.get_mut(index) {
-            *cell = Some(mv);
+            *cell = mv;
         }
     }
 }
@@ -58,7 +92,7 @@ impl TrajectoryMotionField {
 pub(super) struct TrajectoryState {
     pub(super) fields: Vec<TrajectoryMotionField>,
     pub(super) positions: Vec<Vec<PhasePositions>>,
-    pub(super) projection_offsets: Vec<Option<i32>>,
+    pub(super) projection_offsets: Vec<i32>,
     step: usize,
     unit_size8: usize,
 }
@@ -75,8 +109,8 @@ impl TrajectoryState {
         let step = step.clamp(1, 2);
         Some(Self {
             fields: vec![template; reference_count],
-            positions: vec![vec![[None; 3]; cell_count]; reference_count],
-            projection_offsets: vec![None; cell_count],
+            positions: vec![vec![[PackedPosition::INVALID; 3]; cell_count]; reference_count],
+            projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
             step,
             unit_size8: unit_size8.max(1),
         })
@@ -103,11 +137,12 @@ impl TrajectoryState {
         }
         self.positions.resize_with(reference_count, Vec::new);
         for positions in &mut self.positions {
-            positions.resize(cell_count, [None; 3]);
-            positions.fill([None; 3]);
+            positions.resize(cell_count, [PackedPosition::INVALID; 3]);
+            positions.fill([PackedPosition::INVALID; 3]);
         }
-        self.projection_offsets.resize(cell_count, None);
-        self.projection_offsets.fill(None);
+        self.projection_offsets
+            .resize(cell_count, INVALID_PROJECTION_OFFSET);
+        self.projection_offsets.fill(INVALID_PROJECTION_OFFSET);
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
         Some(())
@@ -147,7 +182,7 @@ impl TrajectoryState {
         phase: usize,
     ) -> Option<(usize, usize)> {
         let index = self.fields.first()?.index(y8, x8)?;
-        self.positions.get(reference)?.get(index)?[phase]
+        self.positions.get(reference)?.get(index)?[phase].unpack()
     }
 
     fn set_position(
@@ -165,8 +200,9 @@ impl TrajectoryState {
             .positions
             .get_mut(reference)
             .and_then(|field| field.get_mut(index))
+            && let Some(position) = PackedPosition::new(position)
         {
-            cell[phase] = Some(position);
+            cell[phase] = position;
         }
     }
 
@@ -278,6 +314,7 @@ impl TrajectoryState {
         }
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(super) fn observe_projection(
         &mut self,
@@ -303,6 +340,39 @@ impl TrajectoryState {
         let Some(projected) = project_mv(mv, numerator, reference_offset) else {
             return;
         };
+        self.observe_projection_with_projected(
+            source,
+            end,
+            target,
+            y8,
+            x8,
+            mv,
+            projected,
+            source_to_current,
+            reference_offset,
+            backward,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn observe_projection_with_projected(
+        &mut self,
+        source: usize,
+        end: Option<usize>,
+        target: Option<usize>,
+        y8: usize,
+        x8: usize,
+        mv: Mv,
+        projected: Mv,
+        source_to_current: i32,
+        reference_offset: i32,
+        backward: bool,
+    ) {
+        let numerator = if backward {
+            -source_to_current
+        } else {
+            source_to_current
+        };
         let Some(position) = self
             .sampled_position(y8, x8, projected)
             .filter(|&position| self.position_allowed((y8, x8), position))
@@ -316,14 +386,14 @@ impl TrajectoryState {
         else {
             return;
         };
-        let replace = self.projection_offsets[index].is_none()
+        let replace = self.projection_offsets[index] == INVALID_PROJECTION_OFFSET
             || (target.is_some()
                 && target == end
-                && self.projection_offsets[index] != Some(reference_offset));
+                && self.projection_offsets[index] != reference_offset);
         if !replace {
             return;
         }
-        self.projection_offsets[index] = Some(reference_offset);
+        self.projection_offsets[index] = reference_offset;
         let phase = self.phase(position.1);
         self.set_position(source, y8, x8, phase, position);
         self.set_field(
@@ -438,6 +508,18 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn trajectory_storage_stays_compact() {
+        assert_eq!(std::mem::size_of::<Mv>(), 8);
+        assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
+        assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
+        assert_eq!(std::mem::size_of::<i32>(), 4);
+        assert_eq!(
+            PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
+            Some((8191, 8191))
+        );
+    }
 
     #[test]
     fn direct_projection_records_reference_specific_trajectories() {

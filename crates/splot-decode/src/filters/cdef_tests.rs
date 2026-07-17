@@ -393,15 +393,13 @@ fn interior_fast_path_matches_per_sample_reference() {
                 frame_sub_y: 1,
             };
             let mut pad = [0u16; CDEF_PADDED_AREA];
-            let (_, rect, samples, stride) =
-                compute_cdef_filter_plane::<u8>(PlaneId::Y, snap, &ctx, &mut pad)
-                    .unwrap()
-                    .unwrap();
+            let mut filtered = StripePlane::copy_from(snap, 0, 64).unwrap();
+            compute_cdef_filter_plane::<u8>(snap, &ctx, &mut pad, &mut filtered).unwrap();
             let offsets = CdefTapOffsets::for_direction(ctx.dir);
-            for i in 0..rect.height() {
-                for j in 0..rect.width() {
-                    let x = rect.x() + j;
-                    let y = rect.y() + i;
+            for i in 0..8 {
+                for j in 0..8 {
+                    let x = 24 + j;
+                    let y = 24 + i;
                     let center = snap.get(x as isize, y as isize).unwrap();
                     let taps = gather_taps(snap, &offsets, x, y, 64, 64, center);
                     let expected = cdef_filter_sample(
@@ -413,7 +411,7 @@ fn interior_fast_path_matches_per_sample_reference() {
                     )
                     .clamp(0, ctx.max_sample);
                     assert_eq!(
-                        i32::from(samples[i * stride + j]),
+                        i32::from(filtered.row(y).unwrap()[x]),
                         expected,
                         "dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
                     );

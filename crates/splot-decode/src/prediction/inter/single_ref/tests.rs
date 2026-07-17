@@ -29,7 +29,7 @@ fn encode_single_ref(
     bit: u8,
 ) {
     tile.with_row_mut(TileCdfSelector::SingleRef { ctx, ref_idx }, |row| {
-        encoder.write_symbol(row, Symbol::new(bit))
+        encoder.write_symbol_u16(row, Symbol::new(bit))
     })
     .unwrap()
     .unwrap();

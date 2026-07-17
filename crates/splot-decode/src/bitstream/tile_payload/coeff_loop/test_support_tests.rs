@@ -49,7 +49,7 @@ pub(crate) fn seeded_luma_context_state(
     rows: usize,
     w4: usize,
     h4: usize,
-    cul_level: u32,
+    cul_level: u8,
     dc_category: u8,
 ) -> TileCoeffContextState {
     let mut state = TileCoeffContextState::new(columns, rows).unwrap();

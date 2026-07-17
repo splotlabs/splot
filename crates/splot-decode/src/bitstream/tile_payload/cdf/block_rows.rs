@@ -148,137 +148,137 @@ const CCTX_TYPE_CDF_ROW_LEN: usize = 8;
 const PALETTE_ROW_FLAG_CONTEXTS: usize = 4;
 const PALETTE_COLOR_CONTEXTS: usize = 5;
 
-pub(crate) type YModeSetCdfRow = [i32; Y_MODE_SET_CDF_ROW_LEN];
-pub(crate) type DpcmCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type YModeIndexCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
-pub(crate) type YModeOffsetCdfRows = [[i32; Y_MODE_OFFSET_CDF_ROW_LEN]; Y_MODE_OFFSET_CONTEXTS];
-pub(crate) type TxbSkipCdfRows = [[[[[i32; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_SIZE_CONTEXTS];
+pub(crate) type YModeSetCdfRow = [u16; Y_MODE_SET_CDF_ROW_LEN];
+pub(crate) type DpcmCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type YModeIndexCdfRows = [[u16; INTRA_MODE_CDF_ROW_LEN]; Y_MODE_INDEX_CONTEXTS];
+pub(crate) type YModeOffsetCdfRows = [[u16; Y_MODE_OFFSET_CDF_ROW_LEN]; Y_MODE_OFFSET_CONTEXTS];
+pub(crate) type TxbSkipCdfRows = [[[[[u16; CDF_ROW_LEN]; TXB_SKIP_CONTEXTS]; TX_SIZE_CONTEXTS];
     PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type UvModeCflNotAllowedCdfRows = [[i32; INTRA_MODE_CDF_ROW_LEN]; UV_MODE_CONTEXTS];
-pub(crate) type IsCflCdfRows = [[i32; CDF_ROW_LEN]; CFL_CONTEXTS];
-pub(crate) type CflIndexCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type CflSignCdfRow = [i32; CFL_SIGN_CDF_ROW_LEN];
-pub(crate) type CflAlphaCdfRows = [[i32; CFL_ALPHA_CDF_ROW_LEN]; CFL_ALPHA_CONTEXTS];
-pub(crate) type CflMhccpCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type CflMhDirCdfRows = [[i32; CFL_MH_DIR_CDF_ROW_LEN]; CFL_MH_DIR_GROUPS];
-pub(crate) type UseDipCdfRows = [[i32; CDF_ROW_LEN]; DIP_CONTEXTS];
-pub(crate) type DipModeCdfRow = [i32; DIP_MODE_ROW_LEN];
-pub(crate) type VTxbSkipCdfRows = [[[i32; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobExtraCdfRows = [[i32; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type UvModeCflNotAllowedCdfRows = [[u16; INTRA_MODE_CDF_ROW_LEN]; UV_MODE_CONTEXTS];
+pub(crate) type IsCflCdfRows = [[u16; CDF_ROW_LEN]; CFL_CONTEXTS];
+pub(crate) type CflIndexCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type CflSignCdfRow = [u16; CFL_SIGN_CDF_ROW_LEN];
+pub(crate) type CflAlphaCdfRows = [[u16; CFL_ALPHA_CDF_ROW_LEN]; CFL_ALPHA_CONTEXTS];
+pub(crate) type CflMhccpCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type CflMhDirCdfRows = [[u16; CFL_MH_DIR_CDF_ROW_LEN]; CFL_MH_DIR_GROUPS];
+pub(crate) type UseDipCdfRows = [[u16; CDF_ROW_LEN]; DIP_CONTEXTS];
+pub(crate) type DipModeCdfRow = [u16; DIP_MODE_ROW_LEN];
+pub(crate) type VTxbSkipCdfRows = [[[u16; CDF_ROW_LEN]; V_TXB_SKIP_CONTEXTS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobExtraCdfRows = [[u16; CDF_ROW_LEN]; COEFF_CDF_Q_CONTEXTS];
 pub(crate) type DcSignCdfRows =
-    [[[[[i32; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type IsInterCdfRows = [[i32; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
-pub(crate) type SkipModeCdfRows = [[i32; CDF_ROW_LEN]; SKIP_MODE_CONTEXTS];
-pub(crate) type SkipCdfRows = [[i32; CDF_ROW_LEN]; SKIP_CONTEXTS];
-pub(crate) type SingleModeCdfRows = [[i32; 4]; SINGLE_MODE_CONTEXTS];
-pub(crate) type IsWarpCdfRows = [[i32; CDF_ROW_LEN]; WARP_MODE_CONTEXTS];
-pub(crate) type WarpMvCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type WarpIdxCdfRows = [[i32; CDF_ROW_LEN]; WARP_IDX_CONTEXTS];
-pub(crate) type WarpWithMvdCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type WarpPrecisionCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_CONTEXTS];
+    [[[[[u16; CDF_ROW_LEN]; DC_SIGN_CONTEXTS]; DC_SIGN_GROUPS]; PLANE_TYPES]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type IsInterCdfRows = [[u16; CDF_ROW_LEN]; IS_INTER_CONTEXTS];
+pub(crate) type SkipModeCdfRows = [[u16; CDF_ROW_LEN]; SKIP_MODE_CONTEXTS];
+pub(crate) type SkipCdfRows = [[u16; CDF_ROW_LEN]; SKIP_CONTEXTS];
+pub(crate) type SingleModeCdfRows = [[u16; 4]; SINGLE_MODE_CONTEXTS];
+pub(crate) type IsWarpCdfRows = [[u16; CDF_ROW_LEN]; WARP_MODE_CONTEXTS];
+pub(crate) type WarpMvCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type WarpIdxCdfRows = [[u16; CDF_ROW_LEN]; WARP_IDX_CONTEXTS];
+pub(crate) type WarpWithMvdCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type WarpPrecisionCdfRows = [[u16; CDF_ROW_LEN]; BLOCK_SIZE_CONTEXTS];
 pub(crate) type WarpDeltaParamCdfRows =
-    [[i32; WARP_DELTA_PARAM_CDF_ROW_LEN]; WARP_DELTA_PARAM_CONTEXTS];
-pub(crate) type WarpDeltaParamSignCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type WarpInterIntraCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
-pub(crate) type InterIntraCdfRows = [[i32; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
-pub(crate) type InterIntraModeCdfRows = [[i32; INTERINTRA_MODE_ROW_LEN]; BLOCK_SIZE_GROUPS];
-pub(crate) type WedgeInterIntraCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type WedgeQuadCdfRow = [i32; WEDGE_QUAD_ROW_LEN];
-pub(crate) type WedgeAngleCdfRows = [[i32; WEDGE_ANGLE_ROW_LEN]; WEDGE_ANGLE_CONTEXTS];
-pub(crate) type WedgeDist1CdfRow = [i32; WEDGE_DIST1_ROW_LEN];
-pub(crate) type WedgeDist2CdfRow = [i32; WEDGE_DIST2_ROW_LEN];
-pub(crate) type DrlModeCdfRows = [[[i32; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
-pub(crate) type SkipDrlModeCdfRows = [[i32; CDF_ROW_LEN]; DRL_MODE_IDX_BANKS];
-pub(crate) type TipModeCdfRows = [[i32; CDF_ROW_LEN]; TIP_CONTEXTS];
-pub(crate) type TipPredModeCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type TipDrlModeCdfRows = [[i32; CDF_ROW_LEN]; DRL_MODE_IDX_BANKS];
-pub(crate) type SingleRefCdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
-pub(crate) type CompModeCdfRows = [[i32; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
-pub(crate) type IsJointCdfRows = [[i32; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
-pub(crate) type JmvdScaleModeCdfRow = [i32; JMVD_SCALE_MODE_CDF_ROW_LEN];
-pub(crate) type JmvdAdaptiveScaleModeCdfRow = [i32; JMVD_ADAPTIVE_SCALE_MODE_CDF_ROW_LEN];
+    [[u16; WARP_DELTA_PARAM_CDF_ROW_LEN]; WARP_DELTA_PARAM_CONTEXTS];
+pub(crate) type WarpDeltaParamSignCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type WarpInterIntraCdfRows = [[u16; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
+pub(crate) type InterIntraCdfRows = [[u16; CDF_ROW_LEN]; BLOCK_SIZE_GROUPS];
+pub(crate) type InterIntraModeCdfRows = [[u16; INTERINTRA_MODE_ROW_LEN]; BLOCK_SIZE_GROUPS];
+pub(crate) type WedgeInterIntraCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type WedgeQuadCdfRow = [u16; WEDGE_QUAD_ROW_LEN];
+pub(crate) type WedgeAngleCdfRows = [[u16; WEDGE_ANGLE_ROW_LEN]; WEDGE_ANGLE_CONTEXTS];
+pub(crate) type WedgeDist1CdfRow = [u16; WEDGE_DIST1_ROW_LEN];
+pub(crate) type WedgeDist2CdfRow = [u16; WEDGE_DIST2_ROW_LEN];
+pub(crate) type DrlModeCdfRows = [[[u16; CDF_ROW_LEN]; DRL_MODE_CONTEXTS]; DRL_MODE_IDX_BANKS];
+pub(crate) type SkipDrlModeCdfRows = [[u16; CDF_ROW_LEN]; DRL_MODE_IDX_BANKS];
+pub(crate) type TipModeCdfRows = [[u16; CDF_ROW_LEN]; TIP_CONTEXTS];
+pub(crate) type TipPredModeCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type TipDrlModeCdfRows = [[u16; CDF_ROW_LEN]; DRL_MODE_IDX_BANKS];
+pub(crate) type SingleRefCdfRows = [[[u16; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
+pub(crate) type CompModeCdfRows = [[u16; CDF_ROW_LEN]; COMP_MODE_CONTEXTS];
+pub(crate) type IsJointCdfRows = [[u16; CDF_ROW_LEN]; IS_JOINT_CONTEXTS];
+pub(crate) type JmvdScaleModeCdfRow = [u16; JMVD_SCALE_MODE_CDF_ROW_LEN];
+pub(crate) type JmvdAdaptiveScaleModeCdfRow = [u16; JMVD_ADAPTIVE_SCALE_MODE_CDF_ROW_LEN];
 pub(crate) type CompoundModeNonJointCdfRows =
-    [[i32; COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
+    [[u16; COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
 pub(crate) type CompoundModeSameRefsCdfRows =
-    [[i32; COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
-pub(crate) type CompoundTypeCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type CompGroupIdxCdfRows = [[i32; CDF_ROW_LEN]; COMP_GROUP_IDX_CONTEXTS];
-pub(crate) type CwpIdxCdfRows = [[i32; CDF_ROW_LEN]; CWP_IDX_CONTEXTS];
-pub(crate) type CompRef0CdfRows = [[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
+    [[u16; COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN]; COMPOUND_MODE_CONTEXTS];
+pub(crate) type CompoundTypeCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type CompGroupIdxCdfRows = [[u16; CDF_ROW_LEN]; COMP_GROUP_IDX_CONTEXTS];
+pub(crate) type CwpIdxCdfRows = [[u16; CDF_ROW_LEN]; CWP_IDX_CONTEXTS];
+pub(crate) type CompRef0CdfRows = [[[u16; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; REF_CONTEXTS];
 pub(crate) type CompRef1CdfRows =
-    [[[[i32; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
-pub(crate) type UseAmvdCdfRows = [[[i32; CDF_ROW_LEN]; AMVD_CONTEXTS]; AMVD_MODE_CONTEXTS];
-pub(crate) type UseOptflowCdfRows = [[i32; CDF_ROW_LEN]; USE_OPTFLOW_CONTEXTS];
-pub(crate) type UseRefinemvCdfRows = [[i32; CDF_ROW_LEN]; USE_REFINEMV_CONTEXTS];
-pub(crate) type UseExtendWarpCdfRows = [[i32; CDF_ROW_LEN]; USE_EXTEND_WARP_CONTEXTS];
-pub(crate) type UseLocalWarpCdfRows = [[i32; CDF_ROW_LEN]; USE_LOCAL_WARP_CONTEXTS];
+    [[[[u16; CDF_ROW_LEN]; REFS_PER_FRAME_MINUS_1]; COMP_REF1_BIT_TYPES]; REF_CONTEXTS];
+pub(crate) type UseAmvdCdfRows = [[[u16; CDF_ROW_LEN]; AMVD_CONTEXTS]; AMVD_MODE_CONTEXTS];
+pub(crate) type UseOptflowCdfRows = [[u16; CDF_ROW_LEN]; USE_OPTFLOW_CONTEXTS];
+pub(crate) type UseRefinemvCdfRows = [[u16; CDF_ROW_LEN]; USE_REFINEMV_CONTEXTS];
+pub(crate) type UseExtendWarpCdfRows = [[u16; CDF_ROW_LEN]; USE_EXTEND_WARP_CONTEXTS];
+pub(crate) type UseLocalWarpCdfRows = [[u16; CDF_ROW_LEN]; USE_LOCAL_WARP_CONTEXTS];
 pub(crate) type UseMostProbablePrecisionCdfRows =
-    [[i32; CDF_ROW_LEN]; MOST_PROBABLE_PRECISION_CONTEXTS];
-pub(crate) type PbMvPrecisionCdfRows = [[[i32; PB_MV_PRECISION_CDF_ROW_LEN];
+    [[u16; CDF_ROW_LEN]; MOST_PROBABLE_PRECISION_CONTEXTS];
+pub(crate) type PbMvPrecisionCdfRows = [[[u16; PB_MV_PRECISION_CDF_ROW_LEN];
     PB_MV_PRECISION_FRAME_CONTEXTS];
     PB_MV_PRECISION_CONTEXTS];
-pub(crate) type UseBawpCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type ExplicitBawpCdfRows = [[i32; CDF_ROW_LEN]; BAWP_SCALES_CONTEXTS];
-pub(crate) type ExplicitBawpScaleCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type UseWienerNsCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type UsePcWienerCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type FlexRestorationTypeCdfRows = [[[i32; CDF_ROW_LEN]; 3]; 3];
-pub(crate) type WienerNsLengthCdfRows = [[i32; CDF_ROW_LEN]; WIENER_NS_LENGTH_CONTEXTS];
-pub(crate) type WienerNsUvSymCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type WienerNsBaseCdfRow = [i32; WIENER_NS_BASE_CDF_ROW_LEN];
-pub(crate) type IsLongSideDctCdfRows = [[i32; CDF_ROW_LEN]; IS_LONG_SIDE_DCT_CONTEXTS];
+pub(crate) type UseBawpCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type ExplicitBawpCdfRows = [[u16; CDF_ROW_LEN]; BAWP_SCALES_CONTEXTS];
+pub(crate) type ExplicitBawpScaleCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type UseWienerNsCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type UsePcWienerCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type FlexRestorationTypeCdfRows = [[[u16; CDF_ROW_LEN]; 3]; 3];
+pub(crate) type WienerNsLengthCdfRows = [[u16; CDF_ROW_LEN]; WIENER_NS_LENGTH_CONTEXTS];
+pub(crate) type WienerNsUvSymCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type WienerNsBaseCdfRow = [u16; WIENER_NS_BASE_CDF_ROW_LEN];
+pub(crate) type IsLongSideDctCdfRows = [[u16; CDF_ROW_LEN]; IS_LONG_SIDE_DCT_CONTEXTS];
 pub(crate) type IntraTxTypeLongCdfRows =
-    [[i32; INTRA_TX_TYPE_LONG_ROW_LEN]; INTRA_TX_TYPE_LONG_SIZE_CONTEXTS];
-pub(crate) type InterTxTypeLongCdfRows = [[[i32; INTER_TX_TYPE_LONG_ROW_LEN];
+    [[u16; INTRA_TX_TYPE_LONG_ROW_LEN]; INTRA_TX_TYPE_LONG_SIZE_CONTEXTS];
+pub(crate) type InterTxTypeLongCdfRows = [[[u16; INTER_TX_TYPE_LONG_ROW_LEN];
     INTER_TX_TYPE_LONG_SIZE_CONTEXTS];
     INTER_TX_TYPE_LONG_EOB_CONTEXTS];
-pub(crate) type InterTxTypeSet1CdfRows = [[[i32; INTER_TX_TYPE_SET1_ROW_LEN];
+pub(crate) type InterTxTypeSet1CdfRows = [[[u16; INTER_TX_TYPE_SET1_ROW_LEN];
     INTER_TX_TYPE_SET1_SIZE_CONTEXTS];
     INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type InterTxTypeSet2CdfRows =
-    [[i32; INTER_TX_TYPE_SET2_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+    [[u16; INTER_TX_TYPE_SET2_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type InterTxTypeIndexSet1CdfRows =
-    [[i32; INTER_TX_TYPE_INDEX_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+    [[u16; INTER_TX_TYPE_INDEX_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type InterTxTypeIndexSet2CdfRows =
-    [[i32; INTER_TX_TYPE_INDEX_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+    [[u16; INTER_TX_TYPE_INDEX_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type InterTxTypeOffsetSet1CdfRows =
-    [[i32; INTER_TX_TYPE_OFFSET_SET1_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+    [[u16; INTER_TX_TYPE_OFFSET_SET1_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type InterTxTypeOffsetSet2CdfRows =
-    [[i32; INTER_TX_TYPE_OFFSET_SET2_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
-pub(crate) type InterTxTypeSet3CdfRows = [[[i32; INTER_TX_TYPE_SET3_ROW_LEN];
+    [[u16; INTER_TX_TYPE_OFFSET_SET2_ROW_LEN]; INTER_TX_TYPE_EOB_CONTEXTS];
+pub(crate) type InterTxTypeSet3CdfRows = [[[u16; INTER_TX_TYPE_SET3_ROW_LEN];
     INTER_TX_TYPE_SET34_SIZE_CONTEXTS];
     INTER_TX_TYPE_EOB_CONTEXTS];
-pub(crate) type InterTxTypeSet4CdfRows = [[[i32; INTER_TX_TYPE_SET4_ROW_LEN];
+pub(crate) type InterTxTypeSet4CdfRows = [[[u16; INTER_TX_TYPE_SET4_ROW_LEN];
     INTER_TX_TYPE_SET34_SIZE_CONTEXTS];
     INTER_TX_TYPE_EOB_CONTEXTS];
 pub(crate) type IntraTxTypeSet1CdfRows =
-    [[i32; INTRA_TX_TYPE_SET1_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
+    [[u16; INTRA_TX_TYPE_SET1_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
 pub(crate) type IntraTxTypeSet2CdfRows =
-    [[i32; INTRA_TX_TYPE_SET2_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
+    [[u16; INTRA_TX_TYPE_SET2_ROW_LEN]; INTRA_TX_TYPE_SIZE_CONTEXTS];
 pub(crate) type SecTxTypeCdfRows =
-    [[[i32; SEC_TX_TYPE_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_CONTEXTS]; SEC_TX_TYPE_IS_INTER_CONTEXTS];
-pub(crate) type MostProbableStxSetCdfRow = [i32; MOST_PROBABLE_STX_SET_ROW_LEN];
-pub(crate) type MostProbableStxSetAdstCdfRow = [i32; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
-pub(crate) type CctxTypeCdfRow = [i32; CCTX_TYPE_CDF_ROW_LEN];
-pub(crate) type PaletteYModeCdfRow = [i32; CDF_ROW_LEN];
-pub(crate) type PaletteYSizeCdfRow = [i32; 8];
-pub(crate) type IdentityRowYCdfRows = [[i32; 4]; PALETTE_ROW_FLAG_CONTEXTS];
-pub(crate) type PaletteSize2YColorCdfRows = [[i32; 3]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type PaletteSize3YColorCdfRows = [[i32; 4]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type PaletteSize4YColorCdfRows = [[i32; 5]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type PaletteSize5YColorCdfRows = [[i32; 6]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type PaletteSize6YColorCdfRows = [[i32; 7]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type PaletteSize7YColorCdfRows = [[i32; 8]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type PaletteSize8YColorCdfRows = [[i32; 9]; PALETTE_COLOR_CONTEXTS];
-pub(crate) type InterpFilterCdfRows = [[i32; 4]; INTERP_FILTER_CONTEXTS];
+    [[[u16; SEC_TX_TYPE_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_CONTEXTS]; SEC_TX_TYPE_IS_INTER_CONTEXTS];
+pub(crate) type MostProbableStxSetCdfRow = [u16; MOST_PROBABLE_STX_SET_ROW_LEN];
+pub(crate) type MostProbableStxSetAdstCdfRow = [u16; MOST_PROBABLE_STX_SET_ADST_ROW_LEN];
+pub(crate) type CctxTypeCdfRow = [u16; CCTX_TYPE_CDF_ROW_LEN];
+pub(crate) type PaletteYModeCdfRow = [u16; CDF_ROW_LEN];
+pub(crate) type PaletteYSizeCdfRow = [u16; 8];
+pub(crate) type IdentityRowYCdfRows = [[u16; 4]; PALETTE_ROW_FLAG_CONTEXTS];
+pub(crate) type PaletteSize2YColorCdfRows = [[u16; 3]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize3YColorCdfRows = [[u16; 4]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize4YColorCdfRows = [[u16; 5]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize5YColorCdfRows = [[u16; 6]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize6YColorCdfRows = [[u16; 7]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize7YColorCdfRows = [[u16; 8]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type PaletteSize8YColorCdfRows = [[u16; 9]; PALETTE_COLOR_CONTEXTS];
+pub(crate) type InterpFilterCdfRows = [[u16; 4]; INTERP_FILTER_CONTEXTS];
 
-pub(crate) type EobPt16CdfRows = [[[i32; 6]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt32CdfRows = [[[i32; 7]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt64CdfRows = [[[i32; 8]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt128CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt256CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt512CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
-pub(crate) type EobPt1024CdfRows = [[[i32; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt16CdfRows = [[[u16; 6]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt32CdfRows = [[[u16; 7]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt64CdfRows = [[[u16; 8]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt128CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt256CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt512CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
+pub(crate) type EobPt1024CdfRows = [[[u16; 9]; EOB_PLANE_CTXS]; COEFF_CDF_Q_CONTEXTS];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum EobPtSize {
@@ -1369,14 +1369,14 @@ impl BlockCdfRows {
         self.coeff.replicate_q_context(q)
     }
 
-    pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[i32], TileCdfError> {
+    pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         block_cdf_row!(self, selector, get, as_slice, row)
     }
 
     pub(crate) fn row_mut(
         &mut self,
         selector: TileCdfSelector,
-    ) -> Result<&mut [i32], TileCdfError> {
+    ) -> Result<&mut [u16], TileCdfError> {
         block_cdf_row!(self, selector, get_mut, as_mut_slice, row_mut)
     }
 

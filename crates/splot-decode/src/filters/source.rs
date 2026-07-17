@@ -219,6 +219,18 @@ impl StripePlane {
         }
         Some(())
     }
+
+    pub(crate) fn rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u16], usize)> {
+        let row = rect.y().checked_sub(self.origin_y)?;
+        let start = row.checked_mul(self.width)?.checked_add(rect.x())?;
+        let end = rect
+            .height()
+            .checked_sub(1)?
+            .checked_mul(self.width)?
+            .checked_add(start)?
+            .checked_add(rect.width())?;
+        Some((self.samples.get_mut(start..end)?, self.width))
+    }
 }
 
 impl Drop for StripePlane {

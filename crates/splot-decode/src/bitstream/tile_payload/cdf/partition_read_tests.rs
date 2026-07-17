@@ -54,7 +54,7 @@ fn reads_supported_partition_entry_symbols() {
         let mut helper = decoder(&PAYLOAD, CdfUpdateMode::Enabled);
 
         let expected = direct_tile
-            .with_row_mut(selector, |row| direct.read_symbol(row))
+            .with_row_mut(selector, |row| direct.read_symbol_u16(row))
             .unwrap()
             .unwrap();
         let actual = helper_tile
@@ -221,7 +221,7 @@ fn zero_length_payload_read_matches_direct_symbol_handoff() {
     let mut helper = decoder(&[], CdfUpdateMode::Enabled);
 
     let expected = direct_tile
-        .with_row_mut(selector, |row| direct.read_symbol(row))
+        .with_row_mut(selector, |row| direct.read_symbol_u16(row))
         .unwrap()
         .unwrap();
     let actual = helper_tile

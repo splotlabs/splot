@@ -155,6 +155,7 @@ fn search_refinemv<T: ReconSample>(
                 InterpolationFilter::Bilinear,
                 Some((candidates[0], rect.luma_w, rect.luma_h)),
                 offset,
+                false,
                 pred0,
             )?;
             super::optflow::initial_luma_prediction(
@@ -165,6 +166,7 @@ fn search_refinemv<T: ReconSample>(
                 InterpolationFilter::Bilinear,
                 Some((candidates[1], rect.luma_w, rect.luma_h)),
                 offset,
+                false,
                 pred1,
             )?;
             Ok(search_refinemv_offset(
@@ -188,6 +190,120 @@ fn search_refinemv<T: ReconSample>(
             col: candidates[1].col - dx * 8,
         },
     ])
+}
+
+pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: CompoundMcBlock<'_, T>,
+    offset: ByteOffset,
+    reuse_horizontal: [bool; 2],
+) -> Result<Option<MotionCell>> {
+    const PREDICTION_SIZE: usize = 16;
+    const CENTER_SIZE: usize = 8;
+
+    let Some(distances) = block.optflow_distances else {
+        return Ok(None);
+    };
+    let candidates = [block.mv0, block.mv1];
+    if !block.search_refinemv
+        || block.rect.luma_w != 8
+        || block.rect.luma_h != 8
+        || !search_range_allowed(candidates)
+    {
+        return Ok(None);
+    }
+    let mut prediction_rect = block.rect;
+    prediction_rect.luma_w = PREDICTION_SIZE;
+    prediction_rect.luma_h = PREDICTION_SIZE;
+    let search_mv = |candidate: Mv| Mv {
+        row: candidate.row - SEARCH_PADDING,
+        col: candidate.col - SEARCH_PADDING,
+    };
+    super::with_initial_luma_predictions(PREDICTION_SIZE, PREDICTION_SIZE, |pred0, pred1| {
+        super::optflow::initial_luma_prediction(
+            sink,
+            block.reference0,
+            prediction_rect,
+            search_mv(candidates[0]),
+            InterpolationFilter::Bilinear,
+            Some((candidates[0], CENTER_SIZE, CENTER_SIZE)),
+            offset,
+            reuse_horizontal[0],
+            pred0,
+        )?;
+        super::optflow::initial_luma_prediction(
+            sink,
+            block.reference1,
+            prediction_rect,
+            search_mv(candidates[1]),
+            InterpolationFilter::Bilinear,
+            Some((candidates[1], CENTER_SIZE, CENTER_SIZE)),
+            offset,
+            reuse_horizontal[1],
+            pred1,
+        )?;
+        let (dx, dy) = search_refinemv_offset(
+            pred0,
+            pred1,
+            PREDICTION_SIZE,
+            CENTER_SIZE,
+            CENTER_SIZE,
+            sink.info().bit_depth(),
+            true,
+        )?;
+        let base_mvs = [
+            Mv {
+                row: candidates[0].row + dy * 8,
+                col: candidates[0].col + dx * 8,
+            },
+            Mv {
+                row: candidates[1].row - dy * 8,
+                col: candidates[1].col - dx * 8,
+            },
+        ];
+        let mut centered = [[0u16; CENTER_SIZE * CENTER_SIZE]; 2];
+        for (reference, (prediction, x, y)) in [(pred0, 4 + dx, 4 + dy), (pred1, 4 - dx, 4 - dy)]
+            .into_iter()
+            .enumerate()
+        {
+            let x = usize::try_from(x).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "TIP optical-flow predictor x offset",
+            })?;
+            let y = usize::try_from(y).map_err(|_| ReconError::ArithmeticOverflow {
+                context: "TIP optical-flow predictor y offset",
+            })?;
+            for row in 0..CENTER_SIZE {
+                let source_start = (y + row)
+                    .checked_mul(PREDICTION_SIZE)
+                    .and_then(|row| row.checked_add(x))
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "TIP optical-flow predictor source offset",
+                    })?;
+                let source_end = source_start.checked_add(CENTER_SIZE).ok_or(
+                    ReconError::ArithmeticOverflow {
+                        context: "TIP optical-flow predictor source end",
+                    },
+                )?;
+                let source = prediction.get(source_start..source_end).ok_or(
+                    ReconError::ArithmeticOverflow {
+                        context: "TIP optical-flow predictor source lookup",
+                    },
+                )?;
+                let destination_start = row * CENTER_SIZE;
+                centered[reference][destination_start..destination_start + CENTER_SIZE]
+                    .copy_from_slice(source);
+            }
+        }
+        super::optflow::tip_optflow_motion_cell(
+            &centered[0],
+            &centered[1],
+            sink.info().bit_depth(),
+            distances,
+            block.optflow_sad_threshold,
+            base_mvs,
+        )
+        .map(Some)
+    })
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {

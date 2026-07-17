@@ -355,7 +355,7 @@ fn assert_candidate_mask_superset(
             );
             if curr_tx_base != prev_tx_base || curr_sub_pu != prev_sub_pu {
                 assert!(
-                    grid.is_candidate(row, col, pass, true),
+                    grid.is_candidate(row, col, pass, true, sub_x, sub_y),
                     "candidate mask missed plane={plane} pass={pass} row={row} col={col}"
                 );
             }
@@ -396,8 +396,8 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
             assert_candidate_mask_superset(&grid, 4, 6, plane, pass, sub_x, sub_y);
         }
     }
-    assert!(!grid.is_candidate(3, 5, 0, false));
-    assert!(!grid.is_candidate(3, 5, 1, false));
+    assert!(!grid.is_candidate(3, 5, 0, false, 0, 0));
+    assert!(!grid.is_candidate(3, 5, 1, false, 0, 0));
 }
 
 fn assert_smoothed_step(p0: u8, q0: u8, reason: &str) {

@@ -9,8 +9,8 @@
 //! lifecycle, coefficient syntax, and coded tile traversal.
 
 use crate::symbol::{
-    CDF_PROB_SCALE, CdfUpdateMode, EC_PROB_SHIFT, MAX_LITERAL_BITS, SYMBOL_RANGE_INIT, Symbol,
-    floor_log2, update_cdf, validate_cdf_shape,
+    CDF_PROB_SCALE, CdfStorage, CdfUpdateMode, EC_PROB_SHIFT, MAX_LITERAL_BITS, SYMBOL_RANGE_INIT,
+    Symbol, floor_log2, update_cdf, validate_cdf_shape,
 };
 use crate::tables::conversion::PROB_INC;
 use crate::write::{WriteError, WriteResult};
@@ -21,6 +21,40 @@ const SYMBOL_VALUE_BITS: u32 = 15;
 const EXIT_Y_WINDOW: u32 = (1 << (SYMBOL_VALUE_BITS - 1)) - 1;
 const INITIAL_CODE_BITS: u64 = SYMBOL_VALUE_BITS as u64;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
+
+macro_rules! write_symbol_to_cdf {
+    ($encoder:expr, $cdf:expr, $symbol:expr) => {{
+        let encoder = $encoder;
+        let cdf = $cdf;
+        let shape =
+            validate_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
+        let symbol = usize::from($symbol.get());
+        if symbol >= shape.n {
+            return Err(WriteError::SymbolOutOfRange {
+                symbol: symbol as u8,
+                symbols: shape.n,
+            });
+        }
+
+        let step = encoder.symbol_step(cdf, shape.n, symbol)?;
+        encoder.ensure_projected_steps(u64::from(step.bits), 1)?;
+        encoder.range = step.range_after;
+        encoder.value_limit = step.range_after;
+        encoder.step_bits = encoder.step_bits.saturating_add(u64::from(step.bits));
+        encoder.steps.push(RangeStep::Symbol {
+            low: step.low,
+            bits: step.bits,
+            residual_limit: step.range_after >> step.bits,
+        });
+        encoder.symbol_count = encoder.symbol_count.saturating_add(1);
+
+        if encoder.config.cdf_update == CdfUpdateMode::Enabled {
+            update_cdf(cdf, shape, symbol);
+        }
+
+        Ok(())
+    }};
+}
 
 /// Configuration for [`SymbolEncoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,33 +313,17 @@ impl SymbolEncoder {
     /// [`WriteError::SymbolOutputTooLarge`] if the output limit would be exceeded,
     /// or [`WriteError::SymbolOperationLimit`] if the operation limit would be exceeded.
     pub fn write_symbol(&mut self, cdf: &mut [i32], symbol: Symbol) -> WriteResult<()> {
-        let shape =
-            validate_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
-        let symbol = usize::from(symbol.get());
-        if symbol >= shape.n {
-            return Err(WriteError::SymbolOutOfRange {
-                symbol: symbol as u8,
-                symbols: shape.n,
-            });
-        }
+        write_symbol_to_cdf!(self, cdf, symbol)
+    }
 
-        let step = self.symbol_step(cdf, shape.n, symbol)?;
-        self.ensure_projected_steps(u64::from(step.bits), 1)?;
-        self.range = step.range_after;
-        self.value_limit = step.range_after;
-        self.step_bits = self.step_bits.saturating_add(u64::from(step.bits));
-        self.steps.push(RangeStep::Symbol {
-            low: step.low,
-            bits: step.bits,
-            residual_limit: step.range_after >> step.bits,
-        });
-        self.symbol_count = self.symbol_count.saturating_add(1);
-
-        if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf(cdf, shape, symbol);
-        }
-
-        Ok(())
+    /// Writes one AV2 § 8.2.6 symbol from a compact `u16` CDF row.
+    ///
+    /// The row layout and errors are identical to [`Self::write_symbol`].
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::write_symbol`].
+    pub fn write_symbol_u16(&mut self, cdf: &mut [u16], symbol: Symbol) -> WriteResult<()> {
+        write_symbol_to_cdf!(self, cdf, symbol)
     }
 
     /// Finalizes the symbol payload and returns owned tile-payload bytes.
@@ -359,14 +377,19 @@ impl SymbolEncoder {
         self.step_bits = self.step_bits.saturating_add(u64::from(bits));
     }
 
-    fn symbol_step(&self, cdf: &[i32], n: usize, target: usize) -> WriteResult<SymbolStep> {
+    fn symbol_step<T: CdfStorage>(
+        &self,
+        cdf: &[T],
+        n: usize,
+        target: usize,
+    ) -> WriteResult<SymbolStep> {
         let mut cur = self.range;
         for symbol in 0..=target {
             let prev = cur;
             let f = if symbol == n - 1 {
                 0
             } else {
-                CDF_PROB_SCALE - cdf[symbol] as u32
+                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
             };
             let prob_inc = PROB_INC[n - 2][symbol] as u32;
             let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;

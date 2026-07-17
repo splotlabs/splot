@@ -70,43 +70,31 @@ fn br(pos: usize, plane: usize, is_lf: bool, tx_class: usize) -> CoeffBrContext 
 }
 
 #[test]
-fn coeff_br_dc_luma_2d_sums_clamped_neighbours() {
-    let mut level = [0u32; 16];
+fn coeff_br_contexts_cover_neighbour_and_plane_rules() {
+    let mut level = [0u8; 16];
     level[1] = 7;
     level[4] = 2;
     level[5] = 10;
     assert_eq!(br(0, 0, false, 0).ctx(&level), 6);
-}
 
-#[test]
-fn coeff_br_clamps_halved_magnitude_to_six() {
-    let mut level = [0u32; 16];
+    level.fill(0);
     level[6] = 5;
     level[9] = 5;
     level[10] = 5;
     assert_eq!(br(5, 0, false, 0).ctx(&level), 6);
-}
 
-#[test]
-fn coeff_br_dc_non_2d_and_low_frequency_add_seven() {
-    let zero = [0u32; 16];
+    let zero = [0u8; 16];
     assert_eq!(br(0, 0, false, 2).ctx(&zero), 7);
     assert_eq!(br(5, 0, true, 0).ctx(&zero), 7);
     assert_eq!(br(5, 0, false, 0).ctx(&zero), 0);
-}
 
-#[test]
-fn coeff_br_chroma_clamps_to_three() {
-    let mut level = [0u32; 16];
+    level.fill(0);
     level[1] = 5;
     level[4] = 5;
     level[5] = 5;
     assert_eq!(br(0, 1, false, 0).ctx(&level), 3);
-}
 
-#[test]
-fn coeff_br_non_2d_chroma_reads_only_two_neighbours() {
-    let mut level = [0u32; 16];
+    level.fill(0);
     level[6] = 1;
     level[9] = 1;
     level[13] = 4;
@@ -115,15 +103,15 @@ fn coeff_br_non_2d_chroma_reads_only_two_neighbours() {
 
 #[test]
 fn coeff_br_is_total_for_out_of_bounds_and_short_slices() {
-    let full = [9u32; 16];
+    let full = [9u8; 16];
     assert_eq!(br(15, 0, false, 0).ctx(&full), 0);
-    let short = [0u32, 9, 0, 0];
+    let short = [0u8, 9, 0, 0];
     assert_eq!(br(0, 0, false, 0).ctx(&short), 3);
 }
 
 #[test]
 fn coeff_br_is_total_for_pathological_geometry() {
-    let level = [0u32; 16];
+    let level = [0u8; 16];
     let _ = CoeffBrContext {
         pos: usize::MAX,
         bwl: u32::MAX,
@@ -148,32 +136,29 @@ fn coeff_br_is_total_for_pathological_geometry() {
 
 #[test]
 fn coeff_base_idtx_sums_clamped_left_and_above() {
-    let mut lvl = [0u32; 16];
+    let mut lvl = [0u8; 16];
     lvl[4] = 1; // (1,0) = left of (1,1)
     lvl[1] = 9; // (0,1) = above of (1,1)
     assert_eq!(coeff_base_idtx_ctx(&lvl, 1, 1, 4), 4);
 }
 
 #[test]
-fn coeff_base_idtx_skips_missing_neighbours() {
-    let lvl = [7u32; 16];
+fn coeff_idtx_contexts_cover_missing_neighbours_and_clamps() {
+    let lvl = [7u8; 16];
     assert_eq!(coeff_base_idtx_ctx(&lvl, 0, 0, 4), 0);
     assert_eq!(coeff_base_idtx_ctx(&lvl, 0, 1, 4), 3);
     assert_eq!(coeff_base_idtx_ctx(&lvl, 1, 0, 4), 3);
-}
 
-#[test]
-fn coeff_br_idtx_clamps_to_five_then_six() {
-    let lvl = [9u32; 16];
+    let lvl = [9u8; 16];
     assert_eq!(coeff_br_idtx_ctx(&lvl, 1, 1, 4), 6);
     assert_eq!(coeff_br_idtx_ctx(&lvl, 0, 1, 4), 5);
 }
 
 #[test]
 fn coeff_idtx_is_total_for_short_slice_and_pathological_geometry() {
-    let short = [3u32, 3];
+    let short = [3u8, 3];
     assert_eq!(coeff_base_idtx_ctx(&short, 1, 1, 4), 3);
-    let lvl = [0u32; 4];
+    let lvl = [0u8; 4];
     let _ = coeff_base_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
     let _ = coeff_br_idtx_ctx(&lvl, usize::MAX, usize::MAX, usize::MAX);
 }
@@ -201,7 +186,7 @@ fn cb8(
 
 #[test]
 fn coeff_base_luma_hf_2d_position_buckets() {
-    let z = [0u32; 64];
+    let z = [0u8; 64];
     assert_eq!(
         cb8(0, 0, false, false, 0, 0).select(&z),
         CoeffBaseSelection::Hf { ctx: 0 }
@@ -218,7 +203,7 @@ fn coeff_base_luma_hf_2d_position_buckets() {
 
 #[test]
 fn coeff_base_luma_hf_non_2d_adds_fifteen() {
-    let z = [0u32; 64];
+    let z = [0u8; 64];
     assert_eq!(
         cb8(0, 0, false, false, 1, 2).select(&z),
         CoeffBaseSelection::Hf { ctx: 15 }
@@ -226,46 +211,28 @@ fn coeff_base_luma_hf_non_2d_adds_fifteen() {
 }
 
 #[test]
-fn coeff_base_luma_lf_2d_branches() {
-    let z = [0u32; 64];
-    assert_eq!(
-        cb8(0, 0, true, false, 0, 0).select(&z),
-        CoeffBaseSelection::Lf { ctx: 0 }
-    );
-    assert_eq!(
-        cb8(1, 0, true, false, 1, 0).select(&z),
-        CoeffBaseSelection::Lf { ctx: 9 }
-    );
-    assert_eq!(
-        cb8(9, 0, true, false, 1, 0).select(&z),
-        CoeffBaseSelection::Lf { ctx: 16 }
-    );
-}
-
-#[test]
-fn coeff_base_luma_lf_non_2d_keys_on_horiz_col_vert_row() {
-    let z = [0u32; 64];
-    assert_eq!(
-        cb8(0, 0, true, false, 1, 1).select(&z),
-        CoeffBaseSelection::Lf { ctx: 21 }
-    );
-    assert_eq!(
-        cb8(1, 0, true, false, 1, 1).select(&z),
-        CoeffBaseSelection::Lf { ctx: 28 }
-    );
-    assert_eq!(
-        cb8(0, 0, true, false, 1, 2).select(&z),
-        CoeffBaseSelection::Lf { ctx: 21 }
-    );
-    assert_eq!(
-        cb8(9, 0, true, false, 1, 2).select(&z),
-        CoeffBaseSelection::Lf { ctx: 28 }
-    );
+fn coeff_base_luma_lf_covers_2d_and_directional_branches() {
+    let z = [0u8; 64];
+    let cases = [
+        ((0, 0, 0), 0),
+        ((1, 1, 0), 9),
+        ((9, 1, 0), 16),
+        ((0, 1, 1), 21),
+        ((1, 1, 1), 28),
+        ((0, 1, 2), 21),
+        ((9, 1, 2), 28),
+    ];
+    for ((pos, c, tx_class), ctx) in cases {
+        assert_eq!(
+            cb8(pos, 0, true, false, c, tx_class).select(&z),
+            CoeffBaseSelection::Lf { ctx }
+        );
+    }
 }
 
 #[test]
 fn coeff_base_chroma_uv_branches() {
-    let z = [0u32; 64];
+    let z = [0u8; 64];
     assert_eq!(
         cb8(0, 1, false, false, 1, 0).select(&z),
         CoeffBaseSelection::Uv { ctx: 0 }
@@ -286,7 +253,7 @@ fn coeff_base_chroma_uv_branches() {
 
 #[test]
 fn coeff_base_sums_clamped_neighbours_into_hf() {
-    let mut lvl = [0u32; 64];
+    let mut lvl = [0u8; 64];
     for f in [1, 8, 9, 2, 16] {
         lvl[f] = 9;
     }
@@ -298,7 +265,7 @@ fn coeff_base_sums_clamped_neighbours_into_hf() {
 
 #[test]
 fn coeff_base_low_frequency_maglimit_raises_to_five() {
-    let mut lvl = [0u32; 64];
+    let mut lvl = [0u8; 64];
     lvl[1] = 9;
     assert_eq!(
         cb8(0, 0, true, false, 0, 0).select(&lvl),
@@ -308,7 +275,7 @@ fn coeff_base_low_frequency_maglimit_raises_to_five() {
 
 #[test]
 fn coeff_base_parity_hidden_overrides_and_caps_maglimit() {
-    let mut lvl = [0u32; 64];
+    let mut lvl = [0u8; 64];
     lvl[1] = 9;
     assert_eq!(
         cb8(0, 0, true, true, 0, 0).select(&lvl),
@@ -318,7 +285,7 @@ fn coeff_base_parity_hidden_overrides_and_caps_maglimit() {
 
 #[test]
 fn coeff_base_chroma_2d_reads_three_neighbours_not_five() {
-    let mut lvl = [0u32; 64];
+    let mut lvl = [0u8; 64];
     lvl[9] = 9;
     lvl[2] = 9;
     assert_eq!(
@@ -329,12 +296,12 @@ fn coeff_base_chroma_2d_reads_three_neighbours_not_five() {
 
 #[test]
 fn coeff_base_is_total_for_short_slice_and_pathological_geometry() {
-    let short = [0u32, 9];
+    let short = [0u8, 9];
     assert_eq!(
         cb8(0, 0, false, false, 0, 0).select(&short),
         CoeffBaseSelection::Hf { ctx: 2 }
     );
-    let z = [0u32; 4];
+    let z = [0u8; 4];
     let _ = CoeffBaseContext {
         pos: usize::MAX,
         bwl: u32::MAX,
@@ -382,7 +349,7 @@ fn dc_sign_ctx_is_total_for_pathological_geometry() {
 
 #[test]
 fn idtx_sign_ctx_maps_signc_to_base_context() {
-    let zl = [0u32; 16];
+    let zl = [0u8; 16];
     let p3 = [1i32, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&p3, &zl, 1, 1, 4), 5);
     let n3 = [-1i32, -1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -397,16 +364,16 @@ fn idtx_sign_ctx_maps_signc_to_base_context() {
 #[test]
 fn idtx_sign_ctx_level_threshold_raises_nonzero_context() {
     let p1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let hi = [0u32, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 4 > 3
+    let hi = [0u8, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 4 > 3
     assert_eq!(idtx_sign_ctx(&p1, &hi, 1, 1, 4), 3);
-    let eq = [0u32, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let eq = [0u8, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&p1, &eq, 1, 1, 4), 1);
     assert_eq!(idtx_sign_ctx(&[0i32; 16], &hi, 1, 1, 4), 0);
 }
 
 #[test]
 fn idtx_sign_ctx_skips_missing_edge_neighbours() {
-    let zl = [0u32; 16];
+    let zl = [0u8; 16];
     let q = [1i32; 16];
     assert_eq!(idtx_sign_ctx(&q, &zl, 0, 0, 4), 0);
     let only_left = [1i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
@@ -418,7 +385,7 @@ fn idtx_sign_ctx_skips_missing_edge_neighbours() {
 #[test]
 fn idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry() {
     let q = [1i32, 1];
-    let l = [9u32];
+    let l = [9u8];
     let _ = idtx_sign_ctx(&q, &l, 1, 1, 4);
     let _ = idtx_sign_ctx(&q, &l, usize::MAX, usize::MAX, usize::MAX);
 }

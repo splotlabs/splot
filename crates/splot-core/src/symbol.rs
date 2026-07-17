@@ -24,6 +24,92 @@ pub(crate) const MAX_LITERAL_BITS: u32 = 32;
 pub(crate) const MAX_CDF_COUNT: i32 = 32;
 const BYPASS_LITERAL_CHUNK_BITS: u32 = 8;
 
+pub(crate) trait CdfStorage: Copy {
+    fn to_i32(self) -> i32;
+    fn from_i32(value: i32) -> Self;
+}
+
+impl CdfStorage for i32 {
+    fn to_i32(self) -> i32 {
+        self
+    }
+
+    fn from_i32(value: i32) -> Self {
+        value
+    }
+}
+
+impl CdfStorage for u16 {
+    fn to_i32(self) -> i32 {
+        i32::from(self)
+    }
+
+    fn from_i32(value: i32) -> Self {
+        debug_assert!((0..=i32::from(u16::MAX)).contains(&value));
+        value as u16
+    }
+}
+
+macro_rules! read_symbol_from_cdf {
+    ($decoder:expr, $cdf:expr) => {{
+        let decoder = $decoder;
+        let cdf = $cdf;
+        let shape = decoder.validate_cdf(cdf)?;
+        let mut cur = decoder.symbol_range;
+        let mut symbol = 0usize;
+
+        let (prev, cur) = loop {
+            let prev = cur;
+            let f = if symbol == shape.n - 1 {
+                0
+            } else {
+                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
+            };
+            let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
+            let next_cur = (((decoder.symbol_range >> 8) * pp) >> 7) << 3;
+
+            if decoder.symbol_value >= next_cur {
+                break (prev, next_cur);
+            }
+
+            cur = next_cur;
+            symbol += 1;
+            if symbol >= shape.n {
+                return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+            }
+        };
+
+        let new_range = prev.saturating_sub(cur);
+        if new_range == 0 {
+            return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+        }
+        let new_value = decoder.symbol_value - cur;
+        let bits = 15 - floor_log2(new_range);
+        decoder.symbol_range = new_range << bits;
+        let num_bits = decoder.num_bits_to_read(bits);
+        let new_data = decoder.reader.read_bits(num_bits)?;
+        let padded_data = new_data << (bits - num_bits);
+        let mask = (1u32 << bits) - 1;
+        decoder.symbol_value = (new_value << bits) | (padded_data ^ mask);
+        decoder.symbol_max_bits -= i64::from(bits);
+        decoder.frame_symbol_count = decoder.frame_symbol_count.saturating_add(1);
+
+        if decoder.config.cdf_update == CdfUpdateMode::Enabled {
+            update_cdf(cdf, shape, symbol);
+        }
+
+        trace::emit(
+            "read_symbol",
+            symbol as u32,
+            decoder.reader.consumed_bits(),
+            decoder.symbol_max_bits,
+        );
+
+        Ok(Symbol::new(symbol as u8))
+    }};
+}
+
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolBitPosition(u64);
@@ -362,60 +448,18 @@ impl<'a> SymbolDecoder<'a> {
     /// supply a required coded bit.
     #[track_caller]
     pub fn read_symbol(&mut self, cdf: &mut [i32]) -> Result<Symbol> {
-        let shape = self.validate_cdf(cdf)?;
+        read_symbol_from_cdf!(self, cdf)
+    }
 
-        let mut cur = self.symbol_range;
-        let mut symbol = 0usize;
-
-        let (prev, cur) = loop {
-            let prev = cur;
-            let f = if symbol == shape.n - 1 {
-                0
-            } else {
-                CDF_PROB_SCALE - cdf[symbol] as u32
-            };
-            let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
-            let next_cur = (((self.symbol_range >> 8) * pp) >> 7) << 3;
-
-            if self.symbol_value >= next_cur {
-                break (prev, next_cur);
-            }
-
-            cur = next_cur;
-            symbol += 1;
-            if symbol >= shape.n {
-                return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-            }
-        };
-
-        let new_range = prev.saturating_sub(cur);
-        if new_range == 0 {
-            return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-        }
-        let new_value = self.symbol_value - cur;
-        let bits = 15 - floor_log2(new_range);
-        self.symbol_range = new_range << bits;
-        let num_bits = self.num_bits_to_read(bits);
-        let new_data = self.reader.read_bits(num_bits)?;
-        let padded_data = new_data << (bits - num_bits);
-        let mask = (1u32 << bits) - 1;
-        self.symbol_value = (new_value << bits) | (padded_data ^ mask);
-        self.symbol_max_bits -= i64::from(bits);
-        self.frame_symbol_count = self.frame_symbol_count.saturating_add(1);
-
-        if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf(cdf, shape, symbol);
-        }
-
-        trace::emit(
-            "read_symbol",
-            symbol as u32,
-            self.reader.consumed_bits(),
-            self.symbol_max_bits,
-        );
-
-        Ok(Symbol::new(symbol as u8))
+    /// Decodes one AV2 § 8.2.6 symbol from a compact `u16` CDF row.
+    ///
+    /// The row layout and errors are identical to [`Self::read_symbol`].
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::read_symbol`].
+    #[track_caller]
+    pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
+        read_symbol_from_cdf!(self, cdf)
     }
 
     /// Validates AV2 § 8.2.4 `exit_symbol()` and returns the final decoder summary.
@@ -508,7 +552,7 @@ impl<'a> SymbolDecoder<'a> {
         self.exit_symbol()
     }
 
-    fn validate_cdf(&self, cdf: &[i32]) -> Result<CdfShape> {
+    fn validate_cdf<T: CdfStorage>(&self, cdf: &[T]) -> Result<CdfShape> {
         validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))
     }
 
@@ -614,8 +658,8 @@ pub(crate) struct CdfShape {
     pub(crate) count: i32,
 }
 
-pub(crate) fn validate_cdf_shape(
-    cdf: &[i32],
+pub(crate) fn validate_cdf_shape<T: CdfStorage>(
+    cdf: &[T],
 ) -> core::result::Result<CdfShape, SymbolCdfErrorKind> {
     let len = cdf.len();
     let n = len.saturating_sub(1);
@@ -624,11 +668,11 @@ pub(crate) fn validate_cdf_shape(
     }
 
     for index in 0..n - 1 {
-        let value = cdf[index];
+        let value = cdf[index].to_i32();
         if !(1..=CDF_PROB_MAX).contains(&value) {
             return Err(SymbolCdfErrorKind::ProbabilityOutOfRange { index, value });
         }
-        if index > 0 && value < cdf[index - 1] {
+        if index > 0 && value < cdf[index - 1].to_i32() {
             return Err(SymbolCdfErrorKind::DecreasingCumulative {
                 previous_index: index - 1,
                 index,
@@ -636,7 +680,7 @@ pub(crate) fn validate_cdf_shape(
         }
     }
 
-    let rate_index = cdf[n - 1];
+    let rate_index = cdf[n - 1].to_i32();
     if !(0..PARA_ADJUSTMENT_LIST.len() as i32).contains(&rate_index) {
         return Err(SymbolCdfErrorKind::AdaptationRateOutOfRange {
             index: n - 1,
@@ -644,7 +688,7 @@ pub(crate) fn validate_cdf_shape(
         });
     }
 
-    let count = cdf[n];
+    let count = cdf[n].to_i32();
     if !(0..=MAX_CDF_COUNT).contains(&count) {
         return Err(SymbolCdfErrorKind::CountOutOfRange {
             index: n,
@@ -690,7 +734,7 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }
 
-pub(crate) fn update_cdf(cdf: &mut [i32], shape: CdfShape, symbol: usize) {
+pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
     let time_interval = if shape.count > 31 {
         2usize
     } else {
@@ -703,14 +747,16 @@ pub(crate) fn update_cdf(cdf: &mut [i32], shape: CdfShape, symbol: usize) {
     let rate = rate as u32;
 
     for (index, entry) in cdf.iter_mut().take(shape.n - 1).enumerate() {
+        let value = entry.to_i32();
         if index < symbol {
-            *entry -= *entry >> rate;
+            *entry = T::from_i32(value - (value >> rate));
         } else {
-            *entry += (CDF_PROB_SCALE as i32 - *entry) >> rate;
+            *entry = T::from_i32(value + ((CDF_PROB_SCALE as i32 - value) >> rate));
         }
     }
-    if cdf[shape.n] < MAX_CDF_COUNT {
-        cdf[shape.n] += 1;
+    let count = cdf[shape.n].to_i32();
+    if count < MAX_CDF_COUNT {
+        cdf[shape.n] = T::from_i32(count + 1);
     }
 }
 

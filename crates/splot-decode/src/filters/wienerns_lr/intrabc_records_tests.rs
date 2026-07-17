@@ -174,7 +174,7 @@ fn encode_steps(steps: &[(Option<TileCdfSelector>, u32)]) -> Vec<u8> {
     for &(selector, value) in steps {
         if let Some(selector) = selector {
             cdfs.with_row_mut(selector, |row| {
-                encoder.write_symbol(row, Symbol::new(u8::try_from(value).unwrap()))
+                encoder.write_symbol_u16(row, Symbol::new(u8::try_from(value).unwrap()))
             })
             .unwrap()
             .unwrap();

@@ -14,7 +14,7 @@ fn default_binary_cdf() -> [i32; 3] {
 /// Returns the adapted row and its arity; the caller asserts that the
 /// equal-adjacent state was actually reached.
 fn adapt_default_row_to_equal_adjacent() -> ([i32; 8], usize) {
-    let mut cdf = crate::tables::cdf::DEFAULT_CCTX_TYPE_CDF;
+    let mut cdf = crate::tables::cdf::DEFAULT_CCTX_TYPE_CDF.map(i32::from);
     let n = cdf.len() - 1;
     let mut steps = 0;
     while steps < 512 {
