@@ -338,6 +338,74 @@ fn deblock_sample_filter_inner_4_bounded<T: ReconSample>(
     let q_thr_clamp = q_thr * q_thresh_mult;
     let max_sample = i32::from(bit_depth.max_sample());
     let width = max_width_neg.max(max_width_pos);
+    if stride == 1 {
+        let low_extent = max_width_neg.max(2);
+        for lane in 0..4 {
+            let boundary = boundary + lane * lane_stride;
+            let window = &mut line[boundary - low_extent..boundary + width.max(2)];
+            let q0 = i32::from(window[low_extent].to_u16());
+            let q1 = i32::from(window[low_extent + 1].to_u16());
+            let p0 = i32::from(window[low_extent - 1].to_u16());
+            let p1 = i32::from(window[low_extent - 2].to_u16());
+            let delta_m2 = ((p1 - q1 + 3 * (q0 - p0)) * 4).clamp(-q_thr_clamp, q_thr_clamp);
+            let (neg_side, pos_side) = window.split_at_mut(low_extent);
+            if !curr_lossless {
+                let delta_m2_pos = delta_m2 * w_mult_pos;
+                for (i, sample) in pos_side[..width].iter_mut().enumerate() {
+                    let diff = (delta_m2_pos * (max_width_pos as i32 - i as i32) + (1 << 10)) >> 11;
+                    let value = (i32::from(sample.to_u16()) - diff).clamp(0, max_sample);
+                    *sample = T::try_from_u16(value as u16)?;
+                }
+            }
+            if !prev_lossless {
+                let delta_m2_neg = delta_m2 * w_mult_neg;
+                let ramp = neg_side[low_extent - max_width_neg..].iter_mut();
+                for (i, sample) in ramp.enumerate() {
+                    let diff = (delta_m2_neg * (i as i32 + 1) + (1 << 10)) >> 11;
+                    let value = (i32::from(sample.to_u16()) + diff).clamp(0, max_sample);
+                    *sample = T::try_from_u16(value as u16)?;
+                }
+            }
+        }
+        return Ok(());
+    }
+    if lane_stride == 1 && stride >= 4 {
+        let mut delta_neg = [0i32; 4];
+        let mut delta_pos = [0i32; 4];
+        for (lane, (neg, pos)) in delta_neg.iter_mut().zip(&mut delta_pos).enumerate() {
+            let boundary = boundary + lane;
+            let q0 = i32::from(line[boundary].to_u16());
+            let q1 = i32::from(line[boundary + stride].to_u16());
+            let p0 = i32::from(line[boundary - stride].to_u16());
+            let p1 = i32::from(line[boundary - 2 * stride].to_u16());
+            let delta_m2 = ((p1 - q1 + 3 * (q0 - p0)) * 4).clamp(-q_thr_clamp, q_thr_clamp);
+            *neg = delta_m2 * w_mult_neg;
+            *pos = delta_m2 * w_mult_pos;
+        }
+        if !curr_lossless {
+            for i in 0..width {
+                let row_start = boundary + i * stride;
+                let factor = max_width_pos as i32 - i as i32;
+                for (lane, sample) in line[row_start..row_start + 4].iter_mut().enumerate() {
+                    let diff = (delta_pos[lane] * factor + (1 << 10)) >> 11;
+                    let value = (i32::from(sample.to_u16()) - diff).clamp(0, max_sample);
+                    *sample = T::try_from_u16(value as u16)?;
+                }
+            }
+        }
+        if !prev_lossless {
+            for i in 0..max_width_neg {
+                let row_start = boundary - (i + 1) * stride;
+                let factor = (max_width_neg - i) as i32;
+                for (lane, sample) in line[row_start..row_start + 4].iter_mut().enumerate() {
+                    let diff = (delta_neg[lane] * factor + (1 << 10)) >> 11;
+                    let value = (i32::from(sample.to_u16()) + diff).clamp(0, max_sample);
+                    *sample = T::try_from_u16(value as u16)?;
+                }
+            }
+        }
+        return Ok(());
+    }
     for lane in 0..4 {
         let boundary = boundary + lane * lane_stride;
         let q0 = i32::from(line[boundary].to_u16());
