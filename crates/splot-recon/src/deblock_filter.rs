@@ -561,15 +561,15 @@ pub fn deblock_filter_choice<T: ReconSample>(
         }
     }
 
-    let mut sampled_s = [0; 2 * MAX_DBL_FLT_LEN];
-    let mut sampled_t = [0; 2 * MAX_DBL_FLT_LEN];
-    for offset in -(max_samples_neg as isize)..pos_span as isize {
-        let slot = (MAX_DBL_FLT_LEN as isize + offset) as usize;
-        let index = (boundary as isize + offset) as usize;
-        sampled_s[slot] = i32::from(s[index].to_u16());
-        sampled_t[slot] = i32::from(t[index].to_u16());
-    }
-    Ok(deblock_filter_choice_inner(params, &sampled_s, &sampled_t))
+    Ok(deblock_filter_choice_progressive(
+        params,
+        max_samples_neg,
+        pos_span,
+        |offset| {
+            let index = (boundary as isize + offset) as usize;
+            (i32::from(s[index].to_u16()), i32::from(t[index].to_u16()))
+        },
+    ))
 }
 
 /// Chooses the deblocking width from two lines inside one strided sample plane.
@@ -636,29 +636,149 @@ pub fn deblock_filter_choice_strided<T: ReconSample>(
         }
     }
 
-    let mut sampled_s = [0; 2 * MAX_DBL_FLT_LEN];
-    let mut sampled_t = [0; 2 * MAX_DBL_FLT_LEN];
-    for offset in -(max_samples_neg as isize)..positive_samples as isize {
-        let slot = (MAX_DBL_FLT_LEN as isize + offset) as usize;
-        let distance = offset.unsigned_abs() * stride;
-        let first_index = if offset < 0 {
-            boundary - distance
-        } else {
-            boundary + distance
-        };
-        let last_index = if offset < 0 {
-            last_boundary - distance
-        } else {
-            last_boundary + distance
-        };
-        sampled_s[slot] = i32::from(samples[first_index].to_u16());
-        sampled_t[slot] = i32::from(samples[last_index].to_u16());
-    }
-    Ok(deblock_filter_choice_inner(params, &sampled_s, &sampled_t))
+    Ok(deblock_filter_choice_progressive(
+        params,
+        max_samples_neg,
+        positive_samples,
+        |offset| {
+            let distance = offset.unsigned_abs() * stride;
+            let first_index = if offset < 0 {
+                boundary - distance
+            } else {
+                boundary + distance
+            };
+            let last_index = if offset < 0 {
+                last_boundary - distance
+            } else {
+                last_boundary + distance
+            };
+            (
+                i32::from(samples[first_index].to_u16()),
+                i32::from(samples[last_index].to_u16()),
+            )
+        },
+    ))
 }
 
 #[inline]
-fn deblock_filter_choice_inner(
+fn deblock_filter_choice_progressive(
+    params: &DeblockFilterChoice,
+    max_samples_neg: usize,
+    positive_samples: usize,
+    mut load: impl FnMut(isize) -> (i32, i32),
+) -> usize {
+    let mut sampled_s = [0; 2 * MAX_DBL_FLT_LEN];
+    let mut sampled_t = [0; 2 * MAX_DBL_FLT_LEN];
+    for offset in -3..3 {
+        load_choice_offset(&mut load, &mut sampled_s, &mut sampled_t, offset);
+    }
+    if let Some(width) = deblock_filter_choice_initial(params, &sampled_s, &sampled_t) {
+        return width;
+    }
+    if params.max_width_neg > 2 {
+        load_choice_offset(&mut load, &mut sampled_s, &mut sampled_t, -4);
+    }
+    load_choice_offset(&mut load, &mut sampled_s, &mut sampled_t, 3);
+    if let Some(width) = deblock_filter_choice_ends(params, &sampled_s, &sampled_t) {
+        return width;
+    }
+    for offset in -(max_samples_neg as isize)..positive_samples as isize {
+        if !(-4..=3).contains(&offset) {
+            load_choice_offset(&mut load, &mut sampled_s, &mut sampled_t, offset);
+        }
+    }
+    deblock_filter_choice_wide(params, &sampled_s, &sampled_t)
+}
+
+#[inline]
+fn load_choice_offset(
+    load: &mut impl FnMut(isize) -> (i32, i32),
+    sampled_s: &mut [i32; 2 * MAX_DBL_FLT_LEN],
+    sampled_t: &mut [i32; 2 * MAX_DBL_FLT_LEN],
+    offset: isize,
+) {
+    let slot = (MAX_DBL_FLT_LEN as isize + offset) as usize;
+    let (s, t) = load(offset);
+    sampled_s[slot] = s;
+    sampled_t[slot] = t;
+}
+
+#[inline]
+fn deblock_filter_choice_initial(
+    params: &DeblockFilterChoice,
+    samples_s: &[i32; 2 * MAX_DBL_FLT_LEN],
+    samples_t: &[i32; 2 * MAX_DBL_FLT_LEN],
+) -> Option<usize> {
+    let DeblockFilterChoice {
+        q_thr,
+        side_thr,
+        max_width_pos,
+        ..
+    } = *params;
+    let sample_s = |k: i32| samples_s[(MAX_DBL_FLT_LEN as i32 + k) as usize];
+    let sample_t = |k: i32| samples_t[(MAX_DBL_FLT_LEN as i32 + k) as usize];
+    let second_deriv_at = |k: i32| -> i32 {
+        let deriv_s = (sample_s(k - 1) - (sample_s(k) << 1) + sample_s(k + 1)).abs();
+        let deriv_t = (sample_t(k - 1) - (sample_t(k) << 1) + sample_t(k + 1)).abs();
+        (deriv_s + deriv_t + 1) >> 1
+    };
+
+    let sd_m2 = second_deriv_at(-2);
+    let sd_m1 = second_deriv_at(-1);
+    let sd_0 = second_deriv_at(0);
+    let sd_1 = second_deriv_at(1);
+    if sd_m2 > side_thr || sd_1 > side_thr {
+        return Some(0);
+    }
+    if max_width_pos == 1 {
+        return Some(1);
+    }
+    let side_thr2 = side_thr >> 2;
+    if sd_m2 > side_thr2 || sd_1 > side_thr2 || sd_m1 + sd_0 > q_thr * 4 {
+        return Some(1);
+    }
+    let side_thr3 = side_thr >> 3;
+    if sd_m2 > side_thr3 || sd_1 > side_thr3 || sd_m1 + sd_0 > q_thr * 3 {
+        return Some(2);
+    }
+    None
+}
+
+#[inline]
+fn deblock_filter_choice_ends(
+    params: &DeblockFilterChoice,
+    samples_s: &[i32; 2 * MAX_DBL_FLT_LEN],
+    samples_t: &[i32; 2 * MAX_DBL_FLT_LEN],
+) -> Option<usize> {
+    let DeblockFilterChoice {
+        side_thr,
+        max_width_pos,
+        max_width_neg,
+        ..
+    } = *params;
+    let sample_s = |k: i32| samples_s[(MAX_DBL_FLT_LEN as i32 + k) as usize];
+    let sample_t = |k: i32| samples_t[(MAX_DBL_FLT_LEN as i32 + k) as usize];
+    let directional = |i: i32, j: i32, g: i32, n: i32| -> i32 {
+        let deriv_s = (sample_s(i) - sample_s(j) - n * (sample_s(i) - sample_s(g))).abs();
+        let deriv_t = (sample_t(i) - sample_t(j) - n * (sample_t(i) - sample_t(g))).abs();
+        (deriv_s + deriv_t + 1) >> 1
+    };
+
+    let end_thr = (side_thr * 3) >> 4;
+    if max_width_neg > 2 && directional(-1, -4, -2, 3) > end_thr {
+        return Some(2);
+    }
+    if directional(0, 3, 1, 3) > end_thr {
+        return Some(2);
+    }
+    if max_width_pos == 3 {
+        return Some(3);
+    }
+    None
+}
+
+#[inline]
+fn deblock_filter_choice_wide(
     params: &DeblockFilterChoice,
     samples_s: &[i32; 2 * MAX_DBL_FLT_LEN],
     samples_t: &[i32; 2 * MAX_DBL_FLT_LEN],
@@ -678,43 +798,13 @@ fn deblock_filter_choice_inner(
         let deriv_t = (sample_t(k - 1) - (sample_t(k) << 1) + sample_t(k + 1)).abs();
         (deriv_s + deriv_t + 1) >> 1
     };
-
-    let sd_m2 = second_deriv_at(-2);
     let sd_m1 = second_deriv_at(-1);
     let sd_0 = second_deriv_at(0);
-    let sd_1 = second_deriv_at(1);
-    if sd_m2 > side_thr || sd_1 > side_thr {
-        return 0;
-    }
-    if max_width_pos == 1 {
-        return 1;
-    }
-    let side_thr2 = side_thr >> 2;
-    if sd_m2 > side_thr2 || sd_1 > side_thr2 || sd_m1 + sd_0 > q_thr * 4 {
-        return 1;
-    }
-    let side_thr3 = side_thr >> 3;
-    if sd_m2 > side_thr3 || sd_1 > side_thr3 || sd_m1 + sd_0 > q_thr * 3 {
-        return 2;
-    }
-
     let directional = |i: i32, j: i32, g: i32, n: i32| -> i32 {
         let deriv_s = (sample_s(i) - sample_s(j) - n * (sample_s(i) - sample_s(g))).abs();
         let deriv_t = (sample_t(i) - sample_t(j) - n * (sample_t(i) - sample_t(g))).abs();
         (deriv_s + deriv_t + 1) >> 1
     };
-
-    let end_thr = (side_thr * 3) >> 4;
-    if max_width_neg > 2 && directional(-1, -4, -2, 3) > end_thr {
-        return 2;
-    }
-    if directional(0, 3, 1, 3) > end_thr {
-        return 2;
-    }
-    if max_width_pos == 3 {
-        return 3;
-    }
-
     let transition = (sd_m1 + sd_0) << 4;
     let mut prev_dist = 3usize;
     let mut dist = 4usize;
