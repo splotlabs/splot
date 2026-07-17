@@ -561,15 +561,10 @@ pub fn deblock_filter_choice<T: ReconSample>(
         }
     }
 
-    let mut sampled_s = [0; 2 * MAX_DBL_FLT_LEN];
-    let mut sampled_t = [0; 2 * MAX_DBL_FLT_LEN];
-    for offset in -(max_samples_neg as isize)..pos_span as isize {
-        let slot = (MAX_DBL_FLT_LEN as isize + offset) as usize;
+    Ok(deblock_filter_choice_progressive(params, |offset| {
         let index = (boundary as isize + offset) as usize;
-        sampled_s[slot] = i32::from(s[index].to_u16());
-        sampled_t[slot] = i32::from(t[index].to_u16());
-    }
-    Ok(deblock_filter_choice_inner(params, &sampled_s, &sampled_t))
+        (i32::from(s[index].to_u16()), i32::from(t[index].to_u16()))
+    }))
 }
 
 /// Chooses the deblocking width from two lines inside one strided sample plane.
@@ -636,10 +631,7 @@ pub fn deblock_filter_choice_strided<T: ReconSample>(
         }
     }
 
-    let mut sampled_s = [0; 2 * MAX_DBL_FLT_LEN];
-    let mut sampled_t = [0; 2 * MAX_DBL_FLT_LEN];
-    for offset in -(max_samples_neg as isize)..positive_samples as isize {
-        let slot = (MAX_DBL_FLT_LEN as isize + offset) as usize;
+    Ok(deblock_filter_choice_progressive(params, |offset| {
         let distance = offset.unsigned_abs() * stride;
         let first_index = if offset < 0 {
             boundary - distance
@@ -651,17 +643,17 @@ pub fn deblock_filter_choice_strided<T: ReconSample>(
         } else {
             last_boundary + distance
         };
-        sampled_s[slot] = i32::from(samples[first_index].to_u16());
-        sampled_t[slot] = i32::from(samples[last_index].to_u16());
-    }
-    Ok(deblock_filter_choice_inner(params, &sampled_s, &sampled_t))
+        (
+            i32::from(samples[first_index].to_u16()),
+            i32::from(samples[last_index].to_u16()),
+        )
+    }))
 }
 
 #[inline]
-fn deblock_filter_choice_inner(
+fn deblock_filter_choice_progressive(
     params: &DeblockFilterChoice,
-    samples_s: &[i32; 2 * MAX_DBL_FLT_LEN],
-    samples_t: &[i32; 2 * MAX_DBL_FLT_LEN],
+    mut load: impl FnMut(isize) -> (i32, i32),
 ) -> usize {
     let DeblockFilterChoice {
         q_thr,
@@ -671,18 +663,16 @@ fn deblock_filter_choice_inner(
         q_first,
         ..
     } = *params;
-    let sample_s = |k: i32| samples_s[(MAX_DBL_FLT_LEN as i32 + k) as usize];
-    let sample_t = |k: i32| samples_t[(MAX_DBL_FLT_LEN as i32 + k) as usize];
-    let second_deriv_at = |k: i32| -> i32 {
-        let deriv_s = (sample_s(k - 1) - (sample_s(k) << 1) + sample_s(k + 1)).abs();
-        let deriv_t = (sample_t(k - 1) - (sample_t(k) << 1) + sample_t(k + 1)).abs();
-        (deriv_s + deriv_t + 1) >> 1
-    };
-
-    let sd_m2 = second_deriv_at(-2);
-    let sd_m1 = second_deriv_at(-1);
-    let sd_0 = second_deriv_at(0);
-    let sd_1 = second_deriv_at(1);
+    let m3 = load(-3);
+    let m2 = load(-2);
+    let m1 = load(-1);
+    let zero = load(0);
+    let p1 = load(1);
+    let p2 = load(2);
+    let sd_m2 = choice_second_deriv(m3, m2, m1);
+    let sd_m1 = choice_second_deriv(m2, m1, zero);
+    let sd_0 = choice_second_deriv(m1, zero, p1);
+    let sd_1 = choice_second_deriv(zero, p1, p2);
     if sd_m2 > side_thr || sd_1 > side_thr {
         return 0;
     }
@@ -698,23 +688,16 @@ fn deblock_filter_choice_inner(
         return 2;
     }
 
-    let directional = |i: i32, j: i32, g: i32, n: i32| -> i32 {
-        let deriv_s = (sample_s(i) - sample_s(j) - n * (sample_s(i) - sample_s(g))).abs();
-        let deriv_t = (sample_t(i) - sample_t(j) - n * (sample_t(i) - sample_t(g))).abs();
-        (deriv_s + deriv_t + 1) >> 1
-    };
-
     let end_thr = (side_thr * 3) >> 4;
-    if max_width_neg > 2 && directional(-1, -4, -2, 3) > end_thr {
+    if max_width_neg > 2 && choice_directional(m1, load(-4), m2, 3) > end_thr {
         return 2;
     }
-    if directional(0, 3, 1, 3) > end_thr {
+    if choice_directional(zero, load(3), p1, 3) > end_thr {
         return 2;
     }
     if max_width_pos == 3 {
         return 3;
     }
-
     let transition = (sd_m1 + sd_0) << 4;
     let mut prev_dist = 3usize;
     let mut dist = 4usize;
@@ -726,16 +709,32 @@ fn deblock_filter_choice_inner(
         }
         let dist2 = dist.min(7);
         let n = dist2 as i32;
-        if max_width_neg >= dist2 && directional(-1, -(n + 1), -2, n) > end_thr4 {
+        if max_width_neg >= dist2
+            && choice_directional(m1, load(-(n as isize + 1)), m2, n) > end_thr4
+        {
             return prev_dist;
         }
-        if directional(0, n, 1, n) > end_thr4 {
+        if choice_directional(zero, load(n as isize), p1, n) > end_thr4 {
             return prev_dist;
         }
         prev_dist = dist;
         dist += 2;
     }
     max_width_pos
+}
+
+#[inline]
+fn choice_second_deriv(left: (i32, i32), center: (i32, i32), right: (i32, i32)) -> i32 {
+    let deriv_s = (left.0 - (center.0 << 1) + right.0).abs();
+    let deriv_t = (left.1 - (center.1 << 1) + right.1).abs();
+    (deriv_s + deriv_t + 1) >> 1
+}
+
+#[inline]
+fn choice_directional(i: (i32, i32), j: (i32, i32), g: (i32, i32), n: i32) -> i32 {
+    let deriv_s = (i.0 - j.0 - n * (i.0 - g.0)).abs();
+    let deriv_t = (i.1 - j.1 - n * (i.1 - g.1)).abs();
+    (deriv_s + deriv_t + 1) >> 1
 }
 
 #[cfg(test)]

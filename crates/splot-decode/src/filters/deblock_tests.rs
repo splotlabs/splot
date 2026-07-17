@@ -116,28 +116,22 @@ fn sub_pu_filter_dimensions_follow_filt_max_size() {
 
 #[test]
 fn explicit_sub_pu_dimensions_follow_pass_and_chroma_subsampling() {
-    let mut info = MiBlockInfo {
-        base_row: 0,
-        base_col: 0,
-        luma_prediction: prediction(0, 0, 3),
-        chroma_prediction: prediction(0, 0, 3),
-        chroma_base_row: 0,
-        chroma_base_col: 0,
-        luma_tx: 3,
-        chroma_tx: None,
-        sub_pu_size: None,
-        qindex: 100,
-        skip: false,
-        lossless: false,
+    let mut blocks = deblock_blocks(1, 1);
+    blocks[0].sub_pu_size = Some(DeblockSubPuSize::square(8));
+    let info = EdgeBlock {
+        block: &blocks[0],
+        chroma_transform: None,
     };
+    assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 4);
+    assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
 
-    info.sub_pu_size = Some(DeblockSubPuSize::square(8));
-    assert_eq!(sub_pu_dimension(&info, 1, 0, 1, 1), 4);
-    assert_eq!(sub_pu_dimension(&info, 1, 1, 1, 1), 4);
-
-    info.sub_pu_size = Some(DeblockSubPuSize::new(16, 8));
-    assert_eq!(sub_pu_dimension(&info, 1, 0, 1, 1), 8);
-    assert_eq!(sub_pu_dimension(&info, 1, 1, 1, 1), 4);
+    blocks[0].sub_pu_size = Some(DeblockSubPuSize::new(16, 8));
+    let info = EdgeBlock {
+        block: &blocks[0],
+        chroma_transform: None,
+    };
+    assert_eq!(sub_pu_dimension(info, 1, 0, 1, 1), 8);
+    assert_eq!(sub_pu_dimension(info, 1, 1, 1, 1), 4);
 }
 
 #[test]
@@ -330,23 +324,15 @@ fn assert_candidate_mask_superset(
             }
             let prev_row = row - (dy << sub_y);
             let prev_col = col - (dx << sub_x);
-            let curr = grid.get(row, col).unwrap();
-            let prev = grid.get(prev_row, prev_col).unwrap();
-            let curr_tx_base = if plane == 0 {
-                (curr.base_row, curr.base_col)
-            } else {
-                (curr.chroma_base_row, curr.chroma_base_col)
-            };
-            let prev_tx_base = if plane == 0 {
-                (prev.base_row, prev.base_col)
-            } else {
-                (prev.chroma_base_row, prev.chroma_base_col)
-            };
+            let curr = grid.get_edge(row, col).unwrap();
+            let prev = grid.get_edge(prev_row, prev_col).unwrap();
+            let curr_tx_base = curr.tx_base(plane);
+            let prev_tx_base = prev.tx_base(plane);
             let x_p = (col * MI_SIZE) >> sub_x;
             let y_p = (row * MI_SIZE) >> sub_y;
-            let curr_sub_pu = sub_pu_base(&curr, plane, x_p, y_p, sub_x, sub_y);
+            let curr_sub_pu = sub_pu_base(curr, plane, x_p, y_p, sub_x, sub_y);
             let prev_sub_pu = sub_pu_base(
-                &prev,
+                prev,
                 plane,
                 x_p.saturating_sub(dx),
                 y_p.saturating_sub(dy),
@@ -827,23 +813,23 @@ fn mi_grid_covers_decoded_blocks() {
         lossless: true,
     }];
     let grid = build_mi_grid(&blocks, 16, 16).unwrap();
-    assert!(grid.get(0, 0).is_some(), "top-left MI is covered");
+    assert!(grid.get_edge(0, 0).is_some(), "top-left MI is covered");
     assert!(
-        grid.get(0, 0).is_some_and(|info| info.lossless),
+        grid.get_edge(0, 0).is_some_and(|info| info.block.lossless),
         "MI records preserve per-segment lossless state"
     );
     assert!(
-        grid.get(7, 7).is_some(),
+        grid.get_edge(7, 7).is_some(),
         "bottom-right of the 8x8 footprint is covered"
     );
     assert!(
-        grid.get(8, 8).is_none(),
+        grid.get_edge(8, 8).is_none(),
         "an MI outside the block is uncovered"
     );
-    let info = grid.get(0, 0).unwrap();
-    assert_eq!((info.base_row, info.base_col), (0, 0));
-    assert_eq!(plane_tx(0, info), 3, "luma tx index");
-    assert_eq!(plane_tx(1, info), 2, "chroma tx index");
+    let info = grid.get_edge(0, 0).unwrap();
+    assert_eq!(info.tx_base(0), (0, 0));
+    assert_eq!(info.tx(0), 3, "luma tx index");
+    assert_eq!(info.tx(1), 2, "chroma tx index");
 }
 
 #[test]
@@ -903,24 +889,16 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
     let chroma = [metadata, transform];
     let grid = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
 
-    let inherited = grid.get(1, 3).unwrap();
-    assert_eq!(
-        (
-            inherited.chroma_prediction.base_r,
-            inherited.chroma_prediction.base_c
-        ),
-        (0, 0)
-    );
-    assert_eq!(inherited.chroma_prediction.default_sub_pu_tx, 3);
-    assert_eq!(
-        (inherited.chroma_base_row, inherited.chroma_base_col),
-        (0, 2)
-    );
-    assert_eq!(inherited.chroma_tx, Some(5));
-    assert_eq!(inherited.qindex, 90);
-    assert!(!inherited.skip);
-    assert!(!inherited.lossless);
-    assert_eq!(inherited.sub_pu_size, None);
+    let inherited = grid.get_edge(1, 3).unwrap();
+    let chroma_prediction = inherited.prediction(1);
+    assert_eq!((chroma_prediction.base_r, chroma_prediction.base_c), (0, 0));
+    assert_eq!(chroma_prediction.default_sub_pu_tx, 3);
+    assert_eq!(inherited.tx_base(1), (0, 2));
+    assert_eq!(inherited.tx(1), 5);
+    assert_eq!(inherited.block.qindex, 90);
+    assert!(!inherited.block.skip);
+    assert!(!inherited.block.lossless);
+    assert_eq!(inherited.block.sub_pu_size, None);
 }
 
 #[test]
@@ -963,17 +941,15 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     let chroma = [ordinary];
     let grid = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
 
-    let info = grid.get(1, 3).unwrap();
-    assert_eq!(
-        (info.chroma_prediction.base_r, info.chroma_prediction.base_c),
-        (7, 7)
-    );
-    assert_eq!((info.chroma_base_row, info.chroma_base_col), (0, 2));
-    assert_eq!(info.chroma_tx, Some(5));
-    assert_eq!(info.sub_pu_size, Some(DeblockSubPuSize::new(4, 8)));
-    assert_eq!(info.qindex, 255);
-    assert!(!info.skip);
-    assert!(info.lossless);
+    let info = grid.get_edge(1, 3).unwrap();
+    let chroma_prediction = info.prediction(1);
+    assert_eq!((chroma_prediction.base_r, chroma_prediction.base_c), (7, 7));
+    assert_eq!(info.tx_base(1), (0, 2));
+    assert_eq!(info.tx(1), 5);
+    assert_eq!(info.block.sub_pu_size, Some(DeblockSubPuSize::new(4, 8)));
+    assert_eq!(info.block.qindex, 255);
+    assert!(!info.block.skip);
+    assert!(info.block.lossless);
 }
 
 #[test]
@@ -1008,13 +984,11 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     let grid = build_mi_grid(&luma, 16, 16).unwrap();
     let chroma = [record];
     let grid = overlay_mi_grid(&grid, &chroma, 16, 16).unwrap();
-    let info = grid.get(6, 4).unwrap();
-    assert_eq!(
-        (info.chroma_prediction.base_r, info.chroma_prediction.base_c),
-        (6, 4)
-    );
-    assert_eq!((info.chroma_base_row, info.chroma_base_col), (6, 4));
-    assert_eq!(info.qindex, 77);
+    let info = grid.get_edge(6, 4).unwrap();
+    let chroma_prediction = info.prediction(1);
+    assert_eq!((chroma_prediction.base_r, chroma_prediction.base_c), (6, 4));
+    assert_eq!(info.tx_base(1), (6, 4));
+    assert_eq!(info.block.qindex, 77);
 }
 
 #[test]

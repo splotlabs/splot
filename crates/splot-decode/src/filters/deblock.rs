@@ -94,53 +94,38 @@ impl DeblockQuantDeltas {
 }
 
 #[derive(Clone, Copy)]
-struct MiBlockInfo {
-    base_row: usize,
-    base_col: usize,
-    luma_prediction: DeblockPredictionUnit,
-    chroma_prediction: DeblockPredictionUnit,
-    chroma_base_row: usize,
-    chroma_base_col: usize,
-    luma_tx: usize,
-    chroma_tx: Option<usize>,
-    sub_pu_size: Option<DeblockSubPuSize>,
-    qindex: u32,
-    skip: bool,
-    lossless: bool,
+struct EdgeBlock<'a> {
+    block: &'a DeblockBlock,
+    chroma_transform: Option<&'a DeblockBlock>,
 }
 
-impl MiBlockInfo {
-    const fn from_block(block: DeblockBlock) -> Self {
-        let DeblockBlock {
-            r,
-            c,
-            luma_prediction,
-            chroma_prediction,
-            chroma_base_r,
-            chroma_base_c,
-            n4w: _,
-            n4h: _,
-            luma_tx,
-            chroma_tx,
-            sub_pu_size,
-            chroma_transform_only: _,
-            qindex,
-            skip,
-            lossless,
-        } = block;
-        Self {
-            base_row: r,
-            base_col: c,
-            luma_prediction,
-            chroma_prediction,
-            chroma_base_row: chroma_base_r,
-            chroma_base_col: chroma_base_c,
-            luma_tx,
-            chroma_tx,
-            sub_pu_size,
-            qindex,
-            skip,
-            lossless,
+impl EdgeBlock<'_> {
+    fn prediction(self, plane: usize) -> DeblockPredictionUnit {
+        if plane == 0 {
+            self.block.luma_prediction
+        } else {
+            self.block.chroma_prediction
+        }
+    }
+
+    fn tx_base(self, plane: usize) -> (usize, usize) {
+        if plane == 0 {
+            (self.block.r, self.block.c)
+        } else if let Some(transform) = self.chroma_transform {
+            (transform.chroma_base_r, transform.chroma_base_c)
+        } else {
+            (self.block.chroma_base_r, self.block.chroma_base_c)
+        }
+    }
+
+    fn tx(self, plane: usize) -> usize {
+        if plane == 0 {
+            self.block.luma_tx
+        } else {
+            self.chroma_transform
+                .and_then(|transform| transform.chroma_tx)
+                .or(self.block.chroma_tx)
+                .unwrap_or(0)
         }
     }
 }
@@ -375,149 +360,177 @@ fn deblock_plane_pass<T: ReconSample>(
 
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
     let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
-    if splot_parallel::on_worker_pool()
+    let use_parallel = splot_parallel::on_multiworker_pool()
         && (plane_pass.pass == 0 && covered_rows <= height
-            || plane_pass.pass == 1 && covered_cols <= width)
-    {
-        let workers = splot_parallel::current_pool_width();
-        let timer = crate::timing::start();
-        let tally = crate::timing::WorkerTally::new();
-        let samples = validated_plane_samples(samples, stride, width, height)?;
-        let process_band = |unit_start: usize, unit_end: usize, mut ctx: PlaneCtx<'_, '_, T>| {
-            tally.note_worker();
-            let mut strengths = StrengthCache::default();
-            if plane_pass.pass == 0 {
-                for unit in unit_start..unit_end {
-                    let r = unit * plane_pass.row_step;
-                    if r >= mi_rows {
-                        break;
-                    }
-                    for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                        if !grid.is_candidate(
-                            r,
-                            c,
-                            plane_pass.pass,
-                            plane_pass.allow_df_sub_pu,
-                            plane_pass.plane_sub_x,
-                            plane_pass.plane_sub_y,
-                        ) {
-                            continue;
-                        }
-                        deblock_filter_edge(
-                            &mut ctx,
-                            grid,
-                            plane_pass.edge_context(r, c, tile_info),
-                            disable_loopfilters_across_tiles,
-                            &mut strengths,
-                        )?;
-                    }
-                }
-            } else {
-                for unit in unit_start..unit_end {
-                    let c = unit * plane_pass.col_step;
-                    if c >= mi_cols {
-                        break;
-                    }
-                    for r in (0..mi_rows).step_by(plane_pass.row_step) {
-                        if !grid.is_candidate(
-                            r,
-                            c,
-                            plane_pass.pass,
-                            plane_pass.allow_df_sub_pu,
-                            plane_pass.plane_sub_x,
-                            plane_pass.plane_sub_y,
-                        ) {
-                            continue;
-                        }
-                        deblock_filter_edge(
-                            &mut ctx,
-                            grid,
-                            plane_pass.edge_context(r, c, tile_info),
-                            disable_loopfilters_across_tiles,
-                            &mut strengths,
-                        )?;
-                    }
-                }
-            }
-            Ok(())
-        };
-        let (result, band_count) = if plane_pass.pass == 0 {
-            let plane_units = height.div_ceil(MI_SIZE);
-            let units_per_band = plane_units.div_ceil(workers * 4).max(1);
-            let rows_per_band = units_per_band * MI_SIZE;
-            let samples_per_band = rows_per_band
-                .checked_mul(stride)
-                .ok_or(DeblockError::Workspace)?;
-            let band_count = height.div_ceil(rows_per_band);
-            let result = samples
-                .par_chunks_mut(samples_per_band)
-                .enumerate()
-                .try_for_each(|(band, band_samples)| {
-                    let unit_start = band * units_per_band;
-                    let y_origin = unit_start * MI_SIZE;
-                    process_band(
-                        unit_start,
-                        unit_start + units_per_band,
-                        PlaneCtx::contiguous_band(band_samples, stride, width, height, 0, y_origin),
-                    )
-                });
-            (result, band_count)
-        } else {
-            let plane_units = width.div_ceil(MI_SIZE);
-            let units_per_band = plane_units.div_ceil(workers * 2).max(1);
-            let band_count = plane_units.div_ceil(units_per_band);
-            let cols_per_band = units_per_band * MI_SIZE;
-            let split_row_count = band_count
-                .checked_mul(height)
-                .ok_or(DeblockError::Workspace)?;
-            let row_count = height
-                .checked_add(split_row_count)
-                .ok_or(DeblockError::Workspace)?;
-            let mut rows = Vec::new();
-            rows.try_reserve_exact(row_count)
-                .map_err(|_| DeblockError::Workspace)?;
-            for row in samples.chunks_mut(stride) {
-                rows.push(&mut row[..width]);
-            }
-            for _ in 0..band_count {
-                for row in 0..height {
-                    let available = core::mem::take(&mut rows[row]);
-                    let split_at = cols_per_band.min(available.len());
-                    let (column, remainder) = available.split_at_mut(split_at);
-                    rows[row] = remainder;
-                    rows.push(column);
-                }
-            }
-            let (_, split_rows) = rows.split_at_mut(height);
-            let result = split_rows
-                .par_chunks_mut(height.max(1))
-                .enumerate()
-                .try_for_each(|(band, rows)| {
-                    let unit_start = band * units_per_band;
-                    let x_origin = unit_start * MI_SIZE;
-                    process_band(
-                        unit_start,
-                        unit_start + units_per_band,
-                        PlaneCtx::split_band(rows, width, height, x_origin, 0),
-                    )
-                });
-            (result, band_count)
-        };
-        if timer.is_some() {
-            crate::timing::report_detail(
-                "deblock_pass_bands",
-                timer,
-                &format!(
-                    "plane={} pass={} units={band_count} threads={workers} workers_used={}",
-                    plane_pass.plane,
-                    plane_pass.pass,
-                    tally.workers_used()
-                ),
-            );
-        }
-        return result;
+            || plane_pass.pass == 1 && covered_cols <= width);
+    if !use_parallel {
+        return deblock_plane_pass_serial(
+            samples,
+            stride,
+            width,
+            height,
+            grid,
+            plane_pass,
+            mi_rows,
+            mi_cols,
+            tile_info,
+            disable_loopfilters_across_tiles,
+        );
     }
 
+    let workers = splot_parallel::current_pool_width();
+    let timer = crate::timing::start();
+    let tally = crate::timing::WorkerTally::new();
+    let samples = validated_plane_samples(samples, stride, width, height)?;
+    let process_band = |unit_start: usize, unit_end: usize, mut ctx: PlaneCtx<'_, '_, T>| {
+        tally.note_worker();
+        let mut strengths = StrengthCache::default();
+        if plane_pass.pass == 0 {
+            for unit in unit_start..unit_end {
+                let r = unit * plane_pass.row_step;
+                if r >= mi_rows {
+                    break;
+                }
+                for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                    if !grid.is_candidate(
+                        r,
+                        c,
+                        plane_pass.pass,
+                        plane_pass.allow_df_sub_pu,
+                        plane_pass.plane_sub_x,
+                        plane_pass.plane_sub_y,
+                    ) {
+                        continue;
+                    }
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(r, c, tile_info),
+                        disable_loopfilters_across_tiles,
+                        &mut strengths,
+                    )?;
+                }
+            }
+        } else {
+            for unit in unit_start..unit_end {
+                let c = unit * plane_pass.col_step;
+                if c >= mi_cols {
+                    break;
+                }
+                for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                    if !grid.is_candidate(
+                        r,
+                        c,
+                        plane_pass.pass,
+                        plane_pass.allow_df_sub_pu,
+                        plane_pass.plane_sub_x,
+                        plane_pass.plane_sub_y,
+                    ) {
+                        continue;
+                    }
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(r, c, tile_info),
+                        disable_loopfilters_across_tiles,
+                        &mut strengths,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    };
+    let (result, band_count) = if plane_pass.pass == 0 {
+        let plane_units = height.div_ceil(MI_SIZE);
+        let units_per_band = plane_units.div_ceil(workers * 4).max(1);
+        let rows_per_band = units_per_band * MI_SIZE;
+        let samples_per_band = rows_per_band
+            .checked_mul(stride)
+            .ok_or(DeblockError::Workspace)?;
+        let band_count = height.div_ceil(rows_per_band);
+        let result = samples
+            .par_chunks_mut(samples_per_band)
+            .enumerate()
+            .try_for_each(|(band, band_samples)| {
+                let unit_start = band * units_per_band;
+                let y_origin = unit_start * MI_SIZE;
+                process_band(
+                    unit_start,
+                    unit_start + units_per_band,
+                    PlaneCtx::contiguous_band(band_samples, stride, width, height, 0, y_origin),
+                )
+            });
+        (result, band_count)
+    } else {
+        let plane_units = width.div_ceil(MI_SIZE);
+        let units_per_band = plane_units.div_ceil(workers * 2).max(1);
+        let band_count = plane_units.div_ceil(units_per_band);
+        let cols_per_band = units_per_band * MI_SIZE;
+        let split_row_count = band_count
+            .checked_mul(height)
+            .ok_or(DeblockError::Workspace)?;
+        let row_count = height
+            .checked_add(split_row_count)
+            .ok_or(DeblockError::Workspace)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(row_count)
+            .map_err(|_| DeblockError::Workspace)?;
+        for row in samples.chunks_mut(stride) {
+            rows.push(&mut row[..width]);
+        }
+        for _ in 0..band_count {
+            for row in 0..height {
+                let available = core::mem::take(&mut rows[row]);
+                let split_at = cols_per_band.min(available.len());
+                let (column, remainder) = available.split_at_mut(split_at);
+                rows[row] = remainder;
+                rows.push(column);
+            }
+        }
+        let (_, split_rows) = rows.split_at_mut(height);
+        let result = split_rows
+            .par_chunks_mut(height.max(1))
+            .enumerate()
+            .try_for_each(|(band, rows)| {
+                let unit_start = band * units_per_band;
+                let x_origin = unit_start * MI_SIZE;
+                process_band(
+                    unit_start,
+                    unit_start + units_per_band,
+                    PlaneCtx::split_band(rows, width, height, x_origin, 0),
+                )
+            });
+        (result, band_count)
+    };
+    if timer.is_some() {
+        crate::timing::report_detail(
+            "deblock_pass_bands",
+            timer,
+            &format!(
+                "plane={} pass={} units={band_count} threads={workers} workers_used={}",
+                plane_pass.plane,
+                plane_pass.pass,
+                tally.workers_used()
+            ),
+        );
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn deblock_plane_pass_serial<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    width: usize,
+    height: usize,
+    grid: &MiGrid<'_>,
+    plane_pass: PlanePass,
+    mi_rows: usize,
+    mi_cols: usize,
+    tile_info: Option<&TileInfo>,
+    disable_loopfilters_across_tiles: bool,
+) -> Result<(), DeblockError> {
     let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
@@ -755,6 +768,8 @@ impl PlanePass {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
     fn edge_context(self, row: usize, col: usize, tile_info: Option<&TileInfo>) -> EdgeContext {
         let tile_edge = tile_info.is_some_and(|tile_info| {
             let (starts, coordinate) = if self.pass == 0 {
@@ -800,13 +815,13 @@ struct EdgeContext {
 }
 
 fn sub_pu_dimension(
-    info: &MiBlockInfo,
+    info: EdgeBlock<'_>,
     plane: usize,
     pass: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> usize {
-    if let Some(size) = info.sub_pu_size {
+    if let Some(size) = info.block.sub_pu_size {
         let (dimension, subsampling) = if pass == 0 {
             (size.width, sub_x)
         } else {
@@ -815,9 +830,9 @@ fn sub_pu_dimension(
         return (dimension >> subsampling).max(1);
     }
     let tx = if plane == 0 {
-        info.luma_prediction.default_sub_pu_tx
+        info.block.luma_prediction.default_sub_pu_tx
     } else {
-        info.chroma_prediction.default_sub_pu_tx
+        info.block.chroma_prediction.default_sub_pu_tx
     };
     let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
     dimensions
@@ -827,21 +842,17 @@ fn sub_pu_dimension(
 }
 
 fn sub_pu_base(
-    info: &MiBlockInfo,
+    info: EdgeBlock<'_>,
     plane: usize,
     x: usize,
     y: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> (usize, usize) {
-    let prediction = if plane == 0 {
-        info.luma_prediction
-    } else {
-        info.chroma_prediction
-    };
+    let prediction = info.prediction(plane);
     let block_x = (prediction.base_c * MI_SIZE) >> sub_x;
     let block_y = (prediction.base_r * MI_SIZE) >> sub_y;
-    let Some(size) = info.sub_pu_size else {
+    let Some(size) = info.block.sub_pu_size else {
         return (block_x, block_y);
     };
     let width = (size.width >> sub_x).max(1);
@@ -910,36 +921,23 @@ fn deblock_filter_edge<T: ReconSample>(
     let prev_col = col - (dx << plane_sub_x);
 
     let curr = grid
-        .get(row, col)
+        .get_edge(row, col)
         .ok_or(DeblockError::UncoveredMi { row, col })?;
     let prev = grid
-        .get(prev_row, prev_col)
+        .get_edge(prev_row, prev_col)
         .ok_or(DeblockError::UncoveredMi {
             row: prev_row,
             col: prev_col,
         })?;
 
-    let (tx_col_base, tx_row_base, prev_tx_col_base, prev_tx_row_base) = if plane == 0 {
-        (curr.base_col, curr.base_row, prev.base_col, prev.base_row)
-    } else {
-        (
-            curr.chroma_base_col,
-            curr.chroma_base_row,
-            prev.chroma_base_col,
-            prev.chroma_base_row,
-        )
-    };
-
-    let prediction = if plane == 0 {
-        curr.luma_prediction
-    } else {
-        curr.chroma_prediction
-    };
+    let (tx_row_base, tx_col_base) = curr.tx_base(plane);
+    let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
+    let prediction = curr.prediction(plane);
     let block_y = (prediction.base_r * MI_SIZE) >> plane_sub_y;
     let block_x = (prediction.base_c * MI_SIZE) >> plane_sub_x;
-    let skip = curr.skip;
-    let tx_sz = plane_tx(plane, curr);
-    let prev_tx_sz = plane_tx(plane, prev);
+    let skip = curr.block.skip;
+    let tx_sz = curr.tx(plane);
+    let prev_tx_sz = prev.tx(plane);
     let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
     } else {
@@ -953,9 +951,9 @@ fn deblock_filter_edge<T: ReconSample>(
     })
     .unwrap_or(0);
     let sub_pu_sizes = if allow_df_sub_pu {
-        let curr_sub_pu_base = sub_pu_base(&curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
+        let curr_sub_pu_base = sub_pu_base(curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
         let prev_sub_pu_base = sub_pu_base(
-            &prev,
+            prev,
             plane,
             x_p.saturating_sub(dx),
             y_p.saturating_sub(dy),
@@ -964,8 +962,8 @@ fn deblock_filter_edge<T: ReconSample>(
         );
         (curr_sub_pu_base != prev_sub_pu_base).then(|| {
             (
-                sub_pu_dimension(&curr, plane, pass, plane_sub_x, plane_sub_y),
-                sub_pu_dimension(&prev, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(curr, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(prev, plane, pass, plane_sub_x, plane_sub_y),
             )
         })
     } else {
@@ -985,8 +983,8 @@ fn deblock_filter_edge<T: ReconSample>(
     };
     let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
-    let (curr_q, curr_side) = strengths.get(curr.qindex, quant_delta, df_delta_q, bit_depth);
-    let (prev_q, prev_side) = strengths.get(prev.qindex, quant_delta, df_delta_q, bit_depth);
+    let (curr_q, curr_side) = strengths.get(curr.block.qindex, quant_delta, df_delta_q, bit_depth);
+    let (prev_q, prev_side) = strengths.get(prev.block.qindex, quant_delta, df_delta_q, bit_depth);
 
     let curr_strong = curr_q != 0 && curr_side != 0;
     let prev_strong = prev_q != 0 && prev_side != 0;
@@ -1047,8 +1045,8 @@ fn deblock_filter_edge<T: ReconSample>(
         q_thresh_mult,
         w_mult_neg,
         w_mult_pos,
-        prev_lossless: prev.lossless,
-        curr_lossless: curr.lossless,
+        prev_lossless: prev.block.lossless,
+        curr_lossless: curr.block.lossless,
         bit_depth,
     };
 
@@ -1452,14 +1450,6 @@ fn combine_strengths(curr_q: i32, prev_q: i32, curr_side: i32, prev_side: i32) -
     (q_thr, side)
 }
 
-fn plane_tx(plane: usize, info: MiBlockInfo) -> usize {
-    if plane == 0 {
-        info.luma_tx
-    } else {
-        info.chroma_tx.unwrap_or(0)
-    }
-}
-
 fn plane_index_to_id(plane: usize) -> PlaneId {
     match plane {
         0 => PlaneId::Y,
@@ -1497,23 +1487,26 @@ struct MiGrid<'a> {
 }
 
 impl MiGrid<'_> {
-    fn get(&self, row: usize, col: usize) -> Option<MiBlockInfo> {
+    fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let cell = self.cells.get(row * self.mi_cols + col)?;
         let block = if cell.overlay != NO_BLOCK_INDEX {
             self.overlay_blocks.get(cell.overlay as usize)?
         } else {
             self.base_blocks.get(cell.base as usize)?
         };
-        let mut info = MiBlockInfo::from_block(*block);
-        if cell.chroma_transform != NO_BLOCK_INDEX {
-            let transform = self.overlay_blocks.get(cell.chroma_transform as usize)?;
-            info.chroma_base_row = transform.chroma_base_r;
-            info.chroma_base_col = transform.chroma_base_c;
-            info.chroma_tx = transform.chroma_tx;
-        }
-        Some(info)
+        let chroma_transform = if cell.chroma_transform != NO_BLOCK_INDEX {
+            Some(self.overlay_blocks.get(cell.chroma_transform as usize)?)
+        } else {
+            None
+        };
+        Some(EdgeBlock {
+            block,
+            chroma_transform,
+        })
     }
 
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
     fn is_candidate(
         &self,
         row: usize,
