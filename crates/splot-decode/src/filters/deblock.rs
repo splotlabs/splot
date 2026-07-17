@@ -360,149 +360,177 @@ fn deblock_plane_pass<T: ReconSample>(
 
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
     let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
-    if splot_parallel::on_multiworker_pool()
+    let use_parallel = splot_parallel::on_multiworker_pool()
         && (plane_pass.pass == 0 && covered_rows <= height
-            || plane_pass.pass == 1 && covered_cols <= width)
-    {
-        let workers = splot_parallel::current_pool_width();
-        let timer = crate::timing::start();
-        let tally = crate::timing::WorkerTally::new();
-        let samples = validated_plane_samples(samples, stride, width, height)?;
-        let process_band = |unit_start: usize, unit_end: usize, mut ctx: PlaneCtx<'_, '_, T>| {
-            tally.note_worker();
-            let mut strengths = StrengthCache::default();
-            if plane_pass.pass == 0 {
-                for unit in unit_start..unit_end {
-                    let r = unit * plane_pass.row_step;
-                    if r >= mi_rows {
-                        break;
-                    }
-                    for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                        if !grid.is_candidate(
-                            r,
-                            c,
-                            plane_pass.pass,
-                            plane_pass.allow_df_sub_pu,
-                            plane_pass.plane_sub_x,
-                            plane_pass.plane_sub_y,
-                        ) {
-                            continue;
-                        }
-                        deblock_filter_edge(
-                            &mut ctx,
-                            grid,
-                            plane_pass.edge_context(r, c, tile_info),
-                            disable_loopfilters_across_tiles,
-                            &mut strengths,
-                        )?;
-                    }
-                }
-            } else {
-                for unit in unit_start..unit_end {
-                    let c = unit * plane_pass.col_step;
-                    if c >= mi_cols {
-                        break;
-                    }
-                    for r in (0..mi_rows).step_by(plane_pass.row_step) {
-                        if !grid.is_candidate(
-                            r,
-                            c,
-                            plane_pass.pass,
-                            plane_pass.allow_df_sub_pu,
-                            plane_pass.plane_sub_x,
-                            plane_pass.plane_sub_y,
-                        ) {
-                            continue;
-                        }
-                        deblock_filter_edge(
-                            &mut ctx,
-                            grid,
-                            plane_pass.edge_context(r, c, tile_info),
-                            disable_loopfilters_across_tiles,
-                            &mut strengths,
-                        )?;
-                    }
-                }
-            }
-            Ok(())
-        };
-        let (result, band_count) = if plane_pass.pass == 0 {
-            let plane_units = height.div_ceil(MI_SIZE);
-            let units_per_band = plane_units.div_ceil(workers * 4).max(1);
-            let rows_per_band = units_per_band * MI_SIZE;
-            let samples_per_band = rows_per_band
-                .checked_mul(stride)
-                .ok_or(DeblockError::Workspace)?;
-            let band_count = height.div_ceil(rows_per_band);
-            let result = samples
-                .par_chunks_mut(samples_per_band)
-                .enumerate()
-                .try_for_each(|(band, band_samples)| {
-                    let unit_start = band * units_per_band;
-                    let y_origin = unit_start * MI_SIZE;
-                    process_band(
-                        unit_start,
-                        unit_start + units_per_band,
-                        PlaneCtx::contiguous_band(band_samples, stride, width, height, 0, y_origin),
-                    )
-                });
-            (result, band_count)
-        } else {
-            let plane_units = width.div_ceil(MI_SIZE);
-            let units_per_band = plane_units.div_ceil(workers * 2).max(1);
-            let band_count = plane_units.div_ceil(units_per_band);
-            let cols_per_band = units_per_band * MI_SIZE;
-            let split_row_count = band_count
-                .checked_mul(height)
-                .ok_or(DeblockError::Workspace)?;
-            let row_count = height
-                .checked_add(split_row_count)
-                .ok_or(DeblockError::Workspace)?;
-            let mut rows = Vec::new();
-            rows.try_reserve_exact(row_count)
-                .map_err(|_| DeblockError::Workspace)?;
-            for row in samples.chunks_mut(stride) {
-                rows.push(&mut row[..width]);
-            }
-            for _ in 0..band_count {
-                for row in 0..height {
-                    let available = core::mem::take(&mut rows[row]);
-                    let split_at = cols_per_band.min(available.len());
-                    let (column, remainder) = available.split_at_mut(split_at);
-                    rows[row] = remainder;
-                    rows.push(column);
-                }
-            }
-            let (_, split_rows) = rows.split_at_mut(height);
-            let result = split_rows
-                .par_chunks_mut(height.max(1))
-                .enumerate()
-                .try_for_each(|(band, rows)| {
-                    let unit_start = band * units_per_band;
-                    let x_origin = unit_start * MI_SIZE;
-                    process_band(
-                        unit_start,
-                        unit_start + units_per_band,
-                        PlaneCtx::split_band(rows, width, height, x_origin, 0),
-                    )
-                });
-            (result, band_count)
-        };
-        if timer.is_some() {
-            crate::timing::report_detail(
-                "deblock_pass_bands",
-                timer,
-                &format!(
-                    "plane={} pass={} units={band_count} threads={workers} workers_used={}",
-                    plane_pass.plane,
-                    plane_pass.pass,
-                    tally.workers_used()
-                ),
-            );
-        }
-        return result;
+            || plane_pass.pass == 1 && covered_cols <= width);
+    if !use_parallel {
+        return deblock_plane_pass_serial(
+            samples,
+            stride,
+            width,
+            height,
+            grid,
+            plane_pass,
+            mi_rows,
+            mi_cols,
+            tile_info,
+            disable_loopfilters_across_tiles,
+        );
     }
 
+    let workers = splot_parallel::current_pool_width();
+    let timer = crate::timing::start();
+    let tally = crate::timing::WorkerTally::new();
+    let samples = validated_plane_samples(samples, stride, width, height)?;
+    let process_band = |unit_start: usize, unit_end: usize, mut ctx: PlaneCtx<'_, '_, T>| {
+        tally.note_worker();
+        let mut strengths = StrengthCache::default();
+        if plane_pass.pass == 0 {
+            for unit in unit_start..unit_end {
+                let r = unit * plane_pass.row_step;
+                if r >= mi_rows {
+                    break;
+                }
+                for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                    if !grid.is_candidate(
+                        r,
+                        c,
+                        plane_pass.pass,
+                        plane_pass.allow_df_sub_pu,
+                        plane_pass.plane_sub_x,
+                        plane_pass.plane_sub_y,
+                    ) {
+                        continue;
+                    }
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(r, c, tile_info),
+                        disable_loopfilters_across_tiles,
+                        &mut strengths,
+                    )?;
+                }
+            }
+        } else {
+            for unit in unit_start..unit_end {
+                let c = unit * plane_pass.col_step;
+                if c >= mi_cols {
+                    break;
+                }
+                for r in (0..mi_rows).step_by(plane_pass.row_step) {
+                    if !grid.is_candidate(
+                        r,
+                        c,
+                        plane_pass.pass,
+                        plane_pass.allow_df_sub_pu,
+                        plane_pass.plane_sub_x,
+                        plane_pass.plane_sub_y,
+                    ) {
+                        continue;
+                    }
+                    deblock_filter_edge(
+                        &mut ctx,
+                        grid,
+                        plane_pass.edge_context(r, c, tile_info),
+                        disable_loopfilters_across_tiles,
+                        &mut strengths,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    };
+    let (result, band_count) = if plane_pass.pass == 0 {
+        let plane_units = height.div_ceil(MI_SIZE);
+        let units_per_band = plane_units.div_ceil(workers * 4).max(1);
+        let rows_per_band = units_per_band * MI_SIZE;
+        let samples_per_band = rows_per_band
+            .checked_mul(stride)
+            .ok_or(DeblockError::Workspace)?;
+        let band_count = height.div_ceil(rows_per_band);
+        let result = samples
+            .par_chunks_mut(samples_per_band)
+            .enumerate()
+            .try_for_each(|(band, band_samples)| {
+                let unit_start = band * units_per_band;
+                let y_origin = unit_start * MI_SIZE;
+                process_band(
+                    unit_start,
+                    unit_start + units_per_band,
+                    PlaneCtx::contiguous_band(band_samples, stride, width, height, 0, y_origin),
+                )
+            });
+        (result, band_count)
+    } else {
+        let plane_units = width.div_ceil(MI_SIZE);
+        let units_per_band = plane_units.div_ceil(workers * 2).max(1);
+        let band_count = plane_units.div_ceil(units_per_band);
+        let cols_per_band = units_per_band * MI_SIZE;
+        let split_row_count = band_count
+            .checked_mul(height)
+            .ok_or(DeblockError::Workspace)?;
+        let row_count = height
+            .checked_add(split_row_count)
+            .ok_or(DeblockError::Workspace)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(row_count)
+            .map_err(|_| DeblockError::Workspace)?;
+        for row in samples.chunks_mut(stride) {
+            rows.push(&mut row[..width]);
+        }
+        for _ in 0..band_count {
+            for row in 0..height {
+                let available = core::mem::take(&mut rows[row]);
+                let split_at = cols_per_band.min(available.len());
+                let (column, remainder) = available.split_at_mut(split_at);
+                rows[row] = remainder;
+                rows.push(column);
+            }
+        }
+        let (_, split_rows) = rows.split_at_mut(height);
+        let result = split_rows
+            .par_chunks_mut(height.max(1))
+            .enumerate()
+            .try_for_each(|(band, rows)| {
+                let unit_start = band * units_per_band;
+                let x_origin = unit_start * MI_SIZE;
+                process_band(
+                    unit_start,
+                    unit_start + units_per_band,
+                    PlaneCtx::split_band(rows, width, height, x_origin, 0),
+                )
+            });
+        (result, band_count)
+    };
+    if timer.is_some() {
+        crate::timing::report_detail(
+            "deblock_pass_bands",
+            timer,
+            &format!(
+                "plane={} pass={} units={band_count} threads={workers} workers_used={}",
+                plane_pass.plane,
+                plane_pass.pass,
+                tally.workers_used()
+            ),
+        );
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn deblock_plane_pass_serial<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    width: usize,
+    height: usize,
+    grid: &MiGrid<'_>,
+    plane_pass: PlanePass,
+    mi_rows: usize,
+    mi_cols: usize,
+    tile_info: Option<&TileInfo>,
+    disable_loopfilters_across_tiles: bool,
+) -> Result<(), DeblockError> {
     let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
@@ -740,6 +768,8 @@ impl PlanePass {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
     fn edge_context(self, row: usize, col: usize, tile_info: Option<&TileInfo>) -> EdgeContext {
         let tile_edge = tile_info.is_some_and(|tile_info| {
             let (starts, coordinate) = if self.pass == 0 {
@@ -1475,6 +1505,8 @@ impl MiGrid<'_> {
         })
     }
 
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
     fn is_candidate(
         &self,
         row: usize,
