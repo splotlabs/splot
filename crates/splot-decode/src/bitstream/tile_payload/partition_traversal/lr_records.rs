@@ -272,11 +272,14 @@ pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
             col_end = checked_add("lr_source_col_end", col, 1)?;
         }
     }
+    let Some(col_start) = col_start else {
+        return Ok(());
+    };
+    let cols = checked_sub("lr_source_cols", col_end, col_start)?;
     for row in row_start.unwrap_or(row_end)..row_end {
-        for col in col_start.unwrap_or(col_end)..col_end {
-            let block = lr_source_block_for(input, row, col)?;
-            lr_activity.record_source_block(block, limits)?;
-        }
+        let mut block = lr_source_block_for(input, row, col_start)?;
+        block.width = checked_mul("lr_source_run_width", block.width, cols)?;
+        lr_activity.record_source_block(block, limits)?;
     }
     Ok(())
 }

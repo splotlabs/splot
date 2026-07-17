@@ -471,10 +471,19 @@ impl TileIntrabcPreludeState {
             n4w,
         };
         let area = self.clipped_record_area(row, col, n4w, n4h, tile_offset)?;
-        for r in area.rows {
-            for c in area.cols.clone() {
-                let index = self.index(r, c, tile_offset)?;
-                self.values[index] = Some(facts);
+        if !area.cols.is_empty() {
+            for r in area.rows {
+                let start = self.index(r, area.cols.start, tile_offset)?;
+                let row_values = start
+                    .checked_add(area.cols.len())
+                    .and_then(|end| self.values.get_mut(start..end))
+                    .ok_or_else(|| {
+                        wienerns_lr_selectable_transform_record_error_reason(
+                            tile_offset,
+                            "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
+                        )
+                    })?;
+                row_values.fill(Some(facts));
             }
         }
         if self.enable_refmvbank {
