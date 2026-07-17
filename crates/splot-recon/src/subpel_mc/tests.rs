@@ -836,8 +836,22 @@ fn compound_intermediate_into_matches_owned_copy_and_filtered() {
         let stride = params.w + 3;
         let sentinel = -12345;
         let mut output = vec![sentinel; stride * params.h + 2];
-        subpel_predict_block_compound_intermediate_into(&view, &params, &mut output, stride)
+        subpel_predict_block_compound_intermediate_into(&view, &params, None, &mut output, stride)
             .unwrap();
+
+        for (scratch_len, label) in [(4096usize, "caller scratch"), (1, "undersized scratch")] {
+            let mut scratch = vec![0i32; scratch_len];
+            let mut scratched = vec![sentinel; stride * params.h + 2];
+            subpel_predict_block_compound_intermediate_into(
+                &view,
+                &params,
+                Some(&mut scratch),
+                &mut scratched,
+                stride,
+            )
+            .unwrap();
+            assert_eq!(scratched, output, "{label}");
+        }
 
         for row in 0..params.h {
             assert_eq!(
@@ -931,6 +945,7 @@ fn compound_average_into_matches_materialized_second_predictor() {
                 &params,
                 &pred0,
                 cwp_weight,
+                None,
                 &mut strided,
                 stride,
             )
@@ -1089,6 +1104,7 @@ fn one_axis_compound_intermediates_match_independent_reference() {
                     subpel_predict_block_compound_intermediate_into(
                         &view,
                         &params,
+                        None,
                         &mut output,
                         stride,
                     )
@@ -1134,6 +1150,7 @@ fn compound_intermediate_into_rejects_invalid_destination_without_writes() {
         subpel_predict_block_compound_intermediate_into(
             &view,
             &params,
+            None,
             &mut short_stride,
             params.w - 1,
         ),
@@ -1148,7 +1165,13 @@ fn compound_intermediate_into_rejects_invalid_destination_without_writes() {
     let required = (params.h - 1) * stride + params.w;
     let mut short_output = vec![sentinel; required - 1];
     assert_eq!(
-        subpel_predict_block_compound_intermediate_into(&view, &params, &mut short_output, stride,),
+        subpel_predict_block_compound_intermediate_into(
+            &view,
+            &params,
+            None,
+            &mut short_output,
+            stride,
+        ),
         Err(ReconError::BufferLengthMismatch {
             expected: required,
             actual: required - 1,

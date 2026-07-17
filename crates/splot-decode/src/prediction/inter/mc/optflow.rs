@@ -51,6 +51,11 @@ enum RefinemvCandidates {
     },
 }
 
+/// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
+const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
+/// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
+const MAX_MOTION_GRID_SUBPEL_INTERMEDIATE: usize = 16 * (16 + 7);
+
 std::thread_local! {
     static OPTFLOW_SCRATCH: std::cell::Cell<Option<OptflowScratch>> =
         const { std::cell::Cell::new(None) };
@@ -573,6 +578,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
     let mut refinemv_candidates = Vec::with_capacity(unit_count);
+    let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
     for (index, (rect, mvs)) in units.enumerate() {
@@ -598,6 +604,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
             unit,
             offset,
             reuse_horizontal,
+            &mut initial_predictions,
         )?;
         previous_unit = Some((rect, mvs));
         previous_refined = refined.is_some();
@@ -845,10 +852,14 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
         prediction.block_h,
     );
     let output_stride = prediction.block_w;
+    let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
+    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     super::predict_compound_average_into(
         &prediction,
         &[params0, params1],
         cwp_weight,
+        Some(&mut pred0_scratch),
+        Some(&mut intermediate_scratch),
         output,
         output_stride,
     )?;
@@ -889,6 +900,8 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
     let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
+    let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
+    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     for row in (0..prediction.block_h).step_by(subblock_h) {
         for col in (0..prediction.block_w).step_by(subblock_w) {
             let width = subblock_w.min(prediction.block_w - col);
@@ -957,6 +970,8 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
                 &subplane,
                 &params,
                 cwp_weight,
+                Some(&mut pred0_scratch),
+                Some(&mut intermediate_scratch),
                 &mut output[output_start..],
                 prediction.block_w,
             )?;
@@ -1021,6 +1036,7 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
                 subpel_predict_block_compound_intermediate_into(
                     view,
                     &params,
+                    None,
                     &mut output[start..],
                     prediction.block_w,
                 )?;

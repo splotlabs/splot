@@ -1181,6 +1181,8 @@ fn predict_compound_plane_output<T: ReconSample>(
             &translation.plane,
             &translation.params,
             cwp_weight,
+            None,
+            None,
             output,
             translation.plane.block_w,
         );
@@ -1220,6 +1222,8 @@ fn predict_compound_average_into<T: ReconSample>(
     plane: &CompoundSubpelPlane<'_, T>,
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
+    pred0_scratch: Option<&mut [i32]>,
+    intermediate_scratch: Option<&mut [i32]>,
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<()> {
@@ -1230,23 +1234,56 @@ fn predict_compound_average_into<T: ReconSample>(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "compound prediction sample count",
             })?;
-    with_compound_primary_prediction(sample_count, |pred0| {
-        subpel_predict_block_compound_intermediate_into(
-            &plane.views[0],
-            &params[0],
-            pred0,
-            plane.block_w,
-        )?;
-        subpel_predict_block_compound_average_strided_into(
-            &plane.views[1],
-            &params[1],
-            pred0,
+    match pred0_scratch.and_then(|scratch| scratch.get_mut(..sample_count)) {
+        Some(pred0) => predict_compound_average_pred0_into(
+            plane,
+            params,
             cwp_weight,
+            pred0,
+            intermediate_scratch,
             output,
             output_stride,
-        )?;
-        Ok(())
-    })
+        ),
+        None => with_compound_primary_prediction(sample_count, |pred0| {
+            predict_compound_average_pred0_into(
+                plane,
+                params,
+                cwp_weight,
+                pred0,
+                intermediate_scratch,
+                output,
+                output_stride,
+            )
+        }),
+    }
+}
+
+fn predict_compound_average_pred0_into<T: ReconSample>(
+    plane: &CompoundSubpelPlane<'_, T>,
+    params: &[SubpelPredictParams; 2],
+    cwp_weight: i16,
+    pred0: &mut [i32],
+    mut intermediate_scratch: Option<&mut [i32]>,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<()> {
+    subpel_predict_block_compound_intermediate_into(
+        &plane.views[0],
+        &params[0],
+        intermediate_scratch.as_deref_mut(),
+        pred0,
+        plane.block_w,
+    )?;
+    subpel_predict_block_compound_average_strided_into(
+        &plane.views[1],
+        &params[1],
+        pred0,
+        cwp_weight,
+        intermediate_scratch,
+        output,
+        output_stride,
+    )?;
+    Ok(())
 }
 
 struct CompoundPlanePrediction {
@@ -1547,12 +1584,14 @@ fn compound_plane_prediction_from_translation<T: ReconSample>(
     subpel_predict_block_compound_intermediate_into(
         &views[0],
         &params[0],
+        None,
         &mut prediction.pred0,
         block_w,
     )?;
     subpel_predict_block_compound_intermediate_into(
         &views[1],
         &params[1],
+        None,
         &mut prediction.pred1,
         block_w,
     )?;
