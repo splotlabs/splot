@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0a6696eeda2bdaebeb07689985280ef523f41d5a",
+  "audited_commit": "479452b39303ce8ad135b5a01788680a62e2966b",
   "outcome": "success",
   "files": [
     {
@@ -4931,7 +4931,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "1d0b81ec2609ee9c00f4452e20bd9088f4b1e37ddbae1ccf57d9058ce96e04ed",
+      "sha256": "7c0050132e9c0bede0ef78b2835833e05702060c113d7adc1d031c813c636207",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SUBPEL-MC"
