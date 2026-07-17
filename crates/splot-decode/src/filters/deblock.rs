@@ -94,53 +94,38 @@ impl DeblockQuantDeltas {
 }
 
 #[derive(Clone, Copy)]
-struct MiBlockInfo {
-    base_row: usize,
-    base_col: usize,
-    luma_prediction: DeblockPredictionUnit,
-    chroma_prediction: DeblockPredictionUnit,
-    chroma_base_row: usize,
-    chroma_base_col: usize,
-    luma_tx: usize,
-    chroma_tx: Option<usize>,
-    sub_pu_size: Option<DeblockSubPuSize>,
-    qindex: u32,
-    skip: bool,
-    lossless: bool,
+struct EdgeBlock<'a> {
+    block: &'a DeblockBlock,
+    chroma_transform: Option<&'a DeblockBlock>,
 }
 
-impl MiBlockInfo {
-    const fn from_block(block: DeblockBlock) -> Self {
-        let DeblockBlock {
-            r,
-            c,
-            luma_prediction,
-            chroma_prediction,
-            chroma_base_r,
-            chroma_base_c,
-            n4w: _,
-            n4h: _,
-            luma_tx,
-            chroma_tx,
-            sub_pu_size,
-            chroma_transform_only: _,
-            qindex,
-            skip,
-            lossless,
-        } = block;
-        Self {
-            base_row: r,
-            base_col: c,
-            luma_prediction,
-            chroma_prediction,
-            chroma_base_row: chroma_base_r,
-            chroma_base_col: chroma_base_c,
-            luma_tx,
-            chroma_tx,
-            sub_pu_size,
-            qindex,
-            skip,
-            lossless,
+impl EdgeBlock<'_> {
+    fn prediction(self, plane: usize) -> DeblockPredictionUnit {
+        if plane == 0 {
+            self.block.luma_prediction
+        } else {
+            self.block.chroma_prediction
+        }
+    }
+
+    fn tx_base(self, plane: usize) -> (usize, usize) {
+        if plane == 0 {
+            (self.block.r, self.block.c)
+        } else if let Some(transform) = self.chroma_transform {
+            (transform.chroma_base_r, transform.chroma_base_c)
+        } else {
+            (self.block.chroma_base_r, self.block.chroma_base_c)
+        }
+    }
+
+    fn tx(self, plane: usize) -> usize {
+        if plane == 0 {
+            self.block.luma_tx
+        } else {
+            self.chroma_transform
+                .and_then(|transform| transform.chroma_tx)
+                .or(self.block.chroma_tx)
+                .unwrap_or(0)
         }
     }
 }
@@ -800,13 +785,13 @@ struct EdgeContext {
 }
 
 fn sub_pu_dimension(
-    info: &MiBlockInfo,
+    info: EdgeBlock<'_>,
     plane: usize,
     pass: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> usize {
-    if let Some(size) = info.sub_pu_size {
+    if let Some(size) = info.block.sub_pu_size {
         let (dimension, subsampling) = if pass == 0 {
             (size.width, sub_x)
         } else {
@@ -815,9 +800,9 @@ fn sub_pu_dimension(
         return (dimension >> subsampling).max(1);
     }
     let tx = if plane == 0 {
-        info.luma_prediction.default_sub_pu_tx
+        info.block.luma_prediction.default_sub_pu_tx
     } else {
-        info.chroma_prediction.default_sub_pu_tx
+        info.block.chroma_prediction.default_sub_pu_tx
     };
     let dimensions = if pass == 0 { &TX_WIDTH } else { &TX_HEIGHT };
     dimensions
@@ -827,21 +812,17 @@ fn sub_pu_dimension(
 }
 
 fn sub_pu_base(
-    info: &MiBlockInfo,
+    info: EdgeBlock<'_>,
     plane: usize,
     x: usize,
     y: usize,
     sub_x: usize,
     sub_y: usize,
 ) -> (usize, usize) {
-    let prediction = if plane == 0 {
-        info.luma_prediction
-    } else {
-        info.chroma_prediction
-    };
+    let prediction = info.prediction(plane);
     let block_x = (prediction.base_c * MI_SIZE) >> sub_x;
     let block_y = (prediction.base_r * MI_SIZE) >> sub_y;
-    let Some(size) = info.sub_pu_size else {
+    let Some(size) = info.block.sub_pu_size else {
         return (block_x, block_y);
     };
     let width = (size.width >> sub_x).max(1);
@@ -910,36 +891,23 @@ fn deblock_filter_edge<T: ReconSample>(
     let prev_col = col - (dx << plane_sub_x);
 
     let curr = grid
-        .get(row, col)
+        .get_edge(row, col)
         .ok_or(DeblockError::UncoveredMi { row, col })?;
     let prev = grid
-        .get(prev_row, prev_col)
+        .get_edge(prev_row, prev_col)
         .ok_or(DeblockError::UncoveredMi {
             row: prev_row,
             col: prev_col,
         })?;
 
-    let (tx_col_base, tx_row_base, prev_tx_col_base, prev_tx_row_base) = if plane == 0 {
-        (curr.base_col, curr.base_row, prev.base_col, prev.base_row)
-    } else {
-        (
-            curr.chroma_base_col,
-            curr.chroma_base_row,
-            prev.chroma_base_col,
-            prev.chroma_base_row,
-        )
-    };
-
-    let prediction = if plane == 0 {
-        curr.luma_prediction
-    } else {
-        curr.chroma_prediction
-    };
+    let (tx_row_base, tx_col_base) = curr.tx_base(plane);
+    let (prev_tx_row_base, prev_tx_col_base) = prev.tx_base(plane);
+    let prediction = curr.prediction(plane);
     let block_y = (prediction.base_r * MI_SIZE) >> plane_sub_y;
     let block_x = (prediction.base_c * MI_SIZE) >> plane_sub_x;
-    let skip = curr.skip;
-    let tx_sz = plane_tx(plane, curr);
-    let prev_tx_sz = plane_tx(plane, prev);
+    let skip = curr.block.skip;
+    let tx_sz = curr.tx(plane);
+    let prev_tx_sz = prev.tx(plane);
     let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
     } else {
@@ -953,9 +921,9 @@ fn deblock_filter_edge<T: ReconSample>(
     })
     .unwrap_or(0);
     let sub_pu_sizes = if allow_df_sub_pu {
-        let curr_sub_pu_base = sub_pu_base(&curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
+        let curr_sub_pu_base = sub_pu_base(curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
         let prev_sub_pu_base = sub_pu_base(
-            &prev,
+            prev,
             plane,
             x_p.saturating_sub(dx),
             y_p.saturating_sub(dy),
@@ -964,8 +932,8 @@ fn deblock_filter_edge<T: ReconSample>(
         );
         (curr_sub_pu_base != prev_sub_pu_base).then(|| {
             (
-                sub_pu_dimension(&curr, plane, pass, plane_sub_x, plane_sub_y),
-                sub_pu_dimension(&prev, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(curr, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(prev, plane, pass, plane_sub_x, plane_sub_y),
             )
         })
     } else {
@@ -985,8 +953,8 @@ fn deblock_filter_edge<T: ReconSample>(
     };
     let is_sub_pu_edge = curr_sub_pu_edge && !is_block_edge;
 
-    let (curr_q, curr_side) = strengths.get(curr.qindex, quant_delta, df_delta_q, bit_depth);
-    let (prev_q, prev_side) = strengths.get(prev.qindex, quant_delta, df_delta_q, bit_depth);
+    let (curr_q, curr_side) = strengths.get(curr.block.qindex, quant_delta, df_delta_q, bit_depth);
+    let (prev_q, prev_side) = strengths.get(prev.block.qindex, quant_delta, df_delta_q, bit_depth);
 
     let curr_strong = curr_q != 0 && curr_side != 0;
     let prev_strong = prev_q != 0 && prev_side != 0;
@@ -1047,8 +1015,8 @@ fn deblock_filter_edge<T: ReconSample>(
         q_thresh_mult,
         w_mult_neg,
         w_mult_pos,
-        prev_lossless: prev.lossless,
-        curr_lossless: curr.lossless,
+        prev_lossless: prev.block.lossless,
+        curr_lossless: curr.block.lossless,
         bit_depth,
     };
 
@@ -1452,14 +1420,6 @@ fn combine_strengths(curr_q: i32, prev_q: i32, curr_side: i32, prev_side: i32) -
     (q_thr, side)
 }
 
-fn plane_tx(plane: usize, info: MiBlockInfo) -> usize {
-    if plane == 0 {
-        info.luma_tx
-    } else {
-        info.chroma_tx.unwrap_or(0)
-    }
-}
-
 fn plane_index_to_id(plane: usize) -> PlaneId {
     match plane {
         0 => PlaneId::Y,
@@ -1497,21 +1457,22 @@ struct MiGrid<'a> {
 }
 
 impl MiGrid<'_> {
-    fn get(&self, row: usize, col: usize) -> Option<MiBlockInfo> {
+    fn get_edge(&self, row: usize, col: usize) -> Option<EdgeBlock<'_>> {
         let cell = self.cells.get(row * self.mi_cols + col)?;
         let block = if cell.overlay != NO_BLOCK_INDEX {
             self.overlay_blocks.get(cell.overlay as usize)?
         } else {
             self.base_blocks.get(cell.base as usize)?
         };
-        let mut info = MiBlockInfo::from_block(*block);
-        if cell.chroma_transform != NO_BLOCK_INDEX {
-            let transform = self.overlay_blocks.get(cell.chroma_transform as usize)?;
-            info.chroma_base_row = transform.chroma_base_r;
-            info.chroma_base_col = transform.chroma_base_c;
-            info.chroma_tx = transform.chroma_tx;
-        }
-        Some(info)
+        let chroma_transform = if cell.chroma_transform != NO_BLOCK_INDEX {
+            Some(self.overlay_blocks.get(cell.chroma_transform as usize)?)
+        } else {
+            None
+        };
+        Some(EdgeBlock {
+            block,
+            chroma_transform,
+        })
     }
 
     fn is_candidate(
