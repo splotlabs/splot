@@ -25,7 +25,7 @@ impl TileCdfSubset {
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, PartitionEntrySymbolReadError> {
         let symbol = self
-            .with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
+            .with_row_mut(selector, |row| symbol_decoder.read_symbol_u16(row))
             .map_err(PartitionEntrySymbolReadError::Cdf)?
             .map_err(PartitionEntrySymbolReadError::Symbol)?;
         Ok(symbol)

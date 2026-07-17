@@ -85,7 +85,7 @@ use self::util::{
 };
 use super::coeff_loop::use_fsc_branch::coeff_cdf_q_ctx_from_base_q_idx;
 
-pub(crate) const CDF_PROB_SCALE: i32 = 1 << 15;
+pub(crate) const CDF_PROB_SCALE: u32 = 1 << 15;
 pub(crate) const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
 pub(crate) const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
 const DO_SPLIT_CONTEXTS: usize = 64;
@@ -124,42 +124,42 @@ const SEGMENT_ID_ROW_LEN: usize = 9;
 const SEG_ID_EXT_FLAG_ROW_LEN: usize = 3;
 const INTER_SDP_BSIZE_GROUPS: usize = 4;
 
-type DoSplitCdfRows = [[[i32; CDF_ROW_LEN]; DO_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+type DoSplitCdfRows = [[[u16; CDF_ROW_LEN]; DO_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type DoExtPartitionCdfRows =
-    [[[i32; CDF_ROW_LEN]; DO_EXT_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+    [[[u16; CDF_ROW_LEN]; DO_EXT_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type DoSquareSplitCdfRows =
-    [[[i32; CDF_ROW_LEN]; DO_SQUARE_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+    [[[u16; CDF_ROW_LEN]; DO_SQUARE_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type DoUneven4WayPartitionCdfRows =
-    [[[i32; CDF_ROW_LEN]; DO_UNEVEN_4WAY_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
-type RectTypeCdfRows = [[[i32; CDF_ROW_LEN]; RECT_TYPE_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+    [[[u16; CDF_ROW_LEN]; DO_UNEVEN_4WAY_PARTITION_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
+type RectTypeCdfRows = [[[u16; CDF_ROW_LEN]; RECT_TYPE_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type TxDoPartitionCdfRows =
-    [[[[i32; CDF_ROW_LEN]; TXFM_SPLIT_GROUPS]; TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
-type Tx2Or3PartitionTypeCdfRows = [[[[i32; CDF_ROW_LEN]; TX_2OR3_PARTITION_TYPE_CONTEXTS];
+    [[[[u16; CDF_ROW_LEN]; TXFM_SPLIT_GROUPS]; TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
+type Tx2Or3PartitionTypeCdfRows = [[[[u16; CDF_ROW_LEN]; TX_2OR3_PARTITION_TYPE_CONTEXTS];
     TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
-type TxPartitionTypeCdfRows = [[[[i32; TX_PARTITION_TYPE_ROW_LEN]; TX_PARTITION_TYPE_CONTEXTS];
+type TxPartitionTypeCdfRows = [[[[u16; TX_PARTITION_TYPE_ROW_LEN]; TX_PARTITION_TYPE_CONTEXTS];
     TX_IS_INTER_CONTEXTS]; TX_FSC_CONTEXTS];
 type LosslessTxSizeCdfRows =
-    [[[i32; CDF_ROW_LEN]; LOSSLESS_TX_SIZE_IS_INTER_CONTEXTS]; LOSSLESS_TX_SIZE_GROUPS];
-type LosslessInterTxTypeCdfRow = [i32; CDF_ROW_LEN];
-type DeltaQCdfRow = [i32; DELTA_Q_CDF_ROW_LEN];
-type FscModeCdfRows = [[[i32; CDF_ROW_LEN]; FSC_BSIZE_CONTEXTS]; FSC_MODE_CONTEXTS];
-type CdefIndex0CdfRows = [[i32; CDF_ROW_LEN]; CDEF_STRENGTH_INDEX0_CONTEXTS];
-type CcsoBlkCdfRows = [[[i32; CDF_ROW_LEN]; CCSO_CONTEXTS]; CCSO_PLANES];
-type CdefIndexMinus1With3CdfRow = [i32; CDEF_INDEX_MINUS1_WITH3_ROW_LEN];
-type CdefIndexMinus1With4CdfRow = [i32; CDEF_INDEX_MINUS1_WITH4_ROW_LEN];
-type CdefIndexMinus1With5CdfRow = [i32; CDEF_INDEX_MINUS1_WITH5_ROW_LEN];
-type CdefIndexMinus1With6CdfRow = [i32; CDEF_INDEX_MINUS1_WITH6_ROW_LEN];
-type CdefIndexMinus1With7CdfRow = [i32; CDEF_INDEX_MINUS1_WITH7_ROW_LEN];
-type CdefIndexMinus1With8CdfRow = [i32; CDEF_INDEX_MINUS1_WITH8_ROW_LEN];
-type IntrabcCdfRows = [[i32; CDF_ROW_LEN]; INTRABC_CONTEXTS];
-type IntrabcModeCdfRow = [i32; CDF_ROW_LEN];
-type IntrabcPrecisionCdfRow = [i32; CDF_ROW_LEN];
-type MorphPredCdfRows = [[i32; CDF_ROW_LEN]; MORPH_PRED_CONTEXTS];
-type MrlIndexCdfRows = [[i32; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
-type MrlSecIndexCdfRows = [[i32; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
-type SegmentIdCdfRows = [[i32; SEGMENT_ID_ROW_LEN]; SEGMENT_ID_CONTEXTS];
-type SegIdExtFlagCdfRows = [[i32; SEG_ID_EXT_FLAG_ROW_LEN]; SEGMENT_ID_CONTEXTS];
-type RegionTypeCdfRows = [[i32; CDF_ROW_LEN]; INTER_SDP_BSIZE_GROUPS];
+    [[[u16; CDF_ROW_LEN]; LOSSLESS_TX_SIZE_IS_INTER_CONTEXTS]; LOSSLESS_TX_SIZE_GROUPS];
+type LosslessInterTxTypeCdfRow = [u16; CDF_ROW_LEN];
+type DeltaQCdfRow = [u16; DELTA_Q_CDF_ROW_LEN];
+type FscModeCdfRows = [[[u16; CDF_ROW_LEN]; FSC_BSIZE_CONTEXTS]; FSC_MODE_CONTEXTS];
+type CdefIndex0CdfRows = [[u16; CDF_ROW_LEN]; CDEF_STRENGTH_INDEX0_CONTEXTS];
+type CcsoBlkCdfRows = [[[u16; CDF_ROW_LEN]; CCSO_CONTEXTS]; CCSO_PLANES];
+type CdefIndexMinus1With3CdfRow = [u16; CDEF_INDEX_MINUS1_WITH3_ROW_LEN];
+type CdefIndexMinus1With4CdfRow = [u16; CDEF_INDEX_MINUS1_WITH4_ROW_LEN];
+type CdefIndexMinus1With5CdfRow = [u16; CDEF_INDEX_MINUS1_WITH5_ROW_LEN];
+type CdefIndexMinus1With6CdfRow = [u16; CDEF_INDEX_MINUS1_WITH6_ROW_LEN];
+type CdefIndexMinus1With7CdfRow = [u16; CDEF_INDEX_MINUS1_WITH7_ROW_LEN];
+type CdefIndexMinus1With8CdfRow = [u16; CDEF_INDEX_MINUS1_WITH8_ROW_LEN];
+type IntrabcCdfRows = [[u16; CDF_ROW_LEN]; INTRABC_CONTEXTS];
+type IntrabcModeCdfRow = [u16; CDF_ROW_LEN];
+type IntrabcPrecisionCdfRow = [u16; CDF_ROW_LEN];
+type MorphPredCdfRows = [[u16; CDF_ROW_LEN]; MORPH_PRED_CONTEXTS];
+type MrlIndexCdfRows = [[u16; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
+type MrlSecIndexCdfRows = [[u16; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
+type SegmentIdCdfRows = [[u16; SEGMENT_ID_ROW_LEN]; SEGMENT_ID_CONTEXTS];
+type SegIdExtFlagCdfRows = [[u16; SEG_ID_EXT_FLAG_ROW_LEN]; SEGMENT_ID_CONTEXTS];
+type RegionTypeCdfRows = [[u16; CDF_ROW_LEN]; INTER_SDP_BSIZE_GROUPS];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfPolicyInput {
     tile_cols: u32,
@@ -263,13 +263,13 @@ pub(crate) struct TileCdfSubset {
 }
 
 impl TileCdfSubset {
-    pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[i32], TileCdfError> {
+    pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         self.rows.row(selector)
     }
     pub(crate) fn with_row_mut<R>(
         &mut self,
         selector: TileCdfSelector,
-        f: impl FnOnce(&mut [i32]) -> R,
+        f: impl FnOnce(&mut [u16]) -> R,
     ) -> Result<R, TileCdfError> {
         Ok(f(self.rows.row_mut(selector)?))
     }
@@ -988,7 +988,7 @@ pub(crate) struct TileCdfRows {
     lossless_tx_size: LosslessTxSizeCdfRows,
     lossless_inter_tx_type: LosslessInterTxTypeCdfRow,
     delta_q: DeltaQCdfRow,
-    use_gdf: [i32; CDF_ROW_LEN],
+    use_gdf: [u16; CDF_ROW_LEN],
     cdef_index0: CdefIndex0CdfRows,
     ccso_blk: CcsoBlkCdfRows,
     cdef_index_minus1_with3: CdefIndexMinus1With3CdfRow,
@@ -1350,7 +1350,7 @@ impl TileCdfRows {
         }
     }
 
-    fn row(&self, selector: TileCdfSelector) -> Result<&[i32], TileCdfError> {
+    fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         tile_cdf_row!(
             self,
             selector,
@@ -1362,7 +1362,7 @@ impl TileCdfRows {
         )
     }
 
-    fn row_mut(&mut self, selector: TileCdfSelector) -> Result<&mut [i32], TileCdfError> {
+    fn row_mut(&mut self, selector: TileCdfSelector) -> Result<&mut [u16], TileCdfError> {
         tile_cdf_row!(
             self,
             selector,
@@ -1434,14 +1434,14 @@ macro_rules! select_cdef_index_minus1_row {
     };
 }
 
-fn cdef_index_minus1_row(rows: &TileCdfRows, strengths: usize) -> Result<&[i32], TileCdfError> {
+fn cdef_index_minus1_row(rows: &TileCdfRows, strengths: usize) -> Result<&[u16], TileCdfError> {
     select_cdef_index_minus1_row!(rows, strengths, as_slice)
 }
 
 fn cdef_index_minus1_row_mut(
     rows: &mut TileCdfRows,
     strengths: usize,
-) -> Result<&mut [i32], TileCdfError> {
+) -> Result<&mut [u16], TileCdfError> {
     select_cdef_index_minus1_row!(rows, strengths, as_mut_slice)
 }
 

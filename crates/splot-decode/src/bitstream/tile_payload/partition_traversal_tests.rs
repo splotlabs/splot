@@ -117,7 +117,7 @@ enum LrUnitSymbolRow {
     FlexRestorationType { tool: usize, plane: usize },
 }
 
-fn lr_unit_symbol_row(work_unit: &DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [i32; 3] {
+fn lr_unit_symbol_row(work_unit: &DecodeTileWorkUnit<'_>, row: LrUnitSymbolRow) -> [u16; 3] {
     match row {
         LrUnitSymbolRow::WienerNs => *work_unit.cdf().tile_cdfs().rows().use_wiener_ns(),
         LrUnitSymbolRow::PcWiener => *work_unit.cdf().tile_cdfs().rows().use_pc_wiener(),
@@ -470,7 +470,7 @@ fn cursor_returns_live_symbol_state_at_frontier() {
     );
     assert_eq!(plan.symbol_count_after(), symbols.symbol_count());
     let mut row = DEFAULT_Y_MODE_SET_CDF;
-    assert_eq!(symbols.read_symbol(&mut row).unwrap().get(), 0);
+    assert_eq!(symbols.read_symbol_u16(&mut row).unwrap().get(), 0);
     assert_eq!(symbols.symbol_count(), 2);
 }
 

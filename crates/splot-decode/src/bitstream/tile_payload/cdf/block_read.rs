@@ -23,7 +23,7 @@ impl TileCdfSubset {
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, BlockSymbolTraceReadError> {
         let symbol = self
-            .with_row_mut(selector, |row| symbol_decoder.read_symbol(row))
+            .with_row_mut(selector, |row| symbol_decoder.read_symbol_u16(row))
             .map_err(BlockSymbolTraceReadError::Cdf)?
             .map_err(BlockSymbolTraceReadError::Symbol)?;
         Ok(symbol)

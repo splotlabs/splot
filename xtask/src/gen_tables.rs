@@ -17,8 +17,9 @@
 //! Coverage is explicit and loud:
 //!
 //! - Tables whose element values are all integer literals are **generated** as
-//!   nested fixed-size `i32` arrays (the array shape is inferred from the brace
-//!   nesting; named dimension expressions are recorded as a doc comment only).
+//!   nested fixed-size arrays (compact `u16` for CDFs and GDF alpha, `i16` for GDF
+//!   weights, and `i32` otherwise; the array shape is inferred from the brace
+//!   nesting and named dimension expressions are recorded as a doc comment only).
 //! - The four § 9.2 block-size tables with `BLOCK_*` element values, the
 //!   four § 9.2 transform-size tables with `TX_*` element values, and the
 //!   § 9.2 `Mode_To_Txfm` table with `TxType` element values are also generated
@@ -161,8 +162,8 @@ struct Decl {
     /// `[ COEFF_CDF_Q_CTXS ][ 3 ]`. Recorded verbatim for the generated doc
     /// comment; not used to size the Rust array (the brace nesting does that).
     dims: String,
-    /// `true` if every element value is an integer literal (emittable as an `i32`
-    /// array); `false` if any symbolic token appears (needs the skip-allowlist).
+    /// `true` if every element value is an integer literal; `false` if any symbolic
+    /// token appears (needs the skip-allowlist).
     numeric: bool,
     /// The raw brace body `{ ... }` with comments already stripped.
     body: String,
@@ -593,8 +594,14 @@ fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<Stri
     for table in decls {
         let decl = table.decl;
         let rust_name = to_screaming_snake(&decl.name);
-        let value = render_value(&table.body)?;
-        let ty = array_type(&table.body)?;
+        let element_type = match rust_name.as_str() {
+            "GDF_ALPHA" => "u16",
+            "GDF_WEIGHT" => "i16",
+            _ if section.module == "cdf" => "u16",
+            _ => "i32",
+        };
+        let value = render_value(&table.body, element_type)?;
+        let ty = array_type(&table.body, element_type)?;
         let dims = normalize_ws(&decl.dims);
         let _ = writeln!(
             out,
@@ -663,10 +670,10 @@ fn normalize_ws(s: &str) -> String {
 /// Render the array literal for a numeric body, normalizing whitespace to a single
 /// canonical form so output is deterministic regardless of the attachment's
 /// formatting. Nesting becomes nested `[ ... ]`.
-fn render_value(body: &str) -> Result<String> {
+fn render_value(body: &str, element_type: &str) -> Result<String> {
     let toks = tokenize_body(body)?;
     let mut idx = 0usize;
-    let s = render_node(&toks, &mut idx)?;
+    let s = render_node(&toks, &mut idx, element_type)?;
     if idx != toks.len() {
         bail!("gen-tables: trailing tokens after array body");
     }
@@ -722,12 +729,17 @@ fn tokenize_body(body: &str) -> Result<Vec<Tok>> {
 
 /// Recursively render one node (a `{...}` group or a leaf integer) from the token
 /// stream as a Rust array literal / integer.
-fn render_node(toks: &[Tok], idx: &mut usize) -> Result<String> {
+fn render_node(toks: &[Tok], idx: &mut usize, element_type: &str) -> Result<String> {
     match toks.get(*idx) {
         Some(Tok::Int(v)) => {
             *idx += 1;
-            if i32::try_from(*v).is_err() {
-                bail!("table value {v} does not fit the generated i32 type");
+            let fits = match element_type {
+                "i16" => i16::try_from(*v).is_ok(),
+                "u16" => u16::try_from(*v).is_ok(),
+                _ => i32::try_from(*v).is_ok(),
+            };
+            if !fits {
+                bail!("table value {v} does not fit the generated {element_type} type");
             }
             Ok(v.to_string())
         }
@@ -741,7 +753,7 @@ fn render_node(toks: &[Tok], idx: &mut usize) -> Result<String> {
                         break;
                     }
                     None => bail!("gen-tables: unterminated array group"),
-                    _ => parts.push(render_node(toks, idx)?),
+                    _ => parts.push(render_node(toks, idx, element_type)?),
                 }
             }
             Ok(format!("[{}]", parts.join(", ")))
@@ -751,17 +763,17 @@ fn render_node(toks: &[Tok], idx: &mut usize) -> Result<String> {
     }
 }
 
-/// Compute the Rust fixed-size array type (`[[i32; N]; M]`) from the brace nesting
+/// Compute the Rust fixed-size array type from the brace nesting
 /// and group lengths of a numeric body. Requires every sibling group at a level to
 /// have equal length (a rectangular array); a ragged array is a hard error.
-fn array_type(body: &str) -> Result<String> {
+fn array_type(body: &str, element_type: &str) -> Result<String> {
     let toks = tokenize_body(body)?;
     let mut idx = 0usize;
     let dims = shape(&toks, &mut idx)?;
     if idx != toks.len() {
         bail!("gen-tables: trailing tokens while computing array shape");
     }
-    let mut ty = String::from("i32");
+    let mut ty = String::from(element_type);
     for &d in dims.iter().rev() {
         ty = format!("[{ty}; {d}]");
     }
@@ -839,23 +851,23 @@ mod tests {
     #[test]
     fn renders_nested_array_value_and_type() -> Result<()> {
         let body = "{ { 1, 2 }, { -3, 4 } }";
-        assert_eq!(render_value(body)?, "[[1, 2], [-3, 4]]");
-        assert_eq!(array_type(body)?, "[[i32; 2]; 2]");
+        assert_eq!(render_value(body, "i32")?, "[[1, 2], [-3, 4]]");
+        assert_eq!(array_type(body, "i32")?, "[[i32; 2]; 2]");
         Ok(())
     }
 
     #[test]
     fn flat_array_type_is_one_dimensional() -> Result<()> {
         let body = "{ 5, 6, 7 }";
-        assert_eq!(array_type(body)?, "[i32; 3]");
-        assert_eq!(render_value(body)?, "[5, 6, 7]");
+        assert_eq!(array_type(body, "u16")?, "[u16; 3]");
+        assert_eq!(render_value(body, "u16")?, "[5, 6, 7]");
         Ok(())
     }
 
     #[test]
     fn ragged_array_is_rejected() {
         let body = "{ { 1, 2 }, { 3 } }";
-        assert!(array_type(body).is_err());
+        assert!(array_type(body, "i32").is_err());
     }
 
     #[test]

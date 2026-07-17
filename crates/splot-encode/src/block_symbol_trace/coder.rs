@@ -110,7 +110,7 @@ pub(crate) fn encode_block_symbol_trace(trace: &[BlockSymbolToken]) -> Result<Ve
             }
             _ => {
                 encoder
-                    .write_symbol(
+                    .write_symbol_u16(
                         encode_cdfs.row_mut(*token, index)?,
                         Symbol::new(token.symbol()),
                     )
@@ -158,7 +158,7 @@ pub(crate) fn roundtrip_block_symbol_trace(
             actual as u8
         } else {
             let decoded = decoder
-                .read_symbol(decode_cdfs.row_mut(*token, index)?)
+                .read_symbol_u16(decode_cdfs.row_mut(*token, index)?)
                 .map_err(|source| Error::BlockSymbolTraceSymbolRead { index, source })?
                 .get();
             if decoded != token.symbol() {

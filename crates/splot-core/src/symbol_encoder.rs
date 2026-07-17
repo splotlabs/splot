@@ -9,8 +9,8 @@
 //! lifecycle, coefficient syntax, and coded tile traversal.
 
 use crate::symbol::{
-    CDF_PROB_SCALE, CdfUpdateMode, EC_PROB_SHIFT, MAX_LITERAL_BITS, SYMBOL_RANGE_INIT, Symbol,
-    floor_log2, update_cdf, validate_cdf_shape,
+    CDF_PROB_SCALE, CdfStorage, CdfUpdateMode, EC_PROB_SHIFT, MAX_LITERAL_BITS, SYMBOL_RANGE_INIT,
+    Symbol, floor_log2, update_cdf, validate_cdf_shape,
 };
 use crate::tables::conversion::PROB_INC;
 use crate::write::{WriteError, WriteResult};
@@ -279,6 +279,24 @@ impl SymbolEncoder {
     /// [`WriteError::SymbolOutputTooLarge`] if the output limit would be exceeded,
     /// or [`WriteError::SymbolOperationLimit`] if the operation limit would be exceeded.
     pub fn write_symbol(&mut self, cdf: &mut [i32], symbol: Symbol) -> WriteResult<()> {
+        self.write_symbol_impl(cdf, symbol)
+    }
+
+    /// Writes one AV2 § 8.2.6 symbol from a compact `u16` CDF row.
+    ///
+    /// The row layout and errors are identical to [`Self::write_symbol`].
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::write_symbol`].
+    pub fn write_symbol_u16(&mut self, cdf: &mut [u16], symbol: Symbol) -> WriteResult<()> {
+        self.write_symbol_impl(cdf, symbol)
+    }
+
+    fn write_symbol_impl<T: CdfStorage>(
+        &mut self,
+        cdf: &mut [T],
+        symbol: Symbol,
+    ) -> WriteResult<()> {
         let shape =
             validate_cdf_shape(cdf).map_err(|kind| WriteError::InvalidSymbolCdf { kind })?;
         let symbol = usize::from(symbol.get());
@@ -359,14 +377,19 @@ impl SymbolEncoder {
         self.step_bits = self.step_bits.saturating_add(u64::from(bits));
     }
 
-    fn symbol_step(&self, cdf: &[i32], n: usize, target: usize) -> WriteResult<SymbolStep> {
+    fn symbol_step<T: CdfStorage>(
+        &self,
+        cdf: &[T],
+        n: usize,
+        target: usize,
+    ) -> WriteResult<SymbolStep> {
         let mut cur = self.range;
         for symbol in 0..=target {
             let prev = cur;
             let f = if symbol == n - 1 {
                 0
             } else {
-                CDF_PROB_SCALE - cdf[symbol] as u32
+                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
             };
             let prob_inc = PROB_INC[n - 2][symbol] as u32;
             let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;

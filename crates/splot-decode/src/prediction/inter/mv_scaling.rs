@@ -135,6 +135,30 @@ fn derive_plane_scaling_from_scale(
     last_y: i32,
     prescaled: bool,
 ) -> PlaneScaling {
+    let unit_scale = 1 << REF_SCALE_SHIFT;
+    if scale_x == unit_scale && scale_y == unit_scale {
+        let start = |plane_pos: i32, mv_component: i32, subsampling: u32| {
+            let mv_offset = if prescaled {
+                round2_signed_i32(mv_component, subsampling)
+            } else {
+                (2 * mv_component) >> subsampling
+            };
+            let orig = (plane_pos << SUBPEL_BITS) + mv_offset;
+            scaling_value((i64::from(orig) << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) + 32)
+        };
+        return PlaneScaling {
+            start_x: start(plane_x, mv_col, sub_x),
+            start_y: start(plane_y, mv_row, sub_y),
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            scale_x,
+            scale_y,
+            first_x: 0,
+            first_y: 0,
+            last_x,
+            last_y,
+        };
+    }
     let half_sample = 1i32 << (SUBPEL_BITS - 1);
     let off = (1i32 << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) / 2;
     let round_shift = REF_SCALE_SHIFT + SUBPEL_BITS - SCALE_SUBPEL_BITS;
@@ -164,6 +188,9 @@ fn derive_plane_scaling_from_scale(
 }
 
 fn scale_dimension(reference: i32, current: i32) -> i32 {
+    if reference == current {
+        return 1 << REF_SCALE_SHIFT;
+    }
     let numerator = (i64::from(reference) << REF_SCALE_SHIFT) + i64::from(current) / 2;
     scaling_value(numerator / i64::from(current))
 }

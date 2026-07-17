@@ -14,7 +14,8 @@ use splot_recon::{
     WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
     loop_restoration_source_sample, pc_wiener_classify_grid_padded_into,
     pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass,
-    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded_into,
+    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_into,
 };
 
 use super::{MI_SIZE, WienerNsLrReconSink};
@@ -1066,7 +1067,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let LrSourceScratch {
                 primary,
                 cell_subclasses,
-                subclasses,
                 ..
             } = scratch;
             let window = LrSourceWindow::<T>::materialize(
@@ -1082,8 +1082,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 WIENER_NS_LUMA_TAP_RADIUS.max(PC_WIENER_CLASSIFY_READ_RADIUS),
             )
             .map_err(|_| luma_lr_filter_error(offset))?;
-            let subclass_map = if num_classes > 1 {
-                Some(self.luma_lr_subclasses(
+            let cell_subclass_map = if num_classes > 1 {
+                Some(self.luma_lr_cell_subclasses(
                     offset,
                     &block,
                     &window,
@@ -1092,7 +1092,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     filter_set_index,
                     sample_count,
                     cell_subclasses,
-                    subclasses,
                 )?)
             } else {
                 None
@@ -1105,7 +1104,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 output_stride: block.width,
                 bit_depth: self.bit_depth,
                 coeffs_by_class: coeffs,
-                subclasses: subclass_map,
+                subclasses: None,
             };
             let tap_radius = isize::try_from(WIENER_NS_LUMA_TAP_RADIUS)
                 .map_err(|_| luma_lr_filter_error(offset))?;
@@ -1119,7 +1118,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(|_| luma_lr_filter_error(offset))?;
             with_wiener_ns_luma_scratch(sample_count, |scratch| {
-                wiener_ns_filter_luma_block_padded_into(output, &params, &padded_source, scratch)
+                if let Some(cell_subclasses) = cell_subclass_map {
+                    wiener_ns_filter_luma_block_padded_cells_into(
+                        output,
+                        &params,
+                        &padded_source,
+                        cell_subclasses,
+                        scratch,
+                    )
+                } else {
+                    wiener_ns_filter_luma_block_padded_into(
+                        output,
+                        &params,
+                        &padded_source,
+                        scratch,
+                    )
+                }
             })
             .map_err(|_| luma_lr_filter_error(offset))?;
             Ok(())
@@ -1184,7 +1198,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn luma_lr_subclasses<'a>(
+    fn luma_lr_cell_subclasses<'a>(
         &self,
         offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
@@ -1193,11 +1207,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         num_classes: usize,
         filter_set_index: usize,
         sample_count: usize,
-        cell_subclasses: &mut Vec<usize>,
-        subclasses: &'a mut Vec<usize>,
+        cell_subclasses: &'a mut Vec<usize>,
     ) -> Result<&'a [usize]> {
         cell_subclasses.clear();
-        subclasses.clear();
         if sample_count
             != block
                 .width
@@ -1222,9 +1234,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .try_reserve_exact(cell_count)
             .map_err(|_| luma_lr_filter_error(offset))?;
         cell_subclasses.resize(cell_count, 0);
-        subclasses
-            .try_reserve_exact(sample_count)
-            .map_err(|_| luma_lr_filter_error(offset))?;
         let mut group_start = 0;
         while group_start < cell_cols {
             let class_x = block
@@ -1300,18 +1309,46 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             group_start = group_end;
         }
 
+        Ok(cell_subclasses)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn luma_lr_subclasses<'a>(
+        &self,
+        offset: ByteOffset,
+        block: &WienerNsLrSourceBlock,
+        window: &LrSourceWindow<'_, T>,
+        qindex: u32,
+        num_classes: usize,
+        filter_set_index: usize,
+        sample_count: usize,
+        cell_subclasses: &mut Vec<usize>,
+        subclasses: &'a mut Vec<usize>,
+    ) -> Result<&'a [usize]> {
+        let cells = self.luma_lr_cell_subclasses(
+            offset,
+            block,
+            window,
+            qindex,
+            num_classes,
+            filter_set_index,
+            sample_count,
+            cell_subclasses,
+        )?;
+        subclasses.clear();
+        subclasses
+            .try_reserve_exact(sample_count)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         for row in 0..block.height {
             let cell_row = row / MI_SIZE;
             for cell_col in 0..cell_cols {
-                let cell_index = cell_row
-                    .checked_mul(cell_cols)
-                    .and_then(|start| start.checked_add(cell_col))
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
-                let Some(&subclass) = cell_subclasses.get(cell_index) else {
+                let cell_index = cell_row * cell_cols + cell_col;
+                let Some(&subclass) = cells.get(cell_index) else {
                     return Err(luma_lr_filter_error(offset));
                 };
-                let cell_start = cell_col.saturating_mul(MI_SIZE);
-                let cell_width = MI_SIZE.min(block.width.saturating_sub(cell_start));
+                let cell_start = cell_col * MI_SIZE;
+                let cell_width = MI_SIZE.min(block.width - cell_start);
                 subclasses.extend(core::iter::repeat_n(subclass, cell_width));
             }
         }

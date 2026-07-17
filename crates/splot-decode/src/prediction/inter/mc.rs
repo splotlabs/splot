@@ -8,7 +8,9 @@ use splot_recon::{
     PixelFormat, PlaneId, PlaneRect, ReconError, ReconSample, ReferencePlaneView,
     SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
     blend_compound_average_weighted_sample, ext_warp_predict_unit,
-    subpel_predict_block_compound_average_into, subpel_predict_block_compound_intermediate,
+    subpel_predict_16x16_fullpel_horizontal_overlap_into,
+    subpel_predict_block_compound_average_fullpel_strided_into,
+    subpel_predict_block_compound_average_strided_into, subpel_predict_block_compound_intermediate,
     subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
     warp_predict_block_into, wedge_mask_plane_sample,
 };
@@ -401,6 +403,17 @@ impl CompoundBlockMetadata {
             .transpose()
     }
 
+    pub(super) fn stored_mvs_at_luma_offset(
+        &self,
+        x: usize,
+        y: usize,
+    ) -> splot_recon::Result<Option<[Mv; 2]>> {
+        self.motion
+            .as_ref()
+            .map(|motion| motion.stored_mvs_at_luma_offset(x, y))
+            .transpose()
+    }
+
     pub(super) fn publish<T: ReconSample>(
         &self,
         samples: &[T],
@@ -640,20 +653,61 @@ pub(super) fn predict_compound_average_block_into<T: ReconSample>(
     offset: ByteOffset,
     samples: &mut [T],
 ) -> Result<CompoundBlockMetadata> {
-    let sample_count =
-        compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
-    let available_samples = samples.len();
-    let mut samples = samples
-        .get_mut(..sample_count)
-        .ok_or(ReconError::BufferLengthMismatch {
-            expected: sample_count,
-            actual: available_samples,
-        })?;
+    let samples = compound_output_samples(sink, block, samples)?;
     let refinemv = block
         .use_refinemv
         .then(|| refinemv::compound_default_refinemv_motion_grid(sink, block, offset))
         .transpose()?;
     let motion = optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)?;
+    predict_compound_average_block_with_motion_into(sink, block, motion, offset, samples)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn predict_tip_compound_batch_into<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    mut block: CompoundMcBlock<'_, T>,
+    batch_rect: McBlockRect,
+    batch_has_chroma: bool,
+    columns: usize,
+    units: impl ExactSizeIterator<Item = (McBlockRect, [Mv; 2])>,
+    offset: ByteOffset,
+    samples: &mut [T],
+) -> Result<CompoundBlockMetadata> {
+    let motion = optflow::tip_motion_grid(sink, block, 8, columns, units, offset)?;
+    block.rect = batch_rect;
+    block.has_chroma = batch_has_chroma;
+    block.sub8x8_chroma = false;
+    block.optflow_distances = None;
+    block.use_refinemv = false;
+    block.search_refinemv = false;
+    let samples = compound_output_samples(sink, block, samples)?;
+    predict_compound_average_block_with_motion_into(sink, block, Some(motion), offset, samples)
+}
+
+fn compound_output_samples<'a, T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: CompoundMcBlock<'_, T>,
+    samples: &'a mut [T],
+) -> Result<&'a mut [T]> {
+    let sample_count =
+        compound_output_sample_count(block.rect, block.has_chroma, sink.info().pixel_format())?;
+    let available_samples = samples.len();
+    samples.get_mut(..sample_count).ok_or(
+        ReconError::BufferLengthMismatch {
+            expected: sample_count,
+            actual: available_samples,
+        }
+        .into(),
+    )
+}
+
+fn predict_compound_average_block_with_motion_into<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: CompoundMcBlock<'_, T>,
+    motion: Option<CompoundMotionGrid>,
+    offset: ByteOffset,
+    mut samples: &mut [T],
+) -> Result<CompoundBlockMetadata> {
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(sink, block, motion.as_ref(), offset)?;
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
@@ -1074,6 +1128,30 @@ fn predict_compound_plane_output<T: ReconSample>(
     {
         return Ok(());
     }
+    if !has_warp
+        && let (
+            Some(motion),
+            CompoundBlend::Average {
+                implicit_mask,
+                cwp_weight,
+            },
+            Some(output),
+        ) = (motion, blend, T::u16_slice_mut(samples))
+        && optflow::predict_motion_grid_compound_average_into(
+            sink,
+            block,
+            plane,
+            sub_x,
+            sub_y,
+            motion,
+            implicit_mask,
+            cwp_weight,
+            offset,
+            output,
+        )?
+    {
+        return Ok(());
+    }
     let translation = if motion.is_none() && !has_warp {
         Some(translational_compound_plane(
             sink, block, plane, sub_x, sub_y, offset,
@@ -1104,6 +1182,7 @@ fn predict_compound_plane_output<T: ReconSample>(
             &translation.params,
             cwp_weight,
             output,
+            translation.plane.block_w,
         );
     }
     let prediction = match translation {
@@ -1142,6 +1221,7 @@ fn predict_compound_average_into<T: ReconSample>(
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
     output: &mut [u16],
+    output_stride: usize,
 ) -> Result<()> {
     let sample_count =
         plane
@@ -1157,12 +1237,13 @@ fn predict_compound_average_into<T: ReconSample>(
             pred0,
             plane.block_w,
         )?;
-        subpel_predict_block_compound_average_into(
+        subpel_predict_block_compound_average_strided_into(
             &plane.views[1],
             &params[1],
             pred0,
             cwp_weight,
             output,
+            output_stride,
         )?;
         Ok(())
     })

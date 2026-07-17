@@ -45,27 +45,27 @@ fn encode_wedge_compound_blend() -> Vec<u8> {
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
     );
     tile.with_row_mut(TileCdfSelector::CompGroupIdx { ctx: 0 }, |row| {
-        encoder.write_symbol(row, Symbol::new(1))
+        encoder.write_symbol_u16(row, Symbol::new(1))
     })
     .unwrap()
     .unwrap();
     tile.with_row_mut(TileCdfSelector::CompoundType, |row| {
-        encoder.write_symbol(row, Symbol::new(0))
+        encoder.write_symbol_u16(row, Symbol::new(0))
     })
     .unwrap()
     .unwrap();
     tile.with_row_mut(TileCdfSelector::WedgeQuad, |row| {
-        encoder.write_symbol(row, Symbol::new(0))
+        encoder.write_symbol_u16(row, Symbol::new(0))
     })
     .unwrap()
     .unwrap();
     tile.with_row_mut(TileCdfSelector::WedgeAngle { quad: 0 }, |row| {
-        encoder.write_symbol(row, Symbol::new(0))
+        encoder.write_symbol_u16(row, Symbol::new(0))
     })
     .unwrap()
     .unwrap();
     tile.with_row_mut(TileCdfSelector::WedgeDist2, |row| {
-        encoder.write_symbol(row, Symbol::new(0))
+        encoder.write_symbol_u16(row, Symbol::new(0))
     })
     .unwrap()
     .unwrap();
@@ -132,7 +132,7 @@ fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
     );
     tile.with_row_mut(TileCdfSelector::UseLocalWarp { ctx }, |row| {
-        encoder.write_symbol(row, Symbol::new(u8::from(enabled)))
+        encoder.write_symbol_u16(row, Symbol::new(u8::from(enabled)))
     })
     .unwrap()
     .unwrap();
@@ -707,7 +707,7 @@ fn encode_use_refinemv(ctx: usize, enabled: bool) -> Vec<u8> {
         SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Enabled),
     );
     tile.with_row_mut(TileCdfSelector::UseRefinemv { ctx }, |row| {
-        encoder.write_symbol(row, Symbol::new(u8::from(enabled)))
+        encoder.write_symbol_u16(row, Symbol::new(u8::from(enabled)))
     })
     .unwrap()
     .unwrap();

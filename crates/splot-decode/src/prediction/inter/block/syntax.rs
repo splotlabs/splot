@@ -321,7 +321,7 @@ mod tests {
         );
         for &(idx, value) in sequence {
             tile.with_row_mut(selector(idx.min(2)), |row| {
-                encoder.write_symbol(row, Symbol::new(value))
+                encoder.write_symbol_u16(row, Symbol::new(value))
             })
             .unwrap()
             .unwrap();

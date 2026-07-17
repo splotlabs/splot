@@ -164,6 +164,7 @@ impl TemporalMotionField {
         }
     }
 
+    #[cfg(test)]
     fn cell(&self, y8: usize, x8: usize) -> Option<TemporalMotionCell> {
         self.cells
             .get(temporal_grid_index(self.width8, self.height8, y8, x8)?)
@@ -1025,48 +1026,69 @@ fn project_temporal_motion_field(
     let projection_step = projection_step.clamp(1, 2);
     let target_order_hint =
         target_ref.and_then(|target| ref_order_hints.get(target).copied().flatten());
-    for y8 in (0..source.height8).step_by(projection_step) {
-        for x8 in (0..source.width8).step_by(projection_step) {
-            let Some(cell) = source.cell(y8, x8).filter(|cell| cell.is_valid()) else {
+    if source.width8 == 0 {
+        return;
+    }
+    let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
+    let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
+    let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
+    let target_cache = source
+        .ref_order_hints
+        .iter()
+        .flatten()
+        .copied()
+        .map(|hint| {
+            let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
+            (
+                hint,
+                mapped_reference(source_order_hint, hint, ref_order_hints),
+                super::super::get_relative_dist(source_hint, target_hint),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (y8, row) in source
+        .cells
+        .chunks_exact(source.width8)
+        .enumerate()
+        .step_by(projection_step)
+    {
+        for (x8, cell) in row.iter().copied().enumerate().step_by(projection_step) {
+            if !cell.is_valid() {
                 continue;
-            };
+            }
             let list = side;
             let Some(target_hint) = cell.ref_order_hints[list] else {
                 continue;
             };
             let saved_target_hint = target_hint;
             let mut mv = uncompress_tmvp_mv(cell.mvs[list]);
-            let end_ref = mapped_reference(source_order_hint, saved_target_hint, ref_order_hints);
+            let (end_ref, mut ref_offset) = target_cache
+                .iter()
+                .find(|(hint, _, _)| *hint == saved_target_hint)
+                .map_or_else(
+                    || {
+                        let target_hint = i32::try_from(target_hint).unwrap_or(i32::MAX);
+                        (
+                            mapped_reference(source_order_hint, saved_target_hint, ref_order_hints),
+                            super::super::get_relative_dist(source_hint, target_hint),
+                        )
+                    },
+                    |(_, end_ref, ref_offset)| (*end_ref, *ref_offset),
+                );
             if let Some(trajectories) = trajectories.as_deref_mut() {
                 trajectories.check_intersection(source_ref, end_ref, y8, x8, mv);
             }
-            let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
-            let target_hint = i32::try_from(target_hint).unwrap_or(i32::MAX);
-            let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
-            let mut ref_offset = super::super::get_relative_dist(source_hint, target_hint);
             if ref_offset.abs() > MAX_FRAME_DISTANCE {
                 continue;
             }
             if (side == 0 && ref_offset < 0) || (side == 1 && ref_offset > 0) {
                 continue;
             }
-            let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
             if source_to_current.abs() > MAX_FRAME_DISTANCE {
                 continue;
             }
-            if let Some(trajectories) = trajectories.as_deref_mut() {
-                trajectories.observe_projection(
-                    source_ref,
-                    end_ref,
-                    target_ref,
-                    y8,
-                    x8,
-                    mv,
-                    source_to_current,
-                    ref_offset,
-                    side == 1,
-                );
-            }
+            let trajectory_mv = mv;
+            let trajectory_ref_offset = ref_offset;
             if ref_offset < 0 {
                 ref_offset = -ref_offset;
                 mv = Mv {
@@ -1077,6 +1099,20 @@ fn project_temporal_motion_field(
             let Some(projected_to_current) = project_mv(mv, source_to_current, ref_offset) else {
                 continue;
             };
+            if let Some(trajectories) = trajectories.as_deref_mut() {
+                trajectories.observe_projection_with_projected(
+                    source_ref,
+                    end_ref,
+                    target_ref,
+                    y8,
+                    x8,
+                    trajectory_mv,
+                    projected_to_current,
+                    source_to_current,
+                    trajectory_ref_offset.abs(),
+                    side == 1,
+                );
+            }
             let Some((pos_y8, pos_x8)) = sampled_temporal_position(
                 y8,
                 x8,
@@ -1087,13 +1123,18 @@ fn project_temporal_motion_field(
             ) else {
                 continue;
             };
-            let replace = output.cell(pos_y8, pos_x8).is_none_or(|cell| {
-                !cell.valid
-                    || (target_order_hint == Some(saved_target_hint)
-                        && cell.ref_offset != ref_offset)
-            });
+            let Some(output_cell) = output.cells.get_mut(pos_y8 * output.width8 + pos_x8) else {
+                continue;
+            };
+            let replace = !output_cell.valid
+                || (target_order_hint == Some(saved_target_hint)
+                    && output_cell.ref_offset != ref_offset);
             if replace {
-                output.set(pos_y8, pos_x8, mv, ref_offset, true);
+                *output_cell = ProjectedTemporalMotionCell {
+                    valid: true,
+                    mv,
+                    ref_offset,
+                };
             }
         }
     }

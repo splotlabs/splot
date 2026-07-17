@@ -480,10 +480,15 @@ pub fn subpel_predict_block_into<T: ReconSample>(
     if params.interp == InterpolationFilter::Bilinear
         && params.step_x == 1 << SCALE_SUBPEL_BITS
         && params.step_y == 1 << SCALE_SUBPEL_BITS
-        && ((params.start_x >> 6) & SUBPEL_MASK) != 0
-        && ((params.start_y >> 6) & SUBPEL_MASK) != 0
     {
-        return subpel_bilinear_2d_into(reference, params, output);
+        let h_phase = (params.start_x >> 6) & SUBPEL_MASK;
+        let v_phase = (params.start_y >> 6) & SUBPEL_MASK;
+        match (h_phase == 0, v_phase == 0) {
+            (false, true) => return subpel_bilinear_horizontal_into(reference, params, output),
+            (true, false) => return subpel_bilinear_vertical_into(reference, params, output),
+            (false, false) => return subpel_bilinear_2d_into(reference, params, output),
+            (true, true) => {}
+        }
     }
     let max_sample = i32::from(params.bit_depth.max_sample());
     subpel_predict_block_internal_into_validated(
@@ -495,6 +500,184 @@ pub fn subpel_predict_block_into<T: ReconSample>(
         params.w,
         |pred| pred.clamp(0, max_sample) as u16,
     )
+}
+
+/// Reuses the seven stable columns shared by horizontally adjacent 16x16
+/// zero-phase TIP refine-MV predictors and fills the other nine columns.
+///
+/// `output` must initially contain the prediction for the same reference,
+/// motion vector, and vertical position eight samples left of `params.start_x`.
+/// The leftmost column is regenerated because the refine-MV clipping window
+/// moves with the 8x8 prediction unit. Returns `Ok(false)` when the current
+/// predictor is not an eligible zero-phase, unscaled 16x16 block.
+///
+/// # Errors
+///
+/// Returns the same parameter and output-length errors as
+/// [`subpel_predict_block_into`].
+pub fn subpel_predict_16x16_fullpel_horizontal_overlap_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> Result<bool> {
+    const SHIFT: usize = 8;
+    if params.step_x != 1 << SCALE_SUBPEL_BITS
+        || params.step_y != 1 << SCALE_SUBPEL_BITS
+        || (params.start_x >> 6) & SUBPEL_MASK != 0
+        || (params.start_y >> 6) & SUBPEL_MASK != 0
+        || params.w != 16
+        || params.h != 16
+    {
+        return Ok(false);
+    }
+    validate_subpel_params(params)?;
+    let output_len = params
+        .w
+        .checked_mul(params.h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "overlapping subpel prediction sample count",
+        })?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let direct_x = subpel_direct_copy_x(reference, params);
+    let retained = params.w - SHIFT;
+    for row in 0..params.h {
+        let source_row = (y0 + row as i32).clamp(params.first_y, params.last_y) as usize;
+        let destination = &mut output[row * params.w..][..params.w];
+        // splot-copy-ok: retain the seven horizontally overlapping TIP predictor columns
+        destination.copy_within(SHIFT.., 0);
+        if let Some(x) = direct_x {
+            for (slot, sample) in destination[retained..]
+                .iter_mut()
+                .zip(&reference.row(source_row)[x + retained..x + retained + SHIFT])
+            {
+                *slot = sample.to_u16();
+            }
+        } else {
+            for (col, slot) in destination[retained..].iter_mut().enumerate() {
+                let source_col =
+                    (x0 + (retained + col) as i32).clamp(params.first_x, params.last_x) as usize;
+                *slot = reference.sample(source_row, source_col) as u16;
+            }
+        }
+        let first_col = x0.clamp(params.first_x, params.last_x) as usize;
+        destination[0] = reference.sample(source_row, first_col) as u16;
+    }
+    Ok(true)
+}
+
+fn bilinear_sample(left: u16, right: u16, phase: i32) -> u16 {
+    let left = i32::from(left);
+    let right = i32::from(right);
+    round2_i32((16 - phase) * left + phase * right, SUBPEL_BITS) as u16
+}
+
+fn subpel_bilinear_horizontal_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> Result<()> {
+    let output_len = params.w * params.h;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let phase = (params.start_x >> 6) & SUBPEL_MASK;
+    let direct_x = usize::try_from(x0).ok().filter(|&x| {
+        x >= params.first_x.max(0) as usize
+            && x.checked_add(params.w).is_some_and(|last| {
+                last < reference.width
+                    && i32::try_from(last).is_ok_and(|last| last <= params.last_x)
+            })
+    });
+    let mut clipped_x = [0usize; MAX_BLOCK_DIM + 1];
+    if direct_x.is_none() {
+        for (c, col) in clipped_x[..=params.w].iter_mut().enumerate() {
+            *col = (x0 + c as i32)
+                .clamp(params.first_x, params.last_x)
+                .clamp(0, reference.width as i32 - 1) as usize;
+        }
+    }
+    for r in 0..params.h {
+        let row = (y0 + r as i32)
+            .clamp(params.first_y, params.last_y)
+            .clamp(0, reference.height as i32 - 1) as usize;
+        let source = reference.row(row);
+        let destination = &mut output[r * params.w..][..params.w];
+        if let Some(x) = direct_x {
+            for (out, pair) in destination
+                .iter_mut()
+                .zip(source[x..=x + params.w].windows(2))
+            {
+                *out = bilinear_sample(pair[0].to_u16(), pair[1].to_u16(), phase);
+            }
+        } else {
+            for (c, out) in destination.iter_mut().enumerate() {
+                *out = bilinear_sample(
+                    source[clipped_x[c]].to_u16(),
+                    source[clipped_x[c + 1]].to_u16(),
+                    phase,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn subpel_bilinear_vertical_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    output: &mut [u16],
+) -> Result<()> {
+    let output_len = params.w * params.h;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+    let x0 = params.start_x >> SCALE_SUBPEL_BITS;
+    let y0 = params.start_y >> SCALE_SUBPEL_BITS;
+    let phase = (params.start_y >> 6) & SUBPEL_MASK;
+    let direct_x = subpel_direct_copy_x(reference, params);
+    for r in 0..params.h {
+        let top = (y0 + r as i32)
+            .clamp(params.first_y, params.last_y)
+            .clamp(0, reference.height as i32 - 1) as usize;
+        let bottom = (y0 + r as i32 + 1)
+            .clamp(params.first_y, params.last_y)
+            .clamp(0, reference.height as i32 - 1) as usize;
+        let top = reference.row(top);
+        let bottom = reference.row(bottom);
+        let destination = &mut output[r * params.w..][..params.w];
+        if let Some(x) = direct_x {
+            for (out, (&top, &bottom)) in destination
+                .iter_mut()
+                .zip(top[x..x + params.w].iter().zip(&bottom[x..x + params.w]))
+            {
+                *out = bilinear_sample(top.to_u16(), bottom.to_u16(), phase);
+            }
+        } else {
+            for (c, out) in destination.iter_mut().enumerate() {
+                let col = (x0 + c as i32)
+                    .clamp(params.first_x, params.last_x)
+                    .clamp(0, reference.width as i32 - 1) as usize;
+                *out = bilinear_sample(top[col].to_u16(), bottom[col].to_u16(), phase);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn subpel_bilinear_2d_into<T: ReconSample>(
@@ -660,6 +843,26 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
     cwp_weight: i16,
     output: &mut [u16],
 ) -> Result<()> {
+    subpel_predict_block_compound_average_strided_into(
+        reference, params, pred0, cwp_weight, output, params.w,
+    )
+}
+
+/// Produces and blends the second compound predictor into caller-owned strided
+/// output. `pred0` remains a contiguous `w * h` intermediate block.
+///
+/// # Errors
+///
+/// Returns the same errors as [`subpel_predict_block_compound_average_into`],
+/// plus [`ReconError::StrideTooSmall`] when `output_stride < params.w`.
+pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    pred0: &[i32],
+    cwp_weight: i16,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<()> {
     let intermediate_height = validate_subpel_params(params)?;
     let sample_count = params
         .w
@@ -667,13 +870,11 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "compound prediction sample count",
         })?;
-    for len in [pred0.len(), output.len()] {
-        if len != sample_count {
-            return Err(ReconError::BufferLengthMismatch {
-                expected: sample_count,
-                actual: len,
-            });
-        }
+    if pred0.len() != sample_count {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: sample_count,
+            actual: pred0.len(),
+        });
     }
     let mut index = 0;
     subpel_predict_block_internal_into_validated(
@@ -682,13 +883,114 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
         INTER_ROUND1_COMPOUND,
         intermediate_height,
         output,
-        params.w,
+        output_stride,
         |pred1| {
             let pred0 = pred0[index];
             index += 1;
             blend_compound_average_weighted_sample(pred0, pred1, params.bit_depth, cwp_weight)
         },
     )
+}
+
+/// Produces and blends two zero-phase, unscaled compound predictors directly
+/// into caller-owned strided output without materializing either intermediate.
+///
+/// Returns `Ok(false)` when either predictor is not zero-phase and unscaled, or
+/// when their block geometry and bit depth differ.
+///
+/// # Errors
+///
+/// Returns the same validation and output-layout errors as
+/// [`subpel_predict_block_compound_average_strided_into`].
+#[allow(clippy::too_many_arguments)]
+pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample>(
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [u16],
+    output_stride: usize,
+) -> Result<bool> {
+    let fullpel = |params: &SubpelPredictParams| {
+        params.step_x == 1 << SCALE_SUBPEL_BITS
+            && params.step_y == 1 << SCALE_SUBPEL_BITS
+            && (params.start_x >> 6) & SUBPEL_MASK == 0
+            && (params.start_y >> 6) & SUBPEL_MASK == 0
+    };
+    if !fullpel(params0)
+        || !fullpel(params1)
+        || params0.w != params1.w
+        || params0.h != params1.h
+        || params0.bit_depth != params1.bit_depth
+    {
+        return Ok(false);
+    }
+    validate_subpel_params(params0)?;
+    validate_subpel_params(params1)?;
+    if output_stride < params0.w {
+        return Err(ReconError::StrideTooSmall {
+            stride_samples: output_stride,
+            storage_width: params0.w,
+        });
+    }
+    let output_len = (params0.h - 1)
+        .checked_mul(output_stride)
+        .and_then(|len| len.checked_add(params0.w))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "strided compound prediction sample count",
+        })?;
+    if output.len() < output_len {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: output_len,
+            actual: output.len(),
+        });
+    }
+
+    let x0 = [
+        params0.start_x >> SCALE_SUBPEL_BITS,
+        params1.start_x >> SCALE_SUBPEL_BITS,
+    ];
+    let y0 = [
+        params0.start_y >> SCALE_SUBPEL_BITS,
+        params1.start_y >> SCALE_SUBPEL_BITS,
+    ];
+    let direct_x = [
+        subpel_direct_copy_x(reference0, params0),
+        subpel_direct_copy_x(reference1, params1),
+    ];
+    let forward = i32::from(cwp_weight);
+    let backward = 16 - forward;
+    let max_sample = i32::from(params0.bit_depth.max_sample());
+    for row in 0..params0.h {
+        let source_row = [
+            (y0[0] + row as i32).clamp(params0.first_y, params0.last_y) as usize,
+            (y0[1] + row as i32).clamp(params1.first_y, params1.last_y) as usize,
+        ];
+        let destination = &mut output[row * output_stride..][..params0.w];
+        if let [Some(x0), Some(x1)] = direct_x {
+            for (slot, (&left, &right)) in destination.iter_mut().zip(
+                reference0.row(source_row[0])[x0..x0 + params0.w]
+                    .iter()
+                    .zip(&reference1.row(source_row[1])[x1..x1 + params0.w]),
+            ) {
+                let weighted =
+                    forward * i32::from(left.to_u16()) + backward * i32::from(right.to_u16());
+                *slot = round2_i32(weighted, 4).clamp(0, max_sample) as u16;
+            }
+        } else {
+            for (col, slot) in destination.iter_mut().enumerate() {
+                let source_col = [
+                    (x0[0] + col as i32).clamp(params0.first_x, params0.last_x) as usize,
+                    (x0[1] + col as i32).clamp(params1.first_x, params1.last_x) as usize,
+                ];
+                let weighted = forward * reference0.sample(source_row[0], source_col[0])
+                    + backward * reference1.sample(source_row[1], source_col[1]);
+                *slot = round2_i32(weighted, 4).clamp(0, max_sample) as u16;
+            }
+        }
+    }
+    Ok(true)
 }
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16

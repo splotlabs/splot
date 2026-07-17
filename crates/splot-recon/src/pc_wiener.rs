@@ -672,8 +672,6 @@ where
                         actual: cached.len(),
                     });
                 };
-                // Sources are validated <= max_sample (<= 4095) before this runs, so
-                // each |feature| <= 4 * 4095 and a 36-point i32 sum cannot overflow.
                 for feature in feature_row {
                     sums[0] += feature.values[0];
                     sums[1] += feature.values[1];
@@ -789,7 +787,8 @@ where
     Ok(())
 }
 
-#[inline]
+#[allow(clippy::inline_always)]
+#[inline(always)]
 fn second_derivative_features(up: &[u16], cur: &[u16], down: &[u16], center: usize) -> [i32; 3] {
     let m2 = 2 * i32::from(cur[center]);
     [
@@ -833,6 +832,8 @@ where
 /// tx-skip sum, which grid classification bounds by the window point count.
 type QvalOffsetsCache = [Option<[i32; PC_WIENER_NUM_FEATURES]>; PC_WIENER_WINDOW_POINTS + 1];
 
+#[allow(clippy::inline_always)]
+#[inline(always)]
 fn finish_pc_wiener_classification(
     raw_features: [i32; PC_WIENER_NUM_FEATURES],
     raw_tx_skip_sum: i32,

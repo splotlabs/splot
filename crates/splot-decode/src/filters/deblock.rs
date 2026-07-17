@@ -9,9 +9,11 @@ use splot_parallel::prelude::*;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DeblockFilterChoice, DeblockSampleFilter, PixelFormat,
     PlaneId, ReconSample, deblock_adaptive_filter_strength, deblock_filter_choice,
-    deblock_filter_max_width, deblock_sample_filter, deblock_side_threshold_index,
+    deblock_filter_choice_strided, deblock_filter_max_width, deblock_sample_filter,
+    deblock_sample_filter_strided, deblock_sample_filter_strided_4, deblock_side_threshold_index,
     max_quantizer_index,
 };
+use std::num::NonZeroUsize;
 
 const MI_SIZE: usize = 4;
 
@@ -391,7 +393,14 @@ fn deblock_plane_pass<T: ReconSample>(
                         break;
                     }
                     for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                        if !grid.is_candidate(r, c, plane_pass.pass, plane_pass.allow_df_sub_pu) {
+                        if !grid.is_candidate(
+                            r,
+                            c,
+                            plane_pass.pass,
+                            plane_pass.allow_df_sub_pu,
+                            plane_pass.plane_sub_x,
+                            plane_pass.plane_sub_y,
+                        ) {
                             continue;
                         }
                         deblock_filter_edge(
@@ -410,7 +419,14 @@ fn deblock_plane_pass<T: ReconSample>(
                         break;
                     }
                     for r in (0..mi_rows).step_by(plane_pass.row_step) {
-                        if !grid.is_candidate(r, c, plane_pass.pass, plane_pass.allow_df_sub_pu) {
+                        if !grid.is_candidate(
+                            r,
+                            c,
+                            plane_pass.pass,
+                            plane_pass.allow_df_sub_pu,
+                            plane_pass.plane_sub_x,
+                            plane_pass.plane_sub_y,
+                        ) {
                             continue;
                         }
                         deblock_filter_edge(
@@ -506,16 +522,22 @@ fn deblock_plane_pass<T: ReconSample>(
     let mut strengths = StrengthCache::default();
     for r in (0..mi_rows).step_by(plane_pass.row_step) {
         for c in (0..mi_cols).step_by(plane_pass.col_step) {
-            if !grid.is_candidate(r, c, plane_pass.pass, plane_pass.allow_df_sub_pu) {
-                continue;
+            if grid.is_candidate(
+                r,
+                c,
+                plane_pass.pass,
+                plane_pass.allow_df_sub_pu,
+                plane_pass.plane_sub_x,
+                plane_pass.plane_sub_y,
+            ) {
+                deblock_filter_edge(
+                    &mut ctx,
+                    grid,
+                    plane_pass.edge_context(r, c, tile_info),
+                    disable_loopfilters_across_tiles,
+                    &mut strengths,
+                )?;
             }
-            deblock_filter_edge(
-                &mut ctx,
-                grid,
-                plane_pass.edge_context(r, c, tile_info),
-                disable_loopfilters_across_tiles,
-                &mut strengths,
-            )?;
         }
     }
     Ok(())
@@ -842,6 +864,8 @@ fn sub_pu_filter_dimension(tx_size: usize, sub_pu_size: usize, is_tx_edge: bool)
     }
 }
 
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
 fn deblock_filter_edge<T: ReconSample>(
     plane_ctx: &mut PlaneCtx<'_, '_, T>,
     grid: &MiGrid,
@@ -895,9 +919,6 @@ fn deblock_filter_edge<T: ReconSample>(
             col: prev_col,
         })?;
 
-    let tx_sz = plane_tx(plane, curr);
-    let prev_tx_sz = plane_tx(plane, prev);
-
     let (tx_col_base, tx_row_base, prev_tx_col_base, prev_tx_row_base) = if plane == 0 {
         (curr.base_col, curr.base_row, prev.base_col, prev.base_row)
     } else {
@@ -917,6 +938,8 @@ fn deblock_filter_edge<T: ReconSample>(
     let block_y = (prediction.base_r * MI_SIZE) >> plane_sub_y;
     let block_x = (prediction.base_c * MI_SIZE) >> plane_sub_x;
     let skip = curr.skip;
+    let tx_sz = plane_tx(plane, curr);
+    let prev_tx_sz = plane_tx(plane, prev);
     let curr_tx_size = usize::try_from(if pass == 0 {
         TX_WIDTH[tx_sz]
     } else {
@@ -929,27 +952,33 @@ fn deblock_filter_edge<T: ReconSample>(
         TX_HEIGHT[prev_tx_sz]
     })
     .unwrap_or(0);
-    let curr_sub_pu_size = sub_pu_dimension(&curr, plane, pass, plane_sub_x, plane_sub_y);
-    let prev_sub_pu_size = sub_pu_dimension(&prev, plane, pass, plane_sub_x, plane_sub_y);
-    let curr_sub_pu_base = sub_pu_base(&curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
-    let prev_sub_pu_base = sub_pu_base(
-        &prev,
-        plane,
-        x_p.saturating_sub(dx),
-        y_p.saturating_sub(dy),
-        plane_sub_x,
-        plane_sub_y,
-    );
-    let is_sub_pu_boundary = allow_df_sub_pu && curr_sub_pu_base != prev_sub_pu_base;
-
+    let sub_pu_sizes = if allow_df_sub_pu {
+        let curr_sub_pu_base = sub_pu_base(&curr, plane, x_p, y_p, plane_sub_x, plane_sub_y);
+        let prev_sub_pu_base = sub_pu_base(
+            &prev,
+            plane,
+            x_p.saturating_sub(dx),
+            y_p.saturating_sub(dy),
+            plane_sub_x,
+            plane_sub_y,
+        );
+        (curr_sub_pu_base != prev_sub_pu_base).then(|| {
+            (
+                sub_pu_dimension(&curr, plane, pass, plane_sub_x, plane_sub_y),
+                sub_pu_dimension(&prev, plane, pass, plane_sub_x, plane_sub_y),
+            )
+        })
+    } else {
+        None
+    };
     let is_block_edge = (pass == 0 && x_p == block_x) || (pass == 1 && y_p == block_y);
     let is_tx_edge = tx_col_base != prev_tx_col_base || tx_row_base != prev_tx_row_base;
-    let (curr_filter_size, curr_sub_pu_edge) = if is_sub_pu_boundary {
+    let (curr_filter_size, curr_sub_pu_edge) = if let Some((curr_sub_pu_size, _)) = sub_pu_sizes {
         sub_pu_filter_dimension(curr_tx_size, curr_sub_pu_size, is_tx_edge)
     } else {
         (curr_tx_size, false)
     };
-    let prev_filter_size = if is_sub_pu_boundary {
+    let prev_filter_size = if let Some((_, prev_sub_pu_size)) = sub_pu_sizes {
         sub_pu_filter_dimension(prev_tx_size, prev_sub_pu_size, is_tx_edge).0
     } else {
         prev_tx_size
@@ -1047,6 +1076,44 @@ fn choose_filter_width<T: ReconSample>(
         return Ok(0);
     }
     let boundary = GATHER_HALF;
+    let horizontal = dx == 1
+        && dy == 0
+        && x_p >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x_p <= plane_ctx.width.saturating_sub(GATHER_HALF)
+        && y_p >= plane_ctx.y_origin
+        && y_p
+            .checked_add(MI_SIZE)
+            .is_some_and(|end| end <= plane_ctx.height);
+    let vertical = dx == 0
+        && dy == 1
+        && y_p >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
+        && y_p <= plane_ctx.height.saturating_sub(GATHER_HALF)
+        && x_p >= plane_ctx.x_origin
+        && x_p
+            .checked_add(MI_SIZE)
+            .is_some_and(|end| end <= plane_ctx.width);
+    if (horizontal || vertical)
+        && let PlaneRows::Contiguous { samples, stride } = &plane_ctx.rows
+    {
+        let first_boundary = (y_p - plane_ctx.y_origin) * *stride + x_p - plane_ctx.x_origin;
+        let perpendicular_stride = if horizontal { 1 } else { *stride };
+        let lane_stride = if horizontal { *stride } else { 1 };
+        let params = DeblockFilterChoice {
+            boundary: first_boundary,
+            q_thr,
+            side_thr: side,
+            max_width_pos,
+            max_width_neg,
+            q_first: Q_FIRST,
+        };
+        return deblock_filter_choice_strided(
+            samples,
+            first_boundary + (MI_SIZE - 1) * lane_stride,
+            NonZeroUsize::new(perpendicular_stride).ok_or(DeblockError::Workspace)?,
+            &params,
+        )
+        .map_err(|_| DeblockError::FilterChoice);
+    }
 
     let s = gather_line(plane_ctx, PerpLine::new(x_p, y_p, dx, dy));
     let end = MI_SIZE - 1;
@@ -1115,6 +1182,53 @@ fn apply_edge_samples<T: ReconSample>(
 ) -> Result<(), DeblockError> {
     let PerpLine { x, y, dx, dy } = perp;
     if lanes == 0 {
+        return Ok(());
+    }
+    let horizontal = dx == 1
+        && dy == 0
+        && x >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x <= plane_ctx.width.saturating_sub(GATHER_HALF)
+        && y >= plane_ctx.y_origin
+        && y.checked_add(lanes)
+            .is_some_and(|end| end <= plane_ctx.height);
+    let vertical = dx == 0
+        && dy == 1
+        && y >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
+        && y <= plane_ctx.height.saturating_sub(GATHER_HALF)
+        && x >= plane_ctx.x_origin
+        && x.checked_add(lanes)
+            .is_some_and(|end| end <= plane_ctx.width);
+    if lanes <= MI_SIZE
+        && params.boundary == GATHER_HALF
+        && (horizontal || vertical)
+        && let PlaneRows::Contiguous { samples, stride } = &mut plane_ctx.rows
+    {
+        let boundary = (y - plane_ctx.y_origin) * *stride + x - plane_ctx.x_origin;
+        let perpendicular_stride = if horizontal { 1 } else { *stride };
+        let lane_stride = if horizontal { *stride } else { 1 };
+        let perpendicular_stride =
+            NonZeroUsize::new(perpendicular_stride).ok_or(DeblockError::Workspace)?;
+        if lanes == MI_SIZE {
+            deblock_sample_filter_strided_4(
+                samples,
+                perpendicular_stride,
+                NonZeroUsize::new(lane_stride).ok_or(DeblockError::Workspace)?,
+                &DeblockSampleFilter { boundary, ..params },
+            )
+            .map_err(|_| DeblockError::SampleFilter)?;
+        } else {
+            for lane in 0..lanes {
+                deblock_sample_filter_strided(
+                    samples,
+                    perpendicular_stride,
+                    &DeblockSampleFilter {
+                        boundary: boundary + lane * lane_stride,
+                        ..params
+                    },
+                )
+                .map_err(|_| DeblockError::SampleFilter)?;
+            }
+        }
         return Ok(());
     }
     if lanes <= MI_SIZE
@@ -1400,7 +1514,20 @@ impl MiGrid<'_> {
         Some(info)
     }
 
-    fn is_candidate(&self, row: usize, col: usize, pass: usize, allow_sub_pu: bool) -> bool {
+    fn is_candidate(
+        &self,
+        row: usize,
+        col: usize,
+        pass: usize,
+        allow_sub_pu: bool,
+        plane_sub_x: usize,
+        plane_sub_y: usize,
+    ) -> bool {
+        let candidate = if pass == 0 {
+            VERTICAL_TX_CANDIDATE
+        } else {
+            HORIZONTAL_TX_CANDIDATE
+        };
         let index = row * self.mi_cols + col;
         let Some(cell) = self.cells.get(index) else {
             return true;
@@ -1408,13 +1535,17 @@ impl MiGrid<'_> {
         if cell.base == NO_BLOCK_INDEX && cell.overlay == NO_BLOCK_INDEX {
             return true;
         }
-        let tx_candidate = if pass == 0 {
-            VERTICAL_TX_CANDIDATE
-        } else {
-            HORIZONTAL_TX_CANDIDATE
-        };
-        let mask = tx_candidate | if allow_sub_pu { SUB_PU_CANDIDATE } else { 0 };
-        self.candidates[index] & mask != 0
+        let current = self.candidates[index];
+        if current & candidate != 0 || allow_sub_pu && current & SUB_PU_CANDIDATE != 0 {
+            return true;
+        }
+        if pass == 0 && plane_sub_x != 0 && col != 0 {
+            return self.candidates[index - 1] & VERTICAL_TX_CANDIDATE != 0;
+        }
+        if pass == 1 && plane_sub_y != 0 && row != 0 {
+            return self.candidates[index - self.mi_cols] & HORIZONTAL_TX_CANDIDATE != 0;
+        }
+        false
     }
 }
 
@@ -1537,8 +1668,8 @@ fn mark_block_candidates(
 }
 
 fn mark_vertical_candidate(candidates: &mut [u8], row: usize, col: usize, mi_cols: usize) {
-    for marked_col in col..col.saturating_add(2).min(mi_cols) {
-        candidates[row * mi_cols + marked_col] |= VERTICAL_TX_CANDIDATE;
+    if col < mi_cols {
+        candidates[row * mi_cols + col] |= VERTICAL_TX_CANDIDATE;
     }
 }
 
@@ -1549,8 +1680,8 @@ fn mark_horizontal_candidate(
     mi_rows: usize,
     mi_cols: usize,
 ) {
-    for marked_row in row..row.saturating_add(2).min(mi_rows) {
-        candidates[marked_row * mi_cols + col] |= HORIZONTAL_TX_CANDIDATE;
+    if row < mi_rows {
+        candidates[row * mi_cols + col] |= HORIZONTAL_TX_CANDIDATE;
     }
 }
 

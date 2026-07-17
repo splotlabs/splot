@@ -259,6 +259,36 @@ fn compute_parallel_outputs<T: ReconSample>(
         })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compute_batched_output<T: ReconSample>(
+    sink: &mc::WorkspaceSink<'_, '_, T>,
+    units: &[TipUnit],
+    output_samples: &mut [T],
+    prediction: &TipPrediction<'_, T>,
+    batch_rect: mc::McBlockRect,
+    batch_has_chroma: bool,
+    columns: usize,
+    tile_offset: ByteOffset,
+) -> Result<mc::CompoundBlockMetadata> {
+    let first = units.first().ok_or(ReconError::ZeroDimension {
+        field: "TIP compound batch",
+    })?;
+    let compound = prediction
+        .block_params(first)
+        .into_compound()
+        .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+    mc::predict_tip_compound_batch_into(
+        sink,
+        compound,
+        batch_rect,
+        batch_has_chroma,
+        columns,
+        units.iter().map(|unit| (unit.rect, unit.mvs)),
+        tile_offset,
+        output_samples,
+    )
+}
+
 pub(super) const fn reference_uses_16x16_units(
     n4w: usize,
     n4h: usize,
@@ -598,6 +628,34 @@ pub(super) fn reconstruct<T: ReconSample>(
     }
     let parallel_output =
         allow_unit_parallelism && two_references && splot_parallel::on_worker_pool();
+    let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
+    let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
+    let batch_chroma_end_x = placed
+        .luma_x
+        .saturating_add(block_w)
+        .min(placed.chroma_luma_x.saturating_add(placed.chroma_luma_w));
+    let batch_chroma_end_y = placed
+        .luma_y
+        .saturating_add(block_h)
+        .min(placed.chroma_luma_y.saturating_add(placed.chroma_luma_h));
+    let batch_has_chroma = placed.predict_chroma
+        && batch_chroma_end_x > batch_chroma_x
+        && batch_chroma_end_y > batch_chroma_y;
+    let batch_rect = mc::McBlockRect {
+        luma_x: placed.luma_x,
+        luma_y: placed.luma_y,
+        luma_w: block_w,
+        luma_h: block_h,
+        chroma_luma_x: batch_chroma_x,
+        chroma_luma_y: batch_chroma_y,
+        chroma_luma_w: batch_chroma_end_x.saturating_sub(batch_chroma_x),
+        chroma_luma_h: batch_chroma_end_y.saturating_sub(batch_chroma_y),
+    };
+    let batched_output = parallel_output
+        && use_optflow
+        && unit_size == 8
+        && scratch.units.len() > 1
+        && splot_parallel::current_pool_width() == 1;
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))
@@ -610,7 +668,27 @@ pub(super) fn reconstruct<T: ReconSample>(
         )?;
         scratch.output_samples.resize(arena_len, T::default());
     }
-    if parallel_output && let Some(prediction) = prediction.as_ref() {
+    let batch_metadata = if batched_output {
+        let prediction = prediction
+            .as_ref()
+            .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+        Some(compute_batched_output(
+            sink,
+            &scratch.units,
+            &mut scratch.output_samples,
+            prediction,
+            batch_rect,
+            batch_has_chroma,
+            block_w.div_ceil(unit_size),
+            tile_offset,
+        )?)
+    } else {
+        None
+    };
+    if parallel_output
+        && !batched_output
+        && let Some(prediction) = prediction.as_ref()
+    {
         compute_parallel_outputs(
             sink,
             &mut scratch.units,
@@ -628,9 +706,18 @@ pub(super) fn reconstruct<T: ReconSample>(
             "7.22"
         )
     })?;
+    if let Some(metadata) = batch_metadata.as_ref() {
+        metadata.publish(&scratch.output_samples, sink)?;
+    }
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     for unit in scratch.units.drain(..) {
-        let stored_mvs = if let Some(metadata) = unit.metadata {
+        let stored_mvs = if let Some(metadata) = batch_metadata.as_ref() {
+            let x = unit.rect.luma_x.saturating_sub(batch_rect.luma_x);
+            let y = unit.rect.luma_y.saturating_sub(batch_rect.luma_y);
+            metadata
+                .stored_mvs_at_luma_offset(x, y)?
+                .unwrap_or(unit.mvs)
+        } else if let Some(metadata) = unit.metadata {
             let samples = output_chunks
                 .next()
                 .ok_or(ReconError::BufferLengthMismatch {

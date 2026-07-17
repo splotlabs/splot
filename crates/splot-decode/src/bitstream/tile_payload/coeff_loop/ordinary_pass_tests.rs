@@ -481,7 +481,7 @@ fn coefficient_ordinary_pass_composes_level_sign_and_quant_writes() {
         .iter()
         .map(|quant| quant.unsigned_abs())
         .sum::<u32>()
-        .min(4);
+        .min(4) as u8;
     let expected_dc_category = match pass.block().quant()[0] {
         ..=-1 => 1,
         0 => 0,

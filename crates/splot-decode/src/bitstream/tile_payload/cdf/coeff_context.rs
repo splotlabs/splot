@@ -48,7 +48,7 @@ const fn coeff_position(pos: usize, bwl: u32) -> CoeffPosition {
 }
 
 fn clamped_level_at(
-    level: &[u32],
+    level: &[u8],
     row: usize,
     col: usize,
     txw: usize,
@@ -60,7 +60,7 @@ fn clamped_level_at(
     }
     let flat = row.saturating_mul(txw).saturating_add(col);
     if flat < level.len() {
-        level[flat].min(limit)
+        u32::from(level[flat]).min(limit)
     } else {
         0
     }
@@ -104,7 +104,7 @@ pub(crate) struct CoeffBrContext {
 }
 
 impl CoeffBrContext {
-    pub(crate) fn ctx(self, level: &[u32]) -> usize {
+    pub(crate) fn ctx(self, level: &[u8]) -> usize {
         let pos = coeff_position(self.pos, self.bwl);
         let class_idx = tx_class_idx(self.tx_class);
         let num = if class_idx != 0 && self.plane > 0 {
@@ -138,7 +138,7 @@ impl CoeffBrContext {
     }
 }
 
-fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
+fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
     let mut mag = 0u32;
     if col > 0 {
         mag += clamped_level_at(level, row, col - 1, txw, usize::MAX, clamp);
@@ -149,11 +149,11 @@ fn idtx_neighbour_mag(level: &[u32], row: usize, col: usize, txw: usize, clamp: 
     mag
 }
 
-pub(crate) fn coeff_base_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
+pub(crate) fn coeff_base_idtx_ctx(level: &[u8], row: usize, col: usize, txw: usize) -> usize {
     idtx_neighbour_mag(level, row, col, txw, 3) as usize
 }
 
-pub(crate) fn coeff_br_idtx_ctx(level: &[u32], row: usize, col: usize, txw: usize) -> usize {
+pub(crate) fn coeff_br_idtx_ctx(level: &[u8], row: usize, col: usize, txw: usize) -> usize {
     let mag = idtx_neighbour_mag(level, row, col, txw, MAX_BASE_BR_RANGE - 1);
     mag.min(6) as usize
 }
@@ -181,7 +181,7 @@ pub(crate) struct CoeffBaseContext {
 }
 
 impl CoeffBaseContext {
-    pub(crate) fn select(&self, level: &[u32]) -> CoeffBaseSelection {
+    pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
         let pos = coeff_position(self.pos, self.bwl);
         let class_idx = tx_class_idx(self.tx_class);
         let num = if self.plane > 0 {
@@ -307,7 +307,7 @@ pub(crate) const fn dc_sign_ctx(
 
 pub(crate) const fn idtx_sign_ctx(
     quant_sign: &[i32],
-    level: &[u32],
+    level: &[u8],
     row: usize,
     col: usize,
     txw: usize,
@@ -344,7 +344,7 @@ pub(crate) const fn idtx_sign_ctx(
     };
     let lidx = row.saturating_mul(txw).saturating_add(col);
     let level_val = if lidx < level.len() { level[lidx] } else { 0 };
-    if level_val > COEFF_BASE_RANGE && ctx != 0 {
+    if level_val > COEFF_BASE_RANGE as u8 && ctx != 0 {
         ctx += 2;
     }
     ctx

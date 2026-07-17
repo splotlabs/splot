@@ -739,7 +739,7 @@ pub(super) fn read_extended_sdp_region_type(
     let ctx = intra_region_context(call.b_size)?;
     let selector = super::cdf::TileCdfSelector::RegionType { ctx };
     let region_type = cdfs
-        .with_row_mut(selector, |row| symbols.read_symbol(row))??
+        .with_row_mut(selector, |row| symbols.read_symbol_u16(row))??
         .get();
     match region_type {
         INTRA_REGION => Ok((

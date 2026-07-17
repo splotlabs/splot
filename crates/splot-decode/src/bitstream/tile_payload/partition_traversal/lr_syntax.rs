@@ -315,7 +315,7 @@ fn read_pc_wiener_lr_unit(
 ) -> Result<LrUnitRestorationType, TilePartitionTraversalError> {
     let use_pc_wiener = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::UsePcWiener, |row| {
-            symbols.read_symbol(row)
+            symbols.read_symbol_u16(row)
         })??
         .get()
         != 0;
@@ -343,7 +343,7 @@ fn read_switchable_lr_unit(
         let found = cdfs
             .with_row_mut(
                 super::cdf::TileCdfSelector::FlexRestorationType { tool, plane },
-                |row| symbols.read_symbol(row),
+                |row| symbols.read_symbol_u16(row),
             )??
             .get()
             != 0;
@@ -370,7 +370,7 @@ fn read_wiener_ns_lr_unit(
 ) -> Result<LrUnitRestorationType, TilePartitionTraversalError> {
     let use_wiener_ns = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::UseWienerNs, |row| {
-            symbols.read_symbol(row)
+            symbols.read_symbol_u16(row)
         })??
         .get()
         != 0;
@@ -427,7 +427,7 @@ pub(super) fn read_wiener_ns_unit_filter(
     let subset = read_wiener_ns_subset_symbol(plane, cdfs, symbols)?;
     let wiener_ns_uv_sym = if plane > 0 && subset > 0 {
         cdfs.with_row_mut(super::cdf::TileCdfSelector::WienerNsUvSym, |row| {
-            symbols.read_symbol(row)
+            symbols.read_symbol_u16(row)
         })??
         .get()
             != 0
@@ -506,7 +506,7 @@ fn read_wiener_ns_subset_symbol(
             super::cdf::TileCdfSelector::WienerNsLength {
                 plane_ctx: plane.min(1),
             },
-            |row| symbols.read_symbol(row),
+            |row| symbols.read_symbol_u16(row),
         )??;
         if wiener_ns_length.get() == 0 {
             break;
@@ -577,7 +577,7 @@ fn read_wiener_ns_4part_wref(
 ) -> Result<usize, TilePartitionTraversalError> {
     let wiener_ns_base = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::WienerNsBase, |row| {
-            symbols.read_symbol(row)
+            symbols.read_symbol_u16(row)
         })??
         .get() as usize;
     let nsymb_bits = usize::from(k);

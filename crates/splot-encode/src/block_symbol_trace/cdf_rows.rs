@@ -13,45 +13,45 @@ use super::*;
 /// the emitter modules' private CDF-row internals.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BlockSymbolTraceCdfRows {
-    do_split_root: [i32; DO_SPLIT_CDF_ROW_LEN],
-    do_square_split_root: [i32; DO_SQUARE_SPLIT_CDF_ROW_LEN],
-    y_mode_set: [i32; Y_MODE_SET_CDF_ROW_LEN],
-    y_mode_index_tile_origin: [i32; INTRA_MODE_CDF_ROW_LEN],
-    uv_mode_non_directional: [i32; INTRA_MODE_CDF_ROW_LEN],
-    luma_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
-    u_txb_skip: [i32; TXB_SKIP_CDF_ROW_LEN],
-    v_txb_skip: [i32; V_TXB_SKIP_CDF_ROW_LEN],
-    luma_txb_skip_64x64: [i32; TXB_SKIP_CDF_ROW_LEN],
-    luma_txb_skip_16x16: [i32; TXB_SKIP_CDF_ROW_LEN],
-    u_txb_skip_32x32: [i32; TXB_SKIP_CDF_ROW_LEN],
-    eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
-    eob_pt_1024: [i32; EOB_PT_1024_CDF_ROW_LEN],
-    eob_pt_256: [i32; EOB_PT_256_CDF_ROW_LEN],
-    eob_pt_1024_chroma: [i32; EOB_PT_1024_CDF_ROW_LEN],
-    eob_extra: [i32; EOB_EXTRA_CDF_ROW_LEN],
-    coeff_base_lf_eob_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
-    coeff_base_lf_eob_tx16: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
-    intra_tx_type_set1_4x4: [i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
-    sec_tx_type_intra_4x4: [i32; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
-    coeff_base_lf_eob_4x4: [[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT],
-    coeff_base_lf_eob_ac_tx64: [i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
-    coeff_base_lf_4x4: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT],
-    coeff_base_lf_dc_tx64: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
-    coeff_base_lf_dc_tx64_visible_ac: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
-    coeff_base_lf_ac_tx64_ctx9: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
-    coeff_base_lf_dc_tx64_2d: [i32; COEFF_BASE_LF_CDF_ROW_LEN],
-    coeff_br_lf: [[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT],
-    coeff_base_eob_hf_4x4: [[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
-    coeff_br_hf: [[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT],
-    coeff_base_hf_4x4: [[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT],
-    coeff_base_lf_eob_16x16: [[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT],
-    coeff_base_lf_16x16: [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT],
-    coeff_base_eob_hf_16x16: [[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
-    coeff_base_hf_16x16: [[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT],
-    dc_sign: [i32; DC_SIGN_CDF_ROW_LEN],
-    v_txb_skip_eobu: [i32; V_TXB_SKIP_CDF_ROW_LEN],
-    chroma_eob_pt_16: [i32; EOB_PT_16_CDF_ROW_LEN],
-    coeff_base_lf_eob_uv: [i32; COEFF_BASE_LF_EOB_UV_CDF_ROW_LEN],
+    do_split_root: [u16; DO_SPLIT_CDF_ROW_LEN],
+    do_square_split_root: [u16; DO_SQUARE_SPLIT_CDF_ROW_LEN],
+    y_mode_set: [u16; Y_MODE_SET_CDF_ROW_LEN],
+    y_mode_index_tile_origin: [u16; INTRA_MODE_CDF_ROW_LEN],
+    uv_mode_non_directional: [u16; INTRA_MODE_CDF_ROW_LEN],
+    luma_txb_skip: [u16; TXB_SKIP_CDF_ROW_LEN],
+    u_txb_skip: [u16; TXB_SKIP_CDF_ROW_LEN],
+    v_txb_skip: [u16; V_TXB_SKIP_CDF_ROW_LEN],
+    luma_txb_skip_64x64: [u16; TXB_SKIP_CDF_ROW_LEN],
+    luma_txb_skip_16x16: [u16; TXB_SKIP_CDF_ROW_LEN],
+    u_txb_skip_32x32: [u16; TXB_SKIP_CDF_ROW_LEN],
+    eob_pt_16: [u16; EOB_PT_16_CDF_ROW_LEN],
+    eob_pt_1024: [u16; EOB_PT_1024_CDF_ROW_LEN],
+    eob_pt_256: [u16; EOB_PT_256_CDF_ROW_LEN],
+    eob_pt_1024_chroma: [u16; EOB_PT_1024_CDF_ROW_LEN],
+    eob_extra: [u16; EOB_EXTRA_CDF_ROW_LEN],
+    coeff_base_lf_eob_tx64: [u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_eob_tx16: [u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    intra_tx_type_set1_4x4: [u16; INTRA_TX_TYPE_SET1_CDF_ROW_LEN],
+    sec_tx_type_intra_4x4: [u16; SEC_TX_TYPE_INTRA_CDF_ROW_LEN],
+    coeff_base_lf_eob_4x4: [[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT],
+    coeff_base_lf_eob_ac_tx64: [u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN],
+    coeff_base_lf_4x4: [[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT],
+    coeff_base_lf_dc_tx64: [u16; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_dc_tx64_visible_ac: [u16; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_ac_tx64_ctx9: [u16; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_base_lf_dc_tx64_2d: [u16; COEFF_BASE_LF_CDF_ROW_LEN],
+    coeff_br_lf: [[u16; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT],
+    coeff_base_eob_hf_4x4: [[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
+    coeff_br_hf: [[u16; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT],
+    coeff_base_hf_4x4: [[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT],
+    coeff_base_lf_eob_16x16: [[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT],
+    coeff_base_lf_16x16: [[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT],
+    coeff_base_eob_hf_16x16: [[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT],
+    coeff_base_hf_16x16: [[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT],
+    dc_sign: [u16; DC_SIGN_CDF_ROW_LEN],
+    v_txb_skip_eobu: [u16; V_TXB_SKIP_CDF_ROW_LEN],
+    chroma_eob_pt_16: [u16; EOB_PT_16_CDF_ROW_LEN],
+    coeff_base_lf_eob_uv: [u16; COEFF_BASE_LF_EOB_UV_CDF_ROW_LEN],
 }
 
 /// Builds the low-frequency non-EOB `coeff_base` bank at the neutral TCQ context for
@@ -61,8 +61,8 @@ pub(super) struct BlockSymbolTraceCdfRows {
 /// is a const within the table dimensions.
 const fn coeff_base_lf_bank(
     tx_size: usize,
-) -> [[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT] {
-    let mut bank = [[0i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT];
+) -> [[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT] {
+    let mut bank = [[0u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT];
     let mut ctx = 0;
     while ctx < COEFF_BASE_LF_CTX_COUNT {
         bank[ctx] = DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][tx_size][ctx]
@@ -79,8 +79,8 @@ const fn coeff_base_lf_bank(
 /// panic-free: every index is a const within the table dimensions.
 const fn coeff_base_hf_bank(
     tx_size: usize,
-) -> [[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT] {
-    let mut bank = [[0i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT];
+) -> [[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT] {
+    let mut bank = [[0u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT];
     let mut ctx = 0;
     while ctx < COEFF_BASE_CTX_COUNT {
         bank[ctx] = DEFAULT_COEFF_BASE_CDF[MINIMAL_COEFF_CDF_Q_CTX][tx_size][ctx]
@@ -159,7 +159,7 @@ impl BlockSymbolTraceCdfRows {
         }
     }
 
-    pub(super) fn row_mut(&mut self, token: BlockSymbolToken, index: usize) -> Result<&mut [i32]> {
+    pub(super) fn row_mut(&mut self, token: BlockSymbolToken, index: usize) -> Result<&mut [u16]> {
         match token {
             BlockSymbolToken::Bypass { .. } => {
                 Err(Error::BlockSymbolTraceUnsupportedSelector { index })

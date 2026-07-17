@@ -115,6 +115,12 @@ pub struct WienerNsLumaScratch<T> {
     acc: Vec<i32>,
 }
 
+#[derive(Clone, Copy)]
+enum LumaSubclassLayout<'a> {
+    Samples(Option<&'a [usize]>),
+    Cells { values: &'a [usize], cols: usize },
+}
+
 /// Applies AV2 § 7.20.3 luma non-separable Wiener filtering to a block.
 ///
 /// `source_sample(x, y)` is called with block-relative coordinates for the
@@ -256,12 +262,57 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
     source: &WienerNsLumaPaddedSource<'_, T>,
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
+    wiener_ns_filter_luma_block_padded_layout_into(
+        output,
+        params,
+        source,
+        LumaSubclassLayout::Samples(params.subclasses),
+        scratch,
+    )
+}
+
+/// Applies padded luma Wiener NS filtering with one subclass per 4x4 cell.
+///
+/// This is equivalent to expanding each cell subclass across its covered
+/// output samples before calling [`wiener_ns_filter_luma_block_padded_into`].
+/// Edge cells cover the remaining partial width or height.
+///
+/// # Errors
+/// Returns the same errors as [`wiener_ns_filter_luma_block_padded_into`], plus
+/// a subclass-map length error when `cell_subclasses` does not cover the block.
+#[inline]
+pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
+    output: &mut [T],
+    params: &WienerNsLumaFilter<'_>,
+    source: &WienerNsLumaPaddedSource<'_, T>,
+    cell_subclasses: &[usize],
+    scratch: &mut WienerNsLumaScratch<T>,
+) -> Result<()> {
+    wiener_ns_filter_luma_block_padded_layout_into(
+        output,
+        params,
+        source,
+        LumaSubclassLayout::Cells {
+            values: cell_subclasses,
+            cols: params.width.div_ceil(4),
+        },
+        scratch,
+    )
+}
+
+fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
+    output: &mut [T],
+    params: &WienerNsLumaFilter<'_>,
+    source: &WienerNsLumaPaddedSource<'_, T>,
+    subclasses: LumaSubclassLayout<'_>,
+    scratch: &mut WienerNsLumaScratch<T>,
+) -> Result<()> {
     scratch.clean_rows.clear();
     scratch.filtered.clear();
     scratch.acc.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     let sample_count = validate_luma_params(output.len(), params)?;
-    validate_subclasses(params, sample_count)?;
+    validate_subclass_layout(params, sample_count, subclasses)?;
     WienerNsLumaPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
 
     let stride = source.stride;
@@ -331,6 +382,7 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
                 stride,
                 r,
                 params,
+                subclasses,
                 max_sample,
             )?;
         } else {
@@ -342,6 +394,7 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
                 center_offset,
                 r,
                 params,
+                subclasses,
                 max_sample,
             )?;
         }
@@ -388,6 +441,7 @@ fn padded_row<T: ReconSample>(
 /// segments. The i32 accumulation adds the same § 7.20.3 tap terms in config
 /// order, so the result is bit-identical to the per-sample path.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn filter_padded_luma_row_in_range<T: ReconSample>(
     filtered: &mut Vec<T>,
     acc: &mut [i32],
@@ -395,6 +449,7 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
     stride: usize,
     r: usize,
     params: &WienerNsLumaFilter<'_>,
+    subclasses: LumaSubclassLayout<'_>,
     max_sample: u16,
 ) -> Result<()> {
     const RADIUS: usize = WIENER_NS_LUMA_TAP_RADIUS;
@@ -411,11 +466,11 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
     let row_start = r.checked_mul(width).ok_or(ReconError::ArithmeticOverflow {
         context: "Wiener NS luma filter row start",
     })?;
-    match params.subclasses {
-        None => filter_padded_luma_segment(
+    match subclasses {
+        LumaSubclassLayout::Samples(None) => filter_padded_luma_segment(
             filtered, acc, &rows, center, 0, width, 0, params, max_sample,
         )?,
-        Some(subclasses) => {
+        LumaSubclassLayout::Samples(Some(subclasses)) => {
             let row_subclasses = subclasses
                 .get(row_start..row_start + width)
                 .ok_or_else(|| luma_segment_error(width))?;
@@ -438,6 +493,31 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
                     max_sample,
                 )?;
                 segment_start = segment_end;
+            }
+        }
+        LumaSubclassLayout::Cells { values, cols } => {
+            let cell_row = (r / 4) * cols;
+            let mut cell_start = 0;
+            while cell_start < cols {
+                let subclass = values[cell_row + cell_start];
+                let mut cell_end = cell_start + 1;
+                while cell_end < cols && values[cell_row + cell_end] == subclass {
+                    cell_end += 1;
+                }
+                let segment_start = cell_start * 4;
+                let segment_end = (cell_end * 4).min(width);
+                filter_padded_luma_segment(
+                    filtered,
+                    acc,
+                    &rows,
+                    center,
+                    segment_start,
+                    segment_end - segment_start,
+                    subclass,
+                    params,
+                    max_sample,
+                )?;
+                cell_start = cell_end;
             }
         }
     }
@@ -529,11 +609,12 @@ fn filter_padded_luma_row_validated<T: ReconSample>(
     center_offset: usize,
     r: usize,
     params: &WienerNsLumaFilter<'_>,
+    subclasses: LumaSubclassLayout<'_>,
     max_sample: u16,
 ) -> Result<()> {
     for c in 0..params.width {
-        let sample_index = r * params.width + c;
-        let coeffs = coeffs_for_sample(params, sample_index);
+        let subclass = subclass_for_position(subclasses, params.width, r, c);
+        let coeffs = &params.coeffs_by_class[subclass];
         let base = r * stride + c;
         let m = validated_padded_sample(
             samples,
@@ -648,6 +729,53 @@ fn validate_subclasses(params: &WienerNsLumaFilter<'_>, sample_count: usize) -> 
         }
     }
     Ok(())
+}
+
+fn validate_subclass_layout(
+    params: &WienerNsLumaFilter<'_>,
+    sample_count: usize,
+    subclasses: LumaSubclassLayout<'_>,
+) -> Result<()> {
+    let LumaSubclassLayout::Cells { values, cols } = subclasses else {
+        return validate_subclasses(params, sample_count);
+    };
+    let rows = params.height.div_ceil(4);
+    let expected = cols
+        .checked_mul(rows)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS luma cell subclass count",
+        })?;
+    if values.len() < expected {
+        return Err(ReconError::WienerNsFilterSubclassMapTooShort {
+            expected,
+            actual: values.len(),
+        });
+    }
+    for (cell_index, &subclass) in values.iter().take(expected).enumerate() {
+        if subclass >= params.coeffs_by_class.len() {
+            let cell_row = cell_index / cols;
+            let cell_col = cell_index % cols;
+            return Err(ReconError::WienerNsFilterSubclassOutOfRange {
+                sample_index: cell_row * 4 * params.width + cell_col * 4,
+                subclass,
+                classes: params.coeffs_by_class.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn subclass_for_position(
+    subclasses: LumaSubclassLayout<'_>,
+    width: usize,
+    row: usize,
+    col: usize,
+) -> usize {
+    match subclasses {
+        LumaSubclassLayout::Samples(Some(values)) => values[row * width + col],
+        LumaSubclassLayout::Samples(None) => 0,
+        LumaSubclassLayout::Cells { values, cols } => values[(row / 4) * cols + col / 4],
+    }
 }
 
 fn coeffs_for_sample<'a>(
@@ -808,6 +936,63 @@ mod tests {
         wiener_ns_filter_luma_block_padded(&mut padded_output, &params, &source).unwrap();
 
         assert_eq!(callback_output, padded_output);
+    }
+
+    #[test]
+    fn cell_subclasses_match_per_sample_expansion() {
+        let width = 10;
+        let height = 6;
+        let radius = WIENER_NS_LUMA_TAP_RADIUS;
+        let stride = width + 2 * radius;
+        let mut class_a = ZERO;
+        class_a[0] = 7;
+        class_a[8] = -3;
+        let mut class_b = ZERO;
+        class_b[4] = -5;
+        class_b[15] = 9;
+        let coeffs = [class_a, class_b];
+        let cell_subclasses = [0usize, 0, 1, 1, 1, 0];
+        let cell_cols = width.div_ceil(4);
+        let subclasses: Vec<usize> = (0..height)
+            .flat_map(|row| {
+                (0..width).map(move |col| cell_subclasses[(row / 4) * cell_cols + col / 4])
+            })
+            .collect();
+        let source_at =
+            |x: isize, y: isize| -> u8 { ((x * 11 + y * 19 + 120).rem_euclid(256)) as u8 };
+        let padded: Vec<u8> = padded_from(height, stride, source_at);
+        let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
+        let per_sample = params(
+            width,
+            height,
+            width,
+            BitDepth::Eight,
+            &coeffs,
+            Some(&subclasses),
+        );
+        let per_cell = params(width, height, width, BitDepth::Eight, &coeffs, None);
+        let mut expected = vec![0u8; width * height];
+        let mut actual = vec![0u8; width * height];
+        let mut expected_scratch = WienerNsLumaScratch::default();
+        let mut actual_scratch = WienerNsLumaScratch::default();
+
+        wiener_ns_filter_luma_block_padded_into(
+            &mut expected,
+            &per_sample,
+            &source,
+            &mut expected_scratch,
+        )
+        .unwrap();
+        wiener_ns_filter_luma_block_padded_cells_into(
+            &mut actual,
+            &per_cell,
+            &source,
+            &cell_subclasses,
+            &mut actual_scratch,
+        )
+        .unwrap();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]

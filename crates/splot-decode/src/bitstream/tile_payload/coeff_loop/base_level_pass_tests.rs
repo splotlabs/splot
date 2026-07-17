@@ -122,7 +122,7 @@ fn find_payload(
     panic!("no coefficient base/level payload found");
 }
 
-fn base_lf_rows(tile: &TileCdfSubset, first_ctx: usize, tcq_ctx: usize) -> Vec<Vec<i32>> {
+fn base_lf_rows(tile: &TileCdfSubset, first_ctx: usize, tcq_ctx: usize) -> Vec<Vec<u16>> {
     (first_ctx..)
         .map_while(|ctx| {
             tile.row(TileCdfSelector::Coeff(CoeffCdfSelector::BaseLf {
@@ -132,14 +132,14 @@ fn base_lf_rows(tile: &TileCdfSubset, first_ctx: usize, tcq_ctx: usize) -> Vec<V
                 tcq_ctx,
             }))
             .ok()
-            .map(<[i32]>::to_vec)
+            .map(<[u16]>::to_vec)
         })
         .collect()
 }
 
 fn base_lf_row_changed(
     tile: &TileCdfSubset,
-    rows_before: &[Vec<i32>],
+    rows_before: &[Vec<u16>],
     first_ctx: usize,
     tcq_ctx: usize,
 ) -> bool {

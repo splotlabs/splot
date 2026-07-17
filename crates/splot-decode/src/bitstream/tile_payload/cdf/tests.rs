@@ -529,12 +529,14 @@ fn flex_restoration_type_selector_loads_defaults_and_checks_tool_and_plane() {
     );
 }
 
-fn expected_blend_prob(current: i32, saved: i32) -> i32 {
-    CDF_PROB_SCALE - (((CDF_PROB_SCALE - saved) + 7 * (CDF_PROB_SCALE - current) + 4) >> 3)
+fn expected_blend_prob(current: u16, saved: u16) -> u16 {
+    (CDF_PROB_SCALE
+        - (((CDF_PROB_SCALE - u32::from(saved)) + 7 * (CDF_PROB_SCALE - u32::from(current)) + 4)
+            >> 3)) as u16
 }
 
-fn expected_blend_count(current: i32, saved: i32) -> i32 {
-    (saved + 7 * current + 4) >> 3
+fn expected_blend_count(current: u16, saved: u16) -> u16 {
+    ((u32::from(saved) + 7 * u32::from(current) + 4) >> 3) as u16
 }
 
 #[test]
@@ -1664,7 +1666,7 @@ fn eob_extra_tile_copy_does_not_alias_the_frame() {
 fn assert_eob_pt_bank<const N: usize>(
     tile: &TileCdfSubset,
     size: EobPtSize,
-    expected: &[[[i32; N]; 3]; 4],
+    expected: &[[[u16; N]; 3]; 4],
 ) {
     for (q, expected_q) in expected.iter().enumerate() {
         for (c, expected_qc) in expected_q.iter().enumerate() {
@@ -2073,7 +2075,7 @@ fn tx_partition_rows_load_defaults_and_report_selector_errors() {
 fn coeff_base_rows_load_defaults_and_select_by_family() {
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
-    let cases: &[(TileCdfSelector, &[i32])] = &[
+    let cases: &[(TileCdfSelector, &[u16])] = &[
         (
             coeff(CoeffCdfSelector::Base {
                 coeff_cdf_q_ctx: 1,

@@ -9,35 +9,35 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CoefficientTokenCdfRows {
-    txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    txb_skip_16x16: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    eob_pt_256: [[i32; 9]; COEFF_CDF_Q_CONTEXTS],
-    eob_extra: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
+    txb_skip: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    txb_skip_16x16: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    eob_pt_16: [[u16; 6]; COEFF_CDF_Q_CONTEXTS],
+    eob_pt_256: [[u16; 9]; COEFF_CDF_Q_CONTEXTS],
+    eob_extra: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob:
-        [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf:
-        [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    coeff_br_lf: [[[i32; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    coeff_br_lf: [[[u16; COEFF_BR_LF_CDF_ROW_LEN]; COEFF_BR_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_eob_hf:
-        [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    coeff_br_hf: [[[i32; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_hf: [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    coeff_br_hf: [[[u16; COEFF_BR_CDF_ROW_LEN]; COEFF_BR_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_hf: [[[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_eob_16x16_full:
-        [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_lf_16x16:
-        [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_eob_hf_16x16:
-        [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
     coeff_base_hf_16x16:
-        [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
-    dc_sign: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    chroma_u_txb_skip: [[i32; 3]; COEFF_CDF_Q_CONTEXTS],
-    chroma_eob_pt_16: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
-    coeff_base_lf_eob_uv: [[i32; 6]; COEFF_CDF_Q_CONTEXTS],
+        [[[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS],
+    dc_sign: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    chroma_u_txb_skip: [[u16; 3]; COEFF_CDF_Q_CONTEXTS],
+    chroma_eob_pt_16: [[u16; 6]; COEFF_CDF_Q_CONTEXTS],
+    coeff_base_lf_eob_uv: [[u16; 6]; COEFF_CDF_Q_CONTEXTS],
     intra_tx_type_set1:
-        [[i32; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
-    sec_tx_type_intra: [[i32; SEC_TX_TYPE_CDF_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_SQR_COUNT],
+        [[u16; INTRA_TX_TYPE_SET1_CDF_ROW_LEN]; INTRA_TX_TYPE_SET1_TX_SIZE_SQR_COUNT],
+    sec_tx_type_intra: [[u16; SEC_TX_TYPE_CDF_ROW_LEN]; SEC_TX_TYPE_TX_SIZE_SQR_COUNT],
 }
 
 /// Builds the low-frequency `coeff_base_eob` bank `[q][ctx]` at the given `tx_size`
@@ -45,8 +45,8 @@ pub(crate) struct CoefficientTokenCdfRows {
 /// and panic-free: every index is a const within the table dimensions.
 const fn coeff_base_lf_eob_bank(
     tx_size: usize,
-) -> [[[i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
-    let mut bank = [[[0i32; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT];
+) -> [[[u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
+    let mut bank = [[[0u16; COEFF_BASE_LF_EOB_CDF_ROW_LEN]; COEFF_BASE_LF_EOB_CTX_COUNT];
         COEFF_CDF_Q_CONTEXTS];
     let mut q = 0;
     while q < COEFF_CDF_Q_CONTEXTS {
@@ -65,9 +65,9 @@ const fn coeff_base_lf_eob_bank(
 /// rows). Total and panic-free: every index is a const within the table dimensions.
 const fn coeff_base_eob_hf_bank(
     tx_size: usize,
-) -> [[[i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
+) -> [[[u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
     let mut bank =
-        [[[0i32; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
+        [[[0u16; COEFF_BASE_EOB_CDF_ROW_LEN]; COEFF_BASE_EOB_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
     let mut q = 0;
     while q < COEFF_CDF_Q_CONTEXTS {
         let mut ctx = 0;
@@ -86,9 +86,9 @@ const fn coeff_base_eob_hf_bank(
 /// dimensions.
 const fn coeff_base_lf_bank(
     tx_size: usize,
-) -> [[[i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
+) -> [[[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
     let mut bank =
-        [[[0i32; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
+        [[[0u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
     let mut q = 0;
     while q < COEFF_CDF_Q_CONTEXTS {
         let mut ctx = 0;
@@ -108,8 +108,8 @@ const fn coeff_base_lf_bank(
 /// const within the table dimensions.
 const fn coeff_base_hf_bank(
     tx_size: usize,
-) -> [[[i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
-    let mut bank = [[[0i32; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
+) -> [[[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS] {
+    let mut bank = [[[0u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT]; COEFF_CDF_Q_CONTEXTS];
     let mut q = 0;
     while q < COEFF_CDF_Q_CONTEXTS {
         let mut ctx = 0;
@@ -193,7 +193,7 @@ impl CoefficientTokenCdfRows {
         }
     }
 
-    pub(crate) fn row_mut(&mut self, selector: CoefficientCdfRowSelector) -> Result<&mut [i32]> {
+    pub(crate) fn row_mut(&mut self, selector: CoefficientCdfRowSelector) -> Result<&mut [u16]> {
         match selector {
             CoefficientCdfRowSelector::TxbSkip {
                 coeff_cdf_q_ctx,

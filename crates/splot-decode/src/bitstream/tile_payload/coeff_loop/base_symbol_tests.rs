@@ -381,7 +381,7 @@ fn encode_coeff_symbol(
     symbol: u8,
 ) {
     tile.with_row_mut(TileCdfSelector::Coeff(selector), |row| {
-        encoder.write_symbol(row, Symbol::new(symbol))
+        encoder.write_symbol_u16(row, Symbol::new(symbol))
     })
     .unwrap()
     .unwrap();

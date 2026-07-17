@@ -27,7 +27,7 @@ const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 #[derive(Default)]
 struct TransformCoeffBufferRecycler {
-    levels: Vec<Vec<u32>>,
+    levels: Vec<Vec<u8>>,
     signed: Vec<Vec<i32>>,
 }
 
@@ -140,7 +140,7 @@ impl Drop for super::general_intra_residual::LumaCoeffBlock {
 pub(crate) struct TransformCoeffBlockState {
     width: usize,
     height: usize,
-    level: Vec<u32>,
+    level: Vec<u8>,
     quant_sign: Vec<i32>,
     quant: Vec<i32>,
 }
@@ -199,7 +199,7 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn level(&self) -> &[u32] {
+    pub(crate) fn level(&self) -> &[u8] {
         &self.level
     }
 
@@ -229,7 +229,8 @@ impl TransformCoeffBlockState {
         value: u32,
     ) -> Result<(), TileCoeffStateError> {
         let idx = self.index(row, col)?;
-        self.level[idx] = value;
+        debug_assert!(u8::try_from(value).is_ok());
+        self.level[idx] = value as u8;
         Ok(())
     }
 
@@ -252,7 +253,7 @@ impl TransformCoeffBlockState {
     }
 
     pub(crate) fn level_at(&self, row: usize, col: usize) -> Result<u32, TileCoeffStateError> {
-        Ok(self.level[self.index(row, col)?])
+        Ok(u32::from(self.level[self.index(row, col)?]))
     }
 
     pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i32, TileCoeffStateError> {
@@ -338,8 +339,8 @@ pub(crate) struct TileCoeffContextState {
     plane_col_origins: [usize; PLANE_COUNT],
     plane_rows: [usize; PLANE_COUNT],
     plane_cols: [usize; PLANE_COUNT],
-    above_level: [Vec<u32>; PLANE_COUNT],
-    left_level: [Vec<u32>; PLANE_COUNT],
+    above_level: [Vec<u8>; PLANE_COUNT],
+    left_level: [Vec<u8>; PLANE_COUNT],
     above_dc: [Vec<u8>; PLANE_COUNT],
     left_dc: [Vec<u8>; PLANE_COUNT],
 }
@@ -434,11 +435,11 @@ impl TileCoeffContextState {
         self.mi_cols
     }
 
-    pub(crate) fn above_level(&self, plane: usize) -> Result<&[u32], TileCoeffStateError> {
+    pub(crate) fn above_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.above_level[validate_plane(plane)?])
     }
 
-    pub(crate) fn left_level(&self, plane: usize) -> Result<&[u32], TileCoeffStateError> {
+    pub(crate) fn left_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
         Ok(&self.left_level[validate_plane(plane)?])
     }
 
@@ -601,7 +602,7 @@ pub(crate) struct CoeffContextUpdate {
     pub(crate) y4: usize,
     pub(crate) w4: usize,
     pub(crate) h4: usize,
-    pub(crate) cul_level: u32,
+    pub(crate) cul_level: u8,
     pub(crate) dc_category: u8,
 }
 
@@ -802,10 +803,10 @@ fn shifted(value: usize, shift: u32) -> Result<usize, TileCoeffStateError> {
 }
 
 fn fill_context_line(
-    level: &mut [u32],
+    level: &mut [u8],
     dc: &mut [u8],
     range: Range<usize>,
-    level_value: u32,
+    level_value: u8,
     dc_value: u8,
 ) {
     for idx in range {

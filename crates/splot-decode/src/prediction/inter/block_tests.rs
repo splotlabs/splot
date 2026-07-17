@@ -397,7 +397,7 @@ fn write_symbol(
     value: u8,
 ) -> TestResult {
     tile.with_row_mut(selector, |row| {
-        encoder.write_symbol(row, Symbol::new(value))
+        encoder.write_symbol_u16(row, Symbol::new(value))
     })??;
     Ok(())
 }
