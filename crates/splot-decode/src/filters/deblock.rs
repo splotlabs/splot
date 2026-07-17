@@ -375,7 +375,7 @@ fn deblock_plane_pass<T: ReconSample>(
 
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
     let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
-    if splot_parallel::on_worker_pool()
+    if splot_parallel::on_multiworker_pool()
         && (plane_pass.pass == 0 && covered_rows <= height
             || plane_pass.pass == 1 && covered_cols <= width)
     {
