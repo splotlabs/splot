@@ -334,19 +334,28 @@ fn validate_plane_samples<T: ReconSample>(
     samples: &Plane<T>,
     max: u16,
 ) -> Result<()> {
-    for (sample_index, sample) in samples.samples().iter().copied().enumerate() {
-        let value = sample.to_u16();
-        if value > max {
-            return Err(ReconError::SampleOutOfRange {
-                plane,
-                sample_index,
-                value,
-                max,
-            });
-        }
+    let peak = samples
+        .samples()
+        .iter()
+        .fold(0u16, |peak, sample| peak.max(sample.to_u16()));
+    if peak <= max {
+        return Ok(());
     }
-
-    Ok(())
+    let (sample_index, value) = samples
+        .samples()
+        .iter()
+        .enumerate()
+        .find_map(|(sample_index, sample)| {
+            let value = sample.to_u16();
+            (value > max).then_some((sample_index, value))
+        })
+        .unwrap_or((0, peak));
+    Err(ReconError::SampleOutOfRange {
+        plane,
+        sample_index,
+        value,
+        max,
+    })
 }
 
 #[cfg(test)]

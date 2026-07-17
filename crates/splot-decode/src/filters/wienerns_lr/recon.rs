@@ -380,12 +380,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .storage_size();
         let end_y = stripe.end_y().ok_or_else(&error)?;
         let max_sample = self.bit_depth.max_sample();
+        // Sample range membership is proven by `DecodedFrame::try_new` at freeze.
         if stripe.width() != size.width()
             || stripe.frame_height() != size.height()
             || stripe.origin_y() > end_y
             || end_y > size.height()
             || T::try_from_u16(max_sample).is_err()
-            || stripe.samples().iter().any(|&sample| sample > max_sample)
         {
             return Err(error());
         }
