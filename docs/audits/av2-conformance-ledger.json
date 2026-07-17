@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "98ed4bfc3f92efbc07d7be47192a4995d71b32ad",
+  "audited_commit": "0a6696eeda2bdaebeb07689985280ef523f41d5a",
   "outcome": "success",
   "files": [
     {
@@ -2606,7 +2606,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/deblock.rs",
-      "sha256": "e1899052a01db63d332eddcc542a8bea8cc17b4f30571ece524521c4c33c6fb1",
+      "sha256": "8db7871056e6a42c5a0769a1db1426a144cee49fb409ebe70e5e5cebeb186900",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-DEBLOCK"
@@ -4621,7 +4621,7 @@
     },
     {
       "path": "crates/splot-recon/src/deblock_filter.rs",
-      "sha256": "39ff3a2aa46fd90793413ebed97e0af3a9886623f1bd2e863636a4c71807c7d1",
+      "sha256": "08f14faeef63e3a94a2bb58b43f36ba14d36e9c041b0dd202e609094795044e8",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-DEBLOCK-ADAPTIVE-STRENGTH",

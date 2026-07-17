@@ -1017,6 +1017,45 @@ fn deblock_filter_edge<T: ReconSample>(
         return Ok(());
     }
 
+    let horizontal = dx == 1
+        && dy == 0
+        && x_p >= plane_ctx.x_origin.saturating_add(GATHER_HALF)
+        && x_p <= plane_ctx.width.saturating_sub(GATHER_HALF)
+        && y_p >= plane_ctx.y_origin
+        && y_p
+            .checked_add(MI_SIZE)
+            .is_some_and(|end| end <= plane_ctx.height);
+    let vertical = dx == 0
+        && dy == 1
+        && y_p >= plane_ctx.y_origin.saturating_add(GATHER_HALF)
+        && y_p <= plane_ctx.height.saturating_sub(GATHER_HALF)
+        && x_p >= plane_ctx.x_origin
+        && x_p
+            .checked_add(MI_SIZE)
+            .is_some_and(|end| end <= plane_ctx.width);
+    if horizontal || vertical {
+        let x_origin = plane_ctx.x_origin;
+        let y_origin = plane_ctx.y_origin;
+        if let PlaneRows::Contiguous { samples, stride } = &mut plane_ctx.rows {
+            let stride = *stride;
+            let boundary = (y_p - y_origin) * stride + x_p - x_origin;
+            let (perpendicular, lane) = if horizontal { (1, stride) } else { (stride, 1) };
+            return filter_contiguous_edge(
+                samples,
+                boundary,
+                NonZeroUsize::new(perpendicular).ok_or(DeblockError::Workspace)?,
+                NonZeroUsize::new(lane).ok_or(DeblockError::Workspace)?,
+                q_thr,
+                side,
+                max_width_neg,
+                max_width_pos,
+                prev.block.lossless,
+                curr.block.lossless,
+                bit_depth,
+            );
+        }
+    }
+
     let width = choose_filter_width(
         plane_ctx,
         x_p,
@@ -1056,6 +1095,55 @@ fn deblock_filter_edge<T: ReconSample>(
         MI_SIZE,
         sample_params,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filter_contiguous_edge<T: ReconSample>(
+    samples: &mut [T],
+    boundary: usize,
+    perpendicular_stride: NonZeroUsize,
+    lane_stride: NonZeroUsize,
+    q_thr: i32,
+    side: i32,
+    max_width_neg: usize,
+    max_width_pos: usize,
+    prev_lossless: bool,
+    curr_lossless: bool,
+    bit_depth: BitDepth,
+) -> Result<(), DeblockError> {
+    let width = deblock_filter_choice_strided(
+        samples,
+        boundary + (MI_SIZE - 1) * lane_stride.get(),
+        perpendicular_stride,
+        &DeblockFilterChoice {
+            boundary,
+            q_thr,
+            side_thr: side,
+            max_width_pos,
+            max_width_neg,
+            q_first: Q_FIRST,
+        },
+    )
+    .map_err(|_| DeblockError::FilterChoice)?;
+    if width == 0 {
+        return Ok(());
+    }
+    let eff_neg = width.min(max_width_neg);
+    let eff_pos = width.min(max_width_pos);
+    let params = DeblockSampleFilter {
+        boundary,
+        q_thr,
+        max_width_neg: eff_neg,
+        max_width_pos: eff_pos,
+        q_thresh_mult: Q_THRESH_MULTS[eff_neg.max(eff_pos) - 1],
+        w_mult_neg: W_MULT[eff_neg - 1],
+        w_mult_pos: W_MULT[eff_pos - 1],
+        prev_lossless,
+        curr_lossless,
+        bit_depth,
+    };
+    deblock_sample_filter_strided_4(samples, perpendicular_stride, lane_stride, &params)
+        .map_err(|_| DeblockError::SampleFilter)
 }
 
 #[allow(clippy::too_many_arguments)]
