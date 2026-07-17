@@ -155,7 +155,8 @@ pub struct PcWienerClassification {
 #[derive(Debug, Default)]
 pub struct PcWienerClassifyScratch {
     source_cache: Vec<u16>,
-    features: Vec<CachedPcWienerFeature>,
+    feature_grid: Vec<[i32; 4]>,
+    skip_row: Vec<i32>,
     classifications: Vec<PcWienerClassification>,
 }
 
@@ -335,7 +336,8 @@ where
             )?);
         }
     }
-    let mut features = Vec::new();
+    let mut feature_grid = Vec::new();
+    let mut skip_row = Vec::new();
     let mut classifications = Vec::new();
     classify_grid_from_cache(
         params,
@@ -343,7 +345,8 @@ where
         cell_rows,
         &geo,
         &source_cache,
-        &mut features,
+        &mut feature_grid,
+        &mut skip_row,
         &mut classifications,
         tx_skip,
     )?;
@@ -409,7 +412,6 @@ where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     scratch.source_cache.clear();
-    scratch.features.clear();
     scratch.classifications.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     validate_params(params)?;
@@ -424,7 +426,8 @@ where
         cell_rows,
         &geo,
         &scratch.source_cache,
-        &mut scratch.features,
+        &mut scratch.feature_grid,
+        &mut scratch.skip_row,
         &mut scratch.classifications,
         tx_skip,
     );
@@ -613,19 +616,22 @@ fn classify_grid_from_cache<FT>(
     cell_rows: usize,
     geo: &ClassifyGridGeometry,
     source_cache: &[u16],
-    cached: &mut Vec<CachedPcWienerFeature>,
+    feature_grid: &mut Vec<[i32; 4]>,
+    skip_row: &mut Vec<i32>,
     classifications: &mut Vec<PcWienerClassification>,
     mut tx_skip: FT,
 ) -> Result<()>
 where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
-    cached
-        .try_reserve_exact(geo.feature_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener feature-grid allocation",
-        })?;
-    build_feature_grid(params, geo, source_cache, cached, &mut tx_skip)?;
+    build_feature_grid(
+        params,
+        geo,
+        source_cache,
+        feature_grid,
+        skip_row,
+        &mut tx_skip,
+    )?;
 
     let cell_count = cell_cols
         .checked_mul(cell_rows)
@@ -651,32 +657,30 @@ where
                     context: "PC-Wiener classification-grid column",
                 },
             )?;
+            let base = feature_row
+                .checked_mul(geo.feature_width)
+                .and_then(|start| start.checked_add(feature_col))
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "PC-Wiener classification-grid feature index",
+                })?;
             let mut sums = [0i32; 3];
             let mut raw_tx_skip_sum = 0i32;
             for row in 0..PC_WIENER_FEATURE_WINDOW_SIDE {
-                let start = feature_row
-                    .checked_add(row)
-                    .and_then(|row| row.checked_mul(geo.feature_width))
-                    .and_then(|start| start.checked_add(feature_col))
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "PC-Wiener classification-grid feature index",
-                    })?;
-                let end = start.checked_add(PC_WIENER_FEATURE_WINDOW_SIDE).ok_or(
-                    ReconError::ArithmeticOverflow {
-                        context: "PC-Wiener classification-grid feature end",
-                    },
-                )?;
-                let Some(feature_row) = cached.get(start..end) else {
+                let start = base + row * geo.feature_width;
+                let Some(window) = feature_grid
+                    .get(start..)
+                    .and_then(|tail| tail.first_chunk::<PC_WIENER_FEATURE_WINDOW_SIDE>())
+                else {
                     return Err(ReconError::BufferLengthMismatch {
-                        expected: end,
-                        actual: cached.len(),
+                        expected: start + PC_WIENER_FEATURE_WINDOW_SIDE,
+                        actual: feature_grid.len(),
                     });
                 };
-                for feature in feature_row {
-                    sums[0] += feature.values[0];
-                    sums[1] += feature.values[1];
-                    sums[2] += feature.values[2];
-                    raw_tx_skip_sum += feature.tx_skip;
+                for feature in window {
+                    sums[0] += feature[0];
+                    sums[1] += feature[1];
+                    sums[2] += feature[2];
+                    raw_tx_skip_sum += feature[3];
                 }
             }
             classifications.push(finish_pc_wiener_classification(
@@ -700,7 +704,8 @@ fn build_feature_grid<FT>(
     params: &PcWienerClassifyParams,
     geo: &ClassifyGridGeometry,
     source_cache: &[u16],
-    cached: &mut Vec<CachedPcWienerFeature>,
+    feature_grid: &mut Vec<[i32; 4]>,
+    skip_row: &mut Vec<i32>,
     tx_skip: &mut FT,
 ) -> Result<()>
 where
@@ -732,6 +737,18 @@ where
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener source-grid center column",
         })?;
+    feature_grid
+        .try_reserve_exact(geo.feature_count.saturating_sub(feature_grid.len()))
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener feature-grid allocation",
+        })?;
+    feature_grid.resize(geo.feature_count, [0; 4]);
+    skip_row
+        .try_reserve_exact(geo.feature_width.saturating_sub(skip_row.len()))
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "PC-Wiener feature-grid allocation",
+        })?;
+    skip_row.resize(geo.feature_width, 0);
     for row in 0..geo.feature_height {
         let y = coordinate_add(
             geo.feature_start_y,
@@ -745,43 +762,60 @@ where
                 field: "PC-Wiener tx-skip stripe y bounds",
             })?
             .clamp(params.tile_start_y, params.tile_end_y);
-        let skip_row = clipped_y >> 2;
+        let skip_grid_row = clipped_y >> 2;
         let row_base = (row + 1) * geo.source_width;
         let up = &source_cache[row_base - geo.source_width..row_base];
         let cur = &source_cache[row_base..row_base + geo.source_width];
         let down = &source_cache[row_base + geo.source_width..row_base + 2 * geo.source_width];
-        let mut run: Option<(usize, i32)> = None;
-        for col in 0..linear_cols {
-            let values = second_derivative_features(up, cur, down, col + 1);
-            let x = geo.feature_start_x + col as isize;
-            let skip = run_tx_skip(
-                tx_skip,
-                &mut run,
-                x.clamp(block_lo, block_hi) as usize,
-                clipped_y,
-                skip_row,
-            )?;
-            cached.push(CachedPcWienerFeature {
-                values,
-                tx_skip: skip,
+        let grid_start = row * geo.feature_width;
+        let Some(grid_row) = feature_grid.get_mut(grid_start..grid_start + geo.feature_width)
+        else {
+            return Err(ReconError::BufferLengthMismatch {
+                expected: grid_start + geo.feature_width,
+                actual: geo.feature_count,
             });
+        };
+        let mut col = 0usize;
+        while col < linear_cols {
+            let x = (geo.feature_start_x + col as isize).clamp(block_lo, block_hi);
+            let run_last_x = (x >> 2) * 4 + 3;
+            let seg_end = if block_hi <= run_last_x {
+                linear_cols
+            } else {
+                usize::try_from(run_last_x - geo.feature_start_x)
+                    .map_or(linear_cols, |last_col| (last_col + 1).min(linear_cols))
+            };
+            let value = checked_tx_skip(tx_skip, x as usize, clipped_y, skip_grid_row)?;
+            let Some(segment) = skip_row.get_mut(col..seg_end) else {
+                return Err(ReconError::BufferLengthMismatch {
+                    expected: seg_end,
+                    actual: geo.feature_width,
+                });
+            };
+            segment.fill(value);
+            col = seg_end;
+        }
+        for ((col, slot), &skip) in grid_row
+            .iter_mut()
+            .enumerate()
+            .zip(skip_row.iter())
+            .take(linear_cols)
+        {
+            let values = second_derivative_features(up, cur, down, col + 1);
+            *slot = [values[0], values[1], values[2], skip];
         }
         if linear_cols < geo.feature_width {
             let values = second_derivative_features(up, cur, down, clamped_center);
-            let skip = run_tx_skip(
-                tx_skip,
-                &mut run,
-                geo.block_end_plus_two.clamp(block_lo, block_hi) as usize,
-                clipped_y,
-                skip_row,
-            )?;
-            let feature = CachedPcWienerFeature {
-                values,
-                tx_skip: skip,
+            let staged = linear_cols
+                .checked_sub(1)
+                .and_then(|last| skip_row.get(last).copied());
+            let skip = if let Some(value) = staged {
+                value
+            } else {
+                let x = geo.block_end_plus_two.clamp(block_lo, block_hi) as usize;
+                checked_tx_skip(tx_skip, x, clipped_y, skip_grid_row)?
             };
-            for _ in linear_cols..geo.feature_width {
-                cached.push(feature);
-            }
+            grid_row[linear_cols..].fill([values[0], values[1], values[2], skip]);
         }
     }
     Ok(())
@@ -798,22 +832,11 @@ fn second_derivative_features(up: &[u16], cur: &[u16], down: &[u16], center: usi
     ]
 }
 
-fn run_tx_skip<FT>(
-    tx_skip: &mut FT,
-    run: &mut Option<(usize, i32)>,
-    x: usize,
-    y: usize,
-    row: usize,
-) -> Result<i32>
+fn checked_tx_skip<FT>(tx_skip: &mut FT, x: usize, y: usize, row: usize) -> Result<i32>
 where
     FT: FnMut(PcWienerTxSkipLookup) -> Result<i32>,
 {
     let col = x >> 2;
-    if let Some((run_col, value)) = *run
-        && run_col == col
-    {
-        return Ok(value);
-    }
     let value = tx_skip(PcWienerTxSkipLookup { x, y, row, col })?;
     if !(0..=1).contains(&value) {
         return Err(ReconError::PcWienerInvalidTxSkip {
@@ -824,7 +847,6 @@ where
             value,
         });
     }
-    *run = Some((col, value));
     Ok(value)
 }
 
@@ -1239,14 +1261,6 @@ const fn pc_wiener_subclass_target_index(num_classes: usize) -> Option<usize> {
 struct PcWienerFeatureValues {
     x: isize,
     values: [i32; PC_WIENER_NUM_FEATURES],
-}
-
-/// One cached feature point: the three non-constant § 7.20.4 second-derivative
-/// features (feature `0` is identically zero) plus the point's `LrTxSkip`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CachedPcWienerFeature {
-    values: [i32; 3],
-    tx_skip: i32,
 }
 
 #[inline]
@@ -2008,10 +2022,11 @@ mod tests {
         .unwrap()
         .as_ptr();
         let source_ptr = scratch.source_cache.as_ptr();
-        let feature_ptr = scratch.features.as_ptr();
+        let feature_ptr = scratch.feature_grid.as_ptr();
         let capacities = (
             scratch.source_cache.capacity(),
-            scratch.features.capacity(),
+            scratch.feature_grid.capacity(),
+            scratch.skip_row.capacity(),
             scratch.classifications.capacity(),
         );
 
@@ -2027,12 +2042,13 @@ mod tests {
         .as_ptr();
 
         assert_eq!(scratch.source_cache.as_ptr(), source_ptr);
-        assert_eq!(scratch.features.as_ptr(), feature_ptr);
+        assert_eq!(scratch.feature_grid.as_ptr(), feature_ptr);
         assert_eq!(small_output_ptr, large_output_ptr);
         assert_eq!(
             (
                 scratch.source_cache.capacity(),
-                scratch.features.capacity(),
+                scratch.feature_grid.capacity(),
+                scratch.skip_row.capacity(),
                 scratch.classifications.capacity(),
             ),
             capacities
