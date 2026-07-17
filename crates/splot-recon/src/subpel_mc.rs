@@ -496,6 +496,7 @@ pub fn subpel_predict_block_into<T: ReconSample>(
         params,
         INTER_ROUND1_NON_COMPOUND,
         intermediate_height,
+        None,
         output,
         params.w,
         |pred| pred.clamp(0, max_sample) as u16,
@@ -748,27 +749,27 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
     };
 
     let max_sample = i32::from(params.bit_depth.max_sample());
-    with_subpel_intermediate(2 * params.w, |intermediate| {
-        horizontal_row(y0, &mut intermediate[..params.w]);
-        let mut top_is_first = true;
-        for r in 0..params.h {
-            let (first, second) = intermediate.split_at_mut(params.w);
-            let (top, bottom) = if top_is_first {
-                (first, second)
-            } else {
-                (second, first)
-            };
-            horizontal_row(y0 + r as i32 + 1, bottom);
-            for (out, (&top, &bottom)) in output[r * params.w..][..params.w]
-                .iter_mut()
-                .zip(top.iter().zip(bottom.iter()))
-            {
-                *out = round2_i32(v0 * top + v1 * bottom, INTER_ROUND1_NON_COMPOUND)
-                    .clamp(0, max_sample) as u16;
-            }
-            top_is_first = !top_is_first;
+    let mut storage = [0i32; 2 * MAX_BLOCK_DIM];
+    let intermediate = &mut storage[..2 * params.w];
+    horizontal_row(y0, &mut intermediate[..params.w]);
+    let mut top_is_first = true;
+    for r in 0..params.h {
+        let (first, second) = intermediate.split_at_mut(params.w);
+        let (top, bottom) = if top_is_first {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        horizontal_row(y0 + r as i32 + 1, bottom);
+        for (out, (&top, &bottom)) in output[r * params.w..][..params.w]
+            .iter_mut()
+            .zip(top.iter().zip(bottom.iter()))
+        {
+            *out = round2_i32(v0 * top + v1 * bottom, INTER_ROUND1_NON_COMPOUND)
+                .clamp(0, max_sample) as u16;
         }
-    });
+        top_is_first = !top_is_first;
+    }
     Ok(())
 }
 
@@ -799,7 +800,9 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 ///
 /// `output` starts at the prediction's top-left sample. The function writes
 /// `params.w` samples in each of `params.h` rows and leaves row padding and any
-/// trailing storage unchanged.
+/// trailing storage unchanged. `scratch` optionally provides the horizontal-pass
+/// intermediate storage; when absent or too small the convolution falls back to
+/// its internal storage.
 ///
 /// # Errors
 ///
@@ -810,6 +813,7 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
+    scratch: Option<&mut [i32]>,
     output: &mut [i32],
     output_stride: usize,
 ) -> Result<()> {
@@ -819,6 +823,7 @@ pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
         params,
         INTER_ROUND1_COMPOUND,
         intermediate_height,
+        scratch,
         output,
         output_stride,
         |pred| pred,
@@ -850,12 +855,14 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
         });
     }
     subpel_predict_block_compound_average_strided_into(
-        reference, params, pred0, cwp_weight, output, params.w,
+        reference, params, pred0, cwp_weight, None, output, params.w,
     )
 }
 
 /// Produces and blends the second compound predictor into caller-owned strided
-/// output. `pred0` remains a contiguous `w * h` intermediate block.
+/// output. `pred0` remains a contiguous `w * h` intermediate block. `scratch`
+/// optionally provides the horizontal-pass intermediate storage; when absent or
+/// too small the convolution falls back to its internal storage.
 ///
 /// # Errors
 ///
@@ -866,6 +873,7 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
     params: &SubpelPredictParams,
     pred0: &[i32],
     cwp_weight: i16,
+    scratch: Option<&mut [i32]>,
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<()> {
@@ -888,6 +896,7 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
         params,
         INTER_ROUND1_COMPOUND,
         intermediate_height,
+        scratch,
         output,
         output_stride,
         |pred1| {
@@ -1031,6 +1040,7 @@ pub fn blend_compound_average_weighted(
 
 /// Blends one pair of § 7.13.3.18 compound intermediate samples with the
 /// supplied § 7.13.3.16 `cwpWeight`, then applies the final § 4.8 `Clip1`.
+#[inline]
 pub fn blend_compound_average_weighted_sample(
     pred0: i32,
     pred1: i32,
@@ -1279,6 +1289,7 @@ fn subpel_predict_block_internal<T: ReconSample, O: Clone + Default>(
         params,
         inter_round1,
         intermediate_height,
+        None,
         &mut output,
         params.w,
         finish,
@@ -1342,11 +1353,13 @@ fn validate_subpel_params(params: &SubpelPredictParams) -> Result<usize> {
     Ok(intermediate_height)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
     inter_round1: u32,
     intermediate_height: usize,
+    scratch: Option<&mut [i32]>,
     output: &mut [O],
     output_stride: usize,
     mut finish: impl FnMut(i32) -> O,
@@ -1463,7 +1476,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "subpel intermediate sample count",
             })?;
-    with_subpel_intermediate(intermediate_len, |intermediate| {
+    let mut run = |intermediate: &mut [i32]| {
         for r in read_lo..read_hi {
             let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
             let ref_row = (ref_row as usize).min(reference.height - 1);
@@ -1548,7 +1561,11 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
         }
 
         Ok(())
-    })
+    };
+    match scratch.and_then(|scratch| scratch.get_mut(..intermediate_len)) {
+        Some(intermediate) => run(intermediate),
+        None => with_subpel_intermediate(intermediate_len, run),
+    }
 }
 
 fn scaled_position(start: i32, step: i32, index: usize) -> i32 {

@@ -26,6 +26,7 @@ impl PlaneScaling {
         self.scale_x != 1 << REF_SCALE_SHIFT || self.scale_y != 1 << REF_SCALE_SHIFT
     }
 
+    #[inline]
     pub(crate) fn with_prescaled_mv(
         self,
         plane_x: i32,
@@ -38,6 +39,7 @@ impl PlaneScaling {
         self.with_mv_precision(plane_x, plane_y, mv_row, mv_col, sub_x, sub_y, true)
     }
 
+    #[inline]
     pub(crate) fn with_mv(
         self,
         plane_x: i32,
@@ -51,6 +53,7 @@ impl PlaneScaling {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[inline]
     fn with_mv_precision(
         self,
         plane_x: i32,
@@ -88,6 +91,7 @@ pub(crate) fn reference_is_scaled(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn derive_plane_scaling(
     plane_x: i32,
     plane_y: i32,
@@ -122,6 +126,7 @@ pub(crate) fn derive_plane_scaling(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn derive_plane_scaling_from_scale(
     plane_x: i32,
     plane_y: i32,
@@ -187,6 +192,7 @@ fn derive_plane_scaling_from_scale(
     }
 }
 
+#[inline]
 fn scale_dimension(reference: i32, current: i32) -> i32 {
     if reference == current {
         return 1 << REF_SCALE_SHIFT;
@@ -195,6 +201,7 @@ fn scale_dimension(reference: i32, current: i32) -> i32 {
     scaling_value(numerator / i64::from(current))
 }
 
+#[inline]
 fn scaling_value(value: i64) -> i32 {
     value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
