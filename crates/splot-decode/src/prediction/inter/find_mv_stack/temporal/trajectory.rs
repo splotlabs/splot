@@ -72,8 +72,12 @@ impl TrajectoryMotionField {
     }
 
     pub(super) fn cell(&self, y8: usize, x8: usize) -> Option<Mv> {
+        self.cell_at(self.index(y8, x8)?)
+    }
+
+    fn cell_at(&self, index: usize) -> Option<Mv> {
         self.cells
-            .get(self.index(y8, x8)?)
+            .get(index)
             .copied()
             .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
     }
@@ -82,6 +86,10 @@ impl TrajectoryMotionField {
         let Some(index) = self.index(y8, x8) else {
             return;
         };
+        self.set_at(index, mv);
+    }
+
+    fn set_at(&mut self, index: usize, mv: Mv) {
         if let Some(cell) = self.cells.get_mut(index) {
             *cell = mv;
         }
@@ -95,6 +103,8 @@ pub(super) struct TrajectoryState {
     pub(super) projection_offsets: Vec<i32>,
     step: usize,
     unit_size8: usize,
+    width8: usize,
+    height8: usize,
 }
 
 impl TrajectoryState {
@@ -107,12 +117,18 @@ impl TrajectoryState {
         let template = TrajectoryMotionField::new(mi_dimensions.0, mi_dimensions.1)?;
         let cell_count = template.cells.len();
         let step = step.clamp(1, 2);
+        let fields = vec![template; reference_count];
+        let (width8, height8) = fields
+            .first()
+            .map_or((0, 0), |field| (field.width8, field.height8));
         Some(Self {
-            fields: vec![template; reference_count],
+            fields,
             positions: vec![vec![[PackedPosition::INVALID; 3]; cell_count]; reference_count],
             projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
             step,
             unit_size8: unit_size8.max(1),
+            width8,
+            height8,
         })
     }
 
@@ -145,17 +161,26 @@ impl TrajectoryState {
         self.projection_offsets.fill(INVALID_PROJECTION_OFFSET);
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
+        (self.width8, self.height8) = self
+            .fields
+            .first()
+            .map_or((0, 0), |field| (field.width8, field.height8));
         Some(())
     }
 
     #[cfg(test)]
     pub(super) fn from_fields(fields: Vec<TrajectoryMotionField>) -> Self {
+        let (width8, height8) = fields
+            .first()
+            .map_or((0, 0), |field| (field.width8, field.height8));
         Self {
             fields,
             positions: Vec::new(),
             projection_offsets: Vec::new(),
             step: 1,
             unit_size8: 1,
+            width8,
+            height8,
         }
     }
 
@@ -168,34 +193,21 @@ impl TrajectoryState {
         &self.fields
     }
 
-    fn dimensions(&self) -> Option<(usize, usize)> {
-        self.fields
-            .first()
-            .map(|field| (field.height8, field.width8))
+    fn grid_index(&self, y8: usize, x8: usize) -> Option<usize> {
+        temporal_grid_index(self.width8, self.height8, y8, x8)
     }
 
-    fn position(
-        &self,
-        reference: usize,
-        y8: usize,
-        x8: usize,
-        phase: usize,
-    ) -> Option<(usize, usize)> {
-        let index = self.fields.first()?.index(y8, x8)?;
+    fn position_at(&self, reference: usize, index: usize, phase: usize) -> Option<Position> {
         self.positions.get(reference)?.get(index)?[phase].unpack()
     }
 
-    fn set_position(
+    fn set_position_at(
         &mut self,
         reference: usize,
-        y8: usize,
-        x8: usize,
+        index: usize,
         phase: usize,
-        position: (usize, usize),
+        position: Position,
     ) {
-        let Some(index) = self.fields.first().and_then(|field| field.index(y8, x8)) else {
-            return;
-        };
         if let Some(cell) = self
             .positions
             .get_mut(reference)
@@ -206,19 +218,32 @@ impl TrajectoryState {
         }
     }
 
+    fn div_unit(value: usize, unit: usize) -> usize {
+        if unit.is_power_of_two() {
+            value >> unit.trailing_zeros()
+        } else {
+            value / unit
+        }
+    }
+
     fn phase(&self, x8: usize) -> usize {
-        x8 / self.unit_size8 % 3
+        Self::div_unit(x8, self.unit_size8) % 3
+    }
+
+    fn unit_base(&self, value: usize) -> usize {
+        Self::div_unit(value, self.unit_size8) * self.unit_size8
+    }
+
+    fn round_step(&self, value: usize) -> usize {
+        Self::div_unit(value, self.step) * self.step
     }
 
     fn position_allowed(&self, candidate: (usize, usize), base: (usize, usize)) -> bool {
-        let Some((height8, width8)) = self.dimensions() else {
-            return false;
-        };
-        if candidate.0 >= height8 || candidate.1 >= width8 {
+        if candidate.0 >= self.height8 || candidate.1 >= self.width8 {
             return false;
         }
-        let base_y = base.0 / self.unit_size8 * self.unit_size8;
-        let base_x = base.1 / self.unit_size8 * self.unit_size8;
+        let base_y = self.unit_base(base.0);
+        let base_x = self.unit_base(base.1);
         let col_offset = if self.step == 1 {
             self.unit_size8 / 2
         } else {
@@ -231,7 +256,6 @@ impl TrajectoryState {
     }
 
     fn sampled_position(&self, y8: usize, x8: usize, mv: Mv) -> Option<(usize, usize)> {
-        let (height8, width8) = self.dimensions()?;
         let offset = |base: usize, delta: i32, limit: usize| {
             let delta8 = delta / (1 << 6);
             let projected = i32::try_from(base).ok()?.checked_add(delta8)?;
@@ -239,14 +263,24 @@ impl TrajectoryState {
                 .ok()
                 .filter(|&projected| projected < limit)
         };
-        let y8 = offset(y8, mv.row, height8)?;
-        let x8 = offset(x8, mv.col, width8)?;
-        Some((y8 / self.step * self.step, x8 / self.step * self.step))
+        let y8 = offset(y8, mv.row, self.height8)?;
+        let x8 = offset(x8, mv.col, self.width8)?;
+        Some((self.round_step(y8), self.round_step(x8)))
     }
 
-    fn set_field(&mut self, reference: usize, y8: usize, x8: usize, mv: Mv) {
+    fn field_cell_at(&self, reference: usize, index: usize) -> Option<Mv> {
+        self.fields.get(reference)?.cell_at(index)
+    }
+
+    fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
         if let Some(field) = self.fields.get_mut(reference) {
-            field.set(y8, x8, clamp_mv(mv));
+            field.set_at(index, clamp_mv(mv));
+        }
+    }
+
+    fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
+        if let Some(index) = self.grid_index(at.0, at.1) {
+            self.set_position_at(reference, index, phase, position);
         }
     }
 
@@ -261,55 +295,67 @@ impl TrajectoryState {
         let Some(end) = end.filter(|&end| end < self.fields.len()) else {
             return;
         };
-        for phase in 0..3 {
-            let Some(trajectory) = self.position(source, y8, x8, phase) else {
-                continue;
-            };
-            if self.phase(trajectory.1) != phase
-                || !self.position_allowed((y8, x8), trajectory)
-                || self.fields[end].cell(trajectory.0, trajectory.1).is_some()
-            {
-                continue;
-            }
-            let Some(source_mv) = self.fields[source].cell(trajectory.0, trajectory.1) else {
-                continue;
-            };
-            let end_mv = add_mv(source_mv, mv);
-            self.set_field(end, trajectory.0, trajectory.1, end_mv);
-            if let Some(position) = self
-                .sampled_position(trajectory.0, trajectory.1, end_mv)
-                .filter(|&position| self.position_allowed(position, trajectory))
-            {
-                self.set_position(end, position.0, position.1, phase, trajectory);
+        if let Some(start_index) = self.grid_index(y8, x8) {
+            for phase in 0..3 {
+                let Some(trajectory) = self.position_at(source, start_index, phase) else {
+                    continue;
+                };
+                if self.phase(trajectory.1) != phase || !self.position_allowed((y8, x8), trajectory)
+                {
+                    continue;
+                }
+                let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
+                    continue;
+                };
+                if self.field_cell_at(end, traj_index).is_some() {
+                    continue;
+                }
+                let Some(source_mv) = self.field_cell_at(source, traj_index) else {
+                    continue;
+                };
+                let end_mv = add_mv(source_mv, mv);
+                self.set_field_at(end, traj_index, end_mv);
+                if let Some(position) = self
+                    .sampled_position(trajectory.0, trajectory.1, end_mv)
+                    .filter(|&position| self.position_allowed(position, trajectory))
+                {
+                    self.set_position(end, position, phase, trajectory);
+                }
             }
         }
 
         let Some(end_position) = self.sampled_position(y8, x8, mv) else {
             return;
         };
+        let Some(end_index) = self.grid_index(end_position.0, end_position.1) else {
+            return;
+        };
         for phase in 0..3 {
-            let Some(trajectory) = self.position(end, end_position.0, end_position.1, phase) else {
+            let Some(trajectory) = self.position_at(end, end_index, phase) else {
                 continue;
             };
             if self.phase(trajectory.1) != phase
                 || !self.position_allowed((y8, x8), trajectory)
                 || !self.position_allowed(end_position, trajectory)
-                || self.fields[source]
-                    .cell(trajectory.0, trajectory.1)
-                    .is_some()
             {
                 continue;
             }
-            let Some(end_mv) = self.fields[end].cell(trajectory.0, trajectory.1) else {
+            let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
+                continue;
+            };
+            if self.field_cell_at(source, traj_index).is_some() {
+                continue;
+            }
+            let Some(end_mv) = self.field_cell_at(end, traj_index) else {
                 continue;
             };
             let source_mv = subtract_mv(end_mv, mv);
-            self.set_field(source, trajectory.0, trajectory.1, source_mv);
+            self.set_field_at(source, traj_index, source_mv);
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
                 .filter(|&position| self.position_allowed(position, trajectory))
             {
-                self.set_position(source, position.0, position.1, phase, trajectory);
+                self.set_position(source, position, phase, trajectory);
             }
         }
     }
@@ -379,27 +425,23 @@ impl TrajectoryState {
         else {
             return;
         };
-        let Some(index) = self
-            .fields
-            .first()
-            .and_then(|field| field.index(position.0, position.1))
-        else {
+        let Some(index) = self.grid_index(position.0, position.1) else {
             return;
         };
-        let replace = self.projection_offsets[index] == INVALID_PROJECTION_OFFSET
-            || (target.is_some()
-                && target == end
-                && self.projection_offsets[index] != reference_offset);
+        let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
+            return;
+        };
+        let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
+            || (target.is_some() && target == end && *recorded_offset != reference_offset);
         if !replace {
             return;
         }
-        self.projection_offsets[index] = reference_offset;
+        *recorded_offset = reference_offset;
         let phase = self.phase(position.1);
-        self.set_position(source, y8, x8, phase, position);
-        self.set_field(
+        self.set_position(source, (y8, x8), phase, position);
+        self.set_field_at(
             source,
-            position.0,
-            position.1,
+            index,
             Mv {
                 row: -projected.row,
                 col: -projected.col,
@@ -411,12 +453,12 @@ impl TrajectoryState {
         let Some(end_mv) = project_mv(mv, reference_offset - numerator, reference_offset) else {
             return;
         };
-        self.set_field(end, position.0, position.1, end_mv);
+        self.set_field_at(end, index, end_mv);
         if let Some(target_position) = self
             .sampled_position(y8, x8, mv)
             .filter(|&target_position| self.position_allowed(target_position, position))
         {
-            self.set_position(end, target_position.0, target_position.1, phase, position);
+            self.set_position(end, target_position, phase, position);
         }
     }
 
