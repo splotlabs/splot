@@ -843,6 +843,12 @@ pub fn subpel_predict_block_compound_average_into<T: ReconSample>(
     cwp_weight: i16,
     output: &mut [u16],
 ) -> Result<()> {
+    if output.len() != pred0.len() {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: pred0.len(),
+            actual: output.len(),
+        });
+    }
     subpel_predict_block_compound_average_strided_into(
         reference, params, pred0, cwp_weight, output, params.w,
     )

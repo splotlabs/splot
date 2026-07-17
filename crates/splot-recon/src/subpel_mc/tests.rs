@@ -953,6 +953,21 @@ fn compound_average_into_matches_materialized_second_predictor() {
             );
         }
     }
+
+    let mut oversized = vec![0; pred0.len() + 1];
+    assert!(matches!(
+        subpel_predict_block_compound_average_into(
+            &view,
+            &base,
+            &pred0,
+            8,
+            &mut oversized,
+        ),
+        Err(ReconError::BufferLengthMismatch {
+            expected,
+            actual
+        }) if expected == pred0.len() && actual == pred0.len() + 1
+    ));
 }
 
 #[test]

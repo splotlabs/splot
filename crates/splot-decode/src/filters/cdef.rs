@@ -5,7 +5,8 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
     CdefSampleTaps, CdefTap, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample,
-    cdef_direction, cdef_direction_padded, cdef_filter_block_interior_to, cdef_filter_sample,
+    cdef_direction, cdef_direction_padded, cdef_filter_block_interior_to_valid_stride,
+    cdef_filter_sample,
 };
 
 use super::source::{FramePlane, StripePlane};
@@ -550,7 +551,7 @@ fn filter_interior_pad_into(
     };
     let rect = PlaneRect::new(x0, y0, w, h).map_err(|_| CdefError::Geometry)?;
     let (output, stride) = filtered.rect_mut(rect).ok_or(CdefError::Workspace)?;
-    if cdef_filter_block_interior_to(pad, w, h, &filter, output, stride) {
+    if cdef_filter_block_interior_to_valid_stride(pad, w, h, &filter, output, stride) {
         Ok(())
     } else {
         Err(CdefError::Workspace)

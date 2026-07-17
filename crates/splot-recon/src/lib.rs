@@ -57,7 +57,8 @@ mod y4m;
 pub use cdef_filter::{
     CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
     CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction, cdef_direction_padded,
-    cdef_filter_block_interior, cdef_filter_block_interior_to, cdef_filter_sample,
+    cdef_filter_block_interior, cdef_filter_block_interior_to,
+    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
 pub use deblock_filter::{

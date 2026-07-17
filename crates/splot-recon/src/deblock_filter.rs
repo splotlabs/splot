@@ -185,15 +185,15 @@ pub fn deblock_sample_filter_strided_4<T: ReconSample>(
         stride,
     )?;
     let max_weight = params.w_mult_neg.max(params.w_mult_pos);
-    let bounded_product = i128::from(params.q_thr)
-        * i128::from(params.q_thresh_mult)
-        * i128::from(max_weight)
-        * params.max_width_neg.max(params.max_width_pos) as i128;
+    let bounded_factor =
+        (i128::from(max_weight) * params.max_width_neg.max(params.max_width_pos) as i128).max(1);
+    let bounded_product =
+        i128::from(params.q_thr) * i128::from(params.q_thresh_mult) * bounded_factor;
     if params.q_thr >= 0
         && params.q_thresh_mult >= 0
         && params.w_mult_neg >= 0
         && params.w_mult_pos >= 0
-        && bounded_product <= i128::from(i32::MAX)
+        && bounded_product <= i128::from(i32::MAX - (1 << 10))
     {
         deblock_sample_filter_inner_4_bounded(samples, params, stride, lane_stride.get())
     } else {
@@ -873,6 +873,7 @@ mod tests {
         }
         let cases = [
             params(boundary, 80, 6, 8, 17, 20, 15, false, false),
+            params(boundary, i32::MAX, 6, 8, i32::MAX, 0, 0, false, false),
             params(
                 boundary,
                 i32::MAX,

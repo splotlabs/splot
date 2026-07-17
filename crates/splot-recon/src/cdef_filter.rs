@@ -549,6 +549,23 @@ pub fn cdef_filter_block_interior_to(
     out: &mut [u16],
     out_stride: usize,
 ) -> bool {
+    let w = w.min(8);
+    if out_stride < w {
+        return false;
+    }
+    cdef_filter_block_interior_to_valid_stride(pad, w, h, filter, out, out_stride)
+}
+
+/// Variant of [`cdef_filter_block_interior_to`] for an already-validated output view.
+#[doc(hidden)]
+pub fn cdef_filter_block_interior_to_valid_stride(
+    pad: &[u16; CDEF_PADDED_AREA],
+    w: usize,
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16],
+    out_stride: usize,
+) -> bool {
     let (pri_rel, sec_rel) = cdef_relative_offsets(filter.dir);
     match w.min(8) {
         8 => cdef_filter_block_interior_rows::<8>(
@@ -948,6 +965,20 @@ mod tests {
                 }
             }
         }
+
+        let pad = [128u16; CDEF_PADDED_AREA];
+        let filter = CdefBlockFilter {
+            pri_str: 4,
+            sec_str: 2,
+            damping: 3,
+            dir: 0,
+            coeff_shift: 0,
+        };
+        let mut out = [u16::MAX; 64];
+        assert!(!cdef_filter_block_interior_to(
+            &pad, 8, 8, &filter, &mut out, 7,
+        ));
+        assert!(out.iter().all(|&sample| sample == u16::MAX));
     }
 
     #[test]
