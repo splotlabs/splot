@@ -1701,7 +1701,7 @@ fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COOR
 }
 
 fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
-    samples.get(start..start + len)
+    samples.get(start..)?.get(..len)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -117,7 +117,8 @@ pub struct WienerNsLumaScratch<T> {
 
 #[derive(Clone, Copy)]
 enum LumaSubclassLayout<'a> {
-    Samples(Option<&'a [usize]>),
+    Uniform,
+    Samples(&'a [usize]),
     Cells { values: &'a [usize], cols: usize },
 }
 
@@ -262,13 +263,10 @@ pub fn wiener_ns_filter_luma_block_padded_into<T: ReconSample>(
     source: &WienerNsLumaPaddedSource<'_, T>,
     scratch: &mut WienerNsLumaScratch<T>,
 ) -> Result<()> {
-    wiener_ns_filter_luma_block_padded_layout_into(
-        output,
-        params,
-        source,
-        LumaSubclassLayout::Samples(params.subclasses),
-        scratch,
-    )
+    let subclasses = params
+        .subclasses
+        .map_or(LumaSubclassLayout::Uniform, LumaSubclassLayout::Samples);
+    wiener_ns_filter_luma_block_padded_layout_into(output, params, source, subclasses, scratch)
 }
 
 /// Applies padded luma Wiener NS filtering with one subclass per 4x4 cell.
@@ -467,10 +465,10 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
         context: "Wiener NS luma filter row start",
     })?;
     match subclasses {
-        LumaSubclassLayout::Samples(None) => filter_padded_luma_segment(
+        LumaSubclassLayout::Uniform => filter_padded_luma_segment(
             filtered, acc, &rows, center, 0, width, 0, params, max_sample,
         )?,
-        LumaSubclassLayout::Samples(Some(subclasses)) => {
+        LumaSubclassLayout::Samples(subclasses) => {
             let row_subclasses = subclasses
                 .get(row_start..row_start + width)
                 .ok_or_else(|| luma_segment_error(width))?;
@@ -772,8 +770,8 @@ fn subclass_for_position(
     col: usize,
 ) -> usize {
     match subclasses {
-        LumaSubclassLayout::Samples(Some(values)) => values[row * width + col],
-        LumaSubclassLayout::Samples(None) => 0,
+        LumaSubclassLayout::Uniform => 0,
+        LumaSubclassLayout::Samples(values) => values[row * width + col],
         LumaSubclassLayout::Cells { values, cols } => values[(row / 4) * cols + col / 4],
     }
 }

@@ -273,8 +273,7 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
         while r < r_end {
             let mut c = 0;
             while c < mi_cols {
-                let ctx = lookup.at(r, c)?;
-                if let Some(ctx) = ctx {
+                if let Some(ctx) = lookup.at(r, c)? {
                     compute_cdef_block::<T>(
                         &ctx,
                         &mut pad,
