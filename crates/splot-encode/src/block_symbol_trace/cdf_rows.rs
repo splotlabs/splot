@@ -54,40 +54,17 @@ pub(super) struct BlockSymbolTraceCdfRows {
     coeff_base_lf_eob_uv: [u16; COEFF_BASE_LF_EOB_UV_CDF_ROW_LEN],
 }
 
-/// Builds the low-frequency non-EOB `coeff_base` bank at the neutral TCQ context for
-/// the given `tx_size` by extracting the `tcq = COEFF_BASE_LF_TCQ_CTX_NEUTRAL` row at
-/// every § 8.3.2 context from the generated `DEFAULT_COEFF_BASE_LF_CDF[q][txSz][ctx][tcq]`
-/// table, at the minimal coefficient-CDF q-context. Total and panic-free: every index
-/// is a const within the table dimensions.
-const fn coeff_base_lf_bank(
-    tx_size: usize,
-) -> [[u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT] {
-    let mut bank = [[0u16; COEFF_BASE_LF_CDF_ROW_LEN]; COEFF_BASE_LF_CTX_COUNT];
-    let mut ctx = 0;
-    while ctx < COEFF_BASE_LF_CTX_COUNT {
-        bank[ctx] = DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX][tx_size][ctx]
-            [COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
-        ctx += 1;
-    }
-    bank
-}
-
-/// Builds the HIGH-frequency non-EOB `coeff_base` bank at the neutral TCQ context for
-/// the given `tx_size` by extracting the `tcq = COEFF_BASE_LF_TCQ_CTX_NEUTRAL` row at
-/// every § 8.3.2 HF context from the generated `DEFAULT_COEFF_BASE_CDF[q][txSz][ctx][tcq]`
-/// table (4-symbol rows), at the minimal coefficient-CDF q-context. Total and
-/// panic-free: every index is a const within the table dimensions.
-const fn coeff_base_hf_bank(
-    tx_size: usize,
-) -> [[u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT] {
-    let mut bank = [[0u16; COEFF_BASE_CDF_ROW_LEN]; COEFF_BASE_CTX_COUNT];
-    let mut ctx = 0;
-    while ctx < COEFF_BASE_CTX_COUNT {
-        bank[ctx] = DEFAULT_COEFF_BASE_CDF[MINIMAL_COEFF_CDF_Q_CTX][tx_size][ctx]
-            [COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
-        ctx += 1;
-    }
-    bank
+macro_rules! coeff_base_bank {
+    ($table:expr, $tx_size:expr, $row_len:expr, $ctx_count:expr) => {{
+        let mut bank = [[0u16; $row_len]; $ctx_count];
+        let mut ctx = 0;
+        while ctx < $ctx_count {
+            bank[ctx] =
+                ($table)[MINIMAL_COEFF_CDF_Q_CTX][$tx_size][ctx][COEFF_BASE_LF_TCQ_CTX_NEUTRAL];
+            ctx += 1;
+        }
+        bank
+    }};
 }
 
 impl BlockSymbolTraceCdfRows {
@@ -129,7 +106,12 @@ impl BlockSymbolTraceCdfRows {
                 [TX_SIZE_4X4_CTX],
             coeff_base_lf_eob_ac_tx64: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_EOB_CTX_EOB2_AC],
-            coeff_base_lf_4x4: coeff_base_lf_bank(TX_SIZE_4X4_CTX),
+            coeff_base_lf_4x4: coeff_base_bank!(
+                DEFAULT_COEFF_BASE_LF_CDF,
+                TX_SIZE_4X4_CTX,
+                COEFF_BASE_LF_CDF_ROW_LEN,
+                COEFF_BASE_LF_CTX_COUNT
+            ),
             coeff_base_lf_dc_tx64: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_64X64_CTX][COEFF_BASE_LF_CTX_EOB2_DC][COEFF_BASE_LF_TCQ_CTX_NEUTRAL],
             coeff_base_lf_dc_tx64_visible_ac: DEFAULT_COEFF_BASE_LF_CDF[MINIMAL_COEFF_CDF_Q_CTX]
@@ -142,13 +124,28 @@ impl BlockSymbolTraceCdfRows {
             coeff_base_eob_hf_4x4: DEFAULT_COEFF_BASE_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_4X4_CTX],
             coeff_br_hf: DEFAULT_COEFF_BR_CDF[MINIMAL_COEFF_CDF_Q_CTX],
-            coeff_base_hf_4x4: coeff_base_hf_bank(TX_SIZE_4X4_CTX),
+            coeff_base_hf_4x4: coeff_base_bank!(
+                DEFAULT_COEFF_BASE_CDF,
+                TX_SIZE_4X4_CTX,
+                COEFF_BASE_CDF_ROW_LEN,
+                COEFF_BASE_CTX_COUNT
+            ),
             coeff_base_lf_eob_16x16: DEFAULT_COEFF_BASE_LF_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_16X16_CTX],
-            coeff_base_lf_16x16: coeff_base_lf_bank(TX_SIZE_16X16_CTX),
+            coeff_base_lf_16x16: coeff_base_bank!(
+                DEFAULT_COEFF_BASE_LF_CDF,
+                TX_SIZE_16X16_CTX,
+                COEFF_BASE_LF_CDF_ROW_LEN,
+                COEFF_BASE_LF_CTX_COUNT
+            ),
             coeff_base_eob_hf_16x16: DEFAULT_COEFF_BASE_EOB_CDF[MINIMAL_COEFF_CDF_Q_CTX]
                 [TX_SIZE_16X16_CTX],
-            coeff_base_hf_16x16: coeff_base_hf_bank(TX_SIZE_16X16_CTX),
+            coeff_base_hf_16x16: coeff_base_bank!(
+                DEFAULT_COEFF_BASE_CDF,
+                TX_SIZE_16X16_CTX,
+                COEFF_BASE_CDF_ROW_LEN,
+                COEFF_BASE_CTX_COUNT
+            ),
             dc_sign: DEFAULT_DC_SIGN_CDF[MINIMAL_COEFF_CDF_Q_CTX][DC_SIGN_PLANE_TYPE_LUMA]
                 [DC_SIGN_GROUP_VISIBLE][DC_SIGN_CTX_NEUTRAL],
             v_txb_skip_eobu: DEFAULT_V_TXB_SKIP_CDF[MINIMAL_COEFF_CDF_Q_CTX]

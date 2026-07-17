@@ -313,9 +313,7 @@ fn cdef_output_row<const W: usize>(
     stride: usize,
     row: usize,
 ) -> Option<&mut [u16; W]> {
-    let start = row.checked_mul(stride)?;
-    let end = start.checked_add(W)?;
-    out.get_mut(start..end)?.try_into().ok()
+    out.get_mut(row.checked_mul(stride)?..)?.first_chunk_mut()
 }
 
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]

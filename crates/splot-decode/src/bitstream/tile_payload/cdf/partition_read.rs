@@ -8,6 +8,7 @@
 use splot_core::Error as CoreError;
 use splot_core::symbol::{Symbol, SymbolDecoder};
 
+use super::block_read::BlockSymbolTraceReadError;
 use super::{TileCdfError, TileCdfSelector, TileCdfSubset};
 
 #[derive(Debug, thiserror::Error)]
@@ -24,11 +25,13 @@ impl TileCdfSubset {
         selector: TileCdfSelector,
         symbol_decoder: &mut SymbolDecoder<'_>,
     ) -> Result<Symbol, PartitionEntrySymbolReadError> {
-        let symbol = self
-            .with_row_mut(selector, |row| symbol_decoder.read_symbol_u16(row))
-            .map_err(PartitionEntrySymbolReadError::Cdf)?
-            .map_err(PartitionEntrySymbolReadError::Symbol)?;
-        Ok(symbol)
+        self.read_block_symbol_trace(selector, symbol_decoder)
+            .map_err(|error| match error {
+                BlockSymbolTraceReadError::Cdf(error) => PartitionEntrySymbolReadError::Cdf(error),
+                BlockSymbolTraceReadError::Symbol(error) => {
+                    PartitionEntrySymbolReadError::Symbol(error)
+                }
+            })
     }
 }
 

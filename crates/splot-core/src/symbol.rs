@@ -50,6 +50,66 @@ impl CdfStorage for u16 {
     }
 }
 
+macro_rules! read_symbol_from_cdf {
+    ($decoder:expr, $cdf:expr) => {{
+        let decoder = $decoder;
+        let cdf = $cdf;
+        let shape = decoder.validate_cdf(cdf)?;
+        let mut cur = decoder.symbol_range;
+        let mut symbol = 0usize;
+
+        let (prev, cur) = loop {
+            let prev = cur;
+            let f = if symbol == shape.n - 1 {
+                0
+            } else {
+                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
+            };
+            let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
+            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
+            let next_cur = (((decoder.symbol_range >> 8) * pp) >> 7) << 3;
+
+            if decoder.symbol_value >= next_cur {
+                break (prev, next_cur);
+            }
+
+            cur = next_cur;
+            symbol += 1;
+            if symbol >= shape.n {
+                return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+            }
+        };
+
+        let new_range = prev.saturating_sub(cur);
+        if new_range == 0 {
+            return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
+        }
+        let new_value = decoder.symbol_value - cur;
+        let bits = 15 - floor_log2(new_range);
+        decoder.symbol_range = new_range << bits;
+        let num_bits = decoder.num_bits_to_read(bits);
+        let new_data = decoder.reader.read_bits(num_bits)?;
+        let padded_data = new_data << (bits - num_bits);
+        let mask = (1u32 << bits) - 1;
+        decoder.symbol_value = (new_value << bits) | (padded_data ^ mask);
+        decoder.symbol_max_bits -= i64::from(bits);
+        decoder.frame_symbol_count = decoder.frame_symbol_count.saturating_add(1);
+
+        if decoder.config.cdf_update == CdfUpdateMode::Enabled {
+            update_cdf(cdf, shape, symbol);
+        }
+
+        trace::emit(
+            "read_symbol",
+            symbol as u32,
+            decoder.reader.consumed_bits(),
+            decoder.symbol_max_bits,
+        );
+
+        Ok(Symbol::new(symbol as u8))
+    }};
+}
+
 /// Relative bit position inside the tile payload consumed by a symbol decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SymbolBitPosition(u64);
@@ -388,7 +448,7 @@ impl<'a> SymbolDecoder<'a> {
     /// supply a required coded bit.
     #[track_caller]
     pub fn read_symbol(&mut self, cdf: &mut [i32]) -> Result<Symbol> {
-        self.read_symbol_impl(cdf)
+        read_symbol_from_cdf!(self, cdf)
     }
 
     /// Decodes one AV2 § 8.2.6 symbol from a compact `u16` CDF row.
@@ -399,64 +459,7 @@ impl<'a> SymbolDecoder<'a> {
     /// Returns the same errors as [`Self::read_symbol`].
     #[track_caller]
     pub fn read_symbol_u16(&mut self, cdf: &mut [u16]) -> Result<Symbol> {
-        self.read_symbol_impl(cdf)
-    }
-
-    #[track_caller]
-    fn read_symbol_impl<T: CdfStorage>(&mut self, cdf: &mut [T]) -> Result<Symbol> {
-        let shape = self.validate_cdf(cdf)?;
-        let mut cur = self.symbol_range;
-        let mut symbol = 0usize;
-
-        let (prev, cur) = loop {
-            let prev = cur;
-            let f = if symbol == shape.n - 1 {
-                0
-            } else {
-                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
-            };
-            let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
-            let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
-            let next_cur = (((self.symbol_range >> 8) * pp) >> 7) << 3;
-
-            if self.symbol_value >= next_cur {
-                break (prev, next_cur);
-            }
-
-            cur = next_cur;
-            symbol += 1;
-            if symbol >= shape.n {
-                return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-            }
-        };
-
-        let new_range = prev.saturating_sub(cur);
-        if new_range == 0 {
-            return Err(self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
-        }
-        let new_value = self.symbol_value - cur;
-        let bits = 15 - floor_log2(new_range);
-        self.symbol_range = new_range << bits;
-        let num_bits = self.num_bits_to_read(bits);
-        let new_data = self.reader.read_bits(num_bits)?;
-        let padded_data = new_data << (bits - num_bits);
-        let mask = (1u32 << bits) - 1;
-        self.symbol_value = (new_value << bits) | (padded_data ^ mask);
-        self.symbol_max_bits -= i64::from(bits);
-        self.frame_symbol_count = self.frame_symbol_count.saturating_add(1);
-
-        if self.config.cdf_update == CdfUpdateMode::Enabled {
-            update_cdf(cdf, shape, symbol);
-        }
-
-        trace::emit(
-            "read_symbol",
-            symbol as u32,
-            self.reader.consumed_bits(),
-            self.symbol_max_bits,
-        );
-
-        Ok(Symbol::new(symbol as u8))
+        read_symbol_from_cdf!(self, cdf)
     }
 
     /// Validates AV2 § 8.2.4 `exit_symbol()` and returns the final decoder summary.

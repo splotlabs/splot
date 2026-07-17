@@ -70,43 +70,31 @@ fn br(pos: usize, plane: usize, is_lf: bool, tx_class: usize) -> CoeffBrContext 
 }
 
 #[test]
-fn coeff_br_dc_luma_2d_sums_clamped_neighbours() {
+fn coeff_br_contexts_cover_neighbour_and_plane_rules() {
     let mut level = [0u8; 16];
     level[1] = 7;
     level[4] = 2;
     level[5] = 10;
     assert_eq!(br(0, 0, false, 0).ctx(&level), 6);
-}
 
-#[test]
-fn coeff_br_clamps_halved_magnitude_to_six() {
-    let mut level = [0u8; 16];
+    level.fill(0);
     level[6] = 5;
     level[9] = 5;
     level[10] = 5;
     assert_eq!(br(5, 0, false, 0).ctx(&level), 6);
-}
 
-#[test]
-fn coeff_br_dc_non_2d_and_low_frequency_add_seven() {
     let zero = [0u8; 16];
     assert_eq!(br(0, 0, false, 2).ctx(&zero), 7);
     assert_eq!(br(5, 0, true, 0).ctx(&zero), 7);
     assert_eq!(br(5, 0, false, 0).ctx(&zero), 0);
-}
 
-#[test]
-fn coeff_br_chroma_clamps_to_three() {
-    let mut level = [0u8; 16];
+    level.fill(0);
     level[1] = 5;
     level[4] = 5;
     level[5] = 5;
     assert_eq!(br(0, 1, false, 0).ctx(&level), 3);
-}
 
-#[test]
-fn coeff_br_non_2d_chroma_reads_only_two_neighbours() {
-    let mut level = [0u8; 16];
+    level.fill(0);
     level[6] = 1;
     level[9] = 1;
     level[13] = 4;
@@ -155,15 +143,12 @@ fn coeff_base_idtx_sums_clamped_left_and_above() {
 }
 
 #[test]
-fn coeff_base_idtx_skips_missing_neighbours() {
+fn coeff_idtx_contexts_cover_missing_neighbours_and_clamps() {
     let lvl = [7u8; 16];
     assert_eq!(coeff_base_idtx_ctx(&lvl, 0, 0, 4), 0);
     assert_eq!(coeff_base_idtx_ctx(&lvl, 0, 1, 4), 3);
     assert_eq!(coeff_base_idtx_ctx(&lvl, 1, 0, 4), 3);
-}
 
-#[test]
-fn coeff_br_idtx_clamps_to_five_then_six() {
     let lvl = [9u8; 16];
     assert_eq!(coeff_br_idtx_ctx(&lvl, 1, 1, 4), 6);
     assert_eq!(coeff_br_idtx_ctx(&lvl, 0, 1, 4), 5);
@@ -226,41 +211,23 @@ fn coeff_base_luma_hf_non_2d_adds_fifteen() {
 }
 
 #[test]
-fn coeff_base_luma_lf_2d_branches() {
+fn coeff_base_luma_lf_covers_2d_and_directional_branches() {
     let z = [0u8; 64];
-    assert_eq!(
-        cb8(0, 0, true, false, 0, 0).select(&z),
-        CoeffBaseSelection::Lf { ctx: 0 }
-    );
-    assert_eq!(
-        cb8(1, 0, true, false, 1, 0).select(&z),
-        CoeffBaseSelection::Lf { ctx: 9 }
-    );
-    assert_eq!(
-        cb8(9, 0, true, false, 1, 0).select(&z),
-        CoeffBaseSelection::Lf { ctx: 16 }
-    );
-}
-
-#[test]
-fn coeff_base_luma_lf_non_2d_keys_on_horiz_col_vert_row() {
-    let z = [0u8; 64];
-    assert_eq!(
-        cb8(0, 0, true, false, 1, 1).select(&z),
-        CoeffBaseSelection::Lf { ctx: 21 }
-    );
-    assert_eq!(
-        cb8(1, 0, true, false, 1, 1).select(&z),
-        CoeffBaseSelection::Lf { ctx: 28 }
-    );
-    assert_eq!(
-        cb8(0, 0, true, false, 1, 2).select(&z),
-        CoeffBaseSelection::Lf { ctx: 21 }
-    );
-    assert_eq!(
-        cb8(9, 0, true, false, 1, 2).select(&z),
-        CoeffBaseSelection::Lf { ctx: 28 }
-    );
+    let cases = [
+        ((0, 0, 0), 0),
+        ((1, 1, 0), 9),
+        ((9, 1, 0), 16),
+        ((0, 1, 1), 21),
+        ((1, 1, 1), 28),
+        ((0, 1, 2), 21),
+        ((9, 1, 2), 28),
+    ];
+    for ((pos, c, tx_class), ctx) in cases {
+        assert_eq!(
+            cb8(pos, 0, true, false, c, tx_class).select(&z),
+            CoeffBaseSelection::Lf { ctx }
+        );
+    }
 }
 
 #[test]

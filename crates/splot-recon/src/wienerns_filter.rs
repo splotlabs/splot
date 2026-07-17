@@ -298,6 +298,33 @@ pub fn wiener_ns_filter_luma_block_padded_cells_into<T: ReconSample>(
     )
 }
 
+fn padded_luma_offsets(stride: usize) -> Result<([usize; WIENER_NS_LUMA_TAPS], usize)> {
+    let center = WIENER_NS_LUMA_TAP_RADIUS
+        .checked_mul(stride)
+        .and_then(|row| row.checked_add(WIENER_NS_LUMA_TAP_RADIUS))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS padded source stride",
+        })?;
+    let mut taps = [0usize; WIENER_NS_LUMA_TAPS];
+    for (offset, &(dy, dx, _)) in taps.iter_mut().zip(&WIENER_NS_CONFIG_Y) {
+        let row = usize::try_from(dy + WIENER_NS_LUMA_TAP_RADIUS as isize)
+            .map_err(|_| ReconError::ArithmeticOverflow {
+                context: "Wiener NS padded tap offset",
+            })?
+            .checked_mul(stride)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "Wiener NS padded tap offset",
+            })?;
+        *offset = usize::try_from(dx + WIENER_NS_LUMA_TAP_RADIUS as isize)
+            .ok()
+            .and_then(|col| row.checked_add(col))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "Wiener NS padded tap offset",
+            })?;
+    }
+    Ok((taps, center))
+}
+
 fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     output: &mut [T],
     params: &WienerNsLumaFilter<'_>,
@@ -314,30 +341,7 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     WienerNsLumaPaddedSource::new(source.samples, source.stride, params.width, params.height)?;
 
     let stride = source.stride;
-    let mut tap_offsets = [0usize; WIENER_NS_LUMA_TAPS];
-    let center_offset = WIENER_NS_LUMA_TAP_RADIUS
-        .checked_mul(stride)
-        .and_then(|row| row.checked_add(WIENER_NS_LUMA_TAP_RADIUS))
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "Wiener NS padded source stride",
-        })?;
-    for (offset, &(dy, dx, _)) in tap_offsets.iter_mut().zip(&WIENER_NS_CONFIG_Y) {
-        let row = usize::try_from(dy + WIENER_NS_LUMA_TAP_RADIUS as isize)
-            .map_err(|_| ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded tap offset",
-            })?
-            .checked_mul(stride)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded tap offset",
-            })?;
-        *offset = usize::try_from(dx + WIENER_NS_LUMA_TAP_RADIUS as isize)
-            .ok()
-            .and_then(|col| row.checked_add(col))
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "Wiener NS padded tap offset",
-            })?;
-    }
-
+    let (tap_offsets, center_offset) = padded_luma_offsets(stride)?;
     let max_sample = params.bit_depth.max_sample();
     let padded_width = params.width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
     let padded_rows = params.height + 2 * WIENER_NS_LUMA_TAP_RADIUS;
