@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0a6696eeda2bdaebeb07689985280ef523f41d5a",
+  "audited_commit": "2c1172bfcbf3e389a621ccf6558fb0a0d3143c57",
   "outcome": "success",
   "files": [
     {
@@ -3485,7 +3485,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/mc/optflow.rs",
-      "sha256": "55c8b7bb97f7f790cb88447c8c42b096434348ef7c67ca4ca16764259463d187",
+      "sha256": "6b188525d921d3d192426c3cf20da3506705bc73eab3719c89a666f7a10bdc26",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -4931,7 +4931,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc.rs",
-      "sha256": "1d0b81ec2609ee9c00f4452e20bd9088f4b1e37ddbae1ccf57d9058ce96e04ed",
+      "sha256": "c62212a2828fa980dd75583f2a933ea4f082caac2bcb1c19eb8203e89bafea8d",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-SUBPEL-MC"
@@ -4940,7 +4940,7 @@
     },
     {
       "path": "crates/splot-recon/src/subpel_mc/tests.rs",
-      "sha256": "f889a5fd4619d173e18b27c626d986312e2a0fe5e9091fcb443d1ecb1a66b223",
+      "sha256": "2803be898560808e103e172c1ebdf33f693f6c81911ccb04410189ccdb0984c5",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [],
       "outcome": "success"

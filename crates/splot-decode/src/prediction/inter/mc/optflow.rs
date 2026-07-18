@@ -53,8 +53,8 @@ enum RefinemvCandidates {
 
 /// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
-/// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
-const MAX_MOTION_GRID_SUBPEL_INTERMEDIATE: usize = 16 * (16 + 7);
+/// Horizontal-pass rows plus one materialized predictor for a 16x16 subblock.
+const MAX_MOTION_GRID_SUBPEL_SCRATCH: usize = 16 * (16 + 7) + MAX_MOTION_GRID_SUBBLOCK_SAMPLES;
 
 std::thread_local! {
     static OPTFLOW_SCRATCH: std::cell::Cell<Option<OptflowScratch>> =
@@ -853,7 +853,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
     );
     let output_stride = prediction.block_w;
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_SCRATCH];
     super::predict_compound_average_into(
         &prediction,
         &[params0, params1],
@@ -901,7 +901,7 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_SCRATCH];
     for row in (0..prediction.block_h).step_by(subblock_h) {
         for col in (0..prediction.block_w).step_by(subblock_w) {
             let width = subblock_w.min(prediction.block_w - col);
