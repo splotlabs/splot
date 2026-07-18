@@ -950,6 +950,20 @@ fn compound_average_into_matches_materialized_second_predictor() {
                 stride,
             )
             .unwrap();
+            let scratch_len = validate_subpel_params(&params).unwrap() * params.w + pred0.len();
+            let mut scratch = vec![0; scratch_len];
+            let mut scratched = vec![sentinel; strided.len()];
+            subpel_predict_block_compound_average_strided_into(
+                &view,
+                &params,
+                &pred0,
+                cwp_weight,
+                Some(&mut scratch),
+                &mut scratched,
+                stride,
+            )
+            .unwrap();
+            assert_eq!(scratched, strided);
             for row in 0..params.h {
                 assert_eq!(
                     &strided[row * stride..row * stride + params.w],

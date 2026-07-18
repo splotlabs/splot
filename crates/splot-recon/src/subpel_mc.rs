@@ -1216,10 +1216,7 @@ fn subpel_horizontal_only_into<T: ReconSample, O, F: FnMut(i32) -> O, const INTE
         if let Some(window_start) = x_window_start {
             let row_base = ref_row * reference.stride + window_start;
             let window = &reference.samples[row_base..row_base + params.w + NUM_TAPS - 1];
-            for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
-                let Some(win) = win.first_chunk::<NUM_TAPS>() else {
-                    continue;
-                };
+            for (out, win) in row_out.iter_mut().zip(window.array_windows::<NUM_TAPS>()) {
                 let mut sum = 0i32;
                 for (&tap, &sample) in full_taps.iter().zip(win) {
                     sum += tap * i32::from(sample.to_u16());
@@ -1547,10 +1544,7 @@ fn subpel_predict_block_internal_into_validated<
                     continue;
                 }
                 let taps = &h_filter_rows[phase];
-                for (out, win) in row_out.iter_mut().zip(window.windows(NUM_TAPS)) {
-                    let Some(win) = win.first_chunk::<NUM_TAPS>() else {
-                        continue;
-                    };
+                for (out, win) in row_out.iter_mut().zip(window.array_windows::<NUM_TAPS>()) {
                     let mut s = 0i32;
                     for (&tap, &sample) in taps.iter().zip(win) {
                         s += tap * i32::from(sample.to_u16());
