@@ -295,8 +295,8 @@ fn base_selector(
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> CoeffCdfSelector {
     let selection = CoeffBaseContext {
-        pos: entry.pos(),
-        bwl: config.tx_width_log2,
+        row: entry.row(),
+        col: entry.col(),
         stride: block.level_stride(),
         plane: config.plane,
         is_lf,
@@ -349,8 +349,8 @@ fn base_range_selector(
     config: CoeffBaseDerivedLevelPassConfig,
 ) -> CoeffCdfSelector {
     let ctx = CoeffBrContext {
-        pos: entry.pos(),
-        bwl: config.tx_width_log2,
+        row: entry.row(),
+        col: entry.col(),
         stride: block.level_stride(),
         plane: config.plane,
         is_lf,

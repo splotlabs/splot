@@ -74,8 +74,8 @@ fn coeff_base_bob_zero_segment_eob() {
 
 fn br(pos: usize, plane: usize, is_lf: bool, tx_class: usize) -> CoeffBrContext {
     CoeffBrContext {
-        pos,
-        bwl: 2,
+        row: pos >> 2,
+        col: pos & 3,
         stride: 4 + PAD,
         plane,
         is_lf,
@@ -127,8 +127,8 @@ fn coeff_br_is_total_for_out_of_bounds_and_short_slices() {
 fn coeff_br_is_total_for_pathological_geometry() {
     let level = [0u8; 16];
     let _ = CoeffBrContext {
-        pos: usize::MAX,
-        bwl: u32::MAX,
+        row: usize::MAX,
+        col: usize::MAX,
         stride: usize::MAX,
         plane: 0,
         is_lf: false,
@@ -136,8 +136,8 @@ fn coeff_br_is_total_for_pathological_geometry() {
     }
     .ctx(&level);
     let _ = CoeffBrContext {
-        pos: usize::MAX,
-        bwl: 2,
+        row: usize::MAX,
+        col: usize::MAX,
         stride: usize::MAX,
         plane: 1,
         is_lf: true,
@@ -184,8 +184,8 @@ fn cb8(
     tx_class: usize,
 ) -> CoeffBaseContext {
     CoeffBaseContext {
-        pos,
-        bwl: 3,
+        row: pos >> 3,
+        col: pos & 7,
         stride: 8 + PAD,
         plane,
         is_lf,
@@ -314,8 +314,8 @@ fn coeff_base_is_total_for_short_slice_and_pathological_geometry() {
     );
     let z = [0u8; 4];
     let _ = CoeffBaseContext {
-        pos: usize::MAX,
-        bwl: u32::MAX,
+        row: usize::MAX,
+        col: usize::MAX,
         stride: usize::MAX,
         plane: 0,
         is_lf: true,
