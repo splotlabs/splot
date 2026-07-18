@@ -262,6 +262,7 @@ pub(crate) struct TemporalMvContext {
     field: ProjectedTemporalMotionField,
     projection_scratch: ProjectedTemporalMotionField,
     average_scratch: ProjectedTemporalMotionField,
+    target_cache: Vec<(u32, Option<usize>, i32)>,
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
     tip: Option<TipReferencePair>,
@@ -331,6 +332,7 @@ impl TemporalMvContext {
                 height8: 0,
                 cells: Vec::new(),
             },
+            target_cache: Vec::new(),
             trajectories: None,
             trajectory_scratch: None,
             tip: None,
@@ -354,6 +356,7 @@ impl TemporalMvContext {
             field,
             projection_scratch: ProjectedTemporalMotionField::new(0, 0)?,
             average_scratch: ProjectedTemporalMotionField::new(0, 0)?,
+            target_cache: Vec::new(),
             trajectories: None,
             trajectory_scratch: None,
             tip: Some(references),
@@ -500,6 +503,7 @@ impl TemporalMvContext {
                 projection.side,
                 projection.target_ref,
                 &self.ref_order_hints,
+                &mut self.target_cache,
                 trajectories.as_mut(),
                 &mut self.field,
             );
@@ -1020,6 +1024,7 @@ fn project_temporal_motion_field(
     side: usize,
     target_ref: Option<usize>,
     ref_order_hints: &[Option<u32>],
+    target_cache: &mut Vec<(u32, Option<usize>, i32)>,
     mut trajectories: Option<&mut TrajectoryState>,
     output: &mut ProjectedTemporalMotionField,
 ) {
@@ -1032,20 +1037,23 @@ fn project_temporal_motion_field(
     let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
     let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
     let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
-    let target_cache = source
-        .ref_order_hints
-        .iter()
-        .flatten()
-        .copied()
-        .map(|hint| {
-            let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
-            (
-                hint,
-                mapped_reference(source_order_hint, hint, ref_order_hints),
-                super::super::get_relative_dist(source_hint, target_hint),
-            )
-        })
-        .collect::<Vec<_>>();
+    target_cache.clear();
+    target_cache.reserve(source.ref_order_hints.len());
+    target_cache.extend(
+        source
+            .ref_order_hints
+            .iter()
+            .flatten()
+            .copied()
+            .map(|hint| {
+                let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
+                (
+                    hint,
+                    mapped_reference(source_order_hint, hint, ref_order_hints),
+                    super::super::get_relative_dist(source_hint, target_hint),
+                )
+            }),
+    );
     for (y8, row) in source
         .cells
         .chunks_exact(source.width8)
@@ -1300,6 +1308,7 @@ mod tests {
             field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
             projection_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
             average_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
+            target_cache: Vec::new(),
             trajectories: None,
             trajectory_scratch: None,
             tip: None,
@@ -1564,7 +1573,20 @@ mod tests {
         };
         let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
 
-        project_temporal_motion_field(&source, 4, 2, 1, 8, 0, 1, None, &[], None, &mut output);
+        project_temporal_motion_field(
+            &source,
+            4,
+            2,
+            1,
+            8,
+            0,
+            1,
+            None,
+            &[],
+            &mut Vec::new(),
+            None,
+            &mut output,
+        );
 
         assert_eq!(
             output.cell(8, 25),
@@ -1599,6 +1621,7 @@ mod tests {
             0,
             None,
             &[Some(4)],
+            &mut Vec::new(),
             None,
             &mut output,
         );
@@ -1657,6 +1680,7 @@ mod tests {
             1,
             None,
             &[Some(6), Some(4), None, None, None, Some(0)],
+            &mut Vec::new(),
             Some(&mut trajectories),
             &mut output,
         );
