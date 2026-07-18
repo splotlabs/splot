@@ -26,7 +26,7 @@ use super::quant_pass::{
 };
 use super::quant_state::{
     CoeffQuantStateAccumulator, CoeffQuantStateConfig, NonZeroCoeffQuantState,
-    apply_nonzero_coeff_quant_state_step,
+    apply_derived_nonzero_coeff_quant_state_step, apply_nonzero_coeff_quant_state_step,
 };
 use super::read_quant::{CoeffReadQuantConfig, CoeffReadQuantInput, CoeffReadQuantState};
 use super::scan_walk::{NonZeroCoeffScanWalk, walk_nonzero_coeff_scan};
@@ -433,12 +433,6 @@ pub(crate) fn apply_nonzero_coeff_ordinary_pass_with_derived_base(
         w4: sign_config.w4,
         h4: sign_config.h4,
     };
-    for entry in walk.entries() {
-        base_level_pass
-            .block()
-            .level_at(entry.row(), entry.col())
-            .map_err(CoeffSignSourceDeriveError::from)?;
-    }
     let quant_config = CoeffQuantPassConfig {
         is_hidden: first_pass.is_hidden(),
         sum_abs1: first_pass.sum_abs1(),
@@ -551,6 +545,11 @@ enum InterleavedSignInputs<'a> {
     Derived(CoeffSignSourceDeriveConfig<'a>),
 }
 
+/// Interleaves the per-entry sign read and quant read/write passes.
+///
+/// The historical per-entry `max_level >= use_tcq` pre-check is not repeated
+/// here: `derive_coeff_max_level` always returns at least
+/// `NUM_BASE_LEVELS + 1`, which exceeds any `use_tcq` value.
 fn apply_interleaved_sign_and_quant_pass(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -570,18 +569,6 @@ fn apply_interleaved_sign_and_quant_pass(
         tx_class: max_level_config.tx_class,
         is_hidden: config.is_hidden,
     };
-    for (index, entry) in walk.entries().enumerate() {
-        let max_level = derive_coeff_max_level(entry, max_level_config);
-        max_level
-            .max_level
-            .checked_sub(u32::from(config.use_tcq))
-            .ok_or(CoeffQuantPassError::InvalidMaxLevel {
-                index,
-                max_level: max_level.max_level,
-                use_tcq: config.use_tcq,
-            })?;
-    }
-
     let mut read_quant_state = CoeffReadQuantState::new(CoeffReadQuantConfig {
         is_hidden: config.is_hidden,
         allow_tcq: config.use_tcq,
@@ -632,14 +619,25 @@ fn apply_interleaved_sign_and_quant_pass(
                 },
             )
             .map_err(CoeffQuantPassError::from)?;
-        apply_nonzero_coeff_quant_state_step(
-            block,
-            &mut quant_state,
-            index,
-            entry,
-            sign,
-            read_quant.quant_input(),
-        )
+        match sign_inputs {
+            InterleavedSignInputs::Explicit(_) => apply_nonzero_coeff_quant_state_step(
+                block,
+                &mut quant_state,
+                index,
+                entry,
+                sign,
+                read_quant.quant_input(),
+            ),
+            InterleavedSignInputs::Derived(_) => apply_derived_nonzero_coeff_quant_state_step(
+                block,
+                &mut quant_state,
+                index,
+                entry,
+                level,
+                sign,
+                read_quant.quant_input(),
+            ),
+        }
         .map_err(CoeffQuantPassError::from)?;
     }
 
