@@ -47,23 +47,14 @@ const fn coeff_position(pos: usize, bwl: u32) -> CoeffPosition {
     }
 }
 
-fn clamped_level_at(
-    level: &[u8],
-    row: usize,
-    col: usize,
-    txw: usize,
-    txh: usize,
-    limit: u32,
-) -> u32 {
-    if row >= txh || col >= txw {
-        return 0;
-    }
-    let flat = row.saturating_mul(txw).saturating_add(col);
-    if flat < level.len() {
-        u32::from(level[flat]).min(limit)
-    } else {
-        0
-    }
+/// Reads one level from the stride-padded grid kept by
+/// `TransformCoeffBlockState`; the `LEVEL_GRID_PAD` zero rows and columns
+/// below and right of the block absorb every § 8.3.2 neighbor offset, so no
+/// per-axis boundary handling is needed.
+fn clamped_level_at(level: &[u8], stride: usize, row: usize, col: usize, limit: u32) -> u32 {
+    level
+        .get(row.wrapping_mul(stride).wrapping_add(col))
+        .map_or(0, |&value| u32::from(value).min(limit))
 }
 
 pub(crate) const fn coeff_base_eob_ctx(c: usize, bwl: u32, height: usize) -> usize {
@@ -96,8 +87,7 @@ pub(crate) const fn coeff_base_bob_ctx(bob: usize, seg_eob: usize) -> usize {
 pub(crate) struct CoeffBrContext {
     pub(crate) pos: usize,
     pub(crate) bwl: u32,
-    pub(crate) txw: usize,
-    pub(crate) txh: usize,
+    pub(crate) stride: usize,
     pub(crate) plane: usize,
     pub(crate) is_lf: bool,
     pub(crate) tx_class: usize,
@@ -119,10 +109,9 @@ impl CoeffBrContext {
             let off = MAG_REF_OFFSET_WITH_TX_CLASS[class_idx][idx];
             mag += clamped_level_at(
                 level,
-                pos.row.saturating_add(off[0]),
-                pos.col.saturating_add(off[1]),
-                self.txw,
-                self.txh,
+                self.stride,
+                pos.row.wrapping_add(off[0]),
+                pos.col.wrapping_add(off[1]),
                 clamp,
             );
             idx += 1;
@@ -138,23 +127,23 @@ impl CoeffBrContext {
     }
 }
 
-fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, txw: usize, clamp: u32) -> u32 {
+fn idtx_neighbour_mag(level: &[u8], row: usize, col: usize, stride: usize, clamp: u32) -> u32 {
     let mut mag = 0u32;
     if col > 0 {
-        mag += clamped_level_at(level, row, col - 1, txw, usize::MAX, clamp);
+        mag += clamped_level_at(level, stride, row, col - 1, clamp);
     }
     if row > 0 {
-        mag += clamped_level_at(level, row - 1, col, txw, usize::MAX, clamp);
+        mag += clamped_level_at(level, stride, row - 1, col, clamp);
     }
     mag
 }
 
-pub(crate) fn coeff_base_idtx_ctx(level: &[u8], row: usize, col: usize, txw: usize) -> usize {
-    idtx_neighbour_mag(level, row, col, txw, 3) as usize
+pub(crate) fn coeff_base_idtx_ctx(level: &[u8], row: usize, col: usize, stride: usize) -> usize {
+    idtx_neighbour_mag(level, row, col, stride, 3) as usize
 }
 
-pub(crate) fn coeff_br_idtx_ctx(level: &[u8], row: usize, col: usize, txw: usize) -> usize {
-    let mag = idtx_neighbour_mag(level, row, col, txw, MAX_BASE_BR_RANGE - 1);
+pub(crate) fn coeff_br_idtx_ctx(level: &[u8], row: usize, col: usize, stride: usize) -> usize {
+    let mag = idtx_neighbour_mag(level, row, col, stride, MAX_BASE_BR_RANGE - 1);
     mag.min(6) as usize
 }
 
@@ -171,8 +160,7 @@ pub(crate) enum CoeffBaseSelection {
 pub(crate) struct CoeffBaseContext {
     pub(crate) pos: usize,
     pub(crate) bwl: u32,
-    pub(crate) txw: usize,
-    pub(crate) txh: usize,
+    pub(crate) stride: usize,
     pub(crate) plane: usize,
     pub(crate) is_lf: bool,
     pub(crate) is_hidden: bool,
@@ -201,10 +189,9 @@ impl CoeffBaseContext {
                 };
             mag += clamped_level_at(
                 level,
-                pos.row.saturating_add(off[0] as usize),
-                pos.col.saturating_add(off[1] as usize),
-                self.txw,
-                self.txh,
+                self.stride,
+                pos.row.wrapping_add(off[0] as usize),
+                pos.col.wrapping_add(off[1] as usize),
                 mag_limit,
             );
             idx += 1;
@@ -310,23 +297,23 @@ pub(crate) const fn idtx_sign_ctx(
     level: &[u8],
     row: usize,
     col: usize,
-    txw: usize,
+    stride: usize,
 ) -> usize {
     let mut signc: i32 = 0;
     if col > 0 {
-        let idx = row.saturating_mul(txw).saturating_add(col - 1);
+        let idx = row.saturating_mul(stride).saturating_add(col - 1);
         if idx < quant_sign.len() {
             signc += quant_sign[idx];
         }
     }
     if row > 0 {
-        let idx = (row - 1).saturating_mul(txw).saturating_add(col);
+        let idx = (row - 1).saturating_mul(stride).saturating_add(col);
         if idx < quant_sign.len() {
             signc += quant_sign[idx];
         }
     }
     if col > 0 && row > 0 {
-        let idx = (row - 1).saturating_mul(txw).saturating_add(col - 1);
+        let idx = (row - 1).saturating_mul(stride).saturating_add(col - 1);
         if idx < quant_sign.len() {
             signc += quant_sign[idx];
         }
@@ -342,7 +329,7 @@ pub(crate) const fn idtx_sign_ctx(
     } else {
         0
     };
-    let lidx = row.saturating_mul(txw).saturating_add(col);
+    let lidx = row.saturating_mul(stride).saturating_add(col);
     let level_val = if lidx < level.len() { level[lidx] } else { 0 };
     if level_val > COEFF_BASE_RANGE as u8 && ctx != 0 {
         ctx += 2;

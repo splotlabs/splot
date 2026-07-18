@@ -194,7 +194,7 @@ where
 {
     let block = start.block();
     let width = block.width();
-    let coeff_count = block.level().len();
+    let coeff_count = block.coeff_count();
     let mut entries = Vec::new();
     entries.try_reserve(capacity)?;
 
@@ -235,7 +235,7 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
 
     let block = start.block();
     let width = block.width();
-    let coeff_count = block.level().len();
+    let coeff_count = block.coeff_count();
     for (scan_index, scan_pos) in scan[..eob].iter().copied().enumerate().rev() {
         let pos = usize::from(scan_pos);
         if pos >= coeff_count {

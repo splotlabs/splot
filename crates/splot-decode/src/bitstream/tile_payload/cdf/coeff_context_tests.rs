@@ -3,6 +3,21 @@
 
 use super::*;
 
+const PAD: usize = super::super::super::coeff_state::LEVEL_GRID_PAD;
+
+/// Re-lays a flat `txw` x `txh` level grid into the padded-stride layout the
+/// production contexts read.
+fn padded(flat: &[u8], txw: usize, txh: usize) -> Vec<u8> {
+    let stride = txw + PAD;
+    let mut out = vec![0u8; stride * (txh + PAD)];
+    for row in 0..txh {
+        for col in 0..txw {
+            out[row * stride + col] = flat[row * txw + col];
+        }
+    }
+    out
+}
+
 #[test]
 fn coeff_base_eob_partitions_the_scan_position() {
     let (bwl, height) = (5u32, 32usize);
@@ -61,8 +76,7 @@ fn br(pos: usize, plane: usize, is_lf: bool, tx_class: usize) -> CoeffBrContext 
     CoeffBrContext {
         pos,
         bwl: 2,
-        txw: 4,
-        txh: 4,
+        stride: 4 + PAD,
         plane,
         is_lf,
         tx_class,
@@ -75,15 +89,15 @@ fn coeff_br_contexts_cover_neighbour_and_plane_rules() {
     level[1] = 7;
     level[4] = 2;
     level[5] = 10;
-    assert_eq!(br(0, 0, false, 0).ctx(&level), 6);
+    assert_eq!(br(0, 0, false, 0).ctx(&padded(&level, 4, 4)), 6);
 
     level.fill(0);
     level[6] = 5;
     level[9] = 5;
     level[10] = 5;
-    assert_eq!(br(5, 0, false, 0).ctx(&level), 6);
+    assert_eq!(br(5, 0, false, 0).ctx(&padded(&level, 4, 4)), 6);
 
-    let zero = [0u8; 16];
+    let zero = padded(&[0u8; 16], 4, 4);
     assert_eq!(br(0, 0, false, 2).ctx(&zero), 7);
     assert_eq!(br(5, 0, true, 0).ctx(&zero), 7);
     assert_eq!(br(5, 0, false, 0).ctx(&zero), 0);
@@ -92,18 +106,18 @@ fn coeff_br_contexts_cover_neighbour_and_plane_rules() {
     level[1] = 5;
     level[4] = 5;
     level[5] = 5;
-    assert_eq!(br(0, 1, false, 0).ctx(&level), 3);
+    assert_eq!(br(0, 1, false, 0).ctx(&padded(&level, 4, 4)), 3);
 
     level.fill(0);
     level[6] = 1;
     level[9] = 1;
     level[13] = 4;
-    assert_eq!(br(5, 1, false, 2).ctx(&level), 1);
+    assert_eq!(br(5, 1, false, 2).ctx(&padded(&level, 4, 4)), 1);
 }
 
 #[test]
 fn coeff_br_is_total_for_out_of_bounds_and_short_slices() {
-    let full = [9u8; 16];
+    let full = padded(&[9u8; 16], 4, 4);
     assert_eq!(br(15, 0, false, 0).ctx(&full), 0);
     let short = [0u8, 9, 0, 0];
     assert_eq!(br(0, 0, false, 0).ctx(&short), 3);
@@ -115,8 +129,7 @@ fn coeff_br_is_total_for_pathological_geometry() {
     let _ = CoeffBrContext {
         pos: usize::MAX,
         bwl: u32::MAX,
-        txw: usize::MAX,
-        txh: usize::MAX,
+        stride: usize::MAX,
         plane: 0,
         is_lf: false,
         tx_class: 9,
@@ -125,8 +138,7 @@ fn coeff_br_is_total_for_pathological_geometry() {
     let _ = CoeffBrContext {
         pos: usize::MAX,
         bwl: 2,
-        txw: usize::MAX,
-        txh: 4,
+        stride: usize::MAX,
         plane: 1,
         is_lf: true,
         tx_class: 2,
@@ -174,8 +186,7 @@ fn cb8(
     CoeffBaseContext {
         pos,
         bwl: 3,
-        txw: 8,
-        txh: 8,
+        stride: 8 + PAD,
         plane,
         is_lf,
         is_hidden,
@@ -186,7 +197,7 @@ fn cb8(
 
 #[test]
 fn coeff_base_luma_hf_2d_position_buckets() {
-    let z = [0u8; 64];
+    let z = padded(&[0u8; 64], 8, 8);
     assert_eq!(
         cb8(0, 0, false, false, 0, 0).select(&z),
         CoeffBaseSelection::Hf { ctx: 0 }
@@ -203,7 +214,7 @@ fn coeff_base_luma_hf_2d_position_buckets() {
 
 #[test]
 fn coeff_base_luma_hf_non_2d_adds_fifteen() {
-    let z = [0u8; 64];
+    let z = padded(&[0u8; 64], 8, 8);
     assert_eq!(
         cb8(0, 0, false, false, 1, 2).select(&z),
         CoeffBaseSelection::Hf { ctx: 15 }
@@ -212,7 +223,7 @@ fn coeff_base_luma_hf_non_2d_adds_fifteen() {
 
 #[test]
 fn coeff_base_luma_lf_covers_2d_and_directional_branches() {
-    let z = [0u8; 64];
+    let z = padded(&[0u8; 64], 8, 8);
     let cases = [
         ((0, 0, 0), 0),
         ((1, 1, 0), 9),
@@ -232,7 +243,7 @@ fn coeff_base_luma_lf_covers_2d_and_directional_branches() {
 
 #[test]
 fn coeff_base_chroma_uv_branches() {
-    let z = [0u8; 64];
+    let z = padded(&[0u8; 64], 8, 8);
     assert_eq!(
         cb8(0, 1, false, false, 1, 0).select(&z),
         CoeffBaseSelection::Uv { ctx: 0 }
@@ -258,7 +269,7 @@ fn coeff_base_sums_clamped_neighbours_into_hf() {
         lvl[f] = 9;
     }
     assert_eq!(
-        cb8(0, 0, false, false, 0, 0).select(&lvl),
+        cb8(0, 0, false, false, 0, 0).select(&padded(&lvl, 8, 8)),
         CoeffBaseSelection::Hf { ctx: 4 }
     );
 }
@@ -268,7 +279,7 @@ fn coeff_base_low_frequency_maglimit_raises_to_five() {
     let mut lvl = [0u8; 64];
     lvl[1] = 9;
     assert_eq!(
-        cb8(0, 0, true, false, 0, 0).select(&lvl),
+        cb8(0, 0, true, false, 0, 0).select(&padded(&lvl, 8, 8)),
         CoeffBaseSelection::Lf { ctx: 3 }
     );
 }
@@ -278,7 +289,7 @@ fn coeff_base_parity_hidden_overrides_and_caps_maglimit() {
     let mut lvl = [0u8; 64];
     lvl[1] = 9;
     assert_eq!(
-        cb8(0, 0, true, true, 0, 0).select(&lvl),
+        cb8(0, 0, true, true, 0, 0).select(&padded(&lvl, 8, 8)),
         CoeffBaseSelection::Ph { ctx: 2 }
     );
 }
@@ -289,7 +300,7 @@ fn coeff_base_chroma_2d_reads_three_neighbours_not_five() {
     lvl[9] = 9;
     lvl[2] = 9;
     assert_eq!(
-        cb8(0, 1, false, false, 1, 0).select(&lvl),
+        cb8(0, 1, false, false, 1, 0).select(&padded(&lvl, 8, 8)),
         CoeffBaseSelection::Uv { ctx: 2 }
     );
 }
@@ -305,8 +316,7 @@ fn coeff_base_is_total_for_short_slice_and_pathological_geometry() {
     let _ = CoeffBaseContext {
         pos: usize::MAX,
         bwl: u32::MAX,
-        txw: usize::MAX,
-        txh: usize::MAX,
+        stride: usize::MAX,
         plane: 0,
         is_lf: true,
         is_hidden: false,

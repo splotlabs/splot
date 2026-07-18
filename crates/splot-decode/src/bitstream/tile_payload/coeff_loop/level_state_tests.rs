@@ -96,7 +96,8 @@ fn coefficient_level_state_write_sets_levels_from_scan_entries() {
     let mut expected = vec![0u8; block.level().len()];
     for read in &reads {
         let entry = read.entry();
-        expected[entry.row() * block.width() + entry.col()] = u8::try_from(read.level()).unwrap();
+        expected[entry.row() * block.level_stride() + entry.col()] =
+            u8::try_from(read.level()).unwrap();
         assert_eq!(
             block.level_at(entry.row(), entry.col()).unwrap(),
             read.level()

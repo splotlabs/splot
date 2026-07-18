@@ -230,5 +230,5 @@ fn coefficient_fsc_level_pass_rejects_static_config_before_consumption() {
     assert_eq!(tile, tile_before);
     assert_eq!(symbols.consumed_bits(), consumed_before);
     assert_eq!(symbols.symbol_count(), symbol_count_before);
-    assert_eq!(block_before.level(), &[0; 64]);
+    assert!(block_before.level().iter().all(|level| *level == 0));
 }
