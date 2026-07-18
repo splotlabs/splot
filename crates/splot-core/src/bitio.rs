@@ -181,6 +181,32 @@ impl<'a> BitReader<'a> {
         if n == 0 {
             return Ok(0);
         }
+        let bit_pos = u32::from(self.bit_pos);
+        let window = be_window(self.data, self.byte_pos);
+        self.advance_checked(n)?;
+        Ok((window >> (64 - bit_pos - n)) as u32 & (u32::MAX >> (32 - n)))
+    }
+
+    /// Advances past `n` bits without extracting them, with the same bounds
+    /// and end-of-input behavior as [`Self::read_bits`].
+    ///
+    /// # Errors
+    /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
+    /// if fewer than `n` bits remain (the reader is then positioned at end of
+    /// input).
+    pub fn skip_bits(&mut self, n: u32) -> Result<()> {
+        if n > 32 {
+            return Err(Error::BitWidthTooLarge {
+                requested: n,
+                max: 32,
+            });
+        }
+        self.advance_checked(n)
+    }
+
+    /// Consumes `n` bits after bounding them against the payload end; on
+    /// shortfall the reader is left positioned at end of input.
+    fn advance_checked(&mut self, n: u32) -> Result<()> {
         let start = self.consumed_bit_count();
         let within_payload = start
             .checked_add(n as usize)
@@ -193,12 +219,10 @@ impl<'a> BitReader<'a> {
                 needed: 1,
             });
         }
-        let window = be_window(self.data, self.byte_pos);
-        let value = (window >> (64 - u32::from(self.bit_pos) - n)) as u32 & (u32::MAX >> (32 - n));
         let consumed = start + n as usize;
         self.byte_pos = consumed / 8;
         self.bit_pos = (consumed % 8) as u8;
-        Ok(value)
+        Ok(())
     }
 
     /// Reads an AV2 `f(n)` field, treating `n == 0` as reading no bits (value `0`).
@@ -639,6 +663,37 @@ mod tests {
         ));
         assert_eq!(reader.remaining_bits(), 0);
         assert!(reader.is_byte_aligned());
+    }
+
+    #[test]
+    fn skip_bits_advances_like_read_bits() {
+        let data = [0xA5, 0x3C, 0x0F];
+        let mut skipper = BitReader::new(&data, ByteOffset::new(0));
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        skipper.skip_bits(0).unwrap();
+        skipper.skip_bits(11).unwrap();
+        let _ = reader.read_bits(11).unwrap();
+        assert_eq!(skipper.consumed_bits(), reader.consumed_bits());
+        assert_eq!(
+            skipper.read_bits(13).unwrap(),
+            reader.read_bits(13).unwrap()
+        );
+        assert!(matches!(
+            skipper.skip_bits(1),
+            Err(Error::UnexpectedEof { needed: 1, .. })
+        ));
+        assert!(skipper.is_byte_aligned());
+        assert_eq!(skipper.remaining_bits(), 0);
+
+        let mut wide = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            wide.skip_bits(33),
+            Err(Error::BitWidthTooLarge {
+                requested: 33,
+                max: 32
+            })
+        ));
+        assert_eq!(wide.consumed_bits(), 0);
     }
 
     #[test]

@@ -297,8 +297,7 @@ fn base_selector(
     let selection = CoeffBaseContext {
         pos: entry.pos(),
         bwl: config.tx_width_log2,
-        txw: config.tx_width,
-        txh: config.tx_height,
+        stride: block.level_stride(),
         plane: config.plane,
         is_lf,
         is_hidden: first_pass.is_hidden,
@@ -352,8 +351,7 @@ fn base_range_selector(
     let ctx = CoeffBrContext {
         pos: entry.pos(),
         bwl: config.tx_width_log2,
-        txw: config.tx_width,
-        txh: config.tx_height,
+        stride: block.level_stride(),
         plane: config.plane,
         is_lf,
         tx_class: tx_class_index(config.tx_class),

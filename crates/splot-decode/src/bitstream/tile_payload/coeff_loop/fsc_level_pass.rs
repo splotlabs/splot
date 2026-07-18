@@ -254,11 +254,21 @@ fn derive_fsc_level_input(
             selector: CoeffCdfSelector::BaseIdtx {
                 coeff_cdf_q_ctx: config.coeff_cdf_q_ctx,
                 tx_size_ctx,
-                ctx: coeff_base_idtx_ctx(block.level(), entry.row(), entry.col(), config.tx_width),
+                ctx: coeff_base_idtx_ctx(
+                    block.level(),
+                    entry.row(),
+                    entry.col(),
+                    block.level_stride(),
+                ),
             },
         }
     };
-    let br_ctx = coeff_br_idtx_ctx(block.level(), entry.row(), entry.col(), config.tx_width);
+    let br_ctx = coeff_br_idtx_ctx(
+        block.level(),
+        entry.row(),
+        entry.col(),
+        block.level_stride(),
+    );
     CoeffFscLevelReadInput {
         entry,
         base,

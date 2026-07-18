@@ -609,7 +609,7 @@ impl<'a> SymbolDecoder<'a> {
 
     fn advance_bypass(&mut self, bits: u32, symbol_value: u32) -> Result<()> {
         let num_bits = self.num_bits_to_read(bits);
-        let _ = self.reader.read_bits(num_bits)?;
+        self.reader.skip_bits(num_bits)?;
         self.symbol_value = symbol_value;
         self.symbol_max_bits -= i64::from(bits);
         Ok(())

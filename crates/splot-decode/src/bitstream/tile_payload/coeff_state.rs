@@ -18,11 +18,16 @@ use crate::tile::block_context::ChromaSampling;
 
 const PLANE_COUNT: usize = 3;
 const MAX_ADJUSTED_TX_EXTENT: usize = 32;
+/// Zero padding rows/columns kept below and right of the level and sign
+/// grids so AV2 § 8.3.2 neighbor reads (offsets up to +4 per
+/// `Sig_Ref_Diff_Offset`) never need per-sample bounds handling.
+pub(crate) const LEVEL_GRID_PAD: usize = 4;
+const MAX_PADDED_COEFF_LEN: usize =
+    (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD) * (MAX_ADJUSTED_TX_EXTENT + LEVEL_GRID_PAD);
 const MAX_RETAINED_COEFF_BUFFERS_PER_WORKER: usize = 64;
 const MAX_RETAINED_SHARED_QUANT_BUFFERS: usize = 2_560;
-const MAX_RETAINED_COEFF_BUFFER_CAPACITY: usize = MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT;
-static ZERO_QUANT_SIGN: [i32; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT] =
-    [0; MAX_ADJUSTED_TX_EXTENT * MAX_ADJUSTED_TX_EXTENT];
+const MAX_RETAINED_COEFF_BUFFER_CAPACITY: usize = MAX_PADDED_COEFF_LEN;
+static ZERO_QUANT_SIGN: [i32; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 #[derive(Default)]
@@ -140,6 +145,7 @@ impl Drop for super::general_intra_residual::LumaCoeffBlock {
 pub(crate) struct TransformCoeffBlockState {
     width: usize,
     height: usize,
+    stride: usize,
     level: Vec<u8>,
     quant_sign: Vec<i32>,
     quant: Vec<i32>,
@@ -158,8 +164,10 @@ impl TransformCoeffBlockState {
 
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
         let allocation = Self::allocation(width, height)?;
+        let stride = width + LEVEL_GRID_PAD;
+        let level_len = stride * (height + LEVEL_GRID_PAD);
         let level = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
-            take_zeroed_buffer(&mut buffers.levels, allocation.coeff_count)
+            take_zeroed_buffer(&mut buffers.levels, level_len)
         })?;
         let quant = match take_zeroed_quant_buffer(allocation.coeff_count) {
             Ok(quant) => quant,
@@ -173,6 +181,7 @@ impl TransformCoeffBlockState {
         Ok(Self {
             width,
             height,
+            stride,
             level,
             quant_sign: Vec::new(),
             quant,
@@ -201,6 +210,18 @@ impl TransformCoeffBlockState {
     #[must_use]
     pub(crate) fn level(&self) -> &[u8] {
         &self.level
+    }
+
+    /// Row stride of the padded level and sign grids.
+    #[must_use]
+    pub(crate) const fn level_stride(&self) -> usize {
+        self.stride
+    }
+
+    /// Number of real (unpadded) coefficient positions in the block.
+    #[must_use]
+    pub(crate) const fn coeff_count(&self) -> usize {
+        self.width * self.height
     }
 
     #[must_use]
@@ -273,12 +294,12 @@ impl TransformCoeffBlockState {
                 width: self.width,
             });
         }
-        row.checked_mul(self.width)
+        row.checked_mul(self.stride)
             .and_then(|base| base.checked_add(col))
             .ok_or(TileCoeffStateError::ArithmeticOverflow {
-                operation: "row * width + col",
+                operation: "row * stride + col",
                 left: row,
-                right: self.width,
+                right: self.stride,
             })
     }
 

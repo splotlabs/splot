@@ -206,7 +206,7 @@ pub(crate) fn fsc_sign_entries(
         });
     }
     let width = block.width();
-    let coeff_count = block.level().len();
+    let coeff_count = block.coeff_count();
     let mut entries = Vec::new();
     entries.try_reserve(seg_eob.saturating_sub(bob))?;
     for (scan_index, &scan_pos) in scan.iter().enumerate().take(seg_eob).skip(bob) {
@@ -264,7 +264,7 @@ pub(crate) fn derive_fsc_sign_input(
                     block.level(),
                     entry.row(),
                     entry.col(),
-                    config.tx_width,
+                    block.level_stride(),
                 ),
             },
         }
