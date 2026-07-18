@@ -9,7 +9,7 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
-use crate::bitio::{BitReader, be_window};
+use crate::bitio::be_window;
 use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
 use crate::span::{BitOffset, ByteOffset};
 use crate::tables::conversion::{PARA_ADJUSTMENT_LIST, PROB_INC};
@@ -55,6 +55,8 @@ macro_rules! read_symbol_from_cdf {
         let decoder = $decoder;
         let cdf = $cdf;
         let shape = decoder.validate_cdf(cdf)?;
+        decoder.ensure_buffered(15);
+        let symbol_value = (decoder.dif >> SV_SHIFT) as u32;
         let mut cur = decoder.symbol_range;
         let mut symbol = 0usize;
 
@@ -69,7 +71,7 @@ macro_rules! read_symbol_from_cdf {
             let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
             let next_cur = (((decoder.symbol_range >> 8) * pp) >> 7) << 3;
 
-            if decoder.symbol_value >= next_cur {
+            if symbol_value >= next_cur {
                 break (prev, next_cur);
             }
 
@@ -84,14 +86,10 @@ macro_rules! read_symbol_from_cdf {
         if new_range == 0 {
             return Err(decoder.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange));
         }
-        let new_value = decoder.symbol_value - cur;
         let bits = 15 - floor_log2(new_range);
         decoder.symbol_range = new_range << bits;
-        let num_bits = decoder.num_bits_to_read(bits);
-        let new_data = decoder.reader.read_bits(num_bits)?;
-        let padded_data = new_data << (bits - num_bits);
-        let mask = (1u32 << bits) - 1;
-        decoder.symbol_value = (new_value << bits) | (padded_data ^ mask);
+        decoder.dif = (decoder.dif - (u64::from(cur) << SV_SHIFT)) << bits;
+        decoder.buffered -= bits as i32;
         decoder.symbol_max_bits -= i64::from(bits);
         decoder.frame_symbol_count = decoder.frame_symbol_count.saturating_add(1);
 
@@ -102,7 +100,7 @@ macro_rules! read_symbol_from_cdf {
         trace::emit(
             "read_symbol",
             symbol as u32,
-            decoder.reader.consumed_bits(),
+            decoder.consumed_bits().get(),
             decoder.symbol_max_bits,
         );
 
@@ -251,13 +249,26 @@ pub struct SymbolDecoderCheckpoint {
     pub symbol_range: u32,
 }
 
+/// Bit position of the active `SymbolValue` window inside [`SymbolDecoder::dif`].
+const SV_SHIFT: u32 = 48;
+/// Buffered future bits kept below the `SymbolValue` window after a refill.
+const DIF_BUFFER_BITS: i32 = 48;
+
 /// Bounded AV2 § 8.2 symbol decoder over one tile payload byte slice.
+///
+/// The arithmetic state lives in `dif`: bits `[63:48]` hold the AV2
+/// `SymbolValue` register and the `buffered` bits directly below hold
+/// upcoming payload bits, pre-inverted the way every § 8.2 read consumes
+/// them (bits past the payload end buffer as ones, the inverted zero
+/// padding). Renormalization therefore only shifts `dif`; the payload is
+/// touched once per refill instead of once per symbol.
 #[derive(Debug)]
 pub struct SymbolDecoder<'a> {
     data: &'a [u8],
     base: ByteOffset,
-    reader: BitReader<'a>,
-    symbol_value: u32,
+    dif: u64,
+    buffered: i32,
+    fed_bits: u64,
     symbol_range: u32,
     symbol_max_bits: i64,
     frame_symbol_count: u64,
@@ -287,6 +298,10 @@ impl<'a> SymbolDecoder<'a> {
 
     /// Initializes the decoder over `tile_payload`, reporting errors relative to `base`.
     ///
+    /// The shift into the window seeds the 15-bit `SymbolValue` register
+    /// (behind its leading zero bit) and leaves the next 48 payload bits
+    /// buffered below it.
+    ///
     /// # Errors
     /// Returns [`Error::InvalidSymbolDecoderState`] if the payload is too large for
     /// the signed `SymbolMaxBits` state.
@@ -296,21 +311,38 @@ impl<'a> SymbolDecoder<'a> {
         config: SymbolDecoderConfig,
     ) -> Result<Self> {
         let symbol_max_bits = symbol_max_bits_for_len(tile_payload.len(), base)?;
-        let mut reader = BitReader::new(tile_payload, base);
-        let num_bits = tile_payload.len().saturating_mul(8).min(15) as u32;
-        let buf = reader.read_bits(num_bits)?;
-        let padded_buf = buf << (15 - num_bits);
-
+        let dif = !be_window(tile_payload, 0) >> 1;
         Ok(Self {
             data: tile_payload,
             base,
-            reader,
-            symbol_value: (SYMBOL_RANGE_INIT - 1) ^ padded_buf,
+            dif,
+            buffered: DIF_BUFFER_BITS,
+            fed_bits: 63,
             symbol_range: SYMBOL_RANGE_INIT,
             symbol_max_bits,
             frame_symbol_count: 0,
             config,
         })
+    }
+
+    /// Tops the buffered window back up to [`DIF_BUFFER_BITS`] future bits,
+    /// reading payload bits past the end as ones (inverted zero padding).
+    fn refill(&mut self) {
+        let byte_index = usize::try_from(self.fed_bits / 8).unwrap_or(usize::MAX);
+        let bit_offset = (self.fed_bits & 7) as u32;
+        let window = !(be_window(self.data, byte_index) << bit_offset);
+        let buffered = self.buffered.max(0) as u32;
+        self.dif |= window >> (16 + buffered);
+        self.fed_bits += u64::from(DIF_BUFFER_BITS as u32 - buffered);
+        self.buffered = DIF_BUFFER_BITS;
+    }
+
+    /// Guarantees at least `bits` buffered future bits below the value window.
+    #[inline]
+    fn ensure_buffered(&mut self, bits: u32) {
+        if self.buffered < bits as i32 {
+            self.refill();
+        }
     }
 
     /// Returns the current signed `SymbolMaxBits` value.
@@ -340,9 +372,21 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     /// Returns the current relative bit position in the tile payload.
+    ///
+    /// `SymbolMaxBits` starts at `8 * sz - 15` and every read consumes
+    /// exactly the bits it subtracts until the payload is exhausted, after
+    /// which reads consume nothing, so the historical bounded-reader
+    /// position is exactly `8 * sz - max(SymbolMaxBits, 0)`.
     #[must_use]
     pub fn consumed_bits(&self) -> SymbolBitPosition {
-        SymbolBitPosition::new(self.reader.consumed_bits())
+        let total = total_bits(self.data.len());
+        let remaining = self.symbol_max_bits.max(0) as u64;
+        SymbolBitPosition::new(total.saturating_sub(remaining))
+    }
+
+    /// Returns the current AV2 `SymbolValue` register.
+    const fn symbol_value(&self) -> u32 {
+        (self.dif >> SV_SHIFT) as u32
     }
 
     /// Returns a lossless checkpoint of the current arithmetic decoder state.
@@ -352,7 +396,7 @@ impl<'a> SymbolDecoder<'a> {
             consumed_bits: self.consumed_bits(),
             symbol_count: self.frame_symbol_count,
             symbol_max_bits: self.symbol_max_bits,
-            symbol_value: self.symbol_value,
+            symbol_value: self.symbol_value(),
             symbol_range: self.symbol_range,
         }
     }
@@ -368,7 +412,7 @@ impl<'a> SymbolDecoder<'a> {
         trace::emit(
             "read_bool",
             u32::from(symbol),
-            self.reader.consumed_bits(),
+            self.consumed_bits().get(),
             self.symbol_max_bits,
         );
         Ok(symbol)
@@ -401,7 +445,7 @@ impl<'a> SymbolDecoder<'a> {
         trace::emit(
             "read_literal",
             value,
-            self.reader.consumed_bits(),
+            self.consumed_bits().get(),
             self.symbol_max_bits,
         );
         Ok(value)
@@ -431,7 +475,7 @@ impl<'a> SymbolDecoder<'a> {
             trace::emit(
                 "read_unary",
                 0,
-                self.reader.consumed_bits(),
+                self.consumed_bits().get(),
                 self.symbol_max_bits,
             );
             return Ok(0);
@@ -456,13 +500,13 @@ impl<'a> SymbolDecoder<'a> {
         let normalized = scaled_value >> (max_bits - consumed);
         let symbol_value = u32::try_from(normalized)
             .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
-        self.advance_bypass(consumed, symbol_value)?;
+        self.advance_bypass(consumed, symbol_value);
         self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(consumed));
 
         trace::emit(
             "read_unary",
             value,
-            self.reader.consumed_bits(),
+            self.consumed_bits().get(),
             self.symbol_max_bits,
         );
         Ok(value)
@@ -510,7 +554,7 @@ impl<'a> SymbolDecoder<'a> {
             );
         }
 
-        let current = self.reader.consumed_bits();
+        let current = self.consumed_bits().get();
         let rewind = u64::try_from((self.symbol_max_bits + 15).min(15)).map_err(|_| {
             self.state_error(SymbolDecoderErrorKind::SymbolMaxBitsTooSmall {
                 symbol_max_bits: self.symbol_max_bits,
@@ -593,16 +637,6 @@ impl<'a> SymbolDecoder<'a> {
         .map_err(|kind| self.cdf_error(kind))
     }
 
-    fn num_bits_to_read(&self, bits: u32) -> u32 {
-        if self.symbol_max_bits <= 0 {
-            0
-        } else if self.symbol_max_bits >= i64::from(bits) {
-            bits
-        } else {
-            self.symbol_max_bits as u32
-        }
-    }
-
     fn read_bypass_bits(&mut self, bits: u32) -> Result<u32> {
         debug_assert!(bits <= BYPASS_LITERAL_CHUNK_BITS);
 
@@ -621,35 +655,20 @@ impl<'a> SymbolDecoder<'a> {
 
         let symbol_value = u32::try_from(scaled_value)
             .map_err(|_| self.state_error(SymbolDecoderErrorKind::InvalidArithmeticRange))?;
-        self.advance_bypass(bits, symbol_value)?;
+        self.advance_bypass(bits, symbol_value);
         Ok(value)
     }
 
-    fn scaled_bypass_value(&self, bits: u32) -> u64 {
-        (u64::from(self.symbol_value) << bits) | self.peek_inverted_bits(bits)
+    fn scaled_bypass_value(&mut self, bits: u32) -> u64 {
+        self.ensure_buffered(bits);
+        self.dif >> (SV_SHIFT - bits)
     }
 
-    fn peek_inverted_bits(&self, bits: u32) -> u64 {
-        let num_bits = self.num_bits_to_read(bits);
-        let start = self.reader.consumed_bits();
-        let value = if num_bits == 0 {
-            0
-        } else {
-            let byte_index = usize::try_from(start / 8).unwrap_or(usize::MAX);
-            let bit_offset = (start % 8) as u32;
-            let window = be_window(self.data, byte_index);
-            (window >> (64 - bit_offset - num_bits)) & mask_for_bits(num_bits)
-        };
-        let padded_data = value << (bits - num_bits);
-        padded_data ^ mask_for_bits(bits)
-    }
-
-    fn advance_bypass(&mut self, bits: u32, symbol_value: u32) -> Result<()> {
-        let num_bits = self.num_bits_to_read(bits);
-        self.reader.skip_bits(num_bits)?;
-        self.symbol_value = symbol_value;
+    fn advance_bypass(&mut self, bits: u32, symbol_value: u32) {
+        self.dif =
+            (u64::from(symbol_value) << SV_SHIFT) | ((self.dif << bits) & ((1 << SV_SHIFT) - 1));
+        self.buffered -= bits as i32;
         self.symbol_max_bits -= i64::from(bits);
-        Ok(())
     }
 
     fn bit_at(&self, bit_position: u64) -> Option<u8> {
@@ -660,17 +679,19 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     fn cdf_error(&self, kind: SymbolCdfErrorKind) -> Error {
+        let (offset, bit_offset) = self.offset_for_bit(self.consumed_bits().get());
         Error::InvalidSymbolCdf {
-            offset: self.reader.byte_offset(),
-            bit_offset: self.reader.bit_offset(),
+            offset,
+            bit_offset,
             kind,
         }
     }
 
     fn state_error(&self, kind: SymbolDecoderErrorKind) -> Error {
+        let (offset, bit_offset) = self.offset_for_bit(self.consumed_bits().get());
         Error::InvalidSymbolDecoderState {
-            offset: self.reader.byte_offset(),
-            bit_offset: self.reader.bit_offset(),
+            offset,
+            bit_offset,
             kind,
         }
     }
@@ -793,6 +814,7 @@ fn total_bits(len: usize) -> u64 {
     }
 }
 
+#[cfg(test)]
 fn mask_for_bits(bits: u32) -> u64 {
     if bits == 0 { 0 } else { (1u64 << bits) - 1 }
 }
