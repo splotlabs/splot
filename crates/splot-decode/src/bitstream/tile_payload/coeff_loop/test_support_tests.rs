@@ -116,6 +116,22 @@ pub(crate) fn setup_start_with_input(
     Some((tile, symbols, start))
 }
 
+/// Runs a rejection path that must be fail-atomic and asserts the tile CDFs
+/// and the symbol decoder are untouched afterwards.
+pub(crate) fn assert_rejection_leaves_tile_and_symbols_untouched(
+    tile: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    run: impl FnOnce(&mut TileCdfSubset, &mut SymbolDecoder<'_>),
+) {
+    let tile_before = tile.clone();
+    let consumed_before = symbols.consumed_bits();
+    let symbol_count_before = symbols.symbol_count();
+    run(tile, symbols);
+    assert_eq!(*tile, tile_before);
+    assert_eq!(symbols.consumed_bits(), consumed_before);
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+}
+
 pub(crate) fn setup_luma_8x8_walk<'scan>(
     payload: &[u8],
     scan: &'scan [u16],

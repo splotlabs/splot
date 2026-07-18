@@ -12,7 +12,9 @@ use super::fsc_level_pass::{
     NonZeroCoeffFscLevelPass, apply_nonzero_coeff_fsc_level_pass,
 };
 use super::scan_walk::{FscCoeffScanWalk, walk_fsc_coeff_scan};
-use super::test_support::setup_start_with_input;
+use super::test_support::{
+    assert_rejection_leaves_tile_and_symbols_untouched, setup_start_with_input,
+};
 use super::*;
 
 const SCAN: [u16; 4] = [0, 8, 1, 9];
@@ -200,35 +202,38 @@ fn coefficient_fsc_level_pass_conditionally_reads_bridtx() {
 
 #[test]
 fn coefficient_fsc_level_pass_rejects_static_config_before_consumption() {
-    let payload = find_payload(4, |_| true);
-    let (mut tile, mut symbols, start, walk) = setup_start(&payload, 4).unwrap();
-    let tile_before = tile.clone();
-    let consumed_before = symbols.consumed_bits();
-    let symbol_count_before = symbols.symbol_count();
-    let block_before = start.block().clone();
-    let err = apply_nonzero_coeff_fsc_level_pass(
-        &mut tile,
-        &mut symbols,
-        start,
-        walk,
-        CoeffFscLevelPassConfig {
-            tx_width: 16,
-            ..config()
-        },
-    )
-    .unwrap_err();
-
-    assert!(matches!(
-        err,
-        CoeffFscLevelPassError::BlockGeometryMismatch {
-            block_width: 8,
-            block_height: 8,
-            config_width: 16,
-            config_height: 8
-        }
-    ));
-    assert_eq!(tile, tile_before);
-    assert_eq!(symbols.consumed_bits(), consumed_before);
-    assert_eq!(symbols.symbol_count(), symbol_count_before);
-    assert!(block_before.level().iter().all(|level| *level == 0));
+    let width_mismatch = CoeffFscLevelPassConfig {
+        tx_width: 16,
+        ..config()
+    };
+    let height_mismatch = CoeffFscLevelPassConfig {
+        tx_height: 4,
+        ..config()
+    };
+    for (mismatched, expected_width, expected_height) in
+        [(width_mismatch, 16, 8), (height_mismatch, 8, 4)]
+    {
+        let payload = find_payload(4, |_| true);
+        let (mut tile, mut symbols, start, walk) = setup_start(&payload, 4).unwrap();
+        let block_before = start.block().clone();
+        assert_rejection_leaves_tile_and_symbols_untouched(
+            &mut tile,
+            &mut symbols,
+            |tile, symbols| {
+                let err =
+                    apply_nonzero_coeff_fsc_level_pass(tile, symbols, start, walk, mismatched)
+                        .unwrap_err();
+                assert!(matches!(
+                    err,
+                    CoeffFscLevelPassError::BlockGeometryMismatch {
+                        block_width: 8,
+                        block_height: 8,
+                        config_width,
+                        config_height,
+                    } if config_width == expected_width && config_height == expected_height
+                ));
+            },
+        );
+        assert!(block_before.level().iter().all(|level| *level == 0));
+    }
 }
