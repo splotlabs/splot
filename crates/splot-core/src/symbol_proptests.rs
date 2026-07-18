@@ -72,6 +72,57 @@ proptest! {
         }
     }
 
+    /// On well-formed rows, trusted CDF validation must decode the same
+    /// symbol and produce the same adapted row as full validation, for every
+    /// arity; on arbitrary rows it must never panic and only ever return a
+    /// typed error.
+    #[test]
+    fn trusted_cdf_rows_match_validated_decoding(
+        n in MIN_SYMBOLS..=MAX_SYMBOLS,
+        gaps in proptest::collection::vec(1i32..=4000, MAX_SYMBOLS - 1),
+        rate_index in 0usize..PARA_ADJUSTMENT_LIST.len(),
+        count in 0i32..=MAX_CDF_COUNT,
+        data in proptest::collection::vec(any::<u8>(), 2..16),
+        hostile_row in proptest::collection::vec(any::<i32>(), 0..12),
+    ) {
+        let mut row = vec![0i32; n + 1];
+        let mut acc = 0i32;
+        for (entry, gap) in row.iter_mut().take(n - 1).zip(gaps.iter()) {
+            acc += *gap;
+            *entry = acc;
+        }
+        row[n - 1] = rate_index as i32;
+        row[n] = count;
+
+        let trusted_config =
+            SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
+        let mut validated = SymbolDecoder::new(&data).unwrap();
+        let mut validated_row = row.clone();
+        let validated_symbol = validated.read_symbol(&mut validated_row).unwrap();
+
+        let mut trusted = SymbolDecoder::with_config(&data, trusted_config).unwrap();
+        let mut trusted_row = row.clone();
+        let trusted_symbol = trusted.read_symbol(&mut trusted_row).unwrap();
+
+        prop_assert_eq!(validated_symbol, trusted_symbol);
+        prop_assert_eq!(&validated_row, &trusted_row);
+        prop_assert_eq!(validated.checkpoint(), trusted.checkpoint());
+
+        let mut hostile = SymbolDecoder::with_config(&data, trusted_config).unwrap();
+        let mut hostile_cdf = hostile_row;
+        match hostile.read_symbol(&mut hostile_cdf) {
+            Ok(symbol) => {
+                prop_assert!(usize::from(symbol.get()) < hostile_cdf.len().saturating_sub(1));
+            }
+            Err(
+                Error::InvalidSymbolCdf { .. }
+                | Error::InvalidSymbolDecoderState { .. }
+                | Error::UnexpectedEof { .. },
+            ) => {}
+            Err(other) => prop_assert!(false, "unexpected error kind: {other:?}"),
+        }
+    }
+
     /// The windowed bypass peek must match the per-bit `bit_at` reference it
     /// replaced at every reachable width, start alignment, and end-of-payload
     /// overlap, including the zero-padding and inversion steps.

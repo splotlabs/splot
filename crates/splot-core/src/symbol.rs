@@ -155,10 +155,26 @@ pub enum CdfUpdateMode {
     Disabled,
 }
 
+/// Controls how much of a caller-supplied CDF row `read_symbol` validates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CdfValidationMode {
+    /// Validate the full row shape on every read: length, per-entry
+    /// probability range and monotonicity, adaptation-rate index, and count.
+    Validated,
+    /// Validate only what indexing safety requires (length and
+    /// adaptation-rate index). For callers whose rows come exclusively from
+    /// decoder-owned banks — spec-default tables adapted by `update_cdf`,
+    /// which preserves the full-row invariants — the two modes are
+    /// observably identical. A malformed row still decodes panic-free but
+    /// may yield an arithmetic-state error instead of a CDF shape error.
+    Trusted,
+}
+
 /// Configuration for [`SymbolDecoder`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SymbolDecoderConfig {
     cdf_update: CdfUpdateMode,
+    cdf_validation: CdfValidationMode,
 }
 
 impl SymbolDecoderConfig {
@@ -167,6 +183,7 @@ impl SymbolDecoderConfig {
     pub const fn new() -> Self {
         Self {
             cdf_update: CdfUpdateMode::Enabled,
+            cdf_validation: CdfValidationMode::Validated,
         }
     }
 
@@ -174,6 +191,20 @@ impl SymbolDecoderConfig {
     #[must_use]
     pub const fn cdf_update_mode(self) -> CdfUpdateMode {
         self.cdf_update
+    }
+
+    /// Returns the configured CDF validation mode.
+    #[must_use]
+    pub const fn cdf_validation_mode(self) -> CdfValidationMode {
+        self.cdf_validation
+    }
+
+    /// Returns a copy of this configuration with a different CDF validation
+    /// mode.
+    #[must_use]
+    pub const fn with_cdf_validation_mode(mut self, mode: CdfValidationMode) -> Self {
+        self.cdf_validation = mode;
+        self
     }
 
     /// Returns a copy of this configuration with a different CDF update mode.
@@ -553,7 +584,11 @@ impl<'a> SymbolDecoder<'a> {
     }
 
     fn validate_cdf<T: CdfStorage>(&self, cdf: &[T]) -> Result<CdfShape> {
-        validate_cdf_shape(cdf).map_err(|kind| self.cdf_error(kind))
+        match self.config.cdf_validation {
+            CdfValidationMode::Validated => validate_cdf_shape(cdf),
+            CdfValidationMode::Trusted => trusted_cdf_shape(cdf),
+        }
+        .map_err(|kind| self.cdf_error(kind))
     }
 
     fn num_bits_to_read(&self, bits: u32) -> u32 {
@@ -660,6 +695,32 @@ pub(crate) struct CdfShape {
     pub(crate) n: usize,
     pub(crate) rate_index: usize,
     pub(crate) count: i32,
+}
+
+/// Extracts the row shape with only the checks indexing safety requires
+/// (see [`CdfValidationMode::Trusted`]): the length bound that keeps every
+/// row and `PROB_INC` access in range, and the adaptation-rate bound that
+/// keeps the `PARA_ADJUSTMENT_LIST` lookup in range.
+pub(crate) fn trusted_cdf_shape<T: CdfStorage>(
+    cdf: &[T],
+) -> core::result::Result<CdfShape, SymbolCdfErrorKind> {
+    let len = cdf.len();
+    let n = len.saturating_sub(1);
+    if !(MIN_SYMBOLS..=MAX_SYMBOLS).contains(&n) {
+        return Err(SymbolCdfErrorKind::UnsupportedLength { len });
+    }
+    let rate_index = cdf[n - 1].to_i32();
+    if !(0..PARA_ADJUSTMENT_LIST.len() as i32).contains(&rate_index) {
+        return Err(SymbolCdfErrorKind::AdaptationRateOutOfRange {
+            index: n - 1,
+            value: rate_index,
+        });
+    }
+    Ok(CdfShape {
+        n,
+        rate_index: rate_index as usize,
+        count: cdf[n].to_i32(),
+    })
 }
 
 pub(crate) fn validate_cdf_shape<T: CdfStorage>(

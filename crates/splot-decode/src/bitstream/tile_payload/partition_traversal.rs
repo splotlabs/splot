@@ -3,7 +3,9 @@
 
 //! AV2 § 5.20.3.1 partition traversal.
 
-use splot_core::symbol::{SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig};
+use splot_core::symbol::{
+    CdfValidationMode, SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig,
+};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::IntraYMode;
@@ -770,7 +772,9 @@ fn ensure_supported_traversal_frame(
 fn symbol_decoder_for_work_unit<'payload>(
     work_unit: &DecodeTileWorkUnit<'payload>,
 ) -> Result<SymbolDecoder<'payload>, TilePartitionTraversalError> {
-    let config = SymbolDecoderConfig::new().with_cdf_update_mode(work_unit.cdf().update_mode());
+    let config = SymbolDecoderConfig::new()
+        .with_cdf_update_mode(work_unit.cdf().update_mode())
+        .with_cdf_validation_mode(CdfValidationMode::Trusted);
     SymbolDecoder::with_base_and_config(
         work_unit.tile_bytes(),
         work_unit.tile_byte_span().start,
