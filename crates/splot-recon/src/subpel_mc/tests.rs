@@ -186,6 +186,60 @@ fn subpel_filters_table_shape_and_sums() {
 }
 
 #[test]
+fn ten_bit_horizontal_intermediates_fit_i16() {
+    let max_sample = i32::from(BitDepth::Ten.max_sample());
+    for filter in SUBPEL_FILTERS {
+        for taps in filter {
+            let negative: i32 = taps.iter().copied().filter(|&tap| tap < 0).sum();
+            let positive: i32 = taps.iter().copied().filter(|&tap| tap > 0).sum();
+            for value in [
+                round2_i32(negative * max_sample, INTER_ROUND0),
+                round2_i32(positive * max_sample, INTER_ROUND0),
+            ] {
+                assert!(i16::try_from(value).is_ok(), "{value}");
+            }
+        }
+    }
+}
+
+#[test]
+fn over_range_intermediates_fall_back_to_i32() {
+    let ref_w = 12usize;
+    let ref_h = 12usize;
+    let samples = build_ref(vec![u16::MAX; ref_w * ref_h], ref_w, ref_h);
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+    let params = SubpelPredictParams {
+        bit_depth: BitDepth::Ten,
+        start_x: (3 << SCALE_SUBPEL_BITS) + (8 << 6),
+        start_y: (3 << SCALE_SUBPEL_BITS) + (8 << 6),
+        ..full_pel_params(
+            InterpolationFilter::EightTap,
+            4,
+            4,
+            3,
+            3,
+            ref_w as i32,
+            ref_h as i32,
+        )
+    };
+    let mut fallback = vec![0i32; params.w * params.h];
+    subpel_predict_block_compound_intermediate_into(&view, &params, None, &mut fallback, params.w)
+        .unwrap();
+
+    let mut scratch = vec![0i32; validate_subpel_params(&params).unwrap() * params.w];
+    let mut wide = vec![0i32; params.w * params.h];
+    subpel_predict_block_compound_intermediate_into(
+        &view,
+        &params,
+        Some(&mut scratch),
+        &mut wide,
+        params.w,
+    )
+    .unwrap();
+    assert_eq!(fallback, wide);
+}
+
+#[test]
 fn subpel_filters_first_table_rows_verbatim() {
     assert_eq!(SUBPEL_FILTERS[0][8], [0, 2, -14, 76, 76, -14, 2, 0]); // EIGHTTAP half-pel
     assert_eq!(SUBPEL_FILTERS[1][8], [0, -2, 14, 52, 52, 14, -2, 0]); // SMOOTH half-pel

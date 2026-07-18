@@ -78,6 +78,21 @@ const SMALL_BLOCK_EIGHTTAP_SMOOTH: u8 = 5;
 /// The number of filter taps in each `Subpel_Filters` row.
 const NUM_TAPS: usize = 8;
 
+macro_rules! with_recycled_subpel_buffer {
+    ($slot:ident, $len:expr, $f:expr) => {{
+        let len = $len;
+        $slot.with(|slot| {
+            let mut intermediate = slot.take().unwrap_or_default();
+            if intermediate.len() < len {
+                intermediate.resize(len, 0);
+            }
+            let result = ($f)(&mut intermediate[..len]);
+            slot.set(Some(intermediate));
+            result
+        })
+    }};
+}
+
 /// The number of sub-pel phases (the 16 rows of each filter type).
 const NUM_PHASES: usize = 16;
 
@@ -949,9 +964,10 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
         }
         Ok(())
     };
-    match scratch.and_then(|scratch| scratch.get_mut(..total_len)) {
-        Some(buffer) => run(buffer),
-        None => with_subpel_intermediate(total_len, run),
+    if let Some(buffer) = scratch.and_then(|scratch| scratch.get_mut(..total_len)) {
+        run(buffer)
+    } else {
+        with_recycled_subpel_buffer!(SUBPEL_INTERMEDIATE, total_len, run)
     }
 }
 
@@ -1293,18 +1309,33 @@ fn subpel_vertical_only_into<T: ReconSample, O, F: FnMut(i32) -> O, const INTER_
 std::thread_local! {
     static SUBPEL_INTERMEDIATE: std::cell::Cell<Option<Vec<i32>>> =
         const { std::cell::Cell::new(None) };
+    static SUBPEL_INTERMEDIATE_I16: std::cell::Cell<Option<Vec<i16>>> =
+        const { std::cell::Cell::new(None) };
 }
 
-fn with_subpel_intermediate<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
-    SUBPEL_INTERMEDIATE.with(|slot| {
-        let mut intermediate = slot.take().unwrap_or_default();
-        if intermediate.len() < len {
-            intermediate.resize(len, 0);
-        }
-        let result = f(&mut intermediate[..len]);
-        slot.set(Some(intermediate));
-        result
-    })
+trait SubpelIntermediate: Copy {
+    fn try_from_i32(value: i32) -> Option<Self>;
+    fn to_i32(self) -> i32;
+}
+
+impl SubpelIntermediate for i16 {
+    fn try_from_i32(value: i32) -> Option<Self> {
+        i16::try_from(value).ok()
+    }
+
+    fn to_i32(self) -> i32 {
+        i32::from(self)
+    }
+}
+
+impl SubpelIntermediate for i32 {
+    fn try_from_i32(value: i32) -> Option<Self> {
+        Some(value)
+    }
+
+    fn to_i32(self) -> i32 {
+        self
+    }
 }
 
 /// Two-pass § 7.13.3.18 convolution core. With an unscaled horizontal step
@@ -1443,10 +1474,10 @@ fn subpel_predict_block_internal_into_validated<
         start_y,
         step_x,
         step_y,
-        first_x,
-        first_y,
-        last_x,
-        last_y,
+        first_x: _,
+        first_y: _,
+        last_x: _,
+        last_y: _,
         bit_depth: _,
     } = *params;
 
@@ -1483,15 +1514,6 @@ fn subpel_predict_block_internal_into_validated<
         }
     }
 
-    let h_filter = interp.pass_index(w as u32);
-    let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
-
-    let x_window_start = if step_x == 1 << SCALE_SUBPEL_BITS {
-        subpel_horizontal_window_x(reference, params)
-    } else {
-        None
-    };
-
     let v_filter = interp.pass_index(h as u32);
     let mut read_lo = intermediate_height;
     let mut read_hi = 0usize;
@@ -1526,88 +1548,181 @@ fn subpel_predict_block_internal_into_validated<
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "subpel intermediate sample count",
             })?;
-    let mut run = |intermediate: &mut [i32]| {
-        for r in read_lo..read_hi {
-            let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
-            let ref_row = (ref_row as usize).min(reference.height - 1);
-            let window = x_window_start.and_then(|window_start| {
-                let row_base = ref_row * reference.stride + window_start;
-                reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
-            });
-            if let Some(window) = window {
-                let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
-                let row_out = &mut intermediate[r * w..(r + 1) * w];
-                if phase == 0 {
-                    for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
-                        *out = i32::from(sample.to_u16()) << (FILTER_BITS - INTER_ROUND0);
-                    }
-                    continue;
-                }
-                let taps = &h_filter_rows[phase];
-                for (out, win) in row_out.iter_mut().zip(window.array_windows::<NUM_TAPS>()) {
-                    let mut s = 0i32;
-                    for (&tap, &sample) in taps.iter().zip(win) {
-                        s += tap * i32::from(sample.to_u16());
-                    }
-                    *out = round2_i32(s, INTER_ROUND0);
-                }
-                continue;
-            }
-            for c in 0..w {
-                let p = scaled_position(start_x, step_x, c);
-                let phase = ((p >> 6) & SUBPEL_MASK) as usize;
-                if phase == 0 {
-                    let ref_col = (p >> SCALE_SUBPEL_BITS).clamp(first_x, last_x);
-                    intermediate[r * w + c] =
-                        reference.sample(ref_row, ref_col as usize) << (FILTER_BITS - INTER_ROUND0);
-                    continue;
-                }
-                let taps = &h_filter_rows[phase];
-                let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
-                let taps = &taps[tap_start..tap_end];
-                let mut s = 0i32;
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    let t = tap_start + tap_offset;
-                    let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
-                    s += tap * reference.sample(ref_row, ref_col as usize);
-                }
-                intermediate[r * w + c] = round2_i32(s, INTER_ROUND0);
-            }
-        }
-
-        let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
-
-        for r in 0..h {
-            let p = scaled_position(start_y & 1023, step_y, r);
-            let phase = ((p >> 6) & SUBPEL_MASK) as usize;
-            let taps = &v_filter_rows[phase];
-            let base = (p >> SCALE_SUBPEL_BITS) as usize;
-            let output = &mut output[r * output_stride..][..w];
-            if phase == 0 {
-                let center = &intermediate[(base + 3) * w..(base + 4) * w];
-                for (out, &value) in output.iter_mut().zip(center) {
-                    *out = finish(round2_i32(value << FILTER_BITS, INTER_ROUND1));
-                }
-                continue;
-            }
-            let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
-            let row_slices: [&[i32]; NUM_TAPS] =
-                core::array::from_fn(|t| &rows[t * w..(t + 1) * w]);
-            for (x, out) in output.iter_mut().enumerate() {
-                let mut s = 0i32;
-                for (&tap, row) in taps.iter().zip(&row_slices) {
-                    s += tap * row[x];
-                }
-                *out = finish(round2_i32(s, INTER_ROUND1));
-            }
-        }
-
-        Ok(())
-    };
-    match scratch.and_then(|scratch| scratch.get_mut(..intermediate_len)) {
-        Some(intermediate) => run(intermediate),
-        None => with_subpel_intermediate(intermediate_len, run),
+    if let Some(intermediate) = scratch.and_then(|scratch| scratch.get_mut(..intermediate_len)) {
+        run_subpel_convolution::<_, _, _, _, INTER_ROUND1>(
+            reference,
+            params,
+            read_lo,
+            read_hi,
+            v_filter,
+            intermediate,
+            output,
+            output_stride,
+            &mut finish,
+        );
+        return Ok(());
     }
+    if params.bit_depth.bits() <= 10
+        && with_recycled_subpel_buffer!(SUBPEL_INTERMEDIATE_I16, intermediate_len, |intermediate| {
+            run_subpel_convolution::<_, _, _, _, INTER_ROUND1>(
+                reference,
+                params,
+                read_lo,
+                read_hi,
+                v_filter,
+                intermediate,
+                output,
+                output_stride,
+                &mut finish,
+            )
+        })
+    {
+        return Ok(());
+    }
+    with_recycled_subpel_buffer!(SUBPEL_INTERMEDIATE, intermediate_len, |intermediate| {
+        run_subpel_convolution::<_, _, _, _, INTER_ROUND1>(
+            reference,
+            params,
+            read_lo,
+            read_hi,
+            v_filter,
+            intermediate,
+            output,
+            output_stride,
+            &mut finish,
+        );
+    });
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_subpel_convolution<
+    I: SubpelIntermediate,
+    T: ReconSample,
+    O,
+    F: FnMut(i32) -> O,
+    const INTER_ROUND1: u32,
+>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    read_lo: usize,
+    read_hi: usize,
+    v_filter: u8,
+    intermediate: &mut [I],
+    output: &mut [O],
+    output_stride: usize,
+    finish: &mut F,
+) -> bool {
+    let SubpelPredictParams {
+        interp,
+        w,
+        h,
+        start_x,
+        start_y,
+        step_x,
+        step_y,
+        first_x,
+        first_y,
+        last_x,
+        last_y,
+        bit_depth: _,
+    } = *params;
+    let h_filter = interp.pass_index(w as u32);
+    let h_filter_rows = &SUBPEL_FILTERS[h_filter as usize];
+    let x_window_start = if step_x == 1 << SCALE_SUBPEL_BITS {
+        subpel_horizontal_window_x(reference, params)
+    } else {
+        None
+    };
+
+    for r in read_lo..read_hi {
+        let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
+        let ref_row = (ref_row as usize).min(reference.height - 1);
+        let window = x_window_start.and_then(|window_start| {
+            let row_base = ref_row * reference.stride + window_start;
+            reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
+        });
+        if let Some(window) = window {
+            let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
+            let row_out = &mut intermediate[r * w..(r + 1) * w];
+            if phase == 0 {
+                for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
+                    let Some(value) =
+                        I::try_from_i32(i32::from(sample.to_u16()) << (FILTER_BITS - INTER_ROUND0))
+                    else {
+                        return false;
+                    };
+                    *out = value;
+                }
+                continue;
+            }
+            let taps = &h_filter_rows[phase];
+            for (out, win) in row_out.iter_mut().zip(window.array_windows::<NUM_TAPS>()) {
+                let mut s = 0i32;
+                for (&tap, &sample) in taps.iter().zip(win) {
+                    s += tap * i32::from(sample.to_u16());
+                }
+                let Some(value) = I::try_from_i32(round2_i32(s, INTER_ROUND0)) else {
+                    return false;
+                };
+                *out = value;
+            }
+            continue;
+        }
+        for c in 0..w {
+            let p = scaled_position(start_x, step_x, c);
+            let phase = ((p >> 6) & SUBPEL_MASK) as usize;
+            if phase == 0 {
+                let ref_col = (p >> SCALE_SUBPEL_BITS).clamp(first_x, last_x);
+                let Some(value) = I::try_from_i32(
+                    reference.sample(ref_row, ref_col as usize) << (FILTER_BITS - INTER_ROUND0),
+                ) else {
+                    return false;
+                };
+                intermediate[r * w + c] = value;
+                continue;
+            }
+            let taps = &h_filter_rows[phase];
+            let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
+            let taps = &taps[tap_start..tap_end];
+            let mut s = 0i32;
+            for (tap_offset, &tap) in taps.iter().enumerate() {
+                let t = tap_start + tap_offset;
+                let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
+                s += tap * reference.sample(ref_row, ref_col as usize);
+            }
+            let Some(value) = I::try_from_i32(round2_i32(s, INTER_ROUND0)) else {
+                return false;
+            };
+            intermediate[r * w + c] = value;
+        }
+    }
+
+    let v_filter_rows = &SUBPEL_FILTERS[v_filter as usize];
+    for r in 0..h {
+        let p = scaled_position(start_y & 1023, step_y, r);
+        let phase = ((p >> 6) & SUBPEL_MASK) as usize;
+        let taps = &v_filter_rows[phase];
+        let base = (p >> SCALE_SUBPEL_BITS) as usize;
+        let output = &mut output[r * output_stride..][..w];
+        if phase == 0 {
+            let center = &intermediate[(base + 3) * w..(base + 4) * w];
+            for (out, &value) in output.iter_mut().zip(center) {
+                *out = finish(round2_i32(value.to_i32() << FILTER_BITS, INTER_ROUND1));
+            }
+            continue;
+        }
+        let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
+        let row_slices: [&[I]; NUM_TAPS] = core::array::from_fn(|t| &rows[t * w..(t + 1) * w]);
+        for (x, out) in output.iter_mut().enumerate() {
+            let mut s = 0i32;
+            for (&tap, row) in taps.iter().zip(&row_slices) {
+                s += tap * row[x].to_i32();
+            }
+            *out = finish(round2_i32(s, INTER_ROUND1));
+        }
+    }
+    true
 }
 
 fn scaled_position(start: i32, step: i32, index: usize) -> i32 {
