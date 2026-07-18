@@ -59,6 +59,16 @@ fn clear_caps_above_row_to_remaining_tile_width() {
 }
 
 #[test]
+fn clear_caps_left_column_and_resets_stale_interior_flags() {
+    let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 32, 20).unwrap();
+    state.force_decoded(0, 5, 5);
+    state.clear_superblock(16, 0);
+    assert!(state.flag(0, -1, 3));
+    assert!(!state.flag(0, -1, 4));
+    assert!(!state.flag(0, 5, 5));
+}
+
+#[test]
 fn split_bottom_left_reads_decoded_top_right_sibling() {
     let mut state = TileBlockDecodedState::new(3, 1, 1, SB_SIZE4, 16, 16).unwrap();
     state.clear_superblock(0, 0);
