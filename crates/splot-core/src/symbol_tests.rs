@@ -122,7 +122,7 @@ fn checkpoint_preserves_arithmetic_state() {
     assert_eq!(initial.consumed_bits, decoder.consumed_bits());
     assert_eq!(initial.symbol_count, 0);
     assert_eq!(initial.symbol_max_bits, decoder.symbol_max_bits());
-    assert_eq!(initial.symbol_value, decoder.symbol_value);
+    assert_eq!(initial.symbol_value, decoder.symbol_value());
     assert_eq!(initial.symbol_range, SYMBOL_RANGE_INIT);
 
     let mut cdf = default_binary_cdf();
@@ -132,7 +132,7 @@ fn checkpoint_preserves_arithmetic_state() {
     assert_eq!(checkpoint.consumed_bits, decoder.consumed_bits());
     assert_eq!(checkpoint.symbol_count, 1);
     assert_eq!(checkpoint.symbol_max_bits, decoder.symbol_max_bits());
-    assert_eq!(checkpoint.symbol_value, decoder.symbol_value);
+    assert_eq!(checkpoint.symbol_value, decoder.symbol_value());
     assert_eq!(checkpoint.symbol_range, decoder.symbol_range);
     assert_ne!(checkpoint, initial);
 }
@@ -232,14 +232,6 @@ fn read_literal_as_one_bit_chunks(decoder: &mut SymbolDecoder<'_>, width: u32) -
         value = (value << 1) | decoder.read_literal(1).unwrap();
     }
     value
-}
-
-#[test]
-fn num_bits_to_read_does_not_truncate_large_symbol_max_bits() {
-    let mut decoder = SymbolDecoder::new(&[0x80, 0x00]).unwrap();
-    decoder.symbol_max_bits = i64::from(u32::MAX) + 1;
-    assert_eq!(decoder.num_bits_to_read(1), 1);
-    assert_eq!(decoder.num_bits_to_read(15), 15);
 }
 
 #[test]

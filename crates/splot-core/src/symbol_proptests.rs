@@ -138,26 +138,33 @@ proptest! {
         }
     }
 
-    /// The windowed bypass peek must match the per-bit `bit_at` reference it
-    /// replaced at every reachable width, start alignment, and end-of-payload
-    /// overlap, including the zero-padding and inversion steps.
+    /// The buffered bypass window must match the historical per-bit
+    /// reference it replaced — `SymbolValue` scaled up by `bits` with the
+    /// next payload bits read MSB-first, clamped by `SymbolMaxBits`,
+    /// zero-padded past the payload end, and inverted — at every reachable
+    /// width, start alignment, and end-of-payload overlap.
     #[test]
-    fn peek_inverted_bits_matches_per_bit_reference(
+    fn scaled_bypass_value_matches_per_bit_reference(
         data in proptest::collection::vec(any::<u8>(), 2..16),
         advance in 0u32..=32,
         bits in 0u32..=MAX_LITERAL_BITS,
     ) {
         let mut decoder = SymbolDecoder::new(&data).unwrap();
         let _ = decoder.read_literal(advance);
-        let num_bits = decoder.num_bits_to_read(bits);
-        let start = decoder.reader.consumed_bits();
+        let checkpoint = decoder.checkpoint();
+        let num_bits = decoder
+            .symbol_max_bits()
+            .clamp(0, i64::from(bits)) as u32;
+        let start = checkpoint.consumed_bits.get();
         let mut value = 0u64;
         for offset in 0..num_bits {
             value = (value << 1)
                 | u64::from(decoder.bit_at(start + u64::from(offset)).unwrap_or(0));
         }
-        let reference = (value << (bits - num_bits)) ^ mask_for_bits(bits);
-        prop_assert_eq!(decoder.peek_inverted_bits(bits), reference);
+        let reference = (u64::from(checkpoint.symbol_value) << bits)
+            | ((value << (bits - num_bits)) ^ mask_for_bits(bits));
+        prop_assert_eq!(decoder.scaled_bypass_value(bits), reference);
+        prop_assert_eq!(decoder.checkpoint(), checkpoint);
     }
 
     /// `read_symbol` must never panic on an arbitrary caller CDF row. The
