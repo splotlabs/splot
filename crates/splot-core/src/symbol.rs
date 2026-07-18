@@ -354,12 +354,13 @@ impl<'a> SymbolDecoder<'a> {
     /// Returns `true` once the decoder has consumed past the tile payload end.
     ///
     /// AV2 § 8.2.4 `exit_symbol()` tolerates `SymbolMaxBits` down to `-14` (the
-    /// final symbol may borrow up to 14 bits of trailing padding). Beyond that the
-    /// decoder is reading zero-padded phantom bits (`num_bits_to_read` already
-    /// clamps to `0`), which is only ever reached after an upstream entropy-coder
-    /// desync. Callers walking a live record stream can poll this between syntax
-    /// elements to fail fast at the true exhaustion point instead of decoding
-    /// phantom blocks from padding.
+    /// final symbol may borrow up to 14 bits of trailing padding). Beyond that
+    /// the decoder is reading zero-padded phantom bits (buffered as inverted
+    /// ones past the payload end, with [`Self::consumed_bits`] pinned at the
+    /// payload size), which is only ever reached after an upstream
+    /// entropy-coder desync. Callers walking a live record stream can poll
+    /// this between syntax elements to fail fast at the true exhaustion point
+    /// instead of decoding phantom blocks from padding.
     #[must_use]
     pub const fn is_past_payload_end(&self) -> bool {
         self.symbol_max_bits < -14
