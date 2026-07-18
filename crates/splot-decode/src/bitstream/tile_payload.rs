@@ -37,7 +37,7 @@ use cdf::{TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_sa
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CdfUpdateMode, CdfValidationMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
 
 use crate::{
@@ -865,7 +865,9 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         let absolute_tile_offset =
             checked_tile_byte_offset(input.payload_base, tile.tile_data_offset)?;
         let tile_byte_span = checked_tile_byte_span(absolute_tile_offset, tile.tile_size)?;
-        let config = SymbolDecoderConfig::new().with_cdf_update_mode(cdf_update_mode);
+        let config = SymbolDecoderConfig::new()
+            .with_cdf_update_mode(cdf_update_mode)
+            .with_cdf_validation_mode(CdfValidationMode::Trusted);
         let symbol = SymbolDecoder::with_base_and_config(tile_bytes, absolute_tile_offset, config)?;
         let symbol = SymbolInitBoundary {
             consumed_bits: symbol.consumed_bits().get(),
