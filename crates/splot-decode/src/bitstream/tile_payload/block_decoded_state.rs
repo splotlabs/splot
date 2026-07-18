@@ -103,22 +103,17 @@ impl TileBlockDecodedState {
     pub(crate) fn clear_superblock(&mut self, r: usize, c: usize) {
         for plane in 0..self.num_planes {
             let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);
-            let sb_width4 = (self.mi_col_end.saturating_sub(c) >> sub_x) as isize;
-            let sb_height4 = (self.mi_row_end.saturating_sub(r) >> sub_y) as isize;
-            let y_max = (self.sb_size4 >> sub_y) as isize;
-            let x_max = ((2 * self.sb_size4) >> sub_x) as isize;
+            let sb_width4 = self.mi_col_end.saturating_sub(c) >> sub_x;
+            let sb_height4 = self.mi_row_end.saturating_sub(r) >> sub_y;
             let grid = &mut self.planes[plane];
-            for y in -1..=y_max {
-                for x in -1..=x_max {
-                    let decoded = (y < 0 && x < sb_width4) || (x < 0 && y < sb_height4);
-                    if let Some(index) = grid.index(x, y) {
-                        grid.cells[index] = decoded;
-                    }
-                }
+            grid.cells.fill(false);
+            let top_len = sb_width4.saturating_add(1).min(grid.width);
+            grid.cells[..top_len].fill(true);
+            let left_len = sb_height4.saturating_add(1).min(grid.height);
+            for y in 0..left_len {
+                grid.cells[y * grid.width] = true;
             }
-            if let Some(index) = grid.index(-1, y_max) {
-                grid.cells[index] = false;
-            }
+            grid.cells[(grid.height - 1) * grid.width] = false;
         }
     }
 
