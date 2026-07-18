@@ -53,6 +53,25 @@ impl LittleEndianValue {
     }
 }
 
+/// Returns the eight bytes at `byte_index` as a big-endian window, reading
+/// bytes past the end of `data` as zero padding.
+#[inline]
+pub(crate) fn be_window(data: &[u8], byte_index: usize) -> u64 {
+    if let Some(bytes) = byte_index
+        .checked_add(8)
+        .and_then(|end| data.get(byte_index..end))
+        && let Ok(bytes) = <[u8; 8]>::try_from(bytes)
+    {
+        return u64::from_be_bytes(bytes);
+    }
+    let mut window = 0u64;
+    let tail = data.get(byte_index..).unwrap_or_default();
+    for (offset, &byte) in tail.iter().take(8).enumerate() {
+        window |= u64::from(byte) << (56 - offset * 8);
+    }
+    window
+}
+
 /// Reads fixed-width bit fields MSB-first, matching the AV2 `f(n)` descriptor.
 ///
 /// The reader borrows a byte slice and tracks an absolute [`ByteOffset`] base so
@@ -150,7 +169,8 @@ impl<'a> BitReader<'a> {
     ///
     /// # Errors
     /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
-    /// if fewer than `n` bits remain.
+    /// if fewer than `n` bits remain (the reader is then positioned at end of
+    /// input, matching the per-bit consumption it replaces).
     pub fn read_bits(&mut self, n: u32) -> Result<u32> {
         if n > 32 {
             return Err(Error::BitWidthTooLarge {
@@ -158,10 +178,26 @@ impl<'a> BitReader<'a> {
                 max: 32,
             });
         }
-        let mut value = 0u32;
-        for _ in 0..n {
-            value = (value << 1) | u32::from(self.read_bit()?);
+        if n == 0 {
+            return Ok(0);
         }
+        let start = self.consumed_bit_count();
+        let within_payload = start
+            .checked_add(n as usize)
+            .is_some_and(|end| end <= self.data.len().saturating_mul(8));
+        if !within_payload {
+            self.byte_pos = self.data.len();
+            self.bit_pos = 0;
+            return Err(Error::UnexpectedEof {
+                offset: self.byte_offset(),
+                needed: 1,
+            });
+        }
+        let window = be_window(self.data, self.byte_pos);
+        let value = (window >> (64 - u32::from(self.bit_pos) - n)) as u32 & (u32::MAX >> (32 - n));
+        let consumed = start + n as usize;
+        self.byte_pos = consumed / 8;
+        self.bit_pos = (consumed % 8) as u8;
         Ok(value)
     }
 
@@ -580,6 +616,32 @@ mod tests {
     }
 
     #[test]
+    fn read_bits_crosses_bytes_from_unaligned_positions() {
+        let data = [0b1011_0010, 0b0111_0101, 0b1100_1110, 0b0001_1011];
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        assert_eq!(reader.read_bits(3).unwrap(), 0b101);
+        assert_eq!(reader.read_bits(13).unwrap(), 0b1_0010_0111_0101);
+        assert_eq!(reader.read_bits(16).unwrap(), 0b1100_1110_0001_1011);
+        assert!(matches!(
+            reader.read_bits(1),
+            Err(Error::UnexpectedEof { .. })
+        ));
+    }
+
+    #[test]
+    fn read_bits_past_end_consumes_remaining_and_reports_end_offset() {
+        let data = [0xAB];
+        let mut reader = BitReader::new(&data, ByteOffset::new(4));
+        let _ = reader.read_bits(6).unwrap();
+        assert!(matches!(
+            reader.read_bits(5),
+            Err(Error::UnexpectedEof { offset, needed: 1 }) if offset == ByteOffset::new(5)
+        ));
+        assert_eq!(reader.remaining_bits(), 0);
+        assert!(reader.is_byte_aligned());
+    }
+
+    #[test]
     fn read_bits_rejects_widths_over_32() {
         let mut reader = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
         assert!(matches!(
@@ -946,6 +1008,37 @@ mod proptests {
     use proptest::prelude::*;
 
     proptest! {
+        /// Windowed multi-bit reads must match the bit-by-bit reference exactly,
+        /// including consumed position and end-of-input behavior.
+        #[test]
+        fn read_bits_matches_per_bit_reference(
+            data in proptest::collection::vec(any::<u8>(), 0..12),
+            widths in proptest::collection::vec(0u32..=32, 1..8),
+        ) {
+            let mut chunked = BitReader::new(&data, ByteOffset::new(0));
+            let mut reference = BitReader::new(&data, ByteOffset::new(0));
+            for n in widths {
+                let expected = (|| {
+                    let mut value = 0u32;
+                    for _ in 0..n {
+                        value = (value << 1) | u32::from(reference.read_bit()?);
+                    }
+                    Ok::<u32, Error>(value)
+                })();
+                let actual = chunked.read_bits(n);
+                match (expected, actual) {
+                    (Ok(expected), Ok(actual)) => prop_assert_eq!(expected, actual),
+                    (Err(_), Err(_)) => {}
+                    (expected, actual) => {
+                        return Err(TestCaseError::fail(format!(
+                            "mismatch: reference {expected:?} vs chunked {actual:?}"
+                        )));
+                    }
+                }
+                prop_assert_eq!(reference.consumed_bits(), chunked.consumed_bits());
+            }
+        }
+
         /// Descriptor readers must never panic on arbitrary input.
         #[test]
         fn descriptor_readers_never_panic(

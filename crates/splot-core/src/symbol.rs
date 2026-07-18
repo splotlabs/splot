@@ -9,7 +9,7 @@
 //! before § 8.3 syntax-element CDF selection, tile CDF bank ownership,
 //! `decode_tile()`, reconstruction, and encoder range writing.
 
-use crate::bitio::BitReader;
+use crate::bitio::{BitReader, be_window};
 use crate::error::{Error, Result, SymbolCdfErrorKind, SymbolDecoderErrorKind};
 use crate::span::{BitOffset, ByteOffset};
 use crate::tables::conversion::{PARA_ADJUSTMENT_LIST, PROB_INC};
@@ -595,10 +595,14 @@ impl<'a> SymbolDecoder<'a> {
     fn peek_inverted_bits(&self, bits: u32) -> u64 {
         let num_bits = self.num_bits_to_read(bits);
         let start = self.reader.consumed_bits();
-        let mut value = 0u64;
-        for offset in 0..num_bits {
-            value = (value << 1) | u64::from(self.bit_at(start + u64::from(offset)).unwrap_or(0));
-        }
+        let value = if num_bits == 0 {
+            0
+        } else {
+            let byte_index = usize::try_from(start / 8).unwrap_or(usize::MAX);
+            let bit_offset = (start % 8) as u32;
+            let window = be_window(self.data, byte_index);
+            (window >> (64 - bit_offset - num_bits)) & mask_for_bits(num_bits)
+        };
         let padded_data = value << (bits - num_bits);
         padded_data ^ mask_for_bits(bits)
     }
