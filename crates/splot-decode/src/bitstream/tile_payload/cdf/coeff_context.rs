@@ -22,29 +22,8 @@ const CHROMA_2D_PLANE_CONTEXT_OFFSET: [usize; 3] = [4, 0, 4];
 const LF_2D_CONTEXT_CAP_AND_OFFSET: [(usize, usize); 3] = [(8, 0), (6, 9), (4, 16)];
 const HF_2D_CONTEXT_OFFSET: [usize; 3] = [0, 5, 10];
 
-#[derive(Clone, Copy)]
-struct CoeffPosition {
-    row: usize,
-    col: usize,
-}
-
 const fn tx_class_idx(tx_class: usize) -> usize {
     if tx_class < 3 { tx_class } else { 0 }
-}
-
-const fn coeff_position(pos: usize, bwl: u32) -> CoeffPosition {
-    let row = match pos.checked_shr(bwl) {
-        Some(v) => v,
-        None => 0,
-    };
-    let shifted = match row.checked_shl(bwl) {
-        Some(v) => v,
-        None => 0,
-    };
-    CoeffPosition {
-        row,
-        col: pos - shifted,
-    }
 }
 
 /// Reads one level from the stride-padded grid kept by
@@ -85,8 +64,8 @@ pub(crate) const fn coeff_base_bob_ctx(bob: usize, seg_eob: usize) -> usize {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBrContext {
-    pub(crate) pos: usize,
-    pub(crate) bwl: u32,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
     pub(crate) stride: usize,
     pub(crate) plane: usize,
     pub(crate) is_lf: bool,
@@ -95,7 +74,7 @@ pub(crate) struct CoeffBrContext {
 
 impl CoeffBrContext {
     pub(crate) fn ctx(self, level: &[u8]) -> usize {
-        let pos = coeff_position(self.pos, self.bwl);
+        let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);
         let num = if class_idx != 0 && self.plane > 0 {
             2
@@ -110,8 +89,8 @@ impl CoeffBrContext {
             mag += clamped_level_at(
                 level,
                 self.stride,
-                pos.row.wrapping_add(off[0]),
-                pos.col.wrapping_add(off[1]),
+                self.row.wrapping_add(off[0]),
+                self.col.wrapping_add(off[1]),
                 clamp,
             );
             idx += 1;
@@ -119,7 +98,7 @@ impl CoeffBrContext {
         let mag = ((mag + 1) >> 1).min(MAX_BASE_BR_RANGE) as usize;
         if self.plane > 0 {
             mag.min(3)
-        } else if (self.pos == 0 && class_idx != 0) || (self.pos != 0 && self.is_lf) {
+        } else if (is_dc && class_idx != 0) || (!is_dc && self.is_lf) {
             mag + 7
         } else {
             mag
@@ -158,8 +137,8 @@ pub(crate) enum CoeffBaseSelection {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffBaseContext {
-    pub(crate) pos: usize,
-    pub(crate) bwl: u32,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
     pub(crate) stride: usize,
     pub(crate) plane: usize,
     pub(crate) is_lf: bool,
@@ -170,7 +149,6 @@ pub(crate) struct CoeffBaseContext {
 
 impl CoeffBaseContext {
     pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
-        let pos = coeff_position(self.pos, self.bwl);
         let class_idx = tx_class_idx(self.tx_class);
         let num = if self.plane > 0 {
             if class_idx == 0 { 3 } else { 2 }
@@ -190,8 +168,8 @@ impl CoeffBaseContext {
             mag += clamped_level_at(
                 level,
                 self.stride,
-                pos.row.wrapping_add(off[0] as usize),
-                pos.col.wrapping_add(off[1] as usize),
+                self.row.wrapping_add(off[0] as usize),
+                self.col.wrapping_add(off[1] as usize),
                 mag_limit,
             );
             idx += 1;
@@ -219,7 +197,7 @@ impl CoeffBaseContext {
             let lf_ctx = if class_idx == 0 {
                 let bucket = if self.c == 0 {
                     0
-                } else if pos.row + pos.col < 2 {
+                } else if self.row + self.col < 2 {
                     1
                 } else {
                     2
@@ -227,7 +205,7 @@ impl CoeffBaseContext {
                 let (cap, offset) = LF_2D_CONTEXT_CAP_AND_OFFSET[bucket];
                 ctx.min(cap) + offset
             } else {
-                let lidx = [pos.row, pos.col, pos.row][class_idx];
+                let lidx = [self.row, self.col, self.row][class_idx];
                 if lidx == 0 {
                     LF_SIG_COEF_CONTEXTS_2D + ctx.min(6)
                 } else {
@@ -238,7 +216,7 @@ impl CoeffBaseContext {
         }
         let ctx2 = ctx.min(4);
         let hf_ctx = if class_idx == 0 {
-            let diagonal = pos.row + pos.col;
+            let diagonal = self.row + self.col;
             let bucket = usize::from(diagonal >= 6) + usize::from(diagonal >= 8);
             ctx2 + HF_2D_CONTEXT_OFFSET[bucket]
         } else {
