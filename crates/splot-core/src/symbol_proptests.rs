@@ -74,8 +74,7 @@ proptest! {
 
     /// On well-formed rows, trusted CDF validation must decode the same
     /// symbol and produce the same adapted row as full validation, for every
-    /// arity; on arbitrary rows it must never panic and only ever return a
-    /// typed error.
+    /// arity.
     #[test]
     fn trusted_cdf_rows_match_validated_decoding(
         n in MIN_SYMBOLS..=MAX_SYMBOLS,
@@ -83,7 +82,6 @@ proptest! {
         rate_index in 0usize..PARA_ADJUSTMENT_LIST.len(),
         count in 0i32..=MAX_CDF_COUNT,
         data in proptest::collection::vec(any::<u8>(), 2..16),
-        hostile_row in proptest::collection::vec(any::<i32>(), 0..12),
     ) {
         let mut row = vec![0i32; n + 1];
         let mut acc = 0i32;
@@ -107,13 +105,30 @@ proptest! {
         prop_assert_eq!(validated_symbol, trusted_symbol);
         prop_assert_eq!(&validated_row, &trusted_row);
         prop_assert_eq!(validated.checkpoint(), trusted.checkpoint());
+    }
 
-        let mut hostile = SymbolDecoder::with_config(&data, trusted_config).unwrap();
-        let mut hostile_cdf = hostile_row;
-        match hostile.read_symbol(&mut hostile_cdf) {
-            Ok(symbol) => {
-                prop_assert!(usize::from(symbol.get()) < hostile_cdf.len().saturating_sub(1));
-            }
+    /// Trusted-mode decoding must never panic and only ever return a typed
+    /// error when the shape gates pass but the probability entries and count
+    /// are hostile — the case that actually reaches the arithmetic loop and
+    /// the CDF update.
+    #[test]
+    fn trusted_mode_survives_hostile_probability_entries(
+        n in MIN_SYMBOLS..=MAX_SYMBOLS,
+        rate_index in 0usize..PARA_ADJUSTMENT_LIST.len(),
+        probs in proptest::collection::vec(any::<i32>(), MAX_SYMBOLS - 1),
+        count in any::<i32>(),
+        data in proptest::collection::vec(any::<u8>(), 2..16),
+    ) {
+        let mut row = vec![0i32; n + 1];
+        row[..n - 1].copy_from_slice(&probs[..n - 1]);
+        row[n - 1] = rate_index as i32;
+        row[n] = count;
+
+        let trusted_config =
+            SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
+        let mut decoder = SymbolDecoder::with_config(&data, trusted_config).unwrap();
+        match decoder.read_symbol(&mut row) {
+            Ok(symbol) => prop_assert!(usize::from(symbol.get()) < n),
             Err(
                 Error::InvalidSymbolCdf { .. }
                 | Error::InvalidSymbolDecoderState { .. }

@@ -519,3 +519,17 @@ fn adapted_row_with_equal_adjacent_entries_is_accepted_and_decodes() {
     assert!(usize::from(symbol.get()) < n);
     assert_eq!(decoder.symbol_count(), 1);
 }
+
+#[test]
+fn trusted_mode_survives_reviewer_reproducer_rows() {
+    let trusted = SymbolDecoderConfig::new().with_cdf_validation_mode(CdfValidationMode::Trusted);
+    let mut over = [100_000, 0, 5];
+    let mut decoder = SymbolDecoder::with_config(&[0xAA, 0x55], trusted).unwrap();
+    let _ = decoder.read_symbol(&mut over);
+    let mut negative = [-1, 0, 0];
+    let mut decoder = SymbolDecoder::with_config(&[0xAA, 0x55], trusted).unwrap();
+    let _ = decoder.read_symbol(&mut negative);
+    let mut extreme = [i32::MIN, i32::MAX, 3, i32::MAX];
+    let mut decoder = SymbolDecoder::with_config(&[0xAA, 0x55], trusted).unwrap();
+    let _ = decoder.read_symbol(&mut extreme);
+}

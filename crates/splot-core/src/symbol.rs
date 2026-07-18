@@ -63,7 +63,7 @@ macro_rules! read_symbol_from_cdf {
             let f = if symbol == shape.n - 1 {
                 0
             } else {
-                CDF_PROB_SCALE - cdf[symbol].to_i32() as u32
+                CDF_PROB_SCALE.saturating_sub(cdf[symbol].to_i32() as u32)
             };
             let prob_inc = PROB_INC[shape.n - 2][symbol] as u32;
             let pp = ((f >> EC_PROB_SHIFT) << 4) + prob_inc;
@@ -165,8 +165,10 @@ pub enum CdfValidationMode {
     /// adaptation-rate index). For callers whose rows come exclusively from
     /// decoder-owned banks — spec-default tables adapted by `update_cdf`,
     /// which preserves the full-row invariants — the two modes are
-    /// observably identical. A malformed row still decodes panic-free but
-    /// may yield an arithmetic-state error instead of a CDF shape error.
+    /// observably identical. A malformed row still decodes panic-free (the
+    /// arithmetic loop saturates the probability gap, bounding every
+    /// downstream product) but may yield an arithmetic-state error or an
+    /// arbitrary in-range symbol instead of a CDF shape error.
     Trusted,
 }
 
@@ -799,6 +801,9 @@ pub(crate) fn floor_log2(value: u32) -> u32 {
     u32::BITS - 1 - value.leading_zeros()
 }
 
+/// Applies the AV2 § 8.2.6 adaptation step. The grow branch uses wrapping
+/// arithmetic: identical for in-range entries, and panic-free under overflow
+/// checks for trusted rows with hostile entries.
 pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: usize) {
     let time_interval = if shape.count > 31 {
         2usize
@@ -816,7 +821,8 @@ pub(crate) fn update_cdf<T: CdfStorage>(cdf: &mut [T], shape: CdfShape, symbol: 
         if index < symbol {
             *entry = T::from_i32(value - (value >> rate));
         } else {
-            *entry = T::from_i32(value + ((CDF_PROB_SCALE as i32 - value) >> rate));
+            let gap = (CDF_PROB_SCALE as i32).wrapping_sub(value);
+            *entry = T::from_i32(value.wrapping_add(gap >> rate));
         }
     }
     let count = cdf[shape.n].to_i32();
