@@ -72,6 +72,28 @@ proptest! {
         }
     }
 
+    /// The windowed bypass peek must match the per-bit `bit_at` reference it
+    /// replaced at every reachable width, start alignment, and end-of-payload
+    /// overlap, including the zero-padding and inversion steps.
+    #[test]
+    fn peek_inverted_bits_matches_per_bit_reference(
+        data in proptest::collection::vec(any::<u8>(), 2..16),
+        advance in 0u32..=32,
+        bits in 0u32..=MAX_LITERAL_BITS,
+    ) {
+        let mut decoder = SymbolDecoder::new(&data).unwrap();
+        let _ = decoder.read_literal(advance);
+        let num_bits = decoder.num_bits_to_read(bits);
+        let start = decoder.reader.consumed_bits();
+        let mut value = 0u64;
+        for offset in 0..num_bits {
+            value = (value << 1)
+                | u64::from(decoder.bit_at(start + u64::from(offset)).unwrap_or(0));
+        }
+        let reference = (value << (bits - num_bits)) ^ mask_for_bits(bits);
+        prop_assert_eq!(decoder.peek_inverted_bits(bits), reference);
+    }
+
     /// `read_symbol` must never panic on an arbitrary caller CDF row. The
     /// relaxed `validate_cdf` now admits equal-adjacent (and thus possibly
     /// zero-width) buckets, so the "parsers never panic" property must
