@@ -409,6 +409,25 @@ pub(crate) fn apply_nonzero_coeff_quant_state_step(
     Ok(())
 }
 
+/// Interleaved derived-path variant of
+/// [`apply_nonzero_coeff_quant_state_step`]: the caller read `level` from
+/// `block` at `entry`, derived the sign input from that same entry and level,
+/// and ran the hidden-parity gate, so the cross-input validation in
+/// [`checked_quant_write_level`] cannot fail and is skipped.
+pub(crate) fn apply_derived_nonzero_coeff_quant_state_step(
+    block: &mut TransformCoeffBlockState,
+    state: &mut CoeffQuantStateAccumulator,
+    index: usize,
+    entry: CoeffScanEntry,
+    level: u32,
+    sign: CoeffSignRead,
+    input: CoeffQuantReadInput,
+) -> Result<(), CoeffQuantStateWriteError> {
+    let write = state.apply_entry(index, entry, level, sign.sign(), input)?;
+    block.set_quant(write.entry().pos(), write.quant())?;
+    Ok(())
+}
+
 fn checked_mul_add(
     index: usize,
     value: u32,
