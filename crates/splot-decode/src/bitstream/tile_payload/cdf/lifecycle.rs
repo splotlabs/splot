@@ -60,7 +60,7 @@ impl TileCdfRows {
         }
         macro_rules! scale_rows {
             ($field:ident $(. $flatten:ident())*) => {
-                scale_cdf_rows(self.$field.iter_mut()$(.$flatten())*);
+                scale_cdf_rows(flat_cdf_rows_mut!(self.$field $(, $flatten)*));
             };
         }
 

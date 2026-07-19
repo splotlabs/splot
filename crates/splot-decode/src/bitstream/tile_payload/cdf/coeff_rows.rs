@@ -449,24 +449,28 @@ macro_rules! coeff_cdf_row {
 macro_rules! avg_row_family {
     (2, $self:ident, $tile:ident, $tile_num:ident, $num_log2:ident, $field:ident) => {
         avg_cdf_rows(
-            $self.$field.iter_mut().flatten(),
-            $tile.$field.iter().flatten(),
+            $self.$field.as_flattened_mut(),
+            $tile.$field.as_flattened(),
             $tile_num,
             $num_log2,
         );
     };
     (3, $self:ident, $tile:ident, $tile_num:ident, $num_log2:ident, $field:ident) => {
         avg_cdf_rows(
-            $self.$field.iter_mut().flatten().flatten(),
-            $tile.$field.iter().flatten().flatten(),
+            $self.$field.as_flattened_mut().as_flattened_mut(),
+            $tile.$field.as_flattened().as_flattened(),
             $tile_num,
             $num_log2,
         );
     };
     (4, $self:ident, $tile:ident, $tile_num:ident, $num_log2:ident, $field:ident) => {
         avg_cdf_rows(
-            $self.$field.iter_mut().flatten().flatten().flatten(),
-            $tile.$field.iter().flatten().flatten().flatten(),
+            $self
+                .$field
+                .as_flattened_mut()
+                .as_flattened_mut()
+                .as_flattened_mut(),
+            $tile.$field.as_flattened().as_flattened().as_flattened(),
             $tile_num,
             $num_log2,
         );
@@ -475,33 +479,43 @@ macro_rules! avg_row_family {
 
 macro_rules! scale_row_family {
     (2, $self:ident, $field:ident) => {
-        scale_cdf_rows($self.$field.iter_mut().flatten());
+        scale_cdf_rows($self.$field.as_flattened_mut());
     };
     (3, $self:ident, $field:ident) => {
-        scale_cdf_rows($self.$field.iter_mut().flatten().flatten());
+        scale_cdf_rows($self.$field.as_flattened_mut().as_flattened_mut());
     };
     (4, $self:ident, $field:ident) => {
-        scale_cdf_rows($self.$field.iter_mut().flatten().flatten().flatten());
+        scale_cdf_rows(
+            $self
+                .$field
+                .as_flattened_mut()
+                .as_flattened_mut()
+                .as_flattened_mut(),
+        );
     };
 }
 
 macro_rules! blend_row_family {
     (2, $self:ident, $saved:ident, $field:ident) => {
         blend_cdf_rows(
-            $self.$field.iter_mut().flatten(),
-            $saved.$field.iter().flatten(),
+            $self.$field.as_flattened_mut(),
+            $saved.$field.as_flattened(),
         );
     };
     (3, $self:ident, $saved:ident, $field:ident) => {
         blend_cdf_rows(
-            $self.$field.iter_mut().flatten().flatten(),
-            $saved.$field.iter().flatten().flatten(),
+            $self.$field.as_flattened_mut().as_flattened_mut(),
+            $saved.$field.as_flattened().as_flattened(),
         );
     };
     (4, $self:ident, $saved:ident, $field:ident) => {
         blend_cdf_rows(
-            $self.$field.iter_mut().flatten().flatten().flatten(),
-            $saved.$field.iter().flatten().flatten().flatten(),
+            $self
+                .$field
+                .as_flattened_mut()
+                .as_flattened_mut()
+                .as_flattened_mut(),
+            $saved.$field.as_flattened().as_flattened().as_flattened(),
         );
     };
 }

@@ -319,8 +319,8 @@ impl MvCdfRows {
         macro_rules! avg_rows {
             ($field:ident $(. $flatten:ident())*) => {
                 avg_cdf_rows(
-                    self.$field.iter_mut()$(.$flatten())*,
-                    tile.$field.iter()$(.$flatten())*,
+                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
+                    flat_cdf_rows!(tile.$field $(, $flatten)*),
                     tile_num,
                     num_log2,
                 );
@@ -334,8 +334,8 @@ impl MvCdfRows {
         macro_rules! blend_rows {
             ($field:ident $(. $flatten:ident())*) => {
                 blend_cdf_rows(
-                    self.$field.iter_mut()$(.$flatten())*,
-                    saved.$field.iter()$(.$flatten())*,
+                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
+                    flat_cdf_rows!(saved.$field $(, $flatten)*),
                 );
             };
         }
@@ -346,7 +346,7 @@ impl MvCdfRows {
     pub(crate) fn scale_counts(&mut self) {
         macro_rules! scale_rows {
             ($field:ident $(. $flatten:ident())*) => {
-                scale_cdf_rows(self.$field.iter_mut()$(.$flatten())*);
+                scale_cdf_rows(flat_cdf_rows_mut!(self.$field $(, $flatten)*));
             };
         }
 
