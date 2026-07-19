@@ -23,12 +23,12 @@ const BLOCK_16X16: usize = 6;
 const BLOCK_8X8: usize = 3;
 const BLOCK_32X16: usize = 8;
 const BLOCK_64X64: usize = 12;
-const BLOCK_256X256: usize = 18;
+const BLOCK_256X256: u8 = 18;
 const BLOCK_4X16: usize = 19;
 const TX_4X4: usize = 0;
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
-const CLEAR_PARTITION_CONTEXT: usize = 0;
+const CLEAR_PARTITION_CONTEXT: u8 = 0;
 const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
 fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {

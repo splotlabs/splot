@@ -9,7 +9,7 @@ use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
 use super::super::cdf::FrameCdfSubset;
 use super::*;
 
-const BLOCK_4X4: usize = 0;
+const BLOCK_4X4: u8 = 0;
 const BLOCK_16X16: usize = 6;
 const BLOCK_32X32: usize = 9;
 
@@ -22,15 +22,15 @@ fn allowed(partitions: &[PartitionType]) -> AllowedPartitions {
 }
 
 fn partition_context() -> PartitionContextInput<'static> {
-    static LEFT0: [usize; 32] = [BLOCK_4X4; 32];
-    static LEFT1: [usize; 32] = [BLOCK_4X4; 32];
-    static ABOVE0: [usize; 32] = [BLOCK_4X4; 32];
-    static ABOVE1: [usize; 32] = [BLOCK_4X4; 32];
+    static LEFT0: [u8; 32] = [BLOCK_4X4; 32];
+    static LEFT1: [u8; 32] = [BLOCK_4X4; 32];
+    static ABOVE0: [u8; 32] = [BLOCK_4X4; 32];
+    static ABOVE1: [u8; 32] = [BLOCK_4X4; 32];
     PartitionContextInput::new(BLOCK_32X32, 0, 0, 0, [&LEFT0, &LEFT1], [&ABOVE0, &ABOVE1]).unwrap()
 }
 
 fn square_context() -> SquareSplitContextInput<'static> {
-    static GRID: [usize; 4] = [BLOCK_4X4; 4];
+    static GRID: [u8; 4] = [BLOCK_4X4; 4];
     SquareSplitContextInput::new(BLOCK_16X16, 0, 0, 0, false, false, &GRID, 2).unwrap()
 }
 
@@ -371,7 +371,7 @@ fn impossible_final_table_result_is_rejected() {
 
 #[test]
 fn cdf_selector_error_fails_before_symbol_consumption() {
-    static EMPTY: [usize; 0] = [];
+    static EMPTY: [u8; 0] = [];
     let grid = vec![BLOCK_4X4; 4];
     let input = ReadPartitionDecisionInput::new(
         allowed(&[PartitionType::None, PartitionType::Horz]),

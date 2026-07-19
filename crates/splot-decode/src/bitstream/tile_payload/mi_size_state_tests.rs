@@ -21,15 +21,15 @@ fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
 
 impl TileMiSizeState {
     fn mi_size_at(&self, plane: usize, row: usize, col: usize) -> usize {
-        self.mi_sizes_plane(plane)[row * self.mi_size_stride + col]
+        usize::from(self.mi_sizes_plane(plane)[row * self.mi_size_stride + col])
     }
 
     fn left_mi_size_at(&self, plane: usize, row: usize) -> usize {
-        self.left_plane(plane)[row]
+        usize::from(self.left_plane(plane)[row])
     }
 
     fn above_mi_size_at(&self, plane: usize, col: usize) -> usize {
-        self.above_plane(plane)[col]
+        usize::from(self.above_plane(plane)[col])
     }
 }
 
@@ -42,10 +42,16 @@ fn initializes_luma_and_chroma_with_clear_context_sentinel() {
             for col in 0..3 {
                 assert_eq!(state.mi_size_at(plane, row, col), BLOCK_256X256);
             }
-            assert_eq!(state.left_mi_size_at(plane, row), CLEAR_PARTITION_CONTEXT);
+            assert_eq!(
+                state.left_mi_size_at(plane, row),
+                usize::from(CLEAR_PARTITION_CONTEXT)
+            );
         }
         for col in 0..3 {
-            assert_eq!(state.above_mi_size_at(plane, col), CLEAR_PARTITION_CONTEXT);
+            assert_eq!(
+                state.above_mi_size_at(plane, col),
+                usize::from(CLEAR_PARTITION_CONTEXT)
+            );
         }
     }
     assert_eq!(state.mi_sizes_plane(0).len(), 16 * 16);
@@ -108,19 +114,25 @@ fn updates_luma_footprint_and_neighbor_lines() {
         }
         assert_eq!(
             state.left_mi_size_at(0, row),
-            partition_context_left(BLOCK_16X8).unwrap()
+            usize::from(partition_context_left(BLOCK_16X8).unwrap())
         );
     }
     for col in 2..6 {
         assert_eq!(
             state.above_mi_size_at(0, col),
-            partition_context_above(BLOCK_16X8).unwrap()
+            usize::from(partition_context_above(BLOCK_16X8).unwrap())
         );
     }
     assert_eq!(state.mi_size_at(0, 0, 2), BLOCK_256X256);
     assert_eq!(state.mi_size_at(1, 1, 2), BLOCK_256X256);
-    assert_eq!(state.left_mi_size_at(0, 0), CLEAR_PARTITION_CONTEXT);
-    assert_eq!(state.above_mi_size_at(0, 1), CLEAR_PARTITION_CONTEXT);
+    assert_eq!(
+        state.left_mi_size_at(0, 0),
+        usize::from(CLEAR_PARTITION_CONTEXT)
+    );
+    assert_eq!(
+        state.above_mi_size_at(0, 1),
+        usize::from(CLEAR_PARTITION_CONTEXT)
+    );
 }
 
 #[test]
@@ -136,16 +148,22 @@ fn updates_chroma_footprint_without_touching_luma() {
         }
         assert_eq!(
             state.left_mi_size_at(1, row),
-            partition_context_left(BLOCK_8X8).unwrap()
+            usize::from(partition_context_left(BLOCK_8X8).unwrap())
         );
-        assert_eq!(state.left_mi_size_at(0, row), CLEAR_PARTITION_CONTEXT);
+        assert_eq!(
+            state.left_mi_size_at(0, row),
+            usize::from(CLEAR_PARTITION_CONTEXT)
+        );
     }
     for col in 1..3 {
         assert_eq!(
             state.above_mi_size_at(1, col),
-            partition_context_above(BLOCK_8X8).unwrap()
+            usize::from(partition_context_above(BLOCK_8X8).unwrap())
         );
-        assert_eq!(state.above_mi_size_at(0, col), CLEAR_PARTITION_CONTEXT);
+        assert_eq!(
+            state.above_mi_size_at(0, col),
+            usize::from(CLEAR_PARTITION_CONTEXT)
+        );
     }
 }
 
@@ -161,13 +179,13 @@ fn accepts_edge_block_footprint_inside_padded_superblock_extent() {
         }
         assert_eq!(
             state.left_mi_size_at(0, row),
-            partition_context_left(BLOCK_64X64).unwrap()
+            usize::from(partition_context_left(BLOCK_64X64).unwrap())
         );
     }
     for col in 16..32 {
         assert_eq!(
             state.above_mi_size_at(0, col),
-            partition_context_above(BLOCK_64X64).unwrap()
+            usize::from(partition_context_above(BLOCK_64X64).unwrap())
         );
     }
 }
