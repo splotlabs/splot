@@ -6,6 +6,7 @@
 //! Feature tracking: `DECODE-TILE-PAYLOAD-INPUT-DERIVATION`.
 
 use core::fmt;
+use std::sync::Arc;
 
 use splot_core::Error;
 use splot_core::annexb::ObuEnvelope;
@@ -308,7 +309,7 @@ pub(crate) struct FrameCandidateTileBoundaryInput<'payload, 'facts> {
     facts: FrameCandidateTileFacts<'facts>,
     cdf: FrameCandidateCdfFacts,
     limits: DecodeLimits,
-    initial_cdfs: Option<FrameCdfSubset>,
+    initial_cdfs: Option<Arc<FrameCdfSubset>>,
 }
 
 impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
@@ -338,7 +339,7 @@ impl<'payload, 'facts> FrameCandidateTileBoundaryInput<'payload, 'facts> {
     }
 
     #[must_use]
-    pub(crate) fn with_initial_cdfs(mut self, initial_cdfs: FrameCdfSubset) -> Self {
+    pub(crate) fn with_initial_cdfs(mut self, initial_cdfs: Arc<FrameCdfSubset>) -> Self {
         self.initial_cdfs = Some(initial_cdfs);
         self
     }
@@ -520,7 +521,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
     .with_coeff_frame_facts(input.facts.coeff_frame_facts)
     .with_cdf_policy(cdf_policy);
     if let Some(cdfs) = input.initial_cdfs.as_ref() {
-        frame = frame.with_initial_cdfs(cdfs.clone());
+        frame = frame.with_initial_cdfs(Arc::clone(cdfs));
     }
     let boundary_input = TilePayloadBoundaryInput::new(
         payload,

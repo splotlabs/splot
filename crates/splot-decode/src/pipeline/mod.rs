@@ -474,7 +474,7 @@ fn decode_key_frame_with_effects(
         frame,
         display_grain,
         output_effects,
-        frame_cdfs: Arc::new(frame_cdfs),
+        frame_cdfs,
         motion_field: Arc::new(motion_field),
         ccso_params,
         ccso_grid,
@@ -671,7 +671,7 @@ fn decode_frames_from_plan_impl(
                     frame: PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs: Arc::new(frame_cdfs),
+                    frame_cdfs,
                     motion_field: Arc::new(motion_field),
                     ccso_params: core.ccso_params,
                     ccso_grid,
@@ -705,7 +705,7 @@ fn decode_frames_from_plan_impl(
                     frame: PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs: Arc::new(frame_cdfs),
+                    frame_cdfs,
                     motion_field: Arc::new(motion_field),
                     ccso_params: core.ccso_params,
                     ccso_grid,
@@ -736,7 +736,7 @@ fn decode_frames_from_plan_impl(
     let key_update = frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        (*key_frame.frame_cdfs).clone(),
+        Arc::clone(&key_frame.frame_cdfs),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         Arc::clone(&key_frame.motion_field),
@@ -1198,12 +1198,21 @@ fn decode_frames_from_plan_impl(
                 output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
                 let inter_output_effects = output_effect_state.finish_frame();
                 let inter_frame_rate = inter_output_effects.frame_rate(frame_rate);
+                let inter_update = frame_ref_update_from_core(
+                    &inter_core,
+                    inter_envelope.offset,
+                    frame_cdfs,
+                    inter_core.ccso_params.clone(),
+                    ccso_grid.clone(),
+                    Arc::new(motion_field),
+                    inter_envelope.header.embedded_layer_id,
+                )?;
                 let inter_frame = PipelineFrame {
                     frame: inter_frame,
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
-                    frame_cdfs: Arc::new(frame_cdfs),
-                    motion_field: Arc::new(motion_field),
+                    frame_cdfs: Arc::clone(&inter_update.frame_cdfs),
+                    motion_field: Arc::clone(&inter_update.motion_field),
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
                     frame_rate_numerator: inter_frame_rate.numerator,
@@ -1215,15 +1224,6 @@ fn decode_frames_from_plan_impl(
                     &inter_frame,
                 )?;
                 let frame_index = frames.len();
-                let inter_update = frame_ref_update_from_core(
-                    &inter_core,
-                    inter_envelope.offset,
-                    (*inter_frame.frame_cdfs).clone(),
-                    inter_frame.ccso_params.clone(),
-                    inter_frame.ccso_grid.clone(),
-                    Arc::clone(&inter_frame.motion_field),
-                    inter_envelope.header.embedded_layer_id,
-                )?;
                 let inter_saved_grain = inter_frame.display_grain.clone();
                 frames.push(Some(inter_frame));
                 retained_frame_bytes = next_retained_frame_bytes;
@@ -1490,7 +1490,7 @@ fn decode_frames_from_plan_impl(
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
-                    (*key_frame.frame_cdfs).clone(),
+                    Arc::clone(&key_frame.frame_cdfs),
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
                     Arc::clone(&key_frame.motion_field),
@@ -1653,7 +1653,7 @@ fn derive_tile_plan_with<'a>(
     core: &'a FrameHeaderCore,
     options: &DecodeOptions,
     kind: TileFactsKind,
-    initial_cdfs: Option<&FrameCdfSubset>,
+    initial_cdfs: Option<&Arc<FrameCdfSubset>>,
 ) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
@@ -1698,7 +1698,7 @@ fn derive_tile_plan_with<'a>(
             options.limits(),
         );
         if let Some(cdfs) = initial_cdfs {
-            input = input.with_initial_cdfs(cdfs.clone());
+            input = input.with_initial_cdfs(Arc::clone(cdfs));
         }
         let group_plan = crate::bitstream::tile_payload::plan_derived_tile_payload_boundary(&input)
             .map_err(decode_tile_boundary_error)?;
@@ -1883,7 +1883,7 @@ pub(crate) fn derive_inter_tile_plan<'a>(
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
     options: &DecodeOptions,
-    initial_cdfs: &FrameCdfSubset,
+    initial_cdfs: &Arc<FrameCdfSubset>,
 ) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
     derive_tile_plan_with(
         plan,

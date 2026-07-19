@@ -11,6 +11,8 @@
 //! as the inter path (deblock, then CDEF over the walk-parsed strength grid, then
 //! CCSO and loop-restoration), so intra and inter share one final-filter stage.
 
+use std::sync::Arc;
+
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
@@ -42,7 +44,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<(
     DecodedFrame<T>,
-    FrameCdfSubset,
+    Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
     let offset = frame_envelope.offset;
@@ -75,13 +77,15 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
-    let initial_cdfs = FrameCdfSubset::default_for_base_q(qindex).map_err(|_| {
-        unsupported_at(
-            "frame_engine_intra_cdf_default_init",
-            offset,
-            "intra frame decode requires default CDFs",
-        )
-    })?;
+    let initial_cdfs = FrameCdfSubset::default_for_base_q(qindex)
+        .map(Arc::new)
+        .map_err(|_| {
+            unsupported_at(
+                "frame_engine_intra_cdf_default_init",
+                offset,
+                "intra frame decode requires default CDFs",
+            )
+        })?;
 
     // Enforce DecodeLimits before allocating the workspace, as the inter path does.
     let tile_size = {

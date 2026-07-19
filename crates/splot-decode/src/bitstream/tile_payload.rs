@@ -32,6 +32,7 @@ mod test_support;
 mod tile_frontier;
 
 use core::fmt;
+use std::sync::Arc;
 
 use cdf::{TileCdfError, TileCdfPolicyInput, TileCdfWorkUnitBoundary, tile_cdf_save_policy};
 use splot_core::headers::tile_group::{TileFramingDefect, TileGroupFraming};
@@ -222,7 +223,7 @@ pub(crate) struct TileFrameFacts {
     coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     cdf_policy: TileCdfPolicyInput,
-    initial_cdfs: Option<FrameCdfSubset>,
+    initial_cdfs: Option<Arc<FrameCdfSubset>>,
 }
 
 impl TileFrameFacts {
@@ -262,7 +263,7 @@ impl TileFrameFacts {
     }
 
     #[must_use]
-    pub(crate) fn with_initial_cdfs(mut self, initial_cdfs: FrameCdfSubset) -> Self {
+    pub(crate) fn with_initial_cdfs(mut self, initial_cdfs: Arc<FrameCdfSubset>) -> Self {
         self.initial_cdfs = Some(initial_cdfs);
         self
     }
@@ -544,8 +545,8 @@ impl<'a> DecodeTileWorkUnit<'a> {
         &mut self.cdf
     }
 
-    pub(crate) fn frame_cdfs(&self) -> FrameCdfSubset {
-        self.cdf.frame_cdfs_clone()
+    pub(crate) fn frame_cdfs(&self) -> Arc<FrameCdfSubset> {
+        self.cdf.frame_cdfs_shared()
     }
 }
 
@@ -845,8 +846,8 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         CdfUpdateMode::Enabled
     };
     let frame_cdfs = match &input.frame.initial_cdfs {
-        Some(cdfs) => cdfs.clone(),
-        None => FrameCdfSubset::default_for_base_q(input.frame.base_q_idx)?,
+        Some(cdfs) => Arc::clone(cdfs),
+        None => Arc::new(FrameCdfSubset::default_for_base_q(input.frame.base_q_idx)?),
     };
     let cdf_policy = input
         .frame
@@ -875,7 +876,8 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             cdf_update_mode,
         };
         let save_policy = tile_cdf_save_policy(cdf_policy, tile.tile_num)?;
-        let cdf = TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, frame_cdfs.clone());
+        let cdf =
+            TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, Arc::clone(&frame_cdfs));
         work_units.push(DecodeTileWorkUnit {
             source: input.source,
             selected_layer: input.selected_layer,

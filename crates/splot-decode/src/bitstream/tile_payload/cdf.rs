@@ -57,6 +57,7 @@ pub(crate) mod partition_read;
 mod util;
 
 use core::fmt;
+use std::sync::Arc;
 
 use splot_core::symbol::CdfUpdateMode;
 use splot_core::tables::cdf::{
@@ -291,8 +292,7 @@ impl SavedCdfSubset {
 pub(crate) struct TileCdfWorkUnitBoundary {
     update_mode: CdfUpdateMode,
     save_policy: TileCdfSavePolicy,
-    frame_cdfs: FrameCdfSubset,
-    saved_cdfs: Option<SavedCdfSubset>,
+    frame_cdfs: Arc<FrameCdfSubset>,
     tile_cdfs: TileCdfSubset,
 }
 
@@ -301,14 +301,13 @@ impl TileCdfWorkUnitBoundary {
     pub(crate) fn new(
         update_mode: CdfUpdateMode,
         save_policy: TileCdfSavePolicy,
-        frame_cdfs: FrameCdfSubset,
+        frame_cdfs: Arc<FrameCdfSubset>,
     ) -> Self {
         let tile_cdfs = frame_cdfs.tile_copy();
         Self {
             update_mode,
             save_policy,
             frame_cdfs,
-            saved_cdfs: None,
             tile_cdfs,
         }
     }
@@ -328,8 +327,8 @@ impl TileCdfWorkUnitBoundary {
         &mut self.tile_cdfs
     }
 
-    pub(crate) fn frame_cdfs_clone(&self) -> FrameCdfSubset {
-        self.frame_cdfs.clone()
+    pub(crate) fn frame_cdfs_shared(&self) -> Arc<FrameCdfSubset> {
+        Arc::clone(&self.frame_cdfs)
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
