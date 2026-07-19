@@ -415,12 +415,12 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         })?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core, tile_offset)?;
         let intrabc_state = TileIntrabcPreludeState::new_for_tile(
-            context.mi_rows,
-            context.mi_cols,
+            (context.mi_rows, context.mi_cols),
             tile_rows.clone(),
             tile_cols.clone(),
             context.sequence,
             context.core.frame_is_intra == Some(true),
+            crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
             tile_offset,
         )?;
         let segment_id_state =

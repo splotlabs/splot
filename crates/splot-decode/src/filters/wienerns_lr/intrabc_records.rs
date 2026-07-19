@@ -363,6 +363,7 @@ impl From<IntrabcBlockVector> for Mv {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntrabcPreludeState {
+    enabled: bool,
     mi_rows: usize,
     mi_cols: usize,
     origin_row: usize,
@@ -398,44 +399,51 @@ impl TileIntrabcPreludeState {
         tile_offset: ByteOffset,
     ) -> Result<Self> {
         Self::new_for_tile(
-            mi_rows,
-            mi_cols,
+            (mi_rows, mi_cols),
             0..mi_rows,
             0..mi_cols,
             sequence,
             frame_is_intra_only,
+            true,
             tile_offset,
         )
     }
 
     pub(crate) fn new_for_tile(
-        mi_rows: usize,
-        mi_cols: usize,
+        frame_mi_size: (usize, usize),
         tile_rows: Range<usize>,
         tile_cols: Range<usize>,
         sequence: &SequenceHeader,
         frame_is_intra_only: bool,
+        enabled: bool,
         tile_offset: ByteOffset,
     ) -> Result<Self> {
+        let (mi_rows, mi_cols) = frame_mi_size;
         let rows = tile_rows.end.saturating_sub(tile_rows.start);
         let cols = tile_cols.end.saturating_sub(tile_cols.start);
-        let values_len = rows.checked_mul(cols).ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_grid_overflow",
-            )
-        })?;
+        let values_len = if enabled {
+            rows.checked_mul(cols).ok_or_else(|| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    tile_offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_intrabc_grid_overflow",
+                )
+            })?
+        } else {
+            0
+        };
         let sb_size4 = intra_sb_size4(sequence, tile_offset)?;
-        let enable_refmvbank = sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_refmvbank);
+        let enable_refmvbank = enabled
+            && sequence
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_refmvbank);
         let drl_reorder = match sequence.inter.as_ref().map(|inter| inter.drl_reorder) {
             Some(DrlReorder::Always) => DrlReorderMode::Always,
             Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
             Some(DrlReorder::Disabled) | None => DrlReorderMode::Disabled,
         };
         Ok(Self {
+            enabled,
             mi_rows,
             mi_cols,
             origin_row: tile_rows.start,
@@ -460,6 +468,9 @@ impl TileIntrabcPreludeState {
         prelude: IntrabcBlockPrelude,
         tile_offset: ByteOffset,
     ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
         let block_mv = prelude.intrabc.map(|info| info.block_mv);
         let facts = IntrabcBlockFacts {
             use_intrabc: prelude.use_intrabc,
@@ -1394,18 +1405,21 @@ fn intrabc_use_is_coded(
     n4w: usize,
     n4h: usize,
 ) -> bool {
-    let allow_intrabc = core.allow_intrabc == Some(true)
-        || core
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.allow_intrabc == Some(true));
     let region_allows_intrabc = core.frame_is_intra != Some(false) || block.mixed_region;
-    allow_intrabc
+    frame_allows_intrabc(core)
         && region_allows_intrabc
         && !block.is_chroma_part
         && n4w <= 64 / MI_SIZE
         && n4h <= 64 / MI_SIZE
         && block.b_size != BLOCK_64X64
+}
+
+pub(crate) fn frame_allows_intrabc(core: &FrameHeaderCore) -> bool {
+    core.allow_intrabc == Some(true)
+        || core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.allow_intrabc == Some(true))
 }
 
 fn read_symbol(
