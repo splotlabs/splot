@@ -11,16 +11,16 @@ use std::ops::Range;
 use super::partition_size::{BlockSize, PartitionSizeError};
 use super::partition_traversal::TilePartitionContextState;
 
-const BLOCK_256X256_INDEX: usize = 18;
+const BLOCK_256X256_INDEX: u8 = 18;
 const PLANE_COUNT: usize = 2;
 const LUMA_PLANE: usize = 0;
 const CHROMA_PLANE: usize = 1;
-const CLEAR_PARTITION_CONTEXT: usize = 0;
-const PARTITION_CONTEXT_ABOVE: [usize; 29] = [
+const CLEAR_PARTITION_CONTEXT: u8 = 0;
+const PARTITION_CONTEXT_ABOVE: [u8; 29] = [
     63, 63, 62, 62, 62, 60, 60, 60, 56, 56, 56, 48, 48, 48, 32, 32, 32, 0, 0, 63, 60, 62, 56, 60,
     48, 63, 56, 62, 48,
 ];
-const PARTITION_CONTEXT_LEFT: [usize; 29] = [
+const PARTITION_CONTEXT_LEFT: [u8; 29] = [
     63, 62, 63, 62, 60, 62, 60, 56, 60, 56, 48, 56, 48, 32, 48, 32, 0, 32, 0, 60, 63, 56, 62, 48,
     60, 56, 63, 48, 62,
 ];
@@ -38,8 +38,10 @@ pub(crate) struct TileMiSizeState {
     /// Coalesced backing store for both planes of the block-size grid and the
     /// left/above neighbour context lines, laid out as
     /// `[mi_sizes L | mi_sizes C | left L | left C | above L | above C]`. A
-    /// single allocation replaces the previous six per-plane vectors.
-    storage: Vec<usize>,
+    /// single allocation replaces the previous six per-plane vectors. Entries
+    /// are block-size indices (`< 29`) and partition-context values (`<= 63`),
+    /// which fit in a byte.
+    storage: Vec<u8>,
 }
 
 impl TileMiSizeState {
@@ -119,17 +121,17 @@ impl TileMiSizeState {
         2 * self.grid_len + 2 * self.left_len + plane * self.above_len
     }
 
-    fn mi_sizes_plane(&self, plane: usize) -> &[usize] {
+    fn mi_sizes_plane(&self, plane: usize) -> &[u8] {
         let base = self.mi_base(plane);
         &self.storage[base..base + self.grid_len]
     }
 
-    fn left_plane(&self, plane: usize) -> &[usize] {
+    fn left_plane(&self, plane: usize) -> &[u8] {
         let base = self.left_base(plane);
         &self.storage[base..base + self.left_len]
     }
 
-    fn above_plane(&self, plane: usize) -> &[usize] {
+    fn above_plane(&self, plane: usize) -> &[u8] {
         let base = self.above_base(plane);
         &self.storage[base..base + self.above_len]
     }
@@ -180,6 +182,11 @@ impl TileMiSizeState {
         let mi_size_index = mi_size.index();
         let above_partition_context = partition_context_above(mi_size_index)?;
         let left_partition_context = partition_context_left(mi_size_index)?;
+        let mi_size_value = u8::try_from(mi_size_index).map_err(|_| {
+            TileMiSizeStateError::BlockSizeIndexTooLarge {
+                index: mi_size_index,
+            }
+        })?;
         let col_start = region.c;
         let col_end = region.col_end;
         let stride = self.mi_size_stride;
@@ -188,7 +195,7 @@ impl TileMiSizeState {
         let above_base = self.above_base(plane);
         for row in region.r..region.row_end {
             let row_start = mi_base + row * stride;
-            self.storage[row_start + col_start..row_start + col_end].fill(mi_size_index);
+            self.storage[row_start + col_start..row_start + col_end].fill(mi_size_value);
             self.storage[left_base + row] = left_partition_context;
         }
         self.storage[above_base + col_start..above_base + col_end].fill(above_partition_context);
@@ -327,6 +334,8 @@ pub(crate) enum TileMiSizeStateError {
         block_size: usize,
         max_exclusive: usize,
     },
+    #[error("block-size index {index} does not fit in the mi-size grid element type")]
+    BlockSizeIndexTooLarge { index: usize },
     #[error("{coordinate} coordinate overflow: {base} + {offset}")]
     CoordinateOverflow {
         coordinate: &'static str,
@@ -423,7 +432,7 @@ fn checked_mul_usize(
 
 fn coalesced_storage(
     allocation: TileMiSizeStateAllocation,
-) -> Result<Vec<usize>, TileMiSizeStateError> {
+) -> Result<Vec<u8>, TileMiSizeStateError> {
     let mut storage = Vec::new();
     storage.try_reserve_exact(allocation.entry_count())?;
     storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
@@ -431,7 +440,7 @@ fn coalesced_storage(
     Ok(storage)
 }
 
-fn partition_context_above(mi_size_index: usize) -> Result<usize, TileMiSizeStateError> {
+fn partition_context_above(mi_size_index: usize) -> Result<u8, TileMiSizeStateError> {
     partition_context_value(
         "PartitionContextAbove",
         &PARTITION_CONTEXT_ABOVE,
@@ -439,7 +448,7 @@ fn partition_context_above(mi_size_index: usize) -> Result<usize, TileMiSizeStat
     )
 }
 
-fn partition_context_left(mi_size_index: usize) -> Result<usize, TileMiSizeStateError> {
+fn partition_context_left(mi_size_index: usize) -> Result<u8, TileMiSizeStateError> {
     partition_context_value(
         "PartitionContextLeft",
         &PARTITION_CONTEXT_LEFT,
@@ -449,9 +458,9 @@ fn partition_context_left(mi_size_index: usize) -> Result<usize, TileMiSizeState
 
 fn partition_context_value(
     table: &'static str,
-    values: &'static [usize],
+    values: &'static [u8],
     mi_size_index: usize,
-) -> Result<usize, TileMiSizeStateError> {
+) -> Result<u8, TileMiSizeStateError> {
     values.get(mi_size_index).copied().ok_or(
         TileMiSizeStateError::PartitionContextBlockSizeOutOfRange {
             table,

@@ -15,14 +15,21 @@ const BLOCK_4X4: usize = 0;
 const BLOCK_16X16: usize = 6;
 const BLOCK_32X32: usize = 9;
 const BLOCK_256X256: usize = BLOCK_256X256_INDEX;
-const PARTITION_CONTEXT_ABOVE: [usize; BLOCK_SIZES] = [
+const PARTITION_CONTEXT_ABOVE: [u8; BLOCK_SIZES] = [
     63, 63, 62, 62, 62, 60, 60, 60, 56, 56, 56, 48, 48, 48, 32, 32, 32, 0, 0, 63, 60, 62, 56, 60,
     48, 63, 56, 62, 48,
 ];
-const PARTITION_CONTEXT_LEFT: [usize; BLOCK_SIZES] = [
+const PARTITION_CONTEXT_LEFT: [u8; BLOCK_SIZES] = [
     63, 62, 63, 62, 60, 62, 60, 56, 60, 56, 48, 56, 48, 32, 48, 32, 0, 32, 0, 60, 63, 56, 62, 48,
     60, 56, 63, 48, 62,
 ];
+
+fn mi_grid(values: &[usize]) -> Vec<u8> {
+    values
+        .iter()
+        .map(|&value| u8::try_from(value).unwrap())
+        .collect()
+}
 
 fn do_split(plane_start: usize, ctx: usize) -> TileCdfSelector {
     TileCdfSelector::DoSplit { plane_start, ctx }
@@ -44,19 +51,17 @@ fn do_square(plane_start: usize, ctx: usize) -> TileCdfSelector {
     TileCdfSelector::DoSquareSplit { plane_start, ctx }
 }
 
-fn above_partition_context(block_size: usize) -> usize {
+fn above_partition_context(block_size: usize) -> u8 {
     PARTITION_CONTEXT_ABOVE[block_size]
 }
 
-fn left_partition_context(block_size: usize) -> usize {
+fn left_partition_context(block_size: usize) -> u8 {
     PARTITION_CONTEXT_LEFT[block_size]
 }
 
 #[test]
 fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
-    let row0 = [BLOCK_256X256, BLOCK_4X4];
-    let row1 = [BLOCK_4X4, BLOCK_256X256];
-    let mi_sizes = [row0, row1].concat();
+    let mi_sizes = mi_grid(&[BLOCK_256X256, BLOCK_4X4, BLOCK_4X4, BLOCK_256X256]);
 
     assert_eq!(
         SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, true, &mi_sizes, 2)
@@ -92,9 +97,7 @@ fn derives_square_split_contexts_from_availability_gated_grid_neighbors() {
 
 #[test]
 fn derives_square_split_block_256_bonus_contexts() {
-    let row0 = [BLOCK_256X256, BLOCK_4X4];
-    let row1 = [BLOCK_4X4, BLOCK_256X256];
-    let mi_sizes = [row0, row1].concat();
+    let mi_sizes = mi_grid(&[BLOCK_256X256, BLOCK_4X4, BLOCK_4X4, BLOCK_256X256]);
 
     assert_eq!(
         SquareSplitContextInput::new(BLOCK_256X256, 0, 1, 1, false, false, &mi_sizes, 2)
@@ -202,7 +205,7 @@ fn derives_vertical_ext_context_from_above_neighbors() {
 
 #[test]
 fn rejects_invalid_context_inputs_before_table_use() {
-    let empty: [usize; 0] = [];
+    let empty: [u8; 0] = [];
     let err = PartitionContextInput::new(BLOCK_SIZES, 0, 0, 0, [&empty, &empty], [&empty, &empty])
         .unwrap_err();
     assert_eq!(
@@ -311,8 +314,7 @@ fn rejects_square_split_invalid_inputs_before_grid_table_use() {
 #[test]
 fn rejects_square_split_missing_grid_cells_and_invalid_block_sizes() {
     let empty_grid = Vec::new();
-    let one_cell_row = [BLOCK_4X4];
-    let one_cell_grid = one_cell_row.to_vec();
+    let one_cell_grid = mi_grid(&[BLOCK_4X4]);
     let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 0, true, false, &empty_grid, 0)
         .unwrap()
         .do_square_split_selector()
@@ -342,9 +344,7 @@ fn rejects_square_split_missing_grid_cells_and_invalid_block_sizes() {
         }
     );
 
-    let invalid_row = [BLOCK_4X4, BLOCK_SIZES];
-    let row1 = [BLOCK_4X4, BLOCK_4X4];
-    let invalid_grid = [invalid_row, row1].concat();
+    let invalid_grid = mi_grid(&[BLOCK_4X4, BLOCK_SIZES, BLOCK_4X4, BLOCK_4X4]);
     let err = SquareSplitContextInput::new(BLOCK_16X16, 0, 1, 1, true, false, &invalid_grid, 2)
         .unwrap()
         .do_square_split_selector()
@@ -413,9 +413,7 @@ fn derived_selectors_index_generated_default_rows() {
     let left1 = [left_partition_context(BLOCK_256X256); 8];
     let above0 = [above_partition_context(BLOCK_4X4); 8];
     let above1 = [above_partition_context(BLOCK_256X256); 8];
-    let square_row0 = [BLOCK_256X256, BLOCK_4X4];
-    let square_row1 = [BLOCK_4X4, BLOCK_256X256];
-    let mi_sizes = [square_row0, square_row1].concat();
+    let mi_sizes = mi_grid(&[BLOCK_256X256, BLOCK_4X4, BLOCK_4X4, BLOCK_256X256]);
     let frame = FrameCdfSubset::from_defaults();
     let tile = frame.tile_copy();
 

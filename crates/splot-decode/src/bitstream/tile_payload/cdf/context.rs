@@ -36,8 +36,8 @@ pub(crate) struct PartitionContextInput<'a> {
     plane_start: usize,
     r: usize,
     c: usize,
-    left_mi_sizes: [&'a [usize]; DO_SPLIT_PLANE_CONTEXTS],
-    above_mi_sizes: [&'a [usize]; DO_SPLIT_PLANE_CONTEXTS],
+    left_mi_sizes: [&'a [u8]; DO_SPLIT_PLANE_CONTEXTS],
+    above_mi_sizes: [&'a [u8]; DO_SPLIT_PLANE_CONTEXTS],
 }
 
 impl<'a> PartitionContextInput<'a> {
@@ -46,8 +46,8 @@ impl<'a> PartitionContextInput<'a> {
         plane_start: usize,
         r: usize,
         c: usize,
-        left_mi_sizes: [&'a [usize]; DO_SPLIT_PLANE_CONTEXTS],
-        above_mi_sizes: [&'a [usize]; DO_SPLIT_PLANE_CONTEXTS],
+        left_mi_sizes: [&'a [u8]; DO_SPLIT_PLANE_CONTEXTS],
+        above_mi_sizes: [&'a [u8]; DO_SPLIT_PLANE_CONTEXTS],
     ) -> Result<Self, TileCdfError> {
         Ok(Self {
             b_size: BlockSizeIndex::new(b_size, "bSize")?,
@@ -220,7 +220,7 @@ pub(crate) struct SquareSplitContextInput<'a> {
     c: usize,
     avail_u: bool,
     avail_l: bool,
-    mi_sizes: &'a [usize],
+    mi_sizes: &'a [u8],
     mi_size_stride: usize,
 }
 
@@ -233,7 +233,7 @@ impl<'a> SquareSplitContextInput<'a> {
         c: usize,
         avail_u: bool,
         avail_l: bool,
-        mi_sizes: &'a [usize],
+        mi_sizes: &'a [u8],
         mi_size_stride: usize,
     ) -> Result<Self, TileCdfError> {
         Ok(Self {
@@ -349,18 +349,18 @@ fn conversion_table_value(
 
 fn neighbor_partition_context(
     array: &'static str,
-    neighbors: &[usize],
+    neighbors: &[u8],
     plane_start: usize,
     index: usize,
 ) -> Result<usize, TileCdfError> {
-    let context = *neighbors
-        .get(index)
-        .ok_or(TileCdfError::PartitionNeighborOutOfRange {
+    let context = usize::from(*neighbors.get(index).ok_or(
+        TileCdfError::PartitionNeighborOutOfRange {
             array,
             plane_start,
             index,
             len: neighbors.len(),
-        })?;
+        },
+    )?);
     if context >= 64 {
         return Err(TileCdfError::PartitionNeighborContextOutOfRange {
             array,
@@ -375,7 +375,7 @@ fn neighbor_partition_context(
 
 fn neighbor_context(
     array: &'static str,
-    neighbors: &[usize],
+    neighbors: &[u8],
     plane_start: usize,
     index: usize,
     threshold: usize,
@@ -404,7 +404,7 @@ fn checked_grid_coordinate(
 
 fn grid_block_size(
     array: &'static str,
-    grid: &[usize],
+    grid: &[u8],
     stride: usize,
     plane_start: usize,
     row: usize,
@@ -428,7 +428,7 @@ fn grid_block_size(
             cols: stride,
         });
     }
-    let block_size = grid[row * stride + col];
+    let block_size = usize::from(grid[row * stride + col]);
     BlockSizeIndex::new(block_size, array).map_err(|_| {
         TileCdfError::PartitionGridBlockSizeOutOfRange {
             array,
@@ -442,7 +442,7 @@ fn grid_block_size(
 }
 
 fn grid_log2(
-    grid: &[usize],
+    grid: &[u8],
     stride: usize,
     plane_start: usize,
     row: usize,

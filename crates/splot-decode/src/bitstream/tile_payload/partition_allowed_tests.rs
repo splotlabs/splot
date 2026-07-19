@@ -264,9 +264,10 @@ fn coordinate_arithmetic_overflow_is_typed() {
 
 #[test]
 fn partition_decision_facts_collect_implied_allowed_and_rect_type() {
-    static LEFT: [usize; 4] = [BLOCK_4X4; 4];
-    static ABOVE: [usize; 4] = [BLOCK_4X4; 4];
-    let grid = vec![BLOCK_4X4; 16];
+    const BLOCK_4X4_U8: u8 = 0;
+    static LEFT: [u8; 4] = [BLOCK_4X4_U8; 4];
+    static ABOVE: [u8; 4] = [BLOCK_4X4_U8; 4];
+    let grid = vec![BLOCK_4X4_U8; 16];
 
     let facts = partition_decision_facts(input(BLOCK_4X8)).unwrap();
     assert_eq!(facts.implied_partition(), None);
