@@ -58,7 +58,7 @@ use crate::filters::wienerns_lr::tx_records::{
     derive_inter_luma_tx_records_for_block, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
-use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+use crate::{DecodeOptions, Result};
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
 const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
@@ -200,9 +200,7 @@ impl ReconCommand {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_inter_blocks<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
-    plan: &DecodeStreamPlan,
-    candidate: &DecodePlannedObu,
-    bytes: &[u8],
+    mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
     frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -218,32 +216,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-    initial_cdfs: &Arc<FrameCdfSubset>,
 ) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs)> {
     let offset = frame_envelope.offset;
     let frame_is_intra = core.frame_is_intra == Some(true);
-    let mut tile_plan = if frame_is_intra {
-        crate::pipeline::derive_tile_plan(
-            plan,
-            candidate,
-            bytes,
-            frame_envelope,
-            sequence,
-            core,
-            options,
-        )?
-    } else {
-        crate::pipeline::derive_inter_tile_plan(
-            plan,
-            candidate,
-            bytes,
-            frame_envelope,
-            sequence,
-            core,
-            options,
-            initial_cdfs,
-        )?
-    };
     let work_units = tile_plan.work_units_mut();
     let Some(first_tile) = work_units.first() else {
         return Err(inter_cap!(

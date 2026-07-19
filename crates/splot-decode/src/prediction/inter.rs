@@ -192,31 +192,29 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         validate_compound_sequence_subset(sequence, &core, offset)?;
     }
     let limits = options.limits();
-    let tile_size = {
-        let tile_plan = crate::pipeline::derive_inter_tile_plan(
-            plan,
-            candidate,
-            bytes,
-            frame_envelope,
-            sequence,
-            &core,
-            options,
-            &initial_cdfs,
-        )?;
-        tile_plan
-            .work_units()
-            .iter()
-            .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
-            .max()
-            .ok_or_else(|| {
-                inter_missing!(
-                    "inter_missing_tile_work_units",
-                    offset,
-                    "inter.tile_count > 0",
-                    "5.20.1"
-                )
-            })?
-    };
+    let tile_plan = crate::pipeline::derive_inter_tile_plan(
+        plan,
+        candidate,
+        bytes,
+        frame_envelope,
+        sequence,
+        &core,
+        options,
+        &initial_cdfs,
+    )?;
+    let tile_size = tile_plan
+        .work_units()
+        .iter()
+        .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
+        .max()
+        .ok_or_else(|| {
+            inter_missing!(
+                "inter_missing_tile_work_units",
+                offset,
+                "inter.tile_count > 0",
+                "5.20.1"
+            )
+        })?;
     ensure_runtime_limits(
         limits,
         frame_width,
@@ -272,9 +270,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let (frame_cdfs, filter_inputs) = decode_inter_blocks(
         scratch,
-        plan,
-        candidate,
-        bytes,
+        tile_plan,
         frame_envelope,
         sequence,
         &core,
@@ -294,7 +290,6 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         luma_use_tcq,
         residual_use_ddt,
         bit_depth,
-        &initial_cdfs,
     )?;
     let motion_field = filter_inputs.motion_field.clone();
 

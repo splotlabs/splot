@@ -77,40 +77,28 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         .lossless_info
         .as_ref()
         .is_some_and(|lossless| lossless.allow_tcq);
-    let initial_cdfs = FrameCdfSubset::default_for_base_q(qindex)
-        .map(Arc::new)
-        .map_err(|_| {
+    // Enforce DecodeLimits before allocating the workspace, as the inter path does.
+    let tile_plan = derive_tile_plan(
+        plan,
+        candidate,
+        bytes,
+        frame_envelope,
+        sequence,
+        core,
+        options,
+    )?;
+    let tile_size = tile_plan
+        .work_units()
+        .iter()
+        .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
+        .max()
+        .ok_or_else(|| {
             unsupported_at(
-                "frame_engine_intra_cdf_default_init",
+                "frame_engine_intra_tile_work_units",
                 offset,
-                "intra frame decode requires default CDFs",
+                "intra frame decode requires at least one tile work unit",
             )
         })?;
-
-    // Enforce DecodeLimits before allocating the workspace, as the inter path does.
-    let tile_size = {
-        let tile_plan = derive_tile_plan(
-            plan,
-            candidate,
-            bytes,
-            frame_envelope,
-            sequence,
-            core,
-            options,
-        )?;
-        tile_plan
-            .work_units()
-            .iter()
-            .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
-            .max()
-            .ok_or_else(|| {
-                unsupported_at(
-                    "frame_engine_intra_tile_work_units",
-                    offset,
-                    "intra frame decode requires at least one tile work unit",
-                )
-            })?
-    };
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,
@@ -145,9 +133,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
 
     let (frame_cdfs, filter_inputs) = decode_inter_blocks::<T>(
         scratch,
-        plan,
-        candidate,
-        bytes,
+        tile_plan,
         frame_envelope,
         sequence,
         core,
@@ -163,7 +149,6 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         luma_use_tcq,
         false,
         bit_depth,
-        &initial_cdfs,
     )?;
 
     let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
