@@ -12,6 +12,7 @@ use super::super::find_mv_stack::TemporalMotionBlock;
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
+const TIP_BATCH_LUMA_ROWS: usize = 16;
 
 #[derive(Debug)]
 struct TipUnit {
@@ -656,35 +657,93 @@ pub(super) fn reconstruct<T: ReconSample>(
         && unit_size == 8
         && scratch.units.len() > 1
         && splot_parallel::current_pool_width() == 1;
+    let columns = block_w.div_ceil(unit_size);
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))
         .sum::<usize>();
     if parallel_output {
-        let arena_len = scratch.units.len().checked_mul(output_stride).ok_or(
-            ReconError::ArithmeticOverflow {
-                context: "TIP compound output arena length",
-            },
-        )?;
+        let arena_units = if batched_output {
+            columns
+                .checked_mul(TIP_BATCH_LUMA_ROWS / unit_size)
+                .map(|units| units.min(scratch.units.len()))
+        } else {
+            Some(scratch.units.len())
+        }
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "TIP compound output arena unit count",
+        })?;
+        let arena_len =
+            arena_units
+                .checked_mul(output_stride)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "TIP compound output arena length",
+                })?;
         scratch.output_samples.resize(arena_len, T::default());
     }
-    let batch_metadata = if batched_output {
+    if batched_output {
         let prediction = prediction
             .as_ref()
             .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-        Some(compute_batched_output(
-            sink,
-            &scratch.units,
-            &mut scratch.output_samples,
-            prediction,
-            batch_rect,
-            batch_has_chroma,
-            block_w.div_ceil(unit_size),
-            tile_offset,
-        )?)
-    } else {
-        None
-    };
+        let stripe_units = columns.checked_mul(TIP_BATCH_LUMA_ROWS / unit_size).ok_or(
+            ReconError::ArithmeticOverflow {
+                context: "TIP compound stripe unit count",
+            },
+        )?;
+        for units in scratch.units.chunks_mut(stripe_units) {
+            let first = units.first().ok_or(ReconError::ZeroDimension {
+                field: "TIP compound stripe",
+            })?;
+            let last = units.last().ok_or(ReconError::ZeroDimension {
+                field: "TIP compound stripe",
+            })?;
+            let stripe_y = first.rect.luma_y;
+            let stripe_end_y = last.rect.luma_y.saturating_add(last.rect.luma_h);
+            let stripe_chroma_y = stripe_y.max(batch_rect.chroma_luma_y);
+            let stripe_chroma_end_y = stripe_end_y.min(
+                batch_rect
+                    .chroma_luma_y
+                    .saturating_add(batch_rect.chroma_luma_h),
+            );
+            let stripe_has_chroma = batch_has_chroma && stripe_chroma_end_y > stripe_chroma_y;
+            let stripe_rect = mc::McBlockRect {
+                luma_x: batch_rect.luma_x,
+                luma_y: stripe_y,
+                luma_w: batch_rect.luma_w,
+                luma_h: stripe_end_y.saturating_sub(stripe_y),
+                chroma_luma_x: batch_rect.chroma_luma_x,
+                chroma_luma_y: stripe_chroma_y,
+                chroma_luma_w: batch_rect.chroma_luma_w,
+                chroma_luma_h: stripe_chroma_end_y.saturating_sub(stripe_chroma_y),
+            };
+            let sample_count =
+                units
+                    .len()
+                    .checked_mul(output_stride)
+                    .ok_or(ReconError::ArithmeticOverflow {
+                        context: "TIP compound stripe output length",
+                    })?;
+            let samples = &mut scratch.output_samples[..sample_count];
+            let metadata = compute_batched_output(
+                sink,
+                units,
+                samples,
+                prediction,
+                stripe_rect,
+                stripe_has_chroma,
+                columns,
+                tile_offset,
+            )?;
+            metadata.publish(samples, sink)?;
+            for unit in units {
+                let x = unit.rect.luma_x.saturating_sub(stripe_rect.luma_x);
+                let y = unit.rect.luma_y.saturating_sub(stripe_rect.luma_y);
+                unit.mvs = metadata
+                    .stored_mvs_at_luma_offset(x, y)?
+                    .unwrap_or(unit.mvs);
+            }
+        }
+    }
     if parallel_output
         && !batched_output
         && let Some(prediction) = prediction.as_ref()
@@ -706,17 +765,10 @@ pub(super) fn reconstruct<T: ReconSample>(
             "7.22"
         )
     })?;
-    if let Some(metadata) = batch_metadata.as_ref() {
-        metadata.publish(&scratch.output_samples, sink)?;
-    }
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
     for unit in scratch.units.drain(..) {
-        let stored_mvs = if let Some(metadata) = batch_metadata.as_ref() {
-            let x = unit.rect.luma_x.saturating_sub(batch_rect.luma_x);
-            let y = unit.rect.luma_y.saturating_sub(batch_rect.luma_y);
-            metadata
-                .stored_mvs_at_luma_offset(x, y)?
-                .unwrap_or(unit.mvs)
+        let stored_mvs = if batched_output {
+            unit.mvs
         } else if let Some(metadata) = unit.metadata {
             let samples = output_chunks
                 .next()
