@@ -945,22 +945,24 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
             params.w,
             |pred| pred,
         )?;
-        for (destination, (pred0_row, pred1_row)) in output.chunks_mut(output_stride).zip(
-            pred0
-                .chunks_exact(params.w)
-                .zip(pred1.chunks_exact(params.w)),
-        ) {
-            for (out, (&first, &second)) in destination[..params.w]
-                .iter_mut()
-                .zip(pred0_row.iter().zip(pred1_row))
-            {
-                *out = blend_compound_average_weighted_sample(
-                    first,
-                    second,
-                    params.bit_depth,
-                    cwp_weight,
-                );
-            }
+        if cwp_weight == 8 {
+            blend_compound_average_strided_rows::<true>(
+                output,
+                output_stride,
+                pred0,
+                pred1,
+                params,
+                cwp_weight,
+            );
+        } else {
+            blend_compound_average_strided_rows::<false>(
+                output,
+                output_stride,
+                pred0,
+                pred1,
+                params,
+                cwp_weight,
+            );
         }
         Ok(())
     };
@@ -968,6 +970,33 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
         run(buffer)
     } else {
         with_recycled_subpel_buffer!(SUBPEL_INTERMEDIATE, total_len, run)
+    }
+}
+
+#[inline]
+fn blend_compound_average_strided_rows<const EQUAL_WEIGHT: bool>(
+    output: &mut [u16],
+    output_stride: usize,
+    pred0: &[i32],
+    pred1: &[i32],
+    params: &SubpelPredictParams,
+    cwp_weight: i16,
+) {
+    for (destination, (pred0_row, pred1_row)) in output.chunks_mut(output_stride).zip(
+        pred0
+            .chunks_exact(params.w)
+            .zip(pred1.chunks_exact(params.w)),
+    ) {
+        for (out, (&first, &second)) in destination[..params.w]
+            .iter_mut()
+            .zip(pred0_row.iter().zip(pred1_row))
+        {
+            *out = if EQUAL_WEIGHT {
+                blend_compound_average_equal_sample(first, second, params.bit_depth)
+            } else {
+                blend_compound_average_weighted_sample(first, second, params.bit_depth, cwp_weight)
+            };
+        }
     }
 }
 
@@ -1118,6 +1147,12 @@ pub fn blend_compound_average_weighted_sample(
         4 + compound_inter_post_round(),
     );
     blended.clamp(0, i32::from(bit_depth.max_sample())) as u16
+}
+
+#[inline]
+fn blend_compound_average_equal_sample(pred0: i32, pred1: i32, bit_depth: BitDepth) -> u16 {
+    round2_i32(pred0 + pred1, 1 + compound_inter_post_round())
+        .clamp(0, i32::from(bit_depth.max_sample())) as u16
 }
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
