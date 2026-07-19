@@ -59,7 +59,7 @@ fn legacy_inverted_skip_trace_fails_closed_before_output() {
 fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
     with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
         let limits =
-            DecodeLimits::unlimited().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(1024));
+            DecodeLimits::unlimited().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(512));
 
         let Err(err) = plan_tile_partition_frontier(work_unit, sequence, core, limits) else {
             panic!("expected MI-state byte limit");
@@ -71,7 +71,7 @@ fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
         assert_eq!(limit.name(), DecodeLimitName::MaxDecodedFrameBytes);
         assert_eq!(
             limit.actual(),
-            Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
+            Some((2 * (256 + 16 + 16) * size_of::<u8>()) as u64)
         );
     });
 }
@@ -80,7 +80,7 @@ fn partition_frontier_checks_mi_state_byte_budget_before_allocation() {
 fn lr_unit_frontier_checks_mi_state_byte_budget_before_allocation() {
     with_minimal_work_unit(LEGACY_INVERTED_SKIP_TRACE, |work_unit, sequence, core| {
         let limits =
-            DecodeLimits::unlimited().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(1024));
+            DecodeLimits::unlimited().with_max_decoded_frame_bytes(DecodeLimitThreshold::Max(512));
 
         let Err(err) = consume_tile_lr_unit_frontier(work_unit, sequence, core, limits) else {
             panic!("expected MI-state byte limit");
@@ -92,7 +92,7 @@ fn lr_unit_frontier_checks_mi_state_byte_budget_before_allocation() {
         assert_eq!(limit.name(), DecodeLimitName::MaxDecodedFrameBytes);
         assert_eq!(
             limit.actual(),
-            Some((2 * (256 + 16 + 16) * size_of::<usize>()) as u64)
+            Some((2 * (256 + 16 + 16) * size_of::<u8>()) as u64)
         );
     });
 }

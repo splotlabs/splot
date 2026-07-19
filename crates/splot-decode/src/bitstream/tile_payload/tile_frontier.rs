@@ -257,7 +257,7 @@ fn ensure_mi_size_allocation_within_limits(
         .ensure_mul(
             DecodeLimitName::MaxDecodedFrameBytes,
             allocation.entry_count() as u64,
-            size_of::<usize>() as u64,
+            size_of::<u8>() as u64,
         )?
         .actual();
     limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, allocation_bytes)?;
