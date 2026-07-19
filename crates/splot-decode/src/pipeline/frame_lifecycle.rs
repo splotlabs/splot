@@ -543,11 +543,10 @@ pub(crate) fn frame_ref_update_from_core(
     })
 }
 
-fn lr_frame_filter_taps(core: &FrameHeaderCore) -> [Vec<Vec<i16>>; 3] {
+fn lr_frame_filter_taps(core: &FrameHeaderCore) -> Option<Arc<[Vec<Vec<i16>>; 3]>> {
+    let lr = core.lr_params.as_ref()?;
     let mut taps: [Vec<Vec<i16>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let Some(lr) = core.lr_params.as_ref() else {
-        return taps;
-    };
+    let mut any = false;
     for (plane, params) in lr.planes.iter().enumerate().take(3) {
         if !params.frame_filters_on {
             continue;
@@ -560,8 +559,9 @@ fn lr_frame_filter_taps(core: &FrameHeaderCore) -> [Vec<Vec<i16>>; 3] {
             .iter()
             .map(|class| class.coeffs.clone())
             .collect();
+        any = any || !taps[plane].is_empty();
     }
-    taps
+    any.then(|| Arc::new(taps))
 }
 
 fn lr_frame_filter_class_counts(core: &FrameHeaderCore) -> [u8; 3] {

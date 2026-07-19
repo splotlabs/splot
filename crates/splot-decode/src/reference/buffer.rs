@@ -10,6 +10,7 @@
 
 use splot_core::headers::frame::{
     CcsoParams, GlobalMotionRef, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,
+    SlotFrameFilterTaps,
 };
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
@@ -42,7 +43,7 @@ struct Slot {
     saved_order_hints: SavedGlobalMotionOrderHints,
     saved_gm_params: SavedGlobalMotionParams,
     lr_frame_filter_class_counts: [u8; 3],
-    lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
+    lr_frame_filter_taps: SlotFrameFilterTaps,
     frame_index: Option<usize>,
     frame_cdfs: Option<Arc<FrameCdfSubset>>,
     ccso_params: Option<CcsoParams>,
@@ -73,7 +74,7 @@ impl Slot {
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0; 3],
-        lr_frame_filter_taps: [Vec::new(), Vec::new(), Vec::new()],
+        lr_frame_filter_taps: None,
         frame_index: None,
         frame_cdfs: None,
         ccso_params: None,
@@ -137,7 +138,7 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) saved_order_hints: SavedGlobalMotionOrderHints,
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
-    pub(crate) lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
+    pub(crate) lr_frame_filter_taps: SlotFrameFilterTaps,
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     pub(crate) ccso_params: Option<CcsoParams>,
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
@@ -469,7 +470,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) saved_global_motion_order_hints: Vec<SavedGlobalMotionOrderHints>,
     pub(crate) saved_global_motion_params: Vec<SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
+    pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
     pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoUnitGrid>>,

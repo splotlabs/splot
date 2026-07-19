@@ -399,7 +399,10 @@ fn lr_reference_filter_entries<'a>(
         {
             continue;
         }
-        let (Some(planes), Some(counts)) = (slot_taps.get(slot), slot_counts.get(slot)) else {
+        let (Some(planes), Some(counts)) = (
+            slot_taps.get(slot).and_then(Option::as_deref),
+            slot_counts.get(slot),
+        ) else {
             continue;
         };
         for class in 0..usize::from(counts[0]) {

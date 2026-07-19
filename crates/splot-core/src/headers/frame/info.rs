@@ -100,8 +100,8 @@ use crate::headers::frame::quant::{
     parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::restoration::{
-    CcsoParams, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, parse_ccso_params,
-    parse_lr_params,
+    CcsoParams, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, SlotFrameFilterTaps,
+    parse_ccso_params, parse_lr_params,
 };
 use crate::headers::frame::segmentation::{SegmentationParams, parse_segmentation_params};
 use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
@@ -188,7 +188,7 @@ pub struct FrameReferenceStateView<'a> {
     /// dictionary resolves `RefFrameLrWienerNs` values from these; `None` keeps
     /// the bit-exact index parse with unresolved reference tap values (a caller
     /// that never consumes the resolved bank, like the validator, may omit them).
-    pub lr_frame_filter_taps: Option<&'a [[Vec<Vec<i16>>; 3]]>,
+    pub lr_frame_filter_taps: Option<&'a [SlotFrameFilterTaps]>,
 }
 
 impl<'a> FrameReferenceStateView<'a> {
@@ -340,7 +340,7 @@ impl<'a> FrameReferenceStateView<'a> {
 
     /// Attaches the per-slot retained frame-level Wiener-NS filter TAPS.
     #[must_use]
-    pub const fn with_lr_frame_filter_taps(mut self, taps: &'a [[Vec<Vec<i16>>; 3]]) -> Self {
+    pub const fn with_lr_frame_filter_taps(mut self, taps: &'a [SlotFrameFilterTaps]) -> Self {
         self.lr_frame_filter_taps = Some(taps);
         self
     }
