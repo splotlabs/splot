@@ -1961,40 +1961,81 @@ fn blend_compound_average<T: ReconSample>(
     let ref_start_y1 = scaling1.start_y >> 10;
     let max_sample = i32::from(bit_depth.max_sample());
     let shift = 1 + compound_inter_post_round();
-    for (idx, (slot, (&left, &right))) in output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
+    if w == 0 {
+        return Ok(());
+    }
+    let span_w = motion.map_or(w, |motion| (motion.unit_size() >> sub_x).max(1));
+    let starts_at = |mvs: [[i32; 2]; 2], row: usize, col: usize, reference: usize| {
+        let scaling = scaling_templates[reference].with_prescaled_mv(
+            (plane_x + col) as i32,
+            (plane_y + row) as i32,
+            mvs[reference][0],
+            mvs[reference][1],
+            sub_x,
+            sub_y,
+        );
+        (scaling.start_x >> 10, scaling.start_y >> 10)
+    };
+    for (row, (out_row, (pred0_row, pred1_row))) in output
+        .chunks_mut(w)
+        .zip(pred0.chunks(w).zip(pred1.chunks(w)))
+        .enumerate()
     {
-        let row = idx / w;
-        let col = idx % w;
-        let starts = if let Some(motion) = motion {
-            let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
-            core::array::from_fn(|reference| {
-                let scaling = scaling_templates[reference].with_prescaled_mv(
-                    (plane_x + col) as i32,
-                    (plane_y + row) as i32,
-                    mvs[reference][0],
-                    mvs[reference][1],
-                    sub_x,
-                    sub_y,
-                );
-                (scaling.start_x >> 10, scaling.start_y >> 10)
-            })
-        } else {
-            [
-                (ref_start_x0 + col as i32, ref_start_y0 + row as i32),
-                (ref_start_x1 + col as i32, ref_start_y1 + row as i32),
-            ]
-        };
-        let ref0_onscreen =
-            (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
-        let ref1_onscreen =
-            (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
-        let mask = match (ref0_onscreen, ref1_onscreen) {
-            (true, false) => 2,
-            (false, true) => 0,
-            _ => 1,
-        };
-        let sample = round2_i32(mask * left + (2 - mask) * right, shift);
-        *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
+        let mut col = 0;
+        while col < w {
+            let len = span_w.min(w - col);
+            let (starts, mvs, linear) = if let Some(motion) = motion {
+                let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
+                let starts: [(i32, i32); 2] =
+                    core::array::from_fn(|reference| starts_at(mvs, row, col, reference));
+                let linear = (0..2).all(|reference| {
+                    if scaling_templates[reference].is_scaled() {
+                        return false;
+                    }
+                    len == 1
+                        || starts_at(mvs, row, col + len - 1, reference)
+                            == (starts[reference].0 + (len - 1) as i32, starts[reference].1)
+                });
+                (starts, Some(mvs), linear)
+            } else {
+                (
+                    [
+                        (ref_start_x0 + col as i32, ref_start_y0 + row as i32),
+                        (ref_start_x1 + col as i32, ref_start_y1 + row as i32),
+                    ],
+                    None,
+                    true,
+                )
+            };
+            let span = col..col + len;
+            let pixels = out_row[span.clone()]
+                .iter_mut()
+                .zip(pred0_row[span.clone()].iter().zip(&pred1_row[span]))
+                .enumerate();
+            for (offset, (slot, (&left, &right))) in pixels {
+                let starts = match mvs {
+                    Some(mvs) if !linear => core::array::from_fn(|reference| {
+                        starts_at(mvs, row, col + offset, reference)
+                    }),
+                    _ => [
+                        (starts[0].0 + offset as i32, starts[0].1),
+                        (starts[1].0 + offset as i32, starts[1].1),
+                    ],
+                };
+                let ref0_onscreen =
+                    (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
+                let ref1_onscreen =
+                    (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
+                let mask = match (ref0_onscreen, ref1_onscreen) {
+                    (true, false) => 2,
+                    (false, true) => 0,
+                    _ => 1,
+                };
+                let sample = round2_i32(mask * left + (2 - mask) * right, shift);
+                *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
+            }
+            col += len;
+        }
     }
     Ok(())
 }
