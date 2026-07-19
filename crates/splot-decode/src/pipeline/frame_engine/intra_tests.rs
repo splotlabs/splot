@@ -27,7 +27,7 @@ fn decode_intra_fixture_with_core(
     mutate: impl FnOnce(&mut FrameHeaderCore),
 ) -> crate::Result<(
     DecodedFrame<u8>,
-    FrameCdfSubset,
+    std::sync::Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
     decode_intra_fixture_with_core_on_threads(ThreadCount::from(1usize), mutate)
@@ -38,7 +38,7 @@ fn decode_intra_fixture_with_core_on_threads(
     mutate: impl FnOnce(&mut FrameHeaderCore),
 ) -> crate::Result<(
     DecodedFrame<u8>,
-    FrameCdfSubset,
+    std::sync::Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
     let context = DecodeContext::new(DecodeRuntimeConfig::new(threads)).expect("context");

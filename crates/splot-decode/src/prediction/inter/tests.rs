@@ -280,7 +280,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
     let update = crate::pipeline::frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        (*key_frame.frame_cdfs).clone(),
+        std::sync::Arc::clone(&key_frame.frame_cdfs),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),
@@ -370,7 +370,7 @@ pub(super) fn parse_inter_core_for_validation(
     let update = crate::pipeline::frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        (*key_frame.frame_cdfs).clone(),
+        std::sync::Arc::clone(&key_frame.frame_cdfs),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),

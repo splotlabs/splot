@@ -364,7 +364,18 @@ fn decode_tip_output_frame<T: ReconSample>(
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
     let (frame, motion_field) =
         block::tip::reconstruct_output(sequence, &core, reference, bit_depth, offset)?;
-    Ok((frame, core, frame_cdfs, None, motion_field))
+    let mut frame_cdfs = (*frame_cdfs).clone();
+    frame_cdfs
+        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
+        .map_err(|_| {
+            inter_cap!(
+                "reference_coefficient_cdf_context",
+                offset,
+                "inter.cdf.reference_coefficient_context",
+                SPEC_REFERENCE
+            )
+        })?;
+    Ok((frame, core, Arc::new(frame_cdfs), None, motion_field))
 }
 
 fn decode_bridge_frame<T: ReconSample>(
@@ -436,7 +447,18 @@ fn decode_bridge_frame<T: ReconSample>(
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source, frame_size, visible, 0, offset)?;
-    Ok((frame, core, frame_cdfs, None, motion_field))
+    let mut frame_cdfs = (*frame_cdfs).clone();
+    frame_cdfs
+        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
+        .map_err(|_| {
+            inter_cap!(
+                "reference_coefficient_cdf_context",
+                offset,
+                "inter.cdf.reference_coefficient_context",
+                SPEC_REFERENCE
+            )
+        })?;
+    Ok((frame, core, Arc::new(frame_cdfs), None, motion_field))
 }
 
 fn resolve_initial_frame_cdfs(
@@ -444,19 +466,21 @@ fn resolve_initial_frame_cdfs(
     sequence: &SequenceHeader,
     reference: &InterReferenceState<'_, impl ReconSample>,
     offset: ByteOffset,
-) -> Result<FrameCdfSubset> {
+) -> Result<Arc<FrameCdfSubset>> {
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
     let current_order_hint =
         i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
     let default_cdfs = || {
-        FrameCdfSubset::default_for_base_q(current_base_q_idx).map_err(|_| {
-            inter_cap!(
-                "inter_cdf_default_init",
-                offset,
-                "inter.cdf.default_init",
-                SPEC_HEADER
-            )
-        })
+        FrameCdfSubset::default_for_base_q(current_base_q_idx)
+            .map(Arc::new)
+            .map_err(|_| {
+                inter_cap!(
+                    "inter_cdf_default_init",
+                    offset,
+                    "inter.cdf.default_init",
+                    SPEC_HEADER
+                )
+            })
     };
     let Some(inter_ctrl) = core.inter.as_ref() else {
         return default_cdfs();
@@ -491,7 +515,7 @@ fn resolve_initial_frame_cdfs(
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: None,
-        } => Ok((*reference.cdfs_for_slot(primary, offset)?).clone()),
+        } => reference.cdfs_for_slot(primary, offset),
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: Some(blend),
@@ -499,7 +523,7 @@ fn resolve_initial_frame_cdfs(
             let mut cdfs = (*reference.cdfs_for_slot(primary, offset)?).clone();
             let blend_cdfs = reference.cdfs_for_slot(blend, offset)?;
             cdfs.blend_from_saved(&blend_cdfs);
-            Ok(cdfs)
+            Ok(Arc::new(cdfs))
         }
     }
 }
@@ -873,7 +897,7 @@ pub(crate) struct BawpSyntax {
 pub(crate) type InterDecodeOutput<T> = (
     DecodedFrame<T>,
     FrameHeaderCore,
-    FrameCdfSubset,
+    Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
     TemporalMotionField,
 );

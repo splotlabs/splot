@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::sync::Arc;
+
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, MvPrecision,
@@ -212,12 +214,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<'_, T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-    _qindex: u32,
+    qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
-    initial_cdfs: &FrameCdfSubset,
-) -> Result<(FrameCdfSubset, InterFilterInputs)> {
+    initial_cdfs: &Arc<FrameCdfSubset>,
+) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs)> {
     let offset = frame_envelope.offset;
     let frame_is_intra = core.frame_is_intra == Some(true);
     let mut tile_plan = if frame_is_intra {
@@ -252,7 +254,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ));
     };
     let first_tile_offset = first_tile.tile_byte_span().start;
-    let mut frame_cdfs = first_tile.frame_cdfs();
+    let frame_cdfs = first_tile.frame_cdfs();
     let mut saved_cdfs: Option<SavedCdfSubset> = None;
 
     let max_drl_bits_minus_1 = if frame_is_intra {
@@ -407,7 +409,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     for tile in work_units.iter() {
         SavedCdfSubset::apply_completed_tile(
             &mut saved_cdfs,
-            &frame_cdfs,
+            frame_cdfs.as_ref(),
             tile.tile_num(),
             tile.cdf().tile_cdfs(),
             tile.cdf().save_policy(),
@@ -419,7 +421,18 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     } = output;
-    frame_cdfs.frame_end_update_from_saved(saved_cdfs);
+    let mut frame_cdfs = FrameCdfSubset::frame_end_updated(frame_cdfs.as_ref(), saved_cdfs);
+    frame_cdfs
+        .replicate_coeff_q_context_for_base_q(qindex)
+        .map_err(|_| {
+            inter_cap!(
+                "reference_coefficient_cdf_context",
+                offset,
+                "inter.cdf.reference_coefficient_context",
+                "7.23"
+            )
+        })?;
+    let frame_cdfs = Arc::new(frame_cdfs);
     let filter_inputs = InterFilterInputs {
         records: core::mem::take(&mut scratch.frame_filter_records),
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,

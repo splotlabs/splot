@@ -449,7 +449,7 @@ pub(crate) fn parse_frame_core_with_reference(
 pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
-    frame_cdfs: FrameCdfSubset,
+    frame_cdfs: Arc<FrameCdfSubset>,
     ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     motion_field: Arc<inter::TemporalMotionField>,
@@ -476,16 +476,6 @@ pub(crate) fn frame_ref_update_from_core(
             "multi-frame decode requires a parsed base_q_idx for the §7.23 update",
         )
     })?;
-    let mut frame_cdfs = frame_cdfs;
-    frame_cdfs
-        .replicate_coeff_q_context_for_base_q(quantization.base_q_idx)
-        .map_err(|_| {
-            unsupported_at(
-                "reference_coefficient_cdf_context",
-                offset,
-                "reference refresh requires a valid coefficient CDF context",
-            )
-        })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
     let adapted = !core.obu_type.is_tip_frame()
         && core.obu_type != ObuType::BridgeFrame
@@ -542,7 +532,7 @@ pub(crate) fn frame_ref_update_from_core(
         num_total_refs,
         saved_order_hints,
         saved_gm_params,
-        frame_cdfs: Arc::new(frame_cdfs),
+        frame_cdfs,
         ccso_params,
         ccso_grid,
         motion_field,

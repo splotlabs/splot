@@ -6,19 +6,22 @@
 //! Feature tracking: `DECODE-TILE-CDF-SAVE-LIFECYCLE-BOUNDARY`.
 
 use super::{
-    FrameCdfSubset, SavedCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset,
-    TileCdfWorkUnitBoundary, scale_cdf_count, scale_cdf_rows,
+    FrameCdfSubset, SavedCdfSubset, TileCdfRows, TileCdfSavePolicy, TileCdfSubset, scale_cdf_count,
+    scale_cdf_rows,
 };
 
 impl FrameCdfSubset {
-    /// Applies the frame-end update. `None` means no tile was saved, in
-    /// which case the saved bank would still equal this untouched frame
+    /// Builds the frame-end updated bank. `None` means no tile was saved,
+    /// in which case the saved bank would still equal the untouched frame
     /// bank, so only the count scaling applies.
-    pub(crate) fn frame_end_update_from_saved(&mut self, saved: Option<SavedCdfSubset>) {
-        if let Some(saved) = saved {
-            self.rows = saved.rows;
-        }
-        self.rows.scale_counts_for_frame_end_update();
+    #[must_use]
+    pub(crate) fn frame_end_updated(frame: &Self, saved: Option<SavedCdfSubset>) -> Self {
+        let mut rows = match saved {
+            Some(saved) => saved.rows,
+            None => frame.rows.clone(),
+        };
+        rows.scale_counts_for_frame_end_update();
+        Self { rows }
     }
 }
 
@@ -45,23 +48,6 @@ impl SavedCdfSubset {
                 .rows
                 .avg_from_tile(tile_num, &tile.rows, policy.num_log2);
         }
-    }
-}
-
-impl TileCdfWorkUnitBoundary {
-    pub(crate) fn apply_completed_tile_to_saved(&mut self, tile_num: u32) {
-        SavedCdfSubset::apply_completed_tile(
-            &mut self.saved_cdfs,
-            &self.frame_cdfs,
-            tile_num,
-            &self.tile_cdfs,
-            self.save_policy,
-        );
-    }
-
-    pub(crate) fn frame_end_update_cdf_subset(&mut self) {
-        let saved = self.saved_cdfs.take();
-        self.frame_cdfs.frame_end_update_from_saved(saved);
     }
 }
 

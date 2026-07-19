@@ -54,12 +54,6 @@ impl TileCdfSubset {
     }
 }
 
-impl TileCdfWorkUnitBoundary {
-    pub(crate) const fn saved_cdfs(&self) -> Option<&SavedCdfSubset> {
-        self.saved_cdfs.as_ref()
-    }
-}
-
 impl TileCdfRows {
     pub(crate) const fn do_square_split(&self) -> &DoSquareSplitCdfRows {
         &self.do_square_split
@@ -454,12 +448,6 @@ impl BlockCdfRows {
 impl SavedCdfSubset {
     pub(crate) const fn rows(&self) -> &TileCdfRows {
         &self.rows
-    }
-}
-
-impl TileCdfWorkUnitBoundary {
-    pub(crate) const fn frame_cdfs(&self) -> &FrameCdfSubset {
-        &self.frame_cdfs
     }
 }
 
@@ -1520,7 +1508,7 @@ fn disabled_cdf_update_keeps_saved_subset_at_initial_rows() {
 
 #[test]
 fn frame_end_update_copies_saved_rows_and_scales_counts() {
-    let mut frame = FrameCdfSubset::from_defaults();
+    let frame = FrameCdfSubset::from_defaults();
     let mut tile = frame.tile_copy();
     tile.rows_mut().do_split[0][0] = [20_000, 7, 20];
     tile.rows_mut().do_ext_partition[0][4] = [22_000, 5, 8];
@@ -1569,7 +1557,7 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
             avg_cdf: false,
         },
     );
-    frame.frame_end_update_from_saved(saved);
+    let frame = FrameCdfSubset::frame_end_updated(&frame, saved);
 
     assert_eq!(frame.rows().do_split()[0][0], [20_000, 7, 15]);
     assert_eq!(frame.rows().do_ext_partition()[0][4], [22_000, 5, 6]);
@@ -1656,29 +1644,37 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
             copy_cdf: true,
             avg_cdf: false,
         },
-        FrameCdfSubset::from_defaults(),
+        Arc::new(FrameCdfSubset::from_defaults()),
     );
     boundary.tile_cdfs_mut().rows_mut().do_split[0][0] = [20_000, 7, 20];
     boundary.tile_cdfs_mut().rows_mut().block.y_mode_set = [20_000, 21_000, 22_000, 9, 20];
 
-    assert!(boundary.saved_cdfs().is_none());
-    assert_eq!(boundary.frame_cdfs().rows(), expected_frame.rows());
+    let frame_cdfs = boundary.frame_cdfs_shared();
+    assert_eq!(frame_cdfs.rows(), expected_frame.rows());
 
-    boundary.apply_completed_tile_to_saved(0);
-    let saved = boundary.saved_cdfs().unwrap();
-    assert_eq!(saved.rows().do_split()[0][0], [20_000, 7, 20]);
-    assert_eq!(saved.rows().y_mode_set(), &[20_000, 21_000, 22_000, 9, 20]);
-    assert_eq!(boundary.frame_cdfs().rows(), expected_frame.rows());
-
-    boundary.frame_end_update_cdf_subset();
-    assert_eq!(
-        boundary.frame_cdfs().rows().do_split()[0][0],
-        [20_000, 7, 15]
+    let mut saved = None;
+    SavedCdfSubset::apply_completed_tile(
+        &mut saved,
+        frame_cdfs.as_ref(),
+        0,
+        boundary.tile_cdfs(),
+        boundary.save_policy(),
     );
+    let saved_ref = saved.as_ref().unwrap();
+    assert_eq!(saved_ref.rows().do_split()[0][0], [20_000, 7, 20]);
     assert_eq!(
-        boundary.frame_cdfs().rows().y_mode_set(),
+        saved_ref.rows().y_mode_set(),
+        &[20_000, 21_000, 22_000, 9, 20]
+    );
+    assert_eq!(frame_cdfs.rows(), expected_frame.rows());
+
+    let updated = FrameCdfSubset::frame_end_updated(frame_cdfs.as_ref(), saved);
+    assert_eq!(updated.rows().do_split()[0][0], [20_000, 7, 15]);
+    assert_eq!(
+        updated.rows().y_mode_set(),
         &[20_000, 21_000, 22_000, 9, 15]
     );
+    assert_eq!(frame_cdfs.rows(), expected_frame.rows());
 }
 
 #[test]

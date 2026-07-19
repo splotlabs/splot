@@ -28,7 +28,7 @@ pub(crate) mod intra;
 type FrameDecodeOutput<T> = (
     DecodedFrame<T>,
     FrameHeaderCore,
-    FrameCdfSubset,
+    std::sync::Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
     TemporalMotionField,
 );
