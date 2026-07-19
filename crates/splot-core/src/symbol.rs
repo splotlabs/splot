@@ -97,12 +97,14 @@ macro_rules! read_symbol_from_cdf {
             update_cdf(cdf, shape, symbol);
         }
 
-        trace::emit(
-            "read_symbol",
-            symbol as u32,
-            decoder.consumed_bits().get(),
-            decoder.symbol_max_bits,
-        );
+        if decoder.trace_enabled {
+            trace::emit(
+                "read_symbol",
+                symbol as u32,
+                decoder.consumed_bits().get(),
+                decoder.symbol_max_bits,
+            );
+        }
 
         Ok(Symbol::new(symbol as u8))
     }};
@@ -273,6 +275,7 @@ pub struct SymbolDecoder<'a> {
     symbol_max_bits: i64,
     frame_symbol_count: u64,
     config: SymbolDecoderConfig,
+    trace_enabled: bool,
 }
 
 impl<'a> SymbolDecoder<'a> {
@@ -322,6 +325,7 @@ impl<'a> SymbolDecoder<'a> {
             symbol_max_bits,
             frame_symbol_count: 0,
             config,
+            trace_enabled: trace::enabled(),
         })
     }
 
@@ -410,12 +414,14 @@ impl<'a> SymbolDecoder<'a> {
     #[track_caller]
     pub fn read_bool(&mut self) -> Result<bool> {
         let symbol = self.read_bypass_bits(1)? != 0;
-        trace::emit(
-            "read_bool",
-            u32::from(symbol),
-            self.consumed_bits().get(),
-            self.symbol_max_bits,
-        );
+        if self.trace_enabled {
+            trace::emit(
+                "read_bool",
+                u32::from(symbol),
+                self.consumed_bits().get(),
+                self.symbol_max_bits,
+            );
+        }
         Ok(symbol)
     }
 
@@ -443,12 +449,14 @@ impl<'a> SymbolDecoder<'a> {
             value = (value << chunk_bits) | self.read_bypass_bits(chunk_bits)?;
             remaining -= chunk_bits;
         }
-        trace::emit(
-            "read_literal",
-            value,
-            self.consumed_bits().get(),
-            self.symbol_max_bits,
-        );
+        if self.trace_enabled {
+            trace::emit(
+                "read_literal",
+                value,
+                self.consumed_bits().get(),
+                self.symbol_max_bits,
+            );
+        }
         Ok(value)
     }
 
@@ -473,12 +481,14 @@ impl<'a> SymbolDecoder<'a> {
             );
         }
         if max_bits == 0 {
-            trace::emit(
-                "read_unary",
-                0,
-                self.consumed_bits().get(),
-                self.symbol_max_bits,
-            );
+            if self.trace_enabled {
+                trace::emit(
+                    "read_unary",
+                    0,
+                    self.consumed_bits().get(),
+                    self.symbol_max_bits,
+                );
+            }
             return Ok(0);
         }
 
@@ -504,12 +514,14 @@ impl<'a> SymbolDecoder<'a> {
         self.advance_bypass(consumed, symbol_value);
         self.frame_symbol_count = self.frame_symbol_count.saturating_add(u64::from(consumed));
 
-        trace::emit(
-            "read_unary",
-            value,
-            self.consumed_bits().get(),
-            self.symbol_max_bits,
-        );
+        if self.trace_enabled {
+            trace::emit(
+                "read_unary",
+                value,
+                self.consumed_bits().get(),
+                self.symbol_max_bits,
+            );
+        }
         Ok(value)
     }
 
@@ -874,7 +886,7 @@ mod trace {
         static INIT: RefCell<bool> = const { RefCell::new(false) };
     }
 
-    fn enabled() -> bool {
+    pub(super) fn enabled() -> bool {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         *ENABLED.get_or_init(|| std::env::var_os("SPLOT_SYMBOL_TRACE").is_some())
     }

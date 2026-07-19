@@ -73,6 +73,7 @@ pub(crate) struct CoeffBrContext {
 }
 
 impl CoeffBrContext {
+    #[inline]
     pub(crate) fn ctx(self, level: &[u8]) -> usize {
         let is_dc = self.row == 0 && self.col == 0;
         let class_idx = tx_class_idx(self.tx_class);
@@ -148,6 +149,7 @@ pub(crate) struct CoeffBaseContext {
 }
 
 impl CoeffBaseContext {
+    #[inline]
     pub(crate) fn select(&self, level: &[u8]) -> CoeffBaseSelection {
         let class_idx = tx_class_idx(self.tx_class);
         let num = if self.plane > 0 {

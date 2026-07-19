@@ -273,6 +273,7 @@ impl TransformCoeffBlockState {
         Ok(())
     }
 
+    #[inline]
     pub(crate) fn level_at(&self, row: usize, col: usize) -> Result<u32, TileCoeffStateError> {
         Ok(u32::from(self.level[self.index(row, col)?]))
     }
