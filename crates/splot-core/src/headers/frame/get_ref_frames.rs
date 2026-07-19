@@ -150,7 +150,7 @@ pub(crate) struct GetRefFrames {
 
 /// One ranked reference's score row (`Scores*[]` arrays in § 7.7), kept together so the sort
 /// and drop operate on a single vector rather than parallel arrays.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct Ranked {
     /// `ScoresIndex[]`: the reference slot index.
     index: u32,
@@ -244,7 +244,8 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         }
     }
 
-    let mut ranked: Vec<Ranked> = Vec::with_capacity(num_ref_frames);
+    let mut ranked = [Ranked::default(); NUM_REF_FRAMES];
+    let mut ranked_len = 0usize;
     let mut min_q: u32 = 0;
     let mut max_q: u32 = 0;
     for (i, mapped_order_hint) in map_order_hint.iter().enumerate().take(num_ref_frames) {
@@ -267,37 +268,38 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
         let ref_ratio = floor_log2_u32_from_u64(area) as i32;
         score -= ref_ratio << 5;
 
-        if new_score_or_dist(&ranked, d, score, slot.mlayer_id) {
-            if ranked.is_empty() {
+        if new_score_or_dist(&ranked[..ranked_len], d, score, slot.mlayer_id) {
+            if ranked_len == 0 {
                 min_q = q;
                 max_q = q;
             } else {
                 min_q = min_q.min(q);
                 max_q = max_q.max(q);
             }
-            ranked.push(Ranked {
+            ranked[ranked_len] = Ranked {
                 index: i as u32,
                 score,
                 order_hint: d,
                 distance: disp_diff,
                 base_q_idx: q,
                 layer: slot.mlayer_id,
-            });
+            };
+            ranked_len += 1;
         }
     }
 
-    if ranked.len() as u32 > REFS_PER_FRAME {
+    if ranked_len as u32 > REFS_PER_FRAME {
         let q_thresh = (max_q + min_q).div_ceil(2);
-        if let Some(unmapped) = get_unmapped_ref(&ranked, q_thresh) {
+        if let Some(unmapped) = get_unmapped_ref(&ranked[..ranked_len], q_thresh) {
             ranked[unmapped].score = 0x7fff_ffff;
         }
     }
 
-    bubble_sort_ref_scores(&mut ranked);
+    bubble_sort_ref_scores(&mut ranked[..ranked_len]);
 
-    let n_ranked = ranked.len() as u32;
+    let n_ranked = ranked_len as u32;
     let mut num_total_refs = n_ranked.min(active_num_ref_frames);
-    let mut ref_frame_idx: Vec<u32> = ranked
+    let mut ref_frame_idx: Vec<u32> = ranked[..ranked_len]
         .iter()
         .take(num_total_refs as usize)
         .map(|r| r.index)
