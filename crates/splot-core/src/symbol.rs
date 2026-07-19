@@ -650,6 +650,7 @@ impl<'a> SymbolDecoder<'a> {
         .map_err(|kind| self.cdf_error(kind))
     }
 
+    #[inline]
     fn read_bypass_bits(&mut self, bits: u32) -> Result<u32> {
         debug_assert!(bits <= BYPASS_LITERAL_CHUNK_BITS);
 
@@ -672,11 +673,13 @@ impl<'a> SymbolDecoder<'a> {
         Ok(value)
     }
 
+    #[inline]
     fn scaled_bypass_value(&mut self, bits: u32) -> u64 {
         self.ensure_buffered(bits);
         self.dif >> (SV_SHIFT - bits)
     }
 
+    #[inline]
     fn advance_bypass(&mut self, bits: u32, symbol_value: u32) {
         self.dif =
             (u64::from(symbol_value) << SV_SHIFT) | ((self.dif << bits) & ((1 << SV_SHIFT) - 1));

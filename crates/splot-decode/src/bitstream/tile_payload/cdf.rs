@@ -276,9 +276,11 @@ pub(crate) struct TileCdfSubset {
 }
 
 impl TileCdfSubset {
+    #[inline]
     pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         self.rows.row(selector)
     }
+    #[inline]
     pub(crate) fn with_row_mut<R>(
         &mut self,
         selector: TileCdfSelector,
@@ -1372,6 +1374,7 @@ impl TileCdfRows {
         )
     }
 
+    #[inline]
     fn row_mut(&mut self, selector: TileCdfSelector) -> Result<&mut [u16], TileCdfError> {
         tile_cdf_row!(
             self,

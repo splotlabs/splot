@@ -1373,6 +1373,7 @@ impl BlockCdfRows {
         block_cdf_row!(self, selector, get, as_slice, row)
     }
 
+    #[inline]
     pub(crate) fn row_mut(
         &mut self,
         selector: TileCdfSelector,

@@ -17,6 +17,7 @@ pub(crate) enum BlockSymbolTraceReadError {
 }
 
 impl TileCdfSubset {
+    #[inline]
     pub(crate) fn read_block_symbol_trace(
         &mut self,
         selector: TileCdfSelector,
