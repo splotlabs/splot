@@ -140,7 +140,7 @@ pub fn uniform_spacing(tile_log2: u8, mis: u32, sb_size: SuperblockSize) -> Tile
     };
 
     let num_tiles = 1u32 << tile_log2;
-    let mut starts = Vec::new();
+    let mut starts = Vec::with_capacity(num_tiles.min(sbs) as usize);
     let mut start_sb = 0u32;
     let mut i = 0u32;
     while i < num_tiles && start_sb < sbs {

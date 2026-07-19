@@ -296,15 +296,11 @@ pub fn parse_tile_info(
     };
 
     let sb_shift2 = sb_shift2.min(31);
-    let mut mi_col_starts: Vec<u32> = sb_col_starts
-        .iter()
-        .map(|&start| start << sb_shift2)
-        .collect();
+    let mut mi_col_starts: Vec<u32> = Vec::with_capacity(sb_col_starts.len() + 1);
+    mi_col_starts.extend(sb_col_starts.iter().map(|&start| start << sb_shift2));
     mi_col_starts.push(mi_cols);
-    let mut mi_row_starts: Vec<u32> = sb_row_starts
-        .iter()
-        .map(|&start| start << sb_shift2)
-        .collect();
+    let mut mi_row_starts: Vec<u32> = Vec::with_capacity(sb_row_starts.len() + 1);
+    mi_row_starts.extend(sb_row_starts.iter().map(|&start| start << sb_shift2));
     mi_row_starts.push(mi_rows);
 
     let (context_update_tile_id, tile_size_bytes) =
