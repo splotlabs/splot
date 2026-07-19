@@ -292,7 +292,7 @@ pub(crate) struct TileCdfWorkUnitBoundary {
     update_mode: CdfUpdateMode,
     save_policy: TileCdfSavePolicy,
     frame_cdfs: FrameCdfSubset,
-    saved_cdfs: SavedCdfSubset,
+    saved_cdfs: Option<SavedCdfSubset>,
     tile_cdfs: TileCdfSubset,
 }
 
@@ -303,13 +303,12 @@ impl TileCdfWorkUnitBoundary {
         save_policy: TileCdfSavePolicy,
         frame_cdfs: FrameCdfSubset,
     ) -> Self {
-        let saved_cdfs = SavedCdfSubset::from_frame(&frame_cdfs);
         let tile_cdfs = frame_cdfs.tile_copy();
         Self {
             update_mode,
             save_policy,
             frame_cdfs,
-            saved_cdfs,
+            saved_cdfs: None,
             tile_cdfs,
         }
     }

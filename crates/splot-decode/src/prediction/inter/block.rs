@@ -253,7 +253,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     };
     let first_tile_offset = first_tile.tile_byte_span().start;
     let mut frame_cdfs = first_tile.frame_cdfs();
-    let mut saved_cdfs = SavedCdfSubset::from_frame(&frame_cdfs);
+    let mut saved_cdfs: Option<SavedCdfSubset> = None;
 
     let max_drl_bits_minus_1 = if frame_is_intra {
         0
@@ -405,7 +405,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         motion_field,
     )?;
     for tile in work_units.iter() {
-        saved_cdfs.apply_completed_tile(
+        SavedCdfSubset::apply_completed_tile(
+            &mut saved_cdfs,
+            &frame_cdfs,
             tile.tile_num(),
             tile.cdf().tile_cdfs(),
             tile.cdf().save_policy(),
@@ -417,7 +419,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     } = output;
-    frame_cdfs.frame_end_update_from_saved(&saved_cdfs);
+    frame_cdfs.frame_end_update_from_saved(saved_cdfs);
     let filter_inputs = InterFilterInputs {
         records: core::mem::take(&mut scratch.frame_filter_records),
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,

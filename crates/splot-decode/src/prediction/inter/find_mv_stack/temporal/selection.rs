@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::sync::Arc;
+
 use super::{
     MAX_FRAME_DISTANCE, TemporalMotionField, TemporalProjectionConfig, sorted_reference_hints,
 };
@@ -25,17 +27,17 @@ fn relative_distance(a: u32, b: u32) -> i32 {
 fn reference_motion_field<'a>(
     ref_index: usize,
     ref_frame_idx: &[u32],
-    ref_motion_fields: &'a [Option<TemporalMotionField>],
+    ref_motion_fields: &'a [Option<Arc<TemporalMotionField>>],
 ) -> Option<&'a TemporalMotionField> {
     let slot = *ref_frame_idx.get(ref_index)?;
-    ref_motion_fields.get(slot as usize)?.as_ref()
+    ref_motion_fields.get(slot as usize)?.as_deref()
 }
 
 fn topo_sort_reference(
     ref_index: usize,
     ref_frame_idx: &[u32],
     ref_order_hints: &[Option<u32>],
-    ref_motion_fields: &[Option<TemporalMotionField>],
+    ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     overlays: &[bool],
     visited: &mut [bool],
     stack: &mut Vec<usize>,
@@ -109,7 +111,7 @@ pub(super) fn projection_queue(
     config: TemporalProjectionConfig,
     ref_frame_idx: &[u32],
     ref_order_hints: &[Option<u32>],
-    ref_motion_fields: &[Option<TemporalMotionField>],
+    ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
 ) -> Vec<TemporalProjection> {
     let sorted = sorted_reference_hints(ref_order_hints)
         .into_iter()
@@ -310,14 +312,14 @@ mod tests {
 
     use super::*;
 
-    fn reference_field(mi_rows: usize, mi_cols: usize, hints: &[u32]) -> TemporalMotionField {
+    fn reference_field(mi_rows: usize, mi_cols: usize, hints: &[u32]) -> Arc<TemporalMotionField> {
         let mut field = TemporalMotionField::new(mi_rows, mi_cols).unwrap();
         field.set_reference_metadata(
             true,
             (mi_cols * 4, mi_rows * 4),
             &hints.iter().copied().map(Some).collect::<Vec<_>>(),
         );
-        field
+        Arc::new(field)
     }
 
     #[test]

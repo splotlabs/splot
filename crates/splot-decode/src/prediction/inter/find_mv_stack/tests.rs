@@ -7,6 +7,7 @@ use super::MotionMode;
 use super::*;
 use crate::prediction::inter::read_mv::MV_PRECISION_ONE_PEL;
 use splot_core::headers::sequence::DrlReorder;
+use std::sync::Arc;
 
 const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
 
@@ -2177,7 +2178,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         &[0, 1],
         &[true, true],
         &[1, 3],
-        &[Some(source), Some(other)],
+        &[Some(Arc::new(source)), Some(Arc::new(other))],
     )
     .unwrap();
 
