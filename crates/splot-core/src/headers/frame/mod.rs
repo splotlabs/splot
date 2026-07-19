@@ -66,7 +66,7 @@ pub use filtering::{
     InterpolationFilter, MfhDeblockingView, gdf_block_size, parse_cdef_params,
     parse_deblocking_filter_params, parse_gdf_params, read_interpolation_filter,
 };
-pub use get_ref_frames::{RESTRICTED_OH, get_relative_dist};
+pub use get_ref_frames::{RESTRICTED_OH, RefIdxBuf, get_relative_dist};
 pub use global_motion::{
     GlobalMotionInput, GlobalMotionParams, GlobalMotionRef, GlobalMotionReferenceState,
     GlobalMotionStop, GmType, SavedGlobalMotionOrderHints, SavedGlobalMotionParams,

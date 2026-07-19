@@ -65,7 +65,8 @@ use crate::error::Result;
 use crate::headers::frame::config::{parse_intrabc_params, parse_screen_content_params_full};
 use crate::headers::frame::filtering::{InterpolationFilter, read_interpolation_filter};
 use crate::headers::frame::get_ref_frames::{
-    GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RefSlot, get_ref_frames, get_relative_dist,
+    GetRefFrames, GetRefFramesInput, RESTRICTED_OH, RefIdxBuf, RefSlot, get_ref_frames,
+    get_relative_dist,
 };
 use crate::headers::frame::size::{FrameSize, ceil_log2};
 use crate::headers::sequence::SuperblockSize;
@@ -273,9 +274,9 @@ pub struct InterControl {
     /// `NumTotalRefs` (mirror :4597-4609), when read or derived.
     pub num_total_refs: Option<u32>,
     /// `ref_frame_idx[0..NumTotalRefs]` (mirror :4611-4625), when read or derived.
-    pub ref_frame_idx: Vec<u32>,
+    pub ref_frame_idx: RefIdxBuf,
     /// `OrderHints[0..NumTotalRefs] = RefOrderHint[ref_frame_idx[i]]` (mirror :4711).
-    pub order_hints: Vec<u32>,
+    pub order_hints: RefIdxBuf,
     /// `FrameWidth`/`FrameHeight` from the reference-grounded frame size (mirror
     /// :4627-4643), when exactly known.
     pub frame_size: Option<FrameSize>,
@@ -678,7 +679,7 @@ fn parse_inter_reference_region(
     control.num_total_refs = Some(num_total_refs);
 
     let ref_idx_bits = ceil_log2(seq.num_ref_frames);
-    let mut ref_frame_idx = Vec::with_capacity(num_total_refs as usize);
+    let mut ref_frame_idx = RefIdxBuf::default();
     for _ in 0..num_total_refs {
         let idx = if ctx.is_bridge {
             ctx.bridge_frame_ref_idx.unwrap_or(0)

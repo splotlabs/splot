@@ -1056,7 +1056,7 @@ impl InterControlView {
             bridge_frame_overwrite_flag: inter.bridge_frame_overwrite_flag,
             explicit_ref_frame_map: inter.explicit_ref_frame_map,
             num_total_refs: inter.num_total_refs,
-            ref_frame_idx: inter.ref_frame_idx.clone(),
+            ref_frame_idx: inter.ref_frame_idx.to_vec(),
             frame_size: inter.frame_size.map(|size| FrameSizeView {
                 width: size.width,
                 height: size.height,

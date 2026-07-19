@@ -609,7 +609,7 @@ mod tests {
         let control = InterControl {
             signal_primary_ref_frame: signal,
             primary_ref_frame: primary,
-            ref_frame_idx: refs.to_vec(),
+            ref_frame_idx: refs.iter().copied().collect(),
             ..InterControl::default()
         };
         derived_primary_is_none(&control, &state, FrameType::Inter)

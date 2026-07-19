@@ -2367,7 +2367,7 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
         core.inter
             .as_mut()
             .expect("fixture has inter control")
-            .ref_frame_idx = vec![0, 1, 2, 3];
+            .ref_frame_idx = [0, 1, 2, 3].into_iter().collect();
 
         let store = ReferenceFrameStore::<&DecodedFrame<u8>>::with_capacity(4).unwrap();
         let mut reference = super::InterReferenceState::empty(&store);

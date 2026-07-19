@@ -136,6 +136,81 @@ pub(crate) struct GetRefFramesInput {
     pub layer_dependency: fn(u8, u8, u8, u8) -> bool,
 }
 
+/// A stack-resident list of at most `REFS_PER_FRAME` `u32` values, replacing the
+/// per-inter-frame `Vec<u32>` that backed the reference map. It holds both
+/// `ref_frame_idx[0..NumTotalRefs]` (slot indices, § 7.7) and the parallel
+/// `OrderHints[0..NumTotalRefs]` (§ 5.18.2 mirror :4711); each is indexed `0..NumTotalRefs`.
+/// `NumTotalRefs <= ActiveNumRefFrames <= REFS_PER_FRAME` always (the explicit path reads
+/// `num_total_refs` as `f(3)`, `<= 7`; the implicit § 7.7 path caps at `ActiveNumRefFrames`),
+/// so the fixed backing never overflows.
+///
+/// Derefs to `[u32]`, so every read (`len`, `get`, `first`, iteration, slicing) matches the
+/// former `Vec<u32>` surface. `push` and its [`FromIterator`] stop silently at capacity;
+/// callers are bounded by construction, so the cap is a total-function guard, not a
+/// truncation path.
+#[derive(Clone, Default)]
+pub struct RefIdxBuf {
+    entries: [u32; REFS_PER_FRAME as usize],
+    len: u8,
+}
+
+impl RefIdxBuf {
+    /// Appends `value` unless the buffer already holds `REFS_PER_FRAME` entries.
+    pub(crate) fn push(&mut self, value: u32) {
+        if let Some(slot) = self.entries.get_mut(self.len as usize) {
+            *slot = value;
+            self.len += 1;
+        }
+    }
+}
+
+impl core::ops::Deref for RefIdxBuf {
+    type Target = [u32];
+
+    fn deref(&self) -> &[u32] {
+        &self.entries[..self.len as usize]
+    }
+}
+
+impl core::fmt::Debug for RefIdxBuf {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl PartialEq for RefIdxBuf {
+    fn eq(&self, other: &Self) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl Eq for RefIdxBuf {}
+
+impl PartialEq<Vec<u32>> for RefIdxBuf {
+    fn eq(&self, other: &Vec<u32>) -> bool {
+        self[..] == other[..]
+    }
+}
+
+impl<'a> IntoIterator for &'a RefIdxBuf {
+    type Item = &'a u32;
+    type IntoIter = core::slice::Iter<'a, u32>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl FromIterator<u32> for RefIdxBuf {
+    fn from_iter<I: IntoIterator<Item = u32>>(iter: I) -> Self {
+        let mut buf = Self::default();
+        for value in iter {
+            buf.push(value);
+        }
+        buf
+    }
+}
+
 /// The output of `get_ref_frames()` (AV2 v1.0.0 § 7.7): `NumTotalRefs` and the derived
 /// `ref_frame_idx[0..NumTotalRefs]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +220,7 @@ pub(crate) struct GetRefFrames {
     pub num_total_refs: u32,
     /// `ref_frame_idx[i]` for `i in 0..num_total_refs` (§ 7.7 :1637 / :1685): the ranked slot
     /// indices.
-    pub ref_frame_idx: Vec<u32>,
+    pub ref_frame_idx: RefIdxBuf,
 }
 
 /// One ranked reference's score row (`Scores*[]` arrays in § 7.7), kept together so the sort
@@ -299,7 +374,7 @@ pub(crate) fn get_ref_frames(input: &GetRefFramesInput, check_res: bool) -> GetR
 
     let n_ranked = ranked_len as u32;
     let mut num_total_refs = n_ranked.min(active_num_ref_frames);
-    let mut ref_frame_idx: Vec<u32> = ranked[..ranked_len]
+    let mut ref_frame_idx: RefIdxBuf = ranked[..ranked_len]
         .iter()
         .take(num_total_refs as usize)
         .map(|r| r.index)
