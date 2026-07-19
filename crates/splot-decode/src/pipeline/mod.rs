@@ -3,6 +3,8 @@
 
 //! Decode pipeline orchestration for the supported decode runtime.
 
+use std::sync::Arc;
+
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
 use splot_core::headers::frame::{FrameHeaderCore, FrameSize, FrameType, TxMode};
@@ -472,7 +474,7 @@ fn decode_key_frame_with_effects(
         frame,
         display_grain,
         output_effects,
-        frame_cdfs,
+        frame_cdfs: Arc::new(frame_cdfs),
         motion_field,
         ccso_params,
         ccso_grid,
@@ -669,7 +671,7 @@ fn decode_frames_from_plan_impl(
                     frame: PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs,
+                    frame_cdfs: Arc::new(frame_cdfs),
                     motion_field,
                     ccso_params: core.ccso_params,
                     ccso_grid,
@@ -703,7 +705,7 @@ fn decode_frames_from_plan_impl(
                     frame: PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs,
+                    frame_cdfs: Arc::new(frame_cdfs),
                     motion_field,
                     ccso_params: core.ccso_params,
                     ccso_grid,
@@ -734,7 +736,7 @@ fn decode_frames_from_plan_impl(
     let key_update = frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        key_frame.frame_cdfs.clone(),
+        (*key_frame.frame_cdfs).clone(),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),
@@ -1200,7 +1202,7 @@ fn decode_frames_from_plan_impl(
                     frame: inter_frame,
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
-                    frame_cdfs,
+                    frame_cdfs: Arc::new(frame_cdfs),
                     motion_field,
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
@@ -1216,7 +1218,7 @@ fn decode_frames_from_plan_impl(
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
                     inter_envelope.offset,
-                    inter_frame.frame_cdfs.clone(),
+                    (*inter_frame.frame_cdfs).clone(),
                     inter_frame.ccso_params.clone(),
                     inter_frame.ccso_grid.clone(),
                     inter_frame.motion_field.clone(),
@@ -1488,7 +1490,7 @@ fn decode_frames_from_plan_impl(
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
-                    key_frame.frame_cdfs.clone(),
+                    (*key_frame.frame_cdfs).clone(),
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
                     key_frame.motion_field.clone(),

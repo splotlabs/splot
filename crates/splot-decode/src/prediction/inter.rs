@@ -3,6 +3,8 @@
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
+use std::sync::Arc;
+
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, RESTRICTED_OH,
@@ -489,12 +491,12 @@ fn resolve_initial_frame_cdfs(
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: None,
-        } => reference.cdfs_for_slot(primary, offset),
+        } => Ok((*reference.cdfs_for_slot(primary, offset)?).clone()),
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: Some(blend),
         } => {
-            let mut cdfs = reference.cdfs_for_slot(primary, offset)?;
+            let mut cdfs = (*reference.cdfs_for_slot(primary, offset)?).clone();
             let blend_cdfs = reference.cdfs_for_slot(blend, offset)?;
             cdfs.blend_from_saved(&blend_cdfs);
             Ok(cdfs)
@@ -953,7 +955,7 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) saved_global_motion_params: Vec<splot_core::headers::frame::SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
-    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
+    pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<splot_core::headers::frame::CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<crate::filters::ccso::CcsoUnitGrid>>,
     pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
@@ -1070,7 +1072,7 @@ impl<T: ReconSample> InterReferenceState<'_, T> {
         self.store.get(slot).ok().flatten().copied()
     }
 
-    fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<FrameCdfSubset> {
+    fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<Arc<FrameCdfSubset>> {
         self.ref_frame_cdfs
             .get(slot as usize)
             .and_then(Clone::clone)

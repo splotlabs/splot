@@ -7,6 +7,8 @@ use super::{unsupported, unsupported_at, unsupported_feature_at};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
+use std::sync::Arc;
+
 use splot_core::headers::film_grain::{FilmGrainModel, MAX_FILM_GRAIN, parse_film_grain};
 use splot_core::headers::frame::{
     CoreSeqQuantView, FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput,
@@ -84,7 +86,7 @@ pub(crate) struct PipelineFrame {
     pub(crate) frame: PipelineDecodedFrame,
     pub(crate) display_grain: Option<ActiveFilmGrain>,
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
-    pub(crate) frame_cdfs: FrameCdfSubset,
+    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     pub(crate) motion_field: inter::TemporalMotionField,
     pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
@@ -540,7 +542,7 @@ pub(crate) fn frame_ref_update_from_core(
         num_total_refs,
         saved_order_hints,
         saved_gm_params,
-        frame_cdfs,
+        frame_cdfs: Arc::new(frame_cdfs),
         ccso_params,
         ccso_grid,
         motion_field,

@@ -14,6 +14,8 @@ use splot_core::headers::frame::{
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
 
+use std::sync::Arc;
+
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::filters::ccso::CcsoUnitGrid;
@@ -42,7 +44,7 @@ struct Slot {
     lr_frame_filter_class_counts: [u8; 3],
     lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
     frame_index: Option<usize>,
-    frame_cdfs: Option<FrameCdfSubset>,
+    frame_cdfs: Option<Arc<FrameCdfSubset>>,
     ccso_params: Option<CcsoParams>,
     ccso_grid: Option<CcsoUnitGrid>,
     motion_field: Option<TemporalMotionField>,
@@ -104,7 +106,7 @@ impl Slot {
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
             lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
             frame_index: Some(frame_index),
-            frame_cdfs: Some(update.frame_cdfs.clone()),
+            frame_cdfs: Some(Arc::clone(&update.frame_cdfs)),
             ccso_params: update.ccso_params.clone(),
             ccso_grid: update.ccso_grid.clone(),
             motion_field: Some(update.motion_field.clone()),
@@ -136,7 +138,7 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
     pub(crate) lr_frame_filter_taps: [Vec<Vec<i16>>; 3],
-    pub(crate) frame_cdfs: FrameCdfSubset,
+    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     pub(crate) ccso_params: Option<CcsoParams>,
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
     pub(crate) motion_field: TemporalMotionField,
@@ -468,7 +470,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) saved_global_motion_params: Vec<SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
-    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfSubset>>,
+    pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoUnitGrid>>,
     pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
