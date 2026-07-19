@@ -27,17 +27,23 @@ const DIV_MULT: [i32; 32] = [
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CompressedMv {
+    row: i16,
+    col: i16,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TemporalMotionCell {
     ref_order_hints: [u32; 2],
-    mvs: [Mv; 2],
+    mvs: [CompressedMv; 2],
 }
 
 impl Default for TemporalMotionCell {
     fn default() -> Self {
         Self {
             ref_order_hints: [INVALID_ORDER_HINT; 2],
-            mvs: [Mv::ZERO; 2],
+            mvs: [CompressedMv::default(); 2],
         }
     }
 }
@@ -1300,29 +1306,30 @@ fn derive_mv_from_trajectories(candidate: Mv, dst: Mv, candidate_trajectory: Mv)
     }
 }
 
-fn compress_tmvp_mv(mv: Mv) -> Mv {
-    Mv {
+fn compress_tmvp_mv(mv: Mv) -> CompressedMv {
+    CompressedMv {
         row: compress_tmvp_component(mv.row),
         col: compress_tmvp_component(mv.col),
     }
 }
 
-fn uncompress_tmvp_mv(mv: Mv) -> Mv {
+fn uncompress_tmvp_mv(mv: CompressedMv) -> Mv {
     Mv {
         row: uncompress_tmvp_component(mv.row),
         col: uncompress_tmvp_component(mv.col),
     }
 }
 
-fn compress_tmvp_component(value: i32) -> i32 {
+fn compress_tmvp_component(value: i32) -> i16 {
     let abs_value = value.unsigned_abs();
     let msb = 31u32.saturating_sub(abs_value.leading_zeros());
     let step_log2 = msb.saturating_sub(4);
-    let compressed = ((abs_value >> step_log2) + (step_log2 << 4)) as i32;
+    let compressed = ((abs_value >> step_log2) + (step_log2 << 4)) as i16;
     if value < 0 { -compressed } else { compressed }
 }
 
-fn uncompress_tmvp_component(value: i32) -> i32 {
+fn uncompress_tmvp_component(value: i16) -> i32 {
+    let value = i32::from(value);
     let abs_value = value.unsigned_abs();
     let step_log2 = ((abs_value >> 4) as i32 - 1).max(0) as u32;
     let uncompressed = ((abs_value - (step_log2 << 4)) << step_log2) as i32;
@@ -1509,7 +1516,7 @@ mod tests {
 
     #[test]
     fn temporal_motion_storage_stays_compact() {
-        assert_eq!(std::mem::size_of::<TemporalMotionCell>(), 24);
+        assert_eq!(std::mem::size_of::<TemporalMotionCell>(), 16);
     }
 
     #[test]
@@ -1536,7 +1543,10 @@ mod tests {
 
             let cell = field.cell(0, 0).unwrap();
             assert_eq!(cell.ref_order_hints, [7; 2]);
-            assert_eq!(cell.mvs, [Mv { row: 8, col: -12 }; 2]);
+            assert_eq!(
+                cell.mvs.map(uncompress_tmvp_mv),
+                [Mv { row: 8, col: -12 }; 2]
+            );
         }
     }
 
@@ -1567,8 +1577,14 @@ mod tests {
             let stored_hints = cell.ref_order_hints.map(Some);
             assert_eq!(stored_hints, expected);
             let swapped = input != expected;
-            assert_eq!(cell.mvs[0].row, if swapped { 24 } else { 8 });
-            assert_eq!(cell.mvs[1].row, if swapped { 8 } else { 24 });
+            assert_eq!(
+                uncompress_tmvp_mv(cell.mvs[0]).row,
+                if swapped { 24 } else { 8 }
+            );
+            assert_eq!(
+                uncompress_tmvp_mv(cell.mvs[1]).row,
+                if swapped { 8 } else { 24 }
+            );
         }
     }
 
@@ -1578,7 +1594,10 @@ mod tests {
         for x8 in 0..source.width8 {
             source.cells[x8] = TemporalMotionCell {
                 ref_order_hints: [0, INVALID_ORDER_HINT],
-                mvs: [compress_tmvp_mv(Mv { row: 0, col: -64 }), Mv::ZERO],
+                mvs: [
+                    compress_tmvp_mv(Mv { row: 0, col: -64 }),
+                    CompressedMv::default(),
+                ],
             };
         }
         source.set_reference_metadata(true, (32, 32), &[Some(0)]);
@@ -1618,7 +1637,10 @@ mod tests {
         let mut source = TemporalMotionField::new(18, 56).unwrap();
         *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
             ref_order_hints: [INVALID_ORDER_HINT, 9],
-            mvs: [Mv::ZERO, compress_tmvp_mv(Mv { row: 10, col: 232 })],
+            mvs: [
+                CompressedMv::default(),
+                compress_tmvp_mv(Mv { row: 10, col: 232 }),
+            ],
         };
         let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
 
@@ -1656,7 +1678,7 @@ mod tests {
         let mut source = TemporalMotionField::new(4, 4).unwrap();
         *source.cell_mut(0, 0).unwrap() = TemporalMotionCell {
             ref_order_hints: [4, INVALID_ORDER_HINT],
-            mvs: [Mv::ZERO, Mv::ZERO],
+            mvs: [CompressedMv::default(); 2],
         };
         let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
 
