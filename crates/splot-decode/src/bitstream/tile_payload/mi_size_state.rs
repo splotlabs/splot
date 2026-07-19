@@ -25,18 +25,21 @@ const PARTITION_CONTEXT_LEFT: [usize; 29] = [
     60, 56, 63, 48, 62,
 ];
 
-type PlaneBuffers = [Vec<usize>; PLANE_COUNT];
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileMiSizeState {
     origin_row: usize,
     origin_col: usize,
     mi_rows: usize,
     mi_cols: usize,
-    mi_sizes: PlaneBuffers,
     mi_size_stride: usize,
-    left_mi_sizes: PlaneBuffers,
-    above_mi_sizes: PlaneBuffers,
+    grid_len: usize,
+    left_len: usize,
+    above_len: usize,
+    /// Coalesced backing store for both planes of the block-size grid and the
+    /// left/above neighbour context lines, laid out as
+    /// `[mi_sizes L | mi_sizes C | left L | left C | above L | above C]`. A
+    /// single allocation replaces the previous six per-plane vectors.
+    storage: Vec<usize>,
 }
 
 impl TileMiSizeState {
@@ -96,17 +99,45 @@ impl TileMiSizeState {
             origin_col: col_range.start,
             mi_rows,
             mi_cols,
-            mi_sizes: filled_planes(allocation.padded_grid_cells, BLOCK_256X256_INDEX)?,
             mi_size_stride: allocation.padded_cols,
-            left_mi_sizes: filled_planes(allocation.padded_rows, CLEAR_PARTITION_CONTEXT)?,
-            above_mi_sizes: filled_planes(allocation.padded_cols, CLEAR_PARTITION_CONTEXT)?,
+            grid_len: allocation.padded_grid_cells,
+            left_len: allocation.padded_rows,
+            above_len: allocation.padded_cols,
+            storage: coalesced_storage(allocation)?,
         })
     }
 
+    const fn mi_base(&self, plane: usize) -> usize {
+        plane * self.grid_len
+    }
+
+    const fn left_base(&self, plane: usize) -> usize {
+        2 * self.grid_len + plane * self.left_len
+    }
+
+    const fn above_base(&self, plane: usize) -> usize {
+        2 * self.grid_len + 2 * self.left_len + plane * self.above_len
+    }
+
+    fn mi_sizes_plane(&self, plane: usize) -> &[usize] {
+        let base = self.mi_base(plane);
+        &self.storage[base..base + self.grid_len]
+    }
+
+    fn left_plane(&self, plane: usize) -> &[usize] {
+        let base = self.left_base(plane);
+        &self.storage[base..base + self.left_len]
+    }
+
+    fn above_plane(&self, plane: usize) -> &[usize] {
+        let base = self.above_base(plane);
+        &self.storage[base..base + self.above_len]
+    }
+
     pub(crate) fn clear_left_context(&mut self) {
-        for line in &mut self.left_mi_sizes {
-            line.fill(CLEAR_PARTITION_CONTEXT);
-        }
+        let base = 2 * self.grid_len;
+        let end = base + 2 * self.left_len;
+        self.storage[base..end].fill(CLEAR_PARTITION_CONTEXT);
     }
 
     pub(crate) fn update_luma_block(
@@ -129,16 +160,10 @@ impl TileMiSizeState {
 
     pub(crate) fn context_state(&self) -> TilePartitionContextState<'_> {
         TilePartitionContextState::new_at(
-            self.mi_sizes[LUMA_PLANE].as_slice(),
+            self.mi_sizes_plane(LUMA_PLANE),
             self.mi_size_stride,
-            [
-                self.left_mi_sizes[LUMA_PLANE].as_slice(),
-                self.left_mi_sizes[CHROMA_PLANE].as_slice(),
-            ],
-            [
-                self.above_mi_sizes[LUMA_PLANE].as_slice(),
-                self.above_mi_sizes[CHROMA_PLANE].as_slice(),
-            ],
+            [self.left_plane(LUMA_PLANE), self.left_plane(CHROMA_PLANE)],
+            [self.above_plane(LUMA_PLANE), self.above_plane(CHROMA_PLANE)],
             self.origin_row,
             self.origin_col,
         )
@@ -155,13 +180,18 @@ impl TileMiSizeState {
         let mi_size_index = mi_size.index();
         let above_partition_context = partition_context_above(mi_size_index)?;
         let left_partition_context = partition_context_left(mi_size_index)?;
-        let cols = region.col_range();
-        for row in region.row_range() {
-            let row_start = row * self.mi_size_stride;
-            self.mi_sizes[plane][row_start + cols.start..row_start + cols.end].fill(mi_size_index);
-            self.left_mi_sizes[plane][row] = left_partition_context;
+        let col_start = region.c;
+        let col_end = region.col_end;
+        let stride = self.mi_size_stride;
+        let mi_base = self.mi_base(plane);
+        let left_base = self.left_base(plane);
+        let above_base = self.above_base(plane);
+        for row in region.r..region.row_end {
+            let row_start = mi_base + row * stride;
+            self.storage[row_start + col_start..row_start + col_end].fill(mi_size_index);
+            self.storage[left_base + row] = left_partition_context;
         }
-        self.above_mi_sizes[plane][cols].fill(above_partition_context);
+        self.storage[above_base + col_start..above_base + col_end].fill(above_partition_context);
         Ok(())
     }
 
@@ -215,8 +245,7 @@ impl TileMiSizeState {
                 mi_cols: self.mi_cols,
             });
         }
-        let plane_grid = &self.mi_sizes[plane];
-        let rows = plane_grid.len() / self.mi_size_stride;
+        let rows = self.grid_len / self.mi_size_stride;
         let cols = self.mi_size_stride;
         let row_end = absolute_row_end.saturating_sub(self.origin_row);
         let col_end = absolute_col_end.saturating_sub(self.origin_col);
@@ -276,16 +305,6 @@ struct TileMiSizeRegion {
     c: usize,
     row_end: usize,
     col_end: usize,
-}
-
-impl TileMiSizeRegion {
-    fn row_range(self) -> core::ops::Range<usize> {
-        self.r..self.row_end
-    }
-
-    fn col_range(self) -> core::ops::Range<usize> {
-        self.c..self.col_end
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -402,15 +421,14 @@ fn checked_mul_usize(
         })
 }
 
-fn filled_planes(len: usize, value: usize) -> Result<PlaneBuffers, TileMiSizeStateError> {
-    Ok([filled_buffer(len, value)?, filled_buffer(len, value)?])
-}
-
-fn filled_buffer(len: usize, value: usize) -> Result<Vec<usize>, TileMiSizeStateError> {
-    let mut buffer = Vec::new();
-    buffer.try_reserve_exact(len)?;
-    buffer.resize(len, value);
-    Ok(buffer)
+fn coalesced_storage(
+    allocation: TileMiSizeStateAllocation,
+) -> Result<Vec<usize>, TileMiSizeStateError> {
+    let mut storage = Vec::new();
+    storage.try_reserve_exact(allocation.entry_count())?;
+    storage.resize(2 * allocation.padded_grid_cells(), BLOCK_256X256_INDEX);
+    storage.resize(allocation.entry_count(), CLEAR_PARTITION_CONTEXT);
+    Ok(storage)
 }
 
 fn partition_context_above(mi_size_index: usize) -> Result<usize, TileMiSizeStateError> {
