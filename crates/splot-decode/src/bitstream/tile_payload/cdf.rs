@@ -233,14 +233,14 @@ impl TileCdfSavePolicy {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCdfSubset {
-    rows: TileCdfRows,
+    rows: Box<TileCdfRows>,
 }
 
 impl FrameCdfSubset {
     #[must_use]
     pub(crate) fn from_defaults() -> Self {
         Self {
-            rows: TileCdfRows::from_defaults(),
+            rows: Box::new(TileCdfRows::from_defaults()),
         }
     }
 
@@ -272,7 +272,7 @@ impl FrameCdfSubset {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfSubset {
-    rows: TileCdfRows,
+    rows: Box<TileCdfRows>,
 }
 
 impl TileCdfSubset {
@@ -291,7 +291,7 @@ impl TileCdfSubset {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SavedCdfSubset {
-    rows: TileCdfRows,
+    rows: Box<TileCdfRows>,
 }
 
 impl SavedCdfSubset {

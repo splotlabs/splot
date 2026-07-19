@@ -39,13 +39,13 @@ use splot_core::tables::cdf::{
 use super::block_rows::*;
 
 impl FrameCdfSubset {
-    pub(crate) const fn rows(&self) -> &TileCdfRows {
+    pub(crate) fn rows(&self) -> &TileCdfRows {
         &self.rows
     }
 }
 
 impl TileCdfSubset {
-    pub(crate) const fn rows(&self) -> &TileCdfRows {
+    pub(crate) fn rows(&self) -> &TileCdfRows {
         &self.rows
     }
 
@@ -446,7 +446,7 @@ impl BlockCdfRows {
 }
 
 impl SavedCdfSubset {
-    pub(crate) const fn rows(&self) -> &TileCdfRows {
+    pub(crate) fn rows(&self) -> &TileCdfRows {
         &self.rows
     }
 }
