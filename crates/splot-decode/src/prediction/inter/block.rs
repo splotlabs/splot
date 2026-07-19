@@ -153,6 +153,9 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     tile: tile::TileDecodeScratch<T>,
     temporal_context: Option<TemporalMvContext>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
+    tip_recon: tip::TipReconstructScratch<T>,
+    tip_residual: super::InterResidualReconScratch<T>,
+    tip_temporal_records: Vec<super::find_mv_stack::TemporalMotionBlock>,
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {

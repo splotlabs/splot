@@ -419,6 +419,7 @@ impl TemporalMvContext {
         self.ref_order_hints = ref_order_hints;
     }
 
+    #[cfg(test)]
     pub(crate) fn from_references(
         mi_dimensions: (usize, usize),
         current_order_hint: u32,
@@ -797,7 +798,8 @@ pub(crate) fn tip_reference_pair_from_hints(
     ref_order_hints: &[Option<u32>],
 ) -> Option<TipReferencePair> {
     let current = i32::try_from(current_order_hint).ok()?;
-    let sorted = sorted_reference_hints(ref_order_hints);
+    let hints = sorted_reference_hints(ref_order_hints);
+    let sorted = hints.as_slice();
     let past_index = sorted
         .iter()
         .rposition(|&(_, hint)| super::super::get_relative_dist(hint, current) < 0)?;
@@ -827,13 +829,36 @@ pub(crate) fn tip_reference_pair_from_hints(
     })
 }
 
-fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> {
-    let mut sorted = ref_order_hints
+/// Fixed-capacity buffer for sorted `(reference index, order hint)` pairs;
+/// decode reference lists are parse-bounded to seven slots, so eight entries
+/// always suffice and sorting never allocates.
+pub(super) struct SortedReferenceHints {
+    entries: [(usize, i32); MAX_SORTED_REFERENCE_HINTS],
+    len: usize,
+}
+
+pub(super) const MAX_SORTED_REFERENCE_HINTS: usize = 8;
+
+impl SortedReferenceHints {
+    pub(super) fn as_slice(&self) -> &[(usize, i32)] {
+        &self.entries[..self.len]
+    }
+}
+
+fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> SortedReferenceHints {
+    debug_assert!(ref_order_hints.len() <= MAX_SORTED_REFERENCE_HINTS);
+    let mut entries = [(0usize, 0i32); MAX_SORTED_REFERENCE_HINTS];
+    let mut len = 0;
+    let pairs = ref_order_hints
         .iter()
         .copied()
         .enumerate()
-        .filter_map(|(index, hint)| Some((index, i32::try_from(hint?).ok()?)))
-        .collect::<Vec<_>>();
+        .filter_map(|(index, hint)| Some((index, i32::try_from(hint?).ok()?)));
+    for pair in pairs.take(MAX_SORTED_REFERENCE_HINTS) {
+        entries[len] = pair;
+        len += 1;
+    }
+    let sorted = &mut entries[..len];
     for i in 0..sorted.len() {
         for j in i + 1..sorted.len() {
             if super::super::get_relative_dist(sorted[j].1, sorted[i].1) < 0 {
@@ -841,7 +866,7 @@ fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> 
             }
         }
     }
-    sorted
+    SortedReferenceHints { entries, len }
 }
 
 fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superblock_size8: usize) {
