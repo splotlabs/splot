@@ -124,6 +124,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     }
     if frame_envelope.header.obu_type.is_tip_frame() {
         return decode_tip_output_frame(
+            scratch,
             frame_envelope,
             core,
             sequence,
@@ -332,6 +333,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
 }
 
 fn decode_tip_output_frame<T: ReconSample>(
+    scratch: &mut InterDecodeScratch<T>,
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
@@ -358,7 +360,7 @@ fn decode_tip_output_frame<T: ReconSample>(
     )?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
     let (frame, motion_field) =
-        block::tip::reconstruct_output(sequence, &core, reference, bit_depth, offset)?;
+        block::tip::reconstruct_output(scratch, sequence, &core, reference, bit_depth, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
     frame_cdfs
         .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))

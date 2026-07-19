@@ -828,6 +828,7 @@ pub(super) fn reconstruct<T: ReconSample>(
 }
 
 pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
+    decode_scratch: &mut super::InterDecodeScratch<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     reference: &InterReferenceState<'_, T>,
@@ -851,33 +852,37 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let sb_h4 = super::superblock_h4(sequence, core)
         .ok_or_else(|| missing("missing required input: inter.tip_output.superblock_size"))?;
     let projection_step = tmvp_projection_step(core);
-    let mut temporal = TemporalMvContext::from_references(
-        (mi_rows, mi_cols),
-        core.display_order_hint().unwrap_or(0),
-        TemporalProjectionConfig {
-            frame_size: (width, height),
-            step: projection_step,
-            unit_size8: tmvp_unit_size8(projection_step, sb_h4),
-            enable_tip: sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.enable_tip),
-            enable_trajectory: sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.enable_mv_traj),
-            reduced: sequence
-                .inter
-                .as_ref()
-                .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
-        },
-        ref_frame_idx,
-        &reference.ref_valid,
-        &reference.ref_order_hint,
-        &reference.ref_motion_fields,
-    )
-    .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
-    prepare_motion_field(&mut temporal, core, sb_h4);
+    let temporal = decode_scratch
+        .temporal_context
+        .get_or_insert_with(TemporalMvContext::empty);
+    temporal
+        .refresh_from_references(
+            (mi_rows, mi_cols),
+            core.display_order_hint().unwrap_or(0),
+            TemporalProjectionConfig {
+                frame_size: (width, height),
+                step: projection_step,
+                unit_size8: tmvp_unit_size8(projection_step, sb_h4),
+                enable_tip: sequence
+                    .inter
+                    .as_ref()
+                    .is_some_and(|tools| tools.enable_tip),
+                enable_trajectory: sequence
+                    .inter
+                    .as_ref()
+                    .is_some_and(|tools| tools.enable_mv_traj),
+                reduced: sequence
+                    .inter
+                    .as_ref()
+                    .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
+            },
+            ref_frame_idx,
+            &reference.ref_valid,
+            &reference.ref_order_hint,
+            &reference.ref_motion_fields,
+        )
+        .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
+    prepare_motion_field(temporal, core, sb_h4);
     let global_mv = inter
         .tip_global_mv
         .ok_or_else(|| missing("missing required input: inter.tip_output.global_mv"))?;
@@ -923,18 +928,26 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             residual: None,
         },
     };
-    let mut scratch = TipReconstructScratch::default();
-    let mut residual_scratch = InterResidualReconScratch::default();
-    let mut temporal_records = Vec::new();
+    let super::InterDecodeScratch {
+        temporal_context,
+        tip_recon,
+        tip_residual,
+        tip_temporal_records,
+        ..
+    } = decode_scratch;
+    let temporal = temporal_context
+        .as_ref()
+        .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
+    tip_temporal_records.clear();
     reconstruct(
-        &mut scratch,
-        &mut residual_scratch,
-        &mut temporal_records,
+        tip_recon,
+        tip_residual,
+        tip_temporal_records,
         &mut mc::WorkspaceSink::Frame(&mut workspace),
         true,
         &placed,
         &[],
-        &temporal,
+        temporal,
         sequence,
         core,
         ref_frame_idx,
@@ -945,7 +958,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         bit_depth,
         offset,
     )?;
-    super::temporal::commit_temporal_motion_blocks(&mut motion_field, &temporal_records);
+    super::temporal::commit_temporal_motion_blocks(&mut motion_field, tip_temporal_records);
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params

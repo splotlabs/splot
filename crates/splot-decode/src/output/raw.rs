@@ -23,7 +23,25 @@ pub(crate) fn encode_raw_stream_from_plan(
     let outputs = crate::pipeline::decode_frames_from_prepared(bitstream, parsed, options, plan)?;
     crate::timing::report("runtime_decode", decode_started);
     let serialize_started = crate::timing::start();
+    let mut total_bytes = 0usize;
+    for output in &outputs {
+        let frame_bytes = match &output.frame {
+            PipelineDecodedFrame::Eight(frame) => {
+                DecodedFrameHashInput::new(frame.get()).byte_len()?
+            }
+            PipelineDecodedFrame::Ten(frame) => {
+                DecodedFrameHashInput::new(frame.get()).byte_len()?
+            }
+        };
+        total_bytes = total_bytes.saturating_add(frame_bytes);
+    }
     let mut bytes = Vec::new();
+    bytes.try_reserve_exact(total_bytes).map_err(|source| {
+        DecodeOutputError::io(
+            DecodeOutputOperation::SerializeRaw,
+            std::io::Error::other(format!("raw output allocation failed: {source}")),
+        )
+    })?;
     for output in &outputs {
         match &output.frame {
             PipelineDecodedFrame::Eight(frame) => {
