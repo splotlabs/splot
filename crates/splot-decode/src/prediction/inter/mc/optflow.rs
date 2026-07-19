@@ -61,6 +61,32 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
     static OPTFLOW_MOTION_CELLS: std::cell::RefCell<[Option<Vec<MotionCell>>; 2]> =
         const { std::cell::RefCell::new([None, None]) };
+    static TIP_REFINEMV_CANDIDATES: std::cell::Cell<Option<Vec<[Mv; 2]>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn take_tip_refinemv_candidates(capacity: usize) -> Vec<[Mv; 2]> {
+    TIP_REFINEMV_CANDIDATES.with(|slot| {
+        let mut candidates = slot.take().unwrap_or_default();
+        candidates.clear();
+        candidates.reserve(capacity);
+        candidates
+    })
+}
+
+fn recycle_tip_refinemv_candidates(mut candidates: Vec<[Mv; 2]>) {
+    candidates.clear();
+    TIP_REFINEMV_CANDIDATES.with(|slot| {
+        let saved = slot.take();
+        if saved
+            .as_ref()
+            .is_none_or(|saved| saved.capacity() < candidates.capacity())
+        {
+            slot.set(Some(candidates));
+        } else {
+            slot.set(saved);
+        }
+    });
 }
 
 pub(super) fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
@@ -150,6 +176,14 @@ impl Drop for MotionCells {
     fn drop(&mut self) {
         if let Self::Heap(cells) = self {
             recycle_motion_cells(core::mem::take(cells));
+        }
+    }
+}
+
+impl Drop for RefinemvCandidates {
+    fn drop(&mut self) {
+        if let Self::PerCell { candidates, .. } = self {
+            recycle_tip_refinemv_candidates(core::mem::take(candidates));
         }
     }
 }
@@ -577,7 +611,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
-    let mut refinemv_candidates = Vec::with_capacity(unit_count);
+    let mut refinemv_candidates = take_tip_refinemv_candidates(unit_count);
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
@@ -1078,6 +1112,35 @@ mod tests {
         assert_eq!(
             grid.stored_mvs_at_luma_offset(0, 0).unwrap(),
             [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
+        );
+    }
+
+    #[test]
+    fn per_cell_refinemv_candidates_are_independent_of_searched_base_mvs() {
+        let candidates = [
+            [Mv { row: 1, col: 2 }, Mv { row: 3, col: 4 }],
+            [Mv { row: 5, col: 6 }, Mv { row: 7, col: 8 }],
+        ];
+        let grid = CompoundMotionGrid {
+            unit_size: 8,
+            columns: 2,
+            cells: MotionCells::Heap(vec![
+                MotionCell::from_refinemv([Mv::ZERO; 2]);
+                candidates.len()
+            ]),
+            refinemv_candidates: RefinemvCandidates::PerCell {
+                candidates: candidates.to_vec(),
+                unit_size: 8,
+            },
+        };
+
+        assert_eq!(
+            grid.refinemv_candidates_at_luma_offset(0, 0),
+            Some((candidates[0], 8))
+        );
+        assert_eq!(
+            grid.refinemv_candidates_at_luma_offset(8, 0),
+            Some((candidates[1], 8))
         );
     }
 
