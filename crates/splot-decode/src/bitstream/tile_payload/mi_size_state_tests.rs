@@ -21,15 +21,15 @@ fn new_state(mi_rows: usize, mi_cols: usize) -> TileMiSizeState {
 
 impl TileMiSizeState {
     fn mi_size_at(&self, plane: usize, row: usize, col: usize) -> usize {
-        self.mi_sizes[plane][row * self.mi_size_stride + col]
+        self.mi_sizes_plane(plane)[row * self.mi_size_stride + col]
     }
 
     fn left_mi_size_at(&self, plane: usize, row: usize) -> usize {
-        self.left_mi_sizes[plane][row]
+        self.left_plane(plane)[row]
     }
 
     fn above_mi_size_at(&self, plane: usize, col: usize) -> usize {
-        self.above_mi_sizes[plane][col]
+        self.above_plane(plane)[col]
     }
 }
 
@@ -48,10 +48,10 @@ fn initializes_luma_and_chroma_with_clear_context_sentinel() {
             assert_eq!(state.above_mi_size_at(plane, col), CLEAR_PARTITION_CONTEXT);
         }
     }
-    assert_eq!(state.mi_sizes[0].len(), 16 * 16);
+    assert_eq!(state.mi_sizes_plane(0).len(), 16 * 16);
     assert_eq!(state.mi_size_stride, 16);
-    assert_eq!(state.left_mi_sizes[0].len(), 16);
-    assert_eq!(state.above_mi_sizes[0].len(), 16);
+    assert_eq!(state.left_plane(0).len(), 16);
+    assert_eq!(state.above_plane(0).len(), 16);
 }
 
 #[test]
@@ -69,7 +69,7 @@ fn non_square_padded_grid_uses_padded_columns_as_stride() {
     let mut state = new_state(18, 33);
 
     assert_eq!(state.mi_size_stride, 48);
-    assert_eq!(state.mi_sizes[0].len(), 32 * 48);
+    assert_eq!(state.mi_sizes_plane(0).len(), 32 * 48);
 
     state.update_luma_block(16, 32, block(BLOCK_64X64)).unwrap();
 
@@ -243,10 +243,10 @@ fn context_state_view_is_available_after_mutation() {
     state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
 
     let expected = TilePartitionContextState::new(
-        &state.mi_sizes[0],
+        state.mi_sizes_plane(0),
         state.mi_size_stride,
-        [&state.left_mi_sizes[0], &state.left_mi_sizes[1]],
-        [&state.above_mi_sizes[0], &state.above_mi_sizes[1]],
+        [state.left_plane(0), state.left_plane(1)],
+        [state.above_plane(0), state.above_plane(1)],
     );
 
     assert_eq!(state.context_state(), expected);
