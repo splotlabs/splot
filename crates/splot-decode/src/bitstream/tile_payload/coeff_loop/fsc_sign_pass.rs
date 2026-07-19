@@ -298,6 +298,6 @@ pub(crate) fn read_fsc_sign_symbol(
     })
 }
 
-pub(crate) const fn quant_sign_value(sign: bool) -> i32 {
+pub(crate) const fn quant_sign_value(sign: bool) -> i8 {
     if sign { -1 } else { 1 }
 }

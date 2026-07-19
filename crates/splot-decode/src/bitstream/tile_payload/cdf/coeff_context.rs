@@ -271,7 +271,7 @@ pub(crate) const fn dc_sign_ctx(
 }
 
 pub(crate) const fn idtx_sign_ctx(
-    quant_sign: &[i32],
+    quant_sign: &[i8],
     level: &[u8],
     row: usize,
     col: usize,
@@ -281,19 +281,19 @@ pub(crate) const fn idtx_sign_ctx(
     if col > 0 {
         let idx = row.saturating_mul(stride).saturating_add(col - 1);
         if idx < quant_sign.len() {
-            signc += quant_sign[idx];
+            signc += quant_sign[idx] as i32;
         }
     }
     if row > 0 {
         let idx = (row - 1).saturating_mul(stride).saturating_add(col);
         if idx < quant_sign.len() {
-            signc += quant_sign[idx];
+            signc += quant_sign[idx] as i32;
         }
     }
     if col > 0 && row > 0 {
         let idx = (row - 1).saturating_mul(stride).saturating_add(col - 1);
         if idx < quant_sign.len() {
-            signc += quant_sign[idx];
+            signc += quant_sign[idx] as i32;
         }
     }
     let mut ctx: usize = if signc > 2 {

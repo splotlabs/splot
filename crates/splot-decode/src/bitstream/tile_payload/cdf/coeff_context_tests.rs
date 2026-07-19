@@ -360,41 +360,41 @@ fn dc_sign_ctx_is_total_for_pathological_geometry() {
 #[test]
 fn idtx_sign_ctx_maps_signc_to_base_context() {
     let zl = [0u8; 16];
-    let p3 = [1i32, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let p3 = [1i8, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&p3, &zl, 1, 1, 4), 5);
-    let n3 = [-1i32, -1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let n3 = [-1i8, -1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&n3, &zl, 1, 1, 4), 6);
-    let p1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let p1 = [0i8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&p1, &zl, 1, 1, 4), 1);
-    let n1 = [0i32, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let n1 = [0i8, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&n1, &zl, 1, 1, 4), 2);
-    assert_eq!(idtx_sign_ctx(&[0i32; 16], &zl, 1, 1, 4), 0);
+    assert_eq!(idtx_sign_ctx(&[0i8; 16], &zl, 1, 1, 4), 0);
 }
 
 #[test]
 fn idtx_sign_ctx_level_threshold_raises_nonzero_context() {
-    let p1 = [0i32, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let p1 = [0i8, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     let hi = [0u8, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 4 > 3
     assert_eq!(idtx_sign_ctx(&p1, &hi, 1, 1, 4), 3);
     let eq = [0u8, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&p1, &eq, 1, 1, 4), 1);
-    assert_eq!(idtx_sign_ctx(&[0i32; 16], &hi, 1, 1, 4), 0);
+    assert_eq!(idtx_sign_ctx(&[0i8; 16], &hi, 1, 1, 4), 0);
 }
 
 #[test]
 fn idtx_sign_ctx_skips_missing_edge_neighbours() {
     let zl = [0u8; 16];
-    let q = [1i32; 16];
+    let q = [1i8; 16];
     assert_eq!(idtx_sign_ctx(&q, &zl, 0, 0, 4), 0);
-    let only_left = [1i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let only_left = [1i8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&only_left, &zl, 0, 1, 4), 1);
-    let only_above = [1i32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let only_above = [1i8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     assert_eq!(idtx_sign_ctx(&only_above, &zl, 1, 0, 4), 1);
 }
 
 #[test]
 fn idtx_sign_ctx_is_total_for_short_slices_and_pathological_geometry() {
-    let q = [1i32, 1];
+    let q = [1i8, 1];
     let l = [9u8];
     let _ = idtx_sign_ctx(&q, &l, 1, 1, 4);
     let _ = idtx_sign_ctx(&q, &l, usize::MAX, usize::MAX, usize::MAX);

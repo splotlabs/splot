@@ -27,13 +27,13 @@ const MAX_PADDED_COEFF_LEN: usize =
 const MAX_RETAINED_COEFF_BUFFERS_PER_WORKER: usize = 64;
 const MAX_RETAINED_SHARED_QUANT_BUFFERS: usize = 2_560;
 const MAX_RETAINED_COEFF_BUFFER_CAPACITY: usize = MAX_PADDED_COEFF_LEN;
-static ZERO_QUANT_SIGN: [i32; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
+static ZERO_QUANT_SIGN: [i8; MAX_PADDED_COEFF_LEN] = [0; MAX_PADDED_COEFF_LEN];
 const PLANES: [PlaneId; PLANE_COUNT] = [PlaneId::Y, PlaneId::U, PlaneId::V];
 
 #[derive(Default)]
 struct TransformCoeffBufferRecycler {
     levels: Vec<Vec<u8>>,
-    signed: Vec<Vec<i32>>,
+    signed: Vec<Vec<i8>>,
 }
 
 thread_local! {
@@ -147,7 +147,7 @@ pub(crate) struct TransformCoeffBlockState {
     height: usize,
     stride: usize,
     level: Vec<u8>,
-    quant_sign: Vec<i32>,
+    quant_sign: Vec<i8>,
     quant: Vec<i32>,
 }
 
@@ -225,7 +225,7 @@ impl TransformCoeffBlockState {
     }
 
     #[must_use]
-    pub(crate) fn quant_sign(&self) -> &[i32] {
+    pub(crate) fn quant_sign(&self) -> &[i8] {
         if self.quant_sign.is_empty() {
             &ZERO_QUANT_SIGN[..self.level.len()]
         } else {
@@ -259,7 +259,7 @@ impl TransformCoeffBlockState {
         &mut self,
         row: usize,
         col: usize,
-        value: i32,
+        value: i8,
     ) -> Result<(), TileCoeffStateError> {
         let idx = self.index(row, col)?;
         self.ensure_quant_sign()?;
@@ -277,7 +277,7 @@ impl TransformCoeffBlockState {
         Ok(u32::from(self.level[self.index(row, col)?]))
     }
 
-    pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i32, TileCoeffStateError> {
+    pub(crate) fn quant_sign_at(&self, row: usize, col: usize) -> Result<i8, TileCoeffStateError> {
         Ok(self.quant_sign()[self.index(row, col)?])
     }
 
