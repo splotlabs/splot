@@ -1748,12 +1748,14 @@ fn run_subpel_convolution<
             continue;
         }
         let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
-        let row_slices: [&[I]; NUM_TAPS] = core::array::from_fn(|t| &rows[t * w..(t + 1) * w]);
+        let [row0, row1, row2, row3, row4, row5, row6, row7]: [&[I]; NUM_TAPS] =
+            core::array::from_fn(|t| &rows[t * w..(t + 1) * w]);
         for (x, out) in output.iter_mut().enumerate() {
-            let mut s = 0i32;
-            for (&tap, row) in taps.iter().zip(&row_slices) {
-                s += tap * row[x].to_i32();
-            }
+            let s01 = taps[0] * row0[x].to_i32() + taps[1] * row1[x].to_i32();
+            let s23 = taps[2] * row2[x].to_i32() + taps[3] * row3[x].to_i32();
+            let s45 = taps[4] * row4[x].to_i32() + taps[5] * row5[x].to_i32();
+            let s67 = taps[6] * row6[x].to_i32() + taps[7] * row7[x].to_i32();
+            let s = (s01 + s23) + (s45 + s67);
             *out = finish(round2_i32(s, INTER_ROUND1));
         }
     }
