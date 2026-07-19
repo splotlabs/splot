@@ -1219,9 +1219,16 @@ fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
 #[test]
 fn tile_local_state_translates_absolute_coordinates() {
     let (sequence, _core) = selectable_fixture();
-    let mut state =
-        TileIntrabcPreludeState::new_for_tile(12, 16, 4..8, 8..12, &sequence, true, no_off())
-            .unwrap();
+    let mut state = TileIntrabcPreludeState::new_for_tile(
+        (12, 16),
+        4..8,
+        8..12,
+        &sequence,
+        true,
+        true,
+        no_off(),
+    )
+    .unwrap();
     assert_eq!(state.values.len(), 16);
 
     state
@@ -1237,4 +1244,26 @@ fn tile_local_state_translates_absolute_coordinates() {
     assert!(state.facts_at(5, 8).is_none());
     assert!(state.value(3, 9, no_off()).is_err());
     assert!(state.value(5, 12, no_off()).is_err());
+}
+
+#[test]
+fn disabled_intrabc_state_skips_the_tile_grid() {
+    let (sequence, _) = selectable_fixture();
+    let mut state = TileIntrabcPreludeState::new_for_tile(
+        (270, 480),
+        0..270,
+        0..480,
+        &sequence,
+        false,
+        false,
+        no_off(),
+    )
+    .unwrap();
+
+    assert!(state.values.is_empty());
+    assert!(!state.enable_refmvbank);
+    state
+        .record_block(0, 0, 16, 16, frontier_skip_neighbour(), no_off())
+        .unwrap();
+    assert!(state.values.is_empty());
 }
