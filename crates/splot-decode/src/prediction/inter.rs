@@ -8,7 +8,7 @@ use std::sync::Arc;
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, RESTRICTED_OH,
-    SefTrailingBits, TipFrameMode, get_relative_dist, parse_frame_header_core,
+    SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
@@ -975,7 +975,7 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
         Vec<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
     pub(crate) saved_global_motion_params: Vec<splot_core::headers::frame::SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
-    pub(crate) lr_frame_filter_taps: Vec<[Vec<Vec<i16>>; 3]>,
+    pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
     pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<splot_core::headers::frame::CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<crate::filters::ccso::CcsoUnitGrid>>,

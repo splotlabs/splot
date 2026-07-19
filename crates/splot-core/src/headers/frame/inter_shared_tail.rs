@@ -402,13 +402,14 @@ fn lr_reference_filter_entries<'a>(
         let (Some(planes), Some(counts)) = (slot_taps.get(slot), slot_counts.get(slot)) else {
             continue;
         };
+        let planes = planes.as_deref();
         for class in 0..usize::from(counts[0]) {
-            entries[0].push(planes[0].get(class).map(Vec::as_slice));
+            entries[0].push(planes.and_then(|p| p[0].get(class)).map(Vec::as_slice));
         }
         for (plane, checks) in [(1usize, [1usize, 2usize]), (2, [2, 1])] {
             for check in checks {
                 if counts[check] > 0 {
-                    entries[plane].push(planes[check].first().map(Vec::as_slice));
+                    entries[plane].push(planes.and_then(|p| p[check].first()).map(Vec::as_slice));
                 }
             }
         }
@@ -584,6 +585,7 @@ fn store_shared_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::headers::frame::restoration::SlotFrameFilterTaps;
 
     fn derive(
         counters: &[u32],
@@ -639,5 +641,32 @@ mod tests {
             derive(&[0], &[false], &[0], &[0], Some(true), Some(0)),
             Some(false)
         );
+    }
+
+    /// A reference slot with a non-zero class count but no retained taps (a
+    /// `frame_filters_on` plane whose bank is absent, stored as `None`) must
+    /// still contribute a count-sized `None` placeholder so the entry list
+    /// stays positionally aligned with `lr_reference_filter_counts`.
+    #[test]
+    fn reference_filter_entries_keep_placeholder_for_none_taps() {
+        let valid = [true];
+        let hints = [0u32];
+        let sizes = [64u32];
+        let base_q = [100u32];
+        let class_counts = [[1u8, 0, 0]];
+        let taps: [SlotFrameFilterTaps; 1] = [None];
+        let state = FrameReferenceStateView::from_slots_with_base_q_idx(
+            &valid, &hints, &sizes, &sizes, &base_q,
+        )
+        .with_lr_frame_filter_class_counts(&class_counts)
+        .with_lr_frame_filter_taps(&taps);
+        let refs = [0u32];
+
+        let counts = lr_reference_filter_counts(&state, &refs, 1);
+        let entries = lr_reference_filter_entries(&state, &refs, 1);
+
+        assert_eq!(counts[0], 1);
+        assert_eq!(entries[0].len(), 1);
+        assert_eq!(entries[0][0], None);
     }
 }

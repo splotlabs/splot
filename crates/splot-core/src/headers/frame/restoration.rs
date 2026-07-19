@@ -34,6 +34,8 @@
 //! Wiener state from the retained reference-frame banks. Entropy-coded LR unit filters
 //! (`readFrameFilters == 0`) and reconstruction remain out of scope for this parser surface.
 
+use std::sync::Arc;
+
 use crate::bitio::BitReader;
 use crate::error::Result;
 use crate::headers::frame::size::ceil_log2;
@@ -201,6 +203,11 @@ pub struct LrGeometry {
     pub subsampling_y: u8,
 }
 
+/// Retained frame-level Wiener-NS filter taps for one reference slot, shared
+/// from the decoder's § 7.23 reference buffer. `None` marks a slot with no
+/// frame-level filter, avoiding an allocation for the common empty case.
+pub type SlotFrameFilterTaps = Option<Arc<[Vec<Vec<i16>>; 3]>>;
+
 /// Reference-frame Wiener-NS state used by the inter `lr_params()` temporal-copy arm.
 ///
 /// `ref_frame_idx` maps the coded `rst_ref_pic_idx` to a reference slot. The remaining
@@ -209,7 +216,7 @@ pub struct LrGeometry {
 pub struct LrTemporalReferenceView<'a> {
     ref_frame_idx: &'a [u32],
     class_counts_by_slot: Option<&'a [[u8; 3]]>,
-    filter_taps_by_slot: Option<&'a [[Vec<Vec<i16>>; 3]]>,
+    filter_taps_by_slot: Option<&'a [SlotFrameFilterTaps]>,
 }
 
 impl<'a> LrTemporalReferenceView<'a> {
@@ -228,7 +235,7 @@ impl<'a> LrTemporalReferenceView<'a> {
     pub const fn new(
         ref_frame_idx: &'a [u32],
         class_counts_by_slot: Option<&'a [[u8; 3]]>,
-        filter_taps_by_slot: Option<&'a [[Vec<Vec<i16>>; 3]]>,
+        filter_taps_by_slot: Option<&'a [SlotFrameFilterTaps]>,
     ) -> Self {
         Self {
             ref_frame_idx,
@@ -588,6 +595,7 @@ fn copy_temporal_frame_filter(
     let Some(classes) = references
         .filter_taps_by_slot
         .and_then(|slots| slots.get(slot))
+        .and_then(Option::as_deref)
         .and_then(|planes| planes.get(ref_plane))
         .filter(|classes| classes.len() >= class_count)
     else {
@@ -1126,8 +1134,12 @@ mod tests {
         let mut r = reader(&data);
         let counts = [[1, 0, 0], [2, 0, 0]];
         let taps = [
-            [vec![vec![1; 16]], Vec::new(), Vec::new()],
-            [vec![vec![3; 16], vec![7; 16]], Vec::new(), Vec::new()],
+            Some(Arc::new([vec![vec![1; 16]], Vec::new(), Vec::new()])),
+            Some(Arc::new([
+                vec![vec![3; 16], vec![7; 16]],
+                Vec::new(),
+                Vec::new(),
+            ])),
         ];
         let outcome = parse_lr_params_for_inter(
             &mut r,
@@ -1162,7 +1174,7 @@ mod tests {
     #[test]
     fn temporal_filter_copy_uses_alternate_chroma_and_rejects_short_bank() {
         let counts = [[2, 0, 1]];
-        let taps = [[Vec::new(), Vec::new(), vec![vec![9; 8]]]];
+        let taps = [Some(Arc::new([Vec::new(), Vec::new(), vec![vec![9; 8]]]))];
         let references = LrTemporalReferenceView::new(&[0], Some(&counts), Some(&taps));
         let mut chroma = LrPlaneParams {
             restoration_type: FrameRestorationType::WienerNonsep,
