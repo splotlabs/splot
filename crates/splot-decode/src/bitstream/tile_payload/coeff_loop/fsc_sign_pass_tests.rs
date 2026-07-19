@@ -96,7 +96,7 @@ fn find_payload(seg_eob: usize, predicate: impl Fn(&NonZeroCoeffFscSignPass) -> 
     panic!("no coefficient FSC sign payload found");
 }
 
-fn expected_quant_sign(sign: bool) -> i32 {
+fn expected_quant_sign(sign: bool) -> i8 {
     if sign { -1 } else { 1 }
 }
 
