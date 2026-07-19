@@ -1012,6 +1012,119 @@ fn dispatcher_uses_implicit_mask_for_offscreen_compound_refs() {
     assert_eq!(y[28], 12);
 }
 
+#[allow(clippy::too_many_arguments)]
+fn per_pixel_reference_blend(
+    pred0: &[i32],
+    pred1: &[i32],
+    w: usize,
+    motion: &CompoundMotionGrid,
+    plane_x: usize,
+    plane_y: usize,
+    scalings: [crate::prediction::inter::mv_scaling::PlaneScaling; 2],
+    frame_w: usize,
+    frame_h: usize,
+) -> Vec<u16> {
+    let shift = 1 + compound_inter_post_round();
+    let mut expected = vec![0u16; pred0.len()];
+    for (idx, slot) in expected.iter_mut().enumerate() {
+        let row = idx / w;
+        let col = idx % w;
+        let mvs = motion.at_luma_offset(col, row).expect("cell lookup");
+        let starts: [(i32, i32); 2] = core::array::from_fn(|reference| {
+            let scaling = scalings[reference].with_prescaled_mv(
+                (plane_x + col) as i32,
+                (plane_y + row) as i32,
+                mvs[reference][0],
+                mvs[reference][1],
+                0,
+                0,
+            );
+            (scaling.start_x >> 10, scaling.start_y >> 10)
+        });
+        let onscreen = |start: (i32, i32)| {
+            (0..=(frame_w as i32 - 1)).contains(&start.0)
+                && (0..=(frame_h as i32 - 1)).contains(&start.1)
+        };
+        let mask = match (onscreen(starts[0]), onscreen(starts[1])) {
+            (true, false) => 2,
+            (false, true) => 0,
+            _ => 1,
+        };
+        let sample = round2_i32(mask * pred0[idx] + (2 - mask) * pred1[idx], shift);
+        *slot = sample.clamp(0, 255) as u16;
+    }
+    expected
+}
+
+#[test]
+fn multi_span_implicit_mask_blend_matches_per_pixel_reference() {
+    let w = 40usize;
+    let h = 2usize;
+    let pred0: Vec<i32> = (0..w * h)
+        .map(|index| (index as i32 * 7 % 900) * 16)
+        .collect();
+    let pred1: Vec<i32> = (0..w * h)
+        .map(|index| (index as i32 * 11 % 800) * 16)
+        .collect();
+    let cells = vec![
+        MotionCell::from_refinemv([Mv::ZERO; 2]),
+        MotionCell::from_refinemv([Mv { row: 0, col: -640 }, Mv::ZERO]),
+        MotionCell::from_refinemv([Mv { row: 0, col: 96 }, Mv { row: 640, col: 0 }]),
+    ];
+    let motion = CompoundMotionGrid::from_refinemv(3, [Mv::ZERO; 2], cells);
+    let (plane_x, plane_y) = (4usize, 4usize);
+    let (frame_w, frame_h) = (48usize, 8usize);
+    let blend = CompoundBlend::average_with_implicit_mask(true);
+    let scaling = derive_plane_scaling(
+        plane_x as i32,
+        plane_y as i32,
+        0,
+        0,
+        0,
+        0,
+        frame_w as i32,
+        frame_h as i32,
+        frame_w as i32,
+        frame_h as i32,
+    );
+    let mut output = vec![0u16; w * h];
+    blend_compound_average::<u16>(
+        &pred0,
+        &pred1,
+        BitDepth::Eight,
+        w,
+        h,
+        blend,
+        w,
+        h,
+        Some(&motion),
+        plane_x,
+        plane_y,
+        scaling,
+        scaling,
+        frame_w,
+        frame_h,
+        None,
+        0,
+        0,
+        &mut output,
+    )
+    .expect("multi-span implicit-mask blend");
+    let expected = per_pixel_reference_blend(
+        &pred0,
+        &pred1,
+        w,
+        &motion,
+        plane_x,
+        plane_y,
+        [scaling, scaling],
+        frame_w,
+        frame_h,
+    );
+    assert_eq!(output, expected);
+    assert!(output.windows(2).any(|pair| pair[0] != pair[1]));
+}
+
 #[test]
 fn uniform_implicit_mask_fast_path_matches_per_sample_path() {
     let pred0 = [20 * 16, 60 * 16, 100 * 16, 140 * 16];
