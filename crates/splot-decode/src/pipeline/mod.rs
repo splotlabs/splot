@@ -475,7 +475,7 @@ fn decode_key_frame_with_effects(
         display_grain,
         output_effects,
         frame_cdfs: Arc::new(frame_cdfs),
-        motion_field,
+        motion_field: Arc::new(motion_field),
         ccso_params,
         ccso_grid,
         frame_rate_numerator: frame_rate.numerator,
@@ -672,7 +672,7 @@ fn decode_frames_from_plan_impl(
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs: Arc::new(frame_cdfs),
-                    motion_field,
+                    motion_field: Arc::new(motion_field),
                     ccso_params: core.ccso_params,
                     ccso_grid,
                     frame_rate_numerator: rate.numerator,
@@ -706,7 +706,7 @@ fn decode_frames_from_plan_impl(
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs: Arc::new(frame_cdfs),
-                    motion_field,
+                    motion_field: Arc::new(motion_field),
                     ccso_params: core.ccso_params,
                     ccso_grid,
                     frame_rate_numerator: rate.numerator,
@@ -739,7 +739,7 @@ fn decode_frames_from_plan_impl(
         (*key_frame.frame_cdfs).clone(),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
-        key_frame.motion_field.clone(),
+        Arc::clone(&key_frame.motion_field),
         key_envelope.header.embedded_layer_id,
     )?;
     let key_saved_grain = key_frame.display_grain.clone();
@@ -1203,7 +1203,7 @@ fn decode_frames_from_plan_impl(
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
                     frame_cdfs: Arc::new(frame_cdfs),
-                    motion_field,
+                    motion_field: Arc::new(motion_field),
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
                     frame_rate_numerator: inter_frame_rate.numerator,
@@ -1221,7 +1221,7 @@ fn decode_frames_from_plan_impl(
                     (*inter_frame.frame_cdfs).clone(),
                     inter_frame.ccso_params.clone(),
                     inter_frame.ccso_grid.clone(),
-                    inter_frame.motion_field.clone(),
+                    Arc::clone(&inter_frame.motion_field),
                     inter_envelope.header.embedded_layer_id,
                 )?;
                 let inter_saved_grain = inter_frame.display_grain.clone();
@@ -1493,7 +1493,7 @@ fn decode_frames_from_plan_impl(
                     (*key_frame.frame_cdfs).clone(),
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
-                    key_frame.motion_field.clone(),
+                    Arc::clone(&key_frame.motion_field),
                     key_envelope.header.embedded_layer_id,
                 )?;
                 let key_saved_grain = key_frame.display_grain.clone();

@@ -33,7 +33,7 @@ fn key_update() -> FrameRefUpdate {
         frame_cdfs: Arc::new(FrameCdfSubset::from_defaults()),
         ccso_params: None,
         ccso_grid: None,
-        motion_field: TemporalMotionField::empty(),
+        motion_field: Arc::new(TemporalMotionField::empty()),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -62,7 +62,7 @@ fn inter_update(adapted: bool) -> FrameRefUpdate {
         frame_cdfs: Arc::new(FrameCdfSubset::from_defaults()),
         ccso_params: None,
         ccso_grid: None,
-        motion_field: TemporalMotionField::empty(),
+        motion_field: Arc::new(TemporalMotionField::empty()),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -107,7 +107,7 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
         display_grain: None,
         output_effects: crate::pipeline::output_effects::FrameOutputEffects::empty(),
         frame_cdfs: Arc::new(FrameCdfSubset::from_defaults()),
-        motion_field: TemporalMotionField::empty(),
+        motion_field: Arc::new(TemporalMotionField::empty()),
         ccso_params: None,
         ccso_grid: None,
         frame_rate_numerator: 1,

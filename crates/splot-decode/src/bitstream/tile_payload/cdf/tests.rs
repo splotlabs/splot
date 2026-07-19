@@ -55,8 +55,8 @@ impl TileCdfSubset {
 }
 
 impl TileCdfWorkUnitBoundary {
-    pub(crate) const fn saved_cdfs(&self) -> &SavedCdfSubset {
-        &self.saved_cdfs
+    pub(crate) const fn saved_cdfs(&self) -> Option<&SavedCdfSubset> {
+        self.saved_cdfs.as_ref()
     }
 }
 
@@ -1338,8 +1338,10 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
     tile.rows_mut().mrl_sec_index[2] = [20_000, 21_000, 20];
     tile.rows_mut().block.cctx_type = [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 20];
 
-    let mut saved = SavedCdfSubset::from_frame(&frame);
-    saved.apply_completed_tile(
+    let mut saved = Some(SavedCdfSubset::from_frame(&frame));
+    SavedCdfSubset::apply_completed_tile(
+        &mut saved,
+        &frame,
         0,
         &tile,
         TileCdfSavePolicy {
@@ -1348,10 +1350,12 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
             avg_cdf: false,
         },
     );
-    assert_eq!(saved.rows(), tile.rows());
+    assert_eq!(saved.as_ref().unwrap().rows(), tile.rows());
 
-    let mut saved = SavedCdfSubset::from_frame(&frame);
-    saved.apply_completed_tile(
+    let mut saved = Some(SavedCdfSubset::from_frame(&frame));
+    SavedCdfSubset::apply_completed_tile(
+        &mut saved,
+        &frame,
         0,
         &tile,
         TileCdfSavePolicy {
@@ -1360,75 +1364,119 @@ fn saved_copy_and_average_are_exact_for_supported_subset() {
             avg_cdf: true,
         },
     );
-    assert_eq!(saved.rows().do_split()[0][0], [29_576, 7, 1]);
-    assert_eq!(saved.rows().do_ext_partition()[0][4], [30_076, 5, 2]);
-    assert_eq!(saved.rows().do_square_split()[0][0], [29_826, 6, 0]);
-    assert_eq!(saved.rows().rect_type()[1][63], [30_576, 3, 4]);
     assert_eq!(
-        saved.rows().do_uneven_4way_partition()[0][8],
+        saved.as_ref().unwrap().rows().do_split()[0][0],
+        [29_576, 7, 1]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().do_ext_partition()[0][4],
+        [30_076, 5, 2]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().do_square_split()[0][0],
+        [29_826, 6, 0]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().rect_type()[1][63],
+        [30_576, 3, 4]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().do_uneven_4way_partition()[0][8],
         [30_326, 4, 3]
     );
-    assert_eq!(saved.rows().y_mode_set(), &[29_576, 29_826, 30_076, 9, 2]);
     assert_eq!(
-        saved.rows().y_mode_index()[0],
+        saved.as_ref().unwrap().rows().y_mode_set(),
+        &[29_576, 29_826, 30_076, 9, 2]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().y_mode_index()[0],
         [
             29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
         ]
     );
     assert_eq!(
-        saved.rows().block.y_mode_offset[0],
+        saved.as_ref().unwrap().rows().block.y_mode_offset[0],
         [29_576, 29_826, 30_076, 30_326, 30_576, 11, 3]
     );
     assert_eq!(
-        saved.rows().block.jmvd_scale_mode,
+        saved.as_ref().unwrap().rows().block.jmvd_scale_mode,
         [29_576, 29_826, 30_076, 30_326, 11, 3]
     );
     assert_eq!(
-        saved.rows().block.jmvd_adaptive_scale_mode,
+        saved
+            .as_ref()
+            .unwrap()
+            .rows()
+            .block
+            .jmvd_adaptive_scale_mode,
         [29_576, 29_826, 11, 3]
     );
-    assert_eq!(saved.rows().block.use_optflow[0], [30_826, 31, 3]);
-    assert_eq!(saved.rows().txb_skip()[2][0][0][0], [30_826, 13, 5]);
     assert_eq!(
-        saved.rows().uv_mode_cfl_not_allowed()[0],
+        saved.as_ref().unwrap().rows().block.use_optflow[0],
+        [30_826, 31, 3]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().txb_skip()[2][0][0][0],
+        [30_826, 13, 5]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().uv_mode_cfl_not_allowed()[0],
         [
             29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
         ]
     );
-    assert_eq!(saved.rows().cfl_index(), &[30_951, 13, 5]);
+    assert_eq!(saved.as_ref().unwrap().rows().cfl_index(), &[30_951, 13, 5]);
     assert_eq!(
-        saved.rows().cfl_sign(),
+        saved.as_ref().unwrap().rows().cfl_sign(),
         &[
             29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 31_076, 11, 3
         ]
     );
     assert_eq!(
-        saved.rows().cfl_alpha()[4],
+        saved.as_ref().unwrap().rows().cfl_alpha()[4],
         [
             29_601, 29_851, 30_101, 30_351, 30_601, 30_851, 31_101, 11, 3
         ]
     );
-    assert_eq!(saved.rows().cfl_mhccp(), &[31_076, 14, 6]);
-    assert_eq!(saved.rows().cfl_mh_dir()[2], [29_576, 29_826, 22_000, 2]);
-    assert_eq!(saved.rows().v_txb_skip()[1][3], [31_076, 14, 6]);
+    assert_eq!(saved.as_ref().unwrap().rows().cfl_mhccp(), &[31_076, 14, 6]);
     assert_eq!(
-        saved.rows().block.coeff.coeff_base[1][2][3][1],
+        saved.as_ref().unwrap().rows().cfl_mh_dir()[2],
+        [29_576, 29_826, 22_000, 2]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().v_txb_skip()[1][3],
+        [31_076, 14, 6]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().block.coeff.coeff_base[1][2][3][1],
         [29_576, 29_826, 30_076, 9, 2]
     );
     assert_eq!(
-        saved.rows().block.coeff.coeff_base_idtx[1][2][3],
+        saved.as_ref().unwrap().rows().block.coeff.coeff_base_idtx[1][2][3],
         [29_576, 29_826, 30_076, 9, 2]
     );
-    assert_eq!(saved.rows().block.coeff.idtx_sign[1][2][3], [29_576, 9, 2]);
-    assert_eq!(saved.rows().intrabc_mode(), &[30_951, 13, 5]);
-    assert_eq!(saved.rows().intrabc_precision(), &[31_076, 14, 6]);
     assert_eq!(
-        saved.rows().mrl_index()[1],
+        saved.as_ref().unwrap().rows().block.coeff.idtx_sign[1][2][3],
+        [29_576, 9, 2]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().intrabc_mode(),
+        &[30_951, 13, 5]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().intrabc_precision(),
+        &[31_076, 14, 6]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().mrl_index()[1],
         [29_576, 29_826, 30_076, 23_000, 5]
     );
-    assert_eq!(saved.rows().mrl_sec_index()[2], [29_576, 21_000, 5]);
     assert_eq!(
-        saved.rows().cctx_type(),
+        saved.as_ref().unwrap().rows().mrl_sec_index()[2],
+        [29_576, 21_000, 5]
+    );
+    assert_eq!(
+        saved.as_ref().unwrap().rows().cctx_type(),
         &[29_576, 29_826, 30_076, 30_326, 30_576, 30_826, 26_000, 5]
     );
 }
@@ -1453,8 +1501,10 @@ fn disabled_cdf_update_keeps_saved_subset_at_initial_rows() {
     )
     .unwrap();
 
-    let mut saved = SavedCdfSubset::from_frame(&frame);
-    saved.apply_completed_tile(
+    let mut saved = Some(SavedCdfSubset::from_frame(&frame));
+    SavedCdfSubset::apply_completed_tile(
+        &mut saved,
+        &frame,
         0,
         &tile,
         TileCdfSavePolicy {
@@ -1465,7 +1515,7 @@ fn disabled_cdf_update_keeps_saved_subset_at_initial_rows() {
     );
 
     assert_eq!(tile.rows(), frame.rows());
-    assert_eq!(saved.rows(), frame.rows());
+    assert_eq!(saved.unwrap().rows(), frame.rows());
 }
 
 #[test]
@@ -1507,8 +1557,10 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
     tile.rows_mut().mrl_sec_index[2] = [20_000, 21_000, 20];
     tile.rows_mut().block.cctx_type = [20_000, 21_000, 22_000, 23_000, 24_000, 25_000, 26_000, 20];
 
-    let mut saved = SavedCdfSubset::from_frame(&frame);
-    saved.apply_completed_tile(
+    let mut saved = Some(SavedCdfSubset::from_frame(&frame));
+    SavedCdfSubset::apply_completed_tile(
+        &mut saved,
+        &frame,
         0,
         &tile,
         TileCdfSavePolicy {
@@ -1517,7 +1569,7 @@ fn frame_end_update_copies_saved_rows_and_scales_counts() {
             avg_cdf: false,
         },
     );
-    frame.frame_end_update_from_saved(&saved);
+    frame.frame_end_update_from_saved(saved);
 
     assert_eq!(frame.rows().do_split()[0][0], [20_000, 7, 15]);
     assert_eq!(frame.rows().do_ext_partition()[0][4], [22_000, 5, 6]);
@@ -1609,18 +1661,13 @@ fn work_unit_boundary_applies_saved_and_frame_updates_transactionally() {
     boundary.tile_cdfs_mut().rows_mut().do_split[0][0] = [20_000, 7, 20];
     boundary.tile_cdfs_mut().rows_mut().block.y_mode_set = [20_000, 21_000, 22_000, 9, 20];
 
-    assert_eq!(boundary.saved_cdfs().rows(), expected_frame.rows());
+    assert!(boundary.saved_cdfs().is_none());
     assert_eq!(boundary.frame_cdfs().rows(), expected_frame.rows());
 
     boundary.apply_completed_tile_to_saved(0);
-    assert_eq!(
-        boundary.saved_cdfs().rows().do_split()[0][0],
-        [20_000, 7, 20]
-    );
-    assert_eq!(
-        boundary.saved_cdfs().rows().y_mode_set(),
-        &[20_000, 21_000, 22_000, 9, 20]
-    );
+    let saved = boundary.saved_cdfs().unwrap();
+    assert_eq!(saved.rows().do_split()[0][0], [20_000, 7, 20]);
+    assert_eq!(saved.rows().y_mode_set(), &[20_000, 21_000, 22_000, 9, 20]);
     assert_eq!(boundary.frame_cdfs().rows(), expected_frame.rows());
 
     boundary.frame_end_update_cdf_subset();

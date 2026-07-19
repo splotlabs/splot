@@ -958,7 +958,7 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<splot_core::headers::frame::CcsoParams>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<crate::filters::ccso::CcsoUnitGrid>>,
-    pub(crate) ref_motion_fields: Vec<Option<TemporalMotionField>>,
+    pub(crate) ref_motion_fields: Vec<Option<Arc<TemporalMotionField>>>,
 }
 
 impl<'a, T: ReconSample> InterReferenceState<'a, T> {

@@ -87,7 +87,7 @@ pub(crate) struct PipelineFrame {
     pub(crate) display_grain: Option<ActiveFilmGrain>,
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
-    pub(crate) motion_field: inter::TemporalMotionField,
+    pub(crate) motion_field: Arc<inter::TemporalMotionField>,
     pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) frame_rate_numerator: u32,
@@ -452,7 +452,7 @@ pub(crate) fn frame_ref_update_from_core(
     frame_cdfs: FrameCdfSubset,
     ccso_params: Option<splot_core::headers::frame::CcsoParams>,
     ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
-    motion_field: inter::TemporalMotionField,
+    motion_field: Arc<inter::TemporalMotionField>,
     embedded_layer_id: splot_core::types::EmbeddedLayerId,
 ) -> Result<reference_buffer::FrameRefUpdate> {
     let refresh_frame_flags = core.refresh_frame_flags.ok_or_else(|| {

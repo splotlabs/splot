@@ -11,25 +11,38 @@ use super::{
 };
 
 impl FrameCdfSubset {
-    pub(crate) fn frame_end_update_from_saved(&mut self, saved: &SavedCdfSubset) {
-        self.rows = saved.rows.clone();
+    /// Applies the frame-end update. `None` means no tile was saved, in
+    /// which case the saved bank would still equal this untouched frame
+    /// bank, so only the count scaling applies.
+    pub(crate) fn frame_end_update_from_saved(&mut self, saved: Option<SavedCdfSubset>) {
+        if let Some(saved) = saved {
+            self.rows = saved.rows;
+        }
         self.rows.scale_counts_for_frame_end_update();
     }
 }
 
 impl SavedCdfSubset {
+    /// Applies one completed tile under `policy`, materializing the saved
+    /// bank only when the policy actually writes it: a copy policy replaces
+    /// it with the tile bank outright, and an averaging policy first seeds
+    /// it from the (still untouched) frame bank.
     pub(crate) fn apply_completed_tile(
-        &mut self,
+        slot: &mut Option<SavedCdfSubset>,
+        frame: &FrameCdfSubset,
         tile_num: u32,
         tile: &TileCdfSubset,
         policy: TileCdfSavePolicy,
     ) {
         if policy.copy_cdf {
-            self.rows.copy_from_tile(&tile.rows);
+            *slot = Some(SavedCdfSubset {
+                rows: tile.rows.clone(),
+            });
             return;
         }
         if policy.avg_cdf {
-            self.rows
+            slot.get_or_insert_with(|| SavedCdfSubset::from_frame(frame))
+                .rows
                 .avg_from_tile(tile_num, &tile.rows, policy.num_log2);
         }
     }
@@ -37,21 +50,22 @@ impl SavedCdfSubset {
 
 impl TileCdfWorkUnitBoundary {
     pub(crate) fn apply_completed_tile_to_saved(&mut self, tile_num: u32) {
-        self.saved_cdfs
-            .apply_completed_tile(tile_num, &self.tile_cdfs, self.save_policy);
+        SavedCdfSubset::apply_completed_tile(
+            &mut self.saved_cdfs,
+            &self.frame_cdfs,
+            tile_num,
+            &self.tile_cdfs,
+            self.save_policy,
+        );
     }
 
     pub(crate) fn frame_end_update_cdf_subset(&mut self) {
-        self.frame_cdfs
-            .frame_end_update_from_saved(&self.saved_cdfs);
+        let saved = self.saved_cdfs.take();
+        self.frame_cdfs.frame_end_update_from_saved(saved);
     }
 }
 
 impl TileCdfRows {
-    fn copy_from_tile(&mut self, tile: &Self) {
-        *self = tile.clone();
-    }
-
     fn scale_counts_for_frame_end_update(&mut self) {
         macro_rules! scale_row {
             ($field:ident) => {

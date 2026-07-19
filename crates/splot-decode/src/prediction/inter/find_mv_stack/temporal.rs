@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::sync::Arc;
+
 use splot_recon::math::{round2_signed, round2_signed_i32};
 
 use super::{
@@ -424,7 +426,7 @@ impl TemporalMvContext {
         ref_frame_idx: &[u32],
         ref_valid: &[bool],
         ref_order_hint: &[u32],
-        ref_motion_fields: &[Option<TemporalMotionField>],
+        ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     ) -> Option<Self> {
         let mut context = Self::empty();
         context.refresh_from_references(
@@ -448,7 +450,7 @@ impl TemporalMvContext {
         ref_frame_idx: &[u32],
         ref_valid: &[bool],
         ref_order_hint: &[u32],
-        ref_motion_fields: &[Option<TemporalMotionField>],
+        ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     ) -> Option<()> {
         let (mi_rows, mi_cols) = mi_dimensions;
         self.field.reset(mi_rows, mi_cols)?;
@@ -1572,7 +1574,7 @@ mod tests {
             &[0, 1],
             &[true, true],
             &[1, 3],
-            &[Some(source), Some(other)],
+            &[Some(Arc::new(source)), Some(Arc::new(other))],
         )
         .unwrap();
 
