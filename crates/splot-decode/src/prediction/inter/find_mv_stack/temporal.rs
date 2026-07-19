@@ -18,21 +18,32 @@ mod trajectory;
 const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
 const MV_LIMIT: i32 = (1 << 16) - 1;
+const INVALID_ORDER_HINT: u32 = u32::MAX;
 const TIP_DIRECTIONS: [(i32, i32); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
 const DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TemporalMotionCell {
-    ref_order_hints: [Option<u32>; 2],
+    ref_order_hints: [u32; 2],
     mvs: [Mv; 2],
+}
+
+impl Default for TemporalMotionCell {
+    fn default() -> Self {
+        Self {
+            ref_order_hints: [INVALID_ORDER_HINT; 2],
+            mvs: [Mv::ZERO; 2],
+        }
+    }
 }
 
 impl TemporalMotionCell {
     const fn is_valid(self) -> bool {
-        self.ref_order_hints[0].is_some() || self.ref_order_hints[1].is_some()
+        self.ref_order_hints[0] != INVALID_ORDER_HINT
+            || self.ref_order_hints[1] != INVALID_ORDER_HINT
     }
 }
 
@@ -130,16 +141,20 @@ impl TemporalMotionField {
                     if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
                         continue;
                     }
-                    cell.ref_order_hints[list] = Some(order_hint);
+                    cell.ref_order_hints[list] = order_hint;
                     cell.mvs[list] = compress_tmvp_mv(mv);
                 }
-                if cell.ref_order_hints[0].is_some() && cell.ref_order_hints[1].is_none() {
+                if cell.ref_order_hints[0] != INVALID_ORDER_HINT
+                    && cell.ref_order_hints[1] == INVALID_ORDER_HINT
+                {
                     cell.ref_order_hints[1] = cell.ref_order_hints[0];
                     cell.mvs[1] = cell.mvs[0];
-                } else if cell.ref_order_hints[1].is_some() && cell.ref_order_hints[0].is_none() {
+                } else if cell.ref_order_hints[1] != INVALID_ORDER_HINT
+                    && cell.ref_order_hints[0] == INVALID_ORDER_HINT
+                {
                     cell.ref_order_hints[0] = cell.ref_order_hints[1];
                     cell.mvs[0] = cell.mvs[1];
-                } else if let [Some(ref0), Some(ref1)] = cell.ref_order_hints {
+                } else if let [Some(ref0), Some(ref1)] = block.ref_order_hints {
                     let ref0 = i32::try_from(ref0).unwrap_or(i32::MAX);
                     let ref1 = i32::try_from(ref1).unwrap_or(i32::MAX);
                     let current = i32::try_from(block.current_order_hint).unwrap_or(i32::MAX);
@@ -1065,9 +1080,10 @@ fn project_temporal_motion_field(
                 continue;
             }
             let list = side;
-            let Some(target_hint) = cell.ref_order_hints[list] else {
+            let target_hint = cell.ref_order_hints[list];
+            if target_hint == INVALID_ORDER_HINT {
                 continue;
-            };
+            }
             let saved_target_hint = target_hint;
             let mut mv = uncompress_tmvp_mv(cell.mvs[list]);
             let (end_ref, mut ref_offset) = target_cache
@@ -1465,6 +1481,11 @@ mod tests {
     }
 
     #[test]
+    fn temporal_motion_storage_stays_compact() {
+        assert_eq!(std::mem::size_of::<TemporalMotionCell>(), 24);
+    }
+
+    #[test]
     fn single_reference_motion_is_stored_in_both_slots() {
         for source_list in 0..2 {
             let mut field = TemporalMotionField::new(2, 2).unwrap();
@@ -1487,7 +1508,7 @@ mod tests {
             });
 
             let cell = field.cell(0, 0).unwrap();
-            assert_eq!(cell.ref_order_hints, [Some(7); 2]);
+            assert_eq!(cell.ref_order_hints, [7; 2]);
             assert_eq!(cell.mvs, [Mv { row: 8, col: -12 }; 2]);
         }
     }
@@ -1516,7 +1537,8 @@ mod tests {
             });
 
             let cell = field.cell(0, 0).unwrap();
-            assert_eq!(cell.ref_order_hints, expected);
+            let stored_hints = cell.ref_order_hints.map(Some);
+            assert_eq!(stored_hints, expected);
             let swapped = input != expected;
             assert_eq!(cell.mvs[0].row, if swapped { 24 } else { 8 });
             assert_eq!(cell.mvs[1].row, if swapped { 8 } else { 24 });
@@ -1528,7 +1550,7 @@ mod tests {
         let mut source = TemporalMotionField::new(8, 8).unwrap();
         for x8 in 0..source.width8 {
             source.cells[x8] = TemporalMotionCell {
-                ref_order_hints: [Some(0), None],
+                ref_order_hints: [0, INVALID_ORDER_HINT],
                 mvs: [compress_tmvp_mv(Mv { row: 0, col: -64 }), Mv::ZERO],
             };
         }
@@ -1568,7 +1590,7 @@ mod tests {
     fn backward_projection_preserves_source_to_current_direction() {
         let mut source = TemporalMotionField::new(18, 56).unwrap();
         *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
-            ref_order_hints: [None, Some(9)],
+            ref_order_hints: [INVALID_ORDER_HINT, 9],
             mvs: [Mv::ZERO, compress_tmvp_mv(Mv { row: 10, col: 232 })],
         };
         let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
@@ -1606,7 +1628,7 @@ mod tests {
     fn projection_records_zero_offset_reference() {
         let mut source = TemporalMotionField::new(4, 4).unwrap();
         *source.cell_mut(0, 0).unwrap() = TemporalMotionCell {
-            ref_order_hints: [Some(4), None],
+            ref_order_hints: [4, INVALID_ORDER_HINT],
             mvs: [Mv::ZERO, Mv::ZERO],
         };
         let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
