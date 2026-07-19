@@ -3,6 +3,18 @@
 
 //! Crate-private AV2 tile CDF selection and lifecycle boundaries.
 
+/// Reinterprets a nested CDF-row array as one contiguous slice of rows; each
+/// trailing `flatten` token peels one nesting level, mirroring the iterator
+/// `.flatten()` chains these lifecycle macros previously built.
+macro_rules! flat_cdf_rows {
+    ($e:expr) => { &$e[..] };
+    ($e:expr, $f:ident $(, $rest:ident)*) => { flat_cdf_rows!($e.as_flattened() $(, $rest)*) };
+}
+macro_rules! flat_cdf_rows_mut {
+    ($e:expr) => { &mut $e[..] };
+    ($e:expr, $f:ident $(, $rest:ident)*) => { flat_cdf_rows_mut!($e.as_flattened_mut() $(, $rest)*) };
+}
+
 macro_rules! tile_cdf_common_count_rows {
     ($row:ident, $rows:ident) => {
         $rows!(do_split.flatten());
@@ -1381,8 +1393,8 @@ impl TileCdfRows {
         macro_rules! avg_rows {
             ($field:ident $(. $flatten:ident())*) => {
                 avg_cdf_rows(
-                    self.$field.iter_mut()$(.$flatten())*,
-                    tile.$field.iter()$(.$flatten())*,
+                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
+                    flat_cdf_rows!(tile.$field $(, $flatten)*),
                     tile_num,
                     num_log2,
                 );
@@ -1402,8 +1414,8 @@ impl TileCdfRows {
         macro_rules! blend_rows {
             ($field:ident $(. $flatten:ident())*) => {
                 blend_cdf_rows(
-                    self.$field.iter_mut()$(.$flatten())*,
-                    saved.$field.iter()$(.$flatten())*,
+                    flat_cdf_rows_mut!(self.$field $(, $flatten)*),
+                    flat_cdf_rows!(saved.$field $(, $flatten)*),
                 );
             };
         }

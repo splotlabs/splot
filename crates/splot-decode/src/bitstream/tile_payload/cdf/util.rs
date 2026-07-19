@@ -87,28 +87,28 @@ pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_count<const N: usize>(c
     cdf[N - 1] = cdf[N - 1].saturating_mul(3) >> 2;
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<'a, 'b, const N: usize>(
-    frame: impl Iterator<Item = &'a mut [u16; N]>,
-    tile: impl Iterator<Item = &'b [u16; N]>,
+pub(in crate::bitstream::tile_payload::cdf) fn avg_cdf_rows<const N: usize>(
+    frame: &mut [[u16; N]],
+    tile: &[[u16; N]],
     tile_num: u32,
     num_log2: u8,
 ) {
-    for (frame_row, tile_row) in frame.zip(tile) {
+    for (frame_row, tile_row) in frame.iter_mut().zip(tile) {
         avg_cdf_row(frame_row, tile_row, tile_num, num_log2);
     }
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_rows<'a, 'b, const N: usize>(
-    rows: impl Iterator<Item = &'a mut [u16; N]>,
-    saved: impl Iterator<Item = &'b [u16; N]>,
+pub(in crate::bitstream::tile_payload::cdf) fn blend_cdf_rows<const N: usize>(
+    rows: &mut [[u16; N]],
+    saved: &[[u16; N]],
 ) {
-    for (row, saved_row) in rows.zip(saved) {
+    for (row, saved_row) in rows.iter_mut().zip(saved) {
         blend_cdf_row(row, saved_row);
     }
 }
 
-pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<'a, const N: usize>(
-    rows: impl Iterator<Item = &'a mut [u16; N]>,
+pub(in crate::bitstream::tile_payload::cdf) fn scale_cdf_rows<const N: usize>(
+    rows: &mut [[u16; N]],
 ) {
     for row in rows {
         scale_cdf_count(row);
