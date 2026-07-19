@@ -546,6 +546,7 @@ impl CoeffCdfRows {
         coeff_cdf_row!(self, selector, as_slice)
     }
 
+    #[inline]
     pub(crate) fn row_mut(
         &mut self,
         selector: CoeffCdfSelector,
