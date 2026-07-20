@@ -893,6 +893,10 @@ fn cfl_luma_q3_with_min_y<T: ReconSample>(
     let sub_y = isize::from(pixel_format.subsampling_y());
     let luma_x = (chroma_x << sub_x) as isize;
     let luma_y = (chroma_y << sub_y) as isize;
+    let y_plane = workspace.plane(PlaneId::Y)?;
+    let size = y_plane.storage_size();
+    let max_x = size.width().saturating_sub(1) as isize;
+    let max_y = size.height().saturating_sub(1) as isize;
     let mut total = 0i32;
     for dy in -sub_y..=sub_y {
         for dx in -sub_x..=sub_x {
@@ -911,25 +915,18 @@ fn cfl_luma_q3_with_min_y<T: ReconSample>(
             if let Some(min_y) = min_luma_ref_y {
                 sy = sy.max(min_y);
             }
-            total += weight * i32::from(clamped_luma_sample(workspace, sx, sy)?.to_u16());
+            total += weight
+                * i32::from(
+                    y_plane
+                        .reconstructed_sample(
+                            sx.clamp(0, max_x) as usize,
+                            sy.clamp(0, max_y) as usize,
+                        )?
+                        .to_u16(),
+                );
         }
     }
     Ok(total)
-}
-
-fn clamped_luma_sample<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    x: isize,
-    y: isize,
-) -> splot_recon::Result<T> {
-    let size = workspace.plane(PlaneId::Y)?.storage_size();
-    let max_x = size.width().saturating_sub(1) as isize;
-    let max_y = size.height().saturating_sub(1) as isize;
-    workspace.reconstructed_sample(
-        PlaneId::Y,
-        x.clamp(0, max_x) as usize,
-        y.clamp(0, max_y) as usize,
-    )
 }
 
 fn clamped_chroma_sample<T: ReconSample>(
