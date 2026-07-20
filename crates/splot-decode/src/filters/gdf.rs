@@ -1654,9 +1654,11 @@ fn band_classes_from_source(
             offset,
         )?;
         for col in 0..class_cols {
-            let strengths: [u32; GDF_DIRECTIONS] = core::array::from_fn(|direction| {
-                u32::from(previous[col][direction]) + u32::from(current[col][direction])
-            });
+            let mut strengths = [0u32; GDF_DIRECTIONS];
+            for (direction, strength) in strengths.iter_mut().enumerate() {
+                *strength =
+                    u32::from(previous[col][direction]) + u32::from(current[col][direction]);
+            }
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
             let cls = usize::from(index);
@@ -1729,9 +1731,14 @@ fn gdf_width4_rows<const ROWS: usize>(
     for row_offset in 0..ROWS {
         let base = (source_origin.1 + row + row_offset) * source.stride + source_origin.0;
         let centers = exact_slice(source.samples, base, MI_SIZE).ok_or_else(source_error)?;
-        let center_values: [i32; MI_SIZE] = core::array::from_fn(|col| i32::from(centers[col]));
-        let mut gdf_idx: [[i32; 3]; MI_SIZE] =
-            core::array::from_fn(|col| [0, 0, classes[col >> 1].gradient_bias]);
+        let mut center_values = [0i32; MI_SIZE];
+        for (col, value) in center_values.iter_mut().enumerate() {
+            *value = i32::from(centers[col]);
+        }
+        let mut gdf_idx = [[0i32; 3]; MI_SIZE];
+        for (col, cell) in gdf_idx.iter_mut().enumerate() {
+            cell[2] = classes[col >> 1].gradient_bias;
+        }
         for (k, &tap) in tap_offsets.iter().enumerate() {
             let negative =
                 exact_slice(source.samples, base - tap, MI_SIZE).ok_or_else(source_error)?;
@@ -1803,8 +1810,10 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const CLASS: usize, const ROWS: us
         let centers = exact_slice(source.samples, base, WIDTH).ok_or_else(source_error)?;
         let mut gdf_idx0 = [0_i32; WIDTH];
         let mut gdf_idx1 = [0_i32; WIDTH];
-        let mut gdf_idx2: [i32; WIDTH] =
-            core::array::from_fn(|col| classes[col >> 1].gradient_bias);
+        let mut gdf_idx2 = [0i32; WIDTH];
+        for (col, value) in gdf_idx2.iter_mut().enumerate() {
+            *value = classes[col >> 1].gradient_bias;
+        }
         for (k, &tap) in tap_offsets.iter().enumerate() {
             let negative =
                 exact_slice(source.samples, base - tap, WIDTH).ok_or_else(source_error)?;
