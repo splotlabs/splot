@@ -276,8 +276,12 @@ pub(crate) fn parse_inter_shared_tail(
     };
     let lr_reference_filter_counts =
         lr_reference_filter_counts(reference_state, &control.ref_frame_idx, lr_num_total_refs);
-    let lr_reference_filter_taps =
-        lr_reference_filter_entries(reference_state, &control.ref_frame_idx, lr_num_total_refs);
+    let lr_reference_filter_taps = lr_reference_filter_entries(
+        reference_state,
+        &control.ref_frame_idx,
+        lr_num_total_refs,
+        lr_reference_filter_counts,
+    );
     match parse_lr_params_for_inter(
         reader,
         coded_lossless,
@@ -382,8 +386,13 @@ fn lr_reference_filter_entries<'a>(
     reference_state: &FrameReferenceStateView<'a>,
     ref_frame_idx: &[u32],
     num_total_refs: u32,
+    capacities: [usize; 3],
 ) -> [Vec<Option<&'a [i16]>>; 3] {
-    let mut entries: [Vec<Option<&'a [i16]>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut entries: [Vec<Option<&'a [i16]>>; 3] = [
+        Vec::with_capacity(capacities[0]),
+        Vec::with_capacity(capacities[1]),
+        Vec::with_capacity(capacities[2]),
+    ];
     let (Some(slot_taps), Some(slot_counts)) = (
         reference_state.lr_frame_filter_taps,
         reference_state.lr_frame_filter_class_counts,
@@ -663,7 +672,7 @@ mod tests {
         let refs = [0u32];
 
         let counts = lr_reference_filter_counts(&state, &refs, 1);
-        let entries = lr_reference_filter_entries(&state, &refs, 1);
+        let entries = lr_reference_filter_entries(&state, &refs, 1, counts);
 
         assert_eq!(counts[0], 1);
         assert_eq!(entries[0].len(), 1);
