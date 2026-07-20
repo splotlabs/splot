@@ -55,6 +55,9 @@ pub(crate) const RESTORATION_TILESIZE_MAX: u32 = 512;
 /// switchable loop-restoration types scanned by the per-plane `indexToTool` loop.
 const RESTORE_SWITCHABLE_TYPES: usize = 3;
 
+/// Maximum `NumPlanes` (Y, U, V); bounds the per-plane loop-restoration scratch.
+const MAX_LR_PLANES: usize = 3;
+
 /// `Decode_Num_Filter_Classes[8]` (AV2 § 5.18.7.11, mirror :7410): maps the f(3)
 /// `num_filter_classes_idx` to `NumFilterClasses`.
 const DECODE_NUM_FILTER_CLASSES: [u8; 8] = [1, 2, 3, 4, 6, 8, 12, 16];
@@ -437,8 +440,8 @@ fn parse_lr_params_with_references(
     let mut uses_luma_lr = false;
     let mut uses_chroma_lr = false;
     let mut planes: Vec<LrPlaneParams> = Vec::with_capacity(usize::from(num_planes));
-    let mut temporal_pred_flags: Vec<bool> = Vec::with_capacity(usize::from(num_planes));
-    let mut temporal_ref_indices: Vec<usize> = Vec::with_capacity(usize::from(num_planes));
+    let mut temporal_pred_flags = [false; MAX_LR_PLANES];
+    let mut temporal_ref_indices = [0usize; MAX_LR_PLANES];
 
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
@@ -490,8 +493,12 @@ fn parse_lr_params_with_references(
             }
         }
 
-        temporal_pred_flags.push(temporal_pred_flag);
-        temporal_ref_indices.push(temporal_ref_index);
+        if let Some(slot) = temporal_pred_flags.get_mut(plane) {
+            *slot = temporal_pred_flag;
+        }
+        if let Some(slot) = temporal_ref_indices.get_mut(plane) {
+            *slot = temporal_ref_index;
+        }
         planes.push(LrPlaneParams {
             restoration_type,
             frame_filters_on,
