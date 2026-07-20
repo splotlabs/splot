@@ -107,19 +107,12 @@ impl MotionMode {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NeighbourCell {
-    is_inter: bool,
+    flags: u8,
     ref_frame0: i8,
     ref_frame1: Option<i8>,
-    y_mode: NeighbourYMode,
-    newmv_for_list0: bool,
-    newmv_for_list1: bool,
     mv: Mv,
     mv1: Mv,
-    skip_mode: bool,
-    skip: bool,
     interp_filter: u8,
-    use_amvd: bool,
-    masked_compound: bool,
     cwp_weight: i16,
     motion_mode: MotionMode,
     warp_params: Option<[i32; 6]>,
@@ -129,30 +122,67 @@ struct NeighbourCell {
     base_c: u32,
     bw4: u8,
     bh4: u8,
-    tip_size_16x16: bool,
     precision: BlockPrecisionRecord,
 }
 
 impl NeighbourCell {
+    const IS_INTER: u8 = 1 << 0;
+    const NEWMV_LIST0: u8 = 1 << 1;
+    const NEWMV_LIST1: u8 = 1 << 2;
+    const SKIP_MODE: u8 = 1 << 3;
+    const SKIP: u8 = 1 << 4;
+    const USE_AMVD: u8 = 1 << 5;
+    const MASKED_COMPOUND: u8 = 1 << 6;
+    const TIP_SIZE_16X16: u8 = 1 << 7;
+
+    const fn flag(enabled: bool, mask: u8) -> u8 {
+        if enabled { mask } else { 0 }
+    }
+
+    const fn is_inter(&self) -> bool {
+        self.flags & Self::IS_INTER != 0
+    }
+
+    const fn newmv_for_list0(&self) -> bool {
+        self.flags & Self::NEWMV_LIST0 != 0
+    }
+
+    const fn newmv_for_list1(&self) -> bool {
+        self.flags & Self::NEWMV_LIST1 != 0
+    }
+
+    const fn skip_mode(&self) -> bool {
+        self.flags & Self::SKIP_MODE != 0
+    }
+
+    const fn skip(&self) -> bool {
+        self.flags & Self::SKIP != 0
+    }
+
+    const fn use_amvd(&self) -> bool {
+        self.flags & Self::USE_AMVD != 0
+    }
+
+    const fn masked_compound(&self) -> bool {
+        self.flags & Self::MASKED_COMPOUND != 0
+    }
+
+    const fn tip_size_16x16(&self) -> bool {
+        self.flags & Self::TIP_SIZE_16X16 != 0
+    }
+
     const fn is_warp(self) -> bool {
         self.motion_mode.is_warp()
     }
 }
 
 const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
-    is_inter: false,
+    flags: 0,
     ref_frame0: -1,
     ref_frame1: None,
-    y_mode: NeighbourYMode::Other,
-    newmv_for_list0: false,
-    newmv_for_list1: false,
     mv: Mv::ZERO,
     mv1: Mv::ZERO,
-    skip_mode: false,
-    skip: false,
     interp_filter: SWITCHABLE_FILTERS,
-    use_amvd: false,
-    masked_compound: false,
     cwp_weight: CWP_EQUAL,
     motion_mode: MotionMode::Simple,
     warp_params: None,
@@ -162,7 +192,6 @@ const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
     base_c: 0,
     bw4: 0,
     bh4: 0,
-    tip_size_16x16: false,
     precision: BlockPrecisionRecord {
         use_most_probable_precision: false,
         mv_precision: 0,
@@ -362,19 +391,19 @@ impl NeighbourMvGrid {
         precision: BlockPrecisionRecord,
     ) {
         let cell = NeighbourCell {
-            is_inter,
+            flags: NeighbourCell::flag(is_inter, NeighbourCell::IS_INTER)
+                | NeighbourCell::flag(
+                    matches!(y_mode, NeighbourYMode::NewMv),
+                    NeighbourCell::NEWMV_LIST0,
+                )
+                | NeighbourCell::flag(skip, NeighbourCell::SKIP)
+                | NeighbourCell::flag(use_amvd, NeighbourCell::USE_AMVD)
+                | NeighbourCell::flag(tip_size_16x16, NeighbourCell::TIP_SIZE_16X16),
             ref_frame0,
             ref_frame1,
-            y_mode,
-            newmv_for_list0: matches!(y_mode, NeighbourYMode::NewMv),
-            newmv_for_list1: false,
             mv,
             mv1: Mv::ZERO,
-            skip_mode: false,
-            skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
-            use_amvd,
-            masked_compound: false,
             cwp_weight: CWP_EQUAL,
             motion_mode,
             warp_params,
@@ -384,7 +413,6 @@ impl NeighbourMvGrid {
             base_c: c as u32,
             bw4: n4w as u8,
             bh4: n4h as u8,
-            tip_size_16x16,
             precision,
         };
         let row_end = r
@@ -465,23 +493,18 @@ impl NeighbourMvGrid {
         warp_params: [Option<[i32; 6]>; 2],
     ) {
         let cell = NeighbourCell {
-            is_inter: true,
+            flags: NeighbourCell::IS_INTER
+                | NeighbourCell::flag(list0_is_newmv, NeighbourCell::NEWMV_LIST0)
+                | NeighbourCell::flag(list1_is_newmv, NeighbourCell::NEWMV_LIST1)
+                | NeighbourCell::flag(skip_mode, NeighbourCell::SKIP_MODE)
+                | NeighbourCell::flag(skip, NeighbourCell::SKIP)
+                | NeighbourCell::flag(use_amvd, NeighbourCell::USE_AMVD)
+                | NeighbourCell::flag(masked_compound, NeighbourCell::MASKED_COMPOUND),
             ref_frame0,
             ref_frame1: Some(ref_frame1),
-            y_mode: if list0_is_newmv {
-                NeighbourYMode::NewMv
-            } else {
-                NeighbourYMode::Other
-            },
-            newmv_for_list0: list0_is_newmv,
-            newmv_for_list1: list1_is_newmv,
             mv: mv0,
             mv1,
-            skip_mode,
-            skip,
             interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
-            use_amvd,
-            masked_compound,
             cwp_weight,
             motion_mode: if warp_params[0].is_some() || warp_params[1].is_some() {
                 MotionMode::LocalWarp
@@ -496,7 +519,6 @@ impl NeighbourMvGrid {
             base_c: c as u32,
             bw4: n4w as u8,
             bh4: n4h as u8,
-            tip_size_16x16: false,
             precision,
         };
         let row_end = r
@@ -683,7 +705,7 @@ fn matches_block_ref(cell: NeighbourCell, block: &MvBlockContext) -> bool {
 }
 
 fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
-    cell.is_inter && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
+    cell.is_inter() && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
 }
 
 fn mode_ctx_match_newmv(
@@ -691,15 +713,15 @@ fn mode_ctx_match_newmv(
     block: &MvBlockContext,
     tip_ref_pair: Option<(i8, i8)>,
 ) -> Option<bool> {
-    if !cell.is_inter {
+    if !cell.is_inter() {
         return None;
     }
     let Some(block_ref1) = block.ref_frame1 else {
         if cell.ref_frame0 == block.ref_frame0 {
-            return Some(cell.newmv_for_list0);
+            return Some(cell.newmv_for_list0());
         }
         if cell.ref_frame1 == Some(block.ref_frame0) && cell.ref_frame0 != block.ref_frame0 {
-            return Some(cell.newmv_for_list1);
+            return Some(cell.newmv_for_list1());
         }
         return None;
     };
@@ -707,10 +729,10 @@ fn mode_ctx_match_newmv(
         && cell.ref_frame1.is_none()
         && tip_ref_pair == Some((block.ref_frame0, block_ref1))
     {
-        return Some(cell.newmv_for_list0);
+        return Some(cell.newmv_for_list0());
     }
     if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(block_ref1) {
-        return Some(cell.newmv_for_list0 || cell.newmv_for_list1);
+        return Some(cell.newmv_for_list0() || cell.newmv_for_list1());
     }
     None
 }
@@ -823,7 +845,7 @@ impl BlockNeighbourContext {
 
     pub(crate) fn skip_mode_ref_pair(&self, default: (i8, i8)) -> (i8, i8) {
         for cell in self.cells.iter().take(self.cell_count) {
-            if !cell.is_inter {
+            if !cell.is_inter() {
                 continue;
             }
             if let Some(ref_frame1) = cell.ref_frame1 {
@@ -887,7 +909,7 @@ impl BlockNeighbourContext {
                                 ref_frame_idx,
                                 ref_order_hint,
                                 current_order_hint,
-                            ) || !first.is_inter,
+                            ) || !first.is_inter(),
                         )
                     }
                     (true, false) => {
@@ -897,7 +919,7 @@ impl BlockNeighbourContext {
                                 ref_frame_idx,
                                 ref_order_hint,
                                 current_order_hint,
-                            ) || !second.is_inter,
+                            ) || !second.is_inter(),
                         )
                     }
                     (true, true) => 4,
@@ -925,11 +947,11 @@ impl BlockNeighbourContext {
         else {
             return 0;
         };
-        if !cell.is_inter {
+        if !cell.is_inter() {
             return 0;
         }
         if cell.ref_frame1.is_some() {
-            usize::from(cell.masked_compound)
+            usize::from(cell.masked_compound())
         } else if Some(cell.ref_frame0) == furthest_future_ref {
             2
         } else {
@@ -963,7 +985,7 @@ impl BlockNeighbourContext {
         self.cells
             .iter()
             .take(self.cell_count)
-            .filter(|cell| cell.is_inter && cell.ref_frame0 == ref_frame0 && cell.use_amvd)
+            .filter(|cell| cell.is_inter() && cell.ref_frame0 == ref_frame0 && cell.use_amvd())
             .count()
     }
 
@@ -1008,8 +1030,8 @@ pub(crate) fn block_neighbour_ctx(
     let lists = collect_neighbour_context_cells(grid, block);
     let (buf, num_buf) = (lists.buf, lists.buf_len);
 
-    let n_intra_0 = num_buf >= 1 && !buf[0].is_inter;
-    let n_intra_1 = num_buf >= 2 && !buf[1].is_inter;
+    let n_intra_0 = num_buf >= 1 && !buf[0].is_inter();
+    let n_intra_1 = num_buf >= 2 && !buf[1].is_inter();
     let is_inter_ctx = if num_buf == 2 {
         if n_intra_0 && n_intra_1 {
             3
@@ -1025,13 +1047,13 @@ pub(crate) fn block_neighbour_ctx(
     let mut skip_ctx = 0usize;
     let mut skip_mode_ctx = 0usize;
     for cell in buf.iter().take(num_buf) {
-        skip_ctx += usize::from(cell.skip);
-        skip_mode_ctx += usize::from(cell.skip_mode);
+        skip_ctx += usize::from(cell.skip());
+        skip_mode_ctx += usize::from(cell.skip_mode());
     }
 
     let mut ref_counts = [0u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS];
     for cell in buf.iter().take(num_buf) {
-        if !cell.is_inter {
+        if !cell.is_inter() {
             continue;
         }
         for ref_frame in [Some(cell.ref_frame0), cell.ref_frame1] {
@@ -1063,7 +1085,7 @@ fn is_backward_ref_frame(
     ref_order_hint: &[u32],
     current_order_hint: i32,
 ) -> bool {
-    if !cell.is_inter || cell.ref_frame0 < 0 {
+    if !cell.is_inter() || cell.ref_frame0 < 0 {
         return false;
     }
     if cell.ref_frame0 == TIP_REF_FRAME {
@@ -1258,7 +1280,7 @@ pub(crate) fn find_warp_samples(
             return;
         };
         let lists = [
-            (cell.ref_frame0 == target_ref && cell.is_inter).then_some(cell.mv),
+            (cell.ref_frame0 == target_ref && cell.is_inter()).then_some(cell.mv),
             (cell.ref_frame1 == Some(target_ref)).then_some(cell.mv1),
         ];
         for mv in lists.into_iter().flatten() {
@@ -1647,7 +1669,7 @@ fn seed_walk_from_row_above(
         let cand_col2 = (cand_col >> 1) << 1;
         let mut step = 1i32;
         if let Some(cell) = grid.get(cand_row, cand_col2) {
-            if cell.is_inter {
+            if cell.is_inter() {
                 row_hits += 1;
                 visit(&cell);
             }
@@ -1944,7 +1966,7 @@ fn scan_compound_mv_stack_probe(
     let Some(ref_frame1) = block.ref_frame1 else {
         return;
     };
-    if !cell.is_inter {
+    if !cell.is_inter() {
         return;
     }
     let candidate = if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(ref_frame1) {
@@ -2338,7 +2360,7 @@ fn warp_corner(
     let Some(cell) = grid.get(mv_row, mv_col2) else {
         return;
     };
-    if !cell.is_inter || *found >= 3 {
+    if !cell.is_inter() || *found >= 3 {
         return;
     }
     for ref_list in 0..2usize {

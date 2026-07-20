@@ -116,7 +116,7 @@ impl WarpParamStack {
     }
 
     pub(super) fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
-        if cell.is_inter
+        if cell.is_inter()
             && cell.is_warp()
             && cell.ref_frame0 == block.ref_frame0
             && let Some(params) = cell.warp_params
