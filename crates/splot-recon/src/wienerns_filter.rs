@@ -550,9 +550,7 @@ fn filter_padded_luma_segment<T: ReconSample>(
     let center_seg = center
         .get(c0..c0 + len)
         .ok_or_else(|| luma_segment_error(params.width))?;
-    for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a = i32::from(m.to_u16()) << WIENER_NS_PREC_BITS;
-    }
+    seg.fill(0);
     let mut sum_coeff = 0i32;
     for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y_PAIRS {
         let coeff = i32::from(coeffs[coeff_index]);
@@ -563,9 +561,9 @@ fn filter_padded_luma_segment<T: ReconSample>(
             *a += coeff * (i32::from(tp.to_u16()) + i32::from(tm.to_u16()));
         }
     }
-    let center_scale = 2 * sum_coeff;
+    let center_factor = (1i32 << WIENER_NS_PREC_BITS) - 2 * sum_coeff;
     for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a -= center_scale * i32::from(m.to_u16());
+        *a += center_factor * i32::from(m.to_u16());
     }
     for &s in seg.iter() {
         let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
