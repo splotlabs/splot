@@ -1748,7 +1748,10 @@ fn run_subpel_convolution<
             continue;
         }
         let rows = &intermediate[base * w..(base + NUM_TAPS) * w];
-        let row_slices: [&[I]; NUM_TAPS] = core::array::from_fn(|t| &rows[t * w..(t + 1) * w]);
+        let mut row_slices: [&[I]; NUM_TAPS] = [&rows[..w]; NUM_TAPS];
+        for (t, slice) in row_slices.iter_mut().enumerate() {
+            *slice = &rows[t * w..(t + 1) * w];
+        }
         for (x, out) in output.iter_mut().enumerate() {
             let mut s = 0i32;
             for (&tap, row) in taps.iter().zip(&row_slices) {
