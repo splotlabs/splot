@@ -7,6 +7,7 @@ use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tile::mi_width_log2;
 use std::ops::Range;
+use std::sync::Arc;
 
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector};
 use crate::error::Result;
@@ -102,7 +103,7 @@ impl CcsoState {
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        ref_ccso_unit_grids: &[Option<CcsoUnitGrid>],
+        ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
         tile_offset: ByteOffset,
     ) -> Result<Self> {
         let filter = sequence.filter.as_ref();
@@ -303,7 +304,7 @@ impl CcsoState {
         &mut self,
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
-        ref_ccso_unit_grids: &[Option<CcsoUnitGrid>],
+        ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
         tile_offset: ByteOffset,
     ) -> Result<()> {
         let Some(ccso) = core.ccso_params.as_ref() else {

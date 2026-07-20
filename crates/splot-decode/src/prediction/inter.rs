@@ -977,8 +977,8 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
     pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
-    pub(crate) ref_ccso_params: Vec<Option<splot_core::headers::frame::CcsoParams>>,
-    pub(crate) ref_ccso_unit_grids: Vec<Option<crate::filters::ccso::CcsoUnitGrid>>,
+    pub(crate) ref_ccso_params: Vec<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
+    pub(crate) ref_ccso_unit_grids: Vec<Option<Arc<crate::filters::ccso::CcsoUnitGrid>>>,
     pub(crate) ref_motion_fields: Vec<Option<Arc<TemporalMotionField>>>,
 }
 
@@ -1111,7 +1111,7 @@ impl<T: ReconSample> InterReferenceState<'_, T> {
         &self,
         slot: u32,
         offset: ByteOffset,
-    ) -> Result<splot_core::headers::frame::CcsoParams> {
+    ) -> Result<Arc<splot_core::headers::frame::CcsoParams>> {
         self.ref_ccso_params
             .get(slot as usize)
             .and_then(Clone::clone)
