@@ -650,7 +650,7 @@ impl TemporalMvContext {
         }
         let (row, col, _) = probe.stack_target(block);
         let (row, col) = (usize::try_from(row).ok()?, usize::try_from(col).ok()?);
-        let shift = 1 + usize::from(cell.tip_size_16x16);
+        let shift = 1 + usize::from(cell.tip_size_16x16());
         let base_r = cell.base_r as usize;
         let base_c = cell.base_c as usize;
         let row = base_r + ((row.checked_sub(base_r)? >> shift) << shift);

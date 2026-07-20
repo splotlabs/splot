@@ -176,7 +176,7 @@ fn record_warp_inter(
 
 #[test]
 fn neighbour_mv_grid_translates_tile_coordinates() {
-    assert_eq!(core::mem::size_of::<Option<NeighbourCell>>(), 88);
+    assert_eq!(core::mem::size_of::<Option<NeighbourCell>>(), 80);
     let mut grid = NeighbourMvGrid::new_for_tile(4..8, 8..12).unwrap();
     grid.record_block(
         5,
