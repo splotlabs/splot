@@ -1725,6 +1725,7 @@ fn gdf_width4_rows<const ROWS: usize>(
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     let mut output = [[0; MI_SIZE]; ROWS];
+    let params = GdfFinishParams::from_block(block);
     for row_offset in 0..ROWS {
         let base = (source_origin.1 + row + row_offset) * source.stride + source_origin.0;
         let centers = exact_slice(source.samples, base, MI_SIZE).ok_or_else(source_error)?;
@@ -1754,7 +1755,7 @@ fn gdf_width4_rows<const ROWS: usize>(
             core::array::from_fn(|col| {
                 finish_gdf_sample_with_error::<8, 4096>(
                     i32::from(base_values[row_offset][col]),
-                    block,
+                    &params,
                     error,
                     &gdf_idx[col],
                 )
@@ -1764,7 +1765,7 @@ fn gdf_width4_rows<const ROWS: usize>(
             core::array::from_fn(|col| {
                 finish_gdf_sample_with_error::<5, 1000>(
                     i32::from(base_values[row_offset][col]),
-                    block,
+                    &params,
                     error,
                     &gdf_idx[col],
                 )
@@ -1795,6 +1796,7 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const CLASS: usize, const ROWS: us
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     let mut output = [[0; WIDTH]; ROWS];
+    let params = GdfFinishParams::from_block(block);
     for row_offset in 0..ROWS {
         let base = (source_origin.1 + row_offset) * source.stride + source_origin.0;
         let centers = exact_slice(source.samples, base, WIDTH).ok_or_else(source_error)?;
@@ -1827,7 +1829,7 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const CLASS: usize, const ROWS: us
                 let gdf_idx = [gdf_idx0[col], gdf_idx1[col], gdf_idx2[col]];
                 finish_gdf_sample_with_error::<8, 4096>(
                     i32::from(base_values[row_offset][col]),
-                    block,
+                    &params,
                     error,
                     &gdf_idx,
                 )
@@ -1838,7 +1840,7 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const CLASS: usize, const ROWS: us
                 let gdf_idx = [gdf_idx0[col], gdf_idx1[col], gdf_idx2[col]];
                 finish_gdf_sample_with_error::<5, 1000>(
                     i32::from(base_values[row_offset][col]),
-                    block,
+                    &params,
                     error,
                     &gdf_idx,
                 )
@@ -1895,20 +1897,42 @@ fn gdf_sample(
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
+    let params = GdfFinishParams::from_block(block);
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
         finish_gdf_sample_with_error::<8, 4096>(
             base,
-            block,
+            &params,
             &GDF_INTRA_ERROR[block.qp_idx],
             gdf_idx,
         )
     } else {
         finish_gdf_sample_with_error::<5, 1000>(
             base,
-            block,
+            &params,
             &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx],
             gdf_idx,
         )
+    }
+}
+
+/// The block-constant inputs to [`finish_gdf_sample_with_error`], resolved once per block so
+/// the per-pixel finish stops re-reading `block` fields (and re-indexing `GDF_BIAS`) through
+/// the shared `&GdfBlock` reference on every sample.
+struct GdfFinishParams {
+    bias: &'static [i32; 3],
+    pix_scale: i32,
+    residual_shift: u32,
+    max_sample: i32,
+}
+
+impl GdfFinishParams {
+    fn from_block(block: &GdfBlock) -> Self {
+        Self {
+            bias: &GDF_BIAS[block.ref_dst_idx][block.qp_idx],
+            pix_scale: block.pix_scale,
+            residual_shift: 12 - u32::from(block.bit_depth.bits()),
+            max_sample: block.max_sample,
+        }
     }
 }
 
@@ -1916,22 +1940,19 @@ fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
 #[inline(always)]
 fn finish_gdf_sample_with_error<const SCALE: i32, const ERROR_LEN: usize>(
     base: i32,
-    block: &GdfBlock,
+    params: &GdfFinishParams,
     error: &[i32; ERROR_LEN],
     gdf_idx: &[i32; 3],
 ) -> u16 {
     let mut pos = 0_usize;
     for (idx, value) in gdf_idx.iter().enumerate() {
-        let biased = (*value + GDF_BIAS[block.ref_dst_idx][block.qp_idx][idx]) * SCALE;
+        let biased = (*value + params.bias[idx]) * SCALE;
         let v = round2_signed_i32(biased, 15);
         let digit = v.clamp(-SCALE, SCALE - 1) + SCALE;
         pos = pos * (SCALE as usize * 2) + usize::try_from(digit).unwrap_or_default();
     }
-    let residual = round2_signed_i32(
-        error[pos] * block.pix_scale,
-        12 - u32::from(block.bit_depth.bits()),
-    );
-    (base + residual).clamp(0, block.max_sample) as u16
+    let residual = round2_signed_i32(error[pos] * params.pix_scale, params.residual_shift);
+    (base + residual).clamp(0, params.max_sample) as u16
 }
 
 #[cfg(test)]
