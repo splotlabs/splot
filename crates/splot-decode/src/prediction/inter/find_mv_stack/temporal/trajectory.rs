@@ -104,6 +104,7 @@ pub(super) struct TrajectoryState {
     step: usize,
     unit_size8: usize,
     unit_shift: Option<u32>,
+    col_offset: usize,
     width8: usize,
     height8: usize,
 }
@@ -129,6 +130,7 @@ impl TrajectoryState {
             step,
             unit_size8: unit_size8.max(1),
             unit_shift: Self::unit_shift(unit_size8.max(1)),
+            col_offset: Self::col_offset(step, unit_size8.max(1)),
             width8,
             height8,
         })
@@ -164,6 +166,7 @@ impl TrajectoryState {
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
         self.unit_shift = Self::unit_shift(self.unit_size8);
+        self.col_offset = Self::col_offset(self.step, self.unit_size8);
         (self.width8, self.height8) = self
             .fields
             .first()
@@ -183,6 +186,7 @@ impl TrajectoryState {
             step: 1,
             unit_size8: 1,
             unit_shift: Some(0),
+            col_offset: 0,
             width8,
             height8,
         }
@@ -236,6 +240,14 @@ impl TrajectoryState {
             .then(|| unit_size8.trailing_zeros())
     }
 
+    fn col_offset(step: usize, unit_size8: usize) -> usize {
+        if step == 1 {
+            unit_size8 / 2
+        } else {
+            unit_size8
+        }
+    }
+
     fn div_unit_size(&self, value: usize) -> usize {
         match self.unit_shift {
             Some(shift) => value >> shift,
@@ -261,11 +273,7 @@ impl TrajectoryState {
         }
         let base_y = self.unit_base(base.0);
         let base_x = self.unit_base(base.1);
-        let col_offset = if self.step == 1 {
-            self.unit_size8 / 2
-        } else {
-            self.unit_size8
-        };
+        let col_offset = self.col_offset;
         candidate.0 >= base_y
             && candidate.0 < base_y + self.unit_size8
             && candidate.1.saturating_add(col_offset) >= base_x
