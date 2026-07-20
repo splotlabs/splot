@@ -250,15 +250,16 @@ pub fn cdef_filter_sample(
         for sign_index in 0..2 {
             let p = taps.primary[k][sign_index];
             if p.available {
-                sum += pri_taps[k] * constrain_with_adj(p.value - taps.center, pri_str, pri_adj);
+                sum += pri_taps[k]
+                    * constrain_with_adj::<true>(p.value - taps.center, pri_str, pri_adj);
                 max = max.max(p.value);
                 min = min.min(p.value);
             }
             for dir_off_index in 0..2 {
                 let s = taps.secondary[k][sign_index][dir_off_index];
                 if s.available {
-                    sum +=
-                        sec_taps[k] * constrain_with_adj(s.value - taps.center, sec_str, sec_adj);
+                    sum += sec_taps[k]
+                        * constrain_with_adj::<true>(s.value - taps.center, sec_str, sec_adj);
                     max = max.max(s.value);
                     min = min.min(s.value);
                 }
@@ -423,21 +424,21 @@ fn cdef_filter_block_interior_rows<const W: usize>(
                 let s110 = i32::from(sec_rows[1][1][0][j]);
                 let s111 = i32::from(sec_rows[1][1][1][j]);
                 let sum = pri_taps[0]
-                    * (constrain_with_adj(p00 - center, filter.pri_str, pri_adj)
-                        + constrain_with_adj(p01 - center, filter.pri_str, pri_adj))
+                    * (constrain_with_adj::<false>(p00 - center, filter.pri_str, pri_adj)
+                        + constrain_with_adj::<false>(p01 - center, filter.pri_str, pri_adj))
                     + pri_taps[1]
-                        * (constrain_with_adj(p10 - center, filter.pri_str, pri_adj)
-                            + constrain_with_adj(p11 - center, filter.pri_str, pri_adj))
+                        * (constrain_with_adj::<false>(p10 - center, filter.pri_str, pri_adj)
+                            + constrain_with_adj::<false>(p11 - center, filter.pri_str, pri_adj))
                     + sec_taps[0]
-                        * (constrain_with_adj(s000 - center, filter.sec_str, sec_adj)
-                            + constrain_with_adj(s001 - center, filter.sec_str, sec_adj)
-                            + constrain_with_adj(s010 - center, filter.sec_str, sec_adj)
-                            + constrain_with_adj(s011 - center, filter.sec_str, sec_adj))
+                        * (constrain_with_adj::<false>(s000 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj::<false>(s001 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj::<false>(s010 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj::<false>(s011 - center, filter.sec_str, sec_adj))
                     + sec_taps[1]
-                        * (constrain_with_adj(s100 - center, filter.sec_str, sec_adj)
-                            + constrain_with_adj(s101 - center, filter.sec_str, sec_adj)
-                            + constrain_with_adj(s110 - center, filter.sec_str, sec_adj)
-                            + constrain_with_adj(s111 - center, filter.sec_str, sec_adj));
+                        * (constrain_with_adj::<false>(s100 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj::<false>(s101 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj::<false>(s110 - center, filter.sec_str, sec_adj)
+                            + constrain_with_adj::<false>(s111 - center, filter.sec_str, sec_adj));
                 let min = center
                     .min(p00)
                     .min(p01)
@@ -480,8 +481,8 @@ fn cdef_filter_block_interior_rows<const W: usize>(
                 for (k, pri_by_sign) in pri_rows.iter().enumerate() {
                     for pri_row in pri_by_sign {
                         let p = i32::from(pri_row[j]);
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                        sum += pri_taps[k]
+                            * constrain_with_adj::<false>(p - center, filter.pri_str, pri_adj);
                     }
                 }
                 output_row[j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
@@ -501,7 +502,7 @@ fn cdef_filter_block_interior_rows<const W: usize>(
                         for sec_row in sec_by_dir {
                             let s = i32::from(sec_row[j]);
                             sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                                * constrain_with_adj::<false>(s - center, filter.sec_str, sec_adj);
                         }
                     }
                 }
@@ -646,8 +647,8 @@ pub fn cdef_filter_block_interior(
                         let p = i32::from(
                             pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])],
                         );
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                        sum += pri_taps[k]
+                            * constrain_with_adj::<false>(p - center, filter.pri_str, pri_adj);
                         max = max.max(p);
                         min = min.min(p);
                         for dir_off_index in 0..2 {
@@ -656,7 +657,7 @@ pub fn cdef_filter_block_interior(
                                     .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
                             );
                             sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                                * constrain_with_adj::<false>(s - center, filter.sec_str, sec_adj);
                             max = max.max(s);
                             min = min.min(s);
                         }
@@ -679,8 +680,8 @@ pub fn cdef_filter_block_interior(
                         let p = i32::from(
                             pad[center_index.wrapping_add_signed(pri_rel[k][sign_index])],
                         );
-                        sum +=
-                            pri_taps[k] * constrain_with_adj(p - center, filter.pri_str, pri_adj);
+                        sum += pri_taps[k]
+                            * constrain_with_adj::<false>(p - center, filter.pri_str, pri_adj);
                     }
                 }
                 out[i * w + j] = (center + ((8 + sum - i32::from(sum < 0)) >> 4)) as u16;
@@ -700,7 +701,7 @@ pub fn cdef_filter_block_interior(
                                     .wrapping_add_signed(sec_rel[k][sign_index][dir_off_index])],
                             );
                             sum += sec_taps[k]
-                                * constrain_with_adj(s - center, filter.sec_str, sec_adj);
+                                * constrain_with_adj::<false>(s - center, filter.sec_str, sec_adj);
                         }
                     }
                 }
@@ -726,8 +727,15 @@ const fn constrain_damping_adj(threshold: i32, damping: i32) -> i32 {
     if adj < 0 { 0 } else { adj }
 }
 
-const fn constrain_with_adj(diff: i32, threshold: i32, damping_adj: i32) -> i32 {
-    if threshold == 0 {
+/// AV2 § 7.18.3 `constrain(diff, threshold, damping)` with the damping shift pre-reduced to
+/// `damping_adj`. `GUARD` keeps the spec's `threshold == 0 -> 0` short-circuit for the general
+/// per-sample path; the interior loops instantiate `GUARD == false` because their branches are
+/// already gated on a non-zero `pri_str` / `sec_str`, so the guard is dead there and the const
+/// generic elides it from the 12-per-pixel call site.
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
+const fn constrain_with_adj<const GUARD: bool>(diff: i32, threshold: i32, damping_adj: i32) -> i32 {
+    if GUARD && threshold == 0 {
         return 0;
     }
     let abs = diff.abs();
@@ -797,9 +805,16 @@ mod tests {
                 for diff in -300..=300 {
                     assert_eq!(
                         cdef_constrain(diff, threshold, damping),
-                        constrain_with_adj(diff, threshold, adj),
+                        constrain_with_adj::<true>(diff, threshold, adj),
                         "threshold={threshold} damping={damping} diff={diff}"
                     );
+                    if threshold != 0 {
+                        assert_eq!(
+                            constrain_with_adj::<true>(diff, threshold, adj),
+                            constrain_with_adj::<false>(diff, threshold, adj),
+                            "guard variants diverge: threshold={threshold} diff={diff}"
+                        );
+                    }
                 }
             }
         }
