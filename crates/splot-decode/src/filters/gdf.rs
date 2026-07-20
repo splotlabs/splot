@@ -1750,27 +1750,28 @@ fn gdf_width4_rows<const ROWS: usize>(
                 }
             }
         }
-        output[row_offset] = if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        let out = &mut output[row_offset];
+        if block.ref_dst_idx == GDF_INTRA_REF_DST {
             let error = &GDF_INTRA_ERROR[block.qp_idx];
-            core::array::from_fn(|col| {
-                finish_gdf_sample_with_error::<8, 4096>(
+            for (col, slot) in out.iter_mut().enumerate() {
+                *slot = finish_gdf_sample_with_error::<8, 4096>(
                     i32::from(base_values[row_offset][col]),
                     &params,
                     error,
                     &gdf_idx[col],
-                )
-            })
+                );
+            }
         } else {
             let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-            core::array::from_fn(|col| {
-                finish_gdf_sample_with_error::<5, 1000>(
+            for (col, slot) in out.iter_mut().enumerate() {
+                *slot = finish_gdf_sample_with_error::<5, 1000>(
                     i32::from(base_values[row_offset][col]),
                     &params,
                     error,
                     &gdf_idx[col],
-                )
-            })
-        };
+                );
+            }
+        }
     }
     Ok(output)
 }
@@ -1823,29 +1824,30 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const CLASS: usize, const ROWS: us
                 gdf_idx2[col] += comb * weight2;
             }
         }
-        output[row_offset] = if block.ref_dst_idx == GDF_INTRA_REF_DST {
+        let out = &mut output[row_offset];
+        if block.ref_dst_idx == GDF_INTRA_REF_DST {
             let error = &GDF_INTRA_ERROR[block.qp_idx];
-            core::array::from_fn(|col| {
+            for (col, slot) in out.iter_mut().enumerate() {
                 let gdf_idx = [gdf_idx0[col], gdf_idx1[col], gdf_idx2[col]];
-                finish_gdf_sample_with_error::<8, 4096>(
+                *slot = finish_gdf_sample_with_error::<8, 4096>(
                     i32::from(base_values[row_offset][col]),
                     &params,
                     error,
                     &gdf_idx,
-                )
-            })
+                );
+            }
         } else {
             let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-            core::array::from_fn(|col| {
+            for (col, slot) in out.iter_mut().enumerate() {
                 let gdf_idx = [gdf_idx0[col], gdf_idx1[col], gdf_idx2[col]];
-                finish_gdf_sample_with_error::<5, 1000>(
+                *slot = finish_gdf_sample_with_error::<5, 1000>(
                     i32::from(base_values[row_offset][col]),
                     &params,
                     error,
                     &gdf_idx,
-                )
-            })
-        };
+                );
+            }
+        }
     }
     Ok(output)
 }
