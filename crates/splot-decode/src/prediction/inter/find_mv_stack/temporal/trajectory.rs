@@ -103,6 +103,7 @@ pub(super) struct TrajectoryState {
     pub(super) projection_offsets: Vec<i32>,
     step: usize,
     unit_size8: usize,
+    unit_shift: Option<u32>,
     width8: usize,
     height8: usize,
 }
@@ -127,6 +128,7 @@ impl TrajectoryState {
             projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
             step,
             unit_size8: unit_size8.max(1),
+            unit_shift: Self::unit_shift(unit_size8.max(1)),
             width8,
             height8,
         })
@@ -161,6 +163,7 @@ impl TrajectoryState {
         self.projection_offsets.fill(INVALID_PROJECTION_OFFSET);
         self.step = step.clamp(1, 2);
         self.unit_size8 = unit_size8.max(1);
+        self.unit_shift = Self::unit_shift(self.unit_size8);
         (self.width8, self.height8) = self
             .fields
             .first()
@@ -179,6 +182,7 @@ impl TrajectoryState {
             projection_offsets: Vec::new(),
             step: 1,
             unit_size8: 1,
+            unit_shift: Some(0),
             width8,
             height8,
         }
@@ -226,12 +230,25 @@ impl TrajectoryState {
         }
     }
 
+    fn unit_shift(unit_size8: usize) -> Option<u32> {
+        unit_size8
+            .is_power_of_two()
+            .then(|| unit_size8.trailing_zeros())
+    }
+
+    fn div_unit_size(&self, value: usize) -> usize {
+        match self.unit_shift {
+            Some(shift) => value >> shift,
+            None => value / self.unit_size8,
+        }
+    }
+
     fn phase(&self, x8: usize) -> usize {
-        Self::div_unit(x8, self.unit_size8) % 3
+        self.div_unit_size(x8) % 3
     }
 
     fn unit_base(&self, value: usize) -> usize {
-        Self::div_unit(value, self.unit_size8) * self.unit_size8
+        self.div_unit_size(value) * self.unit_size8
     }
 
     fn round_step(&self, value: usize) -> usize {
