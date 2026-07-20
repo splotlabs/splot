@@ -10,7 +10,6 @@ use splot_core::headers::sequence::DrlReorder;
 use std::sync::Arc;
 
 const BLOCK0_MV: Mv = Mv { row: 0, col: 48 };
-
 const N4_32: usize = 8;
 const SB_H4_64: usize = 16;
 const MI_DIM: usize = 16;
@@ -177,6 +176,7 @@ fn record_warp_inter(
 
 #[test]
 fn neighbour_mv_grid_translates_tile_coordinates() {
+    assert_eq!(core::mem::size_of::<Option<NeighbourCell>>(), 88);
     let mut grid = NeighbourMvGrid::new_for_tile(4..8, 8..12).unwrap();
     grid.record_block(
         5,

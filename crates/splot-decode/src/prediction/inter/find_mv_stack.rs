@@ -125,10 +125,10 @@ struct NeighbourCell {
     warp_params: Option<[i32; 6]>,
     sub_mv: Mv,
     sub_mv1: Mv,
-    base_r: usize,
-    base_c: usize,
-    bw4: usize,
-    bh4: usize,
+    base_r: u32,
+    base_c: u32,
+    bw4: u8,
+    bh4: u8,
     tip_size_16x16: bool,
     precision: BlockPrecisionRecord,
 }
@@ -380,10 +380,10 @@ impl NeighbourMvGrid {
             warp_params,
             sub_mv: mv,
             sub_mv1: Mv::ZERO,
-            base_r: r,
-            base_c: c,
-            bw4: n4w,
-            bh4: n4h,
+            base_r: r as u32,
+            base_c: c as u32,
+            bw4: n4w as u8,
+            bh4: n4h as u8,
             tip_size_16x16,
             precision,
         };
@@ -492,10 +492,10 @@ impl NeighbourMvGrid {
             warp_params: warp_params[0],
             sub_mv: mv0,
             sub_mv1: mv1,
-            base_r: r,
-            base_c: c,
-            bw4: n4w,
-            bh4: n4h,
+            base_r: r as u32,
+            base_c: c as u32,
+            bw4: n4w as u8,
+            bh4: n4h as u8,
             tip_size_16x16: false,
             precision,
         };
@@ -1265,8 +1265,8 @@ pub(crate) fn find_warp_samples(
             if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
                 return;
             }
-            let mid_y = (cell.base_r * 4 + cell.bh4 * 2) as i32 - 1;
-            let mid_x = (cell.base_c * 4 + cell.bw4 * 2) as i32 - 1;
+            let mid_y = (cell.base_r * 4 + u32::from(cell.bh4) * 2) as i32 - 1;
+            let mid_x = (cell.base_c * 4 + u32::from(cell.bw4) * 2) as i32 - 1;
             let _ =
                 samples.try_push([mid_y * 8, mid_x * 8, mid_y * 8 + mv.row, mid_x * 8 + mv.col]);
         }

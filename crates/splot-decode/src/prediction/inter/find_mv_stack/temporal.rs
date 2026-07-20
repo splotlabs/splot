@@ -651,8 +651,10 @@ impl TemporalMvContext {
         let (row, col, _) = probe.stack_target(block);
         let (row, col) = (usize::try_from(row).ok()?, usize::try_from(col).ok()?);
         let shift = 1 + usize::from(cell.tip_size_16x16);
-        let row = cell.base_r + ((row.checked_sub(cell.base_r)? >> shift) << shift);
-        let col = cell.base_c + ((col.checked_sub(cell.base_c)? >> shift) << shift);
+        let base_r = cell.base_r as usize;
+        let base_c = cell.base_c as usize;
+        let row = base_r + ((row.checked_sub(base_r)? >> shift) << shift);
+        let col = base_c + ((col.checked_sub(base_c)? >> shift) << shift);
         let base_cell = grid.get(row as i32, col as i32)?;
         self.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv)
     }
