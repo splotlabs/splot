@@ -525,15 +525,15 @@ impl TrajectoryState {
 
 fn add_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row.saturating_add(b.row),
-        col: a.col.saturating_add(b.col),
+        row: a.row + b.row,
+        col: a.col + b.col,
     }
 }
 
 fn subtract_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row.saturating_sub(b.row),
-        col: a.col.saturating_sub(b.col),
+        row: a.row - b.row,
+        col: a.col - b.col,
     }
 }
 
@@ -607,6 +607,35 @@ mod tests {
         assert_eq!(
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
+        );
+    }
+
+    #[test]
+    fn trajectory_arithmetic_handles_maximum_accumulation() {
+        let positive = Mv {
+            row: REFMVS_LIMIT,
+            col: REFMVS_LIMIT,
+        };
+        let negative = Mv {
+            row: -REFMVS_LIMIT,
+            col: -REFMVS_LIMIT,
+        };
+        let sum = add_mv(add_mv(add_mv(positive, positive), positive), positive);
+        let difference = subtract_mv(negative, positive);
+
+        assert_eq!(
+            sum,
+            Mv {
+                row: 4 * REFMVS_LIMIT,
+                col: 4 * REFMVS_LIMIT
+            }
+        );
+        assert_eq!(
+            difference,
+            Mv {
+                row: -2 * REFMVS_LIMIT,
+                col: -2 * REFMVS_LIMIT
+            }
         );
     }
 
