@@ -1033,9 +1033,9 @@ pub(crate) struct TileIntraYModeState {
 
 impl TileIntraYModeState {
     pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileIntraYModeStateError> {
-        let grid = MiGrid::new(
-            mi_rows,
-            mi_cols,
+        let grid = MiGrid::new_for_tile(
+            0..mi_rows,
+            0..mi_cols,
             None::<TileIntraYModeFacts>,
             |mi_rows, mi_cols| TileIntraYModeStateError::EmptyDimensions { mi_rows, mi_cols },
             |operation, left, right| TileIntraYModeStateError::ArithmeticOverflow {
@@ -1085,6 +1085,7 @@ impl_grid_recycle!(
     TileFscModeState,
     TileLumaPaletteState,
     TileUvCflState,
+    TileIntraYModeState,
 );
 
 #[derive(Debug, thiserror::Error)]

@@ -419,10 +419,17 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
     }
 
     pub(crate) fn into_output(self) -> GeneralIntraPartitionTreeOutput<'payload> {
+        let Self {
+            symbols,
+            lr_activity,
+            y_modes,
+            ..
+        } = self;
+        y_modes.recycle();
         GeneralIntraPartitionTreeOutput {
-            symbols: self.symbols,
-            active_source_blocks: self.lr_activity.active_source_blocks,
-            unit_filters: self.lr_activity.unit_filters,
+            symbols,
+            active_source_blocks: lr_activity.active_source_blocks,
+            unit_filters: lr_activity.unit_filters,
         }
     }
 }
