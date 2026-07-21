@@ -191,10 +191,11 @@ impl<T: Copy + Send + 'static> MiGrid<T> {
 
 /// Retained per-thread MI-grid cell buffers, keyed by cell type.
 ///
-/// The intra-frontier cursor rebuilds six area-sized `MiGrid` backing vectors
-/// per tile (five `u8` grids plus the luma-palette grid). Recycling them through
-/// this bounded thread-local pool removes that per-tile allocation traffic while
-/// keeping the grids trivially droppable (no `Drop` glue on the read hot path).
+/// The intra-frontier cursor rebuilds seven area-sized `MiGrid` backing vectors
+/// per tile (five `u8` grids, the luma-palette grid, and the tree-walk y-mode
+/// grid). Recycling them through this bounded thread-local pool removes that
+/// per-tile allocation traffic while keeping the grids trivially droppable (no
+/// `Drop` glue on the read hot path).
 const MI_GRID_SCRATCH_SLOTS: usize = 8;
 const MAX_RETAINED_MI_GRID_CELLS: usize = 1 << 24;
 
