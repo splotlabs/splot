@@ -1604,6 +1604,23 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         DecodedFrame::try_new(self.info, FramePlanes::new(y, u, v))
     }
 
+    /// Consumes a transient (non-frozen) workspace, returning its plane sample
+    /// buffers to the process-global retained pool so the next frame's
+    /// reconstruction workspace can reuse them instead of reallocating.
+    ///
+    /// Call this only on the reconstruction workspace once filtering has read
+    /// all of it; the filtered output workspace is [`freeze`](Self::freeze)d
+    /// into a decoded frame and must not be recycled.
+    pub fn recycle_planes(self) {
+        recycle_recon_plane_buffer(self.y.into_samples());
+        if let Some(u) = self.u {
+            recycle_recon_plane_buffer(u.into_samples());
+        }
+        if let Some(v) = self.v {
+            recycle_recon_plane_buffer(v.into_samples());
+        }
+    }
+
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
         select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
     }
@@ -1611,6 +1628,40 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
 /// Mutable backing storage for one current-frame workspace plane.
 ///
+/// Bounds retained transient reconstruction-plane buffers: at most this many,
+/// and only those whose capacity fits a ~4K single-plane frame, so a large
+/// frame cannot pin its high-water allocation in the process-global pool until
+/// process exit. Retained memory tracks typical frames rather than the largest
+/// ever seen.
+const MAX_RETAINED_RECON_PLANE_BUFFERS: usize = 6;
+const MAX_RETAINED_RECON_PLANE_SAMPLES: usize = 1 << 24;
+
+/// Takes a cleared plane sample buffer from the per-type retained pool, reusing
+/// a prior frame's recycled reconstruction-workspace allocation when available.
+fn take_recon_plane_buffer<T: ReconSample>() -> Vec<T> {
+    let mut buffer = T::recon_plane_pool()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop()
+        .unwrap_or_default();
+    buffer.clear();
+    buffer
+}
+
+/// Returns a plane sample buffer to the per-type retained pool, dropping it when
+/// the pool is full or the buffer is oversized.
+fn recycle_recon_plane_buffer<T: ReconSample>(buffer: Vec<T>) {
+    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_RECON_PLANE_SAMPLES {
+        return;
+    }
+    let mut pool = T::recon_plane_pool()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() < MAX_RETAINED_RECON_PLANE_BUFFERS {
+        pool.push(buffer);
+    }
+}
+
 /// Does not implement `Clone`: it owns the plane sample buffer (see
 /// [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)).
 #[derive(Debug, Eq, PartialEq)]
@@ -1651,7 +1702,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
-        let mut samples = Vec::new();
+        let mut samples = take_recon_plane_buffer::<T>();
         samples.try_reserve_exact(required_samples).map_err(|_| {
             ReconError::WorkspaceAllocationFailed {
                 plane,
@@ -1939,6 +1990,11 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             self.visible_rect,
             self.samples,
         )
+    }
+
+    /// Consumes the plane, returning its backing sample buffer for recycling.
+    fn into_samples(self) -> Vec<T> {
+        self.samples
     }
 
     /// Clamps a write/fill `rect` to the in-frame storage extent.
