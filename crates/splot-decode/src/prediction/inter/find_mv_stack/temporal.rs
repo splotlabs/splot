@@ -21,10 +21,6 @@ const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
 const MV_LIMIT: i32 = (1 << 16) - 1;
 const INVALID_ORDER_HINT: u32 = u32::MAX;
-const INVALID_PROJECTED_MV: Mv = Mv {
-    row: i32::MIN,
-    col: 0,
-};
 const TIP_DIRECTIONS: [(i32, i32); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
 const DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
@@ -218,24 +214,47 @@ pub(crate) struct TemporalMotionBlock {
     pub(crate) warp_params: [Option<[i32; 6]>; 2],
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProjectedTemporalMotionCell {
-    mv: Mv,
-    ref_offset: i32,
-}
-
-impl Default for ProjectedTemporalMotionCell {
-    fn default() -> Self {
-        Self {
-            mv: INVALID_PROJECTED_MV,
-            ref_offset: 0,
-        }
-    }
-}
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ProjectedTemporalMotionCell(u64);
 
 impl ProjectedTemporalMotionCell {
+    const MV_BITS: u32 = 17;
+    const MV_MASK: u64 = (1 << Self::MV_BITS) - 1;
+    const REF_OFFSET_BITS: u32 = 6;
+    const REF_OFFSET_SHIFT: u32 = Self::MV_BITS * 2;
+    const REF_OFFSET_MASK: u64 = (1 << Self::REF_OFFSET_BITS) - 1;
+    const VALID: u64 = 1 << (Self::REF_OFFSET_SHIFT + Self::REF_OFFSET_BITS);
+
+    fn new(mv: Mv, ref_offset: i32, valid: bool) -> Self {
+        debug_assert!((-MAX_FRAME_DISTANCE..=MAX_FRAME_DISTANCE).contains(&ref_offset));
+        let mv = if valid { mv } else { Mv::ZERO };
+        debug_assert!((-MV_LIMIT..=MV_LIMIT).contains(&mv.row));
+        debug_assert!((-MV_LIMIT..=MV_LIMIT).contains(&mv.col));
+        Self(
+            (mv.row as u64 & Self::MV_MASK)
+                | ((mv.col as u64 & Self::MV_MASK) << Self::MV_BITS)
+                | ((ref_offset as u64 & Self::REF_OFFSET_MASK) << Self::REF_OFFSET_SHIFT)
+                | if valid { Self::VALID } else { 0 },
+        )
+    }
+
     const fn is_valid(self) -> bool {
-        self.mv.row != i32::MIN
+        self.0 & Self::VALID != 0
+    }
+
+    const fn mv(self) -> Mv {
+        Mv {
+            row: Self::unpack_signed(self.0, Self::MV_BITS),
+            col: Self::unpack_signed(self.0 >> Self::MV_BITS, Self::MV_BITS),
+        }
+    }
+
+    const fn ref_offset(self) -> i32 {
+        Self::unpack_signed(self.0 >> Self::REF_OFFSET_SHIFT, Self::REF_OFFSET_BITS)
+    }
+
+    const fn unpack_signed(value: u64, bits: u32) -> i32 {
+        ((value << (64 - bits)) as i64 >> (64 - bits)) as i32
     }
 }
 
@@ -278,10 +297,7 @@ impl ProjectedTemporalMotionField {
             return;
         };
         if let Some(cell) = self.cells.get_mut(index) {
-            *cell = ProjectedTemporalMotionCell {
-                mv: if valid { mv } else { INVALID_PROJECTED_MV },
-                ref_offset,
-            };
+            *cell = ProjectedTemporalMotionCell::new(mv, ref_offset, valid);
         }
     }
 }
@@ -589,7 +605,7 @@ impl TemporalMvContext {
                 };
                 if source.is_valid()
                     && let Some(mv) =
-                        project_mv(source.mv, references.ref_offset, source.ref_offset)
+                        project_mv(source.mv(), references.ref_offset, source.ref_offset())
                 {
                     field.set(y8, x8, mv, references.ref_offset, true);
                 }
@@ -641,9 +657,9 @@ impl TemporalMvContext {
         let cell = self.field.cell(y8, x8).unwrap_or_default();
         let projected = if cell.is_valid() {
             [
-                project_mv(cell.mv, references.past_offset, references.ref_offset)
+                project_mv(cell.mv(), references.past_offset, references.ref_offset)
                     .unwrap_or(Mv::ZERO),
-                project_mv(cell.mv, references.future_offset, references.ref_offset)
+                project_mv(cell.mv(), references.future_offset, references.ref_offset)
                     .unwrap_or(Mv::ZERO),
             ]
         } else {
@@ -733,7 +749,7 @@ impl TemporalMvContext {
             self.current_order_hint as i32,
             i32::try_from(dst_hint).ok()?,
         );
-        project_mv(cell.mv, ref_to_dst, cell.ref_offset)
+        project_mv(cell.mv(), ref_to_dst, cell.ref_offset())
     }
 
     pub(super) fn derive_spatial_mv(
@@ -922,8 +938,8 @@ fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superbl
                             field.set(
                                 dst_y,
                                 dst_x,
-                                source.mv,
-                                source.ref_offset,
+                                source.mv(),
+                                source.ref_offset(),
                                 source.is_valid(),
                             );
                         }
@@ -975,8 +991,9 @@ fn average_tip_motion(
                         else {
                             continue;
                         };
-                        sum.row += cell.mv.row;
-                        sum.col += cell.mv.col;
+                        let mv = cell.mv();
+                        sum.row += mv.row;
+                        sum.col += mv.col;
                         count += 1;
                     }
                     if count == 0 {
@@ -989,7 +1006,9 @@ fn average_tip_motion(
                                 row: divide_tip_average(sum.row, count),
                                 col: divide_tip_average(sum.col, count),
                             },
-                            field.cell(y8, x8).map_or(0, |cell| cell.ref_offset),
+                            field
+                                .cell(y8, x8)
+                                .map_or(0, ProjectedTemporalMotionCell::ref_offset),
                             true,
                         );
                     }
@@ -1059,14 +1078,15 @@ fn fill_temporal_sampling_gap(
                 continue;
             };
             let mv = if candidate_y == 0 && candidate_x == 0 {
-                source.mv
+                source.mv()
             } else {
-                project_mv(source.mv, anchor.ref_offset, source.ref_offset).map_or(Mv::ZERO, |mv| {
-                    Mv {
+                project_mv(source.mv(), anchor.ref_offset(), source.ref_offset()).map_or(
+                    Mv::ZERO,
+                    |mv| Mv {
                         row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
                         col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-                    }
-                })
+                    },
+                )
             };
             sum.row += mv.row;
             sum.col += mv.col;
@@ -1086,7 +1106,7 @@ fn fill_temporal_sampling_gap(
             row: average(sum.row),
             col: average(sum.col),
         },
-        anchor.ref_offset,
+        anchor.ref_offset(),
         true,
     );
 }
@@ -1215,9 +1235,9 @@ fn project_temporal_motion_field(
             };
             let replace = !output_cell.is_valid()
                 || (target_order_hint == Some(saved_target_hint)
-                    && output_cell.ref_offset != ref_offset);
+                    && output_cell.ref_offset() != ref_offset);
             if replace {
-                *output_cell = ProjectedTemporalMotionCell { mv, ref_offset };
+                *output_cell = ProjectedTemporalMotionCell::new(mv, ref_offset, true);
             }
         }
     }
@@ -1543,7 +1563,7 @@ mod tests {
     #[test]
     fn temporal_motion_storage_stays_compact() {
         assert_eq!(std::mem::size_of::<TemporalMotionCell>(), 16);
-        assert_eq!(std::mem::size_of::<ProjectedTemporalMotionCell>(), 12);
+        assert_eq!(std::mem::size_of::<ProjectedTemporalMotionCell>(), 8);
     }
 
     #[test]
@@ -1688,13 +1708,14 @@ mod tests {
 
         assert_eq!(
             output.cell(8, 25),
-            Some(ProjectedTemporalMotionCell {
-                mv: Mv {
+            Some(ProjectedTemporalMotionCell::new(
+                Mv {
                     row: -10,
                     col: -232,
                 },
-                ref_offset: 5,
-            })
+                5,
+                true,
+            ))
         );
         assert!(!output.cell(8, 27).unwrap().is_valid());
     }
@@ -1725,10 +1746,7 @@ mod tests {
 
         assert_eq!(
             output.cell(0, 0),
-            Some(ProjectedTemporalMotionCell {
-                mv: Mv::ZERO,
-                ref_offset: 0,
-            })
+            Some(ProjectedTemporalMotionCell::new(Mv::ZERO, 0, true))
         );
     }
 
@@ -1869,10 +1887,7 @@ mod tests {
         let cell = context.field.cell(0, 11).unwrap();
         assert_eq!(
             cell,
-            ProjectedTemporalMotionCell {
-                mv: Mv { row: 18, col: -36 },
-                ref_offset: 9,
-            }
+            ProjectedTemporalMotionCell::new(Mv { row: 18, col: -36 }, 9, true)
         );
     }
 
