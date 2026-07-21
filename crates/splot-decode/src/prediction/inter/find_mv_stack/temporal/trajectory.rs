@@ -35,7 +35,7 @@ impl PackedTrajectoryMv {
     }
 
     fn unpack(self) -> Option<Mv> {
-        (self != Self::INVALID).then_some(Mv {
+        (self.row != Self::INVALID.row).then_some(Mv {
             row: i32::from(self.row),
             col: i32::from(self.col),
         })
@@ -62,7 +62,7 @@ impl PackedPosition {
     }
 
     fn unpack(self) -> Option<Position> {
-        (self != Self::INVALID).then_some((self.y as usize, self.x as usize))
+        (self.y != Self::INVALID.y).then_some((self.y as usize, self.x as usize))
     }
 }
 
@@ -318,10 +318,6 @@ impl TrajectoryState {
         Some((self.round_step(y8), self.round_step(x8)))
     }
 
-    fn field_cell_at(&self, reference: usize, index: usize) -> Option<Mv> {
-        self.fields.get(reference)?.cell_at(index)
-    }
-
     fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
         if let Some(field) = self.fields.get_mut(reference) {
             field.set_at(index, mv);
@@ -342,7 +338,8 @@ impl TrajectoryState {
         x8: usize,
         mv: Mv,
     ) {
-        let Some(end) = end.filter(|&end| end < self.fields.len()) else {
+        let Some(end) = end.filter(|&end| end < self.fields.len() && source < self.fields.len())
+        else {
             return;
         };
         if let Some(start_positions) = self
@@ -359,14 +356,14 @@ impl TrajectoryState {
                 let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
                     continue;
                 };
-                if self.field_cell_at(end, traj_index).is_some() {
+                if self.fields[end].cell_at(traj_index).is_some() {
                     continue;
                 }
-                let Some(source_mv) = self.field_cell_at(source, traj_index) else {
+                let Some(source_mv) = self.fields[source].cell_at(traj_index) else {
                     continue;
                 };
                 let end_mv = add_mv(source_mv, mv);
-                self.set_field_at(end, traj_index, end_mv);
+                self.fields[end].set_at(traj_index, end_mv);
                 if let Some(position) = self
                     .sampled_position(trajectory.0, trajectory.1, end_mv)
                     .filter(|&position| self.position_allowed(position, trajectory))
@@ -397,14 +394,14 @@ impl TrajectoryState {
             let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
                 continue;
             };
-            if self.field_cell_at(source, traj_index).is_some() {
+            if self.fields[source].cell_at(traj_index).is_some() {
                 continue;
             }
-            let Some(end_mv) = self.field_cell_at(end, traj_index) else {
+            let Some(end_mv) = self.fields[end].cell_at(traj_index) else {
                 continue;
             };
             let source_mv = subtract_mv(end_mv, mv);
-            self.set_field_at(source, traj_index, source_mv);
+            self.fields[source].set_at(traj_index, source_mv);
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
                 .filter(|&position| self.position_allowed(position, trajectory))
@@ -605,6 +602,8 @@ mod tests {
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
         assert_eq!(std::mem::size_of::<i32>(), 4);
+        assert_eq!(PackedTrajectoryMv::INVALID.unpack(), None);
+        assert_eq!(PackedPosition::INVALID.unpack(), None);
         assert_eq!(
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
