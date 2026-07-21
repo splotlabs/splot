@@ -358,7 +358,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.filter_records.lr_source_blocks = lr_source_blocks;
         self.filter_records.lr_unit_filters = lr_unit_filters;
-        Ok((filtered_workspace.freeze()?, self.filter_records))
+        let frame = filtered_workspace.freeze()?;
+        self.workspace.recycle_planes();
+        Ok((frame, self.filter_records))
     }
 
     fn validate_filter_stripe(
