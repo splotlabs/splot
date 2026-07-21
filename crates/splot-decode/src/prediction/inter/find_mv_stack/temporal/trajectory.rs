@@ -230,8 +230,8 @@ impl TrajectoryState {
         temporal_grid_index(self.width8, self.height8, y8, x8)
     }
 
-    fn position_at(&self, reference: usize, index: usize, phase: usize) -> Option<Position> {
-        self.positions.get(reference)?.get(index)?[phase].unpack()
+    fn positions_at(&self, reference: usize, index: usize) -> Option<PhasePositions> {
+        self.positions.get(reference)?.get(index).copied()
     }
 
     fn set_position_at(
@@ -345,9 +345,12 @@ impl TrajectoryState {
         let Some(end) = end.filter(|&end| end < self.fields.len()) else {
             return;
         };
-        if let Some(start_index) = self.grid_index(y8, x8) {
-            for phase in 0..3 {
-                let Some(trajectory) = self.position_at(source, start_index, phase) else {
+        if let Some(start_positions) = self
+            .grid_index(y8, x8)
+            .and_then(|index| self.positions_at(source, index))
+        {
+            for (phase, position) in start_positions.into_iter().enumerate() {
+                let Some(trajectory) = position.unpack() else {
                     continue;
                 };
                 if !self.position_allowed((y8, x8), trajectory) {
@@ -379,8 +382,11 @@ impl TrajectoryState {
         let Some(end_index) = self.grid_index(end_position.0, end_position.1) else {
             return;
         };
-        for phase in 0..3 {
-            let Some(trajectory) = self.position_at(end, end_index, phase) else {
+        let Some(end_positions) = self.positions_at(end, end_index) else {
+            return;
+        };
+        for (phase, position) in end_positions.into_iter().enumerate() {
+            let Some(trajectory) = position.unpack() else {
                 continue;
             };
             if !self.position_allowed((y8, x8), trajectory)
