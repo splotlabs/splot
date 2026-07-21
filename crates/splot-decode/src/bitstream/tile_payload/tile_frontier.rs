@@ -198,7 +198,23 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
     }
 
     pub(crate) fn into_output(self) -> GeneralIntraMultiblockOutput<'payload> {
-        self.tree.into_output()
+        let Self {
+            tree,
+            mi_size_state: _,
+            joint_modes,
+            uses_mrls,
+            use_dip,
+            fsc_modes,
+            palette_y,
+            uv_cfls,
+        } = self;
+        joint_modes.recycle();
+        uses_mrls.recycle();
+        use_dip.recycle();
+        fsc_modes.recycle();
+        palette_y.recycle();
+        uv_cfls.recycle();
+        tree.into_output()
     }
 }
 
