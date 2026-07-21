@@ -21,6 +21,10 @@ const MAX_FRAME_DISTANCE: i32 = 31;
 const REFMVS_LIMIT: i32 = (1 << 11) - 1;
 const MV_LIMIT: i32 = (1 << 16) - 1;
 const INVALID_ORDER_HINT: u32 = u32::MAX;
+const INVALID_PROJECTED_MV: Mv = Mv {
+    row: i32::MIN,
+    col: 0,
+};
 const TIP_DIRECTIONS: [(i32, i32); 4] = [(-1, 0), (0, -1), (1, 0), (0, 1)];
 const DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
@@ -214,11 +218,25 @@ pub(crate) struct TemporalMotionBlock {
     pub(crate) warp_params: [Option<[i32; 6]>; 2],
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProjectedTemporalMotionCell {
-    valid: bool,
     mv: Mv,
     ref_offset: i32,
+}
+
+impl Default for ProjectedTemporalMotionCell {
+    fn default() -> Self {
+        Self {
+            mv: INVALID_PROJECTED_MV,
+            ref_offset: 0,
+        }
+    }
+}
+
+impl ProjectedTemporalMotionCell {
+    const fn is_valid(self) -> bool {
+        self.mv.row != i32::MIN
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -261,8 +279,7 @@ impl ProjectedTemporalMotionField {
         };
         if let Some(cell) = self.cells.get_mut(index) {
             *cell = ProjectedTemporalMotionCell {
-                valid,
-                mv,
+                mv: if valid { mv } else { INVALID_PROJECTED_MV },
                 ref_offset,
             };
         }
@@ -570,7 +587,7 @@ impl TemporalMvContext {
                 let Some(source) = self.field.cell(y8, x8) else {
                     continue;
                 };
-                if source.valid
+                if source.is_valid()
                     && let Some(mv) =
                         project_mv(source.mv, references.ref_offset, source.ref_offset)
                 {
@@ -622,7 +639,7 @@ impl TemporalMvContext {
         let y8 = y8.min(self.field.height8.saturating_sub(1));
         let x8 = x8.min(self.field.width8.saturating_sub(1));
         let cell = self.field.cell(y8, x8).unwrap_or_default();
-        let projected = if cell.valid {
+        let projected = if cell.is_valid() {
             [
                 project_mv(cell.mv, references.past_offset, references.ref_offset)
                     .unwrap_or(Mv::ZERO),
@@ -709,7 +726,7 @@ impl TemporalMvContext {
             .copied()
             .flatten()?;
         let cell = self.field.cell(y8, x8)?;
-        if !cell.valid {
+        if !cell.is_valid() {
             return None;
         }
         let ref_to_dst = super::super::get_relative_dist(
@@ -898,9 +915,17 @@ fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superbl
                             && dst_y < end_y
                             && dst_x >= block_x
                             && dst_x < end_x
-                            && !field.cell(dst_y, dst_x).is_some_and(|cell| cell.valid)
+                            && !field
+                                .cell(dst_y, dst_x)
+                                .is_some_and(ProjectedTemporalMotionCell::is_valid)
                         {
-                            field.set(dst_y, dst_x, source.mv, source.ref_offset, source.valid);
+                            field.set(
+                                dst_y,
+                                dst_x,
+                                source.mv,
+                                source.ref_offset,
+                                source.is_valid(),
+                            );
                         }
                     }
                 }
@@ -946,7 +971,7 @@ fn average_tip_motion(
                         }
                         let Some(cell) = field
                             .cell(candidate_y, candidate_x)
-                            .filter(|cell| cell.valid)
+                            .filter(|cell| cell.is_valid())
                         else {
                             continue;
                         };
@@ -1007,7 +1032,7 @@ fn fill_temporal_sampling_gap(
     dx: usize,
     tmvp_unit_size8: usize,
 ) {
-    let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.valid) else {
+    let Some(anchor) = field.cell(y8, x8).filter(|cell| cell.is_valid()) else {
         return;
     };
     if y8 + dy >= field.height8 || x8 + dx >= field.width8 {
@@ -1027,7 +1052,10 @@ fn fill_temporal_sampling_gap(
             {
                 continue;
             }
-            let Some(source) = field.cell(source_y, source_x).filter(|cell| cell.valid) else {
+            let Some(source) = field
+                .cell(source_y, source_x)
+                .filter(|cell| cell.is_valid())
+            else {
                 continue;
             };
             let mv = if candidate_y == 0 && candidate_x == 0 {
@@ -1185,15 +1213,11 @@ fn project_temporal_motion_field(
             let Some(output_cell) = output.cells.get_mut(pos_y8 * output.width8 + pos_x8) else {
                 continue;
             };
-            let replace = !output_cell.valid
+            let replace = !output_cell.is_valid()
                 || (target_order_hint == Some(saved_target_hint)
                     && output_cell.ref_offset != ref_offset);
             if replace {
-                *output_cell = ProjectedTemporalMotionCell {
-                    valid: true,
-                    mv,
-                    ref_offset,
-                };
+                *output_cell = ProjectedTemporalMotionCell { mv, ref_offset };
             }
         }
     }
@@ -1519,6 +1543,7 @@ mod tests {
     #[test]
     fn temporal_motion_storage_stays_compact() {
         assert_eq!(std::mem::size_of::<TemporalMotionCell>(), 16);
+        assert_eq!(std::mem::size_of::<ProjectedTemporalMotionCell>(), 12);
     }
 
     #[test]
@@ -1624,10 +1649,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(context.field.cell(0, 0).unwrap().valid);
-        assert!(context.field.cell(0, 2).unwrap().valid);
-        assert!(!context.field.cell(0, 1).unwrap().valid);
-        assert!(!context.field.cell(0, 3).unwrap().valid);
+        assert!(context.field.cell(0, 0).unwrap().is_valid());
+        assert!(context.field.cell(0, 2).unwrap().is_valid());
+        assert!(!context.field.cell(0, 1).unwrap().is_valid());
+        assert!(!context.field.cell(0, 3).unwrap().is_valid());
 
         context.fill_sampling_gaps(2, 16);
         assert_eq!(context.field.cell(0, 1), context.field.cell(0, 0));
@@ -1664,7 +1689,6 @@ mod tests {
         assert_eq!(
             output.cell(8, 25),
             Some(ProjectedTemporalMotionCell {
-                valid: true,
                 mv: Mv {
                     row: -10,
                     col: -232,
@@ -1672,7 +1696,7 @@ mod tests {
                 ref_offset: 5,
             })
         );
-        assert!(!output.cell(8, 27).unwrap().valid);
+        assert!(!output.cell(8, 27).unwrap().is_valid());
     }
 
     #[test]
@@ -1702,7 +1726,6 @@ mod tests {
         assert_eq!(
             output.cell(0, 0),
             Some(ProjectedTemporalMotionCell {
-                valid: true,
                 mv: Mv::ZERO,
                 ref_offset: 0,
             })
@@ -1760,7 +1783,7 @@ mod tests {
 
         let fields = trajectories.into_fields();
         assert_eq!(fields[5].cell(54, 123), Some(Mv { row: 68, col: -288 }));
-        assert!(output.cells.iter().all(|cell| !cell.valid));
+        assert!(output.cells.iter().all(|cell| !cell.is_valid()));
     }
 
     #[test]
@@ -1847,7 +1870,6 @@ mod tests {
         assert_eq!(
             cell,
             ProjectedTemporalMotionCell {
-                valid: true,
                 mv: Mv { row: 18, col: -36 },
                 ref_offset: 9,
             }
