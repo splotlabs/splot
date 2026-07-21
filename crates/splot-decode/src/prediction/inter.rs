@@ -292,7 +292,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
         residual_use_ddt,
         bit_depth,
     )?;
-    let motion_field = filter_inputs.motion_field.clone();
+    let motion_field = filter_inputs.motion_field;
 
     let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
         workspace,
