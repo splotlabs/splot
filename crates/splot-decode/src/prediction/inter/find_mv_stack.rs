@@ -79,6 +79,7 @@ const MV_BORDER: i32 = 128;
 const MI_SIZE: i32 = 4;
 mod derived;
 mod extra_search;
+mod mv_grid_pool;
 mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
@@ -256,7 +257,7 @@ impl NeighbourMvGrid {
             origin_col: mi_cols.start,
             mi_rows: rows,
             mi_cols: cols,
-            cells: vec![None; cells],
+            cells: mv_grid_pool::take_neighbour_mv_cells(cells),
         })
     }
 
