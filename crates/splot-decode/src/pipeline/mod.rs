@@ -152,6 +152,7 @@ fn reclaim_unowned_frames(
                     "decode pipeline live-frame byte accounting underflowed",
                 )
             })?;
+        frame.frame.reclaim_planes();
     }
     Ok(())
 }

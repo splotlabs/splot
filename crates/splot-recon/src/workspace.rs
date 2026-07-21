@@ -1650,7 +1650,7 @@ fn take_recon_plane_buffer<T: ReconSample>() -> Vec<T> {
 
 /// Returns a plane sample buffer to the per-type retained pool, dropping it when
 /// the pool is full or the buffer is oversized.
-fn recycle_recon_plane_buffer<T: ReconSample>(buffer: Vec<T>) {
+pub(crate) fn recycle_recon_plane_buffer<T: ReconSample>(buffer: Vec<T>) {
     if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_RECON_PLANE_SAMPLES {
         return;
     }
