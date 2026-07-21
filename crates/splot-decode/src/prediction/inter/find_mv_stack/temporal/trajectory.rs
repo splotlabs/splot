@@ -9,10 +9,38 @@ type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
 const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
-const INVALID_TRAJECTORY_MV: Mv = Mv {
-    row: i32::MIN,
-    col: 0,
-};
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PackedTrajectoryMv {
+    row: i16,
+    col: i16,
+}
+
+impl Default for PackedTrajectoryMv {
+    fn default() -> Self {
+        Self::INVALID
+    }
+}
+
+impl PackedTrajectoryMv {
+    const INVALID: Self = Self {
+        row: i16::MIN,
+        col: 0,
+    };
+
+    fn new(mv: Mv) -> Self {
+        Self {
+            row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT) as i16,
+            col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT) as i16,
+        }
+    }
+
+    fn unpack(self) -> Option<Mv> {
+        (self != Self::INVALID).then_some(Mv {
+            row: i32::from(self.row),
+            col: i32::from(self.col),
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PackedPosition {
@@ -42,13 +70,13 @@ impl PackedPosition {
 pub(super) struct TrajectoryMotionField {
     width8: usize,
     height8: usize,
-    pub(super) cells: Vec<Mv>,
+    pub(super) cells: Vec<PackedTrajectoryMv>,
 }
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, mut cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
-        cells.fill(INVALID_TRAJECTORY_MV);
+        cells.fill(PackedTrajectoryMv::INVALID);
         Some(Self {
             width8,
             height8,
@@ -62,8 +90,8 @@ impl TrajectoryMotionField {
         let cells = width8.checked_mul(height8)?;
         self.width8 = width8;
         self.height8 = height8;
-        self.cells.resize(cells, INVALID_TRAJECTORY_MV);
-        self.cells.fill(INVALID_TRAJECTORY_MV);
+        self.cells.resize(cells, PackedTrajectoryMv::INVALID);
+        self.cells.fill(PackedTrajectoryMv::INVALID);
         Some(())
     }
 
@@ -76,10 +104,7 @@ impl TrajectoryMotionField {
     }
 
     fn cell_at(&self, index: usize) -> Option<Mv> {
-        self.cells
-            .get(index)
-            .copied()
-            .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
+        self.cells.get(index).copied()?.unpack()
     }
 
     pub(super) fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
@@ -91,7 +116,7 @@ impl TrajectoryMotionField {
 
     fn set_at(&mut self, index: usize, mv: Mv) {
         if let Some(cell) = self.cells.get_mut(index) {
-            *cell = mv;
+            *cell = PackedTrajectoryMv::new(mv);
         }
     }
 }
@@ -299,7 +324,7 @@ impl TrajectoryState {
 
     fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
         if let Some(field) = self.fields.get_mut(reference) {
-            field.set_at(index, clamp_mv(mv));
+            field.set_at(index, mv);
         }
     }
 
@@ -511,13 +536,6 @@ fn subtract_mv(a: Mv, b: Mv) -> Mv {
     }
 }
 
-fn clamp_mv(mv: Mv) -> Mv {
-    Mv {
-        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
-    }
-}
-
 fn fill_field_gaps(field: &mut TrajectoryMotionField, unit_size8: usize) {
     for y8 in (0..field.height8).step_by(2) {
         for x8 in (0..field.width8).step_by(2) {
@@ -579,6 +597,7 @@ mod tests {
     #[test]
     fn trajectory_storage_stays_compact() {
         assert_eq!(std::mem::size_of::<Mv>(), 8);
+        assert_eq!(std::mem::size_of::<PackedTrajectoryMv>(), 4);
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
         assert_eq!(std::mem::size_of::<i32>(), 4);
