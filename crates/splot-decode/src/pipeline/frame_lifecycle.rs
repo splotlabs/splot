@@ -60,6 +60,16 @@ impl PipelineDecodedFrame {
             Self::Ten(frame) => frame.handle_count(),
         }
     }
+
+    /// Retires the frame, returning its plane sample buffers to the
+    /// reconstruction-plane pool when this is the sole handle (a shared
+    /// show-existing-frame source is left untouched).
+    pub(super) fn reclaim_planes(self) {
+        match self {
+            Self::Eight(frame) => frame.reclaim_planes(),
+            Self::Ten(frame) => frame.reclaim_planes(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
