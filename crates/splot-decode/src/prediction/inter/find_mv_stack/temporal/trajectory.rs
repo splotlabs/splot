@@ -8,7 +8,7 @@ use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_mv, temporal_grid_
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
-const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
+const INVALID_PROJECTION_OFFSET: u8 = u8::MAX;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PackedTrajectoryMv {
     row: i16,
@@ -125,7 +125,7 @@ impl TrajectoryMotionField {
 pub(super) struct TrajectoryState {
     pub(super) fields: Vec<TrajectoryMotionField>,
     pub(super) positions: Vec<Vec<PhasePositions>>,
-    pub(super) projection_offsets: Vec<i32>,
+    pub(super) projection_offsets: Vec<u8>,
     step: usize,
     unit_size8: usize,
     unit_shift: Option<u32>,
@@ -482,12 +482,13 @@ impl TrajectoryState {
         let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
             return;
         };
+        let packed_reference_offset = reference_offset as u8;
         let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
-            || (target.is_some() && target == end && *recorded_offset != reference_offset);
+            || (target.is_some() && target == end && *recorded_offset != packed_reference_offset);
         if !replace {
             return;
         }
-        *recorded_offset = reference_offset;
+        *recorded_offset = packed_reference_offset;
         let phase = self.phase(position.1);
         self.set_position(source, (y8, x8), phase, position);
         self.set_field_at(
@@ -601,7 +602,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<PackedTrajectoryMv>(), 4);
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
-        assert_eq!(std::mem::size_of::<i32>(), 4);
+        assert_eq!(std::mem::size_of::<u8>(), 1);
         assert_eq!(PackedTrajectoryMv::INVALID.unpack(), None);
         assert_eq!(PackedPosition::INVALID.unpack(), None);
         assert_eq!(
