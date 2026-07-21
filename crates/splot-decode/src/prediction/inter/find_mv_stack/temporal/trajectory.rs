@@ -350,8 +350,7 @@ impl TrajectoryState {
                 let Some(trajectory) = self.position_at(source, start_index, phase) else {
                     continue;
                 };
-                if self.phase(trajectory.1) != phase || !self.position_allowed((y8, x8), trajectory)
-                {
+                if !self.position_allowed((y8, x8), trajectory) {
                     continue;
                 }
                 let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
@@ -384,8 +383,7 @@ impl TrajectoryState {
             let Some(trajectory) = self.position_at(end, end_index, phase) else {
                 continue;
             };
-            if self.phase(trajectory.1) != phase
-                || !self.position_allowed((y8, x8), trajectory)
+            if !self.position_allowed((y8, x8), trajectory)
                 || !self.position_allowed(end_position, trajectory)
             {
                 continue;
