@@ -180,7 +180,13 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
                 disable_loopfilters_across_tiles,
             )?;
         }
+        if let Some(chroma_grid) = chroma_grid {
+            let (cells, candidates) = chroma_grid.into_scratch();
+            recycle_deblock_grid_scratch(cells, candidates);
+        }
     }
+    let (cells, candidates) = grid.into_scratch();
+    recycle_deblock_grid_scratch(cells, candidates);
 
     Ok(())
 }
@@ -1630,6 +1636,48 @@ impl MiGrid<'_> {
     }
 }
 
+/// Bounds retained deblock MI-grid scratch: at most this many `(cells,
+/// candidates)` buffer pairs, and only those whose cell capacity fits a large
+/// frame, so a big frame cannot pin its high-water allocation in the pool. The
+/// base grid plus up to two chroma overlays are live per deblock call.
+const MAX_RETAINED_DEBLOCK_GRIDS: usize = 4;
+const MAX_RETAINED_DEBLOCK_CELLS: usize = 1 << 22;
+static RETAINED_DEBLOCK_GRIDS: std::sync::Mutex<Vec<(Vec<MiCell>, Vec<u8>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Takes a `(cells, candidates)` scratch pair from the retained pool, reusing a
+/// prior deblock call's allocation when available.
+fn take_deblock_grid_scratch() -> (Vec<MiCell>, Vec<u8>) {
+    RETAINED_DEBLOCK_GRIDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop()
+        .unwrap_or_default()
+}
+
+/// Returns a `(cells, candidates)` scratch pair to the retained pool, dropping
+/// it when the pool is full or the buffers are oversized.
+fn recycle_deblock_grid_scratch(mut cells: Vec<MiCell>, mut candidates: Vec<u8>) {
+    if cells.capacity() == 0 || cells.capacity() > MAX_RETAINED_DEBLOCK_CELLS {
+        return;
+    }
+    let mut pool = RETAINED_DEBLOCK_GRIDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pool.len() < MAX_RETAINED_DEBLOCK_GRIDS {
+        cells.clear();
+        candidates.clear();
+        pool.push((cells, candidates));
+    }
+}
+
+impl MiGrid<'_> {
+    /// Consumes the grid, returning its `(cells, candidates)` buffers for reuse.
+    fn into_scratch(self) -> (Vec<MiCell>, Vec<u8>) {
+        (self.cells, self.candidates)
+    }
+}
+
 fn build_mi_grid(
     blocks: &[DeblockBlock],
     mi_rows: usize,
@@ -1638,12 +1686,13 @@ fn build_mi_grid(
     let count = mi_rows
         .checked_mul(mi_cols)
         .ok_or(DeblockError::Workspace)?;
-    let mut cells = Vec::new();
+    let (mut cells, mut candidates) = take_deblock_grid_scratch();
+    cells.clear();
     cells
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Workspace)?;
     cells.resize(count, MiCell::default());
-    let mut candidates = Vec::new();
+    candidates.clear();
     candidates
         .try_reserve_exact(count)
         .map_err(|_| DeblockError::Workspace)?;
@@ -1675,8 +1724,16 @@ fn overlay_mi_grid<'a>(
     mi_rows: usize,
     mi_cols: usize,
 ) -> Result<MiGrid<'a>, DeblockError> {
-    let mut grid = base.clone();
-    grid.overlay_blocks = blocks;
+    let (mut cells, mut candidates) = take_deblock_grid_scratch();
+    cells.clone_from(&base.cells);
+    candidates.clone_from(&base.candidates);
+    let mut grid = MiGrid {
+        mi_cols: base.mi_cols,
+        base_blocks: base.base_blocks,
+        overlay_blocks: blocks,
+        cells,
+        candidates,
+    };
     for (block_index, block) in blocks
         .iter()
         .enumerate()
