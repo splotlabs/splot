@@ -100,6 +100,12 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     if baseline.fixture.is_empty() {
         bail!("perf baseline {BASELINE_REL} lists no fixtures; the gate would cover nothing");
     }
+    if !bless && let Some(row) = baseline.fixture.iter().find(|row| row.ir_stable == 0) {
+        bail!(
+            "perf baseline {BASELINE_REL}: fixture {} has ir_stable = 0 (unrecorded); run `cargo xtask perf --bless` to record it",
+            row.path
+        );
+    }
 
     if !crate::tool_available("valgrind") {
         if bless {
