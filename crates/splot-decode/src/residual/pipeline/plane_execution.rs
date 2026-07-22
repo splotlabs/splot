@@ -50,34 +50,48 @@ pub(super) struct ParsedTransformUnit {
 
 #[derive(Default)]
 struct ParsedResidualPlaneRecycler {
-    lists: Vec<Vec<ParsedResidualPlane>>,
+    plane_lists: Vec<Vec<ParsedResidualPlane>>,
+    deferred_lists: Vec<Vec<ParsedResidualPlane>>,
     slots: usize,
 }
 
 impl ParsedResidualPlaneRecycler {
-    fn take(&mut self) -> Vec<ParsedResidualPlane> {
-        let planes = self.lists.pop().unwrap_or_default();
+    fn take(&mut self, deferred: bool) -> Vec<ParsedResidualPlane> {
+        let lists = if deferred {
+            &mut self.deferred_lists
+        } else {
+            &mut self.plane_lists
+        };
+        let planes = lists.pop().unwrap_or_default();
         self.slots = self.slots.saturating_sub(planes.capacity());
         planes
     }
 
-    fn recycle_empty(&mut self, planes: Vec<ParsedResidualPlane>) {
+    fn recycle_empty(&mut self, planes: Vec<ParsedResidualPlane>, deferred: bool) {
         let capacity = planes.capacity();
         if capacity == 0
             || capacity > MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS
             || self.slots > MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS - capacity
-            || self.lists.try_reserve(1).is_err()
         {
             return;
         }
+        let lists = if deferred {
+            &mut self.deferred_lists
+        } else {
+            &mut self.plane_lists
+        };
+        if lists.try_reserve(1).is_err() {
+            return;
+        }
         self.slots += capacity;
-        self.lists.push(planes);
+        lists.push(planes);
     }
 }
 
 static PARSED_RESIDUAL_PLANES: Mutex<ParsedResidualPlaneRecycler> =
     Mutex::new(ParsedResidualPlaneRecycler {
-        lists: Vec::new(),
+        plane_lists: Vec::new(),
+        deferred_lists: Vec::new(),
         slots: 0,
     });
 
@@ -89,14 +103,23 @@ fn lock_parsed_residual_planes() -> MutexGuard<'static, ParsedResidualPlaneRecyc
 
 struct RecycledParsedResidualPlanes {
     entries: Vec<ParsedResidualPlane>,
+    deferred: bool,
 }
 
 impl RecycledParsedResidualPlanes {
     fn take(capacity: usize) -> Self {
-        let mut entries = lock_parsed_residual_planes().take();
+        Self::take_from_pool(capacity, false)
+    }
+
+    fn take_deferred(capacity: usize) -> Self {
+        Self::take_from_pool(capacity, true)
+    }
+
+    fn take_from_pool(capacity: usize, deferred: bool) -> Self {
+        let mut entries = lock_parsed_residual_planes().take(deferred);
         entries.clear();
         entries.reserve(capacity);
-        Self { entries }
+        Self { entries, deferred }
     }
 
     fn push(&mut self, plane: ParsedResidualPlane) {
@@ -112,7 +135,7 @@ impl Drop for RecycledParsedResidualPlanes {
     fn drop(&mut self) {
         let mut entries = core::mem::take(&mut self.entries);
         entries.clear();
-        lock_parsed_residual_planes().recycle_empty(entries);
+        lock_parsed_residual_planes().recycle_empty(entries, self.deferred);
     }
 }
 
@@ -451,7 +474,7 @@ impl ParsedGeneralIntraResidual {
         luma_context: LumaTransformTypeContext,
     ) -> core::result::Result<(), GeneralIntraResidualError> {
         let mut pending_u = None;
-        let mut deferred = RecycledParsedResidualPlanes::take(MAX_DEFERRED_CHROMA_PLANES);
+        let mut deferred = RecycledParsedResidualPlanes::take_deferred(MAX_DEFERRED_CHROMA_PLANES);
         let mut planes = self.planes;
         for plane in planes.drain() {
             match plane.cctx_role {
@@ -744,31 +767,43 @@ mod recycler_tests {
         let planes = Vec::with_capacity(8);
         let capacity = planes.capacity();
         let pointer = planes.as_ptr();
-        recycler.recycle_empty(planes);
+        recycler.recycle_empty(planes, false);
 
-        let reused = recycler.take();
+        let reused = recycler.take(false);
         assert_eq!(reused.capacity(), capacity);
         assert!(core::ptr::eq(reused.as_ptr(), pointer));
+    }
+
+    #[test]
+    fn parsed_residual_plane_recycler_separates_plane_and_deferred_storage() {
+        let mut recycler = ParsedResidualPlaneRecycler::default();
+        recycler.recycle_empty(Vec::with_capacity(1), false);
+        recycler.recycle_empty(Vec::with_capacity(32), true);
+
+        assert_eq!(recycler.take(false).capacity(), 1);
+        assert_eq!(recycler.take(false).capacity(), 0);
+        assert_eq!(recycler.take(true).capacity(), 32);
     }
 
     #[test]
     fn parsed_residual_plane_recycler_is_bounded() {
         let mut recycler = ParsedResidualPlaneRecycler::default();
         for _ in 0..=MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS {
-            recycler.recycle_empty(Vec::with_capacity(1));
+            recycler.recycle_empty(Vec::with_capacity(1), false);
         }
         assert_eq!(
-            recycler.lists.len(),
+            recycler.plane_lists.len() + recycler.deferred_lists.len(),
             MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS
         );
         assert_eq!(recycler.slots, MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS);
-        assert_eq!(recycler.take().capacity(), 1);
+        assert_eq!(recycler.take(false).capacity(), 1);
         assert_eq!(recycler.slots, MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS - 1);
 
         let mut recycler = ParsedResidualPlaneRecycler::default();
-        recycler.recycle_empty(Vec::with_capacity(
-            MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS + 1,
-        ));
-        assert!(recycler.lists.is_empty());
+        recycler.recycle_empty(
+            Vec::with_capacity(MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS + 1),
+            false,
+        );
+        assert!(recycler.plane_lists.is_empty() && recycler.deferred_lists.is_empty());
     }
 }
