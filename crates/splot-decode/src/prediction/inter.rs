@@ -366,7 +366,7 @@ fn decode_tip_output_frame<T: ReconSample>(
         .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
         .map_err(|_| {
             inter_cap!(
-                "reference_coefficient_cdf_context",
+                "tip_output_coefficient_cdf_context",
                 offset,
                 "inter.cdf.reference_coefficient_context",
                 SPEC_REFERENCE
@@ -449,7 +449,7 @@ fn decode_bridge_frame<T: ReconSample>(
         .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
         .map_err(|_| {
             inter_cap!(
-                "reference_coefficient_cdf_context",
+                "bridge_coefficient_cdf_context",
                 offset,
                 "inter.cdf.reference_coefficient_context",
                 SPEC_REFERENCE
