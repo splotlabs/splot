@@ -39,8 +39,11 @@ const BASELINE_HEADER: &str = "\
 # the Ir count is reproducible to the instruction on a fixed binary. Ir is only
 # comparable within one binary/toolchain: a compiler or RUSTFLAGS bump shifts
 # every count wholesale and requires a re-bless (`cargo xtask perf --bless`), not
-# a regression. Generated file: edit fixtures here, but let `--bless` set the
-# numbers.
+# a regression. Under callgrind the environment also spans glibc and the valgrind
+# build (which redirects malloc/memcpy/...), so these numbers are pinned to the
+# `perf` CI job's ubuntu-latest image; that job is the enforced check. If a
+# valgrind/glibc bump skews a fixture past the tolerance, re-bless on-runner.
+# Generated file: edit fixtures here, but let `--bless` set the numbers.
 ";
 /// Fail the gate when a fixture's Ir rises more than this percentage above its
 /// baseline. Callgrind Ir is deterministic for a fixed binary (sub-0.1%
@@ -127,6 +130,7 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
             regressions.push((row.path.clone(), base, measured, delta));
         }
     }
+    let _ = std::fs::remove_dir_all(&scratch);
 
     if bless {
         let body = toml::to_string(&baseline).context("failed to serialize perf baseline")?;
@@ -197,18 +201,50 @@ fn measure_ir(splot: &Path, fixture: &Path, out_file: &Path) -> Result<u64> {
     }
     let text = std::fs::read_to_string(out_file)
         .with_context(|| format!("failed to read {}", out_file.display()))?;
+    parse_summary_ir(&text).with_context(|| format!("callgrind output for {}", fixture.display()))
+}
+
+/// Extracts the total Ir from a callgrind output body's `summary:` line (the
+/// first whitespace-separated integer after the `summary:` prefix).
+fn parse_summary_ir(text: &str) -> Result<u64> {
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("summary:") {
-            let value = rest
+            return rest
                 .split_whitespace()
                 .next()
                 .and_then(|token| token.parse::<u64>().ok())
-                .ok_or_else(|| anyhow!("could not parse callgrind summary line: {line}"))?;
-            return Ok(value);
+                .ok_or_else(|| anyhow!("could not parse callgrind summary line: {line}"));
         }
     }
-    bail!(
-        "no `summary:` line in callgrind output for {}",
-        fixture.display()
-    )
+    bail!("no `summary:` line in callgrind output")
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::parse_summary_ir;
+
+    #[test]
+    fn parses_single_token_summary() {
+        assert_eq!(
+            parse_summary_ir("events: Ir\nsummary: 21219322\n").unwrap(),
+            21_219_322
+        );
+    }
+
+    #[test]
+    fn parses_first_token_of_multi_column_summary() {
+        // callgrind emits one count per event column; Ir is the first.
+        assert_eq!(parse_summary_ir("summary: 42 7 3\n").unwrap(), 42);
+    }
+
+    #[test]
+    fn missing_summary_line_is_an_error() {
+        assert!(parse_summary_ir("events: Ir\ntotals: 5\n").is_err());
+    }
+
+    #[test]
+    fn non_numeric_summary_is_an_error() {
+        assert!(parse_summary_ir("summary: not-a-number\n").is_err());
+    }
 }

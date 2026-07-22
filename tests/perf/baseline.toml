@@ -6,8 +6,11 @@
 # the Ir count is reproducible to the instruction on a fixed binary. Ir is only
 # comparable within one binary/toolchain: a compiler or RUSTFLAGS bump shifts
 # every count wholesale and requires a re-bless (`cargo xtask perf --bless`), not
-# a regression. Generated file: edit fixtures here, but let `--bless` set the
-# numbers.
+# a regression. Under callgrind the environment also spans glibc and the valgrind
+# build (which redirects malloc/memcpy/...), so these numbers are pinned to the
+# `perf` CI job's ubuntu-latest image; that job is the enforced check. If a
+# valgrind/glibc bump skews a fixture past the tolerance, re-bless on-runner.
+# Generated file: edit fixtures here, but let `--bless` set the numbers.
 
 [meta]
 note = "callgrind --cache-sim=no --branch-sim=no; decode --threads 1 --output-format hash"
