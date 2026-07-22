@@ -741,18 +741,19 @@ fn deblock_filter_choice_progressive(
     let sd_m1 = choice_second_deriv(m2, m1, zero);
     let sd_0 = choice_second_deriv(m1, zero, p1);
     let sd_1 = choice_second_deriv(zero, p1, p2);
-    if sd_m2 > side_thr || sd_1 > side_thr {
+    let max_outer_deriv = sd_m2.max(sd_1);
+    if max_outer_deriv > side_thr {
         return 0;
     }
     if max_width_pos == 1 {
         return 1;
     }
     let side_thr2 = side_thr >> 2;
-    if sd_m2 > side_thr2 || sd_1 > side_thr2 || sd_m1 + sd_0 > q_thr * 4 {
+    if max_outer_deriv > side_thr2 || sd_m1 + sd_0 > q_thr * 4 {
         return 1;
     }
     let side_thr3 = side_thr >> 3;
-    if sd_m2 > side_thr3 || sd_1 > side_thr3 || sd_m1 + sd_0 > q_thr * 3 {
+    if max_outer_deriv > side_thr3 || sd_m1 + sd_0 > q_thr * 3 {
         return 2;
     }
 
