@@ -352,6 +352,16 @@ fn deblock_plane_pass<T: ReconSample>(
     tile_info: Option<&TileInfo>,
     disable_loopfilters_across_tiles: bool,
 ) -> Result<(), DeblockError> {
+    let tile_starts = tile_info.and_then(|tile_info| {
+        let starts = if plane_pass.pass == 0 {
+            &tile_info.mi_col_starts
+        } else {
+            &tile_info.mi_row_starts
+        };
+        starts
+            .get(1..starts.len().saturating_sub(1))
+            .filter(|starts| !starts.is_empty())
+    });
     let plane_id = plane_pass.plane_id;
     if workspace.plane(plane_id).is_err() {
         return Ok(());
@@ -379,7 +389,7 @@ fn deblock_plane_pass<T: ReconSample>(
             plane_pass,
             mi_rows,
             mi_cols,
-            tile_info,
+            tile_starts,
             disable_loopfilters_across_tiles,
         );
     }
@@ -411,7 +421,7 @@ fn deblock_plane_pass<T: ReconSample>(
                     deblock_filter_edge(
                         &mut ctx,
                         grid,
-                        plane_pass.edge_context(r, c, tile_info),
+                        plane_pass.edge_context(r, c, tile_starts),
                         disable_loopfilters_across_tiles,
                         &mut strengths,
                     )?;
@@ -437,7 +447,7 @@ fn deblock_plane_pass<T: ReconSample>(
                     deblock_filter_edge(
                         &mut ctx,
                         grid,
-                        plane_pass.edge_context(r, c, tile_info),
+                        plane_pass.edge_context(r, c, tile_starts),
                         disable_loopfilters_across_tiles,
                         &mut strengths,
                     )?;
@@ -534,7 +544,7 @@ fn deblock_plane_pass_serial<T: ReconSample>(
     plane_pass: PlanePass,
     mi_rows: usize,
     mi_cols: usize,
-    tile_info: Option<&TileInfo>,
+    tile_starts: Option<&[u32]>,
     disable_loopfilters_across_tiles: bool,
 ) -> Result<(), DeblockError> {
     let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
@@ -552,7 +562,7 @@ fn deblock_plane_pass_serial<T: ReconSample>(
                 deblock_filter_edge(
                     &mut ctx,
                     grid,
-                    plane_pass.edge_context(r, c, tile_info),
+                    plane_pass.edge_context(r, c, tile_starts),
                     disable_loopfilters_across_tiles,
                     &mut strengths,
                 )?;
@@ -776,18 +786,10 @@ impl PlanePass {
 
     #[allow(clippy::inline_always, reason = "measured deblock hot path")]
     #[inline(always)]
-    fn edge_context(self, row: usize, col: usize, tile_info: Option<&TileInfo>) -> EdgeContext {
-        let tile_edge = tile_info.is_some_and(|tile_info| {
-            let (starts, coordinate) = if self.pass == 0 {
-                (&tile_info.mi_col_starts, col)
-            } else {
-                (&tile_info.mi_row_starts, row)
-            };
-            u32::try_from(coordinate).is_ok_and(|coordinate| {
-                starts
-                    .get(1..starts.len().saturating_sub(1))
-                    .is_some_and(|starts| starts.contains(&coordinate))
-            })
+    fn edge_context(self, row: usize, col: usize, tile_starts: Option<&[u32]>) -> EdgeContext {
+        let coordinate = if self.pass == 0 { col } else { row };
+        let tile_edge = tile_starts.is_some_and(|starts| {
+            u32::try_from(coordinate).is_ok_and(|coordinate| starts.contains(&coordinate))
         });
         EdgeContext {
             plane: self.plane,
