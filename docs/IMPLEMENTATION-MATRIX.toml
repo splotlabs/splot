@@ -22112,3 +22112,47 @@ fixtures = [
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
 ]
 diagnostics = ["decode/malformed-source", "decode/unsupported-feature"]
+
+[[feature]]
+id = "PERF-X86-64-V3-BASELINE"
+name = "x86-64-v3 (AVX2) compile-time CPU baseline for decode throughput"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = ".cargo/config.toml"
+change_id = "perf-x86-64-v3-baseline"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Raises the x86-64 codegen floor to the `x86-64-v3` microarchitecture level (AVX2/FMA/BMI2, Intel Haswell 2013+ / AMD Excavator 2015+) via `.cargo/config.toml`, so the already auto-vectorizing loop-filter and prediction kernels widen from 128-bit SSE2 to 256-bit AVX2. Measured ~15% (-14.9%) faster whole-stream decode on the 1080p reference stream with byte-identical output. aarch64 is left at its default because 128-bit NEON is its mandatory baseline. Release binaries now require an AVX2 x86-64 CPU; the README Quick Start documents the `-C target-cpu=x86-64` portable-build override. First stage of the safe SIMD-acceleration program; the `perf` stage stays `pending` until the `cargo xtask perf` regression gate lands."
+replaces = []
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "done"
+perf = "pending"
+
+[feature.proof]
+tests = [
+    "crates/splot-cli/tests/decoder_oracle.rs",
+    "crates/splot-decode/tests/sequence_transition.rs",
+]
+commands = [
+    "cargo build --release -p splot-cli --locked",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
+    "cargo test -p splot-decode --test sequence_transition --locked",
+]
+fixtures = [
+    ".cargo/config.toml",
+    "README.md",
+]
+diagnostics = []

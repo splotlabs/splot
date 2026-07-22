@@ -37,6 +37,13 @@ cargo build --release
 ./target/release/splot --help
 ```
 
+> **x86-64 CPU requirement:** builds target the `x86-64-v3` microarchitecture
+> level (AVX2/FMA/BMI2, Intel Haswell 2013+ / AMD Excavator 2015+) for decode
+> throughput. On an older x86 CPU the binary traps with `SIGILL`; build with
+> `RUSTFLAGS="-C target-cpu=x86-64" cargo build --release` for a portable
+> baseline. `aarch64` (Apple Silicon, ARM servers) is unaffected — 128-bit NEON
+> is its baseline.
+
 Common commands:
 
 ```bash
