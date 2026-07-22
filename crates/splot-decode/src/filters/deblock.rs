@@ -709,6 +709,8 @@ impl Default for StrengthCache {
 }
 
 impl StrengthCache {
+    #[allow(clippy::inline_always, reason = "measured deblock hot path")]
+    #[inline(always)]
     fn get(
         &mut self,
         qindex: u32,
