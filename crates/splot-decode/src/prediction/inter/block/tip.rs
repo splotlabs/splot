@@ -12,7 +12,7 @@ use super::super::find_mv_stack::TemporalMotionBlock;
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
 const TIP_WEIGHTING_FACTORS: [i16; 8] = [8, 12, 16, 18, 20, 4, 6, -4];
 const TIP_SINGLE_WEIGHT: i16 = 16;
-const TIP_BATCH_LUMA_ROWS: usize = 16;
+const TIP_BATCH_LUMA_ROWS: usize = 32;
 
 #[derive(Debug)]
 struct TipUnit {
