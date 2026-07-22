@@ -51,16 +51,19 @@ const BASELINE_HEADER: &str = "\
 /// pinned toolchain; a real regression moves far past it.
 const TOLERANCE_PCT: f64 = 0.5;
 
-/// The whole `tests/perf/baseline.toml` document.
+/// The whole `tests/perf/baseline.toml` document. `deny_unknown_fields` turns a
+/// mistyped table (e.g. `[[fixtures]]`) into a load error instead of silently
+/// dropping every fixture and greening the gate over zero coverage.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Baseline {
     meta: Meta,
-    #[serde(default)]
     fixture: Vec<FixtureRow>,
 }
 
 /// Free-form provenance for the recorded numbers.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Meta {
     note: String,
 }
@@ -68,10 +71,20 @@ struct Meta {
 /// One measured fixture: its path, the hot kernel(s) it exercises, and the
 /// recorded stable-toolchain Ir baseline.
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct FixtureRow {
     path: String,
     targets: String,
     ir_stable: u64,
+}
+
+/// Removes a scratch directory when dropped, so a mid-loop `?` cannot leak it.
+struct ScratchDir(std::path::PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Runs the perf gate. With `bless`, rewrites the baseline from the measured
@@ -84,6 +97,9 @@ struct FixtureRow {
 pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
     let baseline_path = root.join(BASELINE_REL);
     let mut baseline: Baseline = crate::util::load_toml(&baseline_path)?;
+    if baseline.fixture.is_empty() {
+        bail!("perf baseline {BASELINE_REL} lists no fixtures; the gate would cover nothing");
+    }
 
     if !crate::tool_available("valgrind") {
         if bless {
@@ -93,15 +109,15 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         return Ok(());
     }
 
-    build_release_cli(root)?;
-    let splot = root.join("target/release/splot");
-    if !splot.exists() {
-        bail!("release splot binary missing at {}", splot.display());
-    }
-    let scratch = std::env::temp_dir().join(format!("splot-perf-{}", std::process::id()));
-    std::fs::create_dir_all(&scratch)
-        .with_context(|| format!("failed to create scratch dir {}", scratch.display()))?;
-    let out_file = scratch.join("callgrind.out");
+    // Take the built binary's path from Cargo's own artifact output so the gate
+    // measures the current release binary regardless of CARGO_TARGET_DIR /
+    // `[build] target-dir`, not a reconstructed `target/release/` guess.
+    let splot = crate::conformance::build_splot_binary(root, true)?;
+    let scratch =
+        ScratchDir(std::env::temp_dir().join(format!("splot-perf-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0)
+        .with_context(|| format!("failed to create scratch dir {}", scratch.0.display()))?;
+    let out_file = scratch.0.join("callgrind.out");
 
     let mut regressions = Vec::new();
     eprintln!(
@@ -130,7 +146,6 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
             regressions.push((row.path.clone(), base, measured, delta));
         }
     }
-    let _ = std::fs::remove_dir_all(&scratch);
 
     if bless {
         let body = toml::to_string(&baseline).context("failed to serialize perf baseline")?;
@@ -158,21 +173,6 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         "{} fixture(s) regressed beyond {TOLERANCE_PCT}% (re-bless with `cargo xtask perf --bless` if intentional)",
         regressions.len()
     )
-}
-
-/// Builds the release `splot` CLI so the measured binary reflects the current
-/// tree (and the committed `.cargo/config.toml` CPU baseline).
-fn build_release_cli(root: &Path) -> Result<()> {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
-    let status = Command::new(cargo)
-        .current_dir(root)
-        .args(["build", "--release", "-p", "splot-cli", "--locked"])
-        .status()
-        .context("failed to spawn cargo build for perf gate")?;
-    if !status.success() {
-        bail!("cargo build --release -p splot-cli failed");
-    }
-    Ok(())
 }
 
 /// Decodes one fixture under callgrind and returns the total Ir from the
