@@ -30,6 +30,7 @@ mod fixtures;
 mod gap_markers;
 mod gen_tables;
 mod git_util;
+mod perf;
 mod reference_evidence;
 mod seed_fuzz_corpus;
 mod source_lines;
@@ -222,6 +223,14 @@ enum Task {
     Conformance,
     /// Generate a local HTML coverage report (requires `cargo-llvm-cov`).
     Coverage,
+    /// Decode instruction-count (callgrind Ir) regression gate over curated
+    /// conformance fixtures (requires `valgrind`). Heavy; not part of `ci`.
+    Perf {
+        /// Re-run every fixture and rewrite `tests/perf/baseline.toml` instead
+        /// of comparing against it.
+        #[arg(long)]
+        bless: bool,
+    },
     /// Run a short local fuzz smoke session against every fuzz target.
     ///
     /// Requires a nightly toolchain and `cargo-fuzz`. Each target runs for the
@@ -350,6 +359,7 @@ fn main() -> Result<()> {
         }
         Task::Conformance => conformance::run_conformance(&workspace_root()?),
         Task::Coverage => run_coverage(),
+        Task::Perf { bless } => perf::run_perf(&workspace_root()?, bless),
         Task::Fuzz { time } => run_fuzz(time),
         Task::Audit => run_audit(),
         Task::AuditScope {

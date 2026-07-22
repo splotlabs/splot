@@ -22156,3 +22156,48 @@ fixtures = [
     "README.md",
 ]
 diagnostics = []
+
+[[feature]]
+id = "PERF-REGRESSION-GATE"
+name = "Deterministic decode instruction-count (callgrind Ir) regression gate"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = []
+sources = []
+crate = "splot-cli"
+module = "xtask/src/perf.rs"
+change_id = "perf-regression-gate"
+tracking_issue = ""
+owner = "automation"
+risk = "low"
+notes = "`cargo xtask perf` decodes a curated subset of committed conformance vectors under `valgrind --tool=callgrind --cache-sim=no --branch-sim=no`, single-threaded, and compares each fixture's total retired-instruction count against `tests/perf/baseline.toml`. Callgrind Ir is deterministic for a fixed binary, so it is a runner-independent proxy for decode CPU work (unlike wall-clock). Fails on a >0.5% regression, reports improvements, and rewrites the baseline with `--bless`. Runs as its own `perf` CI job (installs valgrind); intentionally NOT part of `cargo xtask ci` because valgrind is a ~20-30x slowdown, mirroring how fuzz/coverage/audit live outside the fast local gate. Skips with a hint when valgrind is absent so a fresh checkout is unblocked. Fixtures are chosen to exercise the hot loop-filter/prediction kernels (gdf, wienerns-luma, pc-wiener, deblock/cdef, inter subpel/optflow, warp/subpel), giving the upcoming SIMD-kernel ports a measured Ir number per PR."
+replaces = []
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "not-applicable"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "done"
+
+[feature.proof]
+tests = [
+    "xtask/src/perf.rs",
+    "tests/perf/baseline.toml",
+]
+commands = [
+    "cargo xtask perf",
+    "cargo xtask perf --bless",
+]
+fixtures = [
+    "tests/perf/baseline.toml",
+    "tests/conformance/vectors/valid/syn-gdf-intra-128x128.ivf",
+    "tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf",
+    ".github/workflows/ci.yml",
+]
+diagnostics = []

@@ -106,7 +106,7 @@ pub fn run_conformance(root: &Path) -> Result<()> {
         );
     }
 
-    let splot_bin = build_splot_binary(root)?;
+    let splot_bin = build_splot_binary(root, false)?;
 
     let mut failures: Vec<String> = Vec::new();
     eprintln!(
@@ -187,27 +187,31 @@ struct CargoArtifactTarget {
     name: String,
 }
 
-/// Builds the `splot` binary (debug) and returns its path. Building it here means
-/// `cargo xtask conformance` works from a clean checkout without a separate build
-/// step; it is a project binary, not AVM.
+/// Builds the `splot` binary (release when `release`, else debug) and returns its
+/// path. Building it here means `cargo xtask conformance` works from a clean
+/// checkout without a separate build step; it is a project binary, not AVM.
 ///
 /// The path is taken from Cargo's own `--message-format=json` artifact output
 /// rather than reconstructed from a guessed `target/debug/` location, so it is
 /// correct regardless of `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` /
 /// `[build] target-dir` configuration and the platform executable suffix.
-fn build_splot_binary(root: &Path) -> Result<PathBuf> {
+pub(crate) fn build_splot_binary(root: &Path, release: bool) -> Result<PathBuf> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned());
+    let mut args = vec![
+        "build",
+        "--locked",
+        "-p",
+        "splot-cli",
+        "--bin",
+        "splot",
+        "--message-format=json",
+    ];
+    if release {
+        args.push("--release");
+    }
     let output = Command::new(&cargo)
         .current_dir(root)
-        .args([
-            "build",
-            "--locked",
-            "-p",
-            "splot-cli",
-            "--bin",
-            "splot",
-            "--message-format=json",
-        ])
+        .args(&args)
         .output()
         .context("failed to spawn `cargo build -p splot-cli`")?;
     if !output.status.success() {
