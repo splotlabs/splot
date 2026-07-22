@@ -4,9 +4,9 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
-    CdefSampleTaps, CdefTap, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample,
-    cdef_direction, cdef_direction_padded, cdef_filter_block_interior_to_valid_stride,
-    cdef_filter_sample,
+    CdefSampleParams, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, PlaneId, PlaneRect,
+    ReconSample, cdef_direction, cdef_direction_padded, cdef_filter_block_interior_to_valid_stride,
+    cdef_filter_sample_with,
 };
 
 use super::source::{FramePlane, StripePlane};
@@ -493,6 +493,7 @@ fn compute_cdef_filter_plane<S: ReconSample>(
 
     let mut filtered_block = [0u16; 64];
     let offsets = CdefTapOffsets::for_direction(ctx.dir);
+    let params = CdefSampleParams::new(ctx.pri_str, ctx.sec_str, ctx.damping, ctx.coeff_shift);
     for i in 0..h {
         for j in 0..w {
             let center = snap
@@ -516,13 +517,7 @@ fn compute_cdef_filter_plane<S: ReconSample>(
                 primary,
                 secondary,
             };
-            let filtered = cdef_filter_sample(
-                &taps,
-                ctx.pri_str,
-                ctx.sec_str,
-                ctx.damping,
-                ctx.coeff_shift,
-            );
+            let filtered = cdef_filter_sample_with(&taps, &params);
             filtered_block[i * w + j] = storage_sample(filtered, ctx.max_sample)?;
         }
     }

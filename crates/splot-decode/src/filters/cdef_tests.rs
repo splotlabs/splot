@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::test_support::yuv420_workspace as workspace_8bit;
-use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize};
+use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize, cdef_filter_sample};
 
 fn constant_cdef_grid(
     mi_rows: usize,

@@ -235,6 +235,37 @@ pub struct CdefSampleTaps {
     pub secondary: [[[CdefTap; 2]; 2]; 2],
 }
 
+/// AV2 § 7.18.3 per-block CDEF sample-filter parameters, derived once from the
+/// block's strengths and applied to every sample by [`cdef_filter_sample_with`].
+/// Hoisting these out of the per-sample loop keeps the `Cdef_Pri_Taps` row select
+/// and the two `dampingAdj` `FloorLog2`s off the hot per-pixel path.
+#[derive(Clone, Copy, Debug)]
+pub struct CdefSampleParams {
+    pri_taps: [i32; 2],
+    sec_taps: [i32; 2],
+    pri_str: i32,
+    sec_str: i32,
+    pri_adj: i32,
+    sec_adj: i32,
+}
+
+impl CdefSampleParams {
+    /// Derives the per-block parameters. `pri_str` / `sec_str` are the bit-depth-scaled
+    /// strengths, `damping` the § 7.18.1 damping shift, `coeff_shift` is `BitDepth - 8`.
+    #[must_use]
+    pub fn new(pri_str: i32, sec_str: i32, damping: i32, coeff_shift: u32) -> Self {
+        let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
+        Self {
+            pri_taps: CDEF_PRI_TAPS[tap_row],
+            sec_taps: CDEF_SEC_TAPS,
+            pri_str,
+            sec_str,
+            pri_adj: constrain_damping_adj(pri_str, damping),
+            sec_adj: constrain_damping_adj(sec_str, damping),
+        }
+    }
+}
+
 /// AV2 § 7.18.3 per-sample CDEF filter: combines the center sample, the two primary
 /// directional taps, and the four secondary directional taps into one deringed
 /// output sample.
@@ -245,6 +276,7 @@ pub struct CdefSampleTaps {
 /// row via `(pri_str >> coeff_shift) & 1`). Unavailable taps are skipped (they
 /// contribute neither to `sum` nor to the `min` / `max` clamp), matching the spec's
 /// `if (CdefAvailable)` guard.
+#[must_use]
 pub fn cdef_filter_sample(
     taps: &CdefSampleTaps,
     pri_str: i32,
@@ -252,12 +284,17 @@ pub fn cdef_filter_sample(
     damping: i32,
     coeff_shift: u32,
 ) -> i32 {
-    let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
-    let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS;
-    let pri_adj = constrain_damping_adj(pri_str, damping);
-    let sec_adj = constrain_damping_adj(sec_str, damping);
+    cdef_filter_sample_with(
+        taps,
+        &CdefSampleParams::new(pri_str, sec_str, damping, coeff_shift),
+    )
+}
 
+/// AV2 § 7.18.3 per-sample CDEF filter using pre-derived [`CdefSampleParams`], so a
+/// caller filtering many samples of one block derives the block parameters once.
+/// Equivalent to [`cdef_filter_sample`] with the matching strength arguments.
+#[must_use]
+pub fn cdef_filter_sample_with(taps: &CdefSampleTaps, params: &CdefSampleParams) -> i32 {
     let mut sum = 0i32;
     let mut max = taps.center;
     let mut min = taps.center;
@@ -265,16 +302,24 @@ pub fn cdef_filter_sample(
         for sign_index in 0..2 {
             let p = taps.primary[k][sign_index];
             if p.available {
-                sum += pri_taps[k]
-                    * constrain_with_adj::<true>(p.value - taps.center, pri_str, pri_adj);
+                sum += params.pri_taps[k]
+                    * constrain_with_adj::<true>(
+                        p.value - taps.center,
+                        params.pri_str,
+                        params.pri_adj,
+                    );
                 max = max.max(p.value);
                 min = min.min(p.value);
             }
             for dir_off_index in 0..2 {
                 let s = taps.secondary[k][sign_index][dir_off_index];
                 if s.available {
-                    sum += sec_taps[k]
-                        * constrain_with_adj::<true>(s.value - taps.center, sec_str, sec_adj);
+                    sum += params.sec_taps[k]
+                        * constrain_with_adj::<true>(
+                            s.value - taps.center,
+                            params.sec_str,
+                            params.sec_adj,
+                        );
                     max = max.max(s.value);
                     min = min.min(s.value);
                 }
