@@ -109,9 +109,6 @@ pub(crate) fn run_perf(root: &Path, bless: bool) -> Result<()> {
         return Ok(());
     }
 
-    // Take the built binary's path from Cargo's own artifact output so the gate
-    // measures the current release binary regardless of CARGO_TARGET_DIR /
-    // `[build] target-dir`, not a reconstructed `target/release/` guess.
     let splot = crate::conformance::build_splot_binary(root, true)?;
     let scratch =
         ScratchDir(std::env::temp_dir().join(format!("splot-perf-{}", std::process::id())));
@@ -234,7 +231,6 @@ mod tests {
 
     #[test]
     fn parses_first_token_of_multi_column_summary() {
-        // callgrind emits one count per event column; Ir is the first.
         assert_eq!(parse_summary_ir("summary: 42 7 3\n").unwrap(), 42);
     }
 
