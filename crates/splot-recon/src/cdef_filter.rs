@@ -41,9 +41,8 @@ const DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 /// `(priStr >> coeffShift) & 1`.
 const CDEF_PRI_TAPS: [[i32; 2]; 2] = [[4, 2], [3, 3]];
 
-/// AV2 § 7.18.3 `Cdef_Sec_Taps[2][2]`: secondary-tap weights, selected by
-/// `(priStr >> coeffShift) & 1`.
-const CDEF_SEC_TAPS: [[i32; 2]; 2] = [[2, 1], [2, 1]];
+/// AV2 § 7.18.3 secondary-tap weights. Both `Cdef_Sec_Taps` rows are `[2, 1]`.
+const CDEF_SEC_TAPS: [i32; 2] = [2, 1];
 
 /// AV2 § 7.18.3 `Cdef_Directions[8][2][2]`: the `(dy, dx)` neighbour offsets for
 /// direction `dir` and tap index `k` (`[dir][k][0]` is the row offset, `[dir][k][1]`
@@ -87,23 +86,31 @@ const fn floor_log2(x: u32) -> u32 {
 /// the spec-bounded pre-shifted samples keep every directional cost in range.
 #[allow(clippy::needless_range_loop)]
 pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
-    let mut partial_hv = [[0i32; 8]; 2];
+    let mut partial_vertical = [0i32; 8];
     let mut partial_diag = [[0i32; 15]; 2];
     let mut partial_alt = [[0i32; 11]; 4];
+    let mut horizontal_cost = 0;
     for i in 0..8 {
+        let mut horizontal = 0;
         for j in 0..8 {
             let x = block[i][j];
             partial_diag[0][i + j] += x;
             partial_alt[0][i + j / 2] += x;
-            partial_hv[0][i] += x;
+            horizontal += x;
             partial_alt[1][3 + i - j / 2] += x;
             partial_diag[1][7 + i - j] += x;
             partial_alt[2][3 - i / 2 + j] += x;
-            partial_hv[1][j] += x;
+            partial_vertical[j] += x;
             partial_alt[3][i / 2 + j] += x;
         }
+        horizontal_cost += horizontal * horizontal;
     }
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    finish_cdef_direction(
+        horizontal_cost,
+        &partial_vertical,
+        &partial_diag,
+        &partial_alt,
+    )
 }
 
 /// AV2 § 7.18.2 CDEF direction process over the interior padded block layout.
@@ -112,37 +119,45 @@ pub fn cdef_direction(block: &[[i32; 8]; 8]) -> (usize, i32) {
 /// `BitDepth - 8`. The result matches [`cdef_direction`] without materializing
 /// the intermediate shifted 8x8 array.
 pub fn cdef_direction_padded(pad: &[u16; CDEF_PADDED_AREA], coeff_shift: u32) -> (usize, i32) {
-    let mut partial_hv = [[0i32; 8]; 2];
+    let mut partial_vertical = [0i32; 8];
     let mut partial_diag = [[0i32; 15]; 2];
     let mut partial_alt = [[0i32; 11]; 4];
+    let mut horizontal_cost = 0;
     for i in 0..8 {
         let row = (i + 2) * CDEF_PADDED_SIDE + 2;
+        let mut horizontal = 0;
         for j in 0..8 {
             let x = (i32::from(pad[row + j]) >> coeff_shift) - 128;
             partial_diag[0][i + j] += x;
             partial_alt[0][i + j / 2] += x;
-            partial_hv[0][i] += x;
+            horizontal += x;
             partial_alt[1][3 + i - j / 2] += x;
             partial_diag[1][7 + i - j] += x;
             partial_alt[2][3 - i / 2 + j] += x;
-            partial_hv[1][j] += x;
+            partial_vertical[j] += x;
             partial_alt[3][i / 2 + j] += x;
         }
+        horizontal_cost += horizontal * horizontal;
     }
-    finish_cdef_direction(&partial_hv, &partial_diag, &partial_alt)
+    finish_cdef_direction(
+        horizontal_cost,
+        &partial_vertical,
+        &partial_diag,
+        &partial_alt,
+    )
 }
 
 fn finish_cdef_direction(
-    partial_hv: &[[i32; 8]; 2],
+    horizontal_cost: i32,
+    partial_vertical: &[i32; 8],
     partial_diag: &[[i32; 15]; 2],
     partial_alt: &[[i32; 11]; 4],
 ) -> (usize, i32) {
     let mut cost = [0i32; 8];
-    for (&horizontal, &vertical) in partial_hv[0].iter().zip(&partial_hv[1]) {
-        cost[2] += horizontal * horizontal;
+    cost[2] = horizontal_cost * DIV_TABLE[8];
+    for &vertical in partial_vertical {
         cost[6] += vertical * vertical;
     }
-    cost[2] *= DIV_TABLE[8];
     cost[6] *= DIV_TABLE[8];
     for i in 0..7 {
         cost[0] += (partial_diag[0][i] * partial_diag[0][i]
@@ -239,7 +254,7 @@ pub fn cdef_filter_sample(
 ) -> i32 {
     let tap_row = ((pri_str >> coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let sec_taps = CDEF_SEC_TAPS;
     let pri_adj = constrain_damping_adj(pri_str, damping);
     let sec_adj = constrain_damping_adj(sec_str, damping);
 
@@ -396,7 +411,7 @@ fn cdef_filter_block_interior_rows<const W: usize>(
 ) -> Option<()> {
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let sec_taps = CDEF_SEC_TAPS;
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
     let center_start = 2 * CDEF_PADDED_SIDE + 2;
@@ -630,7 +645,7 @@ pub fn cdef_filter_block_interior(
 
     let tap_row = ((filter.pri_str >> filter.coeff_shift) & 1) as usize;
     let pri_taps = CDEF_PRI_TAPS[tap_row];
-    let sec_taps = CDEF_SEC_TAPS[tap_row];
+    let sec_taps = CDEF_SEC_TAPS;
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
 
