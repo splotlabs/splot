@@ -298,6 +298,7 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     cells[5].base = 1;
     MiGrid {
         mi_cols: 16,
+        fully_covered: false,
         base_blocks: blocks,
         overlay_blocks: &[],
         cells,
