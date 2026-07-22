@@ -293,6 +293,11 @@ pub fn cdef_filter_sample(
 /// AV2 § 7.18.3 per-sample CDEF filter using pre-derived [`CdefSampleParams`], so a
 /// caller filtering many samples of one block derives the block parameters once.
 /// Equivalent to [`cdef_filter_sample`] with the matching strength arguments.
+///
+/// Inlined so the per-sample edge-block caller can fuse away the transient
+/// [`CdefSampleTaps`] it assembles per pixel (SROA keeps the taps in registers).
+#[allow(clippy::inline_always, reason = "measured CDEF hot path")]
+#[inline(always)]
 #[must_use]
 pub fn cdef_filter_sample_with(taps: &CdefSampleTaps, params: &CdefSampleParams) -> i32 {
     let mut sum = 0i32;
