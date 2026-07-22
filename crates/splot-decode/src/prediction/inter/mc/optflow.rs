@@ -612,6 +612,10 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
     let mut refinemv_candidates = take_tip_refinemv_candidates(unit_count);
+    let initial_luma = [
+        InitialLumaPredictionContext::new(sink, block.reference0, offset)?,
+        InitialLumaPredictionContext::new(sink, block.reference1, offset)?,
+    ];
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
@@ -634,9 +638,8 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit.has_chroma = false;
         unit.sub8x8_chroma = false;
         let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
-            sink,
             unit,
-            offset,
+            &initial_luma,
             reuse_horizontal,
             &mut initial_predictions,
         )?;
@@ -675,6 +678,42 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     })
 }
 
+pub(super) struct InitialLumaPredictionContext<'a, T: ReconSample> {
+    view: ReferencePlaneView<'a, T>,
+    scaling: PlaneScaling,
+    pub(super) bit_depth: splot_recon::BitDepth,
+}
+
+impl<'a, T: ReconSample> InitialLumaPredictionContext<'a, T> {
+    #[inline]
+    fn new(
+        sink: &WorkspaceSink<'_, '_, T>,
+        reference: &'a DecodedFrame<T>,
+        offset: ByteOffset,
+    ) -> Result<Self> {
+        let (view, _, _) = reference_plane_view(reference, PlaneId::Y, offset)?;
+        let reference_size = reference.info().coded_luma_size();
+        let frame_size = sink.info().coded_luma_size();
+        let scaling = derive_plane_scaling(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            reference_size.width() as i32,
+            reference_size.height() as i32,
+            frame_size.width() as i32,
+            frame_size.height() as i32,
+        );
+        Ok(Self {
+            view,
+            scaling,
+            bit_depth: sink.info().bit_depth(),
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
@@ -687,21 +726,33 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     reuse_horizontal: bool,
     output: &mut [u16],
 ) -> Result<()> {
-    let (view, _, _) = reference_plane_view(reference, PlaneId::Y, offset)?;
-    let reference_size = reference.info().coded_luma_size();
-    let frame_size = sink.info().coded_luma_size();
-    let scaling = derive_plane_scaling(
-        rect.luma_x as i32,
-        rect.luma_y as i32,
-        mv.row,
-        mv.col,
-        0,
-        0,
-        reference_size.width() as i32,
-        reference_size.height() as i32,
-        frame_size.width() as i32,
-        frame_size.height() as i32,
-    );
+    let context = InitialLumaPredictionContext::new(sink, reference, offset)?;
+    initial_luma_prediction_from_context(
+        &context,
+        rect,
+        mv,
+        interp,
+        refinemv_area,
+        reuse_horizontal,
+        output,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+pub(super) fn initial_luma_prediction_from_context<T: ReconSample>(
+    context: &InitialLumaPredictionContext<'_, T>,
+    rect: McBlockRect,
+    mv: Mv,
+    interp: InterpolationFilter,
+    refinemv_area: Option<(Mv, usize, usize)>,
+    reuse_horizontal: bool,
+    output: &mut [u16],
+) -> Result<()> {
+    let scaling =
+        context
+            .scaling
+            .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         super::refinemv::reference_area_bounds(
             rect.luma_x as i32,
@@ -726,14 +777,14 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
         first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
         last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
         last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-        bit_depth: sink.info().bit_depth(),
+        bit_depth: context.bit_depth,
     };
     if reuse_horizontal
-        && subpel_predict_16x16_fullpel_horizontal_overlap_into(&view, &params, output)?
+        && subpel_predict_16x16_fullpel_horizontal_overlap_into(&context.view, &params, output)?
     {
         return Ok(());
     }
-    subpel_predict_block_into(&view, &params, output).map_err(Into::into)
+    subpel_predict_block_into(&context.view, &params, output).map_err(Into::into)
 }
 
 #[allow(clippy::too_many_arguments)]

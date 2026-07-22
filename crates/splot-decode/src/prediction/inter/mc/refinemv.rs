@@ -196,9 +196,8 @@ fn search_refinemv<T: ReconSample>(
 }
 
 pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
-    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
-    offset: ByteOffset,
+    initial_luma: &[super::optflow::InitialLumaPredictionContext<'_, T>; 2],
     reuse_horizontal: [bool; 2],
     predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
 ) -> Result<Option<MotionCell>> {
@@ -224,25 +223,21 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    super::optflow::initial_luma_prediction(
-        sink,
-        block.reference0,
+    super::optflow::initial_luma_prediction_from_context(
+        &initial_luma[0],
         prediction_rect,
         search_mv(candidates[0]),
         InterpolationFilter::Bilinear,
         Some((candidates[0], CENTER_SIZE, CENTER_SIZE)),
-        offset,
         reuse_horizontal[0],
         pred0,
     )?;
-    super::optflow::initial_luma_prediction(
-        sink,
-        block.reference1,
+    super::optflow::initial_luma_prediction_from_context(
+        &initial_luma[1],
         prediction_rect,
         search_mv(candidates[1]),
         InterpolationFilter::Bilinear,
         Some((candidates[1], CENTER_SIZE, CENTER_SIZE)),
-        offset,
         reuse_horizontal[1],
         pred1,
     )?;
@@ -252,7 +247,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         PREDICTION_SIZE,
         CENTER_SIZE,
         CENTER_SIZE,
-        sink.info().bit_depth(),
+        initial_luma[0].bit_depth,
         true,
     )?;
     let base_mvs = [
@@ -303,7 +298,7 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
     super::optflow::tip_optflow_motion_cell(
         &centered[0],
         &centered[1],
-        sink.info().bit_depth(),
+        initial_luma[0].bit_depth,
         distances,
         block.optflow_sad_threshold,
         base_mvs,

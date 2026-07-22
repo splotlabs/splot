@@ -44,6 +44,39 @@ fn scaled_reference_uses_spec_ratio_and_independent_axis_steps() {
 }
 
 #[test]
+fn scaling_template_with_mv_matches_direct_derivation() {
+    for (reference_width, reference_height, frame_width, frame_height) in
+        [(64, 64, 64, 64), (64, 48, 51, 60)]
+    {
+        let direct = derive_plane_scaling(
+            3,
+            5,
+            -7,
+            11,
+            0,
+            0,
+            reference_width,
+            reference_height,
+            frame_width,
+            frame_height,
+        );
+        let template = derive_plane_scaling(
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            reference_width,
+            reference_height,
+            frame_width,
+            frame_height,
+        );
+        assert_eq!(direct, template.with_mv(3, 5, -7, 11, 0, 0));
+    }
+}
+
+#[test]
 fn reference_scale_detection_uses_rounded_spec_scale() {
     assert!(!reference_is_scaled(64, 64, 64, 64));
     assert!(reference_is_scaled(64, 64, 51, 51));
