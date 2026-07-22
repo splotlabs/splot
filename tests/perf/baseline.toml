@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+#
+# Deterministic decode instruction-count (callgrind Ir) baselines for the
+# `cargo xtask perf` regression gate. Each fixture is decoded single-threaded so
+# the Ir count is reproducible to the instruction on a fixed binary. Ir is only
+# comparable within one binary/toolchain: a compiler or RUSTFLAGS bump shifts
+# every count wholesale and requires a re-bless (`cargo xtask perf --bless`), not
+# a regression. Generated file: edit fixtures here, but let `--bless` set the
+# numbers.
+
+[meta]
+note = "callgrind --cache-sim=no --branch-sim=no; decode --threads 1 --output-format hash"
+
+[[fixture]]
+path = "tests/conformance/vectors/valid/syn-gdf-intra-128x128.ivf"
+targets = "gdf"
+ir_stable = 21222000
+
+[[fixture]]
+path = "tests/conformance/vectors/valid/syn-wienerns-intra-128x128.ivf"
+targets = "wienerns-luma"
+ir_stable = 21224843
+
+[[fixture]]
+path = "tests/conformance/vectors/valid/syn-pcwiener-intra-128x128.ivf"
+targets = "pc-wiener"
+ir_stable = 21216316
+
+[[fixture]]
+path = "tests/conformance/vectors/valid/syn-2sb-deblockwide-intra-128x64-q100.ivf"
+targets = "deblock-cdef"
+ir_stable = 3572510
+
+[[fixture]]
+path = "tests/conformance/vectors/valid/syn-8frame-opfl-refine-all-64x64-q120.ivf"
+targets = "inter-subpel-optflow"
+ir_stable = 39152762
+
+[[fixture]]
+path = "tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf"
+targets = "warp-subpel"
+ir_stable = 87005125

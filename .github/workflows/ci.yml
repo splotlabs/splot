@@ -403,3 +403,23 @@ jobs:
           name: coverage-lcov
           path: lcov.info
           if-no-files-found: warn
+
+  perf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      # Deterministic decode instruction-count (callgrind Ir) regression gate.
+      # Ir baselines live in tests/perf/baseline.toml; re-bless intentional
+      # changes with `cargo xtask perf --bless`. Runner-independent (Ir, not
+      # wall-clock), single-threaded, so counts are reproducible.
+      - name: Decode Ir regression gate
+        run: cargo xtask perf
