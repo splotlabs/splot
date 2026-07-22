@@ -365,21 +365,30 @@ const fn cdef_ripple_params() -> CdefFrameParams {
     }
 }
 
-#[test]
-fn interior_fast_path_matches_per_sample_reference() {
+/// Asserts `compute_cdef_filter_plane` output for the 8x8 luma block at
+/// mi-position `(r, c)` matches the per-sample `gather_taps` reference bit-for-bit
+/// across every direction and strength pair. Seeds a non-flat luma region so the
+/// filter is active. `r = c = 0` drives the gather-once edge path (taps off the
+/// plane); an interior `(r, c)` drives the batched fast path.
+fn assert_cdef_block_matches_per_sample_reference(
+    r: usize,
+    c: usize,
+    seed: core::ops::Range<usize>,
+) {
     let mut ws = workspace_8bit(64, 64, 100);
-    for y in 20..36usize {
-        for x in 20..36usize {
+    for y in seed.clone() {
+        for x in seed.clone() {
             let v = (60 + (x * 7 + y * 13) % 130) as u8;
             ws.set_reconstructed_sample(PlaneId::Y, x, y, v).unwrap();
         }
     }
     let snap = FramePlane::new(&ws, PlaneId::Y).unwrap();
+    let (x0, y0) = (c * MI_SIZE, r * MI_SIZE);
     for dir in 0..8usize {
         for (pri_str, sec_str) in [(0, 3), (5, 0), (5, 3), (12, 4)] {
             let ctx = CdefFilterCtx {
-                r: 6,
-                c: 6,
+                r,
+                c,
                 pri_str,
                 sec_str,
                 damping: 4,
@@ -398,8 +407,7 @@ fn interior_fast_path_matches_per_sample_reference() {
             let offsets = CdefTapOffsets::for_direction(ctx.dir);
             for i in 0..8 {
                 for j in 0..8 {
-                    let x = 24 + j;
-                    let y = 24 + i;
+                    let (x, y) = (x0 + j, y0 + i);
                     let center = snap.get(x as isize, y as isize).unwrap();
                     let taps = gather_taps(snap, &offsets, x, y, 64, 64, center);
                     let expected = cdef_filter_sample(
@@ -413,12 +421,22 @@ fn interior_fast_path_matches_per_sample_reference() {
                     assert_eq!(
                         i32::from(filtered.row(y).unwrap()[x]),
                         expected,
-                        "dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
+                        "r={r} c={c} dir={dir} pri={pri_str} sec={sec_str} i={i} j={j}"
                     );
                 }
             }
         }
     }
+}
+
+#[test]
+fn interior_fast_path_matches_per_sample_reference() {
+    assert_cdef_block_matches_per_sample_reference(6, 6, 20..36);
+}
+
+#[test]
+fn edge_block_matches_per_sample_reference() {
+    assert_cdef_block_matches_per_sample_reference(0, 0, 0..16);
 }
 
 #[test]

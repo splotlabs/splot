@@ -481,6 +481,16 @@ fn compute_cdef_filter_plane<S: ReconSample>(
         return filter_interior_pad_into(filtered, pad, x0, y0, w, h, ctx);
     }
 
+    let bw = w + 2 * CDEF_TAP_REACH;
+    let mut tap_pad = [UNAVAILABLE_TAP; CDEF_EDGE_PAD_SIDE * CDEF_EDGE_PAD_SIDE];
+    for by in 0..h + 2 * CDEF_TAP_REACH {
+        let ay = y0 as isize - CDEF_TAP_REACH as isize + by as isize;
+        for bx in 0..bw {
+            let ax = x0 as isize - CDEF_TAP_REACH as isize + bx as isize;
+            tap_pad[by * bw + bx] = cdef_fetch_tap(snap, ax, ay, inside_x, inside_y);
+        }
+    }
+
     let mut filtered_block = [0u16; 64];
     let offsets = CdefTapOffsets::for_direction(ctx.dir);
     for i in 0..h {
@@ -488,7 +498,24 @@ fn compute_cdef_filter_plane<S: ReconSample>(
             let center = snap
                 .get((x0 + j) as isize, (y0 + i) as isize)
                 .ok_or(CdefError::Geometry)?;
-            let taps = gather_taps(snap, &offsets, x0 + j, y0 + i, inside_x, inside_y, center);
+            let base = (i + CDEF_TAP_REACH) * bw + (j + CDEF_TAP_REACH);
+            let at =
+                |(dy, dx): (isize, isize)| tap_pad[base.wrapping_add_signed(dy * bw as isize + dx)];
+            let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
+            let mut secondary = [[[UNAVAILABLE_TAP; 2]; 2]; 2];
+            for k in 0..2 {
+                for sign_index in 0..2 {
+                    primary[k][sign_index] = at(offsets.primary[k][sign_index]);
+                    for (dir_off_index, tap) in secondary[k][sign_index].iter_mut().enumerate() {
+                        *tap = at(offsets.secondary[k][sign_index][dir_off_index]);
+                    }
+                }
+            }
+            let taps = CdefSampleTaps {
+                center,
+                primary,
+                secondary,
+            };
             let filtered = cdef_filter_sample(
                 &taps,
                 ctx.pri_str,
@@ -565,6 +592,10 @@ fn storage_sample(filtered: i32, max_sample: i32) -> Result<u16, CdefError> {
 
 const CDEF_TAP_REACH: usize = 2;
 
+/// Side of the per-edge-block tap buffer: an 8x8 CDEF block plus the two-sample
+/// [`CDEF_TAP_REACH`] border on every side, sized for the largest (luma) block.
+const CDEF_EDGE_PAD_SIDE: usize = 8 + 2 * CDEF_TAP_REACH;
+
 struct CdefTapOffsets {
     primary: [[(isize, isize); 2]; 2],
     secondary: [[[(isize, isize); 2]; 2]; 2],
@@ -592,6 +623,30 @@ impl CdefTapOffsets {
     }
 }
 
+/// Fetches one CDEF tap at absolute plane position `(x, y)`, flagging it
+/// unavailable (contributes to neither `sum` nor the `min`/`max` clamp) when it
+/// falls outside the filter region `[0, inside_x) x [0, inside_y)` or the plane.
+fn cdef_fetch_tap<T: ReconSample>(
+    snap: FramePlane<'_, T>,
+    x: isize,
+    y: isize,
+    inside_x: usize,
+    inside_y: usize,
+) -> CdefTap {
+    if x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y {
+        match snap.row(y as usize).and_then(|row| row.get(x as usize)) {
+            Some(value) => CdefTap {
+                value: i32::from(value.to_u16()),
+                available: true,
+            },
+            None => UNAVAILABLE_TAP,
+        }
+    } else {
+        UNAVAILABLE_TAP
+    }
+}
+
+#[cfg(test)]
 fn gather_taps<T: ReconSample>(
     snap: FramePlane<'_, T>,
     offsets: &CdefTapOffsets,
@@ -601,20 +656,8 @@ fn gather_taps<T: ReconSample>(
     inside_y: usize,
     center: i32,
 ) -> CdefSampleTaps {
-    let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
-        let y = y as isize + dy;
-        let x = x as isize + dx;
-        if x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y {
-            match snap.row(y as usize).and_then(|row| row.get(x as usize)) {
-                Some(value) => CdefTap {
-                    value: i32::from(value.to_u16()),
-                    available: true,
-                },
-                None => UNAVAILABLE_TAP,
-            }
-        } else {
-            UNAVAILABLE_TAP
-        }
+    let fetch = |(dy, dx): (isize, isize)| {
+        cdef_fetch_tap(snap, x as isize + dx, y as isize + dy, inside_x, inside_y)
     };
 
     let mut primary = [[UNAVAILABLE_TAP; 2]; 2];
