@@ -1055,6 +1055,41 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample
         });
     }
 
+    if cwp_weight == 8 {
+        blend_fullpel_compound_rows::<T, true>(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            output,
+            output_stride,
+        );
+    } else {
+        blend_fullpel_compound_rows::<T, false>(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            output,
+            output_stride,
+        );
+    }
+    Ok(true)
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn blend_fullpel_compound_rows<T: ReconSample, const EQUAL_WEIGHT: bool>(
+    reference0: &ReferencePlaneView<'_, T>,
+    params0: &SubpelPredictParams,
+    reference1: &ReferencePlaneView<'_, T>,
+    params1: &SubpelPredictParams,
+    cwp_weight: i16,
+    output: &mut [u16],
+    output_stride: usize,
+) {
     let x0 = [
         params0.start_x >> SCALE_SUBPEL_BITS,
         params1.start_x >> SCALE_SUBPEL_BITS,
@@ -1069,6 +1104,7 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample
     ];
     let forward = i32::from(cwp_weight);
     let backward = 16 - forward;
+    let round = if EQUAL_WEIGHT { 1 } else { 4 };
     let max_sample = i32::from(params0.bit_depth.max_sample());
     for row in 0..params0.h {
         let source_row = [
@@ -1082,9 +1118,14 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample
                     .iter()
                     .zip(&reference1.row(source_row[1])[x1..x1 + params0.w]),
             ) {
-                let weighted =
-                    forward * i32::from(left.to_u16()) + backward * i32::from(right.to_u16());
-                *slot = round2_i32(weighted, 4).clamp(0, max_sample) as u16;
+                let left = i32::from(left.to_u16());
+                let right = i32::from(right.to_u16());
+                let weighted = if EQUAL_WEIGHT {
+                    left + right
+                } else {
+                    forward * left + backward * right
+                };
+                *slot = round2_i32(weighted, round).clamp(0, max_sample) as u16;
             }
         } else {
             for (col, slot) in destination.iter_mut().enumerate() {
@@ -1092,13 +1133,17 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample
                     (x0[0] + col as i32).clamp(params0.first_x, params0.last_x) as usize,
                     (x0[1] + col as i32).clamp(params1.first_x, params1.last_x) as usize,
                 ];
-                let weighted = forward * reference0.sample(source_row[0], source_col[0])
-                    + backward * reference1.sample(source_row[1], source_col[1]);
-                *slot = round2_i32(weighted, 4).clamp(0, max_sample) as u16;
+                let left = reference0.sample(source_row[0], source_col[0]);
+                let right = reference1.sample(source_row[1], source_col[1]);
+                let weighted = if EQUAL_WEIGHT {
+                    left + right
+                } else {
+                    forward * left + backward * right
+                };
+                *slot = round2_i32(weighted, round).clamp(0, max_sample) as u16;
             }
         }
     }
-    Ok(true)
 }
 
 /// Blends two § 7.13.3.18 compound intermediate predictors with § 7.13.3.16
