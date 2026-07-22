@@ -1574,6 +1574,7 @@ impl Default for MiCell {
 #[derive(Clone)]
 struct MiGrid<'a> {
     mi_cols: usize,
+    fully_covered: bool,
     base_blocks: &'a [DeblockBlock],
     overlay_blocks: &'a [DeblockBlock],
     cells: Vec<MiCell>,
@@ -1616,13 +1617,17 @@ impl MiGrid<'_> {
             HORIZONTAL_TX_CANDIDATE
         };
         let index = row * self.mi_cols + col;
-        let Some(cell) = self.cells.get(index) else {
+        let Some(&current) = self.candidates.get(index) else {
             return true;
         };
-        if cell.base == NO_BLOCK_INDEX && cell.overlay == NO_BLOCK_INDEX {
-            return true;
+        if !self.fully_covered {
+            let Some(cell) = self.cells.get(index) else {
+                return true;
+            };
+            if cell.base == NO_BLOCK_INDEX && cell.overlay == NO_BLOCK_INDEX {
+                return true;
+            }
         }
-        let current = self.candidates[index];
         if current & candidate != 0 || allow_sub_pu && current & SUB_PU_CANDIDATE != 0 {
             return true;
         }
@@ -1709,8 +1714,10 @@ fn build_mi_grid(
         }
         mark_block_candidates(&mut candidates, block, mi_rows, mi_cols);
     }
+    let fully_covered = cells.iter().all(|cell| cell.base != NO_BLOCK_INDEX);
     Ok(MiGrid {
         mi_cols,
+        fully_covered,
         base_blocks: blocks,
         overlay_blocks: &[],
         cells,
@@ -1729,6 +1736,7 @@ fn overlay_mi_grid<'a>(
     candidates.clone_from(&base.candidates);
     let mut grid = MiGrid {
         mi_cols: base.mi_cols,
+        fully_covered: base.fully_covered,
         base_blocks: base.base_blocks,
         overlay_blocks: blocks,
         cells,
@@ -1763,6 +1771,12 @@ fn overlay_mi_grid<'a>(
             }
         }
         mark_block_candidates(&mut grid.candidates, block, mi_rows, mi_cols);
+    }
+    if !grid.fully_covered {
+        grid.fully_covered = grid
+            .cells
+            .iter()
+            .all(|cell| cell.base != NO_BLOCK_INDEX || cell.overlay != NO_BLOCK_INDEX);
     }
     Ok(grid)
 }
