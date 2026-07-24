@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#![feature(portable_simd)]
+
 //! `splot-recon` owns AV2 reconstruction primitives and frame/workspace storage.
 //!
 //! The crate exposes checked media buffers, view-first frame access, intra/inter
@@ -55,17 +57,18 @@ mod workspace;
 mod y4m;
 
 pub use cdef_filter::{
-    CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UV_DIR, CdefBlockFilter,
-    CdefSampleParams, CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction,
-    cdef_direction_padded, cdef_filter_block_interior, cdef_filter_block_interior_to,
-    cdef_filter_block_interior_to_valid_stride, cdef_filter_sample, cdef_filter_sample_with,
+    CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR,
+    CdefBlockFilter, CdefSampleTaps, CdefTap, cdef_constrain, cdef_direction,
+    cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_interior,
+    cdef_filter_block_interior_to, cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
 pub use deblock_filter::{
     DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
-    deblock_filter_choice, deblock_filter_choice_strided, deblock_filter_max_width,
-    deblock_sample_filter, deblock_sample_filter_strided, deblock_sample_filter_strided_4,
-    deblock_side_threshold_index,
+    deblock_filter_choice, deblock_filter_choice_and_sample_strided_4,
+    deblock_filter_choice_and_sample_strided_4_fast_validated, deblock_filter_choice_strided,
+    deblock_filter_max_width, deblock_sample_filter, deblock_sample_filter_strided,
+    deblock_sample_filter_strided_4, deblock_side_threshold_index,
 };
 pub use dequant::{
     QuantizerDeltas, ac_quantizer, dc_quantizer, max_quantizer_index, quantizer_index,
@@ -129,15 +132,19 @@ pub use loop_restoration::{
     LoopRestorationSourceSampleValue, loop_restoration_source_sample,
     loop_restoration_source_sample_value,
 };
-pub use optflow::{OptflowScratch, derive_optflow_mv_deltas, derive_optflow_mv_deltas_into};
+pub use optflow::{
+    OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas,
+    derive_optflow_mv_deltas_into,
+};
 pub use pc_wiener::{
     PC_WIENER_CLASSIFY_READ_RADIUS, PC_WIENER_FEATURE_WINDOW_SIDE, PC_WIENER_FILTER_TAP_RADIUS,
     PC_WIENER_FULL_CLASSES, PC_WIENER_LUT_CLASSES, PC_WIENER_LUT_INPUTS, PC_WIENER_NUM_FEATURES,
     PcWienerClassification, PcWienerClassifyPaddedSource, PcWienerClassifyParams,
     PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PcWienerTxSkipLookup,
     pc_wiener_classify, pc_wiener_classify_grid, pc_wiener_classify_grid_padded,
-    pc_wiener_classify_grid_padded_into, pc_wiener_filter_block, pc_wiener_filter_block_padded,
-    pc_wiener_filter_set_index, pc_wiener_subclass,
+    pc_wiener_classify_grid_padded_classes_into, pc_wiener_classify_grid_padded_into,
+    pc_wiener_filter_block, pc_wiener_filter_block_padded, pc_wiener_filter_set_index,
+    pc_wiener_subclass, pc_wiener_subclass_table,
 };
 pub use plane::{Plane, VisibleRows};
 pub use reconstruct::reconstruct_add_residual;
@@ -156,23 +163,29 @@ pub use splot_tables::tables::quantizer::QM_OFFSET;
 pub use subpel_mc::{
     InterpolationFilter, ReferencePlaneView, SUBPEL_FILTERS, SubpelPredictParams,
     blend_compound_average_equal, blend_compound_average_weighted,
-    blend_compound_average_weighted_sample, subpel_predict_16x16_fullpel_horizontal_overlap_into,
-    subpel_predict_block, subpel_predict_block_compound_average_fullpel_strided_into,
+    blend_compound_average_weighted_sample, subpel_predict_16x16_bilinear_horizontal_overlap_into,
+    subpel_predict_block, subpel_predict_block_compound_average_2d_strided_into,
+    subpel_predict_block_compound_average_fast_strided_into,
+    subpel_predict_block_compound_average_fast_validated_strided_into,
+    subpel_predict_block_compound_average_fullpel_strided_into,
+    subpel_predict_block_compound_average_horizontal_strided_into,
     subpel_predict_block_compound_average_into, subpel_predict_block_compound_average_strided_into,
+    subpel_predict_block_compound_average_strided_into_u8,
     subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    subpel_predict_block_into,
+    subpel_predict_block_into, subpel_predict_block_strided_into,
 };
 pub use transform_params::{
     TransformPass, dpcm_direction, get_transform_1d_type, transform_shift, tx_size_index,
 };
 pub use views::{FrameMut, FrameRef, PlaneMut, PlaneMutRows, PlaneRef, PlaneRefRows};
 pub use warp_prediction::{
-    IDENTITY_WARP_PARAMS, WARPED_BLOCK_SIZE, WarpPredictBlockParams, ext_warp_predict_unit,
-    warp_predict_block, warp_predict_block_into, warp_shear_is_valid,
+    IDENTITY_WARP_PARAMS, PreparedWarpPrediction, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
+    ext_warp_predict_unit, warp_predict_block, warp_predict_block_into, warp_shear_is_valid,
 };
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
-    WienerNsChromaFilter, wiener_ns_filter_chroma_block,
+    WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
+    wiener_ns_filter_chroma_block, wiener_ns_filter_chroma_block_padded_420_into,
 };
 pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,

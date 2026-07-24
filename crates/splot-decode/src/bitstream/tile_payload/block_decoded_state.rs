@@ -109,8 +109,8 @@ impl TileBlockDecodedState {
             grid.cells.fill(false);
             let top_len = sb_width4.saturating_add(1).min(grid.width);
             grid.cells[..top_len].fill(true);
-            let left_len = sb_height4.saturating_add(1).min(grid.height);
-            for y in 0..left_len {
+            let left_rows = sb_height4.saturating_add(1).min(grid.height);
+            for y in 1..left_rows {
                 grid.cells[y * grid.width] = true;
             }
             grid.cells[(grid.height - 1) * grid.width] = false;
@@ -131,16 +131,19 @@ impl TileBlockDecodedState {
         let step_x4 = step_x4.max(1);
         let step_y4 = step_y4.max(1);
         let (sub_x, sub_y) = plane_subsampling(plane, self.subsampling_x, self.subsampling_y);
-        let base_x = (sub_block_mi_col >> sub_x) as isize;
-        let base_y = (sub_block_mi_row >> sub_y) as isize;
+        let base_x = sub_block_mi_col >> sub_x;
+        let base_y = sub_block_mi_row >> sub_y;
         let grid = &mut self.planes[plane];
-        for i in 0..step_y4 {
-            for j in 0..step_x4 {
-                let x = base_x.saturating_add(j as isize);
-                let y = base_y.saturating_add(i as isize);
-                if let Some(index) = grid.index(x, y) {
-                    grid.cells[index] = true;
-                }
+        let start_x = base_x.saturating_add(1);
+        let end_x = start_x.saturating_add(step_x4).min(grid.width);
+        let end_y = base_y
+            .saturating_add(step_y4)
+            .saturating_add(1)
+            .min(grid.height);
+        if start_x < end_x {
+            for y in base_y.saturating_add(1)..end_y {
+                let row = y * grid.width;
+                grid.cells[row + start_x..row + end_x].fill(true);
             }
         }
     }

@@ -2,6 +2,6 @@
 # SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 [toolchain]
-channel = "1.96.0"
+channel = "nightly-2026-07-22"
 components = ["rustfmt", "clippy", "rust-analyzer"]
 profile = "default"

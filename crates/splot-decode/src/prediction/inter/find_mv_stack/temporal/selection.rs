@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::sync::Arc;
-
 use super::{
-    MAX_FRAME_DISTANCE, MAX_SORTED_REFERENCE_HINTS, TemporalMotionField, TemporalProjectionConfig,
-    sorted_reference_hints,
+    MAX_FRAME_DISTANCE, TemporalMotionField, TemporalProjectionConfig, sorted_reference_hints,
 };
+use std::sync::Arc;
 
 const TIP_MFMV_STACK_SIZE: usize = 3;
 const MFMV_STACK_SIZE: usize = 4;
@@ -34,29 +32,6 @@ fn reference_motion_field<'a>(
     ref_motion_fields.get(slot as usize)?.as_deref()
 }
 
-#[derive(Default)]
-struct IndexStack {
-    entries: [usize; MAX_SORTED_REFERENCE_HINTS],
-    len: usize,
-}
-
-impl IndexStack {
-    fn push(&mut self, index: usize) {
-        if let Some(slot) = self.entries.get_mut(self.len) {
-            *slot = index;
-            self.len += 1;
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn iter(&self) -> core::slice::Iter<'_, usize> {
-        self.entries[..self.len].iter()
-    }
-}
-
 fn topo_sort_reference(
     ref_index: usize,
     ref_frame_idx: &[u32],
@@ -64,7 +39,7 @@ fn topo_sort_reference(
     ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
     overlays: &[bool],
     visited: &mut [bool],
-    stack: &mut IndexStack,
+    stack: &mut Vec<usize>,
 ) {
     if visited.get(ref_index).copied().unwrap_or(true) {
         return;
@@ -137,39 +112,34 @@ pub(super) fn projection_queue(
     ref_order_hints: &[Option<u32>],
     ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
 ) -> Vec<TemporalProjection> {
-    let hints = sorted_reference_hints(ref_order_hints);
-    let mut sorted_buffer = [0usize; MAX_SORTED_REFERENCE_HINTS];
-    for (slot, &(index, _)) in sorted_buffer.iter_mut().zip(hints.as_slice()) {
-        *slot = index;
-    }
-    let sorted = &sorted_buffer[..hints.as_slice().len()];
-    let reference_count = ref_order_hints.len().min(MAX_SORTED_REFERENCE_HINTS);
-    let mut overlays = [false; MAX_SORTED_REFERENCE_HINTS];
-    for (index, overlay) in overlays.iter_mut().enumerate().take(reference_count) {
-        let Some(hint) = ref_order_hints[index] else {
-            continue;
-        };
-        *overlay =
+    let sorted = sorted_reference_hints(ref_order_hints)
+        .into_iter()
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let overlays: Vec<_> = (0..ref_order_hints.len())
+        .map(|index| {
+            let Some(hint) = ref_order_hints[index] else {
+                return false;
+            };
             reference_motion_field(index, ref_frame_idx, ref_motion_fields).is_some_and(|field| {
                 field
                     .ref_order_hints
                     .iter()
                     .flatten()
                     .any(|&target| relative_distance(hint, target) == 0)
-            });
-    }
-    let overlays = &overlays[..reference_count];
-    let mut visited = [false; MAX_SORTED_REFERENCE_HINTS];
-    let visited = &mut visited[..reference_count];
-    let mut stack = IndexStack::default();
-    for index in 0..reference_count {
+            })
+        })
+        .collect();
+    let mut visited = vec![false; ref_order_hints.len()];
+    let mut stack = Vec::with_capacity(ref_order_hints.len());
+    for index in 0..ref_order_hints.len() {
         topo_sort_reference(
             index,
             ref_frame_idx,
             ref_order_hints,
             ref_motion_fields,
-            overlays,
-            visited,
+            &overlays,
+            &mut visited,
             &mut stack,
         );
     }
@@ -183,7 +153,7 @@ pub(super) fn projection_queue(
             ref_order_hints[index].is_some_and(|hint| relative_distance(hint, current_hint) < 0)
         })
         .map_or(-1, |index| index as isize);
-    let mut checked = [[false; 2]; MAX_SORTED_REFERENCE_HINTS];
+    let mut checked = vec![[false; 2]; ref_order_hints.len()];
     let mut queue = Vec::with_capacity(MFMV_STACK_SIZE);
     let mut add = |projection: TemporalProjection, max_check: usize| {
         let Some(source_hint) = ref_order_hints.get(projection.ref_index).copied().flatten() else {
@@ -195,11 +165,8 @@ pub(super) fn projection_queue(
             return;
         };
         let expected = (mi_dimensions.1.div_ceil(2), mi_dimensions.0.div_ceil(2));
-        let Some(checked_entry) = checked.get_mut(projection.ref_index) else {
-            return;
-        };
         if queue.len() >= max_check
-            || checked_entry[projection.side]
+            || checked[projection.ref_index][projection.side]
             || !source.is_inter
             || source.frame_size != Some(config.frame_size)
             || (source.width8, source.height8) != expected
@@ -207,7 +174,7 @@ pub(super) fn projection_queue(
         {
             return;
         }
-        checked_entry[projection.side] = true;
+        checked[projection.ref_index][projection.side] = true;
         queue.push(projection);
     };
 

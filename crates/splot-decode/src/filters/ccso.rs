@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::simd::{Select, Simd, cmp::SimdOrd, cmp::SimdPartialOrd, num::SimdInt, num::SimdUint};
+
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
 use splot_recon::{BitDepth, PlaneId, ReconSample};
 #[cfg(test)]
@@ -115,6 +117,7 @@ struct CcsoPlaneConfig {
     max_sample: i32,
     band_shift: u8,
     offset_lut: Vec<i32>,
+    offset_lut_simd: [[u8; 16]; 5],
 }
 
 struct PlaneView<'a, T> {
@@ -214,6 +217,15 @@ fn prepare_ccso_plane(
     if params.ccso_offset_idx.len() != expected_offsets {
         return Err(CcsoError::Params);
     }
+    let offset_lut = ccso_offset_lut(params, expected_offsets)?;
+    let mut offset_lut_simd = [[0u8; 16]; 5];
+    if offset_lut.len() > offset_lut_simd.len() * 16 {
+        return Err(CcsoError::Params);
+    }
+    for (index, &offset) in offset_lut.iter().enumerate() {
+        let value = i8::try_from(offset).map_err(|_| CcsoError::Params)?;
+        offset_lut_simd[index / 16][index % 16] = value as u8;
+    }
     Ok(CcsoPlaneConfig {
         sub_x,
         sub_y,
@@ -231,7 +243,8 @@ fn prepare_ccso_plane(
             .bits()
             .checked_sub(max_band_log2)
             .ok_or(CcsoError::Params)?,
-        offset_lut: ccso_offset_lut(params, expected_offsets)?,
+        offset_lut,
+        offset_lut_simd,
     })
 }
 
@@ -366,7 +379,19 @@ fn ccso_apply<L: ReconSample>(
                     ))
                 };
                 let plane_row = destination.row_mut(y3).ok_or(CcsoError::Workspace)?;
-                for x3 in x..x_end {
+                let mut x3 = x;
+                if lossless_grid.is_none() {
+                    x3 = ccso_simd_row(
+                        plane_row,
+                        center_row,
+                        offset_rows,
+                        x,
+                        x_end,
+                        max_luma_x,
+                        config,
+                    );
+                }
+                for x3 in x3..x_end {
                     if lossless_grid.is_some_and(|grid| {
                         grid.plane_sample_lossless(plane_id, x3, y3, config.sub_x, config.sub_y)
                     }) {
@@ -416,6 +441,91 @@ fn ccso_apply<L: ReconSample>(
         );
     }
     Ok(())
+}
+
+fn ccso_simd_row<L: ReconSample>(
+    destination: &mut [u16],
+    center_row: &[L],
+    offset_rows: Option<(&[L], &[L])>,
+    x_start: usize,
+    x_end: usize,
+    max_luma_x: usize,
+    config: &CcsoPlaneConfig,
+) -> usize {
+    const LANES: usize = 16;
+
+    if config.sub_x != 0 || x_end > destination.len() {
+        return x_start;
+    }
+    let Some(center_row) = L::u16_slice(center_row) else {
+        return x_start;
+    };
+    if x_end > center_row.len() {
+        return x_start;
+    }
+    let offset_rows = match offset_rows {
+        None => None,
+        Some((row0, row1)) => {
+            let (Some(row0), Some(row1)) = (L::u16_slice(row0), L::u16_slice(row1)) else {
+                return x_start;
+            };
+            let min_dx = config.sample_offsets[0].0.min(config.sample_offsets[1].0);
+            let max_dx = config.sample_offsets[0].0.max(config.sample_offsets[1].0);
+            if x_start as isize + min_dx < 0 || x_end as isize - 1 + max_dx > max_luma_x as isize {
+                return x_start;
+            }
+            Some((row0, row1))
+        }
+    };
+    let zero = Simd::<u32, LANES>::splat(0);
+    let one = Simd::<u32, LANES>::splat(1);
+    let two = Simd::<u32, LANES>::splat(2);
+    let quant_step = Simd::<i32, LANES>::splat(config.quant_step);
+    let classify = |diff: Simd<i32, LANES>| {
+        let at_least_low = diff.simd_ge(-quant_step);
+        if config.edge_clf {
+            at_least_low.select(one, zero)
+        } else {
+            diff.simd_gt(quant_step)
+                .select(two, at_least_low.select(one, zero))
+        }
+    };
+    let mut x = x_start;
+    while x + LANES <= x_end {
+        let centers = Simd::<u16, LANES>::from_slice(&center_row[x..]);
+        let (class0, class1) = match offset_rows {
+            None => (zero, zero),
+            Some((row0, row1)) => {
+                let x0 =
+                    usize::try_from(x as isize + config.sample_offsets[0].0).unwrap_or_default();
+                let x1 =
+                    usize::try_from(x as isize + config.sample_offsets[1].0).unwrap_or_default();
+                let source0 = Simd::<u16, LANES>::from_slice(&row0[x0..]).cast::<i32>();
+                let source1 = Simd::<u16, LANES>::from_slice(&row1[x1..]).cast::<i32>();
+                let centers = centers.cast::<i32>();
+                (classify(source0 - centers), classify(source1 - centers))
+            }
+        };
+        let band = (centers >> u16::from(config.band_shift)).cast::<u32>();
+        let lut_index = (class0 * Simd::splat(config.max_edge_interval as u32) + class1)
+            * Simd::splat(config.max_band as u32)
+            + band;
+        let lut_index = lut_index.cast::<u8>();
+        let mut offset = Simd::<u8, LANES>::splat(0);
+        let chunks = config.offset_lut.len().div_ceil(LANES);
+        for (chunk, values) in config.offset_lut_simd.iter().take(chunks).enumerate() {
+            offset |= Simd::from_array(*values)
+                .swizzle_dyn(lut_index - Simd::splat((chunk * LANES) as u8));
+        }
+        let offset = offset.cast::<i8>().cast::<i32>();
+        let samples = (Simd::<u16, LANES>::from_slice(&destination[x..]).cast::<i32>() + offset)
+            .simd_max(Simd::splat(0))
+            .simd_min(Simd::splat(config.max_sample))
+            .cast::<u16>();
+        destination[x..x + LANES].copy_from_slice(&samples.to_array());
+        x += LANES;
+    }
+    x
 }
 
 fn frame_view<T: ReconSample>(plane: FramePlane<'_, T>) -> PlaneView<'_, T> {

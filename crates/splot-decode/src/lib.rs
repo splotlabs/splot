@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+#![feature(portable_simd)]
+
 //! `splot-decode` - the AV2 decode driver.
 //!
 //! This crate coordinates parsed AV2 bitstream facts from `splot-core` with

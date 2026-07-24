@@ -32,8 +32,8 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      # rustup honors rust-toolchain.toml; this installs the pinned 1.96.0
-      # toolchain together with its rustfmt and clippy components.
+      # rustup honors rust-toolchain.toml; this installs the pinned nightly
+      # together with its rustfmt and clippy components.
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 
@@ -294,7 +294,7 @@ jobs:
           persist-credentials: false
 
       # `cargo xtask seed-fuzz-corpus` (below) builds with the repo's pinned
-      # stable toolchain; install it alongside the nightly that cargo-fuzz needs.
+      # toolchain; install it alongside the rolling nightly that cargo-fuzz needs.
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
 

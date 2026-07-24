@@ -454,9 +454,20 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
             match target {
                 DecodeOutputTarget::Hash { path } => {
                     let _ = path;
-                    match context.decode_hash_report_bytes(&bytes, options) {
+                    let repeats = std::env::var("SPLOT_DECODE_PROFILE_REPEATS")
+                        .ok()
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .max(1);
+                    let mut decoded = context.decode_hash_report_bytes(&bytes, options);
+                    for _ in 1..repeats {
+                        decoded = context.decode_hash_report_bytes(&bytes, options);
+                    }
+                    match decoded {
                         Ok(report) => {
-                            render_hash_report(&report, args.json)?;
+                            if std::env::var_os("SPLOT_DECODE_DISCARD_HASH").is_none() {
+                                render_hash_report(&report, args.json)?;
+                            }
                             timing_report("total", total_started);
                             return Ok(ExitCode::SUCCESS);
                         }
@@ -517,12 +528,8 @@ fn decode_raw_to_file(
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
-    let mut raw = Vec::new();
-    context.decode_raw_bytes(bytes, *options, &mut raw)?;
-    let publish_started = timing_start();
-    let published = publish_output(path, &raw, RAW_OUTPUT);
-    timing_report("output_publish", publish_started);
-    published
+    let raw = context.decode_raw_output_bytes(bytes, *options)?;
+    publish_output(path, &raw, RAW_OUTPUT)
 }
 
 #[derive(Clone, Copy)]

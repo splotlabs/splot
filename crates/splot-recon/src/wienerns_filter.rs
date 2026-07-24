@@ -15,6 +15,7 @@
 
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
+use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
@@ -113,6 +114,14 @@ pub struct WienerNsLumaScratch<T> {
     clean_rows: Vec<bool>,
     filtered: Vec<T>,
     acc: Vec<i32>,
+    prepared_classes: Vec<PreparedLumaClass>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PreparedLumaClass {
+    center_scale: i32,
+    pairs: [(usize, usize, usize, usize, i32); WIENER_NS_LUMA_COEFFS],
+    pair_count: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -335,6 +344,7 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     scratch.clean_rows.clear();
     scratch.filtered.clear();
     scratch.acc.clear();
+    scratch.prepared_classes.clear();
     validate_sample_type::<T>(params.bit_depth)?;
     let sample_count = validate_luma_params(output.len(), params)?;
     validate_subclass_layout(params, sample_count, subclasses)?;
@@ -352,44 +362,86 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
             context: "Wiener NS clean-row scratch allocation",
         })?;
     scratch
-        .filtered
-        .try_reserve_exact(sample_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "Wiener NS filtered scratch allocation",
-        })?;
-    scratch
         .acc
         .try_reserve_exact(params.width)
         .map_err(|_| ReconError::ArithmeticOverflow {
             context: "Wiener NS accumulator scratch allocation",
         })?;
     scratch.acc.resize(params.width, 0);
+    scratch
+        .prepared_classes
+        .try_reserve_exact(params.coeffs_by_class.len())
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "Wiener NS prepared-class scratch allocation",
+        })?;
+    scratch
+        .prepared_classes
+        .extend(params.coeffs_by_class.iter().map(|coeffs| {
+            let center_scale = (1 << WIENER_NS_PREC_BITS)
+                - 2 * coeffs.iter().map(|&coeff| i32::from(coeff)).sum::<i32>();
+            let mut pairs = [(0, 0, 0, 0, 0); WIENER_NS_LUMA_COEFFS];
+            let mut pair_count = 0;
+            for (&(dy, dx, _), &coeff) in WIENER_NS_CONFIG_Y_PAIRS.iter().zip(coeffs) {
+                if coeff != 0 {
+                    let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;
+                    pairs[pair_count] = (
+                        (dy + radius) as usize,
+                        (dx + radius) as usize,
+                        (-dy + radius) as usize,
+                        (-dx + radius) as usize,
+                        i32::from(coeff),
+                    );
+                    pair_count += 1;
+                }
+            }
+            PreparedLumaClass {
+                center_scale,
+                pairs,
+                pair_count,
+            }
+        }));
     for row_index in 0..padded_rows {
         let row = padded_row(source.samples, stride, row_index, padded_width)?;
         scratch
             .clean_rows
-            .push(row.iter().all(|sample| sample.to_u16() <= max_sample));
+            .push(T::u16_slice(row).is_none_or(|samples| !u16_samples_exceed(samples, max_sample)));
     }
 
+    let direct = scratch.clean_rows.iter().all(|&clean| clean);
+    if !direct {
+        scratch
+            .filtered
+            .try_reserve_exact(sample_count)
+            .map_err(|_| ReconError::ArithmeticOverflow {
+                context: "Wiener NS filtered scratch allocation",
+            })?;
+        scratch.filtered.resize(sample_count, T::default());
+    }
     for r in 0..params.height {
         let window_in_range = scratch
             .clean_rows
             .get(r..r + 2 * WIENER_NS_LUMA_TAP_RADIUS + 1)
             .is_some_and(|rows| rows.iter().all(|&clean| clean));
         if window_in_range {
+            let filtered = if direct {
+                &mut output[r * params.output_stride..][..params.width]
+            } else {
+                &mut scratch.filtered[r * params.width..(r + 1) * params.width]
+            };
             filter_padded_luma_row_in_range(
-                &mut scratch.filtered,
+                filtered,
                 &mut scratch.acc,
                 source.samples,
                 stride,
                 r,
                 params,
+                &scratch.prepared_classes,
                 subclasses,
                 max_sample,
             )?;
         } else {
             filter_padded_luma_row_validated(
-                &mut scratch.filtered,
+                &mut scratch.filtered[r * params.width..(r + 1) * params.width],
                 source.samples,
                 stride,
                 &tap_offsets,
@@ -402,6 +454,9 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
         }
     }
 
+    if direct {
+        return Ok(());
+    }
     for row_index in 0..params.height {
         let src_start = row_index * params.width;
         let src_end = src_start + params.width;
@@ -445,12 +500,13 @@ fn padded_row<T: ReconSample>(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn filter_padded_luma_row_in_range<T: ReconSample>(
-    filtered: &mut Vec<T>,
+    filtered: &mut [T],
     acc: &mut [i32],
     samples: &[T],
     stride: usize,
     r: usize,
     params: &WienerNsLumaFilter<'_>,
+    prepared_classes: &[PreparedLumaClass],
     subclasses: LumaSubclassLayout<'_>,
     max_sample: u16,
 ) -> Result<()> {
@@ -470,7 +526,16 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
     })?;
     match subclasses {
         LumaSubclassLayout::Uniform => filter_padded_luma_segment(
-            filtered, acc, &rows, center, 0, width, 0, params, max_sample,
+            filtered,
+            acc,
+            &rows,
+            center,
+            0,
+            width,
+            0,
+            prepared_classes,
+            params.width,
+            max_sample,
         )?,
         LumaSubclassLayout::Samples(subclasses) => {
             let row_subclasses = subclasses
@@ -491,7 +556,8 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
                     segment_start,
                     segment_end - segment_start,
                     subclass,
-                    params,
+                    prepared_classes,
+                    params.width,
                     max_sample,
                 )?;
                 segment_start = segment_end;
@@ -516,7 +582,8 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
                     segment_start,
                     segment_end - segment_start,
                     subclass,
-                    params,
+                    prepared_classes,
+                    params.width,
                     max_sample,
                 )?;
                 cell_start = cell_end;
@@ -530,63 +597,59 @@ fn filter_padded_luma_row_in_range<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 #[inline]
 fn filter_padded_luma_segment<T: ReconSample>(
-    filtered: &mut Vec<T>,
+    filtered: &mut [T],
     acc: &mut [i32],
     rows: &[&[T]; 2 * WIENER_NS_LUMA_TAP_RADIUS + 1],
     center: &[T],
     c0: usize,
     len: usize,
     subclass: usize,
-    params: &WienerNsLumaFilter<'_>,
+    prepared_classes: &[PreparedLumaClass],
+    width: usize,
     max_sample: u16,
 ) -> Result<()> {
-    let coeffs = params
-        .coeffs_by_class
+    let class = prepared_classes
         .get(subclass)
-        .ok_or_else(|| luma_segment_error(params.width))?;
+        .ok_or_else(|| luma_segment_error(width))?;
     let seg = acc
         .get_mut(c0..c0 + len)
-        .ok_or_else(|| luma_segment_error(params.width))?;
+        .ok_or_else(|| luma_segment_error(width))?;
     let center_seg = center
         .get(c0..c0 + len)
-        .ok_or_else(|| luma_segment_error(params.width))?;
-    seg.fill(0);
-    let mut sum_coeff = 0i32;
-    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_Y_PAIRS {
-        let coeff = i32::from(coeffs[coeff_index]);
-        sum_coeff += coeff;
-        let plus = tap_segment(rows, c0, len, dy, dx, params.width)?;
-        let minus = tap_segment(rows, c0, len, -dy, -dx, params.width)?;
+        .ok_or_else(|| luma_segment_error(width))?;
+    let filtered = filtered
+        .get_mut(c0..c0 + len)
+        .ok_or_else(|| luma_segment_error(width))?;
+    for (a, &m) in seg.iter_mut().zip(center_seg) {
+        *a = class.center_scale * i32::from(m.to_u16());
+    }
+    for &(plus_row, plus_offset, minus_row, minus_offset, coeff) in &class.pairs[..class.pair_count]
+    {
+        let plus = tap_segment(rows, c0, len, plus_row, plus_offset, width)?;
+        let minus = tap_segment(rows, c0, len, minus_row, minus_offset, width)?;
         for ((a, &tp), &tm) in seg.iter_mut().zip(plus).zip(minus) {
             *a += coeff * (i32::from(tp.to_u16()) + i32::from(tm.to_u16()));
         }
     }
-    let center_factor = (1i32 << WIENER_NS_PREC_BITS) - 2 * sum_coeff;
-    for (a, &m) in seg.iter_mut().zip(center_seg) {
-        *a += center_factor * i32::from(m.to_u16());
-    }
-    for &s in seg.iter() {
+    for (slot, &s) in filtered.iter_mut().zip(seg.iter()) {
         let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
-        filtered.push(T::try_from_u16(value as u16)?);
+        *slot = T::try_from_u16(value as u16)?;
     }
     Ok(())
 }
 
 /// Resolves the padded-row segment for one § 7.20.3 tap `(dy, dx)`, preserving
 /// the config-order row-index, offset, and slice bounds checks.
+#[inline]
 fn tap_segment<'r, T: ReconSample>(
     rows: &[&'r [T]; 2 * WIENER_NS_LUMA_TAP_RADIUS + 1],
     c0: usize,
     len: usize,
-    dy: isize,
-    dx: isize,
+    row: usize,
+    offset: usize,
     width: usize,
 ) -> Result<&'r [T]> {
-    const RADIUS: isize = WIENER_NS_LUMA_TAP_RADIUS as isize;
-    let row = rows
-        .get(usize::try_from(dy + RADIUS).map_err(|_| luma_segment_error(width))?)
-        .ok_or_else(|| luma_segment_error(width))?;
-    let offset = usize::try_from(dx + RADIUS).map_err(|_| luma_segment_error(width))?;
+    let row = rows.get(row).ok_or_else(|| luma_segment_error(width))?;
     row.get(c0 + offset..c0 + offset + len)
         .ok_or_else(|| luma_segment_error(width))
 }
@@ -602,7 +665,7 @@ const fn luma_segment_error(width: usize) -> ReconError {
 /// out-of-range samples, preserving the original read-order error identity.
 #[allow(clippy::too_many_arguments)]
 fn filter_padded_luma_row_validated<T: ReconSample>(
-    filtered: &mut Vec<T>,
+    filtered: &mut [T],
     samples: &[T],
     stride: usize,
     tap_offsets: &[usize; WIENER_NS_LUMA_TAPS],
@@ -612,7 +675,7 @@ fn filter_padded_luma_row_validated<T: ReconSample>(
     subclasses: LumaSubclassLayout<'_>,
     max_sample: u16,
 ) -> Result<()> {
-    for c in 0..params.width {
+    for (c, slot) in filtered.iter_mut().enumerate().take(params.width) {
         let subclass = subclass_for_position(subclasses, params.width, r, c);
         let coeffs = &params.coeffs_by_class[subclass];
         let base = r * stride + c;
@@ -636,7 +699,7 @@ fn filter_padded_luma_row_validated<T: ReconSample>(
             s += diff * i32::from(coeffs[coeff_index]);
         }
         let value = round2_i32(s, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample));
-        filtered.push(T::try_from_u16(value as u16)?);
+        *slot = T::try_from_u16(value as u16)?;
     }
     Ok(())
 }
@@ -1089,7 +1152,8 @@ mod tests {
         let width = 512;
         let height = 64;
         let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS;
-        let padded = vec![91u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
+        let mut padded = vec![91u16; stride * (height + 2 * WIENER_NS_LUMA_TAP_RADIUS)];
+        padded[0] = 1024;
         let source = WienerNsLumaPaddedSource::new(&padded, stride, width, height).unwrap();
         let coeffs = [ZERO];
         let large_params = params(width, height, width, BitDepth::Ten, &coeffs, None);
@@ -1103,6 +1167,7 @@ mod tests {
         assert!(scratch.filtered.capacity() >= width * height);
         assert!(scratch.acc.capacity() >= width);
         assert!(scratch.clean_rows.capacity() >= height + 2 * WIENER_NS_LUMA_TAP_RADIUS);
+        assert!(scratch.prepared_classes.capacity() >= coeffs.len());
         let clean_rows_capacity = scratch.clean_rows.capacity();
         let filtered_ptr = scratch.filtered.as_ptr();
         let acc_ptr = scratch.acc.as_ptr();

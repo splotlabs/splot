@@ -9,6 +9,7 @@
 use crate::intra_dc_math::{clip1, round2_u32, validate_output_shape, validate_sample_type};
 use crate::math::round2_i32;
 use crate::{BitDepth, IntraRectBlockSize, ReconError, ReconSample, Result};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
 const ANGLE_D45: u16 = 45;
 const ANGLE_D67: u16 = 67;
@@ -1453,9 +1454,14 @@ fn validate_one_sided_idif_inputs<T: ReconSample>(
 /// `w + h + 4 + (mrlIndex << 1)` samples, for both the zone-1 above edge and the
 /// zone-3 left edge. `mrl_index == 0` is the immediate reference line.
 fn required_one_sided_idif_edge_len(size: IntraRectBlockSize, mrl_index: usize) -> Result<usize> {
+    let mrl_extension = mrl_index
+        .checked_mul(2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle IDIF edge length",
+        })?;
     required_edge_len(size)?
         .checked_add(4)
-        .and_then(|v| v.checked_add(mrl_index << 1))
+        .and_then(|v| v.checked_add(mrl_extension))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle IDIF edge length",
         })
@@ -1470,23 +1476,20 @@ fn validate_one_sided_idif_index_bounds(
     let derivative = one_sided_idif_derivative(angle);
     let branch = angle.branch();
     let max_base = one_sided_max_base(size, mrl_index)?;
-    for row in 0..size.height() {
-        for column in 0..size.width() {
-            let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
-            if reference.base <= max_base {
-                for tap in 0..DR_INTERP_FILTER_TAPS as i32 {
-                    let logical = reference.base.checked_add(tap - 1).ok_or(
-                        ReconError::ArithmeticOverflow {
-                            context: "one-sided directional angle IDIF tap index",
-                        },
-                    )?;
-                    logical_idif_edge_offset(logical, edge_len)?;
-                }
-            } else {
-                logical_idif_edge_offset(max_base, edge_len)?;
-            }
-        }
-    }
+    one_sided_idif_reference(
+        branch,
+        size.height() - 1,
+        size.width() - 1,
+        derivative,
+        mrl_index,
+    )?;
+    logical_idif_edge_offset(-1, edge_len)?;
+    let last_tap = max_base
+        .checked_add(DR_INTERP_FILTER_TAPS as i32 - 2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle IDIF tap index",
+        })?;
+    logical_idif_edge_offset(last_tap, edge_len)?;
     Ok(())
 }
 
@@ -1510,9 +1513,14 @@ fn one_sided_idif_derivative(angle: IntraDirectionalAngle) -> i32 {
 /// the zone-1 above and zone-3 left one-sided projections. `mrl_index == 0` is the
 /// immediate reference line.
 fn one_sided_max_base(size: IntraRectBlockSize, mrl_index: usize) -> Result<i32> {
+    let mrl_extension = mrl_index
+        .checked_mul(2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "one-sided directional angle maxBase",
+        })?;
     let max_base = required_edge_len(size)?
         .checked_sub(1)
-        .and_then(|v| v.checked_add(mrl_index << 1))
+        .and_then(|v| v.checked_add(mrl_extension))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "one-sided directional angle maxBase",
         })?;
@@ -1576,19 +1584,124 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
     let derivative = one_sided_idif_derivative(angle);
     let branch = angle.branch();
     let max_base = one_sided_max_base(size, mrl_index)?;
-    for row in 0..size.height() {
-        let row_start = row * stride_samples;
-        for column in 0..size.width() {
-            let reference = one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
-            let value = if reference.base <= max_base {
-                idif_tap(edge, reference.base, reference.shift, bit_depth)?
-            } else {
-                logical_idif_edge_sample(edge, max_base)?.to_u16()
-            };
-            output[row_start + column] = T::try_from_u16(value)?;
+    match branch {
+        DirectionalAngleBranch::Above { .. } => {
+            for row in 0..size.height() {
+                let row_start = row * stride_samples;
+                let reference = one_sided_idif_reference(branch, row, 0, derivative, mrl_index)?;
+                if let (Some(edge), Some(output_row)) = (
+                    T::u16_slice(edge),
+                    T::u16_slice_mut(&mut output[row_start..row_start + size.width()]),
+                ) {
+                    write_one_sided_idif_above_row_u16(
+                        edge, reference, max_base, bit_depth, output_row,
+                    )?;
+                    continue;
+                }
+                for column in 0..size.width() {
+                    let base = reference.base + column as i32;
+                    let value = if base <= max_base {
+                        idif_tap(edge, base, reference.shift, bit_depth)?
+                    } else {
+                        logical_idif_edge_sample(edge, max_base)?.to_u16()
+                    };
+                    output[row_start + column] = T::try_from_u16(value)?;
+                }
+            }
+        }
+        DirectionalAngleBranch::Left { .. } => {
+            for row in 0..size.height() {
+                let row_start = row * stride_samples;
+                for column in 0..size.width() {
+                    let reference =
+                        one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
+                    let value = if reference.base <= max_base {
+                        idif_tap(edge, reference.base, reference.shift, bit_depth)?
+                    } else {
+                        logical_idif_edge_sample(edge, max_base)?.to_u16()
+                    };
+                    output[row_start + column] = T::try_from_u16(value)?;
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn write_one_sided_idif_above_row_u16(
+    edge: &[u16],
+    reference: OneSidedReference,
+    max_base: i32,
+    bit_depth: BitDepth,
+    output: &mut [u16],
+) -> Result<()> {
+    let active = usize::try_from(max_base - reference.base + 1)
+        .unwrap_or(0)
+        .min(output.len());
+    let last = logical_idif_edge_sample(edge, max_base)?.to_u16();
+    if active == 0 {
+        output.fill(last);
+        return Ok(());
+    }
+    if reference.shift == 0 {
+        let start = logical_idif_edge_offset(reference.base, edge.len())?;
+        output[..active].copy_from_slice(&edge[start..start + active]); // splot-copy-ok: publish contiguous zero-phase IDIF row
+        output[active..].fill(last);
+        return Ok(());
+    }
+    let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
+        ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF shift index",
+        },
+    )?;
+    let first = reference
+        .base
+        .checked_sub(1)
+        .and_then(|base| logical_idif_edge_offset(base, edge.len()).ok())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF tap index",
+        })?;
+    let mut column = 0;
+    while active - column >= 8 {
+        let values = idif_above_row_chunk::<8>(edge, first + column, *taps, bit_depth).to_array();
+        output[column..column + 8].copy_from_slice(&values); // splot-copy-ok: publish SIMD IDIF row chunk
+        column += 8;
+    }
+    while active - column >= 4 {
+        let values = idif_above_row_chunk::<4>(edge, first + column, *taps, bit_depth).to_array();
+        output[column..column + 4].copy_from_slice(&values); // splot-copy-ok: publish SIMD IDIF row chunk
+        column += 4;
+    }
+    for (offset, sample) in output[column..active].iter_mut().enumerate() {
+        *sample = idif_tap(
+            edge,
+            reference.base + (column + offset) as i32,
+            reference.shift,
+            bit_depth,
+        )?;
+    }
+    output[active..].fill(last);
+    Ok(())
+}
+
+#[inline]
+fn idif_above_row_chunk<const LANES: usize>(
+    edge: &[u16],
+    first: usize,
+    taps: [i32; DR_INTERP_FILTER_TAPS],
+    bit_depth: BitDepth,
+) -> Simd<u16, LANES> {
+    let mut sum = Simd::<i32, LANES>::splat(0);
+    for (tap, coefficient) in taps.into_iter().enumerate() {
+        sum += Simd::<u16, LANES>::from_slice(&edge[first + tap..]).cast::<i32>()
+            * Simd::splat(coefficient);
+    }
+    ((sum + Simd::splat(1 << (DR_INTERP_FILTER_ROUND - 1))) >> i32::from(DR_INTERP_FILTER_ROUND))
+        .simd_clamp(
+            Simd::splat(0),
+            Simd::splat(i32::from(bit_depth.max_sample())),
+        )
+        .cast()
 }
 
 fn write_middle_prediction<T: ReconSample>(
@@ -1705,31 +1818,37 @@ fn idif_tap_with_mrl<T: ReconSample>(
     bit_depth: BitDepth,
     mrl_index: usize,
 ) -> Result<u16> {
+    if shift == 0 {
+        let offset = logical_idif_edge_offset_mrl(base, edge.len(), mrl_index)?;
+        return Ok(edge[offset].to_u16());
+    }
     let taps = DR_INTERP_FILTER
         .get(usize::from(shift))
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle IDIF shift index",
         })?;
-    let mut sum = 0i32;
-    for (tap_index, &tap) in taps.iter().enumerate() {
-        let logical =
-            base.checked_add(tap_index as i32 - 1)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "middle directional angle IDIF tap index",
-                })?;
-        let offset = logical_idif_edge_offset_mrl(logical, edge.len(), mrl_index)?;
-        let sample = i32::from(edge[offset].to_u16());
-        let term = tap
-            .checked_mul(sample)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "middle directional angle IDIF tap product",
-            })?;
-        sum = sum
-            .checked_add(term)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "middle directional angle IDIF tap sum",
-            })?;
-    }
+    let first_logical = base.checked_sub(1).ok_or(ReconError::ArithmeticOverflow {
+        context: "middle directional angle IDIF tap index",
+    })?;
+    let first_offset = logical_idif_edge_offset_mrl(first_logical, edge.len(), mrl_index)?;
+    let samples = edge
+        .get(first_offset..)
+        .and_then(|samples| samples.first_chunk::<4>())
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "middle directional angle IDIF tap index",
+        })?;
+    let sum = T::u16_slice(samples).map_or_else(
+        || {
+            taps.iter()
+                .zip(samples)
+                .map(|(&tap, sample)| tap * i32::from(sample.to_u16()))
+                .sum()
+        },
+        |samples| {
+            (Simd::<u16, 4>::from_slice(samples).cast::<i32>() * Simd::from_array(*taps))
+                .reduce_sum()
+        },
+    );
     Ok(idif_round2_clip(sum, bit_depth))
 }
 

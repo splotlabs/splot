@@ -298,7 +298,6 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     cells[5].base = 1;
     MiGrid {
         mi_cols: 16,
-        fully_covered: false,
         base_blocks: blocks,
         overlay_blocks: &[],
         cells,
@@ -665,22 +664,14 @@ fn gather_and_apply_match_accessor_reference_10bit() {
 fn strength_cache_matches_direct_computation() {
     for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
         for &(quant_delta, df_delta_q) in &[(0i32, 0i32), (-6, 3), (12, -2)] {
-            let mut cache = StrengthCache::default();
+            let cache = StrengthCache::new(quant_delta, df_delta_q, bit_depth);
             for qindex in (0u32..=300).chain([301, 302, 303, 304, 1000, u32::MAX]) {
                 let direct = adaptive_strength(
                     deblock_level(qindex, quant_delta, df_delta_q, bit_depth),
                     bit_depth,
                 );
-                assert_eq!(
-                    cache.get(qindex, quant_delta, df_delta_q, bit_depth),
-                    direct,
-                    "first lookup qindex={qindex}"
-                );
-                assert_eq!(
-                    cache.get(qindex, quant_delta, df_delta_q, bit_depth),
-                    direct,
-                    "cached lookup qindex={qindex}"
-                );
+                assert_eq!(cache.get(qindex), direct, "first lookup qindex={qindex}");
+                assert_eq!(cache.get(qindex), direct, "cached lookup qindex={qindex}");
             }
         }
     }
@@ -1007,14 +998,12 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 col: 5,
                 plane_sub_x: 0,
                 plane_sub_y: 0,
-                df_delta_q: 0,
-                quant_delta: 0,
                 bit_depth: BitDepth::Eight,
                 allow_df_sub_pu: false,
                 tile_edge: false,
             },
             false,
-            &mut StrengthCache::default(),
+            &StrengthCache::new(0, 0, BitDepth::Eight),
         )
         .unwrap();
     });
@@ -1042,14 +1031,12 @@ fn skip_suppresses_internal_tx_edge_filtering() {
                 col: 5,
                 plane_sub_x: 0,
                 plane_sub_y: 0,
-                df_delta_q: 0,
-                quant_delta: 0,
                 bit_depth: BitDepth::Eight,
                 allow_df_sub_pu: false,
                 tile_edge: false,
             },
             false,
-            &mut StrengthCache::default(),
+            &StrengthCache::new(0, 0, BitDepth::Eight),
         )
         .unwrap();
     });
@@ -1076,14 +1063,12 @@ fn tile_boundary_filtering_obeys_sequence_flag() {
                     col: 5,
                     plane_sub_x: 0,
                     plane_sub_y: 0,
-                    df_delta_q: 0,
-                    quant_delta: 0,
                     bit_depth: BitDepth::Eight,
                     allow_df_sub_pu: false,
                     tile_edge: true,
                 },
                 disable_loopfilters_across_tiles,
-                &mut StrengthCache::default(),
+                &StrengthCache::new(0, 0, BitDepth::Eight),
             )
             .unwrap();
         });
@@ -1119,14 +1104,12 @@ fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
                     col: 5,
                     plane_sub_x: 0,
                     plane_sub_y: 0,
-                    df_delta_q: 0,
-                    quant_delta: 0,
                     bit_depth: BitDepth::Eight,
                     allow_df_sub_pu,
                     tile_edge: false,
                 },
                 false,
-                &mut StrengthCache::default(),
+                &StrengthCache::new(0, 0, BitDepth::Eight),
             )
             .unwrap();
         });

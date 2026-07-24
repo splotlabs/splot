@@ -416,24 +416,14 @@ impl NeighbourMvGrid {
             bh4: n4h as u8,
             precision,
         };
-        let row_end = r
-            .saturating_add(n4h)
-            .min(self.origin_row.saturating_add(self.mi_rows));
-        let col_end = c
-            .saturating_add(n4w)
-            .min(self.origin_col.saturating_add(self.mi_cols));
-        for rr in r.max(self.origin_row)..row_end {
-            for cc in c.max(self.origin_col)..col_end {
-                let mut cell = cell;
-                if motion_mode.is_warp()
-                    && let Some(params) = warp_params
-                {
-                    cell.sub_mv = warp_sub_mv_at(params, r, c, rr, cc);
-                }
-                self.cells[(rr - self.origin_row) * self.mi_cols + cc - self.origin_col] =
-                    Some(cell);
-            }
-        }
+        let per_cell_warp = warp_params.filter(|_| motion_mode.is_warp());
+        self.publish_block(
+            cell,
+            (r, c),
+            (n4h, n4w),
+            [per_cell_warp, None],
+            ref_frame0 == TIP_REF_FRAME,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -522,20 +512,32 @@ impl NeighbourMvGrid {
             bh4: n4h as u8,
             precision,
         };
-        let row_end = r
-            .saturating_add(n4h)
-            .min(self.origin_row.saturating_add(self.mi_rows));
-        let col_end = c
-            .saturating_add(n4w)
-            .min(self.origin_col.saturating_add(self.mi_cols));
-        for rr in r.max(self.origin_row)..row_end {
-            for cc in c.max(self.origin_col)..col_end {
+        self.publish_block(cell, (r, c), (n4h, n4w), warp_params, false);
+    }
+
+    fn publish_block(
+        &mut self,
+        cell: NeighbourCell,
+        base: (usize, usize),
+        size: (usize, usize),
+        warp_params: [Option<[i32; 6]>; 2],
+        _dense: bool,
+    ) {
+        let row_end = self.origin_row.saturating_add(self.mi_rows);
+        let col_end = self.origin_col.saturating_add(self.mi_cols);
+        let rows = base.0.max(self.origin_row)..base.0.saturating_add(size.0).min(row_end);
+        let cols = base.1.max(self.origin_col)..base.1.saturating_add(size.1).min(col_end);
+        if rows.is_empty() || cols.is_empty() {
+            return;
+        }
+        for rr in rows {
+            for cc in cols.clone() {
                 let mut cell = cell;
                 if let Some(params) = warp_params[0] {
-                    cell.sub_mv = warp_sub_mv_at(params, r, c, rr, cc);
+                    cell.sub_mv = warp_sub_mv_at(params, base.0, base.1, rr, cc);
                 }
                 if let Some(params) = warp_params[1] {
-                    cell.sub_mv1 = warp_sub_mv_at(params, r, c, rr, cc);
+                    cell.sub_mv1 = warp_sub_mv_at(params, base.0, base.1, rr, cc);
                 }
                 self.cells[(rr - self.origin_row) * self.mi_cols + cc - self.origin_col] =
                     Some(cell);

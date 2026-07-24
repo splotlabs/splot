@@ -57,10 +57,9 @@ fn minimal_fixture_with_advisory_metadata_and_empty_record() -> Vec<u8> {
 
 #[test]
 fn minimal_fixture_decodes_to_exact_raw_bytes() {
-    let mut bytes = Vec::new();
-
-    context(ThreadCount::from(1usize))
-        .decode_raw_bytes(MINIMAL_FIXTURE, DecodeOptions::default(), &mut bytes)
+    let context = context(ThreadCount::from(1usize));
+    let bytes = context
+        .decode_raw_output_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
         .unwrap();
 
     assert_eq!(bytes, expected_minimal_raw());

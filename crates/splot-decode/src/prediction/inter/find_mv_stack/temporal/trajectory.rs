@@ -3,44 +3,19 @@
 
 use splot_recon::math::round2_signed_i32;
 
-use super::{Mv, REFMVS_LIMIT, allocate_temporal_grid, project_mv, temporal_grid_index};
+use super::{
+    Mv, REFMVS_LIMIT, allocate_temporal_grid, project_mv, project_no_constraint,
+    temporal_grid_index,
+};
 
 type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
-const INVALID_PROJECTION_OFFSET: u8 = u8::MAX;
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct PackedTrajectoryMv {
-    row: i16,
-    col: i16,
-}
-
-impl Default for PackedTrajectoryMv {
-    fn default() -> Self {
-        Self::INVALID
-    }
-}
-
-impl PackedTrajectoryMv {
-    const INVALID: Self = Self {
-        row: i16::MIN,
-        col: 0,
-    };
-
-    fn new(mv: Mv) -> Self {
-        Self {
-            row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT) as i16,
-            col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT) as i16,
-        }
-    }
-
-    fn unpack(self) -> Option<Mv> {
-        (self.row != Self::INVALID.row).then_some(Mv {
-            row: i32::from(self.row),
-            col: i32::from(self.col),
-        })
-    }
-}
+const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
+const INVALID_TRAJECTORY_MV: Mv = Mv {
+    row: i32::MIN,
+    col: 0,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PackedPosition {
@@ -61,22 +36,36 @@ impl PackedPosition {
         })
     }
 
+    #[cfg(test)]
     fn unpack(self) -> Option<Position> {
-        (self.y != Self::INVALID.y).then_some((self.y as usize, self.x as usize))
+        (self != Self::INVALID).then_some((self.y as usize, self.x as usize))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TrajectoryPositions {
+    phases: PhasePositions,
+    mask: u8,
+}
+
+impl TrajectoryPositions {
+    const EMPTY: Self = Self {
+        phases: [PackedPosition::INVALID; 3],
+        mask: 0,
+    };
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrajectoryMotionField {
     width8: usize,
     height8: usize,
-    pub(super) cells: Vec<PackedTrajectoryMv>,
+    pub(super) cells: Vec<Mv>,
 }
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, mut cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
-        cells.fill(PackedTrajectoryMv::INVALID);
+        cells.fill(INVALID_TRAJECTORY_MV);
         Some(Self {
             width8,
             height8,
@@ -90,8 +79,8 @@ impl TrajectoryMotionField {
         let cells = width8.checked_mul(height8)?;
         self.width8 = width8;
         self.height8 = height8;
-        self.cells.resize(cells, PackedTrajectoryMv::INVALID);
-        self.cells.fill(PackedTrajectoryMv::INVALID);
+        self.cells.resize(cells, INVALID_TRAJECTORY_MV);
+        self.cells.fill(INVALID_TRAJECTORY_MV);
         Some(())
     }
 
@@ -104,7 +93,10 @@ impl TrajectoryMotionField {
     }
 
     fn cell_at(&self, index: usize) -> Option<Mv> {
-        self.cells.get(index).copied()?.unpack()
+        self.cells
+            .get(index)
+            .copied()
+            .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
     }
 
     pub(super) fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
@@ -116,7 +108,7 @@ impl TrajectoryMotionField {
 
     fn set_at(&mut self, index: usize, mv: Mv) {
         if let Some(cell) = self.cells.get_mut(index) {
-            *cell = PackedTrajectoryMv::new(mv);
+            *cell = mv;
         }
     }
 }
@@ -124,12 +116,13 @@ impl TrajectoryMotionField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TrajectoryState {
     pub(super) fields: Vec<TrajectoryMotionField>,
-    pub(super) positions: Vec<Vec<PhasePositions>>,
-    pub(super) projection_offsets: Vec<u8>,
+    pub(super) positions: Vec<Vec<TrajectoryPositions>>,
+    pub(super) projection_offsets: Vec<i32>,
     step: usize,
+    step_mask: usize,
     unit_size8: usize,
-    unit_shift: Option<u32>,
-    col_offset: usize,
+    unit_mask: usize,
+    unit_shift: u32,
     width8: usize,
     height8: usize,
 }
@@ -144,18 +137,20 @@ impl TrajectoryState {
         let template = TrajectoryMotionField::new(mi_dimensions.0, mi_dimensions.1)?;
         let cell_count = template.cells.len();
         let step = step.clamp(1, 2);
+        let unit_size8 = unit_size8.max(1);
         let fields = vec![template; reference_count];
         let (width8, height8) = fields
             .first()
             .map_or((0, 0), |field| (field.width8, field.height8));
         Some(Self {
             fields,
-            positions: vec![vec![[PackedPosition::INVALID; 3]; cell_count]; reference_count],
+            positions: vec![vec![TrajectoryPositions::EMPTY; cell_count]; reference_count],
             projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
             step,
-            unit_size8: unit_size8.max(1),
-            unit_shift: Self::unit_shift(unit_size8.max(1)),
-            col_offset: Self::col_offset(step, unit_size8.max(1)),
+            step_mask: step - 1,
+            unit_size8,
+            unit_mask: unit_size8 - 1,
+            unit_shift: unit_size8.trailing_zeros(),
             width8,
             height8,
         })
@@ -182,16 +177,17 @@ impl TrajectoryState {
         }
         self.positions.resize_with(reference_count, Vec::new);
         for positions in &mut self.positions {
-            positions.resize(cell_count, [PackedPosition::INVALID; 3]);
-            positions.fill([PackedPosition::INVALID; 3]);
+            positions.resize(cell_count, TrajectoryPositions::EMPTY);
+            positions.fill(TrajectoryPositions::EMPTY);
         }
         self.projection_offsets
             .resize(cell_count, INVALID_PROJECTION_OFFSET);
         self.projection_offsets.fill(INVALID_PROJECTION_OFFSET);
         self.step = step.clamp(1, 2);
+        self.step_mask = self.step - 1;
         self.unit_size8 = unit_size8.max(1);
-        self.unit_shift = Self::unit_shift(self.unit_size8);
-        self.col_offset = Self::col_offset(self.step, self.unit_size8);
+        self.unit_mask = self.unit_size8 - 1;
+        self.unit_shift = self.unit_size8.trailing_zeros();
         (self.width8, self.height8) = self
             .fields
             .first()
@@ -209,9 +205,10 @@ impl TrajectoryState {
             positions: Vec::new(),
             projection_offsets: Vec::new(),
             step: 1,
+            step_mask: 0,
             unit_size8: 1,
-            unit_shift: Some(0),
-            col_offset: 0,
+            unit_mask: 0,
+            unit_shift: 0,
             width8,
             height8,
         }
@@ -226,12 +223,8 @@ impl TrajectoryState {
         &self.fields
     }
 
-    fn grid_index(&self, y8: usize, x8: usize) -> Option<usize> {
-        temporal_grid_index(self.width8, self.height8, y8, x8)
-    }
-
-    fn positions_at(&self, reference: usize, index: usize) -> Option<PhasePositions> {
-        self.positions.get(reference)?.get(index).copied()
+    fn valid_grid_index(&self, y8: usize, x8: usize) -> usize {
+        y8 * self.width8 + x8
     }
 
     fn set_position_at(
@@ -241,92 +234,73 @@ impl TrajectoryState {
         phase: usize,
         position: Position,
     ) {
+        let Some(position) = PackedPosition::new(position) else {
+            return;
+        };
         if let Some(cell) = self
             .positions
             .get_mut(reference)
             .and_then(|field| field.get_mut(index))
-            && let Some(position) = PackedPosition::new(position)
+            && let Some(slot) = cell.phases.get_mut(phase)
         {
-            cell[phase] = position;
+            *slot = position;
+            cell.mask |= 1 << phase;
         }
     }
 
-    fn div_unit(value: usize, unit: usize) -> usize {
-        if unit.is_power_of_two() {
-            value >> unit.trailing_zeros()
-        } else {
-            value / unit
-        }
-    }
-
-    fn unit_shift(unit_size8: usize) -> Option<u32> {
-        unit_size8
-            .is_power_of_two()
-            .then(|| unit_size8.trailing_zeros())
-    }
-
-    fn col_offset(step: usize, unit_size8: usize) -> usize {
-        if step == 1 {
-            unit_size8 / 2
-        } else {
-            unit_size8
-        }
-    }
-
-    fn div_unit_size(&self, value: usize) -> usize {
-        match self.unit_shift {
-            Some(shift) => value >> shift,
-            None => value / self.unit_size8,
-        }
+    fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
+        self.set_position_at(
+            reference,
+            self.valid_grid_index(at.0, at.1),
+            phase,
+            position,
+        );
     }
 
     fn phase(&self, x8: usize) -> usize {
-        self.div_unit_size(x8) % 3
+        (x8 >> self.unit_shift) % 3
     }
 
     fn unit_base(&self, value: usize) -> usize {
-        self.div_unit_size(value) * self.unit_size8
+        value & !self.unit_mask
     }
 
     fn round_step(&self, value: usize) -> usize {
-        Self::div_unit(value, self.step) * self.step
+        value & !self.step_mask
     }
 
-    fn position_allowed(&self, candidate: (usize, usize), base: (usize, usize)) -> bool {
-        if candidate.0 >= self.height8 || candidate.1 >= self.width8 {
-            return false;
-        }
+    fn position_bounds(&self, base: Position) -> (usize, usize, usize, usize) {
         let base_y = self.unit_base(base.0);
         let base_x = self.unit_base(base.1);
-        let col_offset = self.col_offset;
-        candidate.0 >= base_y
-            && candidate.0 < base_y + self.unit_size8
-            && candidate.1.saturating_add(col_offset) >= base_x
-            && candidate.1 < base_x + self.unit_size8 + col_offset
+        let col_offset = if self.step == 1 {
+            self.unit_size8 / 2
+        } else {
+            self.unit_size8
+        };
+        (
+            base_y,
+            base_y + self.unit_size8,
+            base_x.saturating_sub(col_offset),
+            base_x + self.unit_size8 + col_offset,
+        )
+    }
+
+    fn position_allowed(
+        candidate: Position,
+        (min_y, max_y, min_x, max_x): (usize, usize, usize, usize),
+    ) -> bool {
+        candidate.0 >= min_y && candidate.0 < max_y && candidate.1 >= min_x && candidate.1 < max_x
     }
 
     fn sampled_position(&self, y8: usize, x8: usize, mv: Mv) -> Option<(usize, usize)> {
-        let offset = |base: usize, delta: i32, limit: usize| {
-            let delta8 = delta / (1 << 6);
-            let projected = i32::try_from(base).ok()?.checked_add(delta8)?;
-            usize::try_from(projected)
-                .ok()
-                .filter(|&projected| projected < limit)
-        };
-        let y8 = offset(y8, mv.row, self.height8)?;
-        let x8 = offset(x8, mv.col, self.width8)?;
+        let y8 = project_no_constraint(y8, mv.row, self.height8)?;
+        let x8 = project_no_constraint(x8, mv.col, self.width8)?;
         Some((self.round_step(y8), self.round_step(x8)))
     }
 
     fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
         if let Some(field) = self.fields.get_mut(reference) {
-            field.set_at(index, mv);
-        }
-    }
-
-    fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
-        if let Some(index) = self.grid_index(at.0, at.1) {
-            self.set_position_at(reference, index, phase, position);
+            field.set_at(index, clamp_mv(mv));
         }
     }
 
@@ -337,78 +311,81 @@ impl TrajectoryState {
         y8: usize,
         x8: usize,
         mv: Mv,
-    ) {
-        let Some(end) = end.filter(|&end| end < self.fields.len() && source < self.fields.len())
-        else {
-            return;
-        };
-        if let Some(start_positions) = self
-            .grid_index(y8, x8)
-            .and_then(|index| self.positions_at(source, index))
+    ) -> Option<Position> {
+        let end = end.filter(|&end| end < self.fields.len())?;
+        if source >= self.fields.len()
+            || source >= self.positions.len()
+            || end >= self.positions.len()
+            || y8 >= self.height8
+            || x8 >= self.width8
         {
-            for (phase, position) in start_positions.into_iter().enumerate() {
-                let Some(trajectory) = position.unpack() else {
-                    continue;
-                };
-                if !self.position_allowed((y8, x8), trajectory) {
-                    continue;
-                }
-                let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
-                    continue;
-                };
-                if self.fields[end].cell_at(traj_index).is_some() {
+            return None;
+        }
+        let source_index = self.valid_grid_index(y8, x8);
+        let source_positions = self.positions[source][source_index];
+        let source_mask = source_positions.mask;
+        if source_mask != 0 {
+            let phases = source_positions.phases;
+            for (phase, packed) in phases.into_iter().enumerate() {
+                if source_mask & (1 << phase) == 0 {
                     continue;
                 }
-                let Some(source_mv) = self.fields[source].cell_at(traj_index) else {
+                let trajectory = (packed.y as usize, packed.x as usize);
+                let bounds = self.position_bounds(trajectory);
+                let traj_index = self.valid_grid_index(trajectory.0, trajectory.1);
+                if self.fields[end].cells[traj_index] != INVALID_TRAJECTORY_MV {
                     continue;
-                };
+                }
+                let source_mv = self.fields[source].cells[traj_index];
+                if source_mv == INVALID_TRAJECTORY_MV {
+                    continue;
+                }
                 let end_mv = add_mv(source_mv, mv);
-                self.fields[end].set_at(traj_index, end_mv);
+                self.fields[end].cells[traj_index] = clamp_mv(end_mv);
                 if let Some(position) = self
                     .sampled_position(trajectory.0, trajectory.1, end_mv)
-                    .filter(|&position| self.position_allowed(position, trajectory))
+                    .filter(|&position| Self::position_allowed(position, bounds))
                 {
                     self.set_position(end, position, phase, trajectory);
                 }
             }
         }
 
-        let Some(end_position) = self.sampled_position(y8, x8, mv) else {
-            return;
-        };
-        let Some(end_index) = self.grid_index(end_position.0, end_position.1) else {
-            return;
-        };
-        let Some(end_positions) = self.positions_at(end, end_index) else {
-            return;
-        };
-        for (phase, position) in end_positions.into_iter().enumerate() {
-            let Some(trajectory) = position.unpack() else {
-                continue;
-            };
-            if !self.position_allowed((y8, x8), trajectory)
-                || !self.position_allowed(end_position, trajectory)
-            {
+        let end_position = self.sampled_position(y8, x8, mv)?;
+        let end_index = self.valid_grid_index(end_position.0, end_position.1);
+        let end_positions = self.positions[end][end_index];
+        let end_mask = end_positions.mask;
+        if end_mask == 0 {
+            return Some(end_position);
+        }
+        let phases = end_positions.phases;
+        for (phase, packed) in phases.into_iter().enumerate() {
+            if end_mask & (1 << phase) == 0 {
                 continue;
             }
-            let Some(traj_index) = self.grid_index(trajectory.0, trajectory.1) else {
-                continue;
-            };
-            if self.fields[source].cell_at(traj_index).is_some() {
+            let trajectory = (packed.y as usize, packed.x as usize);
+            let bounds = self.position_bounds(trajectory);
+            if !Self::position_allowed((y8, x8), bounds) {
                 continue;
             }
-            let Some(end_mv) = self.fields[end].cell_at(traj_index) else {
+            let traj_index = self.valid_grid_index(trajectory.0, trajectory.1);
+            if self.fields[source].cells[traj_index] != INVALID_TRAJECTORY_MV {
                 continue;
-            };
+            }
+            let end_mv = self.fields[end].cells[traj_index];
+            if end_mv == INVALID_TRAJECTORY_MV {
+                continue;
+            }
             let source_mv = subtract_mv(end_mv, mv);
-            self.fields[source].set_at(traj_index, source_mv);
+            self.fields[source].cells[traj_index] = clamp_mv(source_mv);
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
-                .filter(|&position| self.position_allowed(position, trajectory))
+                .filter(|&position| Self::position_allowed(position, bounds))
             {
                 self.set_position(source, position, phase, trajectory);
             }
         }
+        Some(end_position)
     }
 
     #[cfg(test)]
@@ -437,7 +414,15 @@ impl TrajectoryState {
         let Some(projected) = project_mv(mv, numerator, reference_offset) else {
             return;
         };
-        self.observe_projection_with_projected(
+        let Some(position) = self.sampled_position(y8, x8, projected) else {
+            return;
+        };
+        let bounds = self.position_bounds(position);
+        if !Self::position_allowed((y8, x8), bounds) {
+            return;
+        }
+        let target_position = self.sampled_position(y8, x8, mv);
+        self.observe_projection_at(
             source,
             end,
             target,
@@ -445,6 +430,8 @@ impl TrajectoryState {
             x8,
             mv,
             projected,
+            position,
+            target_position,
             source_to_current,
             reference_offset,
             backward,
@@ -452,7 +439,7 @@ impl TrajectoryState {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn observe_projection_with_projected(
+    pub(super) fn observe_projection_at(
         &mut self,
         source: usize,
         end: Option<usize>,
@@ -461,34 +448,25 @@ impl TrajectoryState {
         x8: usize,
         mv: Mv,
         projected: Mv,
+        position: Position,
+        target_position: Option<Position>,
         source_to_current: i32,
         reference_offset: i32,
         backward: bool,
     ) {
-        let numerator = if backward {
-            -source_to_current
-        } else {
-            source_to_current
-        };
-        let Some(position) = self
-            .sampled_position(y8, x8, projected)
-            .filter(|&position| self.position_allowed((y8, x8), position))
-        else {
+        if y8 >= self.height8 || x8 >= self.width8 {
             return;
-        };
-        let Some(index) = self.grid_index(position.0, position.1) else {
-            return;
-        };
+        }
+        let index = self.valid_grid_index(position.0, position.1);
         let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
             return;
         };
-        let packed_reference_offset = reference_offset as u8;
         let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
-            || (target.is_some() && target == end && *recorded_offset != packed_reference_offset);
+            || (target.is_some() && target == end && *recorded_offset != reference_offset);
         if !replace {
             return;
         }
-        *recorded_offset = packed_reference_offset;
+        *recorded_offset = reference_offset;
         let phase = self.phase(position.1);
         self.set_position(source, (y8, x8), phase, position);
         self.set_field_at(
@@ -502,13 +480,18 @@ impl TrajectoryState {
         let Some(end) = end else {
             return;
         };
+        let numerator = if backward {
+            -source_to_current
+        } else {
+            source_to_current
+        };
         let Some(end_mv) = project_mv(mv, reference_offset - numerator, reference_offset) else {
             return;
         };
         self.set_field_at(end, index, end_mv);
-        if let Some(target_position) = self
-            .sampled_position(y8, x8, mv)
-            .filter(|&target_position| self.position_allowed(target_position, position))
+        let bounds = self.position_bounds(position);
+        if let Some(target_position) = target_position
+            .filter(|&target_position| Self::position_allowed(target_position, bounds))
         {
             self.set_position(end, target_position, phase, position);
         }
@@ -526,15 +509,22 @@ impl TrajectoryState {
 
 fn add_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row + b.row,
-        col: a.col + b.col,
+        row: a.row.saturating_add(b.row),
+        col: a.col.saturating_add(b.col),
     }
 }
 
 fn subtract_mv(a: Mv, b: Mv) -> Mv {
     Mv {
-        row: a.row - b.row,
-        col: a.col - b.col,
+        row: a.row.saturating_sub(b.row),
+        col: a.col.saturating_sub(b.col),
+    }
+}
+
+fn clamp_mv(mv: Mv) -> Mv {
+    Mv {
+        row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+        col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
     }
 }
 
@@ -599,44 +589,13 @@ mod tests {
     #[test]
     fn trajectory_storage_stays_compact() {
         assert_eq!(std::mem::size_of::<Mv>(), 8);
-        assert_eq!(std::mem::size_of::<PackedTrajectoryMv>(), 4);
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
-        assert_eq!(std::mem::size_of::<u8>(), 1);
-        assert_eq!(PackedTrajectoryMv::INVALID.unpack(), None);
-        assert_eq!(PackedPosition::INVALID.unpack(), None);
+        assert_eq!(std::mem::size_of::<TrajectoryPositions>(), 14);
+        assert_eq!(std::mem::size_of::<i32>(), 4);
         assert_eq!(
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
-        );
-    }
-
-    #[test]
-    fn trajectory_arithmetic_handles_maximum_accumulation() {
-        let positive = Mv {
-            row: REFMVS_LIMIT,
-            col: REFMVS_LIMIT,
-        };
-        let negative = Mv {
-            row: -REFMVS_LIMIT,
-            col: -REFMVS_LIMIT,
-        };
-        let sum = add_mv(add_mv(add_mv(positive, positive), positive), positive);
-        let difference = subtract_mv(negative, positive);
-
-        assert_eq!(
-            sum,
-            Mv {
-                row: 4 * REFMVS_LIMIT,
-                col: 4 * REFMVS_LIMIT
-            }
-        );
-        assert_eq!(
-            difference,
-            Mv {
-                row: -2 * REFMVS_LIMIT,
-                col: -2 * REFMVS_LIMIT
-            }
         );
     }
 

@@ -140,8 +140,16 @@ impl StripePlane {
         }
         let sample_count = source.width().checked_mul(end_y - origin_y)?;
         let mut samples = take_stripe_sample_buffer(sample_count)?;
-        for y in origin_y..end_y {
-            samples.extend(source.row(y)?.iter().map(|value| value.to_u16()));
+        if let Some(source_samples) = T::u16_slice(source.samples()) {
+            for y in origin_y..end_y {
+                let start = y.checked_mul(source.stride())?;
+                let row = source_samples.get(start..start.checked_add(source.width())?)?;
+                samples.extend_from_slice(row);
+            }
+        } else {
+            for y in origin_y..end_y {
+                samples.extend(source.row(y)?.iter().map(|value| value.to_u16()));
+            }
         }
         Some(Self {
             width: source.width(),

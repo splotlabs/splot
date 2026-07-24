@@ -17,9 +17,10 @@
 //! Coverage is explicit and loud:
 //!
 //! - Tables whose element values are all integer literals are **generated** as
-//!   nested fixed-size arrays (compact `u16` for CDFs and GDF alpha, `i16` for GDF
-//!   weights, and `i32` otherwise; the array shape is inferred from the brace
-//!   nesting and named dimension expressions are recorded as a doc comment only).
+//!   nested fixed-size arrays (compact `u16` for CDFs and GDF alpha, `u8` for the
+//!   PC-Wiener class LUT, `i16` for GDF weights, `i8` for the bounded warped
+//!   filter, and `i32` otherwise; the array shape is inferred from the brace nesting and named
+//!   dimension expressions are recorded as a doc comment only).
 //! - The four § 9.2 block-size tables with `BLOCK_*` element values, the
 //!   four § 9.2 transform-size tables with `TX_*` element values, and the
 //!   § 9.2 `Mode_To_Txfm` table with `TxType` element values are also generated
@@ -597,6 +598,8 @@ fn render_module(section: &Section, decls: &[GeneratedTable<'_>]) -> Result<Stri
         let element_type = match rust_name.as_str() {
             "GDF_ALPHA" => "u16",
             "GDF_WEIGHT" => "i16",
+            "PC_WIENER_LUT_TO_CLASS" | "PC_WIENER_SUB_CLASSIFY" | "PC_WIENER_SUB_CLASSIFY2" => "u8",
+            "WARPED_FILTERS" => "i8",
             _ if section.module == "cdf" => "u16",
             _ => "i32",
         };
@@ -734,7 +737,9 @@ fn render_node(toks: &[Tok], idx: &mut usize, element_type: &str) -> Result<Stri
         Some(Tok::Int(v)) => {
             *idx += 1;
             let fits = match element_type {
+                "i8" => i8::try_from(*v).is_ok(),
                 "i16" => i16::try_from(*v).is_ok(),
+                "u8" => u8::try_from(*v).is_ok(),
                 "u16" => u16::try_from(*v).is_ok(),
                 _ => i32::try_from(*v).is_ok(),
             };

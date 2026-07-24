@@ -109,14 +109,17 @@ mod tests {
         let first = block(1, Mv { row: 8, col: 16 });
         let second = block(2, Mv { row: 24, col: 32 });
         let mut direct = TemporalMotionField::new(2, 2).expect("direct field");
+        direct.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
         direct.record_block(first);
         direct.record_block(second);
 
         let mut logged = TemporalMotionField::new(2, 2).expect("logged field");
+        logged.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
         commit_temporal_motion_blocks(&mut logged, &[first, second]);
         assert_eq!(logged, direct);
 
         let mut reversed = TemporalMotionField::new(2, 2).expect("reversed field");
+        reversed.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
         commit_temporal_motion_blocks(&mut reversed, &[second, first]);
         assert_ne!(reversed, direct);
     }

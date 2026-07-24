@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
+use std::simd::{Simd, num::SimdUint, simd_swizzle};
+
 use splot_recon::math::{approx_divide, resolve_division, round2_i32, round2_signed_i32};
 use splot_recon::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
@@ -400,6 +402,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     bit_depth: BitDepth,
     samples_q3: &mut Vec<i32>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
+    let timer = crate::timing::start();
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(
             GeneralIntraResidualError::UnsupportedTransformToolResidual {
@@ -420,6 +423,26 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
         sb_mib,
         bit_depth,
     )?;
+    let luma_plane = workspace.plane(PlaneId::Y)?;
+    if pixel_format == PixelFormat::Yuv420
+        && cfl_ds_filter_index == 1
+        && let Some(luma) = T::u16_slice(luma_plane.samples())
+        && fill_cfl_luma_ac_420_filter1_u16(
+            luma,
+            luma_plane.stride_samples(),
+            luma_plane.storage_size().width(),
+            luma_plane.storage_size().height(),
+            x,
+            y,
+            width,
+            height,
+            average_q3,
+            samples_q3,
+        )
+    {
+        crate::timing::report("cfl_luma_ac", timer);
+        return Ok(());
+    }
     samples_q3.clear();
     samples_q3.reserve(width.saturating_mul(height));
     for row in 0..height {
@@ -442,7 +465,108 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
             );
         }
     }
+    crate::timing::report("cfl_luma_ac", timer);
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_cfl_luma_ac_420_filter1_u16(
+    luma: &[u16],
+    stride: usize,
+    plane_width: usize,
+    plane_height: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    average_q3: i32,
+    output: &mut Vec<i32>,
+) -> bool {
+    let Some(sample_count) = width.checked_mul(height) else {
+        return false;
+    };
+    let Some(required) = stride.checked_mul(plane_height) else {
+        return false;
+    };
+    if plane_width == 0 || plane_height == 0 || stride < plane_width || luma.len() < required {
+        return false;
+    }
+    output.clear();
+    output.resize(sample_count, 0);
+    let max_x = plane_width - 1;
+    let max_y = plane_height - 1;
+    let average = Simd::<i32, 8>::splat(average_q3);
+    for row in 0..height {
+        let Some(chroma_y) = y.checked_add(row) else {
+            return false;
+        };
+        let Some(luma_y) = chroma_y.checked_mul(2) else {
+            return false;
+        };
+        let row0 = luma_y.min(max_y);
+        let row1 = luma_y.saturating_add(1).min(max_y);
+        let Some(row0_start) = row0.checked_mul(stride) else {
+            return false;
+        };
+        let Some(row1_start) = row1.checked_mul(stride) else {
+            return false;
+        };
+        let Some(row0) = luma.get(row0_start..row0_start + plane_width) else {
+            return false;
+        };
+        let Some(row1) = luma.get(row1_start..row1_start + plane_width) else {
+            return false;
+        };
+        let out = &mut output[row * width..(row + 1) * width];
+        let mut col = 0usize;
+        while col < width {
+            let Some(chroma_x) = x.checked_add(col) else {
+                return false;
+            };
+            let Some(luma_x) = chroma_x.checked_mul(2) else {
+                return false;
+            };
+            let offset_in_64 = luma_x & 63;
+            if col + 8 <= width
+                && col != 0
+                && luma_x > 0
+                && luma_x + 15 < plane_width
+                && offset_in_64 != 0
+                && offset_in_64 + 14 < 64
+            {
+                let a0 = Simd::<u16, 16>::from_slice(&row0[luma_x - 1..]);
+                let b0 = Simd::<u16, 16>::from_slice(&row0[luma_x..]);
+                let a1 = Simd::<u16, 16>::from_slice(&row1[luma_x - 1..]);
+                let b1 = Simd::<u16, 16>::from_slice(&row1[luma_x..]);
+                let left = simd_swizzle!(a0 + a1, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
+                let rows = b0 + b1;
+                let center = simd_swizzle!(rows, [0, 2, 4, 6, 8, 10, 12, 14]).cast::<i32>();
+                let right = simd_swizzle!(rows, [1, 3, 5, 7, 9, 11, 13, 15]).cast::<i32>();
+                out[col..col + 8].copy_from_slice(
+                    &(left + center * Simd::splat(2) + right - average).to_array(),
+                ); // splot-copy-ok: publish eight CfL luma-AC samples
+                col += 8;
+                continue;
+            }
+            let center_x = luma_x.min(max_x);
+            let clamp_x = col == 0 || luma_x.is_multiple_of(64);
+            let left_x = if clamp_x {
+                center_x
+            } else {
+                luma_x.saturating_sub(1).min(max_x)
+            };
+            let right_x = luma_x.saturating_add(1).min(max_x);
+            out[col] = i32::from(row0[left_x])
+                + 2 * i32::from(row0[center_x])
+                + i32::from(row0[right_x])
+                + i32::from(row1[left_x])
+                + 2 * i32::from(row1[center_x])
+                + i32::from(row1[right_x])
+                - average_q3;
+            col += 1;
+        }
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]

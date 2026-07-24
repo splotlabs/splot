@@ -15,6 +15,10 @@
 //! `DECODE-INTER-COMPOUND-LOCALWARP`.
 
 use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
+use std::simd::{
+    Simd,
+    num::{SimdInt, SimdUint},
+};
 
 use crate::error::{ReconError, Result};
 use crate::format::{BitDepth, ReconSample};
@@ -82,6 +86,51 @@ pub struct WarpPredictBlockParams {
     pub last_y: i32,
     /// Active bit depth used by the final § 4.8 `Clip1` clamp.
     pub bit_depth: BitDepth,
+}
+
+/// Validated affine-warp setup reusable across the 8x8 sections of one block.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedWarpPrediction {
+    params: WarpPredictBlockParams,
+    shear: Shear,
+}
+
+impl PreparedWarpPrediction {
+    /// Validates the invariant warp parameters and derives the § 7.13.3.21 shear.
+    ///
+    /// `block_x` and `block_y` in `params` are the initial section coordinates;
+    /// [`Self::predict_block_into`] accepts each reused section's coordinates.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] for invalid bounds, scaling, subsampling, or shear.
+    pub fn new(params: &WarpPredictBlockParams) -> Result<Self> {
+        validate_params(params)?;
+        Ok(Self {
+            params: *params,
+            shear: setup_shear(params.warp_params)?,
+        })
+    }
+
+    /// Writes one 8x8 section using the prepared affine-warp setup.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when projection arithmetic or a derived filter
+    /// phase is outside the checked AV2 envelope.
+    pub fn predict_block_into<T: ReconSample>(
+        &self,
+        reference: &ReferencePlaneView<'_, T>,
+        block_x: i32,
+        block_y: i32,
+        is_compound: bool,
+        output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+    ) -> Result<()> {
+        let params = WarpPredictBlockParams {
+            block_x,
+            block_y,
+            ..self.params
+        };
+        warp_predict_block_prepared_into(reference, &params, &self.shear, is_compound, output)
+    }
 }
 
 /// Runs the AV2 § 7.13.3.19 block-warp convolution for one single-reference 8x8
@@ -339,27 +388,42 @@ pub fn warp_predict_block_into<T: ReconSample>(
     is_compound: bool,
     output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
 ) -> Result<()> {
+    PreparedWarpPrediction::new(params)?.predict_block_into(
+        reference,
+        params.block_x,
+        params.block_y,
+        is_compound,
+        output,
+    )
+}
+
+fn warp_predict_block_prepared_into<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &WarpPredictBlockParams,
+    shear: &Shear,
+    is_compound: bool,
+    output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
+) -> Result<()> {
     let round1 = if is_compound {
         INTER_ROUND1_COMPOUND
     } else {
         INTER_ROUND1_NON_COMPOUND
     };
-    validate_params(params)?;
-    let shear = setup_shear(params.warp_params)?;
     let projected = project_section_center(params)?;
-    let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
+    let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
     if let Some(source_origin) = interior_warp_source_origin(reference, params, &projected) {
         build_interior_intermediate(
             reference,
-            &shear,
+            shear,
             &projected,
             source_origin,
             &mut intermediate,
-        )?;
+        );
     } else {
-        build_intermediate(reference, params, &shear, &projected, &mut intermediate)?;
+        build_intermediate(reference, params, shear, &projected, &mut intermediate);
     }
-    build_output(&shear, &projected, &intermediate, round1, output)
+    build_output(shear, &projected, &intermediate, round1, output);
+    Ok(())
 }
 
 fn interior_warp_source_origin<T: ReconSample>(
@@ -591,31 +655,25 @@ fn build_intermediate<T: ReconSample>(
     params: &WarpPredictBlockParams,
     shear: &Shear,
     projected: &ProjectedCenter,
-    intermediate: &mut [i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
-) -> Result<()> {
+    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+) {
     for i1 in -7i32..8 {
         for i2 in -4i32..4 {
-            let sx = projected
-                .sx4
-                .checked_add(shear.alpha * i2)
-                .and_then(|value| value.checked_add(shear.beta * i1))
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "block-warp horizontal phase",
-                })?;
-            let taps = warped_filter_row(sx)?;
+            let sx = projected.sx4 + shear.alpha * i2 + shear.beta * i1;
+            let taps = warped_filter_row(sx);
             let ref_row = (projected.y4_int + i1).clamp(params.first_y, params.last_y);
             let mut sum = 0i32;
             for (i3, &tap) in taps.iter().enumerate() {
                 let ref_col =
                     (projected.x4_int + i2 - 3 + i3 as i32).clamp(params.first_x, params.last_x);
-                sum += tap * reference.sample(ref_row as usize, ref_col as usize);
+                sum += i32::from(tap) * reference.sample(ref_row as usize, ref_col as usize);
             }
             let row = (i1 + 7) as usize;
             let col = (i2 + 4) as usize;
-            intermediate[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, INTER_ROUND0);
+            intermediate[row * WARPED_BLOCK_SIZE + col] =
+                narrow_warp_intermediate(round2_i32(sum, INTER_ROUND0));
         }
     }
-    Ok(())
 }
 
 fn build_interior_intermediate<T: ReconSample>(
@@ -623,69 +681,112 @@ fn build_interior_intermediate<T: ReconSample>(
     shear: &Shear,
     projected: &ProjectedCenter,
     (first_col, first_row): (usize, usize),
-    intermediate: &mut [i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
-) -> Result<()> {
+    intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+) {
+    if shear.alpha == 0 {
+        let mut supported = true;
+        for row in 0..WARP_INTERMEDIATE_ROWS {
+            let i1 = row as i32 - 7;
+            let source = reference.row(first_row + row);
+            let Some(source) = T::u16_slice(source) else {
+                supported = false;
+                break;
+            };
+            let taps = warped_filter_row(projected.sx4 + shear.beta * i1);
+            let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+            for (tap, &weight) in taps.iter().enumerate() {
+                let samples =
+                    Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(&source[first_col + tap..])
+                        .cast::<i32>();
+                sum += Simd::splat(i32::from(weight)) * samples;
+            }
+            let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
+            intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
+                .copy_from_slice(&rounded.cast::<i16>().to_array()); // splot-copy-ok: store uniform-phase row-wide SIMD warp intermediate
+        }
+        if supported {
+            return;
+        }
+    }
     for row in 0..WARP_INTERMEDIATE_ROWS {
         let i1 = row as i32 - 7;
         let source = reference.row(first_row + row);
         for col in 0..WARPED_BLOCK_SIZE {
             let i2 = col as i32 - 4;
             let sx = projected.sx4 + shear.alpha * i2 + shear.beta * i1;
-            let taps = warped_filter_row(sx)?;
+            let taps = warped_filter_row(sx);
             let samples = &source[first_col + col..first_col + col + WARP_FILTER_TAPS];
             let sum = taps
                 .iter()
                 .zip(samples)
-                .map(|(&tap, &sample)| tap * i32::from(sample.to_u16()))
+                .map(|(&tap, &sample)| i32::from(tap) * i32::from(sample.to_u16()))
                 .sum();
-            intermediate[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, INTER_ROUND0);
+            intermediate[row * WARPED_BLOCK_SIZE + col] =
+                narrow_warp_intermediate(round2_i32(sum, INTER_ROUND0));
         }
     }
-    Ok(())
 }
 
+#[allow(clippy::needless_range_loop, reason = "transpose warp taps for SIMD")]
 fn build_output(
     shear: &Shear,
     projected: &ProjectedCenter,
-    intermediate: &[i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
+    intermediate: &[i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
     round1: u32,
     output: &mut [i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE],
-) -> Result<()> {
-    for i1 in -4i32..4 {
-        for i2 in -4i32..4 {
-            let sy = projected
-                .sy4
-                .checked_add(shear.gamma * i2)
-                .and_then(|value| value.checked_add(shear.delta * i1))
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "block-warp vertical phase",
-                })?;
-            let taps = warped_filter_row(sy)?;
-            let mut sum = 0i32;
-            for (i3, &tap) in taps.iter().enumerate() {
-                let row = (i1 + i3 as i32 + 4) as usize;
-                let col = (i2 + 4) as usize;
-                sum += tap * intermediate[row * WARPED_BLOCK_SIZE + col];
+) {
+    if shear.gamma == 0 {
+        for row in 0..WARPED_BLOCK_SIZE {
+            let i1 = row as i32 - 4;
+            let taps = warped_filter_row(projected.sy4 + shear.delta * i1);
+            let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+            for (tap, &weight) in taps.iter().enumerate() {
+                let samples = Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..])
+                    .cast::<i32>();
+                sum += Simd::splat(i32::from(weight)) * samples;
             }
-            let row = (i1 + 4) as usize;
-            let col = (i2 + 4) as usize;
-            output[row * WARPED_BLOCK_SIZE + col] = round2_i32(sum, round1);
+            let rounded = (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32;
+            output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
+                .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish uniform-phase row-wide SIMD warp output
         }
+        return;
     }
-    Ok(())
+    for row in 0..WARPED_BLOCK_SIZE {
+        let i1 = row as i32 - 4;
+        let mut taps_by_tap = [[0i16; WARPED_BLOCK_SIZE]; WARP_FILTER_TAPS];
+        for col in 0..WARPED_BLOCK_SIZE {
+            let i2 = col as i32 - 4;
+            let sy = projected.sy4 + shear.gamma * i2 + shear.delta * i1;
+            let taps = warped_filter_row(sy);
+            for (tap, &value) in taps.iter().enumerate() {
+                taps_by_tap[tap][col] = i16::from(value);
+            }
+        }
+        let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
+        for (tap, taps) in taps_by_tap.into_iter().enumerate() {
+            let samples =
+                Simd::from_slice(&intermediate[(row + tap) * WARPED_BLOCK_SIZE..]).cast::<i32>();
+            sum += Simd::from_array(taps).cast::<i32>() * samples;
+        }
+        let rounded = (sum + Simd::splat(1 << (round1 - 1))) >> round1 as i32;
+        output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
+            .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish row-wide SIMD warp output
+    }
 }
 
-fn warped_filter_row(phase: i32) -> Result<&'static [i32; WARP_FILTER_TAPS]> {
-    let offset = round2_i32(phase, WARPEDDIFF_PREC_BITS)
-        .checked_add(WARP_FILTER_CENTER)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "block-warp filter offset",
-        })?;
-    let offset_usize =
-        usize::try_from(offset).map_err(|_| ReconError::WarpFilterOffsetOutOfRange { offset })?;
-    WARPED_FILTERS
-        .get(offset_usize)
-        .ok_or(ReconError::WarpFilterOffsetOutOfRange { offset })
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "10-bit warp filter bounds are -6010..=22378 after InterRound0"
+)]
+fn narrow_warp_intermediate(value: i32) -> i16 {
+    debug_assert!((-6010..=22378).contains(&value));
+    value as i16
+}
+
+fn warped_filter_row(phase: i32) -> &'static [i8; WARP_FILTER_TAPS] {
+    let offset = round2_i32(phase, WARPEDDIFF_PREC_BITS) + WARP_FILTER_CENTER;
+    debug_assert!((0..WARPED_FILTERS.len() as i32).contains(&offset));
+    &WARPED_FILTERS[offset as usize]
 }
 
 fn project_coordinate(
@@ -815,7 +916,11 @@ mod tests {
         assert_eq!(WARPED_FILTERS.len(), 449);
         for (index, row) in WARPED_FILTERS.iter().enumerate() {
             assert_eq!(row.len(), WARP_FILTER_TAPS);
-            assert_eq!(row.iter().sum::<i32>(), 128, "row {index}");
+            assert_eq!(
+                row.iter().map(|&tap| i32::from(tap)).sum::<i32>(),
+                128,
+                "row {index}"
+            );
         }
     }
 
@@ -862,8 +967,8 @@ mod tests {
 
         let shear = setup_shear(params.warp_params).unwrap();
         let projected = project_section_center(&params).unwrap();
-        let mut intermediate = [0i32; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
-        build_intermediate(&view, &params, &shear, &projected, &mut intermediate).unwrap();
+        let mut intermediate = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
+        build_intermediate(&view, &params, &shear, &projected, &mut intermediate);
         let mut want = vec![0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
         for i1 in -4i32..4 {
             for i2 in -4i32..4 {

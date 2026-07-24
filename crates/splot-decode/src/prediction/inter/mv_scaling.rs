@@ -151,7 +151,7 @@ fn derive_plane_scaling_from_scale(
                 (2 * mv_component) >> subsampling
             };
             let orig = (plane_pos << SUBPEL_BITS) + mv_offset;
-            scaling_value((i64::from(orig) << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) + 32)
+            (orig << (SCALE_SUBPEL_BITS - SUBPEL_BITS)) + 32
         };
         return PlaneScaling {
             start_x: start(plane_x, mv_col, sub_x),
