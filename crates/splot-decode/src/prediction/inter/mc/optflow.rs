@@ -1,10 +1,106 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::simd::{Simd, num::SimdUint};
+
 use splot_recon::math::round2_signed_i32;
-use splot_recon::{OptflowScratch, derive_optflow_mv_deltas_into};
+use splot_recon::{
+    OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas_into,
+};
 
 use super::*;
+
+pub(super) trait CompoundAverageOutput: Sized {
+    fn predict_second<T: ReconSample>(
+        reference: &ReferencePlaneView<'_, T>,
+        params: &SubpelPredictParams,
+        pred0: &[i32],
+        cwp_weight: i16,
+        scratch: Option<&mut [i32]>,
+        output: &mut [Self],
+        output_stride: usize,
+    ) -> splot_recon::Result<()>;
+
+    #[allow(clippy::too_many_arguments)]
+    fn predict_fast<T: ReconSample>(
+        _reference0: &ReferencePlaneView<'_, T>,
+        _params0: &SubpelPredictParams,
+        _reference1: &ReferencePlaneView<'_, T>,
+        _params1: &SubpelPredictParams,
+        _cwp_weight: i16,
+        _scratch: &mut [i32],
+        _output: &mut [Self],
+        _output_stride: usize,
+    ) -> splot_recon::Result<bool> {
+        Ok(false)
+    }
+}
+
+impl CompoundAverageOutput for u16 {
+    fn predict_second<T: ReconSample>(
+        reference: &ReferencePlaneView<'_, T>,
+        params: &SubpelPredictParams,
+        pred0: &[i32],
+        cwp_weight: i16,
+        scratch: Option<&mut [i32]>,
+        output: &mut [Self],
+        output_stride: usize,
+    ) -> splot_recon::Result<()> {
+        subpel_predict_block_compound_average_strided_into(
+            reference,
+            params,
+            pred0,
+            cwp_weight,
+            scratch,
+            output,
+            output_stride,
+        )
+    }
+
+    fn predict_fast<T: ReconSample>(
+        reference0: &ReferencePlaneView<'_, T>,
+        params0: &SubpelPredictParams,
+        reference1: &ReferencePlaneView<'_, T>,
+        params1: &SubpelPredictParams,
+        cwp_weight: i16,
+        scratch: &mut [i32],
+        output: &mut [Self],
+        output_stride: usize,
+    ) -> splot_recon::Result<bool> {
+        subpel_predict_block_compound_average_fast_validated_strided_into(
+            reference0,
+            params0,
+            reference1,
+            params1,
+            cwp_weight,
+            scratch,
+            output,
+            output_stride,
+        )
+    }
+}
+
+impl CompoundAverageOutput for u8 {
+    fn predict_second<T: ReconSample>(
+        reference: &ReferencePlaneView<'_, T>,
+        params: &SubpelPredictParams,
+        pred0: &[i32],
+        cwp_weight: i16,
+        scratch: Option<&mut [i32]>,
+        output: &mut [Self],
+        output_stride: usize,
+    ) -> splot_recon::Result<()> {
+        subpel_predict_block_compound_average_strided_into_u8(
+            reference,
+            params,
+            pred0,
+            cwp_weight,
+            scratch,
+            output,
+            output_stride,
+        )
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct MotionCell {
@@ -53,40 +149,14 @@ enum RefinemvCandidates {
 
 /// Largest motion-grid subblock (refine-MV unit): 16x16 samples.
 const MAX_MOTION_GRID_SUBBLOCK_SAMPLES: usize = 256;
-/// Horizontal-pass rows plus one materialized predictor for a 16x16 subblock.
-const MAX_MOTION_GRID_SUBPEL_SCRATCH: usize = 16 * (16 + 7) + MAX_MOTION_GRID_SUBBLOCK_SAMPLES;
+/// Horizontal-pass rows for an unscaled 16-sample-tall subblock: 16 + 7 taps.
+const MAX_MOTION_GRID_SUBPEL_INTERMEDIATE: usize = 16 * (16 + 7);
 
 std::thread_local! {
     static OPTFLOW_SCRATCH: std::cell::Cell<Option<OptflowScratch>> =
         const { std::cell::Cell::new(None) };
     static OPTFLOW_MOTION_CELLS: std::cell::RefCell<[Option<Vec<MotionCell>>; 2]> =
         const { std::cell::RefCell::new([None, None]) };
-    static TIP_REFINEMV_CANDIDATES: std::cell::Cell<Option<Vec<[Mv; 2]>>> =
-        const { std::cell::Cell::new(None) };
-}
-
-fn take_tip_refinemv_candidates(capacity: usize) -> Vec<[Mv; 2]> {
-    TIP_REFINEMV_CANDIDATES.with(|slot| {
-        let mut candidates = slot.take().unwrap_or_default();
-        candidates.clear();
-        candidates.reserve(capacity);
-        candidates
-    })
-}
-
-fn recycle_tip_refinemv_candidates(mut candidates: Vec<[Mv; 2]>) {
-    candidates.clear();
-    TIP_REFINEMV_CANDIDATES.with(|slot| {
-        let saved = slot.take();
-        if saved
-            .as_ref()
-            .is_none_or(|saved| saved.capacity() < candidates.capacity())
-        {
-            slot.set(Some(candidates));
-        } else {
-            slot.set(saved);
-        }
-    });
 }
 
 pub(super) fn take_motion_cells(len: usize, value: MotionCell) -> Vec<MotionCell> {
@@ -180,14 +250,6 @@ impl Drop for MotionCells {
     }
 }
 
-impl Drop for RefinemvCandidates {
-    fn drop(&mut self) {
-        if let Self::PerCell { candidates, .. } = self {
-            recycle_tip_refinemv_candidates(core::mem::take(candidates));
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct CompoundMotionGrid {
     unit_size: usize,
@@ -240,7 +302,7 @@ impl CompoundMotionGrid {
         }
     }
 
-    fn refinemv_candidates_at_luma_offset(&self, x: usize, y: usize) -> Option<([Mv; 2], usize)> {
+    fn refinemv_candidates_at_index(&self, index: usize) -> Option<([Mv; 2], usize)> {
         match &self.refinemv_candidates {
             RefinemvCandidates::None => None,
             RefinemvCandidates::Uniform {
@@ -250,15 +312,10 @@ impl CompoundMotionGrid {
             RefinemvCandidates::PerCell {
                 candidates,
                 unit_size,
-            } => {
-                let column = x / self.unit_size;
-                let row = y / self.unit_size;
-                row.checked_mul(self.columns)
-                    .and_then(|row| row.checked_add(column))
-                    .and_then(|index| candidates.get(index))
-                    .copied()
-                    .map(|candidates| (candidates, *unit_size))
-            }
+            } => candidates
+                .get(index)
+                .copied()
+                .map(|candidates| (candidates, *unit_size)),
         }
     }
 
@@ -275,15 +332,11 @@ impl CompoundMotionGrid {
         y: usize,
     ) -> splot_recon::Result<[Mv; 2]> {
         let cell = self.cell_at_luma_offset(x, y)?;
-        Ok(core::array::from_fn(|reference| {
-            let base = cell.base_mvs[reference];
-            let row_delta = cell.mvs[reference][0] - base.row * 2;
-            let col_delta = cell.mvs[reference][1] - base.col * 2;
-            Mv {
-                row: base.row + round2_signed_i32(row_delta, 1),
-                col: base.col + round2_signed_i32(col_delta, 1),
-            }
-        }))
+        Ok(stored_mvs(cell))
+    }
+
+    pub(super) fn stored_mvs_at_index(&self, index: usize) -> splot_recon::Result<[Mv; 2]> {
+        self.cell_at_index(index).map(stored_mvs)
     }
 
     pub(crate) fn temporal_mvs_at_luma_offset(
@@ -327,6 +380,10 @@ impl CompoundMotionGrid {
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "compound motion-grid index",
             })?;
+        self.cell_at_index(index)
+    }
+
+    fn cell_at_index(&self, index: usize) -> splot_recon::Result<MotionCell> {
         self.cells
             .as_slice()
             .get(index)
@@ -335,6 +392,18 @@ impl CompoundMotionGrid {
                 context: "compound motion-grid lookup",
             })
     }
+}
+
+fn stored_mvs(cell: MotionCell) -> [Mv; 2] {
+    core::array::from_fn(|reference| {
+        let base = cell.base_mvs[reference];
+        let row_delta = cell.mvs[reference][0] - base.row * 2;
+        let col_delta = cell.mvs[reference][1] - base.col * 2;
+        Mv {
+            row: base.row + round2_signed_i32(row_delta, 1),
+            col: base.col + round2_signed_i32(col_delta, 1),
+        }
+    })
 }
 
 fn subblock_reference_area_size(
@@ -354,36 +423,43 @@ fn normalized_sad(pred0: &[u16], pred1: &[u16], bit_depth: splot_recon::BitDepth
     sad >> bit_depth.bits().saturating_sub(8)
 }
 
-pub(super) fn tip_optflow_motion_cell(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn tip_optflow_motion_cell_strided(
     pred0: &[u16],
+    start0: usize,
     pred1: &[u16],
+    start1: usize,
+    stride: usize,
     bit_depth: splot_recon::BitDepth,
     distances: [i32; 2],
     sad_threshold: Option<u32>,
     base_mvs: [Mv; 2],
 ) -> Result<MotionCell> {
-    if sad_threshold.is_some_and(|threshold| normalized_sad(pred0, pred1, bit_depth) < threshold) {
+    if sad_threshold.is_some_and(|threshold| {
+        let mut sad = Simd::<u32, 8>::splat(0);
+        for row in 0..8 {
+            let offset = row * stride;
+            let left = Simd::<u16, 8>::from_slice(&pred0[start0 + offset..]);
+            let right = Simd::<u16, 8>::from_slice(&pred1[start1 + offset..]);
+            sad += left.abs_diff(right).cast();
+        }
+        sad.reduce_sum() >> bit_depth.bits().saturating_sub(8) < threshold
+    }) {
         return Ok(MotionCell::from_refinemv(base_mvs));
     }
     OPTFLOW_SCRATCH.with(|slot| {
         let mut scratch = slot.take().unwrap_or_default();
         let result = (|| {
-            let deltas = derive_optflow_mv_deltas_into(
+            let delta = derive_optflow_mv_delta_8x8_strided_into(
                 pred0,
+                start0,
                 pred1,
-                8,
-                8,
-                8,
+                start1,
+                stride,
                 bit_depth,
                 distances,
                 &mut scratch,
             )?;
-            let delta = deltas
-                .first()
-                .copied()
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "TIP optical-flow delta",
-                })?;
             let mut refined = [[0i32; 2]; 2];
             for reference in 0..2 {
                 let base = [base_mvs[reference].row, base_mvs[reference].col];
@@ -611,11 +687,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit_count,
         MotionCell::uninitialized([block.mv0, block.mv1]),
     );
-    let mut refinemv_candidates = take_tip_refinemv_candidates(unit_count);
-    let initial_luma = [
-        InitialLumaPredictionContext::new(sink, block.reference0, offset)?,
-        InitialLumaPredictionContext::new(sink, block.reference1, offset)?,
-    ];
+    let mut refinemv_candidates = Vec::with_capacity(unit_count);
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
@@ -626,8 +698,6 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
                     && rect.luma_y == previous_rect.luma_y
                     && rect.luma_x == previous_rect.luma_x + previous_rect.luma_w
                     && mvs[reference] == previous_mvs[reference]
-                    && mvs[reference].row % 8 == 0
-                    && mvs[reference].col % 8 == 0
             })
         });
         refinemv_candidates.push(mvs);
@@ -638,8 +708,9 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
         unit.has_chroma = false;
         unit.sub8x8_chroma = false;
         let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
+            sink,
             unit,
-            &initial_luma,
+            offset,
             reuse_horizontal,
             &mut initial_predictions,
         )?;
@@ -678,42 +749,6 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     })
 }
 
-pub(super) struct InitialLumaPredictionContext<'a, T: ReconSample> {
-    view: ReferencePlaneView<'a, T>,
-    scaling: PlaneScaling,
-    pub(super) bit_depth: splot_recon::BitDepth,
-}
-
-impl<'a, T: ReconSample> InitialLumaPredictionContext<'a, T> {
-    #[inline]
-    fn new(
-        sink: &WorkspaceSink<'_, '_, T>,
-        reference: &'a DecodedFrame<T>,
-        offset: ByteOffset,
-    ) -> Result<Self> {
-        let (view, _, _) = reference_plane_view(reference, PlaneId::Y, offset)?;
-        let reference_size = reference.info().coded_luma_size();
-        let frame_size = sink.info().coded_luma_size();
-        let scaling = derive_plane_scaling(
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            reference_size.width() as i32,
-            reference_size.height() as i32,
-            frame_size.width() as i32,
-            frame_size.height() as i32,
-        );
-        Ok(Self {
-            view,
-            scaling,
-            bit_depth: sink.info().bit_depth(),
-        })
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
@@ -726,33 +761,21 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     reuse_horizontal: bool,
     output: &mut [u16],
 ) -> Result<()> {
-    let context = InitialLumaPredictionContext::new(sink, reference, offset)?;
-    initial_luma_prediction_from_context(
-        &context,
-        rect,
-        mv,
-        interp,
-        refinemv_area,
-        reuse_horizontal,
-        output,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[inline]
-pub(super) fn initial_luma_prediction_from_context<T: ReconSample>(
-    context: &InitialLumaPredictionContext<'_, T>,
-    rect: McBlockRect,
-    mv: Mv,
-    interp: InterpolationFilter,
-    refinemv_area: Option<(Mv, usize, usize)>,
-    reuse_horizontal: bool,
-    output: &mut [u16],
-) -> Result<()> {
-    let scaling =
-        context
-            .scaling
-            .with_mv(rect.luma_x as i32, rect.luma_y as i32, mv.row, mv.col, 0, 0);
+    let (view, _, _) = reference_plane_view(reference, PlaneId::Y, offset)?;
+    let reference_size = reference.info().coded_luma_size();
+    let frame_size = sink.info().coded_luma_size();
+    let scaling = derive_plane_scaling(
+        rect.luma_x as i32,
+        rect.luma_y as i32,
+        mv.row,
+        mv.col,
+        0,
+        0,
+        reference_size.width() as i32,
+        reference_size.height() as i32,
+        frame_size.width() as i32,
+        frame_size.height() as i32,
+    );
     let bounds = refinemv_area.map(|(candidate, width, height)| {
         super::refinemv::reference_area_bounds(
             rect.luma_x as i32,
@@ -777,14 +800,15 @@ pub(super) fn initial_luma_prediction_from_context<T: ReconSample>(
         first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
         last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
         last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-        bit_depth: context.bit_depth,
+        bit_depth: sink.info().bit_depth(),
     };
-    if reuse_horizontal
-        && subpel_predict_16x16_fullpel_horizontal_overlap_into(&context.view, &params, output)?
-    {
-        return Ok(());
+    if reuse_horizontal {
+        let reused = subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &params, output)?;
+        if reused {
+            return Ok(());
+        }
     }
-    subpel_predict_block_into(&context.view, &params, output).map_err(Into::into)
+    subpel_predict_block_into(&view, &params, output).map_err(Into::into)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -797,69 +821,77 @@ fn compound_optflow_subpel_params<T: ReconSample>(
     motion: &CompoundMotionGrid,
     prediction: &CompoundSubpelPlane<'_, T>,
     cell: MotionCell,
-    reference: usize,
-    scaling: PlaneScaling,
+    scalings: [PlaneScaling; 2],
+    cell_index: usize,
     row: usize,
     col: usize,
     width: usize,
     height: usize,
-) -> SubpelPredictParams {
-    let scaling_template = prediction.scalings[reference];
-    let bounds = if let Some((mvs, refine_unit_size)) =
-        motion.refinemv_candidates_at_luma_offset(col << sub_x, row << sub_y)
-    {
-        let refine_unit_w = refine_unit_size >> sub_x;
-        let refine_unit_h = refine_unit_size >> sub_y;
-        let refine_col = col / refine_unit_w * refine_unit_w;
-        let refine_row = row / refine_unit_h * refine_unit_h;
-        let refine_w = refine_unit_w.min(prediction.block_w - refine_col);
-        let refine_h = refine_unit_h.min(prediction.block_h - refine_row);
-        Some(super::refinemv::reference_area_bounds(
-            (prediction.plane_x + refine_col) as i32,
-            (prediction.plane_y + refine_row) as i32,
-            refine_w,
-            refine_h,
-            mvs[reference],
-            sub_x,
-            sub_y,
-            scaling_template,
-        ))
-    } else if let Some((area_width, area_height)) = subblock_reference_area_size(
-        plane,
-        (motion.unit_size >> sub_x).max(4),
-        (motion.unit_size >> sub_y).max(4),
-    ) {
-        Some(super::refinemv::reference_area_bounds(
-            (prediction.plane_x + col) as i32,
-            (prediction.plane_y + row) as i32,
-            area_width,
-            area_height,
-            cell.base_mvs[reference],
-            sub_x,
-            sub_y,
-            scaling_template,
-        ))
-    } else {
-        None
-    };
-    SubpelPredictParams {
-        interp: block.interp,
-        w: width,
-        h: height,
-        start_x: scaling.start_x,
-        start_y: scaling.start_y,
-        step_x: scaling.step_x,
-        step_y: scaling.step_y,
-        first_x: bounds.map_or(scaling.first_x, |bounds| bounds.first_x),
-        first_y: bounds.map_or(scaling.first_y, |bounds| bounds.first_y),
-        last_x: bounds.map_or(scaling.last_x, |bounds| bounds.last_x),
-        last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
-        bit_depth: sink.info().bit_depth(),
-    }
+) -> [SubpelPredictParams; 2] {
+    let bounds =
+        if let Some((mvs, refine_unit_size)) = motion.refinemv_candidates_at_index(cell_index) {
+            let refine_unit_w = refine_unit_size >> sub_x;
+            let refine_unit_h = refine_unit_size >> sub_y;
+            let refine_col = col & !(refine_unit_w - 1);
+            let refine_row = row & !(refine_unit_h - 1);
+            let refine_w = refine_unit_w.min(prediction.block_w - refine_col);
+            let refine_h = refine_unit_h.min(prediction.block_h - refine_row);
+            core::array::from_fn(|reference| {
+                Some(super::refinemv::reference_area_bounds(
+                    (prediction.plane_x + refine_col) as i32,
+                    (prediction.plane_y + refine_row) as i32,
+                    refine_w,
+                    refine_h,
+                    mvs[reference],
+                    sub_x,
+                    sub_y,
+                    prediction.scalings[reference],
+                ))
+            })
+        } else if let Some((area_width, area_height)) = subblock_reference_area_size(
+            plane,
+            (motion.unit_size >> sub_x).max(4),
+            (motion.unit_size >> sub_y).max(4),
+        ) {
+            core::array::from_fn(|reference| {
+                Some(super::refinemv::reference_area_bounds(
+                    (prediction.plane_x + col) as i32,
+                    (prediction.plane_y + row) as i32,
+                    area_width,
+                    area_height,
+                    cell.base_mvs[reference],
+                    sub_x,
+                    sub_y,
+                    prediction.scalings[reference],
+                ))
+            })
+        } else {
+            [None; 2]
+        };
+    core::array::from_fn(|reference| {
+        let scaling = scalings[reference];
+        SubpelPredictParams {
+            interp: block.interp,
+            w: width,
+            h: height,
+            start_x: scaling.start_x,
+            start_y: scaling.start_y,
+            step_x: scaling.step_x,
+            step_y: scaling.step_y,
+            first_x: bounds[reference].map_or(scaling.first_x, |bounds| bounds.first_x),
+            first_y: bounds[reference].map_or(scaling.first_y, |bounds| bounds.first_y),
+            last_x: bounds[reference].map_or(scaling.last_x, |bounds| bounds.last_x),
+            last_y: bounds[reference].map_or(scaling.last_y, |bounds| bounds.last_y),
+            bit_depth: sink.info().bit_depth(),
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
+pub(super) fn predict_uniform_motion_compound_average_into<
+    T: ReconSample,
+    O: CompoundAverageOutput,
+>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
@@ -869,7 +901,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
     implicit_mask: bool,
     cwp_weight: i16,
     offset: ByteOffset,
-    output: &mut [u16],
+    output: &mut [O],
 ) -> Result<bool> {
     let [cell] = motion.cells.as_slice() else {
         return Ok(false);
@@ -904,7 +936,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
     ) {
         return Ok(false);
     }
-    let params0 = compound_optflow_subpel_params(
+    let params = compound_optflow_subpel_params(
         sink,
         block,
         plane,
@@ -913,24 +945,8 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
         motion,
         &prediction,
         *cell,
+        scalings,
         0,
-        scalings[0],
-        0,
-        0,
-        prediction.block_w,
-        prediction.block_h,
-    );
-    let params1 = compound_optflow_subpel_params(
-        sink,
-        block,
-        plane,
-        sub_x,
-        sub_y,
-        motion,
-        &prediction,
-        *cell,
-        1,
-        scalings[1],
         0,
         0,
         prediction.block_w,
@@ -938,10 +954,10 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
     );
     let output_stride = prediction.block_w;
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_SCRATCH];
+    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     super::predict_compound_average_into(
         &prediction,
-        &[params0, params1],
+        &params,
         cwp_weight,
         Some(&mut pred0_scratch),
         Some(&mut intermediate_scratch),
@@ -952,7 +968,10 @@ pub(super) fn predict_uniform_motion_compound_average_into<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
+pub(super) fn predict_motion_grid_compound_average_into<
+    T: ReconSample,
+    O: CompoundAverageOutput,
+>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
@@ -962,7 +981,7 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
     implicit_mask: bool,
     cwp_weight: i16,
     offset: ByteOffset,
-    output: &mut [u16],
+    output: &mut [O],
 ) -> Result<bool> {
     if motion.cells.as_slice().len() == 1 {
         return Ok(false);
@@ -986,12 +1005,13 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_SCRATCH];
-    for row in (0..prediction.block_h).step_by(subblock_h) {
-        for col in (0..prediction.block_w).step_by(subblock_w) {
+    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
+        for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let width = subblock_w.min(prediction.block_w - col);
             let height = subblock_h.min(prediction.block_h - row);
-            let cell = motion.cell_at_luma_offset(col << sub_x, row << sub_y)?;
+            let cell_index = cell_row * motion.columns + cell_col;
+            let cell = motion.cell_at_index(cell_index)?;
             let scalings = core::array::from_fn(|reference| {
                 prediction.scalings[reference].with_prescaled_mv(
                     (prediction.plane_x + col) as i32,
@@ -1013,24 +1033,22 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
             ) {
                 return Ok(false);
             }
-            let params: [SubpelPredictParams; 2] = core::array::from_fn(|reference| {
-                compound_optflow_subpel_params(
-                    sink,
-                    block,
-                    plane,
-                    sub_x,
-                    sub_y,
-                    motion,
-                    &prediction,
-                    cell,
-                    reference,
-                    scalings[reference],
-                    row,
-                    col,
-                    width,
-                    height,
-                )
-            });
+            let params = compound_optflow_subpel_params(
+                sink,
+                block,
+                plane,
+                sub_x,
+                sub_y,
+                motion,
+                &prediction,
+                cell,
+                scalings,
+                cell_index,
+                row,
+                col,
+                width,
+                height,
+            );
             let subplane = CompoundSubpelPlane {
                 views: prediction.views,
                 plane_x: prediction.plane_x + col,
@@ -1040,12 +1058,13 @@ pub(super) fn predict_motion_grid_compound_average_into<T: ReconSample>(
                 scalings,
             };
             let output_start = row * prediction.block_w + col;
-            if subpel_predict_block_compound_average_fullpel_strided_into(
+            if O::predict_fast(
                 &subplane.views[0],
                 &params[0],
                 &subplane.views[1],
                 &params[1],
                 cwp_weight,
+                &mut intermediate_scratch,
                 &mut output[output_start..],
                 prediction.block_w,
             )? {
@@ -1080,43 +1099,44 @@ pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(
     let [mut pred0, mut pred1] =
         super::take_compound_prediction_buffers(prediction.block_w * prediction.block_h);
 
-    for row in (0..prediction.block_h).step_by(subblock_h) {
-        for col in (0..prediction.block_w).step_by(subblock_w) {
+    for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
+        for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let width = subblock_w.min(prediction.block_w - col);
             let height = subblock_h.min(prediction.block_h - row);
-            let luma_x = col << sub_x;
-            let luma_y = row << sub_y;
-            let cell = motion.cell_at_luma_offset(luma_x, luma_y)?;
-            for (reference, (view, output)) in prediction
-                .views
-                .iter()
-                .zip([&mut pred0, &mut pred1])
-                .enumerate()
-            {
-                let scaling = prediction.scalings[reference].with_prescaled_mv(
+            let cell_index = cell_row * motion.columns + cell_col;
+            let cell = motion.cell_at_index(cell_index)?;
+            let scalings = core::array::from_fn(|reference| {
+                prediction.scalings[reference].with_prescaled_mv(
                     (prediction.plane_x + col) as i32,
                     (prediction.plane_y + row) as i32,
                     cell.mvs[reference][0],
                     cell.mvs[reference][1],
                     sub_x,
                     sub_y,
-                );
-                let params = compound_optflow_subpel_params(
-                    sink,
-                    block,
-                    plane,
-                    sub_x,
-                    sub_y,
-                    motion,
-                    &prediction,
-                    cell,
-                    reference,
-                    scaling,
-                    row,
-                    col,
-                    width,
-                    height,
-                );
+                )
+            });
+            let params = compound_optflow_subpel_params(
+                sink,
+                block,
+                plane,
+                sub_x,
+                sub_y,
+                motion,
+                &prediction,
+                cell,
+                scalings,
+                cell_index,
+                row,
+                col,
+                width,
+                height,
+            );
+            for ((view, output), params) in prediction
+                .views
+                .iter()
+                .zip([&mut pred0, &mut pred1])
+                .zip(params)
+            {
                 let start = row * prediction.block_w + col;
                 subpel_predict_block_compound_intermediate_into(
                     view,
@@ -1163,35 +1183,6 @@ mod tests {
         assert_eq!(
             grid.stored_mvs_at_luma_offset(0, 0).unwrap(),
             [Mv { row: 3, col: -3 }, Mv { row: -3, col: 3 }]
-        );
-    }
-
-    #[test]
-    fn per_cell_refinemv_candidates_are_independent_of_searched_base_mvs() {
-        let candidates = [
-            [Mv { row: 1, col: 2 }, Mv { row: 3, col: 4 }],
-            [Mv { row: 5, col: 6 }, Mv { row: 7, col: 8 }],
-        ];
-        let grid = CompoundMotionGrid {
-            unit_size: 8,
-            columns: 2,
-            cells: MotionCells::Heap(vec![
-                MotionCell::from_refinemv([Mv::ZERO; 2]);
-                candidates.len()
-            ]),
-            refinemv_candidates: RefinemvCandidates::PerCell {
-                candidates: candidates.to_vec(),
-                unit_size: 8,
-            },
-        };
-
-        assert_eq!(
-            grid.refinemv_candidates_at_luma_offset(0, 0),
-            Some((candidates[0], 8))
-        );
-        assert_eq!(
-            grid.refinemv_candidates_at_luma_offset(8, 0),
-            Some((candidates[1], 8))
         );
     }
 

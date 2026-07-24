@@ -39,6 +39,7 @@ use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 use core::num::NonZeroUsize;
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
 /// AV2 § 3 `DF_SHIFT`: the deblocking-filter ramp shift
 /// (`docs/spec/av2/1.0.0/03-symbols.md`, `DF_SHIFT = 8`).
@@ -156,7 +157,8 @@ pub fn deblock_sample_filter_strided<T: ReconSample>(
 /// # Errors
 /// Returns the same errors as [`deblock_sample_filter_strided`] when the
 /// storage type, widths, or a strided sample span is invalid.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
 pub fn deblock_sample_filter_strided_4<T: ReconSample>(
     samples: &mut [T],
     stride: NonZeroUsize,
@@ -184,6 +186,17 @@ pub fn deblock_sample_filter_strided_4<T: ReconSample>(
         },
         stride,
     )?;
+    deblock_sample_filter_strided_4_validated(samples, stride, lane_stride.get(), params)
+}
+
+#[allow(clippy::inline_always, reason = "shared deblock validation hot path")]
+#[inline(always)]
+fn deblock_sample_filter_strided_4_validated<T: ReconSample>(
+    samples: &mut [T],
+    stride: usize,
+    lane_stride: usize,
+    params: &DeblockSampleFilter,
+) -> Result<()> {
     let max_weight = params.w_mult_neg.max(params.w_mult_pos);
     let bounded_factor =
         (i128::from(max_weight) * params.max_width_neg.max(params.max_width_pos) as i128).max(1);
@@ -195,9 +208,9 @@ pub fn deblock_sample_filter_strided_4<T: ReconSample>(
         && params.w_mult_pos >= 0
         && bounded_product <= i128::from(i32::MAX - (1 << 10))
     {
-        deblock_sample_filter_inner_4_bounded(samples, params, stride, lane_stride.get())
+        deblock_sample_filter_inner_4_bounded(samples, params, stride, lane_stride)
     } else {
-        deblock_sample_filter_inner_lanes(samples, params, stride, lane_stride.get(), 4)
+        deblock_sample_filter_inner_lanes(samples, params, stride, lane_stride, 4)
     }
 }
 
@@ -317,6 +330,75 @@ fn deblock_sample_filter_inner_lanes<T: ReconSample>(
 
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
+fn load_u16x4(line: &[u16], start: usize) -> Simd<i32, 4> {
+    Simd::<u16, 4>::from_slice(&line[start..]).cast::<i32>()
+}
+
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn load_strided_u16x4(line: &[u16], start: usize, stride: usize) -> Simd<i32, 4> {
+    Simd::from_array([
+        line[start],
+        line[start + stride],
+        line[start + 2 * stride],
+        line[start + 3 * stride],
+    ])
+    .cast::<i32>()
+}
+
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+fn deblock_width_contiguous_rows<const WIDTH: usize>(
+    line: &mut [u16],
+    params: &DeblockSampleFilter,
+    lane_stride: usize,
+) {
+    let factors_pos = Simd::from_array(core::array::from_fn(|index| (WIDTH - index) as i32));
+    let factors_neg = Simd::from_array(core::array::from_fn(|index| (index + 1) as i32));
+    let low = Simd::splat(0);
+    let high = Simd::splat(i32::from(params.bit_depth.max_sample()));
+    let q_thr_clamp = params.q_thr * params.q_thresh_mult;
+    for lane in 0..4 {
+        let boundary = params.boundary + lane * lane_stride;
+        let q0 = i32::from(line[boundary]);
+        let q1 = i32::from(line[boundary + 1]);
+        let p0 = i32::from(line[boundary - 1]);
+        let p1 = i32::from(line[boundary - 2]);
+        let delta_m2 = ((p1 - q1 + 3 * (q0 - p0)) * 4).clamp(-q_thr_clamp, q_thr_clamp);
+        if !params.curr_lossless {
+            let samples = Simd::<u16, WIDTH>::from_slice(&line[boundary..]).cast::<i32>();
+            let diff = (Simd::splat(delta_m2 * params.w_mult_pos) * factors_pos
+                + Simd::splat(1 << 10))
+                >> 11;
+            // splot-copy-ok: publish filtered contiguous SIMD lanes
+            line[boundary..boundary + WIDTH].copy_from_slice(
+                &(samples - diff)
+                    .simd_max(low)
+                    .simd_min(high)
+                    .cast::<u16>()
+                    .to_array(),
+            );
+        }
+        if !params.prev_lossless {
+            let start = boundary - WIDTH;
+            let samples = Simd::<u16, WIDTH>::from_slice(&line[start..]).cast::<i32>();
+            let diff = (Simd::splat(delta_m2 * params.w_mult_neg) * factors_neg
+                + Simd::splat(1 << 10))
+                >> 11;
+            // splot-copy-ok: publish filtered contiguous SIMD lanes
+            line[start..boundary].copy_from_slice(
+                &(samples + diff)
+                    .simd_max(low)
+                    .simd_min(high)
+                    .cast::<u16>()
+                    .to_array(),
+            );
+        }
+    }
+}
+
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
 fn deblock_sample_filter_inner_4_bounded<T: ReconSample>(
     line: &mut [T],
     params: &DeblockSampleFilter,
@@ -339,6 +421,81 @@ fn deblock_sample_filter_inner_4_bounded<T: ReconSample>(
     let max_sample = i32::from(bit_depth.max_sample());
     let width = max_width_neg.max(max_width_pos);
     if stride == 1 {
+        if let Some(line) = T::u16_slice_mut(line) {
+            if max_width_neg == max_width_pos && lane_stride >= 2 * max_width_neg {
+                match max_width_neg {
+                    4 => {
+                        deblock_width_contiguous_rows::<4>(line, params, lane_stride);
+                        return Ok(());
+                    }
+                    8 => {
+                        deblock_width_contiguous_rows::<8>(line, params, lane_stride);
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+            let q0 = load_strided_u16x4(line, boundary, lane_stride);
+            let q1 = load_strided_u16x4(line, boundary + 1, lane_stride);
+            let p0 = load_strided_u16x4(line, boundary - 1, lane_stride);
+            let p1 = load_strided_u16x4(line, boundary - 2, lane_stride);
+            let delta_m2 = ((p1 - q1 + (q0 - p0) * Simd::splat(3)) * Simd::splat(4))
+                .simd_max(Simd::splat(-q_thr_clamp))
+                .simd_min(Simd::splat(q_thr_clamp));
+            let delta_neg = delta_m2 * Simd::splat(w_mult_neg);
+            let delta_pos = delta_m2 * Simd::splat(w_mult_pos);
+            let low = Simd::splat(0);
+            let high = Simd::splat(max_sample);
+            if !curr_lossless {
+                macro_rules! apply_positive {
+                    ($width:expr) => {
+                        for i in 0..$width {
+                            let start = boundary + i;
+                            let factor = Simd::splat(max_width_pos as i32 - i as i32);
+                            let diff = (delta_pos * factor + Simd::splat(1 << 10)) >> 11;
+                            let values = (load_strided_u16x4(line, start, lane_stride) - diff)
+                                .simd_max(low)
+                                .simd_min(high)
+                                .cast::<u16>()
+                                .to_array();
+                            for (lane, value) in values.into_iter().enumerate() {
+                                line[start + lane * lane_stride] = value; // splot-copy-ok: scatter four SIMD deblock lanes back to their rows
+                            }
+                        }
+                    }
+                }
+                if width == 3 {
+                    apply_positive!(3);
+                } else {
+                    apply_positive!(width);
+                }
+            }
+            if !prev_lossless {
+                macro_rules! apply_negative {
+                    ($width:expr) => {
+                        for i in 0..$width {
+                            let start = boundary - i - 1;
+                            let factor = Simd::splat((max_width_neg - i) as i32);
+                            let diff = (delta_neg * factor + Simd::splat(1 << 10)) >> 11;
+                            let values = (load_strided_u16x4(line, start, lane_stride) + diff)
+                                .simd_max(low)
+                                .simd_min(high)
+                                .cast::<u16>()
+                                .to_array();
+                            for (lane, value) in values.into_iter().enumerate() {
+                                line[start + lane * lane_stride] = value; // splot-copy-ok: scatter four SIMD deblock lanes back to their rows
+                            }
+                        }
+                    }
+                }
+                if max_width_neg == 3 {
+                    apply_negative!(3);
+                } else {
+                    apply_negative!(max_width_neg);
+                }
+            }
+            return Ok(());
+        }
         let low_extent = max_width_neg.max(2);
         for lane in 0..4 {
             let boundary = boundary + lane * lane_stride;
@@ -370,6 +527,68 @@ fn deblock_sample_filter_inner_4_bounded<T: ReconSample>(
         return Ok(());
     }
     if lane_stride == 1 && stride >= 4 {
+        if let Some(line) = T::u16_slice_mut(line) {
+            let q0 = load_u16x4(line, boundary);
+            let q1 = load_u16x4(line, boundary + stride);
+            let p0 = load_u16x4(line, boundary - stride);
+            let p1 = load_u16x4(line, boundary - 2 * stride);
+            let delta_m2 = ((p1 - q1 + (q0 - p0) * Simd::splat(3)) * Simd::splat(4))
+                .simd_max(Simd::splat(-q_thr_clamp))
+                .simd_min(Simd::splat(q_thr_clamp));
+            let delta_neg = delta_m2 * Simd::splat(w_mult_neg);
+            let delta_pos = delta_m2 * Simd::splat(w_mult_pos);
+            let low = Simd::splat(0);
+            let high = Simd::splat(max_sample);
+            if !curr_lossless {
+                macro_rules! apply_positive {
+                    ($width:expr) => {
+                        for i in 0..$width {
+                            let row_start = boundary + i * stride;
+                            let factor = Simd::splat(max_width_pos as i32 - i as i32);
+                            let diff = (delta_pos * factor + Simd::splat(1 << 10)) >> 11;
+                            let value = load_u16x4(line, row_start) - diff; // splot-copy-ok: publish four SIMD lanes back into the in-place deblock row
+                            line[row_start..row_start + 4].copy_from_slice(
+                                &value
+                                    .simd_max(low)
+                                    .simd_min(high)
+                                    .cast::<u16>()
+                                    .to_array(),
+                            );
+                        }
+                    };
+                }
+                if width == 3 {
+                    apply_positive!(3);
+                } else {
+                    apply_positive!(width);
+                }
+            }
+            if !prev_lossless {
+                macro_rules! apply_negative {
+                    ($width:expr) => {
+                        for i in 0..$width {
+                            let row_start = boundary - (i + 1) * stride;
+                            let factor = Simd::splat((max_width_neg - i) as i32);
+                            let diff = (delta_neg * factor + Simd::splat(1 << 10)) >> 11;
+                            let value = load_u16x4(line, row_start) + diff; // splot-copy-ok: publish four SIMD lanes back into the in-place deblock row
+                            line[row_start..row_start + 4].copy_from_slice(
+                                &value
+                                    .simd_max(low)
+                                    .simd_min(high)
+                                    .cast::<u16>()
+                                    .to_array(),
+                            );
+                        }
+                    };
+                }
+                if max_width_neg == 3 {
+                    apply_negative!(3);
+                } else {
+                    apply_negative!(max_width_neg);
+                }
+            }
+            return Ok(());
+        }
         let mut delta_neg = [0i32; 4];
         let mut delta_pos = [0i32; 4];
         for (lane, (neg, pos)) in delta_neg.iter_mut().zip(&mut delta_pos).enumerate() {
@@ -643,7 +862,8 @@ pub fn deblock_filter_choice<T: ReconSample>(
 /// # Errors
 /// Returns the same errors as [`deblock_filter_choice`] when widths or either
 /// strided sample span are invalid.
-#[inline]
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
 pub fn deblock_filter_choice_strided<T: ReconSample>(
     samples: &[T],
     last_boundary: usize,
@@ -718,7 +938,144 @@ pub fn deblock_filter_choice_strided<T: ReconSample>(
     }))
 }
 
-#[inline]
+/// Chooses and applies a four-lane strided deblocking filter with one shared
+/// sample-span validation.
+///
+/// The table arguments are the caller-resolved AV2 § 9.2
+/// `Q_Thresh_Mults` and `W_Mult` arrays. The width-choice span covers every
+/// sample subsequently read or written by the selected filter width.
+///
+/// # Errors
+/// Returns the same errors as [`deblock_filter_choice_strided`] and
+/// [`deblock_sample_filter_strided_4`].
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
+pub fn deblock_filter_choice_and_sample_strided_4<T: ReconSample>(
+    samples: &mut [T],
+    last_boundary: usize,
+    stride: NonZeroUsize,
+    lane_stride: NonZeroUsize,
+    choice: &DeblockFilterChoice,
+    q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
+    w_mults: &[i32; MAX_DBL_FLT_LEN],
+    prev_lossless: bool,
+    curr_lossless: bool,
+    bit_depth: BitDepth,
+) -> Result<usize> {
+    let width = deblock_filter_choice_strided(samples, last_boundary, stride, choice)?;
+    apply_deblock_choice_strided_4::<T, false>(
+        samples,
+        stride.get(),
+        lane_stride.get(),
+        choice,
+        q_thresh_mults,
+        w_mults,
+        prev_lossless,
+        curr_lossless,
+        bit_depth,
+        width,
+    )
+}
+
+/// Chooses and applies a four-lane deblocking filter after the caller has
+/// validated the sample type, widths, and the first and last strided spans.
+///
+/// This is the validation-free decode hot path for frame-interior edges.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "measured validated deblock hot path")]
+#[inline(always)]
+pub fn deblock_filter_choice_and_sample_strided_4_fast_validated<T: ReconSample>(
+    samples: &mut [T],
+    last_boundary: usize,
+    stride: NonZeroUsize,
+    lane_stride: NonZeroUsize,
+    choice: &DeblockFilterChoice,
+    q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
+    w_mults: &[i32; MAX_DBL_FLT_LEN],
+    prev_lossless: bool,
+    curr_lossless: bool,
+    bit_depth: BitDepth,
+) -> Result<usize> {
+    let stride = stride.get();
+    let boundary = choice.boundary;
+    let width = deblock_filter_choice_progressive(choice, |offset| {
+        let distance = offset.unsigned_abs() * stride;
+        let first_index = if offset < 0 {
+            boundary - distance
+        } else {
+            boundary + distance
+        };
+        let last_index = if offset < 0 {
+            last_boundary - distance
+        } else {
+            last_boundary + distance
+        };
+        (
+            i32::from(samples[first_index].to_u16()),
+            i32::from(samples[last_index].to_u16()),
+        )
+    });
+    apply_deblock_choice_strided_4::<T, true>(
+        samples,
+        stride,
+        lane_stride.get(),
+        choice,
+        q_thresh_mults,
+        w_mults,
+        prev_lossless,
+        curr_lossless,
+        bit_depth,
+        width,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::inline_always, reason = "shared fused deblock hot path")]
+#[inline(always)]
+fn apply_deblock_choice_strided_4<T: ReconSample, const VALIDATED: bool>(
+    samples: &mut [T],
+    stride: usize,
+    lane_stride: usize,
+    choice: &DeblockFilterChoice,
+    q_thresh_mults: &[i32; MAX_DBL_FLT_LEN],
+    w_mults: &[i32; MAX_DBL_FLT_LEN],
+    prev_lossless: bool,
+    curr_lossless: bool,
+    bit_depth: BitDepth,
+    width: usize,
+) -> Result<usize> {
+    if width == 0 {
+        return Ok(0);
+    }
+    let max_width_neg = width.min(choice.max_width_neg);
+    let max_width_pos = width.min(choice.max_width_pos);
+    let max_width = max_width_neg.max(max_width_pos);
+    let params = DeblockSampleFilter {
+        boundary: choice.boundary,
+        q_thr: choice.q_thr,
+        max_width_neg,
+        max_width_pos,
+        q_thresh_mult: q_thresh_mults[max_width - 1],
+        w_mult_neg: w_mults[max_width_neg - 1],
+        w_mult_pos: w_mults[max_width_pos - 1],
+        prev_lossless,
+        curr_lossless,
+        bit_depth,
+    };
+    if VALIDATED {
+        deblock_sample_filter_inner_4_bounded(samples, &params, stride, lane_stride)?;
+    } else {
+        validate_sample_type::<T>(bit_depth)?;
+        deblock_sample_filter_strided_4_validated(samples, stride, lane_stride, &params)?;
+    }
+    Ok(width)
+}
+
+#[allow(clippy::inline_always, reason = "measured deblock hot path")]
+#[inline(always)]
 fn deblock_filter_choice_progressive(
     params: &DeblockFilterChoice,
     mut load: impl FnMut(isize) -> (i32, i32),
@@ -976,6 +1333,114 @@ mod tests {
             )
             .unwrap();
             assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn fused_choice_and_four_lane_filter_matches_separate_primitives() {
+        let stride = 32;
+        let boundary = 8 * stride + 4;
+        let lane_stride = NonZeroUsize::MIN;
+        let perpendicular_stride = NonZeroUsize::new(stride).unwrap();
+        let mut source = vec![0u16; 17 * stride];
+        for row in 0..17 {
+            for lane in 0..4 {
+                source[row * stride + 4 + lane] = (120 + row * 3 + lane) as u16;
+            }
+        }
+        let choice = DeblockFilterChoice {
+            boundary,
+            q_thr: 80,
+            side_thr: 40,
+            max_width_pos: 8,
+            max_width_neg: 6,
+            q_first: [4, 5, 6, 7, 8, 9, 10, 11, 12],
+        };
+        let q_thresh_mults = [17; MAX_DBL_FLT_LEN];
+        let w_mults = [20; MAX_DBL_FLT_LEN];
+        let last_boundary = boundary + 3;
+
+        let mut expected = source.clone();
+        let width =
+            deblock_filter_choice_strided(&expected, last_boundary, perpendicular_stride, &choice)
+                .unwrap();
+        if width != 0 {
+            let max_width_neg = width.min(choice.max_width_neg);
+            let max_width_pos = width.min(choice.max_width_pos);
+            deblock_sample_filter_strided_4(
+                &mut expected,
+                perpendicular_stride,
+                lane_stride,
+                &DeblockSampleFilter {
+                    boundary,
+                    q_thr: choice.q_thr,
+                    max_width_neg,
+                    max_width_pos,
+                    q_thresh_mult: q_thresh_mults[max_width_neg.max(max_width_pos) - 1],
+                    w_mult_neg: w_mults[max_width_neg - 1],
+                    w_mult_pos: w_mults[max_width_pos - 1],
+                    prev_lossless: false,
+                    curr_lossless: false,
+                    bit_depth: BitDepth::Ten,
+                },
+            )
+            .unwrap();
+        }
+
+        let mut actual = source;
+        let fused_width = deblock_filter_choice_and_sample_strided_4(
+            &mut actual,
+            last_boundary,
+            perpendicular_stride,
+            lane_stride,
+            &choice,
+            &q_thresh_mults,
+            &w_mults,
+            false,
+            false,
+            BitDepth::Ten,
+        )
+        .unwrap();
+        assert_eq!(fused_width, width);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn four_row_contiguous_filter_matches_individual_rows() {
+        let lane_stride = 32;
+        let boundary = 8;
+        let mut source = vec![0u16; 4 * lane_stride];
+        for row in 0..4 {
+            for col in 0..16 {
+                source[row * lane_stride + col] = (40 + row * 17 + col * 7) as u16;
+            }
+        }
+        for width in [4, 8] {
+            let params = DeblockSampleFilter {
+                boundary,
+                bit_depth: BitDepth::Ten,
+                ..params(boundary, 80, width, width, 17, 20, 15, false, false)
+            };
+            let mut expected = source.clone();
+            for row in 0..4 {
+                deblock_sample_filter(
+                    &mut expected,
+                    &DeblockSampleFilter {
+                        boundary: boundary + row * lane_stride,
+                        ..params
+                    },
+                )
+                .unwrap();
+            }
+            let mut actual = source.clone();
+            deblock_sample_filter_strided_4(
+                &mut actual,
+                NonZeroUsize::new(1).unwrap(),
+                NonZeroUsize::new(lane_stride).unwrap(),
+                &params,
+            )
+            .unwrap();
+            assert_eq!(actual, expected, "width {width}");
         }
     }
 

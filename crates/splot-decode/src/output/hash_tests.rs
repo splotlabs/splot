@@ -377,31 +377,33 @@ fn inter_444_fixture_eof_fails_closed() {
 
 #[test]
 fn reference_scaling_fixture_matches_reference_output_hashes() {
-    let report = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(REFERENCE_SCALING_FIXTURE, DecodeOptions::default())
-        .unwrap();
+    for threads in [1usize, 4] {
+        let report = context(ThreadCount::from(threads))
+            .decode_hash_report_bytes(REFERENCE_SCALING_FIXTURE, DecodeOptions::default())
+            .unwrap();
 
-    assert_eq!(report.frames.len(), 2);
-    assert_eq!(
-        (
-            report.frames[0].visible_luma_width,
-            report.frames[0].visible_luma_height,
-            report.frames[0].chroma_width,
-            report.frames[0].chroma_height,
-        ),
-        (64, 64, Some(32), Some(32))
-    );
-    assert_eq!(
-        (
-            report.frames[1].visible_luma_width,
-            report.frames[1].visible_luma_height,
-            report.frames[1].chroma_width,
-            report.frames[1].chroma_height,
-        ),
-        (51, 51, Some(26), Some(26))
-    );
-    for (frame, expected) in report.frames.iter().zip(REFERENCE_SCALING_EXPECTED_DIGESTS) {
-        assert_eq!(frame.hashes[0].digest_hex, expected);
+        assert_eq!(report.frames.len(), 2);
+        assert_eq!(
+            (
+                report.frames[0].visible_luma_width,
+                report.frames[0].visible_luma_height,
+                report.frames[0].chroma_width,
+                report.frames[0].chroma_height,
+            ),
+            (64, 64, Some(32), Some(32))
+        );
+        assert_eq!(
+            (
+                report.frames[1].visible_luma_width,
+                report.frames[1].visible_luma_height,
+                report.frames[1].chroma_width,
+                report.frames[1].chroma_height,
+            ),
+            (51, 51, Some(26), Some(26))
+        );
+        for (frame, expected) in report.frames.iter().zip(REFERENCE_SCALING_EXPECTED_DIGESTS) {
+            assert_eq!(frame.hashes[0].digest_hex, expected);
+        }
     }
 }
 

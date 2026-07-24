@@ -3,6 +3,12 @@
 
 //! AV2 § 7.20.5 guided detail filter application.
 
+use std::simd::{
+    Simd,
+    cmp::SimdOrd,
+    num::{SimdInt, SimdUint},
+};
+
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::span::ByteOffset;
 use splot_core::tables::loop_restoration::{
@@ -18,6 +24,11 @@ use crate::Result;
 use crate::filters::source::{FramePlane, StripePlane};
 use crate::filters::wienerns_lr::wienerns_lr_selectable_transform_record_error_reason;
 use crate::support::reusable_scratch::with_reusable_scratch;
+
+#[path = "gdf_simd.rs"]
+mod simd;
+
+use simd::{finish_gdf_width_simd, gdf_width4_rows, gdf_width8_rows, uniform_gdf_class};
 
 const MI_SIZE: usize = 4;
 const GDF_TEST_STRIPE_OFF: usize = 8;
@@ -43,11 +54,13 @@ const GDF_COORDS: [(isize, isize); 18] = [
     (0, 2),
     (0, 1),
 ];
+
 const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
 const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 const GDF_SCRATCH_ALLOCATION_REASON: &str =
     "unsupported_wienerns_lr_selectable_transform_records_gdf_allocation";
+const GDF_SOURCE_REASON: &str = "unsupported_wienerns_lr_selectable_transform_records_gdf_source";
 
 fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Option<usize> {
     let local_y = y.checked_sub(tile_start)?;
@@ -582,6 +595,24 @@ struct GdfBlock {
     max_sample: i32,
 }
 
+struct GdfUniformParams {
+    alpha: [i16; GDF_COORDS.len()],
+    weights: [[i16; GDF_COORDS.len()]; 3],
+}
+
+impl GdfUniformParams {
+    fn new(block: &GdfBlock, class: usize) -> Self {
+        let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
+        let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+        Self {
+            alpha: core::array::from_fn(|tap| alpha_table[tap][class] as i16),
+            weights: core::array::from_fn(|index| {
+                core::array::from_fn(|tap| weight_table[index][tap][class])
+            }),
+        }
+    }
+}
+
 fn compute_block<T: ReconSample>(
     source: &GdfSource<'_>,
     base_luma: &[u16],
@@ -718,17 +749,14 @@ fn compute_enabled_segment(
             "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
         )
     };
-    let source_error = || {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        )
-    };
+    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
     if !block.height.is_multiple_of(2) {
         return Err(geometry_error());
     }
     let class_cols = block.width >> 1;
     let tap_offsets = gdf_tap_offsets(source.stride, offset)?;
+    let uniform_params: [GdfUniformParams; 4] =
+        core::array::from_fn(|class| GdfUniformParams::new(block, class));
     for row in (0..block.height).step_by(2) {
         let class_row = (row >> 1)
             .checked_mul(class_cols)
@@ -747,12 +775,11 @@ fn compute_enabled_segment(
                 .checked_add(local_x >> 1)
                 .ok_or_else(geometry_error)?;
             if block.width - local_x >= 16 {
-                let wide_classes = classes
+                let uniform_classes = classes
                     .get(class_start..class_start + 8)
-                    .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok());
-                if let Some(wide_classes) =
-                    wide_classes.filter(|classes| classes.iter().all(|class| class.index == 3))
-                {
+                    .and_then(|classes| <&[GdfClass; 8]>::try_from(classes).ok())
+                    .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
+                if let Some((uniform_classes, class_index)) = uniform_classes {
                     let base_values = exact_slice(base_luma, output_start, 16)
                         .and_then(|samples| <&[u16; 16]>::try_from(samples).ok())
                         .copied()
@@ -761,13 +788,15 @@ fn compute_enabled_segment(
                         .and_then(|samples| <&[u16; 16]>::try_from(samples).ok())
                         .copied()
                         .ok_or_else(source_error)?;
-                    let filtered = gdf_uniform_width_rows::<16, 3, 2>(
+                    let origin = (source_origin.0 + local_x, source_origin.1 + row);
+                    let filtered = gdf_uniform_width_rows::<16, 2>(
                         [base_values, next_base_values],
                         source,
                         &tap_offsets,
-                        wide_classes,
+                        uniform_classes,
+                        &uniform_params[class_index as usize],
                         block,
-                        (source_origin.0 + local_x, source_origin.1 + row),
+                        origin,
                         offset,
                     )?;
                     base_luma[output_start..output_start + 16].copy_from_slice(&filtered[0]);
@@ -781,8 +810,8 @@ fn compute_enabled_segment(
                 let uniform_classes = classes
                     .get(class_start..class_start + 4)
                     .and_then(|classes| <&[GdfClass; 4]>::try_from(classes).ok())
-                    .filter(|classes| classes.iter().all(|class| class.index == classes[0].index));
-                if let Some(uniform_classes) = uniform_classes {
+                    .and_then(|classes| uniform_gdf_class(classes).map(|index| (classes, index)));
+                if let Some((uniform_classes, class_index)) = uniform_classes {
                     let base_values = exact_slice(base_luma, output_start, 8)
                         .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
                         .copied()
@@ -791,50 +820,52 @@ fn compute_enabled_segment(
                         .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
                         .copied()
                         .ok_or_else(source_error)?;
-                    let filtered = match uniform_classes[0].index {
-                        0 => gdf_uniform_width_rows::<8, 0, 2>(
-                            [base_values, next_base_values],
-                            source,
-                            &tap_offsets,
-                            uniform_classes,
-                            block,
-                            (source_origin.0 + local_x, source_origin.1 + row),
-                            offset,
-                        ),
-                        1 => gdf_uniform_width_rows::<8, 1, 2>(
-                            [base_values, next_base_values],
-                            source,
-                            &tap_offsets,
-                            uniform_classes,
-                            block,
-                            (source_origin.0 + local_x, source_origin.1 + row),
-                            offset,
-                        ),
-                        2 => gdf_uniform_width_rows::<8, 2, 2>(
-                            [base_values, next_base_values],
-                            source,
-                            &tap_offsets,
-                            uniform_classes,
-                            block,
-                            (source_origin.0 + local_x, source_origin.1 + row),
-                            offset,
-                        ),
-                        _ => gdf_uniform_width_rows::<8, 3, 2>(
-                            [base_values, next_base_values],
-                            source,
-                            &tap_offsets,
-                            uniform_classes,
-                            block,
-                            (source_origin.0 + local_x, source_origin.1 + row),
-                            offset,
-                        ),
-                    }?;
+                    let args = [base_values, next_base_values];
+                    let origin = (source_origin.0 + local_x, source_origin.1 + row);
+                    let filtered = gdf_uniform_width_rows::<8, 2>(
+                        args,
+                        source,
+                        &tap_offsets,
+                        uniform_classes,
+                        &uniform_params[class_index as usize],
+                        block,
+                        origin,
+                        offset,
+                    )?;
                     base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
                     base_luma[next_output_start..next_output_start + 8]
                         .copy_from_slice(&filtered[1]);
                     local_x += 8;
                     continue;
                 }
+            }
+            if block.width - local_x >= 8 {
+                let base_values = exact_slice(base_luma, output_start, 8)
+                    .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
+                    .copied()
+                    .ok_or_else(source_error)?;
+                let next_base_values = exact_slice(base_luma, next_output_start, 8)
+                    .and_then(|samples| <&[u16; 8]>::try_from(samples).ok())
+                    .copied()
+                    .ok_or_else(source_error)?;
+                let classes = classes
+                    .get(class_start..class_start + 4)
+                    .and_then(|classes| <&[GdfClass; 4]>::try_from(classes).ok())
+                    .copied()
+                    .ok_or_else(geometry_error)?;
+                let filtered = gdf_width8_rows(
+                    [base_values, next_base_values],
+                    source,
+                    &tap_offsets,
+                    classes,
+                    block,
+                    (source_origin.0 + local_x, source_origin.1 + row),
+                    offset,
+                )?;
+                base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
+                base_luma[next_output_start..next_output_start + 8].copy_from_slice(&filtered[1]);
+                local_x += 8;
+                continue;
             }
             let base_values = exact_slice(base_luma, output_start, MI_SIZE)
                 .and_then(|samples| <&[u16; MI_SIZE]>::try_from(samples).ok())
@@ -1166,12 +1197,14 @@ impl<T: ReconSample> GdfSourceRow<'_, T> {
         let end = start.checked_add(dst.len())?;
         match self {
             Self::Frame(row) => {
-                for (dst, sample) in dst.iter_mut().zip(row.get(start..end)?) {
+                let source = row.get(start..end)?;
+                for (dst, sample) in dst.iter_mut().zip(source) {
                     *dst = U::try_from_u16(sample.to_u16()).ok()?.to_u16();
                 }
             }
             Self::Stripe(row) => {
-                for (dst, &sample) in dst.iter_mut().zip(row.get(start..end)?) {
+                let source = row.get(start..end)?;
+                for (dst, &sample) in dst.iter_mut().zip(source) {
                     *dst = U::try_from_u16(sample).ok()?.to_u16();
                 }
             }
@@ -1423,10 +1456,25 @@ fn band_gradients(
     Ok(())
 }
 
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct GdfClass {
-    index: u8,
-    gradient_bias: i32,
+struct GdfClass(i32);
+
+impl GdfClass {
+    #[inline]
+    fn new(index: u8, gradient_bias: i32) -> Self {
+        Self((gradient_bias << 2) | i32::from(index))
+    }
+
+    #[inline]
+    fn index(self) -> u8 {
+        (self.0 & 3) as u8
+    }
+
+    #[inline]
+    fn gradient_bias(self) -> i32 {
+        self.0 >> 2
+    }
 }
 
 #[cfg(test)]
@@ -1492,10 +1540,7 @@ fn band_classes(
                 let comb = ((strength >> strength_shift) as i32).min(i32::from(alpha));
                 gradient_bias += comb * i32::from(weight_table[2][k][cls]);
             }
-            classes[i * class_cols + j] = GdfClass {
-                index,
-                gradient_bias,
-            };
+            classes[i * class_cols + j] = GdfClass::new(index, gradient_bias);
         }
     }
     Ok(())
@@ -1514,12 +1559,7 @@ fn gradient_pair_row(
     resize_scratch(output, class_cols, offset)?;
     let base_row = source_origin.1 - 1 + row_pair * 2;
     let base_col = source_origin.0 - 1;
-    let source_error = || {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        )
-    };
+    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
     let window_col = base_col.checked_sub(1).ok_or_else(source_error)?;
     let window_len = class_cols
         .checked_mul(2)
@@ -1654,11 +1694,9 @@ fn band_classes_from_source(
             offset,
         )?;
         for col in 0..class_cols {
-            let mut strengths = [0u32; GDF_DIRECTIONS];
-            for (direction, strength) in strengths.iter_mut().enumerate() {
-                *strength =
-                    u32::from(previous[col][direction]) + u32::from(current[col][direction]);
-            }
+            let strengths: [u32; GDF_DIRECTIONS] = core::array::from_fn(|direction| {
+                u32::from(previous[col][direction]) + u32::from(current[col][direction])
+            });
             let index = u8::from(strengths[0] <= strengths[1])
                 | (u8::from(strengths[2] <= strengths[3]) << 1);
             let cls = usize::from(index);
@@ -1669,10 +1707,7 @@ fn band_classes_from_source(
                 let comb = ((strength >> strength_shift) as i32).min(i32::from(alpha));
                 gradient_bias += comb * i32::from(weight_table[2][k][cls]);
             }
-            classes[row * class_cols + col] = GdfClass {
-                index,
-                gradient_bias,
-            };
+            classes[row * class_cols + col] = GdfClass::new(index, gradient_bias);
         }
         core::mem::swap(previous, current);
     }
@@ -1707,156 +1742,81 @@ fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn gdf_width4_rows<const ROWS: usize>(
-    base_values: [[u16; MI_SIZE]; ROWS],
-    source: &GdfSource<'_>,
-    tap_offsets: &[usize; GDF_COORDS.len()],
-    classes: [GdfClass; 2],
-    block: &GdfBlock,
-    row: usize,
-    source_origin: (usize, usize),
-    offset: ByteOffset,
-) -> Result<[[u16; MI_SIZE]; ROWS]> {
-    let source_error = || {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        )
-    };
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let shift = u32::from(10 - block.bit_depth.bits().min(10));
-    let mut output = [[0; MI_SIZE]; ROWS];
-    let params = GdfFinishParams::from_block(block);
-    for row_offset in 0..ROWS {
-        let base = (source_origin.1 + row + row_offset) * source.stride + source_origin.0;
-        let centers = exact_slice(source.samples, base, MI_SIZE).ok_or_else(source_error)?;
-        let mut center_values = [0i32; MI_SIZE];
-        for (col, value) in center_values.iter_mut().enumerate() {
-            *value = i32::from(centers[col]);
-        }
-        let mut gdf_idx = [[0i32; 3]; MI_SIZE];
-        for (col, cell) in gdf_idx.iter_mut().enumerate() {
-            cell[2] = classes[col >> 1].gradient_bias;
-        }
-        for (k, &tap) in tap_offsets.iter().enumerate() {
-            let negative =
-                exact_slice(source.samples, base - tap, MI_SIZE).ok_or_else(source_error)?;
-            let positive =
-                exact_slice(source.samples, base + tap, MI_SIZE).ok_or_else(source_error)?;
-            for col in 0..MI_SIZE {
-                let cls = usize::from(classes[col >> 1].index);
-                let alpha = i32::from(alpha_table[k][cls]);
-                let above =
-                    ((i32::from(negative[col]) - center_values[col]) << shift).clamp(-alpha, alpha);
-                let below =
-                    ((i32::from(positive[col]) - center_values[col]) << shift).clamp(-alpha, alpha);
-                let comb = (above + below).clamp(-512, 511);
-                for (idx, total) in gdf_idx[col].iter_mut().enumerate() {
-                    *total += comb * i32::from(weight_table[idx][k][cls]);
-                }
-            }
-        }
-        let out = &mut output[row_offset];
-        if block.ref_dst_idx == GDF_INTRA_REF_DST {
-            let error = &GDF_INTRA_ERROR[block.qp_idx];
-            for (col, slot) in out.iter_mut().enumerate() {
-                *slot = finish_gdf_sample_with_error::<8, 4096>(
-                    i32::from(base_values[row_offset][col]),
-                    &params,
-                    error,
-                    &gdf_idx[col],
-                );
-            }
-        } else {
-            let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-            for (col, slot) in out.iter_mut().enumerate() {
-                *slot = finish_gdf_sample_with_error::<5, 1000>(
-                    i32::from(base_values[row_offset][col]),
-                    &params,
-                    error,
-                    &gdf_idx[col],
-                );
-            }
-        }
-    }
-    Ok(output)
-}
-
-#[allow(clippy::too_many_arguments)]
 #[inline(never)]
-fn gdf_uniform_width_rows<const WIDTH: usize, const CLASS: usize, const ROWS: usize>(
+fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
     base_values: [[u16; WIDTH]; ROWS],
     source: &GdfSource<'_>,
     tap_offsets: &[usize; GDF_COORDS.len()],
     classes: &[GdfClass],
+    params: &GdfUniformParams,
     block: &GdfBlock,
     source_origin: (usize, usize),
     offset: ByteOffset,
 ) -> Result<[[u16; WIDTH]; ROWS]> {
-    let source_error = || {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        )
-    };
-    let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
-    let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
+    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
+    let mut bases = [0usize; ROWS];
+    let mut centers = [Simd::<i16, WIDTH>::splat(0); ROWS];
+    let mut gdf_indices = [[Simd::<i32, WIDTH>::splat(0); 3]; ROWS];
     let mut output = [[0; WIDTH]; ROWS];
-    let params = GdfFinishParams::from_block(block);
     for row_offset in 0..ROWS {
         let base = (source_origin.1 + row_offset) * source.stride + source_origin.0;
-        let centers = exact_slice(source.samples, base, WIDTH).ok_or_else(source_error)?;
-        let mut gdf_idx0 = [0_i32; WIDTH];
-        let mut gdf_idx1 = [0_i32; WIDTH];
-        let mut gdf_idx2 = [0i32; WIDTH];
-        for (col, value) in gdf_idx2.iter_mut().enumerate() {
-            *value = classes[col >> 1].gradient_bias;
-        }
-        for (k, &tap) in tap_offsets.iter().enumerate() {
-            let negative =
-                exact_slice(source.samples, base - tap, WIDTH).ok_or_else(source_error)?;
-            let positive =
-                exact_slice(source.samples, base + tap, WIDTH).ok_or_else(source_error)?;
-            let alpha = i32::from(alpha_table[k][CLASS]);
-            let weight0 = i32::from(weight_table[0][k][CLASS]);
-            let weight1 = i32::from(weight_table[1][k][CLASS]);
-            let weight2 = i32::from(weight_table[2][k][CLASS]);
-            for col in 0..WIDTH {
-                let center = i32::from(centers[col]);
-                let above = ((i32::from(negative[col]) - center) << shift).clamp(-alpha, alpha);
-                let below = ((i32::from(positive[col]) - center) << shift).clamp(-alpha, alpha);
-                let comb = (above + below).clamp(-512, 511);
-                gdf_idx0[col] += comb * weight0;
-                gdf_idx1[col] += comb * weight1;
-                gdf_idx2[col] += comb * weight2;
+        bases[row_offset] = base;
+        centers[row_offset] = Simd::<u16, WIDTH>::from_slice(
+            exact_slice(source.samples, base, WIDTH).ok_or_else(source_error)?,
+        )
+        .cast::<i16>();
+        gdf_indices[row_offset][2] = Simd::from_array(core::array::from_fn(|col| {
+            classes[col >> 1].gradient_bias()
+        }));
+    }
+    for (k, &tap) in tap_offsets.iter().enumerate() {
+        let alpha = params.alpha[k];
+        let low = Simd::splat(-alpha);
+        let high = Simd::splat(alpha);
+        for row_offset in 0..ROWS {
+            let base = bases[row_offset];
+            let negative = Simd::<u16, WIDTH>::from_slice(
+                exact_slice(source.samples, base - tap, WIDTH).ok_or_else(source_error)?,
+            )
+            .cast::<i16>();
+            let positive = Simd::<u16, WIDTH>::from_slice(
+                exact_slice(source.samples, base + tap, WIDTH).ok_or_else(source_error)?,
+            )
+            .cast::<i16>();
+            let above = ((negative - centers[row_offset]) << shift as i16).simd_clamp(low, high);
+            let below = ((positive - centers[row_offset]) << shift as i16).simd_clamp(low, high);
+            let comb = (above + below)
+                .simd_clamp(Simd::splat(-512), Simd::splat(511))
+                .cast::<i32>();
+            for (idx, weights) in gdf_indices[row_offset].iter_mut().zip(&params.weights) {
+                let weight = weights[k];
+                if weight != 0 {
+                    *idx += comb * Simd::splat(i32::from(weight));
+                }
             }
         }
-        let out = &mut output[row_offset];
-        if block.ref_dst_idx == GDF_INTRA_REF_DST {
+    }
+    for (row_offset, gdf_idx) in gdf_indices.into_iter().enumerate() {
+        output[row_offset] = if block.ref_dst_idx == GDF_INTRA_REF_DST {
             let error = &GDF_INTRA_ERROR[block.qp_idx];
-            for (col, slot) in out.iter_mut().enumerate() {
-                let gdf_idx = [gdf_idx0[col], gdf_idx1[col], gdf_idx2[col]];
-                *slot = finish_gdf_sample_with_error::<8, 4096>(
-                    i32::from(base_values[row_offset][col]),
-                    &params,
-                    error,
-                    &gdf_idx,
-                );
-            }
+            finish_gdf_width_simd::<WIDTH, 8, 4096>(
+                Simd::from_array(base_values[row_offset]).cast::<i32>(),
+                block,
+                error,
+                gdf_idx,
+            )
+            .to_array()
         } else {
             let error = &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx];
-            for (col, slot) in out.iter_mut().enumerate() {
-                let gdf_idx = [gdf_idx0[col], gdf_idx1[col], gdf_idx2[col]];
-                *slot = finish_gdf_sample_with_error::<5, 1000>(
-                    i32::from(base_values[row_offset][col]),
-                    &params,
-                    error,
-                    &gdf_idx,
-                );
-            }
-        }
+            finish_gdf_width_simd::<WIDTH, 5, 1000>(
+                Simd::from_array(base_values[row_offset]).cast::<i32>(),
+                block,
+                error,
+                gdf_idx,
+            )
+            .to_array()
+        };
     }
     Ok(output)
 }
@@ -1876,10 +1836,10 @@ fn gdf_sample(
     let samples = source.samples;
     let base = source_row * source.stride + source_col;
     let sample2 = i32::from(samples[base]);
-    let cls = usize::from(class.index);
+    let cls = usize::from(class.index());
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
-    let mut gdf_idx = [0, 0, class.gradient_bias];
+    let mut gdf_idx = [0, 0, class.gradient_bias()];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     for (k, &tap) in tap_offsets.iter().enumerate() {
         let alpha = i32::from(alpha_table[k][cls]);
@@ -1908,42 +1868,20 @@ fn gdf_sample(
 #[allow(clippy::inline_always)]
 #[inline(always)]
 fn finish_gdf_sample(base: i32, block: &GdfBlock, gdf_idx: &[i32; 3]) -> u16 {
-    let params = GdfFinishParams::from_block(block);
     if block.ref_dst_idx == GDF_INTRA_REF_DST {
         finish_gdf_sample_with_error::<8, 4096>(
             base,
-            &params,
+            block,
             &GDF_INTRA_ERROR[block.qp_idx],
             gdf_idx,
         )
     } else {
         finish_gdf_sample_with_error::<5, 1000>(
             base,
-            &params,
+            block,
             &GDF_INTER_ERROR[block.ref_dst_idx - 1][block.qp_idx],
             gdf_idx,
         )
-    }
-}
-
-/// The block-constant inputs to [`finish_gdf_sample_with_error`], resolved once per block so
-/// the per-pixel finish stops re-reading `block` fields (and re-indexing `GDF_BIAS`) through
-/// the shared `&GdfBlock` reference on every sample.
-struct GdfFinishParams {
-    bias: &'static [i32; 3],
-    pix_scale: i32,
-    residual_shift: u32,
-    max_sample: i32,
-}
-
-impl GdfFinishParams {
-    fn from_block(block: &GdfBlock) -> Self {
-        Self {
-            bias: &GDF_BIAS[block.ref_dst_idx][block.qp_idx],
-            pix_scale: block.pix_scale,
-            residual_shift: 12 - u32::from(block.bit_depth.bits()),
-            max_sample: block.max_sample,
-        }
     }
 }
 
@@ -1951,19 +1889,22 @@ impl GdfFinishParams {
 #[inline(always)]
 fn finish_gdf_sample_with_error<const SCALE: i32, const ERROR_LEN: usize>(
     base: i32,
-    params: &GdfFinishParams,
+    block: &GdfBlock,
     error: &[i32; ERROR_LEN],
     gdf_idx: &[i32; 3],
 ) -> u16 {
     let mut pos = 0_usize;
     for (idx, value) in gdf_idx.iter().enumerate() {
-        let biased = (*value + params.bias[idx]) * SCALE;
+        let biased = (*value + GDF_BIAS[block.ref_dst_idx][block.qp_idx][idx]) * SCALE;
         let v = round2_signed_i32(biased, 15);
         let digit = v.clamp(-SCALE, SCALE - 1) + SCALE;
         pos = pos * (SCALE as usize * 2) + usize::try_from(digit).unwrap_or_default();
     }
-    let residual = round2_signed_i32(error[pos] * params.pix_scale, params.residual_shift);
-    (base + residual).clamp(0, params.max_sample) as u16
+    let residual = round2_signed_i32(
+        error[pos] * block.pix_scale,
+        12 - u32::from(block.bit_depth.bits()),
+    );
+    (base + residual).clamp(0, block.max_sample) as u16
 }
 
 #[cfg(test)]

@@ -212,10 +212,12 @@ pub trait ReconSample: private::Sealed + Copy + Default + Send + Sync + 'static 
     /// `u16`; `None` for narrower storage types.
     fn u16_slice_mut(samples: &mut [Self]) -> Option<&mut [u16]>;
 
+    /// Reinterprets a mutable sample slice as `u8` storage when this type is
+    /// `u8`; `None` for wider storage types.
+    fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]>;
+
     /// Process-global retained pool of transient reconstruction-workspace plane
-    /// sample buffers for this storage type, reused across frames instead of
-    /// reallocating each frame's dropped reconstruction workspace. Not part of
-    /// the public contract; used only by `CurrentFramePlane`.
+    /// sample buffers for this storage type.
     #[doc(hidden)]
     fn recon_plane_pool() -> &'static std::sync::Mutex<Vec<Vec<Self>>>;
 }
@@ -243,6 +245,10 @@ impl ReconSample for u8 {
         None
     }
 
+    fn u8_slice_mut(samples: &mut [Self]) -> Option<&mut [u8]> {
+        Some(samples)
+    }
+
     fn recon_plane_pool() -> &'static std::sync::Mutex<Vec<Vec<Self>>> {
         static POOL: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
         &POOL
@@ -266,6 +272,10 @@ impl ReconSample for u16 {
 
     fn u16_slice_mut(samples: &mut [Self]) -> Option<&mut [u16]> {
         Some(samples)
+    }
+
+    fn u8_slice_mut(_samples: &mut [Self]) -> Option<&mut [u8]> {
+        None
     }
 
     fn recon_plane_pool() -> &'static std::sync::Mutex<Vec<Vec<Self>>> {

@@ -52,6 +52,59 @@ fn derived_alpha() -> CflParams {
 }
 
 #[test]
+fn cfl_420_filter1_simd_matches_scalar_at_block_and_frame_edges() {
+    let plane_width = 130;
+    let plane_height = 9;
+    let luma: Vec<u16> = (0..plane_width * plane_height)
+        .map(|index| ((index * 17 + 11) & 1023) as u16)
+        .collect();
+    let average_q3 = 37;
+    for (x, y, width, height) in [(0, 0, 32, 4), (1, 1, 64, 3), (31, 2, 32, 3), (50, 4, 16, 2)] {
+        let mut actual = Vec::new();
+        assert!(fill_cfl_luma_ac_420_filter1_u16(
+            &luma,
+            plane_width,
+            plane_width,
+            plane_height,
+            x,
+            y,
+            width,
+            height,
+            average_q3,
+            &mut actual,
+        ));
+        let mut expected = Vec::with_capacity(width * height);
+        for row in 0..height {
+            let luma_y = (2 * (y + row)).min(plane_height - 1);
+            let next_y = (luma_y + 1).min(plane_height - 1);
+            for col in 0..width {
+                let luma_x = 2 * (x + col);
+                let center = luma_x.min(plane_width - 1);
+                let left = if col == 0 || luma_x.is_multiple_of(64) {
+                    center
+                } else {
+                    luma_x.saturating_sub(1).min(plane_width - 1)
+                };
+                let right = (luma_x + 1).min(plane_width - 1);
+                expected.push(
+                    i32::from(luma[luma_y * plane_width + left])
+                        + 2 * i32::from(luma[luma_y * plane_width + center])
+                        + i32::from(luma[luma_y * plane_width + right])
+                        + i32::from(luma[next_y * plane_width + left])
+                        + 2 * i32::from(luma[next_y * plane_width + center])
+                        + i32::from(luma[next_y * plane_width + right])
+                        - average_q3,
+                );
+            }
+        }
+        assert_eq!(
+            actual, expected,
+            "x={x} y={y} width={width} height={height}"
+        );
+    }
+}
+
+#[test]
 fn cfl_reconstruction_supports_non_420_chroma_geometry() {
     let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
     let mut retained = None;

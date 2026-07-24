@@ -8,7 +8,7 @@ ids, severities, spec sections, offsets, and messages.
 
 [![CI](https://github.com/splotlabs/splot/actions/workflows/ci.yml/badge.svg)](https://github.com/splotlabs/splot/actions/workflows/ci.yml)
 [![AV2 spec v1.0.0](https://img.shields.io/badge/AV2%20spec-v1.0.0-blueviolet)](https://av2.aomedia.org/v1.0.0/index.html)
-[![Rust 1.96 · edition 2024](https://img.shields.io/badge/rust-1.96%20%C2%B7%20edition%202024-orange)](./rust-toolchain.toml)
+[![Rust nightly · edition 2024](https://img.shields.io/badge/rust-nightly%20%C2%B7%20edition%202024-orange)](./rust-toolchain.toml)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success)](./Cargo.toml)
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue)](./LICENSE.md)
 
@@ -30,6 +30,9 @@ cargo xtask decoder-conformance-coverage
 ```
 
 ## Quick Start
+
+The workspace uses the pinned nightly in `rust-toolchain.toml` for portable
+SIMD. Rustup selects and installs it automatically.
 
 ```bash
 rustup show active-toolchain

@@ -5,14 +5,15 @@
 use splot_recon::BitDepth;
 use splot_recon::{
     CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, OptflowScratch,
-    PixelFormat, PlaneId, PlaneRect, ReconError, ReconSample, ReferencePlaneView,
-    SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
+    PixelFormat, PlaneId, PlaneRect, PreparedWarpPrediction, ReconError, ReconSample,
+    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
     blend_compound_average_weighted_sample, ext_warp_predict_unit,
-    subpel_predict_16x16_fullpel_horizontal_overlap_into,
-    subpel_predict_block_compound_average_fullpel_strided_into,
-    subpel_predict_block_compound_average_strided_into, subpel_predict_block_compound_intermediate,
-    subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
-    warp_predict_block_into, wedge_mask_plane_sample,
+    subpel_predict_16x16_bilinear_horizontal_overlap_into,
+    subpel_predict_block_compound_average_fast_validated_strided_into,
+    subpel_predict_block_compound_average_strided_into,
+    subpel_predict_block_compound_average_strided_into_u8,
+    subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
+    subpel_predict_block_into, subpel_predict_block_strided_into, wedge_mask_plane_sample,
 };
 
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
@@ -25,7 +26,7 @@ mod optflow;
 mod refinemv;
 pub(crate) mod sink;
 pub(crate) use optflow::CompoundMotionGrid;
-use optflow::MotionCell;
+use optflow::{CompoundAverageOutput, MotionCell};
 pub(crate) use sink::WorkspaceSink;
 
 pub(crate) const fn mc_planes(pixel_format: PixelFormat) -> [(PlaneId, u32, u32); 3] {
@@ -403,14 +404,10 @@ impl CompoundBlockMetadata {
             .transpose()
     }
 
-    pub(super) fn stored_mvs_at_luma_offset(
-        &self,
-        x: usize,
-        y: usize,
-    ) -> splot_recon::Result<Option<[Mv; 2]>> {
+    pub(super) fn stored_mvs_at_index(&self, index: usize) -> splot_recon::Result<Option<[Mv; 2]>> {
         self.motion
             .as_ref()
-            .map(|motion| motion.stored_mvs_at_luma_offset(x, y))
+            .map(|motion| motion.stored_mvs_at_index(index))
             .transpose()
     }
 
@@ -673,7 +670,9 @@ pub(super) fn predict_tip_compound_batch_into<T: ReconSample>(
     offset: ByteOffset,
     samples: &mut [T],
 ) -> Result<CompoundBlockMetadata> {
+    let motion_timer = crate::timing::start();
     let motion = optflow::tip_motion_grid(sink, block, 8, columns, units, offset)?;
+    crate::timing::report("inter_tip_motion_grid", motion_timer);
     block.rect = batch_rect;
     block.has_chroma = batch_has_chroma;
     block.sub8x8_chroma = false;
@@ -681,7 +680,16 @@ pub(super) fn predict_tip_compound_batch_into<T: ReconSample>(
     block.use_refinemv = false;
     block.search_refinemv = false;
     let samples = compound_output_samples(sink, block, samples)?;
-    predict_compound_average_block_with_motion_into(sink, block, Some(motion), offset, samples)
+    let predict_timer = crate::timing::start();
+    let metadata = predict_compound_average_block_with_motion_into(
+        sink,
+        block,
+        Some(motion),
+        offset,
+        samples,
+    )?;
+    crate::timing::report("inter_tip_batch_predict", predict_timer);
+    Ok(metadata)
 }
 
 fn compound_output_samples<'a, T: ReconSample>(
@@ -865,7 +873,7 @@ fn predict_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    with_plane_prediction(
+    let (view, target, params) = plane_prediction(
         sink.info(),
         reference,
         plane,
@@ -875,11 +883,32 @@ fn predict_plane<T: ReconSample>(
         sub_x,
         sub_y,
         offset,
-        |rect, predicted, stride| {
-            sink::write_u16_rect(sink, plane, rect, predicted, stride)?;
+    )?;
+    if sink
+        .with_contiguous_u16_rect_mut(plane, target, |output, stride| {
+            subpel_predict_block_strided_into(&view, &params, output, stride)
+        })?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let len = params
+        .w
+        .checked_mul(params.h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "single-reference prediction sample count",
+        })?;
+    SUBPEL_PREDICTION_BUFFER.with(|slot| {
+        let mut predicted = slot.take().unwrap_or_default();
+        predicted.resize(len, 0);
+        let result: Result<()> = (|| {
+            subpel_predict_block_into(&view, &params, &mut predicted)?;
+            sink::write_u16_rect(sink, plane, target, &predicted, params.w)?;
             Ok(())
-        },
-    )
+        })();
+        slot.set(Some(predicted));
+        result
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -895,8 +924,40 @@ fn with_plane_prediction<T: ReconSample>(
     offset: ByteOffset,
     consume: impl FnOnce(PlaneRect, &[u16], usize) -> Result<()>,
 ) -> Result<()> {
-    let (view, _, _) = reference_plane_view(reference, plane, offset)?;
+    let (view, rect, params) = plane_prediction(
+        info, reference, plane, rect, mv, interp, sub_x, sub_y, offset,
+    )?;
+    let len = params
+        .w
+        .checked_mul(params.h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "single-reference prediction sample count",
+        })?;
+    SUBPEL_PREDICTION_BUFFER.with(|slot| {
+        let mut predicted = slot.take().unwrap_or_default();
+        predicted.resize(len, 0);
+        let result: Result<()> = (|| {
+            subpel_predict_block_into(&view, &params, &mut predicted)?;
+            consume(rect, &predicted, params.w)
+        })();
+        slot.set(Some(predicted));
+        result
+    })
+}
 
+#[allow(clippy::too_many_arguments)]
+fn plane_prediction<T: ReconSample>(
+    info: DecodedFrameInfo,
+    reference: &DecodedFrame<T>,
+    plane: PlaneId,
+    rect: McBlockRect,
+    mv: Mv,
+    interp: InterpolationFilter,
+    sub_x: u32,
+    sub_y: u32,
+    offset: ByteOffset,
+) -> Result<(ReferencePlaneView<'_, T>, PlaneRect, SubpelPredictParams)> {
+    let (view, _, _) = reference_plane_view(reference, plane, offset)?;
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let reference_size = reference.info().coded_luma_size();
     let frame_size = info.coded_luma_size();
@@ -929,21 +990,7 @@ fn with_plane_prediction<T: ReconSample>(
         bit_depth: info.bit_depth(),
     };
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
-    let len = block_w
-        .checked_mul(block_h)
-        .ok_or(ReconError::ArithmeticOverflow {
-            context: "single-reference prediction sample count",
-        })?;
-    SUBPEL_PREDICTION_BUFFER.with(|slot| {
-        let mut predicted = slot.take().unwrap_or_default();
-        predicted.resize(len, 0);
-        let result: Result<()> = (|| {
-            subpel_predict_block_into(&view, &params, &mut predicted)?;
-            consume(rect, &predicted, block_w)
-        })();
-        slot.set(Some(predicted));
-        result
-    })
+    Ok((view, rect, params))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1031,6 +1078,21 @@ fn predict_warp_plane<T: ReconSample>(
         return Ok(());
     }
 
+    let params = WarpPredictBlockParams {
+        warp_params,
+        block_x: plane_x as i32,
+        block_y: plane_y as i32,
+        subsampling_x: sub_x as u8,
+        subsampling_y: sub_y as u8,
+        reference_scale_x: scaling.scale_x,
+        reference_scale_y: scaling.scale_y,
+        first_x: 0,
+        first_y: 0,
+        last_x: ref_width as i32 - 1,
+        last_y: ref_height as i32 - 1,
+        bit_depth,
+    };
+    let prepared = PreparedWarpPrediction::new(&params)?;
     for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
         for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
             let write_x = plane_x + local_x;
@@ -1038,22 +1100,14 @@ fn predict_warp_plane<T: ReconSample>(
             if write_x >= destination_width || write_y >= destination_height {
                 continue;
             }
-            let params = WarpPredictBlockParams {
-                warp_params,
-                block_x: write_x as i32,
-                block_y: write_y as i32,
-                subsampling_x: sub_x as u8,
-                subsampling_y: sub_y as u8,
-                reference_scale_x: scaling.scale_x,
-                reference_scale_y: scaling.scale_y,
-                first_x: 0,
-                first_y: 0,
-                last_x: ref_width as i32 - 1,
-                last_y: ref_height as i32 - 1,
-                bit_depth,
-            };
             let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
-            warp_predict_block_into(&view, &params, false, &mut predicted)?;
+            prepared.predict_block_into(
+                &view,
+                write_x as i32,
+                write_y as i32,
+                false,
+                &mut predicted,
+            )?;
             let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
             let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
             let packed = clip_and_pack_warp_samples(&predicted, i32::from(bit_depth.max_sample()))?;
@@ -1111,46 +1165,40 @@ fn predict_compound_plane_output<T: ReconSample>(
                 implicit_mask,
                 cwp_weight,
             },
-            Some(output),
-        ) = (motion, blend, T::u16_slice_mut(samples))
-        && optflow::predict_uniform_motion_compound_average_into(
-            sink,
-            block,
-            plane,
-            sub_x,
-            sub_y,
-            motion,
-            implicit_mask,
-            cwp_weight,
-            offset,
-            output,
-        )?
+        ) = (motion, blend)
     {
-        return Ok(());
-    }
-    if !has_warp
-        && let (
-            Some(motion),
-            CompoundBlend::Average {
+        if let Some(output) = T::u8_slice_mut(samples)
+            && predict_motion_compound_average_into(
+                sink,
+                block,
+                plane,
+                sub_x,
+                sub_y,
+                motion,
                 implicit_mask,
                 cwp_weight,
-            },
-            Some(output),
-        ) = (motion, blend, T::u16_slice_mut(samples))
-        && optflow::predict_motion_grid_compound_average_into(
-            sink,
-            block,
-            plane,
-            sub_x,
-            sub_y,
-            motion,
-            implicit_mask,
-            cwp_weight,
-            offset,
-            output,
-        )?
-    {
-        return Ok(());
+                offset,
+                output,
+            )?
+        {
+            return Ok(());
+        }
+        if let Some(output) = T::u16_slice_mut(samples)
+            && predict_motion_compound_average_into(
+                sink,
+                block,
+                plane,
+                sub_x,
+                sub_y,
+                motion,
+                implicit_mask,
+                cwp_weight,
+                offset,
+                output,
+            )?
+        {
+            return Ok(());
+        }
     }
     let translation = if motion.is_none() && !has_warp {
         Some(translational_compound_plane(
@@ -1218,13 +1266,54 @@ fn predict_compound_plane_output<T: ReconSample>(
     Ok(())
 }
 
-fn predict_compound_average_into<T: ReconSample>(
+#[allow(clippy::too_many_arguments)]
+fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
+    sink: &WorkspaceSink<'_, '_, T>,
+    block: CompoundMcBlock<'_, T>,
+    plane: PlaneId,
+    sub_x: u32,
+    sub_y: u32,
+    motion: &CompoundMotionGrid,
+    implicit_mask: bool,
+    cwp_weight: i16,
+    offset: ByteOffset,
+    output: &mut [O],
+) -> Result<bool> {
+    if optflow::predict_uniform_motion_compound_average_into(
+        sink,
+        block,
+        plane,
+        sub_x,
+        sub_y,
+        motion,
+        implicit_mask,
+        cwp_weight,
+        offset,
+        output,
+    )? {
+        return Ok(true);
+    }
+    optflow::predict_motion_grid_compound_average_into(
+        sink,
+        block,
+        plane,
+        sub_x,
+        sub_y,
+        motion,
+        implicit_mask,
+        cwp_weight,
+        offset,
+        output,
+    )
+}
+
+fn predict_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
     plane: &CompoundSubpelPlane<'_, T>,
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
     pred0_scratch: Option<&mut [i32]>,
     intermediate_scratch: Option<&mut [i32]>,
-    output: &mut [u16],
+    output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
     let sample_count =
@@ -1258,13 +1347,13 @@ fn predict_compound_average_into<T: ReconSample>(
     }
 }
 
-fn predict_compound_average_pred0_into<T: ReconSample>(
+fn predict_compound_average_pred0_into<T: ReconSample, O: CompoundAverageOutput>(
     plane: &CompoundSubpelPlane<'_, T>,
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
     pred0: &mut [i32],
     mut intermediate_scratch: Option<&mut [i32]>,
-    output: &mut [u16],
+    output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
     subpel_predict_block_compound_intermediate_into(
@@ -1274,7 +1363,7 @@ fn predict_compound_average_pred0_into<T: ReconSample>(
         pred0,
         plane.block_w,
     )?;
-    subpel_predict_block_compound_average_strided_into(
+    O::predict_second(
         &plane.views[1],
         &params[1],
         pred0,
@@ -1745,24 +1834,31 @@ fn compound_ref_intermediate<T: ReconSample>(
             }
         }
     } else {
+        let params = WarpPredictBlockParams {
+            warp_params,
+            block_x: plane_x as i32,
+            block_y: plane_y as i32,
+            subsampling_x: sub_x as u8,
+            subsampling_y: sub_y as u8,
+            reference_scale_x: scaling.scale_x,
+            reference_scale_y: scaling.scale_y,
+            first_x: 0,
+            first_y: 0,
+            last_x: ref_width as i32 - 1,
+            last_y: ref_height as i32 - 1,
+            bit_depth,
+        };
+        let prepared = PreparedWarpPrediction::new(&params)?;
         for local_y in (0..block_h).step_by(WARPED_BLOCK_SIZE) {
             for local_x in (0..block_w).step_by(WARPED_BLOCK_SIZE) {
-                let params = WarpPredictBlockParams {
-                    warp_params,
-                    block_x: (plane_x + local_x) as i32,
-                    block_y: (plane_y + local_y) as i32,
-                    subsampling_x: sub_x as u8,
-                    subsampling_y: sub_y as u8,
-                    reference_scale_x: scaling.scale_x,
-                    reference_scale_y: scaling.scale_y,
-                    first_x: 0,
-                    first_y: 0,
-                    last_x: ref_width as i32 - 1,
-                    last_y: ref_height as i32 - 1,
-                    bit_depth,
-                };
                 let mut predicted = [0i32; WARPED_BLOCK_SIZE * WARPED_BLOCK_SIZE];
-                warp_predict_block_into(&view, &params, true, &mut predicted)?;
+                prepared.predict_block_into(
+                    &view,
+                    (plane_x + local_x) as i32,
+                    (plane_y + local_y) as i32,
+                    true,
+                    &mut predicted,
+                )?;
                 let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
                 let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
                 write_compound_section(
@@ -1961,81 +2057,40 @@ fn blend_compound_average<T: ReconSample>(
     let ref_start_y1 = scaling1.start_y >> 10;
     let max_sample = i32::from(bit_depth.max_sample());
     let shift = 1 + compound_inter_post_round();
-    if w == 0 {
-        return Ok(());
-    }
-    let span_w = motion.map_or(w, |motion| (motion.unit_size() >> sub_x).max(1));
-    let starts_at = |mvs: [[i32; 2]; 2], row: usize, col: usize, reference: usize| {
-        let scaling = scaling_templates[reference].with_prescaled_mv(
-            (plane_x + col) as i32,
-            (plane_y + row) as i32,
-            mvs[reference][0],
-            mvs[reference][1],
-            sub_x,
-            sub_y,
-        );
-        (scaling.start_x >> 10, scaling.start_y >> 10)
-    };
-    for (row, (out_row, (pred0_row, pred1_row))) in output
-        .chunks_mut(w)
-        .zip(pred0.chunks(w).zip(pred1.chunks(w)))
-        .enumerate()
+    for (idx, (slot, (&left, &right))) in output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
     {
-        let mut col = 0;
-        while col < w {
-            let len = span_w.min(w - col);
-            let (starts, mvs, linear) = if let Some(motion) = motion {
-                let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
-                let starts: [(i32, i32); 2] =
-                    core::array::from_fn(|reference| starts_at(mvs, row, col, reference));
-                let linear = (0..2).all(|reference| {
-                    if scaling_templates[reference].is_scaled() {
-                        return false;
-                    }
-                    len == 1
-                        || starts_at(mvs, row, col + len - 1, reference)
-                            == (starts[reference].0 + (len - 1) as i32, starts[reference].1)
-                });
-                (starts, Some(mvs), linear)
-            } else {
-                (
-                    [
-                        (ref_start_x0 + col as i32, ref_start_y0 + row as i32),
-                        (ref_start_x1 + col as i32, ref_start_y1 + row as i32),
-                    ],
-                    None,
-                    true,
-                )
-            };
-            let span = col..col + len;
-            let pixels = out_row[span.clone()]
-                .iter_mut()
-                .zip(pred0_row[span.clone()].iter().zip(&pred1_row[span]))
-                .enumerate();
-            for (offset, (slot, (&left, &right))) in pixels {
-                let starts = match mvs {
-                    Some(mvs) if !linear => core::array::from_fn(|reference| {
-                        starts_at(mvs, row, col + offset, reference)
-                    }),
-                    _ => [
-                        (starts[0].0 + offset as i32, starts[0].1),
-                        (starts[1].0 + offset as i32, starts[1].1),
-                    ],
-                };
-                let ref0_onscreen =
-                    (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
-                let ref1_onscreen =
-                    (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
-                let mask = match (ref0_onscreen, ref1_onscreen) {
-                    (true, false) => 2,
-                    (false, true) => 0,
-                    _ => 1,
-                };
-                let sample = round2_i32(mask * left + (2 - mask) * right, shift);
-                *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
-            }
-            col += len;
-        }
+        let row = idx / w;
+        let col = idx % w;
+        let starts = if let Some(motion) = motion {
+            let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
+            core::array::from_fn(|reference| {
+                let scaling = scaling_templates[reference].with_prescaled_mv(
+                    (plane_x + col) as i32,
+                    (plane_y + row) as i32,
+                    mvs[reference][0],
+                    mvs[reference][1],
+                    sub_x,
+                    sub_y,
+                );
+                (scaling.start_x >> 10, scaling.start_y >> 10)
+            })
+        } else {
+            [
+                (ref_start_x0 + col as i32, ref_start_y0 + row as i32),
+                (ref_start_x1 + col as i32, ref_start_y1 + row as i32),
+            ]
+        };
+        let ref0_onscreen =
+            (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
+        let ref1_onscreen =
+            (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
+        let mask = match (ref0_onscreen, ref1_onscreen) {
+            (true, false) => 2,
+            (false, true) => 0,
+            _ => 1,
+        };
+        let sample = round2_i32(mask * left + (2 - mask) * right, shift);
+        *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
     }
     Ok(())
 }

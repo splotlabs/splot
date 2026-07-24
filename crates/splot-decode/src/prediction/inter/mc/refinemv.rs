@@ -4,6 +4,7 @@
 use super::*;
 use crate::prediction::inter::mv_scaling::PlaneScaling;
 use crate::prediction::inter::read_mv::{MV_LOW, MV_UPP};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdUint};
 
 const REFINEMV_UNIT_SIZE: usize = 16;
 pub(super) const TIP_PREDICTION_SIZE: usize = 16;
@@ -196,8 +197,9 @@ fn search_refinemv<T: ReconSample>(
 }
 
 pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
-    initial_luma: &[super::optflow::InitialLumaPredictionContext<'_, T>; 2],
+    offset: ByteOffset,
     reuse_horizontal: [bool; 2],
     predictions: &mut [[u16; TIP_PREDICTION_AREA]; 2],
 ) -> Result<Option<MotionCell>> {
@@ -223,33 +225,29 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
         col: candidate.col - SEARCH_PADDING,
     };
     let [pred0, pred1] = predictions;
-    super::optflow::initial_luma_prediction_from_context(
-        &initial_luma[0],
+    super::optflow::initial_luma_prediction(
+        sink,
+        block.reference0,
         prediction_rect,
         search_mv(candidates[0]),
         InterpolationFilter::Bilinear,
         Some((candidates[0], CENTER_SIZE, CENTER_SIZE)),
+        offset,
         reuse_horizontal[0],
         pred0,
     )?;
-    super::optflow::initial_luma_prediction_from_context(
-        &initial_luma[1],
+    super::optflow::initial_luma_prediction(
+        sink,
+        block.reference1,
         prediction_rect,
         search_mv(candidates[1]),
         InterpolationFilter::Bilinear,
         Some((candidates[1], CENTER_SIZE, CENTER_SIZE)),
+        offset,
         reuse_horizontal[1],
         pred1,
     )?;
-    let (dx, dy) = search_refinemv_offset(
-        pred0,
-        pred1,
-        PREDICTION_SIZE,
-        CENTER_SIZE,
-        CENTER_SIZE,
-        initial_luma[0].bit_depth,
-        true,
-    )?;
+    let (dx, dy) = search_tip_refinemv_offset(pred0, pred1, sink.info().bit_depth());
     let base_mvs = [
         Mv {
             row: candidates[0].row + dy * 8,
@@ -260,50 +258,73 @@ pub(super) fn tip_refinemv_optflow_motion_cell<T: ReconSample>(
             col: candidates[1].col - dx * 8,
         },
     ];
-    let mut centered = [[0u16; CENTER_SIZE * CENTER_SIZE]; 2];
-    for (reference, (prediction, x, y)) in [(&*pred0, 4 + dx, 4 + dy), (&*pred1, 4 - dx, 4 - dy)]
-        .into_iter()
-        .enumerate()
-    {
-        let x = usize::try_from(x).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor x offset",
-        })?;
-        let y = usize::try_from(y).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "TIP optical-flow predictor y offset",
-        })?;
-        for row in 0..CENTER_SIZE {
-            let source_start = (y + row)
-                .checked_mul(PREDICTION_SIZE)
-                .and_then(|row| row.checked_add(x))
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "TIP optical-flow predictor source offset",
-                })?;
-            let source_end =
-                source_start
-                    .checked_add(CENTER_SIZE)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "TIP optical-flow predictor source end",
-                    })?;
-            let source =
-                prediction
-                    .get(source_start..source_end)
-                    .ok_or(ReconError::ArithmeticOverflow {
-                        context: "TIP optical-flow predictor source lookup",
-                    })?;
-            let destination_start = row * CENTER_SIZE;
-            centered[reference][destination_start..destination_start + CENTER_SIZE]
-                .copy_from_slice(source);
+    let start0 = usize::try_from((4 + dy) * PREDICTION_SIZE as i32 + 4 + dx).map_err(|_| {
+        ReconError::ArithmeticOverflow {
+            context: "TIP optical-flow predictor 0 offset",
         }
-    }
-    super::optflow::tip_optflow_motion_cell(
-        &centered[0],
-        &centered[1],
-        initial_luma[0].bit_depth,
+    })?;
+    let start1 = usize::try_from((4 - dy) * PREDICTION_SIZE as i32 + 4 - dx).map_err(|_| {
+        ReconError::ArithmeticOverflow {
+            context: "TIP optical-flow predictor 1 offset",
+        }
+    })?;
+    super::optflow::tip_optflow_motion_cell_strided(
+        pred0,
+        start0,
+        pred1,
+        start1,
+        PREDICTION_SIZE,
+        sink.info().bit_depth(),
         distances,
         block.optflow_sad_threshold,
         base_mvs,
     )
     .map(Some)
+}
+
+fn search_tip_refinemv_offset(
+    pred0: &[u16; TIP_PREDICTION_AREA],
+    pred1: &[u16; TIP_PREDICTION_AREA],
+    bit_depth: splot_recon::BitDepth,
+) -> (i32, i32) {
+    let mut best = (0, 0);
+    let center = tip_refinemv_sad(pred0, pred1, 0, 0, bit_depth);
+    let mut best_sad = center - (center >> 3);
+    if best_sad < 12 * 12 * 2 {
+        return best;
+    }
+    for &(dy, dx) in &SEARCH_NEIGHBORS {
+        let sad = tip_refinemv_sad(pred0, pred1, dx, dy, bit_depth);
+        if sad < best_sad {
+            best_sad = sad;
+            best = (dx, dy);
+        }
+    }
+    best
+}
+
+fn tip_refinemv_sad(
+    pred0: &[u16; TIP_PREDICTION_AREA],
+    pred1: &[u16; TIP_PREDICTION_AREA],
+    dx: i32,
+    dy: i32,
+    bit_depth: splot_recon::BitDepth,
+) -> u32 {
+    let start0 = ((2 + dy) * TIP_PREDICTION_SIZE as i32 + 2 + dx) as usize;
+    let start1 = ((2 - dy) * TIP_PREDICTION_SIZE as i32 + 2 - dx) as usize;
+    let mut sad8 = Simd::<u32, 8>::splat(0);
+    let mut sad4 = Simd::<u32, 4>::splat(0);
+    for row in (0..12).step_by(2) {
+        let left = &pred0[start0 + row * TIP_PREDICTION_SIZE..];
+        let right = &pred1[start1 + row * TIP_PREDICTION_SIZE..];
+        let left8 = Simd::<u16, 8>::from_slice(left);
+        let right8 = Simd::<u16, 8>::from_slice(right);
+        sad8 += (left8.simd_max(right8) - left8.simd_min(right8)).cast::<u32>();
+        let left4 = Simd::<u16, 4>::from_slice(&left[8..]);
+        let right4 = Simd::<u16, 4>::from_slice(&right[8..]);
+        sad4 += (left4.simd_max(right4) - left4.simd_min(right4)).cast::<u32>();
+    }
+    (sad8.reduce_sum() + sad4.reduce_sum()) >> bit_depth.bits().saturating_sub(8)
 }
 
 fn search_range_allowed(candidates: [Mv; 2]) -> bool {
@@ -339,7 +360,9 @@ fn search_refinemv_offset(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "refine-MV SAD threshold",
             })? as u32;
-        let center = refinemv_sad(pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth)?;
+        let center = refinemv_sad(
+            pred0, pred1, stride, sad_width, sad_height, 0, 0, bit_depth, None,
+        )?;
         let biased_center = center - (center >> 3);
         if biased_center < threshold {
             return Ok((0, 0));
@@ -348,13 +371,21 @@ fn search_refinemv_offset(
     } else {
         let (dy, dx) = SEARCH_NEIGHBORS[0];
         let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
+            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth, None,
         )?;
         ((dx, dy), sad, 1)
     };
     for &(dy, dx) in &SEARCH_NEIGHBORS[first_unchecked_neighbor..] {
         let sad = refinemv_sad(
-            pred0, pred1, stride, sad_width, sad_height, dx, dy, bit_depth,
+            pred0,
+            pred1,
+            stride,
+            sad_width,
+            sad_height,
+            dx,
+            dy,
+            bit_depth,
+            Some(best_sad),
         )?;
         if sad < best_sad {
             best_sad = sad;
@@ -374,6 +405,7 @@ fn refinemv_sad(
     dx: i32,
     dy: i32,
     bit_depth: splot_recon::BitDepth,
+    limit: Option<u32>,
 ) -> splot_recon::Result<u32> {
     let start0_x = usize::try_from(2 + dx).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD left offset",
@@ -387,7 +419,10 @@ fn refinemv_sad(
     let start1_y = usize::try_from(2 - dy).map_err(|_| ReconError::ArithmeticOverflow {
         context: "refine-MV SAD bottom offset",
     })?;
-    let mut sad = 0u32;
+    let mut sad8 = Simd::<u32, 8>::splat(0);
+    let mut sad4 = Simd::<u32, 4>::splat(0);
+    let mut sad_tail = 0u32;
+    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
     for row in (0..height).step_by(2) {
         let row_range = |start_y: usize, start_x: usize| {
             (start_y + row)
@@ -405,11 +440,25 @@ fn refinemv_sad(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "refine-MV SAD second lookup",
             })?;
-        for (&left, &right) in left.iter().zip(right) {
-            sad += u32::from(left.abs_diff(right));
+        let mut index = 0;
+        while index + 8 <= width {
+            let left = Simd::<u16, 8>::from_slice(&left[index..]);
+            let right = Simd::<u16, 8>::from_slice(&right[index..]);
+            sad8 += (left.simd_max(right) - left.simd_min(right)).cast::<u32>();
+            index += 8;
+        }
+        if index + 4 <= width {
+            let left = Simd::<u16, 4>::from_slice(&left[index..]);
+            let right = Simd::<u16, 4>::from_slice(&right[index..]);
+            sad4 += (left.simd_max(right) - left.simd_min(right)).cast::<u32>();
+            index += 4;
+        }
+        for (&left, &right) in left[index..].iter().zip(&right[index..]) {
+            sad_tail += u32::from(left.abs_diff(right));
         }
     }
-    Ok(sad >> u32::from(bit_depth.bits().saturating_sub(8)))
+    let sad = (sad8.reduce_sum() + sad4.reduce_sum() + sad_tail) >> downshift;
+    Ok(limit.map_or(sad, |limit| sad.min(limit)))
 }
 
 #[cfg(test)]

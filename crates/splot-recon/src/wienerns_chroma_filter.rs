@@ -14,7 +14,9 @@
 
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
+use crate::workspace::u16_samples_exceed;
 use crate::{BitDepth, ReconError, ReconSample, Result};
+use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
 /// AV2 § 3 `WIENER_NS_PREC_BITS`, used by § 7.20.3 for the accumulator scale.
 const WIENER_NS_PREC_BITS: u32 = 7;
@@ -96,6 +98,105 @@ pub struct WienerNsChromaFilter<'a> {
     pub cfl_ds_filter_index: u8,
 }
 
+/// Contiguous § 7.20.2 source windows for 4:2:0 chroma Wiener NS filtering.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WienerNsChromaPaddedSource<'a, T> {
+    chroma_samples: &'a [T],
+    chroma_stride: usize,
+    luma_samples: &'a [T],
+    luma_stride: usize,
+}
+
+impl<'a, T: ReconSample> WienerNsChromaPaddedSource<'a, T> {
+    /// Wraps padded chroma and luma windows for a `width` by `height` chroma block.
+    ///
+    /// The chroma window extends by two chroma samples and the luma window by
+    /// four luma samples on every side.
+    ///
+    /// # Errors
+    /// Returns a typed error when either stride or sample slice cannot cover
+    /// the required padded window.
+    pub fn new(
+        chroma_samples: &'a [T],
+        chroma_stride: usize,
+        luma_samples: &'a [T],
+        luma_stride: usize,
+        width: usize,
+        height: usize,
+    ) -> Result<Self> {
+        validate_padded_window(
+            chroma_samples.len(),
+            chroma_stride,
+            width,
+            height,
+            WIENER_NS_CHROMA_TAP_RADIUS,
+        )?;
+        let luma_width = width.checked_mul(2).ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma width",
+        })?;
+        let luma_height = height
+            .checked_mul(2)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "Wiener NS chroma padded luma height",
+            })?;
+        validate_padded_window(
+            luma_samples.len(),
+            luma_stride,
+            luma_width,
+            luma_height,
+            2 * WIENER_NS_CHROMA_TAP_RADIUS,
+        )?;
+        Ok(Self {
+            chroma_samples,
+            chroma_stride,
+            luma_samples,
+            luma_stride,
+        })
+    }
+}
+
+/// Reusable storage for contiguous 4:2:0 chroma Wiener NS filtering.
+#[derive(Debug, Default)]
+pub struct WienerNsChromaScratch<T> {
+    luma_ds: Vec<u16>,
+    filtered: Vec<T>,
+}
+
+fn validate_padded_window(
+    len: usize,
+    stride: usize,
+    width: usize,
+    height: usize,
+    radius: usize,
+) -> Result<()> {
+    let padded_width = width
+        .checked_add(2 * radius)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded source width",
+        })?;
+    if stride < padded_width {
+        return Err(ReconError::WienerNsFilterOutputStrideTooSmall {
+            stride_samples: stride,
+            width: padded_width,
+        });
+    }
+    let required = height
+        .checked_add(2 * radius)
+        .and_then(|rows| rows.checked_sub(1))
+        .and_then(|rows| rows.checked_mul(stride))
+        .and_then(|prefix| prefix.checked_add(padded_width))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded source length",
+        })?;
+    if len < required {
+        return Err(ReconError::WienerNsFilterOutputTooSmall {
+            expected: required,
+            actual: len,
+        });
+    }
+    Ok(())
+}
+
 /// Applies AV2 § 7.20.3 chroma non-separable Wiener filtering to a block.
 ///
 /// `chroma_source_sample(x, y)` is called with current-plane chroma coordinates
@@ -156,6 +257,462 @@ where
     }
 
     Ok(())
+}
+
+/// Applies 4:2:0 chroma Wiener NS filtering from contiguous padded source windows.
+///
+/// This is bit-identical to [`wiener_ns_filter_chroma_block`] when the caller's
+/// callbacks read the same pre-resolved windows. `scratch` retains allocations
+/// between calls and the output remains fail-atomic.
+///
+/// # Errors
+/// Returns the same parameter, source-range, output-shape, and allocation
+/// errors as the callback-based filter.
+pub fn wiener_ns_filter_chroma_block_padded_420_into<T: ReconSample>(
+    output: &mut [T],
+    params: &WienerNsChromaFilter<'_>,
+    source: &WienerNsChromaPaddedSource<'_, T>,
+    scratch: &mut WienerNsChromaScratch<T>,
+) -> Result<()> {
+    validate_sample_type::<T>(params.bit_depth)?;
+    let context = validate_chroma_params(output.len(), params)?;
+    if context.subsampling_x != 1 || context.subsampling_y != 1 {
+        return Err(ReconError::LoopRestorationSourceInvalidSubsampling {
+            subsampling_x: context.subsampling_x,
+            subsampling_y: context.subsampling_y,
+        });
+    }
+    WienerNsChromaPaddedSource::new(
+        source.chroma_samples,
+        source.chroma_stride,
+        source.luma_samples,
+        source.luma_stride,
+        params.width,
+        params.height,
+    )?;
+
+    let max_sample = params.bit_depth.max_sample();
+    validate_padded_samples(
+        source.chroma_samples,
+        source.chroma_stride,
+        params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS,
+        params.height + 2 * WIENER_NS_CHROMA_TAP_RADIUS,
+        max_sample,
+    )?;
+    validate_padded_samples(
+        source.luma_samples,
+        source.luma_stride,
+        2 * params.width + 4 * WIENER_NS_CHROMA_TAP_RADIUS,
+        2 * params.height + 4 * WIENER_NS_CHROMA_TAP_RADIUS,
+        max_sample,
+    )?;
+
+    let ds_width = params.width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+    let ds_height = params.height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+    let ds_len = ds_width
+        .checked_mul(ds_height)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma downsample scratch length",
+        })?;
+    scratch.luma_ds.clear();
+    scratch
+        .luma_ds
+        .try_reserve(ds_len)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma downsample scratch allocation",
+        })?;
+    scratch.luma_ds.resize(ds_len, 0);
+    downsample_luma_420(
+        &mut scratch.luma_ds,
+        ds_width,
+        source.luma_samples,
+        source.luma_stride,
+        context.cfl_ds_filter_index,
+        params,
+        &context,
+    )?;
+
+    scratch.filtered.clear();
+    scratch
+        .filtered
+        .try_reserve(context.sample_count)
+        .map_err(|_| ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma filtered scratch allocation",
+        })?;
+    scratch.filtered.resize(context.sample_count, T::default());
+    if let (Some(chroma), Some(filtered)) = (
+        T::u16_slice(source.chroma_samples),
+        T::u16_slice_mut(&mut scratch.filtered),
+    ) {
+        filter_chroma_padded_u16(
+            filtered,
+            params,
+            chroma,
+            source.chroma_stride,
+            &scratch.luma_ds,
+            ds_width,
+            max_sample,
+        );
+    } else {
+        filter_chroma_padded_scalar(
+            &mut scratch.filtered,
+            params,
+            source.chroma_samples,
+            source.chroma_stride,
+            &scratch.luma_ds,
+            ds_width,
+            max_sample,
+        )?;
+    }
+
+    for row in 0..params.height {
+        let src = row * params.width;
+        let dst = row * params.output_stride;
+        output[dst..dst + params.width].copy_from_slice(&scratch.filtered[src..src + params.width]); // splot-copy-ok: publish fail-atomic padded chroma Wiener NS row
+    }
+    Ok(())
+}
+
+fn validate_padded_samples<T: ReconSample>(
+    samples: &[T],
+    stride: usize,
+    width: usize,
+    height: usize,
+    max_sample: u16,
+) -> Result<()> {
+    for row in 0..height {
+        let start = row * stride;
+        let values = &samples[start..start + width];
+        if let Some(values) = T::u16_slice(values)
+            && u16_samples_exceed(values, max_sample)
+            && let Some((col, &value)) = values
+                .iter()
+                .enumerate()
+                .find(|&(_, &value)| value > max_sample)
+        {
+            return Err(ReconError::WienerNsFilterSourceSampleOutOfRange {
+                x: col as isize,
+                y: row as isize,
+                value,
+                max: max_sample,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn downsample_luma_420<T: ReconSample>(
+    output: &mut [u16],
+    output_stride: usize,
+    source: &[T],
+    source_stride: usize,
+    filter_index: usize,
+    params: &WienerNsChromaFilter<'_>,
+    context: &ChromaFilterContext,
+) -> Result<()> {
+    let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
+    let chroma_origin_x = checked_isize(params.x, "Wiener NS chroma padded luma origin x")?
+        .checked_sub(radius)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma origin x",
+        })?;
+    let chroma_origin_y = checked_isize(params.y, "Wiener NS chroma padded luma origin y")?
+        .checked_sub(radius)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma origin y",
+        })?;
+    let luma_origin_x = chroma_origin_x
+        .checked_mul(2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma origin x",
+        })?;
+    let luma_origin_y = chroma_origin_y
+        .checked_mul(2)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma origin y",
+        })?;
+    let rows = output.len() / output_stride;
+    let luma_last_x = luma_origin_x
+        .checked_add(
+            isize::try_from(output_stride.saturating_sub(1))
+                .map_err(|_| ReconError::ArithmeticOverflow {
+                    context: "Wiener NS chroma padded luma last x",
+                })?
+                .saturating_mul(2),
+        )
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma last x",
+        })?;
+    let luma_last_y = luma_origin_y
+        .checked_add(
+            isize::try_from(rows.saturating_sub(1))
+                .map_err(|_| ReconError::ArithmeticOverflow {
+                    context: "Wiener NS chroma padded luma last y",
+                })?
+                .saturating_mul(2),
+        )
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "Wiener NS chroma padded luma last y",
+        })?;
+    if luma_origin_x >= context.luma_start_x
+        && luma_last_x <= context.luma_last_x
+        && luma_origin_y >= 0
+        && luma_last_y <= context.luma_last_y
+    {
+        downsample_luma_420_unclipped(output, output_stride, source, source_stride, filter_index);
+        return Ok(());
+    }
+
+    for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
+        let luma_y = luma_origin_y
+            .checked_add(
+                isize::try_from(row)
+                    .map_err(|_| ReconError::ArithmeticOverflow {
+                        context: "Wiener NS chroma padded luma y",
+                    })?
+                    .saturating_mul(2),
+            )
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "Wiener NS chroma padded luma y",
+            })?
+            .clamp(0, context.luma_last_y);
+        let source_y = usize::try_from(luma_y - luma_origin_y).map_err(|_| {
+            ReconError::ArithmeticOverflow {
+                context: "Wiener NS chroma padded luma source y",
+            }
+        })?;
+        for (col, slot) in output.iter_mut().enumerate() {
+            let luma_x = luma_origin_x
+                .checked_add(
+                    isize::try_from(col)
+                        .map_err(|_| ReconError::ArithmeticOverflow {
+                            context: "Wiener NS chroma padded luma x",
+                        })?
+                        .saturating_mul(2),
+                )
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "Wiener NS chroma padded luma x",
+                })?
+                .clamp(context.luma_start_x, context.luma_last_x);
+            let source_x = usize::try_from(luma_x - luma_origin_x).map_err(|_| {
+                ReconError::ArithmeticOverflow {
+                    context: "Wiener NS chroma padded luma source x",
+                }
+            })?;
+            let top = source_y
+                .checked_mul(source_stride)
+                .and_then(|start| start.checked_add(source_x))
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "Wiener NS chroma padded luma source index",
+                })?;
+            let bottom = top
+                .checked_add(source_stride)
+                .ok_or(ReconError::ArithmeticOverflow {
+                    context: "Wiener NS chroma padded luma source index",
+                })?;
+            let top_left = source
+                .get(top)
+                .ok_or(ReconError::WienerNsFilterOutputTooSmall {
+                    expected: top.saturating_add(1),
+                    actual: source.len(),
+                })?;
+            let bottom_left =
+                source
+                    .get(bottom)
+                    .ok_or(ReconError::WienerNsFilterOutputTooSmall {
+                        expected: bottom.saturating_add(1),
+                        actual: source.len(),
+                    })?;
+            let left = u32::from(top_left.to_u16()) + u32::from(bottom_left.to_u16());
+            let sum = if filter_index == 1 {
+                left * 2
+            } else {
+                let top_right =
+                    source
+                        .get(top + 1)
+                        .ok_or(ReconError::WienerNsFilterOutputTooSmall {
+                            expected: top.saturating_add(2),
+                            actual: source.len(),
+                        })?;
+                let bottom_right =
+                    source
+                        .get(bottom + 1)
+                        .ok_or(ReconError::WienerNsFilterOutputTooSmall {
+                            expected: bottom.saturating_add(2),
+                            actual: source.len(),
+                        })?;
+                left + u32::from(top_right.to_u16()) + u32::from(bottom_right.to_u16())
+            };
+            *slot = (sum >> 2) as u16;
+        }
+    }
+    Ok(())
+}
+
+fn downsample_luma_420_unclipped<T: ReconSample>(
+    output: &mut [u16],
+    output_stride: usize,
+    source: &[T],
+    source_stride: usize,
+    filter_index: usize,
+) {
+    for (row, output) in output.chunks_exact_mut(output_stride).enumerate() {
+        let top = &source[2 * row * source_stride..];
+        let bottom = &source[(2 * row + 1) * source_stride..];
+        for (col, slot) in output.iter_mut().enumerate() {
+            let x = 2 * col;
+            let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
+            let sum = if filter_index == 1 {
+                left * 2
+            } else {
+                left + u32::from(top[x + 1].to_u16()) + u32::from(bottom[x + 1].to_u16())
+            };
+            *slot = (sum >> 2) as u16;
+        }
+    }
+}
+
+const WIENER_NS_CONFIG_UV_PAIRS: [(isize, isize, usize); WIENER_NS_CHROMA_COEFF_SLOTS] = [
+    (1, 0, 0),
+    (0, 1, 1),
+    (1, 1, 2),
+    (-1, 1, 3),
+    (2, 0, 4),
+    (0, 2, 5),
+];
+
+fn padded_tap_offset(stride: usize, dy: isize, dx: isize) -> usize {
+    (dy + WIENER_NS_CHROMA_TAP_RADIUS as isize) as usize * stride
+        + (dx + WIENER_NS_CHROMA_TAP_RADIUS as isize) as usize
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filter_chroma_padded_u16(
+    filtered: &mut [u16],
+    params: &WienerNsChromaFilter<'_>,
+    chroma: &[u16],
+    chroma_stride: usize,
+    luma_ds: &[u16],
+    luma_stride: usize,
+    max_sample: u16,
+) {
+    const LANES: usize = 64;
+    let center_offset = padded_tap_offset(chroma_stride, 0, 0);
+    let luma_center_offset = padded_tap_offset(luma_stride, 0, 0);
+    for r in 0..params.height {
+        let chroma_base = r * chroma_stride;
+        let luma_base = r * luma_stride;
+        let output = &mut filtered[r * params.width..][..params.width];
+        let vector_width = params.width - params.width % LANES;
+        for c in (0..vector_width).step_by(LANES) {
+            let center = Simd::<u16, LANES>::from_slice(&chroma[chroma_base + center_offset + c..])
+                .cast::<i32>();
+            let mut sum = center << WIENER_NS_PREC_BITS as i32;
+            for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV_PAIRS {
+                let coeff = i32::from(params.coeffs[coeff_index]);
+                let plus = Simd::<u16, LANES>::from_slice(
+                    &chroma[chroma_base + padded_tap_offset(chroma_stride, dy, dx) + c..],
+                )
+                .cast::<i32>();
+                let minus = Simd::<u16, LANES>::from_slice(
+                    &chroma[chroma_base + padded_tap_offset(chroma_stride, -dy, -dx) + c..],
+                )
+                .cast::<i32>();
+                sum += (plus + minus - center * Simd::splat(2)) * Simd::splat(coeff);
+            }
+            let luma_center =
+                Simd::<u16, LANES>::from_slice(&luma_ds[luma_base + luma_center_offset + c..])
+                    .cast::<i32>();
+            for (tap_index, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
+                let coeff = i32::from(params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS]);
+                if coeff != 0 {
+                    let tap = Simd::<u16, LANES>::from_slice(
+                        &luma_ds[luma_base + padded_tap_offset(luma_stride, dy, dx) + c..],
+                    )
+                    .cast::<i32>();
+                    sum += (tap - luma_center) * Simd::splat(coeff);
+                }
+            }
+            let values = ((sum + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1)))
+                >> WIENER_NS_PREC_BITS as i32)
+                .simd_max(Simd::splat(0))
+                .simd_min(Simd::splat(i32::from(max_sample)))
+                .cast::<u16>()
+                .to_array();
+            output[c..c + LANES].copy_from_slice(&values); // splot-copy-ok: publish SIMD chroma Wiener NS samples
+        }
+        for (c, slot) in output[vector_width..].iter_mut().enumerate() {
+            *slot = filter_chroma_padded_sample(
+                params,
+                chroma,
+                chroma_stride,
+                luma_ds,
+                luma_stride,
+                r,
+                vector_width + c,
+                max_sample,
+            );
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filter_chroma_padded_scalar<T: ReconSample>(
+    filtered: &mut [T],
+    params: &WienerNsChromaFilter<'_>,
+    chroma: &[T],
+    chroma_stride: usize,
+    luma_ds: &[u16],
+    luma_stride: usize,
+    max_sample: u16,
+) -> Result<()> {
+    for r in 0..params.height {
+        for c in 0..params.width {
+            let value = filter_chroma_padded_sample(
+                params,
+                chroma,
+                chroma_stride,
+                luma_ds,
+                luma_stride,
+                r,
+                c,
+                max_sample,
+            );
+            filtered[r * params.width + c] = T::try_from_u16(value)?;
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn filter_chroma_padded_sample<T: ReconSample>(
+    params: &WienerNsChromaFilter<'_>,
+    chroma: &[T],
+    chroma_stride: usize,
+    luma_ds: &[u16],
+    luma_stride: usize,
+    r: usize,
+    c: usize,
+    max_sample: u16,
+) -> u16 {
+    let chroma_base = r * chroma_stride + c;
+    let center = i32::from(chroma[chroma_base + padded_tap_offset(chroma_stride, 0, 0)].to_u16());
+    let mut sum = center << WIENER_NS_PREC_BITS;
+    for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV {
+        let tap =
+            i32::from(chroma[chroma_base + padded_tap_offset(chroma_stride, dy, dx)].to_u16());
+        sum += (tap - center) * i32::from(params.coeffs[coeff_index]);
+    }
+    let luma_base = r * luma_stride + c;
+    let luma_center = i32::from(luma_ds[luma_base + padded_tap_offset(luma_stride, 0, 0)]);
+    for (tap_index, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
+        let coeff = i32::from(params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS]);
+        if coeff != 0 {
+            let tap = i32::from(luma_ds[luma_base + padded_tap_offset(luma_stride, dy, dx)]);
+            sum += (tap - luma_center) * coeff;
+        }
+    }
+    round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample)) as u16
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -701,6 +1258,80 @@ mod tests {
                     "cached block filtering diverged at ({c}, {r})"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn padded_420_filter_matches_callback_path() {
+        let width = 9;
+        let height = 5;
+        let mut coeffs = ZERO_CHROMA;
+        for (index, coeff) in coeffs.iter_mut().enumerate() {
+            *coeff = (index as i16 * 7 % 23) - 11;
+        }
+        let chroma_at =
+            |x: isize, y: isize| -> u16 { ((x * 31 + y * 17 + 512).rem_euclid(1024)) as u16 };
+        let luma_at =
+            |x: isize, y: isize| -> u16 { ((x * 13 + y * 41 + 700).rem_euclid(1024)) as u16 };
+        let mut params = chroma_params(width, height, width, BitDepth::Ten, &coeffs);
+        params.x = 0;
+        params.y = 0;
+        params.subsampling_x = 1;
+        params.subsampling_y = 1;
+        params.luma_start_x = 0;
+        params.luma_end_x = 64;
+        params.mi_rows = 16;
+
+        let chroma_stride = width + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let chroma_height = height + 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let chroma_origin_x = params.x as isize - WIENER_NS_CHROMA_TAP_RADIUS as isize;
+        let chroma_origin_y = params.y as isize - WIENER_NS_CHROMA_TAP_RADIUS as isize;
+        let chroma: Vec<u16> = (0..chroma_height)
+            .flat_map(|row| {
+                (0..chroma_stride).map(move |col| {
+                    chroma_at(
+                        chroma_origin_x + col as isize,
+                        chroma_origin_y + row as isize,
+                    )
+                })
+            })
+            .collect();
+        let luma_radius = 2 * WIENER_NS_CHROMA_TAP_RADIUS;
+        let luma_stride = 2 * width + 2 * luma_radius;
+        let luma_height = 2 * height + 2 * luma_radius;
+        let luma_origin_x = 2 * params.x as isize - luma_radius as isize;
+        let luma_origin_y = 2 * params.y as isize - luma_radius as isize;
+        let luma: Vec<u16> = (0..luma_height)
+            .flat_map(|row| {
+                (0..luma_stride).map(move |col| {
+                    luma_at(luma_origin_x + col as isize, luma_origin_y + row as isize)
+                })
+            })
+            .collect();
+        let source = WienerNsChromaPaddedSource::new(
+            &chroma,
+            chroma_stride,
+            &luma,
+            luma_stride,
+            width,
+            height,
+        )
+        .unwrap();
+        let mut scratch = WienerNsChromaScratch::default();
+
+        for filter_index in [0, 1, 3] {
+            params.cfl_ds_filter_index = filter_index;
+            let mut callback = vec![0u16; width * height];
+            wiener_ns_filter_chroma_block(&mut callback, &params, chroma_at, luma_at).unwrap();
+            let mut padded = vec![0u16; width * height];
+            wiener_ns_filter_chroma_block_padded_420_into(
+                &mut padded,
+                &params,
+                &source,
+                &mut scratch,
+            )
+            .unwrap();
+            assert_eq!(padded, callback, "cfl_ds_filter_index={filter_index}");
         }
     }
 

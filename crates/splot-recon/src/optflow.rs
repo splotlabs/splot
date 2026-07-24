@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::simd::{Select, Simd, cmp::SimdPartialOrd, num::SimdInt, num::SimdUint};
+
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
@@ -137,7 +139,41 @@ pub fn derive_optflow_mv_deltas_into<'a>(
     let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
     let max_sample = bit_depth.max_sample();
-    for index in 0..expected {
+    let mut index = 0;
+    while index + 8 <= expected {
+        let left_samples = Simd::<u16, 8>::from_slice(&pred0[index..]);
+        let right_samples = Simd::<u16, 8>::from_slice(&pred1[index..]);
+        let max_samples = Simd::splat(max_sample);
+        if left_samples.simd_gt(max_samples).any() || right_samples.simd_gt(max_samples).any() {
+            for lane in 0..8 {
+                for (predictor, value) in [(0, left_samples[lane]), (1, right_samples[lane])] {
+                    if value > max_sample {
+                        return Err(ReconError::OptflowPredictorSampleOutOfRange {
+                            predictor,
+                            sample_index: index + lane,
+                            value,
+                            max: max_sample,
+                        });
+                    }
+                }
+            }
+        }
+        let left = left_samples.cast::<i32>();
+        let right = right_samples.cast::<i32>();
+        let weighted_values = round2_signed_simd(
+            Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
+            downshift,
+        )
+        .cast::<i16>()
+        .to_array();
+        weighted[index..index + 8].copy_from_slice(&weighted_values); // splot-copy-ok: publish SIMD optical-flow weights into caller scratch
+        let difference_values = round2_signed_simd(left - right, downshift)
+            .cast::<i16>()
+            .to_array();
+        difference[index..index + 8].copy_from_slice(&difference_values); // splot-copy-ok: publish SIMD optical-flow differences into caller scratch
+        index += 8;
+    }
+    for index in index..expected {
         let left = pred0[index];
         let right = pred1[index];
         for (predictor, value) in [(0, left), (1, right)] {
@@ -176,6 +212,108 @@ pub fn derive_optflow_mv_deltas_into<'a>(
     Ok(&scratch.deltas)
 }
 
+/// Derives one 8x8 optical-flow delta from strided predictors.
+///
+/// # Errors
+///
+/// Returns [`ReconError::BufferLengthMismatch`] when either predictor does not
+/// contain the requested 8x8 region, or the same arithmetic errors as
+/// [`derive_optflow_mv_deltas`].
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn derive_optflow_mv_delta_8x8_strided_into(
+    pred0: &[u16],
+    start0: usize,
+    pred1: &[u16],
+    start1: usize,
+    stride: usize,
+    bit_depth: BitDepth,
+    distances: [i32; 2],
+    scratch: &mut OptflowScratch,
+) -> Result<[[i32; 2]; 2]> {
+    scratch.deltas.clear();
+    if stride < 8 {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: 8,
+            actual: stride,
+        });
+    }
+    let span_len = stride
+        .checked_mul(7)
+        .and_then(|offset| offset.checked_add(8))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "strided optical-flow predictor span",
+        })?;
+    let pred0 = pred0.get(start0..start0.saturating_add(span_len)).ok_or(
+        ReconError::BufferLengthMismatch {
+            expected: start0.saturating_add(span_len),
+            actual: pred0.len(),
+        },
+    )?;
+    let pred1 = pred1.get(start1..start1.saturating_add(span_len)).ok_or(
+        ReconError::BufferLengthMismatch {
+            expected: start1.saturating_add(span_len),
+            actual: pred1.len(),
+        },
+    )?;
+    if distances.contains(&0) {
+        return Ok([[0; 2]; 2]);
+    }
+
+    let distances = reduce_distances(distances);
+    let downshift = u32::from(bit_depth.bits().saturating_sub(8));
+    scratch.samples.resize(8 * 8 * 4, 0);
+    let (weighted, scratch_samples) = scratch.samples.split_at_mut(8 * 8);
+    let (difference, scratch_samples) = scratch_samples.split_at_mut(8 * 8);
+    let (gradient_x, gradient_y) = scratch_samples.split_at_mut(8 * 8);
+    let max_sample = bit_depth.max_sample();
+    for row in 0..8 {
+        let source = row * stride;
+        let destination = row * 8;
+        let left_samples = Simd::<u16, 8>::from_slice(&pred0[source..]);
+        let right_samples = Simd::<u16, 8>::from_slice(&pred1[source..]);
+        let max_samples = Simd::splat(max_sample);
+        if left_samples.simd_gt(max_samples).any() || right_samples.simd_gt(max_samples).any() {
+            for lane in 0..8 {
+                for (predictor, value) in [(0, left_samples[lane]), (1, right_samples[lane])] {
+                    if value > max_sample {
+                        return Err(ReconError::OptflowPredictorSampleOutOfRange {
+                            predictor,
+                            sample_index: destination + lane,
+                            value,
+                            max: max_sample,
+                        });
+                    }
+                }
+            }
+        }
+        let left = left_samples.cast::<i32>();
+        let right = right_samples.cast::<i32>();
+        let weighted_values = round2_signed_simd(
+            Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
+            downshift,
+        )
+        .cast::<i16>()
+        .to_array();
+        weighted[destination..destination + 8].copy_from_slice(&weighted_values); // splot-copy-ok: publish SIMD optical-flow weights into caller scratch
+        let difference_values = round2_signed_simd(left - right, downshift)
+            .cast::<i16>()
+            .to_array();
+        difference[destination..destination + 8].copy_from_slice(&difference_values); // splot-copy-ok: publish SIMD optical-flow differences into caller scratch
+    }
+
+    gradients(weighted, 8, 8, gradient_x, gradient_y);
+    solve_unit(gradient_x, gradient_y, difference, 8, 0, 0, 8, distances)
+}
+
+fn round2_signed_simd<const LANES: usize>(value: Simd<i32, LANES>, shift: u32) -> Simd<i32, LANES> {
+    if shift == 0 {
+        return value;
+    }
+    let rounded = (value.abs() + Simd::splat(1 << (shift - 1))) >> shift as i32;
+    value.is_negative().select(-rounded, rounded)
+}
+
 fn reduce_distances(distances: [i32; 2]) -> [i32; 2] {
     let magnitudes = match distances[0]
         .unsigned_abs()
@@ -207,25 +345,66 @@ fn gradients(
     vertical: &mut [i16],
 ) {
     for row in 0..height {
-        for col in 0..width {
-            let col_start = (col / GRADIENT_UNIT) * GRADIENT_UNIT;
+        let row_offset = row * width;
+        for col_start in (0..width).step_by(GRADIENT_UNIT) {
             let col_end = (col_start + GRADIENT_UNIT).min(width) - 1;
-            let row_start = (row / GRADIENT_UNIT) * GRADIENT_UNIT;
-            let row_end = (row_start + GRADIENT_UNIT).min(height) - 1;
-            let col_prev = col.saturating_sub(1).max(col_start);
-            let col_prev2 = col.saturating_sub(2).max(col_start);
-            let col_next = (col + 1).min(col_end);
-            let col_next2 = (col + 2).min(col_end);
-            let mut value = 42
-                * (i32::from(values[row * width + col_next])
-                    - i32::from(values[row * width + col_prev]))
-                - 5 * (i32::from(values[row * width + col_next2])
-                    - i32::from(values[row * width + col_prev2]));
-            if col + 1 > col_end || col < col_start + 1 {
-                value *= 2;
+            let mut col = col_start;
+            while col <= col_end {
+                if col >= col_start + 2 && col + 5 <= col_end {
+                    let next =
+                        Simd::<i16, 4>::from_slice(&values[row_offset + col + 1..]).cast::<i32>();
+                    let prev =
+                        Simd::<i16, 4>::from_slice(&values[row_offset + col - 1..]).cast::<i32>();
+                    let next2 =
+                        Simd::<i16, 4>::from_slice(&values[row_offset + col + 2..]).cast::<i32>();
+                    let prev2 =
+                        Simd::<i16, 4>::from_slice(&values[row_offset + col - 2..]).cast::<i32>();
+                    let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
+                    horizontal[row_offset + col..row_offset + col + 4]
+                        .copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
+                    col += 4;
+                    continue;
+                }
+                let col_prev = col.saturating_sub(1).max(col_start);
+                let col_prev2 = col.saturating_sub(2).max(col_start);
+                let col_next = (col + 1).min(col_end);
+                let col_next2 = (col + 2).min(col_end);
+                let mut value = 42
+                    * (i32::from(values[row_offset + col_next])
+                        - i32::from(values[row_offset + col_prev]))
+                    - 5 * (i32::from(values[row_offset + col_next2])
+                        - i32::from(values[row_offset + col_prev2]));
+                if col + 1 > col_end || col < col_start + 1 {
+                    value *= 2;
+                }
+                horizontal[row_offset + col] = round2_signed_i32(value, 7) as i16;
+                col += 1;
             }
-            horizontal[row * width + col] = round2_signed_i32(value, 7) as i16;
-
+        }
+        let row_start = (row / GRADIENT_UNIT) * GRADIENT_UNIT;
+        let row_end = (row_start + GRADIENT_UNIT).min(height) - 1;
+        let row_prev = row.saturating_sub(1).max(row_start);
+        let row_prev2 = row.saturating_sub(2).max(row_start);
+        let row_next = (row + 1).min(row_end);
+        let row_next2 = (row + 2).min(row_end);
+        let double = row + 1 > row_end || row < row_start + 1;
+        let mut col = 0;
+        while col + 8 <= width {
+            let mut value = Simd::<i16, 8>::from_slice(&values[row_next * width + col..])
+                .cast::<i32>()
+                - Simd::<i16, 8>::from_slice(&values[row_prev * width + col..]).cast::<i32>();
+            value *= Simd::splat(42);
+            value -= (Simd::<i16, 8>::from_slice(&values[row_next2 * width + col..]).cast::<i32>()
+                - Simd::<i16, 8>::from_slice(&values[row_prev2 * width + col..]).cast::<i32>())
+                * Simd::splat(5);
+            if double {
+                value += value;
+            }
+            let rounded = round2_signed_simd(value, 7).cast::<i16>().to_array();
+            vertical[row * width + col..row * width + col + 8].copy_from_slice(&rounded); // splot-copy-ok: publish SIMD gradients into caller scratch
+            col += 8;
+        }
+        for col in col..width {
             let row_prev = row.saturating_sub(1).max(row_start);
             let row_prev2 = row.saturating_sub(2).max(row_start);
             let row_next = (row + 1).min(row_end);
@@ -235,7 +414,7 @@ fn gradients(
                     - i32::from(values[row_prev * width + col]))
                 - 5 * (i32::from(values[row_next2 * width + col])
                     - i32::from(values[row_prev2 * width + col]));
-            if row + 1 > row_end || row < row_start + 1 {
+            if double {
                 value *= 2;
             }
             vertical[row * width + col] = round2_signed_i32(value, 7) as i16;
@@ -254,24 +433,28 @@ fn solve_unit(
     unit_size: usize,
     distances: [i32; 2],
 ) -> Result<[[i32; 2]; 2]> {
-    let mut su2 = (unit_size * unit_size) as i32;
-    let mut sv2 = su2;
-    let mut suv = 0i32;
-    let mut suw = 0i32;
-    let mut svw = 0i32;
-    for row in unit_y..unit_y + unit_size {
-        for col in unit_x..unit_x + unit_size {
-            let index = row * stride + col;
-            let u = i32::from(gradient_x[index]);
-            let v = i32::from(gradient_y[index]);
-            let w = i32::from(difference[index]);
-            su2 += u * u;
-            suv += u * v;
-            sv2 += v * v;
-            suw += u * w;
-            svw += v * w;
+    let [mut su2, mut sv2, mut suv, mut suw, mut svw] = match unit_size {
+        4 => solve_unit_sums::<4>(gradient_x, gradient_y, difference, stride, unit_x, unit_y),
+        8 => solve_unit_sums::<8>(gradient_x, gradient_y, difference, stride, unit_x, unit_y),
+        _ => {
+            let area = (unit_size * unit_size) as i32;
+            let mut sums = [area, area, 0, 0, 0];
+            for row in unit_y..unit_y + unit_size {
+                for col in unit_x..unit_x + unit_size {
+                    let index = row * stride + col;
+                    let u = i32::from(gradient_x[index]);
+                    let v = i32::from(gradient_y[index]);
+                    let w = i32::from(difference[index]);
+                    sums[0] += u * u;
+                    sums[1] += v * v;
+                    sums[2] += u * v;
+                    sums[3] += u * w;
+                    sums[4] += v * w;
+                }
+            }
+            [sums[0], sums[1], sums[2], sums[3], sums[4]]
         }
-    }
+    };
 
     let max_product_bits = (1 + msb(su2 as u32)) + (1 + msb(sv2 as u32));
     let max_product_bits = max_product_bits
@@ -307,6 +490,36 @@ fn solve_unit(
             (col * distances[1]).clamp(-MV_DELTA_LIMIT, MV_DELTA_LIMIT),
         ],
     ])
+}
+
+fn solve_unit_sums<const N: usize>(
+    gradient_x: &[i16],
+    gradient_y: &[i16],
+    difference: &[i16],
+    stride: usize,
+    unit_x: usize,
+    unit_y: usize,
+) -> [i32; 5] {
+    let mut sums = [Simd::<i32, N>::splat(0); 5];
+    for row in unit_y..unit_y + N {
+        let index = row * stride + unit_x;
+        let u = Simd::<i16, N>::from_slice(&gradient_x[index..]).cast::<i32>();
+        let v = Simd::<i16, N>::from_slice(&gradient_y[index..]).cast::<i32>();
+        let w = Simd::<i16, N>::from_slice(&difference[index..]).cast::<i32>();
+        sums[0] += u * u;
+        sums[1] += v * v;
+        sums[2] += u * v;
+        sums[3] += u * w;
+        sums[4] += v * w;
+    }
+    let area = (N * N) as i32;
+    [
+        sums[0].reduce_sum() + area,
+        sums[1].reduce_sum() + area,
+        sums[2].reduce_sum(),
+        sums[3].reduce_sum(),
+        sums[4].reduce_sum(),
+    ]
 }
 
 fn divide_and_round(values: [i32; 2], denominator: i32, shift: i32) -> Result<[i32; 2]> {

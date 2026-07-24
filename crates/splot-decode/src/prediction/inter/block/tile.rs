@@ -1568,16 +1568,18 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
-        crate::timing::report_detail(
-            "inter_tile_prepare",
-            timer,
-            &format!(
-                "units={} threads={} workers_used={}",
-                prepared_results.len(),
-                splot_parallel::current_pool_width(),
-                tally.workers_used()
-            ),
-        );
+        if timer.is_some() {
+            crate::timing::report_detail(
+                "inter_tile_prepare",
+                timer,
+                &format!(
+                    "units={} threads={} workers_used={}",
+                    prepared_results.len(),
+                    splot_parallel::current_pool_width(),
+                    tally.workers_used()
+                ),
+            );
+        }
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(prepared_results.len())
@@ -1842,7 +1844,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     ),
                 );
             }
-            let active_limit = splot_parallel::current_pool_width().saturating_sub(1);
+            let active_limit = splot_parallel::current_pool_width()
+                .saturating_sub(1)
+                .max(1);
             if prepared.max_pending > prepared.ready_limit || prepared.max_active > active_limit {
                 return Err(inter_cap!(
                     "inter_row_prepass_bounds",

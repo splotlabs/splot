@@ -153,9 +153,6 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
     tile: tile::TileDecodeScratch<T>,
     temporal_context: Option<TemporalMvContext>,
     frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords,
-    tip_recon: tip::TipReconstructScratch<T>,
-    tip_residual: super::InterResidualReconScratch<T>,
-    tip_temporal_records: Vec<super::find_mv_stack::TemporalMotionBlock>,
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
@@ -290,6 +287,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     let temporal_context = scratch
         .temporal_context
         .get_or_insert_with(TemporalMvContext::empty);
+    let temporal_timer = crate::timing::start();
     temporal_context
         .refresh_from_references(
             (mi_rows, mi_cols),
@@ -308,6 +306,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
                 SPEC_MODE_INFO
             )
         })?;
+    crate::timing::report("inter_temporal_refresh", temporal_timer);
     let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols).ok_or_else(|| {
         inter_cap!(
             "inter_temporal_motion_field",
@@ -332,7 +331,9 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         &reference.ref_ccso_unit_grids,
         first_tile_offset,
     )?;
+    let tip_prepare_timer = crate::timing::start();
     tip::prepare_motion_field(temporal_context, core, sb_h4);
+    crate::timing::report("inter_tip_prepare", tip_prepare_timer);
 
     let residual_tool_policy = if frame_is_intra {
         crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)

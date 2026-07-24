@@ -3,21 +3,6 @@
 
 //! Final loop-filter application for the reconstruction sink.
 
-use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
-use splot_core::span::ByteOffset;
-use splot_recon::{
-    LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
-    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
-    PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
-    ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
-    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
-    WienerNsChromaFilter, WienerNsLumaFilter, WienerNsLumaPaddedSource, WienerNsLumaScratch,
-    loop_restoration_source_sample, pc_wiener_classify_grid_padded_into,
-    pc_wiener_filter_block_padded, pc_wiener_filter_set_index, pc_wiener_subclass,
-    wiener_ns_filter_chroma_block, wiener_ns_filter_luma_block_padded_cells_into,
-    wiener_ns_filter_luma_block_padded_into,
-};
-
 use super::{MI_SIZE, WienerNsLrReconSink};
 use crate::Result;
 use crate::bitstream::tile_payload::{
@@ -28,16 +13,47 @@ use crate::filters::source::{FramePlane, StripePlane};
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::filters::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use crate::support::reusable_scratch::with_reusable_scratch;
+use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
+use splot_core::span::ByteOffset;
+use splot_recon::{
+    LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
+    PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
+    PcWienerClassifyParams, PcWienerClassifyScratch, PcWienerFilter, PcWienerPaddedSource, PlaneId,
+    ReconError, ReconSample, Result as ReconResult, WIENER_NS_CHROMA_COEFFS,
+    WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS,
+    WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch, WienerNsLumaFilter,
+    WienerNsLumaPaddedSource, WienerNsLumaScratch, loop_restoration_source_sample,
+    pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
+    pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    wiener_ns_filter_chroma_block_padded_420_into, wiener_ns_filter_luma_block_padded_cells_into,
+    wiener_ns_filter_luma_block_padded_into,
+};
 
 thread_local! {
     static PC_WIENER_CLASSIFY_SCRATCH: std::cell::RefCell<PcWienerClassifyScratch> =
         std::cell::RefCell::new(PcWienerClassifyScratch::default());
     static WIENER_NS_LUMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
+    static WIENER_NS_CHROMA_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
+        const { std::cell::Cell::new(None) };
     static LR_SOURCE_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
     static LR_OUTPUT_SCRATCH: std::cell::Cell<Option<Box<dyn std::any::Any>>> =
         const { std::cell::Cell::new(None) };
+}
+
+fn with_wiener_ns_chroma_scratch<T: ReconSample, R>(
+    f: impl FnOnce(&mut WienerNsChromaScratch<T>) -> R,
+) -> R {
+    WIENER_NS_CHROMA_SCRATCH.with(|slot| {
+        let mut scratch = slot
+            .take()
+            .and_then(|scratch| scratch.downcast::<WienerNsChromaScratch<T>>().ok())
+            .unwrap_or_default();
+        let result = f(&mut scratch);
+        slot.set(Some(scratch));
+        result
+    })
 }
 
 const MAX_RETAINED_WIENER_NS_LUMA_SAMPLES: usize = 512 * 64;
@@ -66,7 +82,6 @@ struct LrSourceScratch<T> {
     primary: Vec<T>,
     secondary: Vec<T>,
     cell_subclasses: Vec<usize>,
-    subclasses: Vec<usize>,
 }
 
 pub(crate) struct LrFrame<'a, T> {
@@ -139,7 +154,6 @@ impl<T> LrSourceScratch<T> {
             self.primary.capacity(),
             self.secondary.capacity(),
             self.cell_subclasses.capacity(),
-            self.subclasses.capacity(),
         ]
         .into_iter()
         .all(|capacity| capacity <= MAX_RETAINED_LR_SCRATCH_ELEMENTS)
@@ -387,8 +401,12 @@ fn write_lr_block<T: ReconSample>(
             .row_mut(y)
             .and_then(|row| row.get_mut(block.x..x_end))
             .ok_or_else(|| luma_lr_filter_error(offset))?;
-        for (dst, sample) in dst.iter_mut().zip(src) {
-            *dst = sample.to_u16();
+        if let Some(src) = T::u16_slice(src) {
+            dst.copy_from_slice(src); // splot-copy-ok: publish contiguous LR output row
+        } else {
+            for (dst, sample) in dst.iter_mut().zip(src) {
+                *dst = sample.to_u16();
+            }
         }
     }
     Ok(())
@@ -457,6 +475,7 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
             .map_err(|_| ReconError::ArithmeticOverflow {
                 context: "LR source window allocation",
             })?;
+        samples.resize(sample_count, T::default());
         for row_index in 0..rows {
             let y = block_y
                 .checked_sub(radius)
@@ -511,7 +530,8 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
                     actual: source_row.len(),
                 },
             )?)?;
-            samples.resize(samples.len().saturating_add(pre), left_value);
+            let row_start = row_index * stride;
+            samples[row_start..row_start + pre].fill(left_value);
             if mid > 0 {
                 let mid_start = (x0 + pre as isize) as usize;
                 let mid_end = mid_start.saturating_add(mid);
@@ -519,13 +539,15 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
                     expected: mid_end,
                     actual: source_row.len(),
                 };
+                let output = &mut samples[row_start + pre..row_start + pre + mid];
                 match &source_row {
                     LrSourceRow::Curr(row) => {
-                        samples.extend_from_slice(row.get(mid_start..mid_end).ok_or(missing)?);
+                        output.copy_from_slice(row.get(mid_start..mid_end).ok_or(missing)?);
                     }
                     LrSourceRow::Cdef(row) => {
-                        for &value in row.get(mid_start..mid_end).ok_or(missing)? {
-                            samples.push(T::try_from_u16(value)?);
+                        let source = row.get(mid_start..mid_end).ok_or(missing)?;
+                        for (output, &value) in output.iter_mut().zip(source) {
+                            *output = T::try_from_u16(value)?;
                         }
                     }
                 }
@@ -536,7 +558,7 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
                     actual: source_row.len(),
                 },
             )?)?;
-            samples.resize(samples.len().saturating_add(post), right_value);
+            samples[row_start + pre + mid..row_start + stride].fill(right_value);
         }
         Ok(Self {
             samples,
@@ -556,6 +578,7 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         self.samples.get(start..).map(|tail| (tail, self.stride))
     }
 
+    #[cfg(test)]
     fn get_abs(&self, x: isize, y: isize) -> T {
         let col = x.saturating_sub(self.origin_x);
         let row = y.saturating_sub(self.origin_y);
@@ -876,7 +899,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let LrSourceScratch {
                 primary,
                 cell_subclasses,
-                subclasses,
                 ..
             } = scratch;
             let window = LrSourceWindow::<T>::materialize(
@@ -892,7 +914,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 PC_WIENER_CLASSIFY_READ_RADIUS.max(PC_WIENER_FILTER_TAP_RADIUS),
             )
             .map_err(|_| luma_lr_filter_error(offset))?;
-            let subclass_map = self.luma_lr_subclasses(
+            let subclass_map = self.luma_lr_cell_subclasses(
                 offset,
                 &block,
                 &window,
@@ -901,7 +923,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 filter_set_index,
                 sample_count,
                 cell_subclasses,
-                subclasses,
             )?;
             output.clear();
             output.resize(sample_count, T::default());
@@ -911,6 +932,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 output_stride: block.width,
                 bit_depth: self.bit_depth,
                 filter_set_index,
+                subclass_block_size: MI_SIZE,
                 subclasses: subclass_map,
             };
             let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
@@ -924,8 +946,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let padded_source =
                 PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(|_| luma_lr_filter_error(offset))?;
+            let timer = crate::timing::start();
             pc_wiener_filter_block_padded(output, &params, &padded_source)
                 .map_err(|_| luma_lr_filter_error(offset))?;
+            crate::timing::report("pc_wiener_filter", timer);
             self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
             Ok(block)
         })
@@ -994,7 +1018,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
             .map_err(|_| luma_lr_filter_error(offset))?;
-        with_lr_source_scratch(|scratch| {
+        with_lr_source_scratch(|scratch| -> Result<()> {
             let chroma_window = LrSourceWindow::<T>::materialize(
                 &mut scratch.primary,
                 plane_id,
@@ -1021,12 +1045,37 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 WIENER_NS_CHROMA_TAP_RADIUS * 2,
             )
             .map_err(|_| luma_lr_filter_error(offset))?;
-            wiener_ns_filter_chroma_block(
-                output,
-                &params,
-                |x, y| chroma_window.get_abs(x, y),
-                |x, y| luma_window.get_abs(x, y),
+            let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
+            let (chroma_padded, chroma_stride) = chroma_window
+                .tail_from(
+                    block_x.saturating_sub(radius),
+                    block_y.saturating_sub(radius),
+                )
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let luma_radius = 2 * radius;
+            let (luma_padded, luma_stride) = luma_window
+                .tail_from(
+                    block_x.saturating_mul(2).saturating_sub(luma_radius),
+                    block_y.saturating_mul(2).saturating_sub(luma_radius),
+                )
+                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let padded_source = WienerNsChromaPaddedSource::new(
+                chroma_padded,
+                chroma_stride,
+                luma_padded,
+                luma_stride,
+                block.width,
+                block.height,
             )
+            .map_err(|_| luma_lr_filter_error(offset))?;
+            with_wiener_ns_chroma_scratch(|scratch| {
+                wiener_ns_filter_chroma_block_padded_420_into(
+                    output,
+                    &params,
+                    &padded_source,
+                    scratch,
+                )
+            })
             .map_err(|_| luma_lr_filter_error(offset))
         })?;
         self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, output, offset)?;
@@ -1117,6 +1166,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let padded_source =
                 WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
                     .map_err(|_| luma_lr_filter_error(offset))?;
+            let timer = crate::timing::start();
             with_wiener_ns_luma_scratch(sample_count, |scratch| {
                 if let Some(cell_subclasses) = cell_subclass_map {
                     wiener_ns_filter_luma_block_padded_cells_into(
@@ -1136,6 +1186,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
             })
             .map_err(|_| luma_lr_filter_error(offset))?;
+            crate::timing::report("wiener_ns_luma", timer);
             Ok(())
         })?;
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
@@ -1209,6 +1260,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         sample_count: usize,
         cell_subclasses: &'a mut Vec<usize>,
     ) -> Result<&'a [usize]> {
+        let timer = crate::timing::start();
         cell_subclasses.clear();
         if sample_count
             != block
@@ -1234,6 +1286,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .try_reserve_exact(cell_count)
             .map_err(|_| luma_lr_filter_error(offset))?;
         cell_subclasses.resize(cell_count, 0);
+        let subclass_table = pc_wiener_subclass_table(num_classes, filter_set_index)
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let padded_source = PcWienerClassifyPaddedSource::new_prevalidated(
+            window.samples,
+            window.stride,
+            window.origin_x,
+            window.origin_y,
+            self.bit_depth,
+        )
+        .map_err(|_| luma_lr_filter_error(offset))?;
         let mut group_start = 0;
         while group_start < cell_cols {
             let class_x = block
@@ -1269,14 +1331,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 tile_end_y,
             };
             let group_cols = group_end - group_start;
-            let padded_source = PcWienerClassifyPaddedSource::new(
-                window.samples,
-                window.stride,
-                window.origin_x,
-                window.origin_y,
-            );
             with_reusable_scratch(&PC_WIENER_CLASSIFY_SCRATCH, |scratch| {
-                let classifications = pc_wiener_classify_grid_padded_into::<T, _>(
+                let classes = pc_wiener_classify_grid_padded_classes_into::<T, _>(
                     &params,
                     group_cols,
                     cell_rows,
@@ -1289,70 +1345,37 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     scratch,
                 )
                 .map_err(|_| luma_lr_filter_error(offset))?;
-                for (index, classification) in classifications.iter().enumerate() {
-                    let cell_row = index / group_cols;
-                    let cell_col = group_start + index % group_cols;
-                    let cell_index = cell_row
-                        .checked_mul(cell_cols)
-                        .and_then(|start| start.checked_add(cell_col))
+                for cell_row in 0..cell_rows {
+                    let class_start = cell_row
+                        .checked_mul(group_cols)
                         .ok_or_else(|| luma_lr_filter_error(offset))?;
-                    let subclass =
-                        pc_wiener_subclass(num_classes, filter_set_index, classification.class)
-                            .map_err(|_| luma_lr_filter_error(offset))?;
-                    let Some(slot) = cell_subclasses.get_mut(cell_index) else {
+                    let class_end = class_start
+                        .checked_add(group_cols)
+                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    let cell_start = cell_row
+                        .checked_mul(cell_cols)
+                        .and_then(|start| start.checked_add(group_start))
+                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    let cell_end = cell_start
+                        .checked_add(group_cols)
+                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    let Some(classes) = classes.get(class_start..class_end) else {
                         return Err(luma_lr_filter_error(offset));
                     };
-                    *slot = subclass;
+                    let Some(cells) = cell_subclasses.get_mut(cell_start..cell_end) else {
+                        return Err(luma_lr_filter_error(offset));
+                    };
+                    for (cell, &class) in cells.iter_mut().zip(classes) {
+                        *cell = usize::from(subclass_table[usize::from(class)]);
+                    }
                 }
                 Ok(())
             })?;
             group_start = group_end;
         }
 
+        crate::timing::report("pc_wiener_classify", timer);
         Ok(cell_subclasses)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn luma_lr_subclasses<'a>(
-        &self,
-        offset: ByteOffset,
-        block: &WienerNsLrSourceBlock,
-        window: &LrSourceWindow<'_, T>,
-        qindex: u32,
-        num_classes: usize,
-        filter_set_index: usize,
-        sample_count: usize,
-        cell_subclasses: &mut Vec<usize>,
-        subclasses: &'a mut Vec<usize>,
-    ) -> Result<&'a [usize]> {
-        let cells = self.luma_lr_cell_subclasses(
-            offset,
-            block,
-            window,
-            qindex,
-            num_classes,
-            filter_set_index,
-            sample_count,
-            cell_subclasses,
-        )?;
-        subclasses.clear();
-        subclasses
-            .try_reserve_exact(sample_count)
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
-        for row in 0..block.height {
-            let cell_row = row / MI_SIZE;
-            for cell_col in 0..cell_cols {
-                let cell_index = cell_row * cell_cols + cell_col;
-                let Some(&subclass) = cells.get(cell_index) else {
-                    return Err(luma_lr_filter_error(offset));
-                };
-                let cell_start = cell_col * MI_SIZE;
-                let cell_width = MI_SIZE.min(block.width - cell_start);
-                subclasses.extend(core::iter::repeat_n(subclass, cell_width));
-            }
-        }
-        Ok(subclasses)
     }
 }
 

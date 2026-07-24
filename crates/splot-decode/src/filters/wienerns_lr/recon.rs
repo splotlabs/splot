@@ -155,6 +155,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         offset: ByteOffset,
     ) -> Result<(DecodedFrame<T>, super::FrameFilterRecords)> {
+        if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
+            return Ok((self.workspace.freeze()?, self.filter_records));
+        }
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if core
@@ -239,6 +242,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             })?;
         let filter_timer = crate::timing::start();
         let run_stripe = |&(start, end): &(usize, usize)| -> Result<final_filters::FilteredStripe> {
+            let cdef_timer = crate::timing::start();
             let mut cdef = crate::filters::cdef::cdef_stripe(
                 &self.workspace,
                 cdef_strengths.as_deref(),
@@ -256,7 +260,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
                 )
             })?;
+            crate::timing::report("filter_cdef_stripe", cdef_timer);
             if let Some((grid, config)) = self.ccso_grid.as_ref().zip(ccso_config.as_ref()) {
+                let ccso_timer = crate::timing::start();
                 crate::filters::ccso::ccso_stripe(
                     &mut cdef,
                     grid,
@@ -269,7 +275,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
                     )
                 })?;
+                crate::timing::report("filter_ccso_stripe", ccso_timer);
             }
+            let lr_timer = crate::timing::start();
             let mut frame = self.apply_lr_stripe(
                 core,
                 offset,
@@ -277,12 +285,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 [y_runs, u_runs, v_runs],
                 &lr_unit_filters,
             )?;
+            crate::timing::report("filter_lr_stripe", lr_timer);
             let (separate_cdef_luma, output_luma) =
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
                     (Some(&frame.cdef_y), post_lr_y)
                 } else {
                     (None, &mut frame.cdef_y)
                 };
+            let gdf_timer = crate::timing::start();
             crate::filters::gdf::apply_stripe(
                 core,
                 frame.deblocked_y,
@@ -295,6 +305,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 self.gdf_reference,
                 offset,
             )?;
+            crate::timing::report("filter_gdf_stripe", gdf_timer);
             Ok(frame.into_filtered())
         };
         let filtered_workspace = Mutex::new(CurrentFrameWorkspace::new(
@@ -382,7 +393,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .storage_size();
         let end_y = stripe.end_y().ok_or_else(&error)?;
         let max_sample = self.bit_depth.max_sample();
-        // Sample range membership is proven by `DecodedFrame::try_new` at freeze.
         if stripe.width() != size.width()
             || stripe.frame_height() != size.height()
             || stripe.origin_y() > end_y
@@ -469,8 +479,12 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let destination = samples
                 .get_mut(start..start.checked_add(source.len()).ok_or_else(&error)?)
                 .ok_or_else(&error)?;
-            for (destination, &source) in destination.iter_mut().zip(source) {
-                *destination = T::try_from_u16(source).map_err(|_| error())?;
+            if let Some(destination) = T::u16_slice_mut(destination) {
+                destination.copy_from_slice(source);
+            } else {
+                for (destination, &source) in destination.iter_mut().zip(source) {
+                    *destination = T::try_from_u16(source).map_err(|_| error())?;
+                }
             }
         }
         Ok(())

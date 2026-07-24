@@ -15,6 +15,8 @@ use core::mem;
 use core::ops::Range;
 use core::slice;
 
+use std::simd::{Simd, cmp::SimdPartialOrd};
+
 use splot_core::headers::sequence::SuperblockSize;
 
 use crate::intra_basic::predict_paeth_sample;
@@ -302,7 +304,7 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
         ensure_surface_rect(self.plane, self.rect, rect)
     }
 
-    fn publish_into(&self, target: &mut CurrentFramePlane<T>, max_sample: u16) -> Result<()> {
+    fn publish_into(&self, target: &mut CurrentFramePlane<T>) -> Result<()> {
         if target.storage_size != self.storage_size {
             return Err(ReconError::WorkspaceRectOutOfBounds {
                 plane: self.plane,
@@ -312,8 +314,24 @@ impl<T: ReconSample> CurrentFramePlaneRect<'_, T> {
         }
         target.ensure_rect(self.rect)?;
         for (row, samples) in self.rows.iter().enumerate() {
-            let rect = PlaneRect::new(self.rect.x(), self.rect.y() + row, self.rect.width(), 1)?;
-            target.write_rect(rect, samples, self.rect.width(), max_sample)?;
+            if samples.len() != self.rect.width() {
+                return Err(ReconError::BufferLengthMismatch {
+                    expected: self.rect.width(),
+                    actual: samples.len(),
+                });
+            }
+            let start = (self.rect.y() + row) * target.stride_samples + self.rect.x();
+            let end = start + self.rect.width();
+            let output =
+                target
+                    .samples
+                    .get_mut(start..end)
+                    .ok_or(ReconError::WorkspaceRectOutOfBounds {
+                        plane: self.plane,
+                        storage: target.storage_size,
+                        rect: self.rect,
+                    })?;
+            output.copy_from_slice(samples); // splot-copy-ok: publish an owned decoded rectangle into its frame surface
         }
         Ok(())
     }
@@ -358,13 +376,11 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
     /// Publishes this completed rectangle into its matching current-frame workspace.
     ///
     /// # Errors
-    /// Returns [`ReconError`] when plane geometry differs or a sample exceeds
-    /// the workspace bit depth.
+    /// Returns [`ReconError`] when plane geometry differs.
     pub fn publish_into(&self, workspace: &mut CurrentFrameWorkspace<T>) -> Result<()> {
-        let max_sample = workspace.info.bit_depth().max_sample();
-        self.y.publish_into(&mut workspace.y, max_sample)?;
+        self.y.publish_into(&mut workspace.y)?;
         match (&self.u, &mut workspace.u) {
-            (Some(source), Some(target)) => source.publish_into(target, max_sample)?,
+            (Some(source), Some(target)) => source.publish_into(target)?,
             (None, None) => {}
             (Some(_), None) => {
                 return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::U });
@@ -374,7 +390,7 @@ impl<'storage, T: ReconSample> CurrentFrameRect<'storage, T> {
             }
         }
         match (&self.v, &mut workspace.v) {
-            (Some(source), Some(target)) => source.publish_into(target, max_sample)?,
+            (Some(source), Some(target)) => source.publish_into(target)?,
             (None, None) => {}
             (Some(_), None) => {
                 return Err(ReconError::UnexpectedChromaPlane { plane: PlaneId::V });
@@ -657,15 +673,17 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
             });
         }
         let max_sample = self.info().bit_depth().max_sample();
-        for (sample_index, &sample) in samples.iter().enumerate() {
-            T::try_from_u16(sample)?;
-            if sample > max_sample {
-                return Err(ReconError::SampleOutOfRange {
-                    plane,
-                    sample_index,
-                    value: sample,
-                    max: max_sample,
-                });
+        if u16_samples_exceed(samples, max_sample) {
+            for (sample_index, &sample) in samples.iter().enumerate() {
+                T::try_from_u16(sample)?;
+                if sample > max_sample {
+                    return Err(ReconError::SampleOutOfRange {
+                        plane,
+                        sample_index,
+                        value: sample,
+                        max: max_sample,
+                    });
+                }
             }
         }
 
@@ -713,6 +731,76 @@ impl<'storage, T: ReconSample> CurrentFrameSurface<'_, 'storage, T> {
                 Ok(())
             }
         }
+    }
+
+    /// Runs a writer over contiguous `u16` storage for one exact target rectangle.
+    ///
+    /// The returned slice starts at the rectangle's top-left sample and spans
+    /// through its final row; `stride` is the destination row stride. Returns
+    /// `Ok(None)` for non-`u16` sample storage, sliced rectangle surfaces, or a
+    /// rectangle clipped at the frame edge.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the plane is absent, the target geometry is
+    /// invalid, or a row target would cross its exclusive band.
+    pub fn with_contiguous_u16_rect_mut<R>(
+        &mut self,
+        plane: PlaneId,
+        rect: PlaneRect,
+        write: impl FnOnce(&mut [u16], usize) -> Result<R>,
+    ) -> Result<Option<R>> {
+        let storage = self.plane_storage_size(plane)?;
+        let clipped = clamp_rect_to_storage(plane, storage, rect)?;
+        if clipped != rect {
+            return Ok(None);
+        }
+        self.rect_rows(plane, rect)?;
+        let (samples, stride, local_x, local_y) = match self {
+            Self::Frame(workspace) => {
+                let target = workspace.plane_mut(plane)?;
+                (
+                    &mut target.samples[..],
+                    target.stride_samples,
+                    rect.x(),
+                    rect.y(),
+                )
+            }
+            Self::Row(row) => {
+                let target = row.plane_mut(plane)?;
+                target.ensure_rect(rect)?;
+                (
+                    &mut *target.samples,
+                    target.stride_samples,
+                    rect.x() - target.rect.x(),
+                    rect.y() - target.rect.y(),
+                )
+            }
+            Self::Rect(_) => return Ok(None),
+        };
+        let Some(samples) = T::u16_slice_mut(samples) else {
+            return Ok(None);
+        };
+        let base = local_y
+            .checked_mul(stride)
+            .and_then(|start| start.checked_add(local_x))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "contiguous u16 target offset",
+            })?;
+        let end = (rect.height() - 1)
+            .checked_mul(stride)
+            .and_then(|offset| base.checked_add(offset))
+            .and_then(|start| start.checked_add(rect.width()))
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: "contiguous u16 target span",
+            })?;
+        let available = samples.len();
+        let target = samples
+            .get_mut(base..end)
+            .ok_or(ReconError::BufferLengthMismatch {
+                expected: end,
+                actual: available,
+            })?;
+        write(target, stride).map(Some)
     }
 
     /// Writes one contiguous rectangular prediction block.
@@ -2342,7 +2430,11 @@ fn validate_write_source<T: ReconSample>(
     for row_index in 0..rect.height() {
         let source_start = row_index * row_stride_samples;
         let source_row = &samples[source_start..source_start + rect.width()];
-        if source_row.iter().any(|sample| sample.to_u16() > max_sample) {
+        let out_of_range = T::u16_slice(source_row).map_or_else(
+            || source_row.iter().any(|sample| sample.to_u16() > max_sample),
+            |samples| u16_samples_exceed(samples, max_sample),
+        );
+        if out_of_range {
             let global_start = global_target_base + row_index * target_stride_samples;
             for (column, &sample) in source_row.iter().enumerate() {
                 validate_sample_value(plane, global_start + column, sample, max_sample)?;
@@ -2351,6 +2443,16 @@ fn validate_write_source<T: ReconSample>(
     }
 
     Ok(())
+}
+
+pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
+    const LANES: usize = 8;
+    let mut chunks = samples.chunks_exact(LANES);
+    let limit = Simd::<u16, LANES>::splat(max_sample);
+    if chunks.any(|chunk| Simd::from_slice(chunk).simd_gt(limit).any()) {
+        return true;
+    }
+    chunks.remainder().iter().any(|&sample| sample > max_sample)
 }
 
 fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> Result<usize> {
