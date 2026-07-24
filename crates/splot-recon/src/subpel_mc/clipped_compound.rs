@@ -208,11 +208,17 @@ fn gather<const LANES: usize, T: ReconSample>(
     let first = (params.start_x >> SCALE_SUBPEL_BITS) + col as i32 + tap as i32 - 3;
     let last = first + LANES as i32 - 1;
     let row_start = row.min(reference.height - 1) * reference.stride;
-    if first >= params.first_x && last <= params.last_x {
+    if first >= params.first_x
+        && last <= params.last_x
+        && first >= 0
+        && last < reference.width as i32
+    {
         return Simd::from_slice(&source[row_start + first as usize..]);
     }
     Simd::from_array(core::array::from_fn(|lane| {
-        let source_column = (first + lane as i32).clamp(params.first_x, params.last_x) as usize;
+        let source_column = (first + lane as i32)
+            .clamp(params.first_x, params.last_x)
+            .clamp(0, reference.width as i32 - 1) as usize;
         source[row_start + source_column]
     }))
 }

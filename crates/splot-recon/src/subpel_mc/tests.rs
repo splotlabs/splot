@@ -1269,25 +1269,33 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
         interp: InterpolationFilter::EightTapSharp,
         w: 8,
         h: 5,
-        start_x: (5 << SCALE_SUBPEL_BITS) + (5 << 6),
+        start_x: 5 << 6,
         start_y: 4 << SCALE_SUBPEL_BITS,
         step_x: 1 << SCALE_SUBPEL_BITS,
         step_y: 1 << SCALE_SUBPEL_BITS,
-        first_x: 5,
+        first_x: -8,
         first_y: 0,
-        last_x: 11,
+        last_x: ref_w as i32 + 7,
         last_y: ref_h as i32 - 1,
         bit_depth: BitDepth::Ten,
     };
     let params1 = SubpelPredictParams {
         interp: InterpolationFilter::EightTapSmooth,
-        start_x: (9 << SCALE_SUBPEL_BITS) + (13 << 6),
-        first_x: 7,
-        last_x: 15,
+        start_x: ((ref_w as i32 - 4) << SCALE_SUBPEL_BITS) + (13 << 6),
         ..params0
     };
-    let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
-    let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+    let expected_params0 = SubpelPredictParams {
+        first_x: 0,
+        last_x: ref_w as i32 - 1,
+        ..params0
+    };
+    let expected_params1 = SubpelPredictParams {
+        first_x: 0,
+        last_x: ref_w as i32 - 1,
+        ..params1
+    };
+    let pred0 = subpel_predict_block_compound_intermediate(&view0, &expected_params0).unwrap();
+    let pred1 = subpel_predict_block_compound_intermediate(&view1, &expected_params1).unwrap();
     for weight in [8, 12] {
         let expected =
             blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
