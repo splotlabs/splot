@@ -594,6 +594,17 @@ fn bilinear_sample(left: u16, right: u16, phase: i32) -> u16 {
     round2_i32((16 - phase) * left + phase * right, SUBPEL_BITS) as u16
 }
 
+fn fixed_16x16_window_in_bounds<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    x0: i32,
+    y0: i32,
+) -> bool {
+    x0 + 1 >= 0
+        && x0 + 15 < reference.width as i32
+        && y0 + 1 >= 0
+        && y0 + 15 < reference.height as i32
+}
+
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
 fn bilinear_u16<const LANES: usize>(
@@ -632,6 +643,7 @@ fn subpel_bilinear_horizontal_into<T: ReconSample>(
         && params.last_x == x0 + 15
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
+        && fixed_16x16_window_in_bounds(reference, x0, y0)
         && let Some(samples) = T::u16_slice(reference.samples)
     {
         let first = (x0 + 1) as usize;
@@ -737,6 +749,7 @@ fn subpel_bilinear_vertical_into<T: ReconSample>(
         && params.last_x == x0 + 15
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
+        && fixed_16x16_window_in_bounds(reference, x0, y0)
         && let Some(samples) = T::u16_slice(reference.samples)
     {
         let first = (x0 + 1) as usize;
@@ -847,6 +860,7 @@ fn subpel_bilinear_2d_into<T: ReconSample>(
         && params.last_x == x0 + 15
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
+        && fixed_16x16_window_in_bounds(reference, x0, y0)
         && let Some(samples) = T::u16_slice(reference.samples)
     {
         let first = (x0 + 1) as usize;
@@ -1654,8 +1668,12 @@ fn subpel_predict_block_compound_average_horizontal_validated<
     ];
     for row in 0..params0.h {
         let source_rows = [
-            (y0[0] + row as i32).clamp(params0.first_y, params0.last_y) as usize,
-            (y0[1] + row as i32).clamp(params1.first_y, params1.last_y) as usize,
+            (y0[0] + row as i32)
+                .clamp(params0.first_y, params0.last_y)
+                .clamp(0, reference0.height as i32 - 1) as usize,
+            (y0[1] + row as i32)
+                .clamp(params1.first_y, params1.last_y)
+                .clamp(0, reference1.height as i32 - 1) as usize,
         ];
         let windows = [
             &source0[source_rows[0] * reference0.stride + window_x0..],
