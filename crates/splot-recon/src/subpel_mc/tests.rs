@@ -297,6 +297,53 @@ fn bilinear_horizontal_overlap_matches_fresh_tip_predictor() {
 }
 
 #[test]
+fn bilinear_horizontal_overlap_clips_physical_plane_borders() {
+    let ref_w = 48usize;
+    let ref_h = 32usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+    for (x0, y0) in [(-10, -2), (26, 18)] {
+        let previous = SubpelPredictParams {
+            interp: InterpolationFilter::Bilinear,
+            w: 16,
+            h: 16,
+            start_x: x0 * (1 << SCALE_SUBPEL_BITS) + (5 << 6),
+            start_y: y0 * (1 << SCALE_SUBPEL_BITS) + (7 << 6),
+            step_x: 1 << SCALE_SUBPEL_BITS,
+            step_y: 1 << SCALE_SUBPEL_BITS,
+            first_x: x0 + 1,
+            first_y: y0 + 1,
+            last_x: x0 + 15,
+            last_y: y0 + 15,
+            bit_depth: BitDepth::Ten,
+        };
+        let current = SubpelPredictParams {
+            start_x: previous.start_x + (8 << SCALE_SUBPEL_BITS),
+            first_x: previous.first_x + 8,
+            last_x: previous.last_x + 8,
+            ..previous
+        };
+        let mut reused = vec![0; previous.w * previous.h];
+        subpel_predict_block_into(&view, &previous, &mut reused).unwrap();
+        assert!(
+            subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &current, &mut reused)
+                .unwrap()
+        );
+
+        let mut expected = vec![0; current.w * current.h];
+        subpel_predict_block_into(&view, &current, &mut expected).unwrap();
+        assert_eq!(reused, expected, "previous origin ({x0}, {y0})");
+    }
+}
+
+#[test]
 fn full_pel_flat_reference_returns_flat() {
     let ref_w = 12usize;
     let ref_h = 12usize;
@@ -422,6 +469,47 @@ fn reference_border_extension_clips() {
     let out = subpel_predict_block(&view, &params).unwrap();
     let want = reference_subpel(&samples, ref_w, ref_h, &params);
     assert_eq!(out, want);
+}
+
+#[test]
+fn bilinear_fixed_window_clips_physical_plane_borders() {
+    let ref_w = 32usize;
+    let ref_h = 32usize;
+    let samples = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 37 + index / ref_w * 19) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+    for (h_phase, v_phase) in [(8, 0), (0, 8), (8, 8)] {
+        for (x0, y0) in [(-2, 4), (18, 4), (4, -2), (4, 18)] {
+            let params = SubpelPredictParams {
+                interp: InterpolationFilter::Bilinear,
+                w: 16,
+                h: 16,
+                start_x: x0 * (1 << SCALE_SUBPEL_BITS) + (h_phase << 6),
+                start_y: y0 * (1 << SCALE_SUBPEL_BITS) + (v_phase << 6),
+                step_x: 1 << SCALE_SUBPEL_BITS,
+                step_y: 1 << SCALE_SUBPEL_BITS,
+                first_x: x0 + 1,
+                first_y: y0 + 1,
+                last_x: x0 + 15,
+                last_y: y0 + 15,
+                bit_depth: BitDepth::Ten,
+            };
+
+            let mut actual = vec![0; params.w * params.h];
+            subpel_predict_block_into(&view, &params, &mut actual).unwrap();
+            assert_eq!(
+                actual,
+                reference_subpel(&samples, ref_w, ref_h, &params),
+                "origin ({x0}, {y0}), phases ({h_phase}, {v_phase})"
+            );
+        }
+    }
 }
 
 #[test]
@@ -1325,6 +1413,75 @@ fn clipped_horizontal_compound_matches_materialized_predictors() {
             );
         }
     }
+}
+
+#[test]
+fn clipped_horizontal_compound_rows_match_materialized_predictors() {
+    let ref_w = 24usize;
+    let ref_h = 8usize;
+    let samples0 = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 17 + 3) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let samples1 = build_ref(
+        (0..ref_w * ref_h)
+            .map(|index| ((index * 29 + 11) % 1024) as u16)
+            .collect(),
+        ref_w,
+        ref_h,
+    );
+    let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
+    let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
+    let params0 = SubpelPredictParams {
+        interp: InterpolationFilter::EightTapSharp,
+        w: 8,
+        h: 5,
+        start_x: (8 << SCALE_SUBPEL_BITS) + (5 << 6),
+        start_y: -2 * (1 << SCALE_SUBPEL_BITS),
+        step_x: 1 << SCALE_SUBPEL_BITS,
+        step_y: 1 << SCALE_SUBPEL_BITS,
+        first_x: 0,
+        first_y: -8,
+        last_x: ref_w as i32 - 1,
+        last_y: ref_h as i32 + 7,
+        bit_depth: BitDepth::Ten,
+    };
+    let params1 = SubpelPredictParams {
+        interp: InterpolationFilter::EightTapSmooth,
+        start_y: (ref_h as i32 - 2) << SCALE_SUBPEL_BITS,
+        ..params0
+    };
+    let expected_params0 = SubpelPredictParams {
+        first_y: 0,
+        last_y: ref_h as i32 - 1,
+        ..params0
+    };
+    let expected_params1 = SubpelPredictParams {
+        first_y: 0,
+        last_y: ref_h as i32 - 1,
+        ..params1
+    };
+    let pred0 = subpel_predict_block_compound_intermediate(&view0, &expected_params0).unwrap();
+    let pred1 = subpel_predict_block_compound_intermediate(&view1, &expected_params1).unwrap();
+    let expected = blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, 12).unwrap();
+    let mut actual = vec![u16::MAX; params0.w * params0.h];
+
+    assert!(
+        subpel_predict_block_compound_average_horizontal_strided_into(
+            &view0,
+            &params0,
+            &view1,
+            &params1,
+            12,
+            &mut actual,
+            params0.w,
+        )
+        .unwrap()
+    );
+    assert_eq!(actual, expected);
 }
 
 #[test]

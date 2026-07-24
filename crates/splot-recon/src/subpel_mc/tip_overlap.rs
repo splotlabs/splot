@@ -57,6 +57,7 @@ pub fn subpel_predict_16x16_bilinear_horizontal_overlap_into<T: ReconSample>(
         && params.last_x == x0 + 15
         && params.first_y == y0 + 1
         && params.last_y == y0 + 15
+        && fixed_16x16_window_in_bounds(reference, x0, y0)
         && let Some(samples) = T::u16_slice(reference.samples)
     {
         let first = (x0 + 1) as usize;

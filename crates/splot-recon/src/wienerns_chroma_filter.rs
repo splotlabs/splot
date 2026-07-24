@@ -516,6 +516,10 @@ fn downsample_luma_420<T: ReconSample>(
                     expected: top.saturating_add(1),
                     actual: source.len(),
                 })?;
+            if filter_index == 2 {
+                *slot = top_left.to_u16();
+                continue;
+            }
             let bottom_left =
                 source
                     .get(bottom)
@@ -561,6 +565,10 @@ fn downsample_luma_420_unclipped<T: ReconSample>(
         let bottom = &source[(2 * row + 1) * source_stride..];
         for (col, slot) in output.iter_mut().enumerate() {
             let x = 2 * col;
+            if filter_index == 2 {
+                *slot = top[x].to_u16();
+                continue;
+            }
             let left = u32::from(top[x].to_u16()) + u32::from(bottom[x].to_u16());
             let sum = if filter_index == 1 {
                 left * 2
@@ -1319,7 +1327,7 @@ mod tests {
         .unwrap();
         let mut scratch = WienerNsChromaScratch::default();
 
-        for filter_index in [0, 1, 3] {
+        for filter_index in [0, 1, 2, 3] {
             params.cfl_ds_filter_index = filter_index;
             let mut callback = vec![0u16; width * height];
             wiener_ns_filter_chroma_block(&mut callback, &params, chroma_at, luma_at).unwrap();
