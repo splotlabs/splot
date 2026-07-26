@@ -22201,3 +22201,51 @@ fixtures = [
     ".github/workflows/ci.yml",
 ]
 diagnostics = []
+
+[[feature]]
+id = "INFRA-DECODE-FRAME-PIPELINING"
+name = "Decode frame-delay finish-phase pipelining"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.2"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/pipeline/inflight.rs"
+change_id = "decode-frame-pipelining"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Frame-delay-deep pipelining of the per-frame finish phases on top of INFRA-DECODE-PARALLEL-STAGES. The plan driver moves frames through a bounded in-flight ring: each walked frame's shared § 7.2 in-loop filter chain and frame freeze run as one worker-pool task while the driver walks the next frame. Reference gating never blocks a worker: row parsing proceeds while referenced frames are still filtering, and a frame's precompute/commit work is enqueued only once every pixel-reference slot has settled (deferred rows flush in parse order; TIP/bridge synthesis, the serial prepass, and the multi-tile path take a blocking driver gate before their pixel reads). Driver waits pool-assist by running installed-pool jobs instead of parking. The depth resolves once per DecodeContext from DecodeRuntimeConfig::frame_delay: `auto` (the default, exposed as `splot decode --frame-delay`) is the resolved worker-thread count, a fixed depth is clamped to that count, and a resolved depth of one or an off-pool run takes the inline serial path unchanged. Emission, show-existing-frame handling, the output-frame limit, and EOF all harvest every outstanding finish, and failures surface lowest-decode-index-first, so a pipelined run reproduces the serial decode's diagnostic. Bit-exact: decoded-frame hash digests are identical across `--threads` 1/2/4/10 and across `--frame-delay` 1/2/4/auto on the canonical 30-frame 1080p10 performance stream, and the full 237-vector conformance corpus decodes byte-identical against the serial path at five thread-and-delay configurations. Paired interleaved medians on that stream (seven rounds, M2 Max): ten threads 0.43 s at `--frame-delay 1` versus 0.40 s at auto, four threads 0.65 s versus 0.63 s, single-thread serial 1.11 s unchanged; per-frame instrumentation attributes the remaining wall to the serial walk chain (parse 5.0 ms, ordered-commit chain 3.7 ms per frame) and the finish latency (7.8 ms). Measured no-go analyses (recorded in the change PR): relocating the commit chain into the finish phase trades walk time for reference latency roughly one-to-one because 91 percent of frames consume the immediately preceding frame's temporal motion field, so further scaling needs row-granular reference progress or intra-in-inter wavefront reconstruction rather than deeper frame pipelining; `perf` stays partial while those follow-ups are open."
+replaces = []
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "partial"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/tests/frame_pipelining.rs",
+    "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_hashes_are_frame_delay_deterministic",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_outputs_are_frame_delay_deterministic",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_outputs_are_frame_delay_deterministic",
+]
+commands = [
+    "cargo test -p splot-decode --test frame_pipelining --locked",
+    "cargo test -p splot-cli --locked",
+    "cargo build --release --locked",
+    "./target/release/splot decode --threads 4 --frame-delay 1 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --threads 4 --frame-delay 4 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --threads 10 --frame-delay auto --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+]
+fixtures = []
+diagnostics = []

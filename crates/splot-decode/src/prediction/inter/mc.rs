@@ -4,9 +4,9 @@
 #[cfg(test)]
 use splot_recon::BitDepth;
 use splot_recon::{
-    CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, InterpolationFilter, OptflowScratch,
-    PixelFormat, PlaneId, PlaneRect, PreparedWarpPrediction, ReconError, ReconSample,
-    ReferencePlaneView, SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
+    CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OptflowScratch, PixelFormat,
+    PlaneId, PlaneRect, PreparedWarpPrediction, ReconError, ReconSample, ReferencePlaneView,
+    SubpelPredictParams, WARPED_BLOCK_SIZE, WarpPredictBlockParams,
     blend_compound_average_weighted_sample, ext_warp_predict_unit,
     subpel_predict_16x16_bilinear_horizontal_overlap_into,
     subpel_predict_block_compound_average_fast_validated_strided_into,
@@ -16,8 +16,9 @@ use splot_recon::{
     subpel_predict_block_into, subpel_predict_block_strided_into, wedge_mask_plane_sample,
 };
 
+use super::Mv;
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use super::{Mv, SPEC_MC, unsupported_at};
+use super::reference::{ALL_ROWS, ReferenceSamples, compound_last_row, subpel_last_reference_row};
 use crate::Result;
 use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2_i32};
@@ -120,7 +121,12 @@ impl McBlockRect {
         }
     }
 
-    fn plane_rect(self, plane: PlaneId, sub_x: u32, sub_y: u32) -> (usize, usize, usize, usize) {
+    pub(in crate::prediction::inter) fn plane_rect(
+        self,
+        plane: PlaneId,
+        sub_x: u32,
+        sub_y: u32,
+    ) -> (usize, usize, usize, usize) {
         let (x, y, width, height) = self.plane_luma_rect(plane);
         let scale_x = 1usize << sub_x;
         let scale_y = 1usize << sub_y;
@@ -200,7 +206,7 @@ pub(crate) struct InterBlockParams<'a, T: ReconSample> {
 
 impl<'a, T: ReconSample> InterBlockParams<'a, T> {
     pub(crate) const fn single(
-        reference: &'a DecodedFrame<T>,
+        reference: ReferenceSamples<'a, T>,
         rect: McBlockRect,
         mv: Mv,
         interp: InterpolationFilter,
@@ -218,8 +224,8 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         }
     }
     pub(crate) const fn compound_average(
-        reference0: &'a DecodedFrame<T>,
-        reference1: &'a DecodedFrame<T>,
+        reference0: ReferenceSamples<'a, T>,
+        reference1: ReferenceSamples<'a, T>,
         rect: McBlockRect,
         mv0: Mv,
         mv1: Mv,
@@ -247,7 +253,7 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
         }
     }
     pub(crate) const fn single_warp(
-        reference: &'a DecodedFrame<T>,
+        reference: ReferenceSamples<'a, T>,
         rect: McBlockRect,
         mv: Mv,
         interp: InterpolationFilter,
@@ -352,17 +358,17 @@ impl<'a, T: ReconSample> InterBlockParams<'a, T> {
 #[derive(Clone, Copy, Debug)]
 enum InterPrediction<'a, T: ReconSample> {
     Single {
-        reference: &'a DecodedFrame<T>,
+        reference: ReferenceSamples<'a, T>,
         mv: Mv,
     },
     SingleWarp {
-        reference: &'a DecodedFrame<T>,
+        reference: ReferenceSamples<'a, T>,
         mv: Mv,
         warp_params: [i32; 6],
     },
     CompoundAverage {
-        reference0: &'a DecodedFrame<T>,
-        reference1: &'a DecodedFrame<T>,
+        reference0: ReferenceSamples<'a, T>,
+        reference1: ReferenceSamples<'a, T>,
         mv0: Mv,
         mv1: Mv,
         blend: CompoundBlend,
@@ -372,8 +378,8 @@ enum InterPrediction<'a, T: ReconSample> {
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CompoundMcBlock<'a, T: ReconSample> {
-    reference0: &'a DecodedFrame<T>,
-    reference1: &'a DecodedFrame<T>,
+    reference0: ReferenceSamples<'a, T>,
+    reference1: ReferenceSamples<'a, T>,
     rect: McBlockRect,
     mv0: Mv,
     mv1: Mv,
@@ -590,7 +596,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
 
 fn motion_compensate_single_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
@@ -827,7 +833,7 @@ fn compound_luma_diff_weighted_mask<T: ReconSample>(
 
 fn motion_compensate_single_warp_block_into<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     block: InterBlockParams<'_, T>,
     mv: Mv,
     warp_params: [i32; 6],
@@ -864,7 +870,7 @@ fn motion_compensate_single_warp_block_into<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn predict_plane<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     mv: Mv,
@@ -914,7 +920,7 @@ fn predict_plane<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn with_plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     mv: Mv,
@@ -948,7 +954,7 @@ fn with_plane_prediction<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn plane_prediction<T: ReconSample>(
     info: DecodedFrameInfo,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     mv: Mv,
@@ -957,7 +963,6 @@ fn plane_prediction<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<(ReferencePlaneView<'_, T>, PlaneRect, SubpelPredictParams)> {
-    let (view, _, _) = reference_plane_view(reference, plane, offset)?;
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let reference_size = reference.info().coded_luma_size();
     let frame_size = info.coded_luma_size();
@@ -989,6 +994,7 @@ fn plane_prediction<T: ReconSample>(
         last_y: scaling.last_y,
         bit_depth: info.bit_depth(),
     };
+    let (view, _, _) = reference.plane_view(plane, subpel_last_reference_row(&params), offset)?;
     let rect = PlaneRect::new(plane_x, plane_y, block_w, block_h)?;
     Ok((view, rect, params))
 }
@@ -996,7 +1002,7 @@ fn plane_prediction<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn predict_warp_plane<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     warp_params: [i32; 6],
@@ -1004,7 +1010,7 @@ fn predict_warp_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
+    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, ALL_ROWS, offset)?;
     let (ref_width, ref_height) = (view.width(), view.height());
     let destination_size = sink.plane_storage_size(plane)?;
     let (destination_width, destination_height) =
@@ -1121,8 +1127,8 @@ fn predict_warp_plane<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn predict_compound_plane_output<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    reference0: &DecodedFrame<T>,
-    reference1: &DecodedFrame<T>,
+    reference0: ReferenceSamples<'_, T>,
+    reference1: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     mv0: Mv,
@@ -1572,9 +1578,6 @@ fn compound_subpel_plane<'a, T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<CompoundSubpelPlane<'a, T>> {
-    let (view0, _, _) = reference_plane_view(block.reference0, plane, offset)?;
-    let (view1, _, _) = reference_plane_view(block.reference1, plane, offset)?;
-
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
     let reference_size0 = block.reference0.info().coded_luma_size();
     let reference_size1 = block.reference1.info().coded_luma_size();
@@ -1604,6 +1607,15 @@ fn compound_subpel_plane<'a, T: ReconSample>(
         frame_size.width() as i32,
         frame_size.height() as i32,
     );
+    let last_row = |scaling: PlaneScaling| {
+        compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y)
+    };
+    let (view0, _, _) = block
+        .reference0
+        .plane_view(plane, last_row(scaling0), offset)?;
+    let (view1, _, _) = block
+        .reference1
+        .plane_view(plane, last_row(scaling1), offset)?;
 
     Ok(CompoundSubpelPlane {
         views: [view0, view1],
@@ -1745,7 +1757,7 @@ struct CompoundRefIntermediate {
 #[allow(clippy::too_many_arguments)]
 fn compound_ref_intermediate<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     rect: McBlockRect,
     warp_params: Option<[i32; 6]>,
@@ -1755,7 +1767,7 @@ fn compound_ref_intermediate<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<CompoundRefIntermediate> {
-    let (view, ref_mi_cols, ref_mi_rows) = reference_plane_view(reference, plane, offset)?;
+    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, ALL_ROWS, offset)?;
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
     let reference_size = reference.info().coded_luma_size();
@@ -2449,48 +2461,6 @@ pub(crate) fn intrabc_predict_subpel_plane_into<T: ReconSample>(
         slot.set(Some(predicted));
         result
     })
-}
-
-pub(crate) fn reference_plane_view<T: ReconSample>(
-    reference: &DecodedFrame<T>,
-    plane: PlaneId,
-    offset: ByteOffset,
-) -> Result<(ReferencePlaneView<'_, T>, i32, i32)> {
-    let Some(ref_plane) = reference.plane(plane) else {
-        return Err(unsupported_at(
-            "inter_reference_missing_plane",
-            offset,
-            "minimal inter motion compensation requires the reference frame to carry every plane",
-            SPEC_MC,
-        ));
-    };
-    let visible = ref_plane.visible_rect();
-    let stride = ref_plane.stride_samples();
-    let origin = visible
-        .y()
-        .checked_mul(stride)
-        .and_then(|row| row.checked_add(visible.x()));
-    let view = origin
-        .and_then(|start| ref_plane.samples().get(start..))
-        .ok_or(())
-        .and_then(|samples| {
-            ReferencePlaneView::from_strided(samples, stride, visible.width(), visible.height())
-                .map_err(|_| ())
-        })
-        .map_err(|()| {
-            unsupported_at(
-                "inter_reference_plane_geometry",
-                offset,
-                "minimal inter motion compensation requires a reference plane whose storage covers its visible rectangle",
-                SPEC_MC,
-            )
-        })?;
-
-    let luma_visible = reference.y().visible_size();
-    let ref_mi_cols = luma_visible.width().div_ceil(4) as i32;
-    let ref_mi_rows = luma_visible.height().div_ceil(4) as i32;
-
-    Ok((view, ref_mi_cols, ref_mi_rows))
 }
 
 #[cfg(test)]

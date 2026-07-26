@@ -6,7 +6,7 @@ use splot_recon::{
     InterpolationFilter, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
 };
 
-use super::{apply_bawp, apply_intrabc_morph_pred, bawp_template_counts};
+use super::{ReferenceSamples, apply_bawp, apply_intrabc_morph_pred, bawp_template_counts};
 use crate::prediction::inter::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, mc::CompoundBlend};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -59,7 +59,7 @@ fn inter_bawp_skips_unavailable_top_left_reference_template() -> TestResult {
 
     apply_bawp(
         &mut workspace,
-        &reference,
+        ReferenceSamples::settled(&reference),
         &placed,
         BawpSyntax {
             enabled: true,
@@ -108,7 +108,7 @@ fn inter_bawp_applies_large_luma_block() -> TestResult {
 
     apply_bawp(
         &mut workspace,
-        &reference,
+        ReferenceSamples::settled(&reference),
         &placed_luma_block(16, 16, 128, 128),
         BawpSyntax {
             enabled: true,
@@ -138,7 +138,7 @@ fn inter_bawp_uses_full_resolution_444_chroma_geometry() -> TestResult {
 
     apply_bawp(
         &mut workspace,
-        &reference,
+        ReferenceSamples::settled(&reference),
         &placed_luma_block(4, 4, 8, 8),
         BawpSyntax {
             enabled: true,

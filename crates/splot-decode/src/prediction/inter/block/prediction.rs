@@ -102,7 +102,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
     refinemv_switchable: bool,
     block_decoded: &TileBlockDecodedState,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
@@ -123,21 +123,19 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    let block_params = super::super::resolve_inter_block_params(
-        ref_frame_idx,
-        reference,
-        placed,
-        rect,
-        tile_offset,
-    )?
-    .with_refinemv(use_refinemv)
-    .with_switchable_refinemv(refinemv_switchable);
+    let held =
+        super::super::hold_inter_block_references(ref_frame_idx, reference, placed, tile_offset)?;
+    let block_params = held
+        .block_params(placed, rect)?
+        .with_refinemv(use_refinemv)
+        .with_switchable_refinemv(refinemv_switchable);
     let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
         &mut mc::WorkspaceSink::Frame(workspace),
         block_params,
         None,
         tile_offset,
     )?;
+    drop(held);
     if placed.block.bawp.enabled {
         let slot = usize::try_from(placed.block.ref_frame0)
             .ok()
@@ -150,7 +148,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                     super::super::SPEC_REFERENCE
                 )
             })?;
-        let ref_frame = reference.frame_for_slot(slot).ok_or_else(|| {
+        let ref_frame = reference.hold_slot(slot).ok_or_else(|| {
             inter_missing!(
                 "inter_missing_bawp_reference_frame",
                 tile_offset,
@@ -160,7 +158,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         })?;
         super::super::bawp::apply_bawp(
             workspace,
-            ref_frame,
+            ref_frame.samples()?,
             placed,
             placed.block.bawp,
             placed.block.mv,
@@ -231,28 +229,26 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     use_refinemv: bool,
     refinemv_switchable: bool,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<Option<mc::CompoundMotionGrid>> {
-    let block_params = super::super::resolve_inter_block_params(
-        ref_frame_idx,
-        reference,
-        placed,
-        placed.motion_compensation_rect(),
-        tile_offset,
-    )?
-    .with_refinemv(use_refinemv)
-    .with_switchable_refinemv(refinemv_switchable);
+    let held =
+        super::super::hold_inter_block_references(ref_frame_idx, reference, placed, tile_offset)?;
+    let block_params = held
+        .block_params(placed, placed.motion_compensation_rect())?
+        .with_refinemv(use_refinemv)
+        .with_switchable_refinemv(refinemv_switchable);
     let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
         sink,
         block_params,
         None,
         tile_offset,
     )?;
+    drop(held);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             residual_scratch,

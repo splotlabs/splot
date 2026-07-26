@@ -16,8 +16,8 @@ use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameHashInput, PixelFormat, PlaneId,
-    PlaneRect, PlaneSize, ReferenceFrameStore,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
+    PlaneSize, SharedFrame,
 };
 
 use super::block::{
@@ -185,7 +185,7 @@ fn fixture_sequence_and_quantization(bytes: &[u8]) -> (SequenceHeader, Quantizat
 fn assert_yuv420_8bit_frames(frames: &[PipelineFrame], width: usize, height: usize) {
     let visible_size = PlaneSize::new(width, height).expect("valid visible size");
     for (index, output) in frames.iter().enumerate() {
-        let PipelineDecodedFrame::Eight(frame) = &output.frame else {
+        let PipelineDecodedFrame::Eight(frame) = output.ready_frame().expect("ready") else {
             panic!("frame {index} decoded as 10-bit");
         };
         assert_eq!(frame.bit_depth(), BitDepth::Eight, "frame {index}");
@@ -198,10 +198,10 @@ pub(super) fn frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            let PipelineDecodedFrame::Eight(frame) = &output.frame else {
+            let PipelineDecodedFrame::Eight(frame) = output.ready_frame().expect("ready") else {
                 panic!("frame decoded as 10-bit");
             };
-            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex()
         })
         .collect()
 }
@@ -236,7 +236,7 @@ fn write_original_ivf_frames(bytes: &mut Vec<u8>, frames: &[ParsedIvfFrame<'_>])
 fn decode_inter_frame_after_quantization_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams) + Send,
-) -> Result<DecodedFrame<u8>> {
+) -> Result<SharedFrame<u8>> {
     let context = decode_context();
     context
         .pool()
@@ -246,7 +246,7 @@ fn decode_inter_frame_after_quantization_mutation(
 fn decode_inter_frame_after_quantization_mutation_inner(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams),
-) -> Result<DecodedFrame<u8>> {
+) -> Result<SharedFrame<u8>> {
     let options = DecodeOptions::default();
     let plan = plan_fixture(bytes, &options);
     let parsed = parse_ivf_fixture(bytes, "inter");
@@ -302,7 +302,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
         &mut next_unvalidated_following_ivf_record,
     )?;
     let (store, meta) = reference.build_store_eight(&frames)?;
-    let inter_state = super::InterReferenceState::from_metadata(&store, meta);
+    let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -319,7 +319,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
             .expect("fixture inter core has quantization params"),
     );
     super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
-    let (frame, ..) = super::decode_inter_frame(
+    let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),
         &plan,
         inter_candidate,
@@ -328,10 +328,10 @@ fn decode_inter_frame_after_quantization_mutation_inner(
         core,
         &sequence,
         &options,
-        &inter_state,
+        &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
         BitDepth::Eight,
     )?;
-    Ok(frame)
+    crate::pipeline::frame_engine::finish::finish_walk_inline(walk.stage)
 }
 
 pub(super) fn parse_inter_core_for_validation(
@@ -392,7 +392,7 @@ pub(super) fn parse_inter_core_for_validation(
         &mut next_unvalidated_following_ivf_record,
     )?;
     let (store, meta) = reference.build_store_eight(&frames)?;
-    let inter_state = super::InterReferenceState::from_metadata(&store, meta);
+    let inter_state = super::InterReferenceState::from_metadata(store, meta);
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);
@@ -779,10 +779,10 @@ fn ten_bit_frame_hashes(frames: &[PipelineFrame]) -> Vec<String> {
     frames
         .iter()
         .map(|output| {
-            let PipelineDecodedFrame::Ten(frame) = &output.frame else {
+            let PipelineDecodedFrame::Ten(frame) = output.ready_frame().expect("ready") else {
                 panic!("frame decoded as 8-bit");
             };
-            DecodedFrameHashInput::new(frame).compute_hash().to_hex()
+            DecodedFrameHashInput::new(&frame).compute_hash().to_hex()
         })
         .collect()
 }
@@ -2369,8 +2369,7 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
             .expect("fixture has inter control")
             .ref_frame_idx = [0, 1, 2, 3].into_iter().collect();
 
-        let store = ReferenceFrameStore::<&DecodedFrame<u8>>::with_capacity(4).unwrap();
-        let mut reference = super::InterReferenceState::empty(&store);
+        let mut reference = super::InterReferenceState::<u8>::empty().unwrap();
         reference.ref_valid = vec![true; 4];
         reference.ref_order_hint = vec![6, 9, 12, 15];
         reference.ref_base_q_idx = vec![50, 101, 104, 200];

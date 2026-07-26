@@ -58,8 +58,8 @@ pub(super) struct InterReconScratch<T: ReconSample> {
     mc: super::super::mc::McScratch,
 }
 
-struct ReconShared<'a, 'r, T: ReconSample> {
-    reference: &'a InterReferenceState<'r, T>,
+struct ReconShared<'a, T: ReconSample> {
+    reference: &'a InterReferenceState<T>,
     ref_frame_idx: &'a [u32],
     temporal_context: &'a TemporalMvContext,
     sequence: &'a SequenceHeader,
@@ -87,6 +87,18 @@ impl InterReconCommand {
             qindex,
             tile_offset,
         }
+    }
+
+    /// The placed block this command reconstructs.
+    pub(super) const fn placed(&self) -> &PlacedInterBlock {
+        &self.placed
+    }
+
+    /// Whether § 7.13.5 TIP synthesis reconstructs this command, which reads
+    /// its reference frames through the TIP motion field rather than through
+    /// the block's own motion vectors.
+    pub(super) const fn is_tip(&self) -> bool {
+        matches!(self.kind, PendingKind::Tip)
     }
 
     pub(super) fn reads_current_frame(&self) -> bool {
@@ -197,6 +209,33 @@ impl InterReconCommand {
         })
     }
 
+    fn single_temporal_record<T: ReconSample>(
+        &self,
+        reference: &InterReferenceState<T>,
+        ref_frame_idx: &[u32],
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+    ) -> TemporalMotionBlock {
+        let block = &self.placed.block;
+        temporal_motion_block(
+            reference,
+            ref_frame_idx,
+            self.placed.luma_y / 4,
+            self.placed.luma_x / 4,
+            self.placed.luma_w / 4,
+            self.placed.luma_h / 4,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            block.ref_frame0,
+            block.ref_frame1,
+            block.mv,
+            block.mv1,
+            block.warp_params,
+        )
+    }
+
     fn refinemv(&self) -> (bool, bool) {
         match self.kind {
             PendingKind::Compound {
@@ -215,7 +254,7 @@ impl InterReconCommand {
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
-        shared: &ReconShared<'_, '_, T>,
+        shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch<T>,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
@@ -288,22 +327,12 @@ impl InterReconCommand {
         };
         match self.kind {
             PendingKind::Single => {
-                let block = &self.placed.block;
-                temporal_records.push(temporal_motion_block(
+                temporal_records.push(self.single_temporal_record(
                     shared.reference,
                     shared.ref_frame_idx,
-                    self.placed.luma_y / 4,
-                    self.placed.luma_x / 4,
-                    self.placed.luma_w / 4,
-                    self.placed.luma_h / 4,
                     mi_rows,
                     mi_cols,
                     current_order_hint,
-                    block.ref_frame0,
-                    block.ref_frame1,
-                    block.mv,
-                    block.mv1,
-                    block.warp_params,
                 ));
                 Ok(())
             }
@@ -358,7 +387,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<'_, T>,
+        reference: &InterReferenceState<T>,
         ref_frame_idx: &[u32],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
@@ -411,7 +440,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         motion_field: &mut TemporalMotionField,
         residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<'_, T>,
+        reference: &InterReferenceState<T>,
         ref_frame_idx: &[u32],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,

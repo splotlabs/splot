@@ -7,9 +7,12 @@ use splot_core::obu::{ParsedObu, PayloadStatus};
 use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_core::types::ObuType;
 use splot_parallel::ThreadCount;
+use splot_recon::SharedFrame;
 
 use super::*;
+use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::DecodeError;
+use crate::pipeline::frame_engine::finish::finish_walked_frame;
 use crate::pipeline::parse_frame_core;
 use crate::{DecodeContext, DecodeRuntimeConfig};
 
@@ -26,7 +29,7 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 fn decode_intra_fixture_with_core(
     mutate: impl FnOnce(&mut FrameHeaderCore),
 ) -> crate::Result<(
-    DecodedFrame<u8>,
+    SharedFrame<u8>,
     std::sync::Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
@@ -37,7 +40,7 @@ fn decode_intra_fixture_with_core_on_threads(
     threads: ThreadCount,
     mutate: impl FnOnce(&mut FrameHeaderCore),
 ) -> crate::Result<(
-    DecodedFrame<u8>,
+    SharedFrame<u8>,
     std::sync::Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
 )> {
@@ -65,19 +68,27 @@ fn decode_intra_fixture_with_core_on_threads(
         .expect("key");
     let mut core = parse_frame_core(key, &sequence).expect("core");
     mutate(&mut core);
-    context.pool().install(|| {
-        decode_intra_frame::<u8>(
+    let walk = context.pool().install(|| {
+        crate::pipeline::frame_engine::walk_frame::<u8>(
             &mut crate::prediction::inter::InterDecodeScratch::default(),
             &plan,
             &candidate,
             Q80_FIXTURE,
             key,
-            &core,
+            core,
             &sequence,
             &options,
+            &crate::pipeline::frame_engine::FrameSetup::Intra,
             BitDepth::Eight,
         )
-    })
+    })?;
+    let WalkStage::Pending(walked) = walk.stage else {
+        panic!("an intra frame always owes its filter phase");
+    };
+    let finished = context
+        .pool()
+        .install(|| finish_walked_frame(*walked, None, drop))?;
+    Ok((finished.frame, walk.frame_cdfs, walk.ccso_grid))
 }
 
 #[test]

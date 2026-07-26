@@ -72,7 +72,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     num_total_refs: usize,
     num_same_ref_compound: u8,
     skip: u8,
@@ -838,7 +838,7 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
     resolved: ResolvedCompoundBlock,
     skip: u8,
@@ -1043,7 +1043,7 @@ const fn compound_deblock_sub_pu_size(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn append_compound_temporal_motion<T: ReconSample>(
     records: &mut Vec<TemporalMotionBlock>,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     placed: &PlacedInterBlock,
     compound: super::super::compound::CompoundBlockSyntax,
@@ -1165,7 +1165,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     num_total_refs: usize,
     skip: u8,
     n4w: usize,
@@ -1305,7 +1305,7 @@ fn skip_mode_default_pair(current: i32, order_hints: Option<(i32, i32)>) -> (i8,
 
 fn compound_switchable_opfl_reachable<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
@@ -1390,7 +1390,7 @@ fn select_near_near_candidates(
 #[allow(clippy::too_many_arguments)]
 fn compound_all_opfl_reachable<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
@@ -1438,7 +1438,7 @@ const fn compound_opfl_block_size_allowed(n4w: usize, n4h: usize) -> bool {
 
 fn compound_opfl_reference_allowed<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     tile_offset: ByteOffset,
@@ -1461,7 +1461,7 @@ fn compound_opfl_reference_allowed<T: ReconSample>(
 fn compound_refinemv_reachable<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     n4w: usize,
@@ -1544,7 +1544,7 @@ const fn compound_refinemv_active_after_blend(
 
 fn compound_refinemv_reference_allowed<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     tile_offset: ByteOffset,
@@ -1571,7 +1571,7 @@ enum CompoundReferencePath {
 
 fn compound_sized_reference_distances<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     compound: super::super::compound::CompoundBlockSyntax,
     path: CompoundReferencePath,
@@ -1632,7 +1632,7 @@ struct CompoundReferenceFacts {
 }
 
 fn compound_reference_facts<T: ReconSample>(
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame: i8,
     tile_offset: ByteOffset,
@@ -1729,7 +1729,7 @@ fn compound_ref_contexts(
 
 fn compound_ref_distance_signs<T: ReconSample>(
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     current_order_hint: u32,
     num_total_refs: usize,
     tile_offset: ByteOffset,
@@ -1766,7 +1766,7 @@ fn compound_ref_distance_signs<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn compound_group_idx_context<T: ReconSample>(
     neighbour_ctx: &BlockNeighbourContext,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     core: &FrameHeaderCore,
     ref_frame0: i8,
@@ -1793,7 +1793,7 @@ fn compound_group_idx_context<T: ReconSample>(
 }
 
 fn compound_furthest_future_ref<T: ReconSample>(
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     current_order_hint: i32,
     num_total_refs: usize,
@@ -1815,7 +1815,7 @@ fn compound_furthest_future_ref<T: ReconSample>(
 }
 
 fn compound_reference_order_hint<T: ReconSample>(
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame: i8,
     tile_offset: ByteOffset,
@@ -1884,7 +1884,7 @@ struct CompoundJointMvProjection {
 
 fn compound_joint_mv_projection<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame0: i8,
     ref_frame1: i8,
@@ -2053,7 +2053,7 @@ struct CompoundCwpInput {
 struct CompoundCwpContext<'a, T: ReconSample> {
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
-    reference: &'a InterReferenceState<'a, T>,
+    reference: &'a InterReferenceState<T>,
     ref_frame_idx: &'a [u32],
 }
 
@@ -2200,7 +2200,7 @@ const fn compound_cwp_mode_allowed(y_mode: CompoundYMode, jmvd_scale_mode: u8) -
 
 fn compound_cwp_same_side<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame0: i8,
     ref_frame1: i8,

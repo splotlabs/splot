@@ -11,42 +11,35 @@
 //! as the inter path (deblock, then CDEF over the walk-parsed strength grid, then
 //! CCSO and loop-restoration), so intra and inter share one final-filter stage.
 
-use std::sync::Arc;
-
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{
-    BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample, ReferenceFrameStore,
-};
+use splot_recon::{BitDepth, PixelFormat, QmFrameLevels, ReconSample};
 
-use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope, FrameQuantizerDeltasScope};
+use crate::bitstream::tile_payload::{FrameQmScope, FrameQuantizerDeltasScope};
+use crate::pipeline::frame_engine::finish::{FrameWalk, WalkStage, WalkedFrame};
 use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
 use crate::pipeline::{
     deblock_quant_deltas, derive_tile_plan, derive_visible_luma_rect, ensure_runtime_limits,
     unsupported_at,
 };
 use crate::prediction::inter::{
-    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
+    InterReferenceState, TemporalMotionField, decode_inter_blocks, effective_quantizer_deltas,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_intra_frame<T: ReconSample>(
+pub(crate) fn walk_intra_frame<T: ReconSample>(
     scratch: &mut crate::prediction::inter::InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &[u8],
     frame_envelope: ObuEnvelope<'_>,
-    core: &FrameHeaderCore,
+    core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
     bit_depth: BitDepth,
-) -> Result<(
-    DecodedFrame<T>,
-    Arc<FrameCdfSubset>,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
-)> {
+) -> Result<FrameWalk<T>> {
     let offset = frame_envelope.offset;
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
@@ -84,7 +77,7 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         bytes,
         frame_envelope,
         sequence,
-        core,
+        &core,
         options,
     )?;
     let tile_size = tile_plan
@@ -119,24 +112,23 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         visible_luma_rect,
     )?;
 
-    let store = ReferenceFrameStore::<&DecodedFrame<T>>::with_capacity(1).map_err(|_| {
+    let reference = InterReferenceState::<T>::empty().map_err(|_| {
         unsupported_at(
             "frame_engine_intra_reference_store",
             offset,
             "intra frame decode requires a reference store",
         )
     })?;
-    let reference = InterReferenceState::empty(&store);
 
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
-    let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));
+    let _qm_scope = FrameQmScope::install(build_frame_qm_levels(&core));
 
     let (frame_cdfs, filter_inputs) = decode_inter_blocks::<T>(
         scratch,
         tile_plan,
         frame_envelope,
         sequence,
-        core,
+        &core,
         options,
         InterpolationFilter::Eighttap,
         0,
@@ -171,14 +163,22 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
     let disable_loopfilters_across_tiles = sequence
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let (frame, filter_records) = filter_sink.into_filtered_frame(
+    let deblock_quant_deltas = deblock_quant_deltas(sequence, &core);
+    let core = std::sync::Arc::new(core);
+
+    Ok(FrameWalk {
+        stage: WalkStage::pending(WalkedFrame::new(
+            filter_sink,
+            std::sync::Arc::clone(&core),
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            offset,
+        )),
         core,
-        disable_loopfilters_across_tiles,
-        deblock_quant_deltas(sequence, core),
-        offset,
-    )?;
-    scratch.recycle_frame_filter_records(filter_records);
-    Ok((frame, frame_cdfs, ccso_grid))
+        frame_cdfs,
+        ccso_grid,
+        motion_field: TemporalMotionField::empty(),
+    })
 }
 
 pub(crate) fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {

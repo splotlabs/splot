@@ -5,10 +5,11 @@
 
 use splot_core::span::ByteOffset;
 use splot_recon::{
-    CurrentFrameIntraEdges, CurrentFrameWorkspace, DecodedFrame, IntraRectBlockSize, PlaneId,
-    PlaneRect, ReconSample, ReferencePlaneView,
+    CurrentFrameIntraEdges, CurrentFrameWorkspace, IntraRectBlockSize, PlaneId, PlaneRect,
+    ReconSample, ReferencePlaneView,
 };
 
+use super::reference::{ALL_ROWS, ReferenceSamples};
 use super::{BawpSyntax, Mv, PlacedInterBlock};
 use crate::Result;
 
@@ -85,7 +86,7 @@ where
 
 pub(crate) fn apply_bawp<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
     bawp: BawpSyntax,
     mv: Mv,
@@ -210,7 +211,7 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn apply_bawp_plane<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     placed: &PlacedInterBlock,
     bawp: BawpSyntax,
     mv: Mv,
@@ -423,11 +424,11 @@ fn intrabc_morph_sample<T: ReconSample>(
 }
 
 fn reference_plane<T: ReconSample>(
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
     tile_offset: ByteOffset,
 ) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
-    let (view, _, _) = super::mc::reference_plane_view(reference, plane, tile_offset)?;
+    let (view, _, _) = reference.plane_view(plane, ALL_ROWS, tile_offset)?;
     let (width, height) = (view.width(), view.height());
     Ok((view, width, height))
 }

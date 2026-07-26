@@ -54,4 +54,8 @@
 # The final Phase 1 decoder reduction collapsed duplicate decode-limit arithmetic
 # plumbing plus coefficient adapter cleanup lowered the measured production
 # duplicate metric 2709 -> 2704.
-max_deletable_lines = 2704
+# The frame-pipelining work lowered the measured metric to 2677 without
+# ratcheting; clearing its PR-ratchet findings (one shared `auto`/count policy
+# parser, one folded SEF/TIP frame-header parse, one shared reference-slot
+# storage-mismatch diagnostic) lowered it 2677 -> 2658.
+max_deletable_lines = 2658

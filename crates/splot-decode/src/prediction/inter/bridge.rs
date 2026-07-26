@@ -15,6 +15,7 @@ use crate::error::Result;
 use super::Mv;
 use super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
 use super::mc::{InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into};
+use super::reference::ReferenceSamples;
 
 /// Reconstructs an `OBU_BRIDGE_FRAME` from its sole reference.
 ///
@@ -23,7 +24,7 @@ use super::mc::{InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_
 /// frame filters disabled by § 5.18.2, the resulting coded frame is a sharp-filtered,
 /// zero-motion prediction from the selected reference, including reference scaling.
 pub(crate) fn reconstruct<T: ReconSample>(
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     frame_size: FrameSize,
     visible: PlaneRect,
     output_index: u64,
@@ -41,10 +42,11 @@ pub(crate) fn reconstruct<T: ReconSample>(
     })?;
     let luma_size = PlaneSize::new(width, height)?;
     visible.ensure_within(luma_size)?;
+    let reference_info = reference.info();
     let info = DecodedFrameInfo::new(
         OutputIndex::new(output_index),
-        reference.bit_depth(),
-        reference.pixel_format(),
+        reference_info.bit_depth(),
+        reference_info.pixel_format(),
         luma_size,
         visible,
     )?;
@@ -57,7 +59,7 @@ pub(crate) fn reconstruct<T: ReconSample>(
             Mv::ZERO,
             InterpolationFilter::EightTapSharp,
         )
-        .with_chroma(!reference.pixel_format().is_monochrome()),
+        .with_chroma(!reference_info.pixel_format().is_monochrome()),
         offset,
     )?;
     Ok(workspace.freeze()?)
@@ -117,7 +119,7 @@ mod tests {
         )?;
 
         let bridge = reconstruct(
-            &source,
+            ReferenceSamples::settled(&source),
             FrameSize::new(2, 3),
             PlaneRect::new(0, 0, 2, 3)?,
             11,

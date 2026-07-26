@@ -243,6 +243,41 @@ fn decode_raw_outputs_are_thread_deterministic() {
 }
 
 #[test]
+fn decode_raw_outputs_are_frame_delay_deterministic() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let decode = |frame_delay| {
+        let output = temp_output("raw");
+        let out = splot(&[
+            "decode",
+            "--output-format",
+            "raw",
+            "--threads",
+            "4",
+            "--frame-delay",
+            frame_delay,
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(0), "frame_delay={frame_delay}");
+        assert!(
+            out.stdout.is_empty(),
+            "stdout was not empty for {frame_delay}"
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "stderr was not empty for {frame_delay}"
+        );
+        std::fs::read(&output).unwrap()
+    };
+    let expected = expected_minimal_raw();
+
+    assert_eq!(decode("1"), expected);
+    assert_eq!(decode("2"), expected);
+    assert_eq!(decode("auto"), expected);
+}
+
+#[test]
 fn decode_raw_missing_output_parent_emits_output_error_json() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
     let dir = temp_dir("missing-output-parent-root");

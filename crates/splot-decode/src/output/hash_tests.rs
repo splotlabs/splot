@@ -5,7 +5,7 @@
 
 use std::num::NonZeroU64;
 
-use splot_parallel::ThreadCount;
+use splot_parallel::{FrameDelay, ThreadCount};
 
 use super::*;
 use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
@@ -715,6 +715,98 @@ fn partition_frontier_limit_preserves_resource_limit() {
         DecodeLimits::default().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
         DecodeLimitName::MaxTilePartitionSteps,
     );
+}
+
+#[test]
+fn hash_report_numbers_frames_in_emission_order() {
+    for threads in [1usize, 4] {
+        for frame_delay in [FrameDelay::Fixed(NonZeroUsize::MIN), FrameDelay::Auto] {
+            let context = DecodeContext::new(
+                DecodeRuntimeConfig::new(ThreadCount::from(threads)).with_frame_delay(frame_delay),
+            )
+            .unwrap();
+            let report = context
+                .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, DecodeOptions::default())
+                .unwrap();
+
+            assert_eq!(report.frames.len(), 121);
+            assert!(
+                report
+                    .frames
+                    .iter()
+                    .map(|frame| frame.output_index)
+                    .eq(0..121),
+                "threads {threads}, frame delay {frame_delay:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_hasher_worker_clamps_rather_than_decrements_the_pipelining_depth() {
+    let nz = |value: usize| NonZeroUsize::new(value).unwrap();
+
+    for (frame_delay, threads, expected) in [
+        (2usize, 4usize, 2usize),
+        (4, 4, 3),
+        (10, 10, 9),
+        (2, 2, 1),
+        (1, 8, 1),
+        (3, 1, 1),
+    ] {
+        assert_eq!(
+            hasher_frame_delay(nz(frame_delay), nz(threads)),
+            nz(expected),
+            "frame delay {frame_delay} at {threads} thread(s)",
+        );
+    }
+}
+
+/// Pins every pipelining depth to the depth-one decode of the same stream.
+///
+/// Pools of four workers and up are compared against their own serial depth
+/// rather than the single-threaded run: this fixture already decodes its last
+/// sixteen emitted frames differently once the pool is wide enough to arm the
+/// parallel inter row prepass (`current_pool_width() >= 4`), on `main` and with
+/// no pipelining involved, which is a separate defect. Comparing at a fixed
+/// width isolates the frame-delay dimension this test is about.
+#[test]
+fn pipelined_hash_decode_matches_the_serial_digests_at_every_depth() {
+    let digests = |threads: usize, frame_delay: FrameDelay| {
+        DecodeContext::new(
+            DecodeRuntimeConfig::new(ThreadCount::from(threads)).with_frame_delay(frame_delay),
+        )
+        .unwrap()
+        .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, DecodeOptions::default())
+        .unwrap()
+        .frames
+        .into_iter()
+        .map(|frame| frame.hashes[0].digest_hex.clone())
+        .collect::<Vec<_>>()
+    };
+    let serial = FrameDelay::Fixed(NonZeroUsize::MIN);
+
+    let single_threaded = digests(1, serial);
+    assert_eq!(single_threaded.len(), 121);
+
+    for threads in [2usize, 3, 4, 8] {
+        let reference = if threads < 4 {
+            single_threaded.clone()
+        } else {
+            digests(threads, serial)
+        };
+        for frame_delay in [
+            FrameDelay::from(2usize),
+            FrameDelay::from(4usize),
+            FrameDelay::Auto,
+        ] {
+            assert_eq!(
+                digests(threads, frame_delay),
+                reference,
+                "threads {threads}, frame delay {frame_delay}",
+            );
+        }
+    }
 }
 
 #[test]

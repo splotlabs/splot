@@ -7,6 +7,8 @@ use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
 use splot_recon::{DecodedFrame, PixelFormat, ReconError};
 
+use super::super::reference::ReferenceSamples;
+
 use super::super::find_mv_stack::TemporalMotionBlock;
 
 #[doc = "AV2 § 7.13.3.1 Tip_Weighting_Factor."]
@@ -23,8 +25,8 @@ struct TipUnit {
 
 #[derive(Clone, Copy)]
 struct TipPrediction<'a, T: ReconSample> {
-    reference0: &'a DecodedFrame<T>,
-    reference1: Option<&'a DecodedFrame<T>>,
+    reference0: ReferenceSamples<'a, T>,
+    reference1: Option<ReferenceSamples<'a, T>>,
     interpolation_filter: ReconInterpolationFilter,
     blend: mc::CompoundBlend,
     optflow_distances: Option<[i32; 2]>,
@@ -438,7 +440,7 @@ pub(super) fn reconstruct<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
@@ -557,7 +559,52 @@ pub(super) fn reconstruct<T: ReconSample>(
         )
     })?;
     let units_timer = crate::timing::start();
-    let mut prediction = None;
+    let held = (block_w > 0 && block_h > 0)
+        .then(|| {
+            let past_slot = super::super::block_reference_slot(
+                ref_frame_idx,
+                references.past_ref,
+                tile_offset,
+            )?;
+            let future_slot = two_references
+                .then(|| {
+                    super::super::block_reference_slot(
+                        ref_frame_idx,
+                        references.future_ref,
+                        tile_offset,
+                    )
+                })
+                .transpose()?;
+            let past = super::super::hold_reference_slot(reference, past_slot, tile_offset)?;
+            let future = match future_slot {
+                Some(slot) if slot != past_slot => Some(super::super::hold_reference_slot(
+                    reference,
+                    slot,
+                    tile_offset,
+                )?),
+                _ => None,
+            };
+            Ok::<_, crate::error::DecodeError>((past, future, future_slot.is_some()))
+        })
+        .transpose()?;
+    let prediction = held
+        .as_ref()
+        .map(|(past, future, compound)| {
+            Ok::<_, crate::error::DecodeError>(TipPrediction {
+                reference0: past.samples()?,
+                reference1: compound
+                    .then(|| future.as_ref().unwrap_or(past).samples())
+                    .transpose()?,
+                interpolation_filter,
+                blend,
+                optflow_distances: use_optflow
+                    .then_some([references.past_offset, references.future_offset]),
+                use_refinemv,
+                search_refinemv,
+                optflow_sad_threshold: use_optflow.then_some(if output { 15 } else { 6 }),
+            })
+        })
+        .transpose()?;
     for local_y in (0..block_h).step_by(unit_size) {
         for local_x in (0..block_w).step_by(unit_size) {
             let luma_x = placed.luma_x + local_x;
@@ -580,35 +627,6 @@ pub(super) fn reconstruct<T: ReconSample>(
                         SPEC_MODE_INFO
                     )
                 })?;
-            if prediction.is_none() {
-                let reference0 = super::super::resolve_block_reference_frame(
-                    ref_frame_idx,
-                    reference,
-                    references.past_ref,
-                    tile_offset,
-                )?;
-                let reference1 = if two_references {
-                    Some(super::super::resolve_block_reference_frame(
-                        ref_frame_idx,
-                        reference,
-                        references.future_ref,
-                        tile_offset,
-                    )?)
-                } else {
-                    None
-                };
-                prediction = Some(TipPrediction {
-                    reference0,
-                    reference1,
-                    interpolation_filter,
-                    blend,
-                    optflow_distances: use_optflow
-                        .then_some([references.past_offset, references.future_offset]),
-                    use_refinemv,
-                    search_refinemv,
-                    optflow_sad_threshold: use_optflow.then_some(if output { 15 } else { 6 }),
-                });
-            }
             let rect = mc::McBlockRect {
                 luma_x,
                 luma_y,
@@ -791,7 +809,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     offset: ByteOffset,
 ) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
@@ -950,6 +968,7 @@ mod tests {
         tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
         tip_uses_two_references, tmvp_unit_size8,
     };
+    use crate::prediction::inter::reference::ReferenceSamples;
     use crate::prediction::inter::{Mv, mc};
     use splot_core::headers::frame::{FrameSize, FrameType};
     use splot_core::span::ByteOffset;
@@ -978,7 +997,7 @@ mod tests {
             metadata: None,
         }];
         let prediction = TipPrediction {
-            reference0: &reference,
+            reference0: ReferenceSamples::settled(&reference),
             reference1: None,
             interpolation_filter: InterpolationFilter::EightTap,
             blend: mc::CompoundBlend::default(),

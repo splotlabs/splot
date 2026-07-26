@@ -20,6 +20,73 @@ use super::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use splot_core::span::ByteOffset;
 
 const MI_SIZE: usize = 4;
+
+/// Where one frame's filtered stripes are published.
+///
+/// A pipelined frame publishes into the [`FrameProgress`] its slot already
+/// shares, so a consumer can read the published prefix before the freeze; every
+/// other path keeps its filtered workspace local to the filter chain.
+///
+/// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
+enum FilteredFrameSink<'a, T: ReconSample> {
+    /// The filter chain owns the output until the freeze.
+    Local(Box<Mutex<CurrentFrameWorkspace<T>>>),
+    /// The frame's slot shares the output, stripe by stripe.
+    Published(&'a crate::pipeline::frame_progress::FrameProgress<T>),
+}
+
+impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
+    fn open(
+        progress: Option<&'a crate::pipeline::frame_progress::FrameProgress<T>>,
+        info: splot_recon::DecodedFrameInfo,
+        ranges: &[(usize, usize)],
+    ) -> Result<Self> {
+        match progress {
+            Some(progress) if progress.begin(ranges) => Ok(Self::Published(progress)),
+            _ => Ok(Self::Local(Box::new(Mutex::new(
+                CurrentFrameWorkspace::new(info, T::default())?,
+            )))),
+        }
+    }
+
+    fn with_workspace_mut(
+        &self,
+        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            Self::Local(workspace) => publish(
+                &mut workspace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            ),
+            Self::Published(progress) => progress.with_workspace_mut(publish),
+        }
+    }
+
+    fn publish(&self, stripe: usize) {
+        if let Self::Published(progress) = self {
+            progress.publish(stripe);
+        }
+    }
+
+    /// Freezes the filtered output and hands the frozen frame to `publish`.
+    ///
+    /// A published frame freezes under its own lock, so the slot `publish`
+    /// settles is visible to every consumer before the published prefix stops
+    /// being readable.
+    fn freeze<R>(self, publish: impl FnOnce(DecodedFrame<T>) -> R) -> Result<R> {
+        match self {
+            Self::Local(workspace) => Ok(publish(
+                workspace
+                    .into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .freeze()?,
+            )),
+            Self::Published(progress) => progress.freeze_workspace(publish),
+        }
+    }
+}
+
 pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     workspace: CurrentFrameWorkspace<T>,
     bit_depth: BitDepth,
@@ -125,6 +192,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.filter_records = records;
     }
 
+    /// Returns the geometry the frozen frame will report: the filter chain
+    /// publishes into a workspace built from this one's metadata, so the
+    /// decoded-frame info is known before the samples are filtered.
+    pub(crate) fn frame_info(&self) -> splot_recon::DecodedFrameInfo {
+        self.workspace.info()
+    }
+
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
         self.cdef_grid = grid;
     }
@@ -148,15 +222,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.gdf_reference = context;
     }
 
-    pub(crate) fn into_filtered_frame(
+    pub(crate) fn into_filtered_frame<R>(
         mut self,
         core: &splot_core::headers::frame::FrameHeaderCore,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+        progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
         offset: ByteOffset,
-    ) -> Result<(DecodedFrame<T>, super::FrameFilterRecords)> {
+        publish: impl FnOnce(DecodedFrame<T>) -> R,
+    ) -> Result<(R, super::FrameFilterRecords)> {
         if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-            return Ok((self.workspace.freeze()?, self.filter_records));
+            return Ok((publish(self.workspace.freeze()?), self.filter_records));
         }
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
@@ -308,11 +384,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             crate::timing::report("filter_gdf_stripe", gdf_timer);
             Ok(frame.into_filtered())
         };
-        let filtered_workspace = Mutex::new(CurrentFrameWorkspace::new(
-            self.workspace.info(),
-            T::default(),
-        )?);
-        let run_stripe_and_publish = |range: &(usize, usize)| {
+        let sink = FilteredFrameSink::open(progress, self.workspace.info(), &ranges)?;
+        let run_stripe_and_publish = |stripe: usize, range: &(usize, usize)| {
             let frame = run_stripe(range)?;
             self.validate_filter_stripe(PlaneId::Y, &frame.y, offset)?;
             if let Some(plane) = frame.u.as_ref() {
@@ -321,25 +394,26 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             if let Some(plane) = frame.v.as_ref() {
                 self.validate_filter_stripe(PlaneId::V, plane, offset)?;
             }
-            let mut output = filtered_workspace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Self::publish_filter_stripe_to(&mut output, PlaneId::Y, &frame.y, offset)?;
-            if let Some(plane) = frame.u.as_ref() {
-                Self::publish_filter_stripe_to(&mut output, PlaneId::U, plane, offset)?;
-            }
-            if let Some(plane) = frame.v.as_ref() {
-                Self::publish_filter_stripe_to(&mut output, PlaneId::V, plane, offset)?;
-            }
+            sink.with_workspace_mut(|output| {
+                Self::publish_filter_stripe_to(output, PlaneId::Y, &frame.y, offset)?;
+                if let Some(plane) = frame.u.as_ref() {
+                    Self::publish_filter_stripe_to(output, PlaneId::U, plane, offset)?;
+                }
+                if let Some(plane) = frame.v.as_ref() {
+                    Self::publish_filter_stripe_to(output, PlaneId::V, plane, offset)?;
+                }
+                Ok(())
+            })?;
+            sink.publish(stripe);
             Ok(())
         };
         if ranges.len() > 1 && splot_parallel::on_multiworker_pool() {
             let mut slots: Vec<Option<Result<()>>> = (0..ranges.len()).map(|_| None).collect();
             let scheduled = splot_parallel::ready_task_scope(|scope| {
-                for (range, slot) in ranges.iter().zip(&mut slots) {
+                for ((stripe, range), slot) in ranges.iter().enumerate().zip(&mut slots) {
                     let run_stripe_and_publish = &run_stripe_and_publish;
                     scope.spawn(move |_| {
-                        *slot = Some(run_stripe_and_publish(range));
+                        *slot = Some(run_stripe_and_publish(stripe, range));
                     });
                 }
             });
@@ -354,22 +428,19 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     slot.unwrap_or_else(|| Err(missing()))?;
                 }
             } else {
-                for range in &ranges {
-                    run_stripe_and_publish(range)?;
+                for (stripe, range) in ranges.iter().enumerate() {
+                    run_stripe_and_publish(stripe, range)?;
                 }
             }
         } else {
-            for range in &ranges {
-                run_stripe_and_publish(range)?;
+            for (stripe, range) in ranges.iter().enumerate() {
+                run_stripe_and_publish(stripe, range)?;
             }
         }
         crate::timing::report("filter_stripes", filter_timer);
-        let filtered_workspace = filtered_workspace
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.filter_records.lr_source_blocks = lr_source_blocks;
         self.filter_records.lr_unit_filters = lr_unit_filters;
-        let frame = filtered_workspace.freeze()?;
+        let frame = sink.freeze(publish)?;
         self.workspace.recycle_planes();
         Ok((frame, self.filter_records))
     }

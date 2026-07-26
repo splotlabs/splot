@@ -191,6 +191,8 @@ fn measure_ir(splot: &Path, fixture: &Path, out_file: &Path) -> Result<u64> {
             "--quiet",
             "--threads",
             "1",
+            "--frame-delay",
+            "1",
             "--output-format",
             "hash",
         ])

@@ -13,7 +13,7 @@ use splot_core::headers::frame::{
     SlotFrameFilterTaps,
 };
 use splot_core::types::{EmbeddedLayerId, ObuType};
-use splot_recon::{DecodedFrame, ReferenceFrameStore, ReferenceSlot};
+use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
 
 use std::sync::Arc;
 
@@ -22,6 +22,7 @@ use crate::error::{DecodeReferenceStateError, Result};
 use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::ActiveFilmGrain;
 use crate::pipeline::PipelineFrame;
+use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::TemporalMotionField;
 
 #[derive(Clone, Debug)]
@@ -306,30 +307,27 @@ impl RuntimeReferenceBuffer {
         })
     }
 
-    pub(crate) fn build_store_eight<'a>(
+    pub(crate) fn build_store_eight(
         &self,
-        frames: &'a [Option<PipelineFrame>],
-    ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<u8>>, ReferenceMetadata)> {
-        self.build_store(frames, PipelineFrame::frame_eight)
+        frames: &[Option<PipelineFrame>],
+    ) -> Result<(ReferenceFrameStore<RefFrameSlot<u8>>, ReferenceMetadata)> {
+        self.build_store(frames, PipelineFrame::slot_eight)
     }
 
-    pub(crate) fn build_store_ten<'a>(
+    pub(crate) fn build_store_ten(
         &self,
-        frames: &'a [Option<PipelineFrame>],
-    ) -> Result<(
-        ReferenceFrameStore<&'a DecodedFrame<u16>>,
-        ReferenceMetadata,
-    )> {
-        self.build_store(frames, PipelineFrame::frame_ten)
+        frames: &[Option<PipelineFrame>],
+    ) -> Result<(ReferenceFrameStore<RefFrameSlot<u16>>, ReferenceMetadata)> {
+        self.build_store(frames, PipelineFrame::slot_ten)
     }
 
-    fn build_store<'a, T: splot_recon::ReconSample>(
+    fn build_store<T: splot_recon::ReconSample>(
         &self,
-        frames: &'a [Option<PipelineFrame>],
-        frame_view: impl Fn(&'a PipelineFrame) -> Result<&'a DecodedFrame<T>>,
-    ) -> Result<(ReferenceFrameStore<&'a DecodedFrame<T>>, ReferenceMetadata)> {
+        frames: &[Option<PipelineFrame>],
+        frame_slot: impl Fn(&PipelineFrame) -> Result<RefFrameSlot<T>>,
+    ) -> Result<(ReferenceFrameStore<RefFrameSlot<T>>, ReferenceMetadata)> {
         let num = self.slots.len();
-        let mut store: ReferenceFrameStore<&'a DecodedFrame<T>> =
+        let mut store: ReferenceFrameStore<RefFrameSlot<T>> =
             ReferenceFrameStore::with_capacity(num)?;
         let mut meta = take_reference_metadata(num);
         for (i, slot) in self.slots.iter().enumerate() {
@@ -350,8 +348,8 @@ impl RuntimeReferenceBuffer {
                 .as_ref()
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
             let reference_slot = ReferenceSlot::new(i)?;
-            let frame = frame_view(frame)?;
-            ensure_slot_matches_frame(i, slot, frame_index, frame)?;
+            let frame = frame_slot(frame)?;
+            ensure_slot_matches_frame(i, slot, frame_index, frame.info())?;
             store.put(reference_slot, frame)?;
         }
         Ok((store, meta))
@@ -424,13 +422,13 @@ fn is_regular_non_olk(obu_type: ObuType) -> bool {
     )
 }
 
-fn ensure_slot_matches_frame<T: splot_recon::ReconSample>(
+fn ensure_slot_matches_frame(
     slot_index: usize,
     slot: &Slot,
     frame_index: usize,
-    frame: &DecodedFrame<T>,
+    info: DecodedFrameInfo,
 ) -> core::result::Result<(), DecodeReferenceStateError> {
-    let size = frame.coded_luma_size();
+    let size = info.coded_luma_size();
     let expected_width = slot.width;
     let expected_height = slot.height;
     let actual_width = size.width();

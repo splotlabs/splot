@@ -2,7 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Decode pipeline orchestration for the supported decode runtime.
+//!
+//! The driver walks frames strictly in decode order and runs every sequential
+//! state machine (output effects, film-grain slots, reference buffer, output
+//! scheduler) at the same program point relative to each frame's walk. Only the
+//! § 7.2 filter phase moves: at a resolved frame-delay depth above one it is
+//! handed to the worker pool through [`inflight::FinishSpawner`], and the driver
+//! is the only thread that blocks on a frame's samples.
 
+use core::num::NonZeroUsize;
 use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
@@ -18,9 +26,9 @@ use splot_core::span::ByteOffset;
 use splot_core::stream::ParsedBitstream;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
+use splot_recon::BitDepth;
 #[cfg(test)]
 use splot_recon::DecodedFrame;
-use splot_recon::{BitDepth, SharedFrame};
 
 use crate::bitstream::byte_stream::FlatParsedBitstream;
 #[cfg(test)]
@@ -37,6 +45,8 @@ use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget}
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
+pub(crate) mod frame_progress;
+pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
 mod stream_schedule;
@@ -104,7 +114,16 @@ pub(crate) fn decode_frames_from_plan(
     let mut parsed = parse_bounded_bitstream(bytes, options.limits())?;
     crate::timing::report("runtime_reparse", runtime_parse_timer);
     parsed.discard_runtime_noops();
-    decode_frames_from_plan_impl(&parsed, bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
+    decode_frames_from_plan_impl(
+        &parsed,
+        bytes,
+        options,
+        plan,
+        NonZeroUsize::MIN,
+        |_| Ok(()),
+        true,
+        |_| Ok(()),
+    )
 }
 
 pub(crate) fn decode_frames_from_prepared(
@@ -112,8 +131,18 @@ pub(crate) fn decode_frames_from_prepared(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_impl(parsed, bytes, options, plan, |_| Ok(()), true, |_| Ok(()))
+    decode_frames_from_plan_impl(
+        parsed,
+        bytes,
+        options,
+        plan,
+        frame_delay,
+        |_| Ok(()),
+        true,
+        |_| Ok(()),
+    )
 }
 
 pub(crate) fn emit_frames_from_prepared(
@@ -121,22 +150,47 @@ pub(crate) fn emit_frames_from_prepared(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
-    emit: impl FnMut(&PipelineFrame) -> Result<()>,
+    frame_delay: NonZeroUsize,
+    emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
 ) -> Result<()> {
-    decode_frames_from_plan_impl(parsed, bytes, options, plan, |_| Ok(()), false, emit).map(drop)
+    decode_frames_from_plan_impl(
+        parsed,
+        bytes,
+        options,
+        plan,
+        frame_delay,
+        |_| Ok(()),
+        false,
+        emit,
+    )
+    .map(drop)
 }
 
+/// Retires the settled frames nothing owns any more, subtracting their bytes
+/// from the live-frame accounting.
+///
+/// A frame the in-flight ring still holds is skipped: the ring keeps a second
+/// slot handle, so its planes stay alive whatever else releases them, and
+/// subtracting the bytes would let the live-frame peak run above
+/// [`crate::DecodeLimitName::MaxReferenceStoreBytes`]. The driver rescans every
+/// frame on each call, so the skipped frame is reclaimed on the first pass after
+/// its finish is harvested.
 fn reclaim_unowned_frames(
     frames: &mut [Option<PipelineFrame>],
     reference: &reference_buffer::RuntimeReferenceBuffer,
     scheduler: &OutputScheduler,
+    ring: &inflight::InflightRing,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
     for frame_index in 0..frames.len() {
-        if frames[frame_index].is_none() {
+        let Some(frame) = frames[frame_index].as_ref() else {
             continue;
-        }
-        if reference.retains(frame_index) || scheduler.retains(frame_index) {
+        };
+        if reference.retains(frame_index)
+            || scheduler.retains(frame_index)
+            || ring.holds(frame_index)
+            || !frame.frame.is_settled()
+        {
             continue;
         }
         let Some(frame) = frames.get_mut(frame_index).and_then(Option::take) else {
@@ -173,7 +227,7 @@ fn parse_key_core_with_effects(
 fn parse_olk_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &inter::InterReferenceState<'_, impl splot_recon::ReconSample>,
+    reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
@@ -350,7 +404,7 @@ fn resolve_mfh_record<'a>(
 fn parse_inter_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &inter::InterReferenceState<'_, impl splot_recon::ReconSample>,
+    reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
@@ -389,9 +443,13 @@ pub(crate) fn decode_key_frame(
     let core = parse_frame_core(frame_envelope, sequence)?;
     let mut scratch_eight = inter::InterDecodeScratch::default();
     let mut scratch_ten = inter::InterDecodeScratch::default();
+    let mut ring = inflight::InflightRing::new(NonZeroUsize::MIN);
     decode_key_frame_with_effects(
         &mut scratch_eight,
         &mut scratch_ten,
+        &inflight::FinishSpawner::Inline,
+        &mut ring,
+        0,
         bytes,
         options,
         plan,
@@ -410,6 +468,9 @@ pub(crate) fn decode_key_frame(
 fn decode_key_frame_with_effects(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
     scratch_ten: &mut inter::InterDecodeScratch<u16>,
+    spawner: &inflight::FinishSpawner<'_, '_>,
+    ring: &mut inflight::InflightRing,
+    frame_index: usize,
     bytes: &[u8],
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
@@ -422,51 +483,68 @@ fn decode_key_frame_with_effects(
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
 ) -> Result<PipelineFrame> {
+    ring.reserve(scratch_eight, scratch_ten);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let (frame, frame_cdfs, ccso_params, ccso_grid, motion_field) =
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
-                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
-                    frame_engine::decode_frame::<u8>(
-                        scratch_eight,
-                        plan,
-                        candidate,
-                        bytes,
-                        frame_envelope,
-                        core,
-                        sequence,
-                        options,
-                        &frame_engine::FrameSetup::Intra,
-                        BitDepth::Eight,
-                    )?;
+                let walk = frame_engine::walk_frame::<u8>(
+                    scratch_eight,
+                    plan,
+                    candidate,
+                    bytes,
+                    frame_envelope,
+                    core,
+                    sequence,
+                    options,
+                    &frame_engine::FrameSetup::Intra,
+                    BitDepth::Eight,
+                )?;
+                let ccso_params = walk.core.ccso_params.clone();
+                let frame = inflight::settle_walk_stage(
+                    walk.stage,
+                    inflight::PipelineFrameSlot::Eight,
+                    spawner,
+                    ring,
+                    frame_index,
+                    scratch_eight,
+                )?;
                 (
-                    PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
-                    frame_cdfs,
-                    core.ccso_params,
-                    ccso_grid,
-                    motion_field,
+                    frame,
+                    walk.frame_cdfs,
+                    ccso_params,
+                    walk.ccso_grid,
+                    walk.motion_field,
                 )
             }
             BitDepthIdc::Ten => {
-                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
-                    frame_engine::decode_frame::<u16>(
-                        scratch_ten,
-                        plan,
-                        candidate,
-                        bytes,
-                        frame_envelope,
-                        core,
-                        sequence,
-                        options,
-                        &frame_engine::FrameSetup::Intra,
-                        BitDepth::Ten,
-                    )?;
+                let walk = frame_engine::walk_frame::<u16>(
+                    scratch_ten,
+                    plan,
+                    candidate,
+                    bytes,
+                    frame_envelope,
+                    core,
+                    sequence,
+                    options,
+                    &frame_engine::FrameSetup::Intra,
+                    BitDepth::Ten,
+                )?;
+                let ccso_params = walk.core.ccso_params.clone();
+                let frame = inflight::settle_walk_stage(
+                    walk.stage,
+                    inflight::PipelineFrameSlot::Ten,
+                    spawner,
+                    ring,
+                    frame_index,
+                    scratch_ten,
+                )?;
                 (
-                    PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
-                    frame_cdfs,
-                    core.ccso_params,
-                    ccso_grid,
-                    motion_field,
+                    frame,
+                    walk.frame_cdfs,
+                    ccso_params,
+                    walk.ccso_grid,
+                    walk.motion_field,
                 )
             }
         };
@@ -489,12 +567,113 @@ pub(crate) fn decode_frames_from_prepared_with_ivf_preflight(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
-    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
+    frame_delay: NonZeroUsize,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
 ) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_impl(parsed, bytes, options, plan, preflight, true, |_| Ok(()))
+    decode_frames_from_plan_impl(
+        parsed,
+        bytes,
+        options,
+        plan,
+        frame_delay,
+        preflight,
+        true,
+        |_| Ok(()),
+    )
 }
 
+/// Runs the frame loop, pipelined when the resolved frame-delay depth is above
+/// one and the caller is inside a multi-worker pool, and serially otherwise.
+#[allow(clippy::too_many_arguments)]
 fn decode_frames_from_plan_impl(
+    parsed: &FlatParsedBitstream<'_>,
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
+    retain_decoded_frames: bool,
+    emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
+) -> Result<Vec<PipelineFrame>> {
+    if frame_delay.get() == 1 || !splot_parallel::on_multiworker_pool() {
+        return drive_frames(
+            parsed,
+            bytes,
+            options,
+            plan,
+            NonZeroUsize::MIN,
+            preflight,
+            retain_decoded_frames,
+            emit,
+            &inflight::FinishSpawner::Inline,
+        );
+    }
+    splot_parallel::ready_task_scope(|scope| {
+        drive_frames(
+            parsed,
+            bytes,
+            options,
+            plan,
+            frame_delay,
+            preflight,
+            retain_decoded_frames,
+            emit,
+            &inflight::FinishSpawner::Deferred(scope),
+        )
+    })?
+}
+
+/// Owns the decode scratch and the in-flight ring for one decode, and resolves
+/// the run's outcome against the filter phases the ring collected.
+///
+/// A filter-phase failure outranks the frame loop's own error: serial decode
+/// would have run that frame's filters before reaching the later error, so the
+/// lowest-indexed collected failure is the one the caller sees.
+#[allow(clippy::too_many_arguments)]
+fn drive_frames(
+    parsed: &FlatParsedBitstream<'_>,
+    bytes: &[u8],
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
+    retain_decoded_frames: bool,
+    emit: impl FnMut(&PipelineFrame) -> Result<()>,
+    spawner: &inflight::FinishSpawner<'_, '_>,
+) -> Result<Vec<PipelineFrame>> {
+    let inflight_timer = crate::timing::start();
+    let mut decode_scratch_eight = inter::InterDecodeScratch::default();
+    let mut decode_scratch_ten = inter::InterDecodeScratch::default();
+    let mut ring = inflight::InflightRing::new(frame_delay);
+    let decoded = decode_frames_in_order(
+        parsed,
+        bytes,
+        options,
+        plan,
+        preflight,
+        retain_decoded_frames,
+        emit,
+        spawner,
+        &mut ring,
+        &mut decode_scratch_eight,
+        &mut decode_scratch_ten,
+    );
+    ring.harvest_all(&mut decode_scratch_eight, &mut decode_scratch_ten);
+    if inflight_timer.is_some() {
+        crate::timing::report_detail(
+            "pipeline_inflight",
+            inflight_timer,
+            &format!("max_in_flight={}", ring.max_in_flight()),
+        );
+    }
+    match ring.take_failure() {
+        Some(failure) => Err(failure),
+        None => decoded,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn decode_frames_in_order(
     parsed: &FlatParsedBitstream<'_>,
     bytes: &[u8],
     options: &DecodeOptions,
@@ -502,6 +681,10 @@ fn decode_frames_from_plan_impl(
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
+    spawner: &inflight::FinishSpawner<'_, '_>,
+    ring: &mut inflight::InflightRing,
+    decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
+    decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
 ) -> Result<Vec<PipelineFrame>> {
     let stream = require_runtime_stream(parsed)?;
     if matches!(stream, RuntimeStream::Ivf { ivf, .. } if ivf.frames.is_empty())
@@ -536,8 +719,6 @@ fn decode_frames_from_plan_impl(
     })?;
     let num_ref_frames = usize::from(sequence_inter.num_ref_frames);
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
-    let mut decode_scratch_eight = inter::InterDecodeScratch::default();
-    let mut decode_scratch_ten = inter::InterDecodeScratch::default();
     let mut frames = Vec::new();
     let mut scheduler = OutputScheduler::new(num_ref_frames);
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
@@ -549,7 +730,7 @@ fn decode_frames_from_plan_impl(
         ObuType::OpenLoopKey => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -560,7 +741,7 @@ fn decode_frames_from_plan_impl(
             }
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -573,7 +754,7 @@ fn decode_frames_from_plan_impl(
         ObuType::RasFrame => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 let activation =
                     inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
                 in_band_long_term_prelude.validate_required(
@@ -591,7 +772,7 @@ fn decode_frames_from_plan_impl(
             }
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 let activation =
                     inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
                 in_band_long_term_prelude.validate_required(
@@ -648,68 +829,86 @@ fn decode_frames_from_plan_impl(
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
+                ring.reserve(decode_scratch_eight, decode_scratch_ten);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                     frame_engine::intra::build_frame_qm_levels(&key_core),
                 );
-                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
-                    frame_engine::decode_frame::<u8>(
-                        &mut decode_scratch_eight,
-                        plan,
-                        key_candidate,
-                        bytes,
-                        key_envelope,
-                        key_core.clone(),
-                        &sequence,
-                        options,
-                        &frame_engine::FrameSetup::Inter(&state),
-                        BitDepth::Eight,
-                    )?;
+                let walk = frame_engine::walk_frame::<u8>(
+                    decode_scratch_eight,
+                    plan,
+                    key_candidate,
+                    bytes,
+                    key_envelope,
+                    key_core.clone(),
+                    &sequence,
+                    options,
+                    &frame_engine::FrameSetup::Inter(&state),
+                    BitDepth::Eight,
+                )?;
+                let ccso_params = walk.core.ccso_params.clone();
+                let frame = inflight::settle_walk_stage(
+                    walk.stage,
+                    inflight::PipelineFrameSlot::Eight,
+                    spawner,
+                    ring,
+                    0,
+                    decode_scratch_eight,
+                )?;
                 let rate = key_output_effects.frame_rate(frame_rate);
                 PipelineFrame {
-                    frame: PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
+                    frame,
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs,
-                    motion_field: Arc::new(motion_field),
-                    ccso_params: core.ccso_params,
-                    ccso_grid,
+                    frame_cdfs: walk.frame_cdfs,
+                    motion_field: Arc::new(walk.motion_field),
+                    ccso_params,
+                    ccso_grid: walk.ccso_grid,
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
                 }
             }
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
+                ring.reserve(decode_scratch_eight, decode_scratch_ten);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                     frame_engine::intra::build_frame_qm_levels(&key_core),
                 );
-                let (frame, core, frame_cdfs, ccso_grid, motion_field) =
-                    frame_engine::decode_frame::<u16>(
-                        &mut decode_scratch_ten,
-                        plan,
-                        key_candidate,
-                        bytes,
-                        key_envelope,
-                        key_core.clone(),
-                        &sequence,
-                        options,
-                        &frame_engine::FrameSetup::Inter(&state),
-                        BitDepth::Ten,
-                    )?;
+                let walk = frame_engine::walk_frame::<u16>(
+                    decode_scratch_ten,
+                    plan,
+                    key_candidate,
+                    bytes,
+                    key_envelope,
+                    key_core.clone(),
+                    &sequence,
+                    options,
+                    &frame_engine::FrameSetup::Inter(&state),
+                    BitDepth::Ten,
+                )?;
+                let ccso_params = walk.core.ccso_params.clone();
+                let frame = inflight::settle_walk_stage(
+                    walk.stage,
+                    inflight::PipelineFrameSlot::Ten,
+                    spawner,
+                    ring,
+                    0,
+                    decode_scratch_ten,
+                )?;
                 let rate = key_output_effects.frame_rate(frame_rate);
                 PipelineFrame {
-                    frame: PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
+                    frame,
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs,
-                    motion_field: Arc::new(motion_field),
-                    ccso_params: core.ccso_params,
-                    ccso_grid,
+                    frame_cdfs: walk.frame_cdfs,
+                    motion_field: Arc::new(walk.motion_field),
+                    ccso_params,
+                    ccso_grid: walk.ccso_grid,
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
                 }
@@ -717,8 +916,11 @@ fn decode_frames_from_plan_impl(
         }
     } else {
         decode_key_frame_with_effects(
-            &mut decode_scratch_eight,
-            &mut decode_scratch_ten,
+            decode_scratch_eight,
+            decode_scratch_ten,
+            spawner,
+            ring,
+            0,
             bytes,
             options,
             plan,
@@ -798,6 +1000,7 @@ fn decode_frames_from_plan_impl(
             &mut frames,
             &reference,
             &scheduler,
+            ring,
             &mut retained_frame_bytes,
         )?;
     }
@@ -852,7 +1055,7 @@ fn decode_frames_from_plan_impl(
                 let sef_core = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
-                        let state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let state = inter::InterReferenceState::from_metadata(store, meta);
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -863,7 +1066,7 @@ fn decode_frames_from_plan_impl(
                     }
                     BitDepthIdc::Ten => {
                         let (store, meta) = reference.build_store_ten(&frames)?;
-                        let state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let state = inter::InterReferenceState::from_metadata(store, meta);
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -915,7 +1118,7 @@ fn decode_frames_from_plan_impl(
                         )
                     })?;
                 let sef_frame = PipelineFrame {
-                    frame: source.share_decoded_frame(),
+                    frame: inflight::PipelineFrameSlot::completed(source.wait_ready_frame()?),
                     display_grain,
                     output_effects,
                     frame_cdfs: source.frame_cdfs.clone(),
@@ -962,6 +1165,7 @@ fn decode_frames_from_plan_impl(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
@@ -1019,7 +1223,7 @@ fn decode_frames_from_plan_impl(
                     let activation = match sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
                             let (store, meta) = reference.build_store_eight(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1029,7 +1233,7 @@ fn decode_frames_from_plan_impl(
                         }
                         BitDepthIdc::Ten => {
                             let (store, meta) = reference.build_store_ten(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1068,13 +1272,14 @@ fn decode_frames_from_plan_impl(
                     }
                 }
                 let inter_frame_timer = crate::timing::start();
-                let (inter_frame, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
+                let frame_index = frames.len();
+                let (inter_slot, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
                     .general
                     .bit_depth_idc
                 {
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1106,35 +1311,44 @@ fn decode_frames_from_plan_impl(
                             &sequence,
                             inter_envelope.offset,
                         )?;
+                        ring.reserve(decode_scratch_eight, decode_scratch_ten);
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
-                            frame_engine::decode_frame(
-                                &mut decode_scratch_eight,
-                                plan,
-                                next_candidate,
-                                bytes,
-                                inter_envelope,
-                                inter_core,
-                                &sequence,
-                                options,
-                                &frame_engine::FrameSetup::Inter(&inter_state),
-                                BitDepth::Eight,
-                            )?;
-                        (
-                            PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
+                        let walk = frame_engine::walk_frame(
+                            decode_scratch_eight,
+                            plan,
+                            next_candidate,
+                            bytes,
+                            inter_envelope,
                             inter_core,
-                            frame_cdfs,
-                            ccso_grid,
-                            motion_field,
+                            &sequence,
+                            options,
+                            &frame_engine::FrameSetup::Inter(&inter_state),
+                            BitDepth::Eight,
+                        )?;
+                        let inter_core = Arc::clone(&walk.core);
+                        let slot = inflight::settle_walk_stage(
+                            walk.stage,
+                            inflight::PipelineFrameSlot::Eight,
+                            spawner,
+                            ring,
+                            frame_index,
+                            decode_scratch_eight,
+                        )?;
+                        (
+                            slot,
+                            inter_core,
+                            walk.frame_cdfs,
+                            walk.ccso_grid,
+                            walk.motion_field,
                         )
                     }
                     BitDepthIdc::Ten => {
                         let (store, meta) = reference.build_store_ten(&frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1166,30 +1380,39 @@ fn decode_frames_from_plan_impl(
                             &sequence,
                             inter_envelope.offset,
                         )?;
+                        ring.reserve(decode_scratch_eight, decode_scratch_ten);
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        let (frame, inter_core, frame_cdfs, ccso_grid, motion_field) =
-                            frame_engine::decode_frame(
-                                &mut decode_scratch_ten,
-                                plan,
-                                next_candidate,
-                                bytes,
-                                inter_envelope,
-                                inter_core,
-                                &sequence,
-                                options,
-                                &frame_engine::FrameSetup::Inter(&inter_state),
-                                BitDepth::Ten,
-                            )?;
-                        (
-                            PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
+                        let walk = frame_engine::walk_frame(
+                            decode_scratch_ten,
+                            plan,
+                            next_candidate,
+                            bytes,
+                            inter_envelope,
                             inter_core,
-                            frame_cdfs,
-                            ccso_grid,
-                            motion_field,
+                            &sequence,
+                            options,
+                            &frame_engine::FrameSetup::Inter(&inter_state),
+                            BitDepth::Ten,
+                        )?;
+                        let inter_core = Arc::clone(&walk.core);
+                        let slot = inflight::settle_walk_stage(
+                            walk.stage,
+                            inflight::PipelineFrameSlot::Ten,
+                            spawner,
+                            ring,
+                            frame_index,
+                            decode_scratch_ten,
+                        )?;
+                        (
+                            slot,
+                            inter_core,
+                            walk.frame_cdfs,
+                            walk.ccso_grid,
+                            walk.motion_field,
                         )
                     }
                 };
@@ -1209,7 +1432,7 @@ fn decode_frames_from_plan_impl(
                     inter_envelope.header.embedded_layer_id,
                 )?;
                 let inter_frame = PipelineFrame {
-                    frame: inter_frame,
+                    frame: inter_slot,
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
                     frame_cdfs: Arc::clone(&inter_update.frame_cdfs),
@@ -1224,7 +1447,6 @@ fn decode_frames_from_plan_impl(
                     retained_frame_bytes,
                     &inter_frame,
                 )?;
-                let frame_index = frames.len();
                 let inter_saved_grain = inter_frame.display_grain.clone();
                 frames.push(Some(inter_frame));
                 retained_frame_bytes = next_retained_frame_bytes;
@@ -1284,6 +1506,7 @@ fn decode_frames_from_plan_impl(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
@@ -1389,7 +1612,7 @@ fn decode_frames_from_plan_impl(
                     match key_sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
                             let (store, meta) = reference.build_store_eight(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
@@ -1400,7 +1623,7 @@ fn decode_frames_from_plan_impl(
                         }
                         BitDepthIdc::Ten => {
                             let (store, meta) = reference.build_store_ten(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
@@ -1447,6 +1670,7 @@ fn decode_frames_from_plan_impl(
                             &mut frames,
                             &reference,
                             &scheduler,
+                            ring,
                             &mut retained_frame_bytes,
                         )?;
                     }
@@ -1466,9 +1690,13 @@ fn decode_frames_from_plan_impl(
                     key_envelope.offset,
                 )?;
                 let key_frame_timer = crate::timing::start();
+                let frame_index = frames.len();
                 let key_frame = decode_key_frame_with_effects(
-                    &mut decode_scratch_eight,
-                    &mut decode_scratch_ten,
+                    decode_scratch_eight,
+                    decode_scratch_ten,
+                    spawner,
+                    ring,
+                    frame_index,
                     bytes,
                     options,
                     plan,
@@ -1487,7 +1715,6 @@ fn decode_frames_from_plan_impl(
                     retained_frame_bytes,
                     &key_frame,
                 )?;
-                let frame_index = frames.len();
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
@@ -1555,6 +1782,7 @@ fn decode_frames_from_plan_impl(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
@@ -1584,10 +1812,12 @@ fn decode_frames_from_plan_impl(
             &mut emit,
         )?;
         if !retain_decoded_frames {
+            ring.harvest_all(decode_scratch_eight, decode_scratch_ten);
             reclaim_unowned_frames(
                 &mut frames,
                 &reference,
                 &scheduler,
+                ring,
                 &mut retained_frame_bytes,
             )?;
         }

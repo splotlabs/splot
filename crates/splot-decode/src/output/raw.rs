@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`.
 
+use core::num::NonZeroUsize;
+
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::bitstream::byte_stream::FlatParsedBitstream;
@@ -18,22 +20,21 @@ pub(crate) fn encode_raw_stream_from_plan(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
 ) -> Result<Vec<u8>> {
     let decode_started = crate::timing::start();
-    let outputs = crate::pipeline::decode_frames_from_prepared(bitstream, parsed, options, plan)?;
+    let outputs = crate::pipeline::decode_frames_from_prepared(
+        bitstream,
+        parsed,
+        options,
+        plan,
+        frame_delay,
+    )?;
     crate::timing::report("runtime_decode", decode_started);
     let serialize_started = crate::timing::start();
     let mut total_bytes = 0usize;
     for output in &outputs {
-        let frame_bytes = match &output.frame {
-            PipelineDecodedFrame::Eight(frame) => {
-                DecodedFrameHashInput::new(frame.get()).byte_len()?
-            }
-            PipelineDecodedFrame::Ten(frame) => {
-                DecodedFrameHashInput::new(frame.get()).byte_len()?
-            }
-        };
-        total_bytes = total_bytes.saturating_add(frame_bytes);
+        total_bytes = total_bytes.saturating_add(output.byte_len()?);
     }
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(total_bytes).map_err(|source| {
@@ -43,7 +44,7 @@ pub(crate) fn encode_raw_stream_from_plan(
         )
     })?;
     for output in &outputs {
-        match &output.frame {
+        match &output.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
                 let display =
                     film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;

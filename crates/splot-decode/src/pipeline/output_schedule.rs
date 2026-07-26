@@ -44,6 +44,7 @@ pub(super) fn charge_emitted_outputs(
             )
         })?;
         frame.validate_output_effects()?;
+        frame.wait_settled()?;
         emit(frame)?;
         if charge_output_bytes {
             output_frame_bytes =

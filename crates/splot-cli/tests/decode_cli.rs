@@ -111,7 +111,7 @@ fn read_dir_paths(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-fn decode_hash_json(path: &Path, threads: &str) -> serde_json::Value {
+fn decode_hash_json(path: &Path, threads: &str, frame_delay: &str) -> serde_json::Value {
     let out = splot(&[
         "decode",
         "--output-format",
@@ -119,9 +119,15 @@ fn decode_hash_json(path: &Path, threads: &str) -> serde_json::Value {
         "--json",
         "--threads",
         threads,
+        "--frame-delay",
+        frame_delay,
         path.to_str().unwrap(),
     ]);
-    assert_eq!(out.status.code(), Some(0), "threads={threads}");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "threads={threads} frame_delay={frame_delay}"
+    );
     assert!(
         out.stderr.is_empty(),
         "stderr was: {}",
@@ -746,9 +752,9 @@ fn decode_hash_json_success_leaves_existing_output_path_untouched() {
 #[test]
 fn decode_hash_json_success_hashes_are_thread_deterministic() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
-    let one = decode_hash_json(&input, "1");
-    let auto = decode_hash_json(&input, "auto");
-    let fixed = decode_hash_json(&input, "2");
+    let one = decode_hash_json(&input, "1", "auto");
+    let auto = decode_hash_json(&input, "auto", "auto");
+    let fixed = decode_hash_json(&input, "2", "auto");
 
     assert_eq!(one["frames"], auto["frames"]);
     assert_eq!(one["frames"], fixed["frames"]);
@@ -771,6 +777,21 @@ fn decode_hash_json_success_hashes_are_thread_deterministic() {
             >= 1
     );
     assert_ne!(auto["selected_thread_policy"], "auto");
+}
+
+#[test]
+fn decode_hash_json_success_hashes_are_frame_delay_deterministic() {
+    let input = conformance_vector("syn-3frame-multiref-64x64.ivf");
+    let serial = decode_hash_json(&input, "4", "1");
+
+    for frame_delay in ["2", "auto"] {
+        let actual = decode_hash_json(&input, "4", frame_delay);
+        assert_eq!(actual["frames"], serial["frames"], "{frame_delay}");
+        assert_eq!(
+            actual["selected_output_variants"], serial["selected_output_variants"],
+            "{frame_delay}"
+        );
+    }
 }
 
 #[test]
@@ -1095,6 +1116,69 @@ fn decode_threads_invalid_is_usage_error() {
         "decode",
         "--threads",
         "nope",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("decode/unsupported-feature"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn decode_frame_delay_fixed_is_accepted_emits_unsupported() {
+    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
+
+    let out = splot(&[
+        "decode",
+        "--frame-delay",
+        "2",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("decode/unsupported-feature"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn decode_frame_delay_auto_is_accepted() {
+    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
+
+    let out = splot(&[
+        "decode",
+        "--frame-delay",
+        "auto",
+        "--output-format",
+        "hash",
+        input.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("decode/unsupported-feature"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
+fn decode_frame_delay_invalid_is_usage_error() {
+    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
+
+    let out = splot(&[
+        "decode",
+        "--frame-delay",
+        "bogus",
         "--output-format",
         "hash",
         input.to_str().unwrap(),

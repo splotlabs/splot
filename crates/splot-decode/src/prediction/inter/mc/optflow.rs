@@ -752,7 +752,7 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn initial_luma_prediction<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
-    reference: &DecodedFrame<T>,
+    reference: ReferenceSamples<'_, T>,
     rect: McBlockRect,
     mv: Mv,
     interp: InterpolationFilter,
@@ -761,7 +761,6 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
     reuse_horizontal: bool,
     output: &mut [u16],
 ) -> Result<()> {
-    let (view, _, _) = reference_plane_view(reference, PlaneId::Y, offset)?;
     let reference_size = reference.info().coded_luma_size();
     let frame_size = sink.info().coded_luma_size();
     let scaling = derive_plane_scaling(
@@ -802,6 +801,8 @@ pub(super) fn initial_luma_prediction<T: ReconSample>(
         last_y: bounds.map_or(scaling.last_y, |bounds| bounds.last_y),
         bit_depth: sink.info().bit_depth(),
     };
+    let (view, _, _) =
+        reference.plane_view(PlaneId::Y, subpel_last_reference_row(&params), offset)?;
     if reuse_horizontal {
         let reused = subpel_predict_16x16_bilinear_horizontal_overlap_into(&view, &params, output)?;
         if reused {

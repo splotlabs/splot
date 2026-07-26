@@ -10,7 +10,9 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{BitDepth, DecodedFrame, Plane, ReconError, ReconSample, Result};
+use crate::{
+    BitDepth, DecodedFrame, DecodedFrameInfo, Plane, PlaneSize, ReconError, ReconSample, Result,
+};
 
 /// Byte length of a `splot-dfh-sha256-v1` digest.
 const SHA256_DIGEST_BYTES: usize = 32;
@@ -112,19 +114,7 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
     /// Returns [`ReconError::ArithmeticOverflow`] if the visible sample count or
     /// byte count overflows `usize`.
     pub fn byte_len(&self) -> Result<usize> {
-        let bytes_per_sample = bytes_per_sample(self.frame.bit_depth());
-        let mut total = 0usize;
-
-        for plane in self.planes() {
-            let plane_len = visible_plane_byte_len(plane, bytes_per_sample)?;
-            total = total
-                .checked_add(plane_len)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: BYTE_LEN_OVERFLOW_CONTEXT,
-                })?;
-        }
-
-        Ok(total)
+        visible_byte_len(self.frame.info())
     }
 
     /// Writes canonical decoded output sample bytes to `writer`.
@@ -166,6 +156,37 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
     }
 }
 
+/// Returns the exact number of canonical decoded-output sample bytes a frame
+/// described by `info` serializes to.
+///
+/// The visible plane sizes a [`DecodedFrame`] is validated against are fully
+/// determined by its [`DecodedFrameInfo`], so this answers the byte length for a
+/// frame whose samples are not materialized yet.
+///
+/// # Errors
+/// Returns [`ReconError::ArithmeticOverflow`] if the chroma size derivation, the
+/// visible sample count, or the byte count overflows `usize`.
+pub fn visible_byte_len(info: DecodedFrameInfo) -> Result<usize> {
+    let bytes_per_sample = bytes_per_sample(info.bit_depth());
+    let luma_size = info.visible_luma_rect().size();
+    let chroma_size = info.pixel_format().chroma_size(luma_size)?;
+    let mut total = 0usize;
+
+    for size in [Some(luma_size), chroma_size, chroma_size]
+        .into_iter()
+        .flatten()
+    {
+        let plane_len = visible_plane_byte_len(size, bytes_per_sample)?;
+        total = total
+            .checked_add(plane_len)
+            .ok_or(ReconError::ArithmeticOverflow {
+                context: BYTE_LEN_OVERFLOW_CONTEXT,
+            })?;
+    }
+
+    Ok(total)
+}
+
 const BYTE_LEN_OVERFLOW_CONTEXT: &str = "decoded frame hash input byte length";
 
 const fn bytes_per_sample(bit_depth: BitDepth) -> usize {
@@ -175,11 +196,7 @@ const fn bytes_per_sample(bit_depth: BitDepth) -> usize {
     }
 }
 
-fn visible_plane_byte_len<T: ReconSample>(
-    plane: &Plane<T>,
-    bytes_per_sample: usize,
-) -> Result<usize> {
-    let visible_size = plane.visible_size();
+fn visible_plane_byte_len(visible_size: PlaneSize, bytes_per_sample: usize) -> Result<usize> {
     let sample_count = visible_size
         .width()
         .checked_mul(visible_size.height())
