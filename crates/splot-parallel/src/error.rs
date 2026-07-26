@@ -35,3 +35,20 @@ pub enum ThreadCountParseError {
         input: String,
     },
 }
+
+/// An error returned when parsing a [`crate::FrameDelay`] from a string.
+#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FrameDelayParseError {
+    /// The input was empty after trimming.
+    #[error("frame delay must not be empty; use `auto` or a positive integer")]
+    Empty,
+    /// The input was neither `auto`, `0`, nor a non-negative integer.
+    #[error(
+        "invalid frame delay {input:?}: expected `auto`, `0` (alias for auto), or a positive integer"
+    )]
+    Invalid {
+        /// The rejected input (trimmed).
+        input: String,
+    },
+}
