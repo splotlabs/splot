@@ -19,7 +19,9 @@
 //! before walking a frame it waits for that frame's pixel references
 //! ([`wait_for_pixel_references`]), before admitting a new frame it harvests the
 //! oldest in-flight entry, and before reading a frame's pixels it waits for that
-//! frame. Worker tasks never wait on any slot.
+//! frame. Worker tasks never wait on any slot. Those driver waits run pool jobs
+//! instead of parking idle, so a blocked driver still finishes frames; every
+//! wait site sits between frames, holding no thread-local frame scope.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
@@ -130,7 +132,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
     /// Blocks the driver thread until the slot settles, then shares the
     /// published frame storage.
     pub(crate) fn wait_ready(&self) -> Result<SharedFrame<T>> {
-        match self.cell.wait() {
+        match self.cell.wait_with_pool_assist() {
             SlotValue::Ready(frame) => Ok(frame.share()),
             SlotValue::Failed => Err(failed_slot()),
         }
@@ -138,7 +140,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
 
     /// Blocks the driver thread until the slot settles.
     pub(crate) fn wait_settled(&self) -> Result<()> {
-        match self.cell.wait() {
+        match self.cell.wait_with_pool_assist() {
             SlotValue::Ready(_) => Ok(()),
             SlotValue::Failed => Err(failed_slot()),
         }

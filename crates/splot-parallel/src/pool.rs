@@ -6,7 +6,7 @@ use core::num::NonZeroUsize;
 use std::cell::{Cell, RefCell};
 use std::sync::{Arc, Weak};
 
-use rayon::ThreadPool;
+use rayon::{ThreadPool, Yield};
 
 use crate::error::ParallelError;
 use crate::thread_count::ThreadCount;
@@ -132,6 +132,33 @@ where
         .with(|installed| installed.borrow().upgrade())
         .ok_or(ParallelError::NotOnWorkerPool)?;
     Ok(pool.scope_fifo(|inner| f(&TaskScope { inner })))
+}
+
+/// What one [`assist_installed_pool`] attempt did.
+pub(crate) enum PoolAssist {
+    /// One pending pool job ran to completion on the calling thread.
+    Executed,
+    /// The installed pool had no job available to run.
+    Idle,
+    /// The caller is not a worker of an installed pool, so nothing ran.
+    OffPool,
+}
+
+/// Runs at most one pending job of the calling thread's installed pool.
+///
+/// The job is taken from the pool the caller belongs to, never Rayon's global
+/// registry: a caller outside [`WorkerPool::install`] gets
+/// [`PoolAssist::OffPool`] and runs nothing. The executed job is arbitrary and
+/// may itself nest further pool work, so callers must be reentrancy-safe.
+pub(crate) fn assist_installed_pool() -> PoolAssist {
+    let Some(pool) = INSTALLED_POOL.with(|installed| installed.borrow().upgrade()) else {
+        return PoolAssist::OffPool;
+    };
+    match pool.yield_now() {
+        Some(Yield::Executed) => PoolAssist::Executed,
+        Some(Yield::Idle) => PoolAssist::Idle,
+        None => PoolAssist::OffPool,
+    }
 }
 
 /// Returns whether the calling thread is a worker of an installed pool that
@@ -301,6 +328,25 @@ mod tests {
         });
         assert_eq!(visits.load(Ordering::Relaxed), 8);
         assert!(all_on_pool.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn pool_assist_runs_a_queued_job_on_the_calling_worker() {
+        assert!(matches!(assist_installed_pool(), PoolAssist::OffPool));
+        let pool = WorkerPool::new(ThreadCount::Fixed(nz(1))).unwrap();
+        let ran = AtomicBool::new(false);
+        let (idle, executed) = pool.install(|| {
+            let idle = matches!(assist_installed_pool(), PoolAssist::Idle);
+            let executed = ready_task_scope(|scope| {
+                scope.spawn(|_| ran.store(true, Ordering::Relaxed));
+                matches!(assist_installed_pool(), PoolAssist::Executed)
+            })
+            .unwrap();
+            (idle, executed)
+        });
+        assert!(idle, "an empty pool has no job to assist with");
+        assert!(executed, "a queued job must run on the assisting worker");
+        assert!(ran.load(Ordering::Relaxed));
     }
 
     #[test]
