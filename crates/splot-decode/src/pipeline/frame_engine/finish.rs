@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::span::ByteOffset;
-use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample};
+use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
 use crate::Result;
 use crate::bitstream::tile_payload::FrameCdfSubset;
@@ -27,6 +27,7 @@ use crate::filters::ccso::CcsoUnitGrid;
 use crate::filters::deblock::DeblockQuantDeltas;
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::filters::wienerns_lr::recon::WienerNsLrReconSink;
+use crate::pipeline::frame_progress::FrameProgress;
 use crate::prediction::inter::TemporalMotionField;
 
 /// One frame's walk output: the sample-side stage plus the frame-level state the
@@ -104,12 +105,18 @@ impl<T: ReconSample> WalkedFrame<T> {
 /// One frame after its filter stages, with the filter records to recycle.
 pub(crate) struct FinishedFrame<T: ReconSample> {
     /// The filtered, frozen frame.
-    pub(crate) frame: DecodedFrame<T>,
+    pub(crate) frame: SharedFrame<T>,
     /// The filter-record buffers to hand back to the decode scratch.
     pub(crate) filter_records: FrameFilterRecords,
 }
 
 /// Runs the shared § 7.2 in-loop filter chain over a walked frame and freezes it.
+///
+/// `publish` receives the frozen frame's first shared handle while the freeze
+/// still holds the frame's publication lock, so a pipelined frame's slot settles
+/// before its published row prefix stops being readable. A `publish` that is
+/// never reached — a filter stage failed — is dropped instead, which is how a
+/// pending slot learns its filter phase failed.
 ///
 /// # Errors
 ///
@@ -117,6 +124,8 @@ pub(crate) struct FinishedFrame<T: ReconSample> {
 /// fails.
 pub(crate) fn finish_walked_frame<T: ReconSample>(
     walked: WalkedFrame<T>,
+    progress: Option<&FrameProgress<T>>,
+    publish: impl FnOnce(SharedFrame<T>),
 ) -> Result<FinishedFrame<T>> {
     let WalkedFrame {
         sink,
@@ -129,7 +138,13 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
         &core,
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
+        progress,
         offset,
+        |frame| {
+            let frame = SharedFrame::new(frame);
+            publish(frame.share());
+            frame
+        },
     )?;
     Ok(FinishedFrame {
         frame,
@@ -143,10 +158,10 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
 ///
 /// Returns the filter chain's own diagnostic when a filter stage fails.
 #[cfg(test)]
-pub(crate) fn finish_walk_inline<T: ReconSample>(stage: WalkStage<T>) -> Result<DecodedFrame<T>> {
+pub(crate) fn finish_walk_inline<T: ReconSample>(stage: WalkStage<T>) -> Result<SharedFrame<T>> {
     Ok(match stage {
-        WalkStage::Complete(frame) => *frame,
-        WalkStage::Pending(walked) => finish_walked_frame(*walked)?.frame,
+        WalkStage::Complete(frame) => SharedFrame::new(*frame),
+        WalkStage::Pending(walked) => finish_walked_frame(*walked, None, drop)?.frame,
     })
 }
 

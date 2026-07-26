@@ -16,8 +16,8 @@ use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameHashInput, PixelFormat, PlaneId,
-    PlaneRect, PlaneSize,
+    BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
+    PlaneSize, SharedFrame,
 };
 
 use super::block::{
@@ -236,7 +236,7 @@ fn write_original_ivf_frames(bytes: &mut Vec<u8>, frames: &[ParsedIvfFrame<'_>])
 fn decode_inter_frame_after_quantization_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams) + Send,
-) -> Result<DecodedFrame<u8>> {
+) -> Result<SharedFrame<u8>> {
     let context = decode_context();
     context
         .pool()
@@ -246,7 +246,7 @@ fn decode_inter_frame_after_quantization_mutation(
 fn decode_inter_frame_after_quantization_mutation_inner(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams),
-) -> Result<DecodedFrame<u8>> {
+) -> Result<SharedFrame<u8>> {
     let options = DecodeOptions::default();
     let plan = plan_fixture(bytes, &options);
     let parsed = parse_ivf_fixture(bytes, "inter");
@@ -302,7 +302,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
         &mut next_unvalidated_following_ivf_record,
     )?;
     let (store, meta) = reference.build_store_eight(&frames)?;
-    let inter_state = super::InterReferenceState::from_metadata(store, meta);
+    let inter_state = std::sync::Arc::new(super::InterReferenceState::from_metadata(store, meta));
     let first_picture_in_tu = prefix
         .iter()
         .any(|obu| obu.header.obu_type == splot_core::types::ObuType::TemporalDelimiter);

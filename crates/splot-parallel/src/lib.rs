@@ -28,8 +28,8 @@ pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
 pub use pool::{
-    TaskScope, WorkerPool, current_pool_width, current_worker_index, on_multiworker_pool,
-    on_worker_pool, ready_task_scope,
+    TaskScope, WorkerPool, assist_pool_or_park, current_pool_width, current_worker_index,
+    on_multiworker_pool, on_worker_pool, ready_task_scope,
 };
 pub use queue::{
     QueueCapacity, QueueReceiver, QueueSender, RecvError, SendError, TryRecvError, TrySendError,

@@ -436,7 +436,7 @@ fn decode_bridge_frame<T: ReconSample>(
             SPEC_HEADER
         )
     })?;
-    let source = reference.frame_for_slot(ref_slot).ok_or_else(|| {
+    let source = reference.hold_slot(ref_slot).ok_or_else(|| {
         inter_missing!(
             "bridge_missing_reference_frame",
             offset,
@@ -471,7 +471,7 @@ fn decode_bridge_frame<T: ReconSample>(
     })?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
-    let frame = bridge::reconstruct(source, frame_size, visible, 0, offset)?;
+    let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
     frame_cdfs
         .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
@@ -557,55 +557,94 @@ const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFr
     enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSample>(
+/// The reference frames one inter block reads, borrowed for the block only.
+///
+/// A still-filtering reference is readable only while its shared borrow lives,
+/// so the borrows are taken once per block, kept on the reconstructing thread's
+/// stack, and released before it waits on anything.
+pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSample> {
+    reference0: reference::HeldFrameSamples<'a, T>,
+    /// The second list's borrow, absent when it names the first list's slot.
+    reference1: Option<reference::HeldFrameSamples<'a, T>>,
+    compound: bool,
+}
+
+/// Borrows the reference frames one placed inter block names.
+///
+/// Two lists that name the same slot share one borrow, since borrowing a
+/// still-filtering frame twice at once would deadlock against its filter phase.
+///
+/// # Errors
+///
+/// Returns a missing-reference diagnostic when a named slot holds no frame.
+pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &'a InterReferenceState<T>,
     placed: &PlacedInterBlock,
-    rect: mc::McBlockRect,
     offset: ByteOffset,
-) -> Result<mc::InterBlockParams<'a, T>> {
-    let ref_frame0 =
-        resolve_block_reference_frame(ref_frame_idx, reference, placed.block.ref_frame0, offset)?;
-    Ok(if let Some(ref_frame1) = placed.block.ref_frame1 {
-        let ref_frame1 =
-            resolve_block_reference_frame(ref_frame_idx, reference, ref_frame1, offset)?;
-        mc::InterBlockParams::compound_average(
-            ref_frame0,
-            ref_frame1,
-            rect,
-            placed.block.mv,
-            placed.block.mv1,
-            placed.block.interp,
-            placed.block.compound_blend,
-        )
-        .with_optflow_distances(placed.block.optflow_distances)
-        .with_compound_warp(placed.block.warp_params)
-        .with_sub8x8_chroma(placed.sub8x8_chroma)
-        .with_chroma(placed.predict_chroma)
-    } else if let Some(warp_params) = placed.block.warp_params[0] {
-        mc::InterBlockParams::single_warp(
-            ref_frame0,
-            rect,
-            placed.block.mv,
-            placed.block.interp,
-            warp_params,
-        )
-        .with_sub8x8_chroma(placed.sub8x8_chroma)
-        .with_chroma(placed.predict_chroma)
-    } else {
-        mc::InterBlockParams::single(ref_frame0, rect, placed.block.mv, placed.block.interp)
-            .with_chroma(placed.predict_chroma)
+) -> Result<HeldInterBlockReferences<'a, T>> {
+    let slot0 = block_reference_slot(ref_frame_idx, placed.block.ref_frame0, offset)?;
+    let slot1 = placed
+        .block
+        .ref_frame1
+        .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1, offset))
+        .transpose()?;
+    Ok(HeldInterBlockReferences {
+        reference0: hold_reference_slot(reference, slot0, offset)?,
+        reference1: match slot1 {
+            Some(slot1) if slot1 != slot0 => Some(hold_reference_slot(reference, slot1, offset)?),
+            _ => None,
+        },
+        compound: slot1.is_some(),
     })
 }
 
-fn resolve_block_reference_frame<'a, T: ReconSample>(
-    ref_frame_idx: &[u32],
-    reference: &'a InterReferenceState<T>,
-    ref_frame: i8,
-    offset: ByteOffset,
-) -> Result<&'a DecodedFrame<T>> {
-    let ref_slot = ref_frame_idx
+impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
+    /// Builds the § 7.13.3 prediction parameters for the held block.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal diagnostic when a held reference's samples are gone.
+    pub(in crate::prediction::inter) fn block_params(
+        &self,
+        placed: &PlacedInterBlock,
+        rect: mc::McBlockRect,
+    ) -> Result<mc::InterBlockParams<'_, T>> {
+        let ref_frame0 = self.reference0.samples()?;
+        Ok(if self.compound {
+            let ref_frame1 = self.reference1.as_ref().unwrap_or(&self.reference0);
+            mc::InterBlockParams::compound_average(
+                ref_frame0,
+                ref_frame1.samples()?,
+                rect,
+                placed.block.mv,
+                placed.block.mv1,
+                placed.block.interp,
+                placed.block.compound_blend,
+            )
+            .with_optflow_distances(placed.block.optflow_distances)
+            .with_compound_warp(placed.block.warp_params)
+            .with_sub8x8_chroma(placed.sub8x8_chroma)
+            .with_chroma(placed.predict_chroma)
+        } else if let Some(warp_params) = placed.block.warp_params[0] {
+            mc::InterBlockParams::single_warp(
+                ref_frame0,
+                rect,
+                placed.block.mv,
+                placed.block.interp,
+                warp_params,
+            )
+            .with_sub8x8_chroma(placed.sub8x8_chroma)
+            .with_chroma(placed.predict_chroma)
+        } else {
+            mc::InterBlockParams::single(ref_frame0, rect, placed.block.mv, placed.block.interp)
+                .with_chroma(placed.predict_chroma)
+        })
+    }
+}
+
+fn block_reference_slot(ref_frame_idx: &[u32], ref_frame: i8, offset: ByteOffset) -> Result<u32> {
+    ref_frame_idx
         .get(ref_frame as usize)
         .copied()
         .ok_or_else(|| {
@@ -615,8 +654,15 @@ fn resolve_block_reference_frame<'a, T: ReconSample>(
                 "inter.block.ref_frame out of range",
                 SPEC_MODE_INFO
             )
-        })?;
-    reference.frame_for_slot(ref_slot).ok_or_else(|| {
+        })
+}
+
+fn hold_reference_slot<T: ReconSample>(
+    reference: &InterReferenceState<T>,
+    slot: u32,
+    offset: ByteOffset,
+) -> Result<reference::HeldFrameSamples<'_, T>> {
+    reference.hold_slot(slot).ok_or_else(|| {
         inter_missing!(
             "inter_missing_block_reference_frame",
             offset,
@@ -1187,13 +1233,14 @@ impl<T: ReconSample> InterReferenceState<T> {
         PixelReferenceGate { slots }
     }
 
-    fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<T>> {
+    /// Borrows one reference slot's samples for the returned handle's lifetime.
+    fn hold_slot(&self, slot: u32) -> Option<reference::HeldFrameSamples<'_, T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
         self.store
             .get(slot)
             .ok()
             .flatten()
-            .and_then(RefFrameSlot::try_frozen)
+            .and_then(RefFrameSlot::hold_samples)
     }
 
     fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<Arc<FrameCdfSubset>> {
@@ -1790,6 +1837,7 @@ mod find_mv_stack;
 pub(crate) mod mc;
 pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
+pub(crate) mod reference;
 mod single_ref;
 
 pub(crate) use block::{InterDecodeScratch, decode_inter_blocks};

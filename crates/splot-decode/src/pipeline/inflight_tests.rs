@@ -35,7 +35,7 @@ fn pending_entry(
     frame_index: usize,
 ) -> (FrameSlotWriter<u8>, Arc<Mutex<FinishOutcome>>) {
     let frame = decoded_frame(4, 4);
-    let (slot, writer) = RefFrameSlot::pending(frame.info());
+    let (slot, writer) = RefFrameSlot::pending(frame.info()).expect("pending slot");
     let outcome = Arc::new(Mutex::new(FinishOutcome::default()));
     ring.push(InflightEntry {
         frame_index,
@@ -49,7 +49,7 @@ fn pending_entry(
 fn pending_slot_publishes_samples_to_try_frozen_and_wait_ready() {
     let frame = decoded_frame(8, 4);
     let info = frame.info();
-    let (slot, writer) = RefFrameSlot::pending(info);
+    let (slot, writer) = RefFrameSlot::pending(info).expect("pending slot");
 
     assert!(!slot.is_settled());
     assert!(slot.try_frozen().is_none());
@@ -66,9 +66,10 @@ fn pending_slot_publishes_samples_to_try_frozen_and_wait_ready() {
 
 #[test]
 fn failed_slot_reports_a_typed_error_to_every_reader() {
-    let (slot, writer) = RefFrameSlot::<u8>::pending(decoded_frame(4, 4).info());
+    let (slot, writer) =
+        RefFrameSlot::<u8>::pending(decoded_frame(4, 4).info()).expect("pending slot");
 
-    writer.fail();
+    drop(writer);
 
     assert!(slot.is_settled());
     assert!(slot.try_frozen().is_none());
@@ -79,7 +80,8 @@ fn failed_slot_reports_a_typed_error_to_every_reader() {
 
 #[test]
 fn dropping_the_writer_settles_the_slot_as_failed() {
-    let (slot, writer) = RefFrameSlot::<u8>::pending(decoded_frame(4, 4).info());
+    let (slot, writer) =
+        RefFrameSlot::<u8>::pending(decoded_frame(4, 4).info()).expect("pending slot");
 
     drop(writer);
 
@@ -91,7 +93,7 @@ fn dropping_the_writer_settles_the_slot_as_failed() {
 fn a_completed_writer_leaves_the_published_samples_in_place() {
     let frame = decoded_frame(4, 4);
     let info = frame.info();
-    let (slot, writer) = RefFrameSlot::pending(info);
+    let (slot, writer) = RefFrameSlot::pending(info).expect("pending slot");
 
     writer.complete(SharedFrame::new(frame));
 
@@ -106,7 +108,7 @@ fn a_completed_writer_leaves_the_published_samples_in_place() {
 fn pending_slot_geometry_matches_the_published_frame() {
     let frame = decoded_frame(12, 8);
     let info = frame.info();
-    let (slot, writer) = RefFrameSlot::pending(info);
+    let (slot, writer) = RefFrameSlot::pending(info).expect("pending slot");
 
     writer.complete(SharedFrame::new(frame));
 
@@ -159,7 +161,7 @@ fn the_lowest_indexed_filter_failure_outranks_later_ones() {
         let (writer, outcome) = pending_entry(&mut ring, frame_index);
         outcome.lock().unwrap_or_else(PoisonError::into_inner).error =
             Some(unsupported(reason, None, "test filter phase failure"));
-        writer.fail();
+        drop(writer);
     }
 
     ring.harvest_all(&mut eight, &mut ten);

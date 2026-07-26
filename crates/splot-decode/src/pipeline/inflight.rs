@@ -32,10 +32,12 @@ use splot_parallel::{CompletionCell, TaskScope};
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
 use super::frame_engine::finish::{WalkStage, finish_walked_frame};
+use super::frame_progress::FrameProgress;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::prediction::inter::InterDecodeScratch;
+use crate::prediction::inter::reference::HeldFrameSamples;
 
 /// The one-shot value a decoded-frame slot publishes.
 enum SlotValue<T: ReconSample> {
@@ -58,6 +60,7 @@ impl<T: ReconSample> SlotValue<T> {
 /// An owned handle to one decoded reference frame and its known geometry.
 pub(crate) struct RefFrameSlot<T: ReconSample> {
     cell: Arc<CompletionCell<SlotValue<T>>>,
+    progress: Option<Arc<FrameProgress<T>>>,
     info: DecodedFrameInfo,
 }
 
@@ -67,19 +70,34 @@ impl<T: ReconSample> RefFrameSlot<T> {
         let info = frame.get().info();
         Self {
             cell: Arc::new(CompletionCell::completed(SlotValue::Ready(frame))),
+            progress: None,
             info,
         }
     }
 
     /// Opens an unsettled handle of known geometry plus the single writer that
     /// may publish its samples.
-    pub(crate) fn pending(info: DecodedFrameInfo) -> (Self, FrameSlotWriter<T>) {
+    ///
+    /// The handle carries the [`FrameProgress`] the filter phase publishes its
+    /// stripes through, so a consumer can read the frame's settled row prefix
+    /// while the rest is still filtering.
+    ///
+    /// # Errors
+    ///
+    /// Returns the filtered-workspace allocation's own diagnostic.
+    pub(crate) fn pending(info: DecodedFrameInfo) -> Result<(Self, FrameSlotWriter<T>)> {
         let cell = Arc::new(CompletionCell::new());
+        let progress = Arc::new(FrameProgress::new(info)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
             info,
         };
-        (Self { cell, info }, writer)
+        let slot = Self {
+            cell,
+            progress: Some(progress),
+            info,
+        };
+        Ok((slot, writer))
     }
 
     /// Returns a second handle to the same completion slot without copying
@@ -87,8 +105,40 @@ impl<T: ReconSample> RefFrameSlot<T> {
     pub(crate) fn share(&self) -> Self {
         Self {
             cell: Arc::clone(&self.cell),
+            progress: self.progress.clone(),
             info: self.info,
         }
+    }
+
+    /// Borrows the row-granular publication state of a still-filtering frame.
+    pub(crate) fn progress(&self) -> Option<&FrameProgress<T>> {
+        self.progress.as_deref()
+    }
+
+    /// How many luma rows from the frame top this slot has published.
+    ///
+    /// A slot with no filter phase to watch publishes nothing row by row; its
+    /// consumers gate on [`Self::is_settled`] instead.
+    pub(crate) fn published_luma_rows(&self) -> usize {
+        self.progress()
+            .map_or(0, FrameProgress::published_luma_rows)
+    }
+
+    /// Borrows this slot's samples for one reader's block.
+    ///
+    /// A settled slot lends its decoded frame directly; a slot whose filter
+    /// phase is still running lends the row prefix that phase has published,
+    /// keeping the shared borrow alive for the handle's lifetime. The settled
+    /// check runs again when the published prefix is gone, since the freeze can
+    /// take the workspace between the two.
+    pub(crate) fn hold_samples(&self) -> Option<HeldFrameSamples<'_, T>> {
+        if let Some(frame) = self.try_frozen() {
+            return Some(HeldFrameSamples::Settled(frame));
+        }
+        if let Some(published) = self.progress().and_then(FrameProgress::read) {
+            return Some(HeldFrameSamples::Filtering(published));
+        }
+        self.try_frozen().map(HeldFrameSamples::Settled)
     }
 
     /// Borrows the decoded frame when its samples have already been published.
@@ -174,11 +224,6 @@ impl<T: ReconSample> FrameSlotWriter<T> {
     pub(crate) fn complete(self, frame: SharedFrame<T>) {
         debug_assert_eq!(frame.get().info(), self.info);
         let _ = self.cell.set(SlotValue::Ready(frame));
-    }
-
-    /// Settles the slot as failed; the diagnostic travels on the ring entry.
-    pub(crate) fn fail(self) {
-        drop(self);
     }
 }
 
@@ -391,6 +436,10 @@ impl InflightRing {
 /// # Errors
 ///
 /// Returns the filter chain's own diagnostic when an inline filter phase fails.
+///
+/// A deferred phase hands its single-use writer to the freeze, so the slot
+/// settles before the frame's published row prefix closes; a freeze the phase
+/// never reaches drops the writer instead, settling the slot as failed.
 pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
@@ -406,31 +455,31 @@ pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
         WalkStage::Pending(walked) => walked,
     };
     let FinishSpawner::Deferred(scope) = spawner else {
-        let finished = finish_walked_frame(*walked)?;
+        let finished = finish_walked_frame(*walked, None, drop)?;
         scratch.recycle_frame_filter_records(finished.filter_records);
-        return Ok(erase(RefFrameSlot::completed(SharedFrame::new(
-            finished.frame,
-        ))));
+        return Ok(erase(RefFrameSlot::completed(finished.frame)));
     };
-    let (slot, writer) = RefFrameSlot::pending(walked.info());
+    let (slot, writer) = RefFrameSlot::pending(walked.info())?;
+    let progress = slot.progress.clone();
     let outcome = Arc::new(Mutex::new(FinishOutcome::default()));
     let task_outcome = Arc::clone(&outcome);
     scope.spawn(move |_| {
         let started = crate::timing::start();
-        match finish_walked_frame(*walked) {
+        match finish_walked_frame(*walked, progress.as_deref(), |frame| {
+            writer.complete(frame);
+        }) {
             Ok(finished) => {
                 task_outcome
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .records = Some(finished.filter_records);
-                writer.complete(SharedFrame::new(finished.frame));
+                drop(finished.frame);
             }
             Err(error) => {
                 task_outcome
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .error = Some(error);
-                writer.fail();
             }
         }
         crate::timing::report("finish_task", started);

@@ -8,6 +8,7 @@ use std::sync::{Arc, Weak};
 
 use rayon::{ThreadPool, Yield};
 
+use crate::completion::ASSIST_PARK;
 use crate::error::ParallelError;
 use crate::thread_count::ThreadCount;
 
@@ -158,6 +159,23 @@ pub(crate) fn assist_installed_pool() -> PoolAssist {
         Some(Yield::Executed) => PoolAssist::Executed,
         Some(Yield::Idle) => PoolAssist::Idle,
         None => PoolAssist::OffPool,
+    }
+}
+
+/// Runs one pending job of the driver's installed pool, or parks briefly when
+/// the pool has nothing to run.
+///
+/// Like [`crate::CompletionCell::wait_with_pool_assist`] this is reserved for
+/// the pipeline driver thread and carries the same reentrancy contract: the
+/// executed job is arbitrary, so the caller must hold no lock, no thread-local
+/// scope guard, and no borrow such a job could need. A driver waiting on
+/// something no completion cell publishes — a reference frame's row watermark,
+/// say — calls this in a loop and re-tests its own condition between steps, so
+/// its wait is donated to the pool instead of spun.
+pub fn assist_pool_or_park() {
+    match assist_installed_pool() {
+        PoolAssist::Executed => (),
+        PoolAssist::Idle | PoolAssist::OffPool => std::thread::sleep(ASSIST_PARK),
     }
 }
 

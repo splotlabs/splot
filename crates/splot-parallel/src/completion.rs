@@ -11,7 +11,7 @@ use crate::pool::{PoolAssist, assist_installed_pool};
 /// re-polls both the cell and the pool. Short enough that work arriving during
 /// the park is picked up promptly, long enough not to spin a core while the
 /// pool is idle.
-const ASSIST_PARK: Duration = Duration::from_micros(100);
+pub(crate) const ASSIST_PARK: Duration = Duration::from_micros(100);
 
 /// A write-once slot that a consumer can block on until the value lands.
 ///

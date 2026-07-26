@@ -89,6 +89,18 @@ impl InterReconCommand {
         }
     }
 
+    /// The placed block this command reconstructs.
+    pub(super) const fn placed(&self) -> &PlacedInterBlock {
+        &self.placed
+    }
+
+    /// Whether § 7.13.5 TIP synthesis reconstructs this command, which reads
+    /// its reference frames through the TIP motion field rather than through
+    /// the block's own motion vectors.
+    pub(super) const fn is_tip(&self) -> bool {
+        matches!(self.kind, PendingKind::Tip)
+    }
+
     pub(super) fn reads_current_frame(&self) -> bool {
         reads_current_frame(
             self.placed.block.bawp.enabled,
@@ -197,6 +209,33 @@ impl InterReconCommand {
         })
     }
 
+    fn single_temporal_record<T: ReconSample>(
+        &self,
+        reference: &InterReferenceState<T>,
+        ref_frame_idx: &[u32],
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+    ) -> TemporalMotionBlock {
+        let block = &self.placed.block;
+        temporal_motion_block(
+            reference,
+            ref_frame_idx,
+            self.placed.luma_y / 4,
+            self.placed.luma_x / 4,
+            self.placed.luma_w / 4,
+            self.placed.luma_h / 4,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            block.ref_frame0,
+            block.ref_frame1,
+            block.mv,
+            block.mv1,
+            block.warp_params,
+        )
+    }
+
     fn refinemv(&self) -> (bool, bool) {
         match self.kind {
             PendingKind::Compound {
@@ -288,22 +327,12 @@ impl InterReconCommand {
         };
         match self.kind {
             PendingKind::Single => {
-                let block = &self.placed.block;
-                temporal_records.push(temporal_motion_block(
+                temporal_records.push(self.single_temporal_record(
                     shared.reference,
                     shared.ref_frame_idx,
-                    self.placed.luma_y / 4,
-                    self.placed.luma_x / 4,
-                    self.placed.luma_w / 4,
-                    self.placed.luma_h / 4,
                     mi_rows,
                     mi_cols,
                     current_order_hint,
-                    block.ref_frame0,
-                    block.ref_frame1,
-                    block.mv,
-                    block.mv1,
-                    block.warp_params,
                 ));
                 Ok(())
             }

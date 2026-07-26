@@ -45,6 +45,7 @@ use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget}
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
+pub(crate) mod frame_progress;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
