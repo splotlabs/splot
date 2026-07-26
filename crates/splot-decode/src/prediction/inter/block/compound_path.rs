@@ -8,8 +8,9 @@ use super::super::compound::{
     CompoundBlockSyntax, CompoundParseInput, CompoundYMode, read_compound_mode_syntax,
     read_compound_reference_pair,
 };
-use super::super::find_mv_stack::{OrderHintMvContext, TemporalMotionBlock};
+use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
+use super::prediction::PlacedInterGeometry;
 use super::temporal::temporal_motion_block;
 use super::*;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
@@ -61,13 +62,9 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
-    temporal_context: Option<&TemporalMvContext>,
-    order_hints: OrderHintMvContext<'_>,
     tip_ref_pair: Option<(i8, i8)>,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
-    warp_param_bank: &mut super::super::find_mv_stack::WarpParamBank,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -82,17 +79,13 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     mi_rows: usize,
     mi_cols: usize,
     max_drl_bits_minus_1: u32,
-    drl_reorder: DrlReorder,
     temporal_first_frame: bool,
     enable_adaptive_mvd: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
     tile_offset: ByteOffset,
-) -> Result<(
-    GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand,
-)> {
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs, tile_offset)?;
     let ref_distance_nonnegative = compound_ref_distance_signs(
@@ -378,19 +371,10 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         residual_scratch,
         residual_blocks,
         sequence,
+        core,
         frontier,
-        &mut MvResolutionState {
-            grid: mv_grid,
-            ref_mv_bank,
-            warp_param_bank,
-            core,
-            temporal: temporal_context,
-            order_hints,
-            drl_reorder,
-            max_drl_bits_minus_1,
-            frame_precision: frame_mv_config.precision(),
-            tile_offset,
-        },
+        mv_grid,
+        frame_mv_config.precision(),
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
@@ -626,8 +610,10 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     residual_scratch: &mut InterResidualParseScratch,
     residual_blocks: &mut Vec<InterResidualBlock>,
     sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
-    state: &mut MvResolutionState<'_>,
+    mv_grid: &mut NeighbourMvGrid,
+    frame_precision: u8,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -641,10 +627,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
-) -> Result<(
-    GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand,
-)> {
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let ParsedCompoundBlock {
         block_ctx,
         motion,
@@ -669,7 +652,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
             residual_scratch,
             residual_blocks,
             sequence,
-            state.core,
+            core,
             frontier,
             n4w,
             n4h,
@@ -721,7 +704,7 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
     };
     let optflow_distances = if motion.use_optflow {
         compound_sized_reference_distances(
-            state.core,
+            core,
             reference,
             ref_frame_idx,
             reference_pair,
@@ -761,42 +744,24 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         optflow_distances,
         residual,
     };
-    state
-        .grid
-        .record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-    let resolved = resolve_inter_block(&syntax, state)?;
-    let placed = PlacedInterBlock {
-        luma_x: placed_geometry.luma_x,
-        luma_y: placed_geometry.luma_y,
-        luma_w: placed_geometry.luma_w,
-        luma_h: placed_geometry.luma_h,
-        chroma_luma_x: placed_geometry.chroma_luma_x,
-        chroma_luma_y: placed_geometry.chroma_luma_y,
-        chroma_luma_w: placed_geometry.chroma_luma_w,
-        chroma_luma_h: placed_geometry.chroma_luma_h,
-        predict_chroma: placed_geometry.predict_chroma,
-        sub8x8_chroma: placed_geometry.sub8x8_chroma,
-        interintra_chroma: false,
-        block: compound_inter_block(syntax, &motion, &resolved),
-    };
-    let command = super::deferred_recon::InterReconCommand::new(
-        placed,
-        super::deferred_recon::PendingKind::Compound {
-            syntax: CompoundBlockSyntax {
-                mv0: resolved.mv[0],
-                mv1: resolved.mv[1],
-                ..reference_pair
+    mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
+    Ok((
+        non_intra_leaf_mode(frontier),
+        pending_inter_leaf(
+            syntax,
+            PlacedInterGeometry {
+                interintra_chroma: false,
+                ..placed_geometry
             },
-            warp_params: resolved.warp_params,
-            mi_row,
-            mi_col,
-            use_refinemv,
-            refinemv_switchable,
-        },
-        block_qindex,
-        tile_offset,
-    );
-    Ok((non_intra_leaf_mode(frontier), command))
+            PendingInterKind::Compound {
+                reference_pair,
+                use_refinemv,
+                refinemv_switchable,
+            },
+            block_qindex,
+            frame_precision,
+        ),
+    ))
 }
 
 /// Input to the § 5.20.7.7 compound motion-vector difference reads.
@@ -1025,12 +990,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
-    temporal_context: Option<&TemporalMvContext>,
-    order_hints: OrderHintMvContext<'_>,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
-    warp_param_bank: &mut super::super::find_mv_stack::WarpParamBank,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -1042,14 +1003,10 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     mi_rows: usize,
     mi_cols: usize,
     max_drl_bits_minus_1: u32,
-    drl_reorder: DrlReorder,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
-) -> Result<(
-    GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand,
-)> {
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let current = compound_current_order_hint(core, tile_offset)?;
     let ref_order_hints = if num_total_refs > 1 {
         Some((
@@ -1089,19 +1046,10 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         residual_scratch,
         residual_blocks,
         sequence,
+        core,
         frontier,
-        &mut MvResolutionState {
-            grid: mv_grid,
-            ref_mv_bank,
-            warp_param_bank,
-            core,
-            temporal: temporal_context,
-            order_hints,
-            drl_reorder,
-            max_drl_bits_minus_1,
-            frame_precision: precision,
-            tile_offset,
-        },
+        mv_grid,
+        precision,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,

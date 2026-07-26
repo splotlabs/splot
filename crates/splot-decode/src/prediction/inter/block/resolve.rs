@@ -7,11 +7,15 @@
 //! leaf, with no reference MV stack consulted. [`resolve_inter_block`] turns
 //! that record into motion vectors and warp models: it builds the § 7.12
 //! stack, derives global-motion and warp models, publishes the neighbour
-//! motion plane and updates the reference MV and warp parameter banks. The
-//! flag plane is published by the parse side, so leaf order is what keeps the
-//! two halves equivalent to the fused walk while they run back-to-back.
+//! motion plane and updates the reference MV and warp parameter banks.
+//!
+//! The parse pass publishes only the flag plane and queues one [`LeafMotion`]
+//! per leaf; [`resolve_parsed_leaves`] then replays the whole parse unit's
+//! queue in leaf order, so every bank reseed, bank hit and motion publication
+//! lands in the fused walk's order even though symbol decode has already run
+//! ahead to the end of the unit.
 
-use super::super::compound::CompoundYMode;
+use super::super::compound::{CompoundBlockSyntax, CompoundYMode};
 use super::super::find_mv_stack::{
     CompoundMvCandidate, MvStack, NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext,
     RefMvBank, WarpParamBank, compound_motion_mode, find_warp_samples, reduce_warp_model,
@@ -20,9 +24,248 @@ use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
     select_near_near_candidates,
 };
+use super::prediction::PlacedInterGeometry;
+use super::tile::ReconRowEntry;
 use super::warp::{apply_warp_delta, extend_warp_estimation, set_warp_translation};
 #[allow(clippy::wildcard_imports)]
 use super::*;
+
+/// One leaf's parse output: the reconstruction command the parse pass could
+/// already build, and the § 7.12 work the parse unit's resolve pass still owes
+/// it.
+pub(super) struct ParsedLeaf {
+    pub(super) command: Option<ReconCommand>,
+    pub(super) dependency: ReconDependency,
+    pub(super) motion: LeafMotion,
+    pub(super) pending: Option<PendingInterBlock>,
+}
+
+impl ParsedLeaf {
+    /// A leaf whose reconstruction command is complete at parse time.
+    pub(super) fn recon(command: ReconCommand, motion: LeafMotion) -> Self {
+        Self {
+            dependency: command.dependency(),
+            command: Some(command),
+            motion,
+            pending: None,
+        }
+    }
+}
+
+/// The § 7.12 work one parsed leaf leaves for the resolve pass. Every leaf
+/// carries one, because the per-leaf bank reseed runs for all of them.
+pub(super) struct LeafMotion {
+    pub(super) mi_row: usize,
+    pub(super) mi_col: usize,
+    pub(super) kind: LeafMotionKind,
+}
+
+/// What the resolve pass owes a leaf beyond the bank reseed.
+pub(super) enum LeafMotionKind {
+    /// Nothing: chroma-part leaves publish no neighbour record.
+    Reseed,
+    /// Zero motion plus the § 7.12.5 bank hit budget: intra and intra block
+    /// copy leaves.
+    NonInter { n4w: usize, n4h: usize },
+    /// Full § 7.12 resolution, taken from the unit's pending-inter list. Only
+    /// inter leaves pay for that record, so it rides in its own list rather
+    /// than widening every leaf's queue slot.
+    Inter,
+}
+
+/// One inter leaf's parse output, held until the resolve pass reaches it.
+pub(super) struct PendingInterBlock {
+    syntax: InterBlockSyntax,
+    geometry: PlacedInterGeometry,
+    kind: PendingInterKind,
+    segment_id: usize,
+    qindex: u32,
+    frame_precision: u8,
+}
+
+/// Which § 7.13 reconstruction the resolved leaf becomes.
+pub(super) enum PendingInterKind {
+    Single,
+    Tip,
+    Compound {
+        reference_pair: CompoundBlockSyntax,
+        use_refinemv: bool,
+        refinemv_switchable: bool,
+    },
+}
+
+/// Queues one parsed inter leaf for the resolve pass, deriving the
+/// reconstruction dependency its recon-entry needs right away.
+pub(super) fn pending_inter_leaf(
+    syntax: InterBlockSyntax,
+    geometry: PlacedInterGeometry,
+    kind: PendingInterKind,
+    qindex: u32,
+    frame_precision: u8,
+) -> ParsedLeaf {
+    let dependency =
+        if deferred_recon::reads_current_frame(syntax.bawp.enabled, syntax.interintra.is_some()) {
+            ReconDependency::CurrentFrame
+        } else {
+            ReconDependency::ReferenceOnly
+        };
+    let motion = LeafMotion {
+        mi_row: syntax.block_ctx.mi_row,
+        mi_col: syntax.block_ctx.mi_col,
+        kind: LeafMotionKind::Inter,
+    };
+    ParsedLeaf {
+        command: None,
+        dependency,
+        motion,
+        pending: Some(PendingInterBlock {
+            syntax,
+            geometry,
+            kind,
+            segment_id: current_frame_qm_segment_id(),
+            qindex,
+            frame_precision,
+        }),
+    }
+}
+
+/// Replays one parse unit's queued § 7.12 work in leaf order.
+///
+/// `queue` and `entries` are pushed together, one of each per leaf, so index
+/// `i` of the queue is the leaf that produced entry `i`; `pending` holds the
+/// inter leaves' records in that same order. Both pairings fail closed rather
+/// than silently skew.
+pub(super) fn resolve_parsed_leaves(
+    queue: &mut Vec<LeafMotion>,
+    pending: &mut Vec<PendingInterBlock>,
+    entries: &mut [ReconRowEntry],
+    state: &mut MvResolutionState<'_>,
+    sb_h4: usize,
+) -> Result<()> {
+    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ResolveRow);
+    if queue.len() != entries.len() {
+        return Err(inter_cap!(
+            "inter_resolve_queue_length",
+            state.tile_offset,
+            "inter.row.resolve_queue",
+            SPEC_MODE_INFO
+        ));
+    }
+    let mut pending = pending.drain(..);
+    for (leaf, entry) in queue.drain(..).zip(entries.iter_mut()) {
+        if let Some(bank) = state.ref_mv_bank.as_mut() {
+            bank.reset_for_leaf(state.grid, leaf.mi_row, leaf.mi_col, sb_h4);
+        }
+        state
+            .warp_param_bank
+            .reset_for_leaf(state.grid, leaf.mi_row, leaf.mi_col, sb_h4);
+        match leaf.kind {
+            LeafMotionKind::Reseed => {}
+            LeafMotionKind::NonInter { n4w, n4h } => {
+                state.grid.record_motion(
+                    leaf.mi_row,
+                    leaf.mi_col,
+                    n4w,
+                    n4h,
+                    ZERO_NEIGHBOUR_MOTION_VALUES,
+                );
+                if let Some(bank) = state.ref_mv_bank.as_mut() {
+                    bank.update_count_for_non_inter(leaf.mi_row, leaf.mi_col, n4w, n4h, sb_h4);
+                }
+            }
+            LeafMotionKind::Inter => {
+                let Some(block) = pending.next() else {
+                    return Err(inter_cap!(
+                        "inter_resolve_pending_missing",
+                        state.tile_offset,
+                        "inter.row.resolve_queue",
+                        SPEC_MODE_INFO
+                    ));
+                };
+                entry.command = Some(ReconCommand::Inter(resolve_pending_inter(block, state)?));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_pending_inter(
+    pending: PendingInterBlock,
+    state: &mut MvResolutionState<'_>,
+) -> Result<deferred_recon::InterReconCommand> {
+    let PendingInterBlock {
+        syntax,
+        geometry,
+        kind,
+        segment_id,
+        qindex,
+        frame_precision,
+    } = pending;
+    state.frame_precision = frame_precision;
+    let resolved = resolve_inter_block(&syntax, state)?;
+    let (block, kind) = match kind {
+        PendingInterKind::Single => (
+            single_inter_block(syntax, &resolved),
+            deferred_recon::PendingKind::Single,
+        ),
+        PendingInterKind::Tip => (
+            single_inter_block(syntax, &resolved),
+            deferred_recon::PendingKind::Tip,
+        ),
+        PendingInterKind::Compound {
+            reference_pair,
+            use_refinemv,
+            refinemv_switchable,
+        } => {
+            let InterMotionSyntax::Compound(compound) = &syntax.motion else {
+                return Err(inter_cap!(
+                    "inter_resolve_compound_syntax",
+                    state.tile_offset,
+                    "inter.compound.resolve_syntax",
+                    SPEC_MODE_INFO
+                ));
+            };
+            let compound = *compound;
+            let (mi_row, mi_col) = (syntax.block_ctx.mi_row, syntax.block_ctx.mi_col);
+            (
+                compound_inter_block(syntax, &compound, &resolved),
+                deferred_recon::PendingKind::Compound {
+                    syntax: CompoundBlockSyntax {
+                        mv0: resolved.mv[0],
+                        mv1: resolved.mv[1],
+                        ..reference_pair
+                    },
+                    warp_params: resolved.warp_params,
+                    mi_row,
+                    mi_col,
+                    use_refinemv,
+                    refinemv_switchable,
+                },
+            )
+        }
+    };
+    let placed = PlacedInterBlock {
+        luma_x: geometry.luma_x,
+        luma_y: geometry.luma_y,
+        luma_w: geometry.luma_w,
+        luma_h: geometry.luma_h,
+        chroma_luma_x: geometry.chroma_luma_x,
+        chroma_luma_y: geometry.chroma_luma_y,
+        chroma_luma_w: geometry.chroma_luma_w,
+        chroma_luma_h: geometry.chroma_luma_h,
+        predict_chroma: geometry.predict_chroma,
+        sub8x8_chroma: geometry.sub8x8_chroma,
+        interintra_chroma: geometry.interintra_chroma,
+        block,
+    };
+    Ok(deferred_recon::InterReconCommand::new(
+        placed,
+        kind,
+        segment_id,
+        qindex,
+        state.tile_offset,
+    ))
+}
 
 /// Per-leaf § 5.20.7 inter syntax, before any § 7.12 candidate is resolved.
 pub(super) struct InterBlockSyntax {

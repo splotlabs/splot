@@ -41,16 +41,19 @@ pub(crate) fn report_detail(phase: &str, started: Option<Instant>, detail: &str)
     }
 }
 
-/// Parse phases of the fused block walk.
+/// Phases of the block walk.
 ///
-/// `Row` nests `Block`, and `Block` nests every remaining phase, so the pure
-/// symbol-decode share is `Block` less the phases nested inside it.
+/// `Row` nests both `Block` (the parse pass) and `ResolveRow` (the § 7.12 pass
+/// that follows it), so the pure symbol-decode share is `Block` less the phases
+/// nested inside it, and the resolve pass's share is `ResolveRow`.
 #[derive(Clone, Copy)]
 pub(crate) enum WalkPhase {
     /// One parser step: partition walk, leaf decode, recon-entry building.
     Row,
     /// One leaf's mode-info and residual parse.
     Block,
+    /// One parse unit's AV2 § 7.12 resolution pass over its parsed leaves.
+    ResolveRow,
     /// AV2 § 7.12 reference MV stack and warp sample construction.
     MvStack,
     /// Reference MV bank and warp parameter bank maintenance.
@@ -67,9 +70,10 @@ pub(crate) enum WalkPhase {
     IntraLeaf,
 }
 
-const WALK_PHASE_NAMES: [&str; 9] = [
+const WALK_PHASE_NAMES: [&str; 10] = [
     "row",
     "block",
+    "resolve_row",
     "mv_stack",
     "mv_bank",
     "mode_ctx",

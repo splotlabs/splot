@@ -86,8 +86,8 @@ mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
 pub(crate) use neighbour_grid::{
-    BlockPrecisionRecord, NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid,
-    compound_motion_mode,
+    BlockPrecisionRecord, NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMotionValues,
+    NeighbourMvGrid, ZERO_NEIGHBOUR_MOTION_VALUES, compound_motion_mode,
 };
 use neighbour_grid::{EMPTY_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use temporal::{

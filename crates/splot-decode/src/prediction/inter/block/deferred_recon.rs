@@ -20,9 +20,7 @@ use super::compound_path::append_compound_temporal_motion;
 use super::temporal::{commit_temporal_motion_blocks, temporal_motion_block};
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
-use crate::bitstream::tile_payload::{
-    FrameQmSegmentScope, TileBlockDecodedState, current_frame_qm_segment_id,
-};
+use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PendingKind {
@@ -69,21 +67,25 @@ struct ReconShared<'a, T: ReconSample> {
     bit_depth: BitDepth,
 }
 
-const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
+pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
     bawp || interintra
 }
 
 impl InterReconCommand {
-    pub(super) fn new(
+    /// `segment_id` is the § 7.14 quantizer-matrix segment in force while the
+    /// leaf was parsed, captured there because the resolve pass runs after the
+    /// leaf's segment scope has been dropped.
+    pub(super) const fn new(
         placed: PlacedInterBlock,
         kind: PendingKind,
+        segment_id: usize,
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Self {
         Self {
             placed,
             kind,
-            segment_id: current_frame_qm_segment_id(),
+            segment_id,
             qindex,
             tile_offset,
         }
@@ -592,6 +594,7 @@ mod tests {
                 },
             },
             PendingKind::Single,
+            0,
             0,
             ByteOffset::new(0),
         )

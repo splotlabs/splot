@@ -22,8 +22,9 @@ use splot_recon::{
 
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MotionMode, MvBlockContext,
-    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
-    TemporalProjectionConfig, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
+    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMvGrid, TIP_REF_FRAME,
+    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
+    ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
     find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_with_temporal, warp_predicted_mv,
 };
 use super::read_mv::{
@@ -554,6 +555,22 @@ fn segment_block_qindex(
     get_qindex(&quant, current_qindex, seg, segment_id)
 }
 
+/// AV2 § 6.4 `drl_reorder` mode this sequence signals.
+pub(super) fn sequence_drl_reorder(sequence: &SequenceHeader) -> DrlReorder {
+    sequence
+        .inter
+        .as_ref()
+        .map_or(DrlReorder::Disabled, |inter| inter.drl_reorder)
+}
+
+/// Whether AV2 § 6.8 `use_ref_frame_mvs` admits temporal § 7.12 candidates.
+pub(super) fn frame_uses_temporal_mvs(core: &FrameHeaderCore) -> bool {
+    core.inter
+        .as_ref()
+        .and_then(|inter| inter.use_ref_frame_mvs)
+        == Some(true)
+}
+
 fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
     work_unit
         .coeff_frame_facts()
@@ -581,8 +598,6 @@ fn decode_block<T: ReconSample>(
     temporal_context: &TemporalMvContext,
     y_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: &mut crate::prediction::intra_edge::TileChromaSmoothGrid,
-    ref_mv_bank: &mut Option<super::find_mv_stack::RefMvBank>,
-    warp_param_bank: &mut super::find_mv_stack::WarpParamBank,
     sb_h4: usize,
     mi_rows: usize,
     mi_cols: usize,
@@ -612,7 +627,7 @@ fn decode_block<T: ReconSample>(
     frame_is_switch: bool,
     current_order_hint: u32,
     tile_offset: ByteOffset,
-) -> Result<(GeneralIntraLeafMode, ReconCommand)> {
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let _block_phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Block);
     crate::timing::note_walk_block();
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
@@ -640,21 +655,6 @@ fn decode_block<T: ReconSample>(
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
         tile_offset,
     )?;
-    let placed_block = |block| PlacedInterBlock {
-        luma_x: placed_geometry.luma_x,
-        luma_y: placed_geometry.luma_y,
-        luma_w: placed_geometry.luma_w,
-        luma_h: placed_geometry.luma_h,
-        chroma_luma_x: placed_geometry.chroma_luma_x,
-        chroma_luma_y: placed_geometry.chroma_luma_y,
-        chroma_luma_w: placed_geometry.chroma_luma_w,
-        chroma_luma_h: placed_geometry.chroma_luma_h,
-        predict_chroma: placed_geometry.predict_chroma,
-        sub8x8_chroma: placed_geometry.sub8x8_chroma,
-        interintra_chroma: placed_geometry.interintra_chroma,
-        block,
-    };
-
     let mut block_ctx = MvBlockContext {
         mi_row,
         mi_col,
@@ -667,15 +667,8 @@ fn decode_block<T: ReconSample>(
         mi_cols,
     };
 
-    if let Some(bank) = ref_mv_bank.as_mut() {
-        bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
-    }
-    warp_param_bank.reset_for_leaf(mv_grid, mi_row, mi_col, sb_h4);
     let comp_ref_allowed = is_comp_ref_allowed(n4w, n4h);
-    let drl_reorder = sequence
-        .inter
-        .as_ref()
-        .map_or(DrlReorder::Disabled, |inter| inter.drl_reorder);
+    let drl_reorder = sequence_drl_reorder(sequence);
     let refs_one_sided = {
         let mut has_past = false;
         let mut has_future = false;
@@ -698,12 +691,7 @@ fn decode_block<T: ReconSample>(
         }
         !has_past || !has_future
     };
-    let use_temporal = core
-        .inter
-        .as_ref()
-        .and_then(|inter| inter.use_ref_frame_mvs)
-        == Some(true);
-    let temporal_stack_context = use_temporal.then_some(temporal_context);
+    let use_temporal = frame_uses_temporal_mvs(core);
     let tip_ref_pair = temporal_context
         .tip_references()
         .map(|references| (references.past_ref, references.future_ref));
@@ -906,28 +894,26 @@ fn decode_block<T: ReconSample>(
                 tile_offset,
             );
             let precision = frame_mv_precision(core, tile_offset)?;
-            mv_grid.record_block(
+            mv_grid.record_flags(
                 mi_row,
                 mi_col,
                 n4w,
                 n4h,
-                true,
-                -1,
-                None,
-                false,
-                Mv::ZERO,
-                prelude.skip_flag,
-                interp_filter_no_neighbour_ctx(false) as u8,
-                false,
-                BlockPrecisionRecord::explicit(precision),
+                NeighbourFlagSyntax {
+                    is_inter: true,
+                    skip: prelude.skip_flag,
+                    interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
+                    precision: BlockPrecisionRecord::explicit(precision),
+                    ..NON_INTER_FLAG_SYNTAX
+                },
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
-            if let Some(bank) = ref_mv_bank.as_mut() {
-                bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
-            }
             return Ok((
                 non_intra_leaf_mode(frontier).mark_intrabc(),
-                ReconCommand::Intrabc(command),
+                ParsedLeaf::recon(
+                    ReconCommand::Intrabc(command),
+                    non_inter_leaf_motion(mi_row, mi_col, n4w, n4h),
+                ),
             ));
         }
         let block_qindex = segment_block_qindex(
@@ -964,29 +950,34 @@ fn decode_block<T: ReconSample>(
             bit_depth,
             tile_offset,
         )?;
+        let mut motion = LeafMotion {
+            mi_row,
+            mi_col,
+            kind: LeafMotionKind::Reseed,
+        };
         if !frontier.is_chroma_part() {
             y_smooth.record(mi_row, mi_col, n4w, n4h, leaf.y_mode_is_smooth());
-            mv_grid.record_block(
+            mv_grid.record_flags(
                 mi_row,
                 mi_col,
                 n4w,
                 n4h,
-                false,
-                -1,
-                None,
-                false,
-                Mv::ZERO,
-                false,
-                interp_filter_no_neighbour_ctx(false) as u8,
-                false,
-                BlockPrecisionRecord::explicit(frame_mv_precision(core, tile_offset)?),
+                NeighbourFlagSyntax {
+                    interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
+                    precision: BlockPrecisionRecord::explicit(frame_mv_precision(
+                        core,
+                        tile_offset,
+                    )?),
+                    ..NON_INTER_FLAG_SYNTAX
+                },
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
-            if let Some(bank) = ref_mv_bank.as_mut() {
-                bank.update_count_for_non_inter(mi_row, mi_col, n4w, n4h, sb_h4);
-            }
+            motion = non_inter_leaf_motion(mi_row, mi_col, n4w, n4h);
         }
-        return Ok((leaf, ReconCommand::GeneralIntra(command)));
+        return Ok((
+            leaf,
+            ParsedLeaf::recon(ReconCommand::GeneralIntra(command), motion),
+        ));
     }
     if is_inter != 1 {
         return Err(inter_cap!(
@@ -1064,12 +1055,8 @@ fn decode_block<T: ReconSample>(
             core,
             frontier,
             mv_grid,
-            temporal_stack_context,
-            temporal_context.order_hint_mv_context(),
             &mut block_ctx,
             &neighbour_ctx,
-            ref_mv_bank,
-            warp_param_bank,
             deblock_blocks,
             chroma_deblock_blocks,
             tx_skip_records,
@@ -1081,12 +1068,10 @@ fn decode_block<T: ReconSample>(
             mi_rows,
             mi_cols,
             max_drl_bits_minus_1,
-            drl_reorder,
             residual_tool_policy,
             block_qindex,
             tile_offset,
-        )
-        .map(|(leaf, command)| (leaf, ReconCommand::Inter(command)));
+        );
     }
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let tip_frame_mode = core
@@ -1127,13 +1112,9 @@ fn decode_block<T: ReconSample>(
             core,
             frontier,
             mv_grid,
-            temporal_stack_context,
-            temporal_context.order_hint_mv_context(),
             tip_ref_pair,
             &mut block_ctx,
             &neighbour_ctx,
-            ref_mv_bank,
-            warp_param_bank,
             deblock_blocks,
             chroma_deblock_blocks,
             tx_skip_records,
@@ -1148,15 +1129,13 @@ fn decode_block<T: ReconSample>(
             mi_rows,
             mi_cols,
             max_drl_bits_minus_1,
-            drl_reorder,
             temporal_first_frame,
             enable_adaptive_mvd,
             residual_tool_policy,
             block_qindex,
             frame_interpolation_filter,
             tile_offset,
-        )
-        .map(|(leaf, command)| (leaf, ReconCommand::Inter(command)));
+        );
     }
 
     let ref_frame0: i8 = if tip_ref {
@@ -1354,28 +1333,16 @@ fn decode_block<T: ReconSample>(
             residual,
         };
         mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-        let resolved = resolve_inter_block(
-            &syntax,
-            &mut MvResolutionState {
-                grid: mv_grid,
-                ref_mv_bank,
-                warp_param_bank,
-                core,
-                temporal: temporal_stack_context,
-                order_hints: temporal_context.order_hint_mv_context(),
-                drl_reorder,
-                max_drl_bits_minus_1,
-                frame_precision: frame_mv_precision(core, tile_offset)?,
-                tile_offset,
-            },
-        )?;
-        let command = deferred_recon::InterReconCommand::new(
-            placed_block(single_inter_block(syntax, &resolved)),
-            deferred_recon::PendingKind::Single,
-            block_qindex,
-            tile_offset,
-        );
-        return Ok((non_intra_leaf_mode(frontier), ReconCommand::Inter(command)));
+        return Ok((
+            non_intra_leaf_mode(frontier),
+            pending_inter_leaf(
+                syntax,
+                placed_geometry,
+                PendingInterKind::Single,
+                block_qindex,
+                frame_mv_precision(core, tile_offset)?,
+            ),
+        ));
     }
 
     let single_mode = if tip_ref {
@@ -1638,33 +1605,30 @@ fn decode_block<T: ReconSample>(
         residual,
     };
     mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
-    let resolved = resolve_inter_block(
-        &syntax,
-        &mut MvResolutionState {
-            grid: mv_grid,
-            ref_mv_bank,
-            warp_param_bank,
-            core,
-            temporal: temporal_stack_context,
-            order_hints: temporal_context.order_hint_mv_context(),
-            drl_reorder,
-            max_drl_bits_minus_1,
-            frame_precision: frame_mv_precision(core, tile_offset)?,
-            tile_offset,
-        },
-    )?;
     let kind = if tip_ref {
-        deferred_recon::PendingKind::Tip
+        PendingInterKind::Tip
     } else {
-        deferred_recon::PendingKind::Single
+        PendingInterKind::Single
     };
-    let command = deferred_recon::InterReconCommand::new(
-        placed_block(single_inter_block(syntax, &resolved)),
-        kind,
-        block_qindex,
-        tile_offset,
-    );
-    Ok((non_intra_leaf_mode(frontier), ReconCommand::Inter(command)))
+    Ok((
+        non_intra_leaf_mode(frontier),
+        pending_inter_leaf(
+            syntax,
+            placed_geometry,
+            kind,
+            block_qindex,
+            frame_mv_precision(core, tile_offset)?,
+        ),
+    ))
+}
+
+/// § 7.12 work of a leaf that publishes a zero motion record.
+const fn non_inter_leaf_motion(mi_row: usize, mi_col: usize, n4w: usize, n4h: usize) -> LeafMotion {
+    LeafMotion {
+        mi_row,
+        mi_col,
+        kind: LeafMotionKind::NonInter { n4w, n4h },
+    }
 }
 
 const fn inter_skip_txfm_ctx(neighbour_skip_ctx: usize, skip_mode: bool) -> usize {
@@ -1719,8 +1683,9 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    MvResolutionState, SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax,
-    compound_inter_block, resolve_inter_block, single_inter_block,
+    LeafMotion, LeafMotionKind, MvResolutionState, ParsedLeaf, PendingInterBlock, PendingInterKind,
+    SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_inter_leaf,
+    resolve_parsed_leaves,
 };
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{

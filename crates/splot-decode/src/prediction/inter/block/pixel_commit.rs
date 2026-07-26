@@ -82,6 +82,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     let ReconRow {
         mut superblocks,
         mut entries,
+        mut motion_queue,
+        mut pending_inter,
         mut residual_blocks,
         mut temporal,
         filter_records: mut row_filter_records,
@@ -170,11 +172,15 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     }
     superblocks.clear();
     entries.clear();
+    motion_queue.clear();
+    pending_inter.clear();
     residual_blocks.clear();
     temporal.clear();
     Ok(ReconRowBuffers {
         superblocks,
         entries,
+        motion_queue,
+        pending_inter,
         residual_blocks,
         temporal,
         filter_records: row_filter_records,

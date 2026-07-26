@@ -64,7 +64,7 @@ fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
 }
 
 fn command(placed: PlacedInterBlock, kind: PendingKind) -> InterReconCommand {
-    InterReconCommand::new(placed, kind, 0, splot_core::span::ByteOffset::new(0))
+    InterReconCommand::new(placed, kind, 0, 0, splot_core::span::ByteOffset::new(0))
 }
 
 /// The last luma row the prediction of one plane will actually read, derived

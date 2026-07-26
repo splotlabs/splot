@@ -662,6 +662,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let ReconRowBuffers {
             superblocks,
             entries,
+            motion_queue,
+            pending_inter,
             residual_blocks,
             temporal,
             filter_records,
@@ -671,6 +673,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             ordinal: self.parser_ordinal,
             superblocks,
             entries,
+            motion_queue,
+            pending_inter,
             residual_blocks,
             temporal,
             filter_records: TileFilterRecords::default(),
@@ -708,8 +712,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         context.temporal_context,
                         &mut self.y_smooth,
                         &mut self.chroma_smooth,
-                        &mut self.ref_mv_bank,
-                        &mut self.warp_param_bank,
                         context.sb_h4,
                         context.mi_rows,
                         context.mi_cols,
@@ -741,21 +743,24 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         tile_offset,
                     )
                 };
-            let mut on_published = |publication: DecodedLeafPublication, command: ReconCommand| {
+            let mut on_published = |publication: DecodedLeafPublication, leaf: ParsedLeaf| {
                 let origin = publication.superblock_origin();
-                let dependency = command.dependency();
                 push_recon_entry(
                     &mut recon_row.superblocks,
                     &mut recon_row.entries,
                     origin,
-                    dependency,
+                    leaf.dependency,
                     ReconRowEntry {
                         publication,
-                        command: Some(command),
+                        command: leaf.command,
                         temporal: 0..0,
                         error: None,
                     },
                 );
+                recon_row.motion_queue.push(leaf.motion);
+                if let Some(pending) = leaf.pending {
+                    recon_row.pending_inter.push(pending);
+                }
             };
             match granularity {
                 ParserGranularity::Row => {
@@ -794,11 +799,12 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             return ParserStep::Last(recon_row);
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
+        let resolved = self.resolve_unit(context, &mut recon_row);
         self.entry_capacity = self.entry_capacity.max(recon_row.entries.capacity());
         self.superblock_capacity = self
             .superblock_capacity
             .max(recon_row.superblocks.capacity());
-        match decoded_row {
+        let step = match decoded_row {
             Ok(true) => ParserStep::More(recon_row),
             Err(error) => {
                 recon_row.terminal = Some(map_inter_multiblock_error(error, tile_offset));
@@ -839,7 +845,47 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 self.tile_walk_output = Some((active_source_blocks, unit_filters));
                 ParserStep::Last(recon_row)
             }
-        }
+        };
+        let Err(error) = resolved else {
+            return step;
+        };
+        let mut row = match step {
+            ParserStep::More(row) | ParserStep::Last(row) => row,
+        };
+        row.terminal = Some(error);
+        ParserStep::Last(row)
+    }
+
+    /// Replays one parsed unit's § 7.12 work, in the leaf order the fused walk
+    /// used, and completes the inter leaves' reconstruction commands.
+    ///
+    /// It runs even when parsing stopped early, because the leaves parsed
+    /// before the failure are exactly the ones the fused walk would have
+    /// resolved; a resolve failure is therefore the earlier one and the caller
+    /// lets it win over any later parse or exit-symbol failure.
+    fn resolve_unit<T: ReconSample>(
+        &mut self,
+        context: &TileDecodeContext<'_, T>,
+        row: &mut ReconRow,
+    ) -> Result<()> {
+        resolve_parsed_leaves(
+            &mut row.motion_queue,
+            &mut row.pending_inter,
+            &mut row.entries,
+            &mut MvResolutionState {
+                grid: &mut self.mv_grid,
+                ref_mv_bank: &mut self.ref_mv_bank,
+                warp_param_bank: &mut self.warp_param_bank,
+                core: context.core,
+                temporal: frame_uses_temporal_mvs(context.core).then_some(context.temporal_context),
+                order_hints: context.temporal_context.order_hint_mv_context(),
+                drl_reorder: sequence_drl_reorder(context.sequence),
+                max_drl_bits_minus_1: context.max_drl_bits_minus_1,
+                frame_precision: 0,
+                tile_offset: self.tile.tile_byte_span().start,
+            },
+            context.sb_h4,
+        )
     }
 
     fn next_row<T: ReconSample>(
@@ -929,6 +975,11 @@ pub(super) struct ReconRow {
     pub(super) ordinal: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
+    /// One § 7.12 work item per parsed leaf, drained by the resolve pass
+    /// before the row leaves the parser.
+    pub(super) motion_queue: Vec<LeafMotion>,
+    /// The inter leaves' § 7.12 records, in the queue's own order.
+    pub(super) pending_inter: Vec<PendingInterBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) filter_records: TileFilterRecords,
@@ -939,6 +990,8 @@ pub(super) struct ReconRow {
 pub(super) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
+    pub(super) motion_queue: Vec<LeafMotion>,
+    pub(super) pending_inter: Vec<PendingInterBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) filter_records: TileFilterRecords,

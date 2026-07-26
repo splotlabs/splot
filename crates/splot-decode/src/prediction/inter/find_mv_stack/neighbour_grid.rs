@@ -6,9 +6,10 @@
 //! The grid keeps two planes over one tile-sized mode-info lattice. The flag
 //! plane holds the syntax facts that neighbour context derivation reads while
 //! symbols are decoded; the motion plane holds the AV2 § 7.12 motion payload
-//! that the reference MV stack and the warp derivations read. The flag plane
-//! carries occupancy, so a motion entry is meaningful only where the flag plane
-//! holds a record, and context derivation never touches motion memory.
+//! that the reference MV stack and the warp derivations read. Each plane
+//! carries its own occupancy — flags for context derivation, a non-zero `bw4`
+//! for motion — so the two may be published at different times, and context
+//! derivation never touches motion memory.
 
 use core::ops::Range;
 
@@ -186,6 +187,27 @@ pub(crate) const fn compound_motion_mode(has_warp_model: bool) -> MotionMode {
     }
 }
 
+/// § 5.20.7 flag record of a leaf that carries no motion of its own — intra
+/// and intra block copy. Call sites fill in `is_inter`, `skip`,
+/// `interp_filter` and `precision`; the rest of the record is fixed.
+pub(crate) const NON_INTER_FLAG_SYNTAX: NeighbourFlagSyntax = NeighbourFlagSyntax {
+    is_inter: false,
+    ref_frame0: -1,
+    ref_frame1: None,
+    newmv: [false, false],
+    skip: false,
+    skip_mode: false,
+    use_amvd: false,
+    masked_compound: false,
+    tip_size_16x16: false,
+    interp_filter: SWITCHABLE_FILTERS,
+    motion_mode: MotionMode::Simple,
+    precision: BlockPrecisionRecord {
+        use_most_probable_precision: false,
+        mv_precision: 0,
+    },
+};
+
 /// Motion-plane inputs for one leaf, all of them AV2 § 7.12 resolution output.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NeighbourMotionValues {
@@ -196,6 +218,15 @@ pub(crate) struct NeighbourMotionValues {
     /// Per-list models driving the § 7.12.2.2 sub-MV splat.
     pub(crate) splat_warp: [Option<[i32; 6]>; 2],
 }
+
+/// § 7.12 motion record of a leaf that carries no motion of its own, which
+/// the resolve pass publishes in the leaf's turn.
+pub(crate) const ZERO_NEIGHBOUR_MOTION_VALUES: NeighbourMotionValues = NeighbourMotionValues {
+    mv: [Mv::ZERO; 2],
+    cwp_weight: CWP_EQUAL,
+    stored_warp: None,
+    splat_warp: [None, None],
+};
 
 /// Backing storage of both grid planes, recycled as one unit.
 #[derive(Default)]
@@ -290,6 +321,7 @@ impl NeighbourMvGrid {
         self.publish_motion(motion, (r, c), rows, cols, values.splat_warp);
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_block(
         &mut self,
@@ -367,6 +399,7 @@ impl NeighbourMvGrid {
         );
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     fn record_block_with_warp(
         &mut self,
@@ -601,11 +634,17 @@ impl NeighbourMvGrid {
         *self.planes.flags.get(self.index(r, c)?)?
     }
 
+    /// Reads both halves, and only where the motion half has been published:
+    /// `bw4` is zero exactly on cells no leaf has resolved yet, so a leaf whose
+    /// flags are already visible but whose § 7.12 resolution has not run is not
+    /// a candidate. That is what keeps the decode-order candidates (the § 7.12
+    /// bottom-left probe above all) out of the stack once the flag plane runs
+    /// ahead of resolution.
     pub(super) fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
         let index = self.index(r, c)?;
         let flags = (*self.planes.flags.get(index)?)?;
         let motion = *self.planes.motion.get(index)?;
-        Some(NeighbourCell { flags, motion })
+        (motion.bw4 != 0).then_some(NeighbourCell { flags, motion })
     }
 
     pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
