@@ -24,6 +24,7 @@ pub(crate) fn record_inter_deblock_geometry(
     lossless: bool,
     tile_offset: ByteOffset,
 ) -> Result<()> {
+    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Records);
     let (n4w, n4h) = block_size4;
     let (sub_x, sub_y) = chroma_subsampling(chroma_format);
     let chroma_subsampling = (u32::from(sub_x), u32::from(sub_y));

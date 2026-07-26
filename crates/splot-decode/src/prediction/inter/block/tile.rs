@@ -653,6 +653,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         granularity: ParserGranularity,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
+        let _row_phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Row);
         let tile_offset = self.tile.tile_byte_span().start;
         let tile_cols = self.tile.mi_col_range();
         let row_superblocks = (tile_cols.end as usize)

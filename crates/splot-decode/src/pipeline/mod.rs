@@ -666,6 +666,7 @@ fn drive_frames(
             &format!("max_in_flight={}", ring.max_in_flight()),
         );
     }
+    crate::timing::report_walk_phases();
     match ring.take_failure() {
         Some(failure) => Err(failure),
         None => decoded,
