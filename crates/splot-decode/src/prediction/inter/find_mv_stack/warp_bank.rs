@@ -51,10 +51,10 @@ impl WarpParamBank {
             self.starts = [0; WARP_BANK_REFS];
         }
         seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
-            if cell.is_warp()
-                && let Some(params) = cell.warp_params
+            if cell.flags.is_warp()
+                && let Some(params) = cell.motion.warp_params
             {
-                self.update(cell.ref_frame0, params);
+                self.update(cell.flags.ref_frame0, params);
             }
         });
     }
@@ -118,10 +118,10 @@ impl WarpParamStack {
     }
 
     pub(super) fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
-        if cell.is_inter()
-            && cell.is_warp()
-            && cell.ref_frame0 == block.ref_frame0
-            && let Some(params) = cell.warp_params
+        if cell.flags.is_inter()
+            && cell.flags.is_warp()
+            && cell.flags.ref_frame0 == block.ref_frame0
+            && let Some(params) = cell.motion.warp_params
         {
             self.insert(params);
         }

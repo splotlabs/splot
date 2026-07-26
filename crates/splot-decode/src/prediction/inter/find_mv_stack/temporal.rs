@@ -689,18 +689,18 @@ impl TemporalMvContext {
         probe: RelativeProbe,
         cell: NeighbourCell,
     ) -> Option<[Mv; 2]> {
-        if cell.ref_frame0 != TIP_REF_FRAME || cell.ref_frame1.is_some() {
+        if cell.flags.ref_frame0 != TIP_REF_FRAME || cell.flags.ref_frame1.is_some() {
             return None;
         }
         let (row, col, _) = probe.stack_target(block);
         let (row, col) = (usize::try_from(row).ok()?, usize::try_from(col).ok()?);
-        let shift = 1 + usize::from(cell.tip_size_16x16());
-        let base_r = usize::try_from(cell.base_r).ok()?;
-        let base_c = usize::try_from(cell.base_c).ok()?;
+        let shift = 1 + usize::from(cell.flags.tip_size_16x16());
+        let base_r = usize::try_from(cell.motion.base_r).ok()?;
+        let base_c = usize::try_from(cell.motion.base_c).ok()?;
         let row = base_r + ((row.checked_sub(base_r)? >> shift) << shift);
         let col = base_c + ((col.checked_sub(base_c)? >> shift) << shift);
         let base_cell = grid.get(row as i32, col as i32)?;
-        self.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv)
+        self.tip_candidate(row >> 1, col >> 1, base_cell.motion.sub_mv)
     }
 
     pub(super) fn tip_spatial_single_candidates(

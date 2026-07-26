@@ -1,0 +1,562 @@
+// SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+// SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+//! Neighbour mode-info grid.
+//!
+//! The grid keeps two planes over one tile-sized mode-info lattice. The flag
+//! plane holds the syntax facts that neighbour context derivation reads while
+//! symbols are decoded; the motion plane holds the AV2 § 7.12 motion payload
+//! that the reference MV stack and the warp derivations read. The flag plane
+//! carries occupancy, so a motion entry is meaningful only where the flag plane
+//! holds a record, and context derivation never touches motion memory.
+
+use core::ops::Range;
+
+use super::mv_grid_pool::take_neighbour_mv_planes;
+use super::{CWP_EQUAL, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at};
+
+/// Syntax facts read by neighbour context derivation during symbol decode.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NeighbourFlags {
+    bits: u8,
+    pub(super) ref_frame0: i8,
+    pub(super) ref_frame1: Option<i8>,
+    pub(super) interp_filter: u8,
+    pub(super) motion_mode: MotionMode,
+    pub(super) precision: BlockPrecisionRecord,
+}
+
+impl NeighbourFlags {
+    const IS_INTER: u8 = 1 << 0;
+    const NEWMV_LIST0: u8 = 1 << 1;
+    const NEWMV_LIST1: u8 = 1 << 2;
+    const SKIP_MODE: u8 = 1 << 3;
+    const SKIP: u8 = 1 << 4;
+    const USE_AMVD: u8 = 1 << 5;
+    const MASKED_COMPOUND: u8 = 1 << 6;
+    const TIP_SIZE_16X16: u8 = 1 << 7;
+
+    const fn flag(enabled: bool, mask: u8) -> u8 {
+        if enabled { mask } else { 0 }
+    }
+
+    pub(super) const fn is_inter(self) -> bool {
+        self.bits & Self::IS_INTER != 0
+    }
+
+    pub(super) const fn newmv_for_list0(self) -> bool {
+        self.bits & Self::NEWMV_LIST0 != 0
+    }
+
+    pub(super) const fn newmv_for_list1(self) -> bool {
+        self.bits & Self::NEWMV_LIST1 != 0
+    }
+
+    pub(super) const fn skip_mode(self) -> bool {
+        self.bits & Self::SKIP_MODE != 0
+    }
+
+    pub(super) const fn skip(self) -> bool {
+        self.bits & Self::SKIP != 0
+    }
+
+    pub(super) const fn use_amvd(self) -> bool {
+        self.bits & Self::USE_AMVD != 0
+    }
+
+    pub(super) const fn masked_compound(self) -> bool {
+        self.bits & Self::MASKED_COMPOUND != 0
+    }
+
+    pub(super) const fn tip_size_16x16(self) -> bool {
+        self.bits & Self::TIP_SIZE_16X16 != 0
+    }
+
+    pub(super) const fn is_warp(self) -> bool {
+        self.motion_mode.is_warp()
+    }
+}
+
+pub(super) const EMPTY_NEIGHBOUR_FLAGS: NeighbourFlags = NeighbourFlags {
+    bits: 0,
+    ref_frame0: -1,
+    ref_frame1: None,
+    interp_filter: SWITCHABLE_FILTERS,
+    motion_mode: MotionMode::Simple,
+    precision: BlockPrecisionRecord {
+        use_most_probable_precision: false,
+        mv_precision: 0,
+    },
+};
+
+/// Motion payload read by AV2 § 7.12 stack, bank and warp-sample derivation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NeighbourMotion {
+    pub(super) mv: Mv,
+    pub(super) mv1: Mv,
+    pub(super) sub_mv: Mv,
+    pub(super) sub_mv1: Mv,
+    pub(super) warp_params: Option<[i32; 6]>,
+    pub(super) cwp_weight: i16,
+    pub(super) base_r: u32,
+    pub(super) base_c: u32,
+    pub(super) bw4: u8,
+    pub(super) bh4: u8,
+}
+
+pub(super) const EMPTY_NEIGHBOUR_MOTION: NeighbourMotion = NeighbourMotion {
+    mv: Mv::ZERO,
+    mv1: Mv::ZERO,
+    sub_mv: Mv::ZERO,
+    sub_mv1: Mv::ZERO,
+    warp_params: None,
+    cwp_weight: CWP_EQUAL,
+    base_r: 0,
+    base_c: 0,
+    bw4: 0,
+    bh4: 0,
+};
+
+/// Plane footprint guard: neighbour context derivation reads eight bytes per
+/// grid cell, not the full record.
+const _: () = {
+    assert!(size_of::<Option<NeighbourFlags>>() == 8);
+    assert!(size_of::<NeighbourMotion>() == 72);
+};
+
+/// Both halves of one occupied grid position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct NeighbourCell {
+    pub(super) flags: NeighbourFlags,
+    pub(super) motion: NeighbourMotion,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BlockPrecisionRecord {
+    pub(crate) use_most_probable_precision: bool,
+    pub(crate) mv_precision: u8,
+}
+
+impl BlockPrecisionRecord {
+    pub(crate) const fn most_probable(mv_precision: u8) -> Self {
+        Self {
+            use_most_probable_precision: true,
+            mv_precision,
+        }
+    }
+
+    pub(crate) const fn explicit(mv_precision: u8) -> Self {
+        Self {
+            use_most_probable_precision: false,
+            mv_precision,
+        }
+    }
+}
+
+impl Default for BlockPrecisionRecord {
+    fn default() -> Self {
+        Self::most_probable(super::super::read_mv::MV_PRECISION_EIGHTH_PEL)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NeighbourYMode {
+    NewMv,
+    Other,
+}
+
+/// Backing storage of both grid planes, recycled as one unit.
+#[derive(Default)]
+pub(super) struct GridPlanes {
+    pub(super) flags: Vec<Option<NeighbourFlags>>,
+    pub(super) motion: Vec<NeighbourMotion>,
+}
+
+pub(crate) struct NeighbourMvGrid {
+    pub(super) origin_row: usize,
+    pub(super) origin_col: usize,
+    pub(super) mi_rows: usize,
+    pub(super) mi_cols: usize,
+    pub(super) planes: GridPlanes,
+}
+
+impl NeighbourMvGrid {
+    pub(crate) fn new_for_tile(
+        mi_rows: core::ops::Range<usize>,
+        mi_cols: core::ops::Range<usize>,
+    ) -> Option<Self> {
+        let rows = mi_rows.end.checked_sub(mi_rows.start)?;
+        let cols = mi_cols.end.checked_sub(mi_cols.start)?;
+        let cells = rows.checked_mul(cols)?;
+        Some(Self {
+            origin_row: mi_rows.start,
+            origin_col: mi_cols.start,
+            mi_rows: rows,
+            mi_cols: cols,
+            planes: take_neighbour_mv_planes(cells),
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        is_inter: bool,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        precision: BlockPrecisionRecord,
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            is_inter,
+            ref_frame0,
+            ref_frame1,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            MotionMode::Simple,
+            None,
+            false,
+            precision,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_global_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        warp_params: [i32; 6],
+        precision: BlockPrecisionRecord,
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            ref_frame0,
+            None,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            MotionMode::Simple,
+            Some(warp_params),
+            false,
+            precision,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_warp_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        motion_mode: MotionMode,
+        warp_params: [i32; 6],
+        precision: BlockPrecisionRecord,
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            ref_frame0,
+            None,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            motion_mode,
+            Some(warp_params),
+            false,
+            precision,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_block_with_warp(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        is_inter: bool,
+        ref_frame0: i8,
+        ref_frame1: Option<i8>,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        motion_mode: MotionMode,
+        warp_params: Option<[i32; 6]>,
+        tip_size_16x16: bool,
+        precision: BlockPrecisionRecord,
+    ) {
+        let flags = NeighbourFlags {
+            bits: NeighbourFlags::flag(is_inter, NeighbourFlags::IS_INTER)
+                | NeighbourFlags::flag(
+                    matches!(y_mode, NeighbourYMode::NewMv),
+                    NeighbourFlags::NEWMV_LIST0,
+                )
+                | NeighbourFlags::flag(skip, NeighbourFlags::SKIP)
+                | NeighbourFlags::flag(use_amvd, NeighbourFlags::USE_AMVD)
+                | NeighbourFlags::flag(tip_size_16x16, NeighbourFlags::TIP_SIZE_16X16),
+            ref_frame0,
+            ref_frame1,
+            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
+            motion_mode,
+            precision,
+        };
+        let motion = NeighbourMotion {
+            mv,
+            mv1: Mv::ZERO,
+            sub_mv: mv,
+            sub_mv1: Mv::ZERO,
+            warp_params,
+            cwp_weight: CWP_EQUAL,
+            base_r: r as u32,
+            base_c: c as u32,
+            bw4: n4w as u8,
+            bh4: n4h as u8,
+        };
+        let per_cell_warp = warp_params.filter(|_| motion_mode.is_warp());
+        self.publish_block(
+            NeighbourCell { flags, motion },
+            (r, c),
+            (n4h, n4w),
+            [per_cell_warp, None],
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_tip_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        y_mode: NeighbourYMode,
+        mv: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        tip_size_16x16: bool,
+        precision: BlockPrecisionRecord,
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        self.record_block_with_warp(
+            r,
+            c,
+            n4w,
+            n4h,
+            true,
+            TIP_REF_FRAME,
+            None,
+            y_mode,
+            mv,
+            skip,
+            interp_filter,
+            use_amvd,
+            MotionMode::Simple,
+            None,
+            tip_size_16x16,
+            precision,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn record_compound_block(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        ref_frame0: i8,
+        ref_frame1: i8,
+        list0_is_newmv: bool,
+        list1_is_newmv: bool,
+        mv0: Mv,
+        mv1: Mv,
+        skip: bool,
+        interp_filter: u8,
+        use_amvd: bool,
+        masked_compound: bool,
+        cwp_weight: i16,
+        skip_mode: bool,
+        precision: BlockPrecisionRecord,
+        warp_params: [Option<[i32; 6]>; 2],
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let flags = NeighbourFlags {
+            bits: NeighbourFlags::IS_INTER
+                | NeighbourFlags::flag(list0_is_newmv, NeighbourFlags::NEWMV_LIST0)
+                | NeighbourFlags::flag(list1_is_newmv, NeighbourFlags::NEWMV_LIST1)
+                | NeighbourFlags::flag(skip_mode, NeighbourFlags::SKIP_MODE)
+                | NeighbourFlags::flag(skip, NeighbourFlags::SKIP)
+                | NeighbourFlags::flag(use_amvd, NeighbourFlags::USE_AMVD)
+                | NeighbourFlags::flag(masked_compound, NeighbourFlags::MASKED_COMPOUND),
+            ref_frame0,
+            ref_frame1: Some(ref_frame1),
+            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
+            motion_mode: if warp_params[0].is_some() || warp_params[1].is_some() {
+                MotionMode::LocalWarp
+            } else {
+                MotionMode::Simple
+            },
+            precision,
+        };
+        let motion = NeighbourMotion {
+            mv: mv0,
+            mv1,
+            sub_mv: mv0,
+            sub_mv1: mv1,
+            // Neighbour-facing derivations read only the first model (AVM `wm_params[0]`).
+            warp_params: warp_params[0],
+            cwp_weight,
+            base_r: r as u32,
+            base_c: c as u32,
+            bw4: n4w as u8,
+            bh4: n4h as u8,
+        };
+        self.publish_block(
+            NeighbourCell { flags, motion },
+            (r, c),
+            (n4h, n4w),
+            warp_params,
+        );
+    }
+
+    fn publish_block(
+        &mut self,
+        cell: NeighbourCell,
+        base: (usize, usize),
+        size: (usize, usize),
+        warp_params: [Option<[i32; 6]>; 2],
+    ) {
+        let row_end = self.origin_row.saturating_add(self.mi_rows);
+        let col_end = self.origin_col.saturating_add(self.mi_cols);
+        let rows = base.0.max(self.origin_row)..base.0.saturating_add(size.0).min(row_end);
+        let cols = base.1.max(self.origin_col)..base.1.saturating_add(size.1).min(col_end);
+        if rows.is_empty() || cols.is_empty() {
+            return;
+        }
+        self.publish_flags(cell.flags, rows.clone(), cols.clone());
+        self.publish_motion(cell.motion, base, rows, cols, warp_params);
+    }
+
+    fn publish_flags(&mut self, flags: NeighbourFlags, rows: Range<usize>, cols: Range<usize>) {
+        for rr in rows {
+            let Some(span) = self.row_span(rr, &cols) else {
+                continue;
+            };
+            if let Some(slots) = self.planes.flags.get_mut(span) {
+                slots.fill(Some(flags));
+            }
+        }
+    }
+
+    fn publish_motion(
+        &mut self,
+        motion: NeighbourMotion,
+        base: (usize, usize),
+        rows: Range<usize>,
+        cols: Range<usize>,
+        warp_params: [Option<[i32; 6]>; 2],
+    ) {
+        for rr in rows {
+            let Some(span) = self.row_span(rr, &cols) else {
+                continue;
+            };
+            let Some(slots) = self.planes.motion.get_mut(span) else {
+                continue;
+            };
+            if warp_params[0].is_none() && warp_params[1].is_none() {
+                slots.fill(motion);
+                continue;
+            }
+            for (slot, cc) in slots.iter_mut().zip(cols.clone()) {
+                *slot = motion;
+                if let Some(params) = warp_params[0] {
+                    slot.sub_mv = warp_sub_mv_at(params, base.0, base.1, rr, cc);
+                }
+                if let Some(params) = warp_params[1] {
+                    slot.sub_mv1 = warp_sub_mv_at(params, base.0, base.1, rr, cc);
+                }
+            }
+        }
+    }
+
+    /// Plane index range covering `cols` on grid row `rr`.
+    fn row_span(&self, rr: usize, cols: &Range<usize>) -> Option<Range<usize>> {
+        let row_base = rr.checked_sub(self.origin_row)?.checked_mul(self.mi_cols)?;
+        let start = row_base.checked_add(cols.start.checked_sub(self.origin_col)?)?;
+        let end = row_base.checked_add(cols.end.checked_sub(self.origin_col)?)?;
+        Some(start..end)
+    }
+
+    fn index(&self, r: i32, c: i32) -> Option<usize> {
+        if r < 0 || c < 0 {
+            return None;
+        }
+        let r = (r as usize).checked_sub(self.origin_row)?;
+        let c = (c as usize).checked_sub(self.origin_col)?;
+        if r >= self.mi_rows || c >= self.mi_cols {
+            return None;
+        }
+        r.checked_mul(self.mi_cols)?.checked_add(c)
+    }
+
+    /// Reads the flag half only; motion memory is not touched.
+    pub(super) fn flags_at(&self, r: i32, c: i32) -> Option<NeighbourFlags> {
+        *self.planes.flags.get(self.index(r, c)?)?
+    }
+
+    pub(super) fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
+        let index = self.index(r, c)?;
+        let flags = (*self.planes.flags.get(index)?)?;
+        let motion = *self.planes.motion.get(index)?;
+        Some(NeighbourCell { flags, motion })
+    }
+
+    pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
+        matches!(self.flags_at(r, c), Some(flags) if flags.ref_frame0 != TIP_REF_FRAME)
+    }
+}

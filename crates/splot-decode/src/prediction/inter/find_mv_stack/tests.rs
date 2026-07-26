@@ -176,7 +176,6 @@ fn record_warp_inter(
 
 #[test]
 fn neighbour_mv_grid_translates_tile_coordinates() {
-    assert_eq!(core::mem::size_of::<Option<NeighbourCell>>(), 80);
     let mut grid = NeighbourMvGrid::new_for_tile(4..8, 8..12).unwrap();
     grid.record_block(
         5,
@@ -194,10 +193,10 @@ fn neighbour_mv_grid_translates_tile_coordinates() {
         BlockPrecisionRecord::default(),
     );
     assert_eq!(
-        grid.get(5, 9).map(|cell| cell.mv),
+        grid.get(5, 9).map(|cell| cell.motion.mv),
         Some(Mv { row: 4, col: 8 })
     );
-    assert_eq!(grid.get(6, 10).map(|cell| cell.base_r), Some(5));
+    assert_eq!(grid.get(6, 10).map(|cell| cell.motion.base_r), Some(5));
     assert_eq!(grid.get(3, 9), None);
     assert_eq!(grid.get(5, 7), None);
 }
@@ -1900,7 +1899,7 @@ fn row_above_seed_walk_uses_tile_global_right_edge() {
     );
 
     let mut visited = Vec::new();
-    seed_walk_from_row_above(&grid, 16, 16, 16, |cell| visited.push(cell.mv));
+    seed_walk_from_row_above(&grid, 16, 16, 16, |cell| visited.push(cell.motion.mv));
 
     assert_eq!(visited, [expected]);
 }
@@ -2403,10 +2402,10 @@ fn compound_warp_cells_expose_the_first_model_and_per_list_sub_mvs() {
     );
 
     let cell = grid.get(1, 1).unwrap();
-    assert_eq!(cell.motion_mode, MotionMode::LocalWarp);
-    assert_eq!(cell.warp_params, Some(model0));
-    assert_eq!(cell.sub_mv, warp_sub_mv_at(model0, 0, 0, 1, 1));
-    assert_eq!(cell.sub_mv1, warp_sub_mv_at(model1, 0, 0, 1, 1));
+    assert_eq!(cell.flags.motion_mode, MotionMode::LocalWarp);
+    assert_eq!(cell.motion.warp_params, Some(model0));
+    assert_eq!(cell.motion.sub_mv, warp_sub_mv_at(model0, 0, 0, 1, 1));
+    assert_eq!(cell.motion.sub_mv1, warp_sub_mv_at(model1, 0, 0, 1, 1));
 
     let mut bank = WarpParamBank::new();
     bank.reset_for_leaf(&grid, 2, 0, 2);

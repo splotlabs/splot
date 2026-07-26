@@ -80,10 +80,13 @@ const MI_SIZE: i32 = 4;
 mod derived;
 mod extra_search;
 mod mv_grid_pool;
+mod neighbour_grid;
 mod temporal;
 mod warp_bank;
 use derived::{CompoundScanState, DerivedMvState};
 use extra_search::{compound_extra_search, extra_search};
+pub(crate) use neighbour_grid::{BlockPrecisionRecord, NeighbourMvGrid, NeighbourYMode};
+use neighbour_grid::{EMPTY_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use temporal::{
     OrderHintMvContext, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, reference_order_hints, tip_reference_pair_from_hints,
@@ -106,466 +109,8 @@ impl MotionMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NeighbourCell {
-    flags: u8,
-    ref_frame0: i8,
-    ref_frame1: Option<i8>,
-    mv: Mv,
-    mv1: Mv,
-    interp_filter: u8,
-    cwp_weight: i16,
-    motion_mode: MotionMode,
-    warp_params: Option<[i32; 6]>,
-    sub_mv: Mv,
-    sub_mv1: Mv,
-    base_r: u32,
-    base_c: u32,
-    bw4: u8,
-    bh4: u8,
-    precision: BlockPrecisionRecord,
-}
-
-impl NeighbourCell {
-    const IS_INTER: u8 = 1 << 0;
-    const NEWMV_LIST0: u8 = 1 << 1;
-    const NEWMV_LIST1: u8 = 1 << 2;
-    const SKIP_MODE: u8 = 1 << 3;
-    const SKIP: u8 = 1 << 4;
-    const USE_AMVD: u8 = 1 << 5;
-    const MASKED_COMPOUND: u8 = 1 << 6;
-    const TIP_SIZE_16X16: u8 = 1 << 7;
-
-    const fn flag(enabled: bool, mask: u8) -> u8 {
-        if enabled { mask } else { 0 }
-    }
-
-    const fn is_inter(&self) -> bool {
-        self.flags & Self::IS_INTER != 0
-    }
-
-    const fn newmv_for_list0(&self) -> bool {
-        self.flags & Self::NEWMV_LIST0 != 0
-    }
-
-    const fn newmv_for_list1(&self) -> bool {
-        self.flags & Self::NEWMV_LIST1 != 0
-    }
-
-    const fn skip_mode(&self) -> bool {
-        self.flags & Self::SKIP_MODE != 0
-    }
-
-    const fn skip(&self) -> bool {
-        self.flags & Self::SKIP != 0
-    }
-
-    const fn use_amvd(&self) -> bool {
-        self.flags & Self::USE_AMVD != 0
-    }
-
-    const fn masked_compound(&self) -> bool {
-        self.flags & Self::MASKED_COMPOUND != 0
-    }
-
-    const fn tip_size_16x16(&self) -> bool {
-        self.flags & Self::TIP_SIZE_16X16 != 0
-    }
-
-    const fn is_warp(self) -> bool {
-        self.motion_mode.is_warp()
-    }
-}
-
-const EMPTY_NEIGHBOUR_CELL: NeighbourCell = NeighbourCell {
-    flags: 0,
-    ref_frame0: -1,
-    ref_frame1: None,
-    mv: Mv::ZERO,
-    mv1: Mv::ZERO,
-    interp_filter: SWITCHABLE_FILTERS,
-    cwp_weight: CWP_EQUAL,
-    motion_mode: MotionMode::Simple,
-    warp_params: None,
-    sub_mv: Mv::ZERO,
-    sub_mv1: Mv::ZERO,
-    base_r: 0,
-    base_c: 0,
-    bw4: 0,
-    bh4: 0,
-    precision: BlockPrecisionRecord {
-        use_most_probable_precision: false,
-        mv_precision: 0,
-    },
-};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct BlockPrecisionRecord {
-    pub(crate) use_most_probable_precision: bool,
-    pub(crate) mv_precision: u8,
-}
-
-impl BlockPrecisionRecord {
-    pub(crate) const fn most_probable(mv_precision: u8) -> Self {
-        Self {
-            use_most_probable_precision: true,
-            mv_precision,
-        }
-    }
-
-    pub(crate) const fn explicit(mv_precision: u8) -> Self {
-        Self {
-            use_most_probable_precision: false,
-            mv_precision,
-        }
-    }
-}
-
-impl Default for BlockPrecisionRecord {
-    fn default() -> Self {
-        Self::most_probable(super::read_mv::MV_PRECISION_EIGHTH_PEL)
-    }
-}
-
 const SWITCHABLE_FILTERS: u8 = 3;
 const INTER_FILTER_COMP_OFFSET: usize = SWITCHABLE_FILTERS as usize + 1;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NeighbourYMode {
-    NewMv,
-    Other,
-}
-
-pub(crate) struct NeighbourMvGrid {
-    origin_row: usize,
-    origin_col: usize,
-    mi_rows: usize,
-    mi_cols: usize,
-    cells: Vec<Option<NeighbourCell>>,
-}
-
-impl NeighbourMvGrid {
-    pub(crate) fn new_for_tile(
-        mi_rows: core::ops::Range<usize>,
-        mi_cols: core::ops::Range<usize>,
-    ) -> Option<Self> {
-        let rows = mi_rows.end.checked_sub(mi_rows.start)?;
-        let cols = mi_cols.end.checked_sub(mi_cols.start)?;
-        let cells = rows.checked_mul(cols)?;
-        Some(Self {
-            origin_row: mi_rows.start,
-            origin_col: mi_cols.start,
-            mi_rows: rows,
-            mi_cols: cols,
-            cells: mv_grid_pool::take_neighbour_mv_cells(cells),
-        })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        is_inter: bool,
-        ref_frame0: i8,
-        ref_frame1: Option<i8>,
-        y_mode: NeighbourYMode,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        precision: BlockPrecisionRecord,
-    ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        self.record_block_with_warp(
-            r,
-            c,
-            n4w,
-            n4h,
-            is_inter,
-            ref_frame0,
-            ref_frame1,
-            y_mode,
-            mv,
-            skip,
-            interp_filter,
-            use_amvd,
-            MotionMode::Simple,
-            None,
-            false,
-            precision,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_global_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        ref_frame0: i8,
-        y_mode: NeighbourYMode,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        warp_params: [i32; 6],
-        precision: BlockPrecisionRecord,
-    ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        self.record_block_with_warp(
-            r,
-            c,
-            n4w,
-            n4h,
-            true,
-            ref_frame0,
-            None,
-            y_mode,
-            mv,
-            skip,
-            interp_filter,
-            use_amvd,
-            MotionMode::Simple,
-            Some(warp_params),
-            false,
-            precision,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_warp_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        ref_frame0: i8,
-        y_mode: NeighbourYMode,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        motion_mode: MotionMode,
-        warp_params: [i32; 6],
-        precision: BlockPrecisionRecord,
-    ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        self.record_block_with_warp(
-            r,
-            c,
-            n4w,
-            n4h,
-            true,
-            ref_frame0,
-            None,
-            y_mode,
-            mv,
-            skip,
-            interp_filter,
-            use_amvd,
-            motion_mode,
-            Some(warp_params),
-            false,
-            precision,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn record_block_with_warp(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        is_inter: bool,
-        ref_frame0: i8,
-        ref_frame1: Option<i8>,
-        y_mode: NeighbourYMode,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        motion_mode: MotionMode,
-        warp_params: Option<[i32; 6]>,
-        tip_size_16x16: bool,
-        precision: BlockPrecisionRecord,
-    ) {
-        let cell = NeighbourCell {
-            flags: NeighbourCell::flag(is_inter, NeighbourCell::IS_INTER)
-                | NeighbourCell::flag(
-                    matches!(y_mode, NeighbourYMode::NewMv),
-                    NeighbourCell::NEWMV_LIST0,
-                )
-                | NeighbourCell::flag(skip, NeighbourCell::SKIP)
-                | NeighbourCell::flag(use_amvd, NeighbourCell::USE_AMVD)
-                | NeighbourCell::flag(tip_size_16x16, NeighbourCell::TIP_SIZE_16X16),
-            ref_frame0,
-            ref_frame1,
-            mv,
-            mv1: Mv::ZERO,
-            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
-            cwp_weight: CWP_EQUAL,
-            motion_mode,
-            warp_params,
-            sub_mv: mv,
-            sub_mv1: Mv::ZERO,
-            base_r: r as u32,
-            base_c: c as u32,
-            bw4: n4w as u8,
-            bh4: n4h as u8,
-            precision,
-        };
-        let per_cell_warp = warp_params.filter(|_| motion_mode.is_warp());
-        self.publish_block(
-            cell,
-            (r, c),
-            (n4h, n4w),
-            [per_cell_warp, None],
-            ref_frame0 == TIP_REF_FRAME,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_tip_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        y_mode: NeighbourYMode,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        tip_size_16x16: bool,
-        precision: BlockPrecisionRecord,
-    ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        self.record_block_with_warp(
-            r,
-            c,
-            n4w,
-            n4h,
-            true,
-            TIP_REF_FRAME,
-            None,
-            y_mode,
-            mv,
-            skip,
-            interp_filter,
-            use_amvd,
-            MotionMode::Simple,
-            None,
-            tip_size_16x16,
-            precision,
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_compound_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        ref_frame0: i8,
-        ref_frame1: i8,
-        list0_is_newmv: bool,
-        list1_is_newmv: bool,
-        mv0: Mv,
-        mv1: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        masked_compound: bool,
-        cwp_weight: i16,
-        skip_mode: bool,
-        precision: BlockPrecisionRecord,
-        warp_params: [Option<[i32; 6]>; 2],
-    ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        let cell = NeighbourCell {
-            flags: NeighbourCell::IS_INTER
-                | NeighbourCell::flag(list0_is_newmv, NeighbourCell::NEWMV_LIST0)
-                | NeighbourCell::flag(list1_is_newmv, NeighbourCell::NEWMV_LIST1)
-                | NeighbourCell::flag(skip_mode, NeighbourCell::SKIP_MODE)
-                | NeighbourCell::flag(skip, NeighbourCell::SKIP)
-                | NeighbourCell::flag(use_amvd, NeighbourCell::USE_AMVD)
-                | NeighbourCell::flag(masked_compound, NeighbourCell::MASKED_COMPOUND),
-            ref_frame0,
-            ref_frame1: Some(ref_frame1),
-            mv: mv0,
-            mv1,
-            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
-            cwp_weight,
-            motion_mode: if warp_params[0].is_some() || warp_params[1].is_some() {
-                MotionMode::LocalWarp
-            } else {
-                MotionMode::Simple
-            },
-            // Neighbour-facing derivations read only the first model (AVM `wm_params[0]`).
-            warp_params: warp_params[0],
-            sub_mv: mv0,
-            sub_mv1: mv1,
-            base_r: r as u32,
-            base_c: c as u32,
-            bw4: n4w as u8,
-            bh4: n4h as u8,
-            precision,
-        };
-        self.publish_block(cell, (r, c), (n4h, n4w), warp_params, false);
-    }
-
-    fn publish_block(
-        &mut self,
-        cell: NeighbourCell,
-        base: (usize, usize),
-        size: (usize, usize),
-        warp_params: [Option<[i32; 6]>; 2],
-        _dense: bool,
-    ) {
-        let row_end = self.origin_row.saturating_add(self.mi_rows);
-        let col_end = self.origin_col.saturating_add(self.mi_cols);
-        let rows = base.0.max(self.origin_row)..base.0.saturating_add(size.0).min(row_end);
-        let cols = base.1.max(self.origin_col)..base.1.saturating_add(size.1).min(col_end);
-        if rows.is_empty() || cols.is_empty() {
-            return;
-        }
-        for rr in rows {
-            for cc in cols.clone() {
-                let mut cell = cell;
-                if let Some(params) = warp_params[0] {
-                    cell.sub_mv = warp_sub_mv_at(params, base.0, base.1, rr, cc);
-                }
-                if let Some(params) = warp_params[1] {
-                    cell.sub_mv1 = warp_sub_mv_at(params, base.0, base.1, rr, cc);
-                }
-                self.cells[(rr - self.origin_row) * self.mi_cols + cc - self.origin_col] =
-                    Some(cell);
-            }
-        }
-    }
-
-    fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
-        if r < 0 || c < 0 {
-            return None;
-        }
-        let (r, c) = (r as usize, c as usize);
-        let r = r.checked_sub(self.origin_row)?;
-        let c = c.checked_sub(self.origin_col)?;
-        if r >= self.mi_rows || c >= self.mi_cols {
-            return None;
-        }
-        self.cells[r * self.mi_cols + c]
-    }
-    pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
-        matches!(self.get(r, c), Some(cell) if cell.ref_frame0 != TIP_REF_FRAME)
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MvBlockContext {
@@ -600,10 +145,10 @@ impl RelativeProbe {
         }
     }
 
-    fn cell(self, grid: &NeighbourMvGrid, block: &MvBlockContext) -> Option<NeighbourCell> {
+    fn flags(self, grid: &NeighbourMvGrid, block: &MvBlockContext) -> Option<NeighbourFlags> {
         let row = block.mi_row as i32 + self.delta_row;
         let col = block.mi_col as i32 + self.delta_col;
-        grid.get(row, col)
+        grid.flags_at(row, col)
     }
 
     fn stack_cell(
@@ -630,13 +175,13 @@ impl RelativeProbe {
         (row, col, delta_col)
     }
 
-    fn warp_context_cell(
+    fn warp_context_flags(
         self,
         grid: &NeighbourMvGrid,
         block: &MvBlockContext,
-    ) -> Option<NeighbourCell> {
+    ) -> Option<NeighbourFlags> {
         let (delta_row, delta_col) = self.warp_context_delta(block);
-        grid.get(
+        grid.flags_at(
             block.mi_row as i32 + delta_row,
             block.mi_col as i32 + delta_col,
         )
@@ -708,16 +253,16 @@ fn optional_probe(enabled: bool, delta_row: i32, delta_col: i32) -> Option<Relat
     enabled.then_some(RelativeProbe::new(delta_row, delta_col))
 }
 
-fn matches_block_ref(cell: NeighbourCell, block: &MvBlockContext) -> bool {
+fn matches_block_ref(cell: NeighbourFlags, block: &MvBlockContext) -> bool {
     neighbour_matches_ref(cell, block.ref_frame0)
 }
 
-fn neighbour_matches_ref(cell: NeighbourCell, ref_frame: i8) -> bool {
+fn neighbour_matches_ref(cell: NeighbourFlags, ref_frame: i8) -> bool {
     cell.is_inter() && (cell.ref_frame0 == ref_frame || cell.ref_frame1 == Some(ref_frame))
 }
 
 fn mode_ctx_match_newmv(
-    cell: NeighbourCell,
+    cell: NeighbourFlags,
     block: &MvBlockContext,
     tip_ref_pair: Option<(i8, i8)>,
 ) -> Option<bool> {
@@ -770,7 +315,7 @@ pub(crate) fn find_mode_ctx_with_tip(
     let mut found = [false; 4];
 
     for (slot, probe) in found.iter_mut().zip(immediate_spatial_probes(block)) {
-        let Some(cell) = probe.cell(grid, block) else {
+        let Some(cell) = probe.flags(grid, block) else {
             continue;
         };
         let Some(is_newmv) = mode_ctx_match_newmv(cell, block, tip_ref_pair) else {
@@ -785,7 +330,7 @@ pub(crate) fn find_mode_ctx_with_tip(
     let mut warp_sample_found1 = false;
     let mut extend_delta = None;
     for probe in warp_context_spatial_probes(block).into_iter().flatten() {
-        let Some(cell) = probe.warp_context_cell(grid, block) else {
+        let Some(cell) = probe.warp_context_flags(grid, block) else {
             continue;
         };
         if matches_block_ref(cell, block) {
@@ -824,9 +369,9 @@ pub(crate) struct BlockNeighbourContext {
     pub(crate) skip_ctx: usize,
     pub(crate) has_neighbour: bool,
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
-    cells: [NeighbourCell; 2],
+    cells: [NeighbourFlags; 2],
     cell_count: usize,
-    npos_cells: [NeighbourCell; 2],
+    npos_cells: [NeighbourFlags; 2],
     npos_count: usize,
 }
 
@@ -1090,7 +635,7 @@ pub(crate) fn block_neighbour_ctx(
 }
 
 fn is_backward_ref_frame(
-    cell: NeighbourCell,
+    cell: NeighbourFlags,
     ref_frame_idx: &[u32],
     ref_order_hint: &[u32],
     current_order_hint: i32,
@@ -1114,9 +659,9 @@ fn is_backward_ref_frame(
 }
 
 struct NeighbourContextLists {
-    buf: [NeighbourCell; 2],
+    buf: [NeighbourFlags; 2],
     buf_len: usize,
-    npos: [NeighbourCell; 2],
+    npos: [NeighbourFlags; 2],
     npos_len: usize,
 }
 
@@ -1125,14 +670,14 @@ fn collect_neighbour_context_cells(
     block: &MvBlockContext,
 ) -> NeighbourContextLists {
     let mut lists = NeighbourContextLists {
-        buf: [EMPTY_NEIGHBOUR_CELL; 2],
+        buf: [EMPTY_NEIGHBOUR_FLAGS; 2],
         buf_len: 0,
-        npos: [EMPTY_NEIGHBOUR_CELL; 2],
+        npos: [EMPTY_NEIGHBOUR_FLAGS; 2],
         npos_len: 0,
     };
 
     for probe in immediate_spatial_probes(block) {
-        let Some(cell) = probe.cell(grid, block) else {
+        let Some(cell) = probe.flags(grid, block) else {
             continue;
         };
         if lists.buf_len < lists.buf.len() {
@@ -1243,15 +788,15 @@ pub(crate) fn extend_warp_neighbour_params(
         block.mi_row as i32 + delta_row,
         block.mi_col as i32 + delta_col,
     )?;
-    if cell.is_warp()
-        && let Some(params) = cell.warp_params
+    if cell.flags.is_warp()
+        && let Some(params) = cell.motion.warp_params
     {
         return Some(params);
     }
-    let mv = if cell.ref_frame0 == block.ref_frame0 {
-        cell.mv
-    } else if cell.ref_frame1 == Some(block.ref_frame0) {
-        cell.mv1
+    let mv = if cell.flags.ref_frame0 == block.ref_frame0 {
+        cell.motion.mv
+    } else if cell.flags.ref_frame1 == Some(block.ref_frame0) {
+        cell.motion.mv1
     } else {
         return None;
     };
@@ -1291,15 +836,16 @@ pub(crate) fn find_warp_samples(
             return;
         };
         let lists = [
-            (cell.ref_frame0 == target_ref && cell.is_inter()).then_some(cell.mv),
-            (cell.ref_frame1 == Some(target_ref)).then_some(cell.mv1),
+            (cell.flags.ref_frame0 == target_ref && cell.flags.is_inter())
+                .then_some(cell.motion.mv),
+            (cell.flags.ref_frame1 == Some(target_ref)).then_some(cell.motion.mv1),
         ];
         for mv in lists.into_iter().flatten() {
             if samples.len() >= LEAST_SQUARES_SAMPLES_MAX {
                 return;
             }
-            let mid_y = (cell.base_r * 4 + u32::from(cell.bh4) * 2) as i32 - 1;
-            let mid_x = (cell.base_c * 4 + u32::from(cell.bw4) * 2) as i32 - 1;
+            let mid_y = (cell.motion.base_r * 4 + u32::from(cell.motion.bh4) * 2) as i32 - 1;
+            let mid_x = (cell.motion.base_c * 4 + u32::from(cell.motion.bw4) * 2) as i32 - 1;
             let _ =
                 samples.try_push([mid_y * 8, mid_x * 8, mid_y * 8 + mv.row, mid_x * 8 + mv.col]);
         }
@@ -1316,7 +862,9 @@ pub(crate) fn find_warp_samples(
         if col % 2 == 0 {
             return true;
         }
-        let src_w4 = grid.get(mi_row - 1, col).map_or(0, |cell| cell.bw4 as i32);
+        let src_w4 = grid
+            .get(mi_row - 1, col)
+            .map_or(0, |cell| cell.motion.bw4 as i32);
         if src_w4 == 1 {
             return false;
         }
@@ -1327,7 +875,7 @@ pub(crate) fn find_warp_samples(
     if mi_row > 0 {
         let col_offset = grid
             .get(mi_row - 1, mi_col)
-            .map_or(0, |cell| cell.base_c as i32 - mi_col);
+            .map_or(0, |cell| cell.motion.base_c as i32 - mi_col);
         if col_offset < 0 {
             do_top_left = false;
         }
@@ -1336,7 +884,7 @@ pub(crate) fn find_warp_samples(
         while i < limit {
             let src_w = grid
                 .get(mi_row - 1, mi_col + i)
-                .map_or(1, |cell| (cell.bw4 as i32).max(1));
+                .map_or(1, |cell| (cell.motion.bw4 as i32).max(1));
             if above_sample_stored(i) {
                 add_sample(&mut samples, -1, i);
             }
@@ -1347,7 +895,7 @@ pub(crate) fn find_warp_samples(
     if mi_col > 0 {
         let row_offset = grid
             .get(mi_row, mi_col - 1)
-            .map_or(0, |cell| cell.base_r as i32 - mi_row);
+            .map_or(0, |cell| cell.motion.base_r as i32 - mi_row);
         if row_offset < 0 {
             do_top_left = false;
         }
@@ -1356,7 +904,7 @@ pub(crate) fn find_warp_samples(
         while i < limit {
             let src_h = grid
                 .get(mi_row + i, mi_col - 1)
-                .map_or(1, |cell| (cell.bh4 as i32).max(1));
+                .map_or(1, |cell| (cell.motion.bh4 as i32).max(1));
             add_sample(&mut samples, i, -1);
             i += src_h;
         }
@@ -1460,11 +1008,11 @@ impl RefMvBank {
         }
         seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
             self.update(
-                cell.ref_frame0,
-                cell.ref_frame1,
-                cell.mv,
-                cell.ref_frame1.map(|_| cell.mv1),
-                cell.cwp_weight,
+                cell.flags.ref_frame0,
+                cell.flags.ref_frame1,
+                cell.motion.mv,
+                cell.flags.ref_frame1.map(|_| cell.motion.mv1),
+                cell.motion.cwp_weight,
                 false,
             );
         });
@@ -1683,11 +1231,11 @@ fn seed_walk_from_row_above(
         let cand_col2 = (cand_col >> 1) << 1;
         let mut step = 1i32;
         if let Some(cell) = grid.get(cand_row, cand_col2) {
-            if cell.is_inter() {
+            if cell.flags.is_inter() {
                 row_hits += 1;
                 visit(&cell);
             }
-            step = (cell.bw4 as i32).max(1);
+            step = (cell.motion.bw4 as i32).max(1);
         }
         cand_col += step;
     }
@@ -1957,7 +1505,7 @@ fn scan_compound_mv_stack_col(
         let Some(left) = grid.get(mv_row, block.mi_col as i32 - 1) else {
             continue;
         };
-        if cell.base_c != left.base_c {
+        if cell.motion.base_c != left.motion.base_c {
             scan_compound_mv_stack_probe(
                 grid,
                 block,
@@ -1982,45 +1530,46 @@ fn scan_compound_mv_stack_probe(
     let Some(ref_frame1) = block.ref_frame1 else {
         return;
     };
-    if !cell.is_inter() {
+    if !cell.flags.is_inter() {
         return;
     }
-    let candidate = if cell.ref_frame0 == block.ref_frame0 && cell.ref_frame1 == Some(ref_frame1) {
-        CompoundMvCandidate {
-            mvs: [cell.sub_mv, cell.sub_mv1],
-            cwp_weight: cell.cwp_weight,
-        }
-    } else if cell.ref_frame0 == TIP_REF_FRAME {
-        let Some(temporal) = temporal else {
+    let candidate =
+        if cell.flags.ref_frame0 == block.ref_frame0 && cell.flags.ref_frame1 == Some(ref_frame1) {
+            CompoundMvCandidate {
+                mvs: [cell.motion.sub_mv, cell.motion.sub_mv1],
+                cwp_weight: cell.motion.cwp_weight,
+            }
+        } else if cell.flags.ref_frame0 == TIP_REF_FRAME {
+            let Some(temporal) = temporal else {
+                return;
+            };
+            let Some(tip_refs) = temporal.tip_references() else {
+                return;
+            };
+            if cell.flags.ref_frame0 != TIP_REF_FRAME
+                || cell.flags.ref_frame1.is_some()
+                || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
+            {
+                return;
+            }
+            let Some(mvs) = temporal.tip_spatial_mvs(grid, block, probe, cell) else {
+                return;
+            };
+            CompoundMvCandidate {
+                mvs,
+                cwp_weight: CWP_EQUAL,
+            }
+        } else {
+            state.derived.add_spatial(
+                block,
+                [
+                    Some((cell.flags.ref_frame0, cell.motion.sub_mv)),
+                    cell.flags.ref_frame1.map(|r| (r, cell.motion.sub_mv1)),
+                ],
+                temporal,
+            );
             return;
         };
-        let Some(tip_refs) = temporal.tip_references() else {
-            return;
-        };
-        if cell.ref_frame0 != TIP_REF_FRAME
-            || cell.ref_frame1.is_some()
-            || (tip_refs.past_ref, tip_refs.future_ref) != (block.ref_frame0, ref_frame1)
-        {
-            return;
-        }
-        let Some(mvs) = temporal.tip_spatial_mvs(grid, block, probe, cell) else {
-            return;
-        };
-        CompoundMvCandidate {
-            mvs,
-            cwp_weight: CWP_EQUAL,
-        }
-    } else {
-        state.derived.add_spatial(
-            block,
-            [
-                Some((cell.ref_frame0, cell.sub_mv)),
-                cell.ref_frame1.map(|r| (r, cell.sub_mv1)),
-            ],
-            temporal,
-        );
-        return;
-    };
     insert_compound_mv_stack_entry(
         &mut state.entries,
         &mut state.prune_count,
@@ -2127,7 +1676,7 @@ fn scan_mv_stack_col(
         let Some(left) = grid.get(mv_row, block.mi_col as i32 - 1) else {
             continue;
         };
-        if cell.base_c == left.base_c {
+        if cell.motion.base_c == left.motion.base_c {
             continue;
         }
         scan_mv_stack_probe(
@@ -2165,8 +1714,8 @@ fn scan_mv_stack_probe(
 
     let (_, _, adjusted_delta_col) = probe.stack_target(block);
     let offsets = (probe.delta_row, adjusted_delta_col);
-    if cell.ref_frame0 == TIP_REF_FRAME
-        && cell.ref_frame1.is_none()
+    if cell.flags.ref_frame0 == TIP_REF_FRAME
+        && cell.flags.ref_frame1.is_none()
         && block.ref_frame0 != TIP_REF_FRAME
         && let Some(temporal) = derived.temporal()
         && let Some(candidates) = temporal.tip_spatial_single_candidates(grid, block, probe, cell)
@@ -2180,8 +1729,10 @@ fn scan_mv_stack_probe(
         }
     }
     let candidates = [
-        Some((cell.ref_frame0, cell.sub_mv)),
-        cell.ref_frame1.map(|ref_frame1| (ref_frame1, cell.sub_mv1)),
+        Some((cell.flags.ref_frame0, cell.motion.sub_mv)),
+        cell.flags
+            .ref_frame1
+            .map(|ref_frame1| (ref_frame1, cell.motion.sub_mv1)),
     ];
     for (candidate_ref, candidate_mv) in candidates.into_iter().flatten() {
         if candidate_ref == block.ref_frame0 {
@@ -2376,30 +1927,30 @@ fn warp_corner(
     let Some(cell) = grid.get(mv_row, mv_col2) else {
         return;
     };
-    if !cell.is_inter() || *found >= 3 {
+    if !cell.flags.is_inter() || *found >= 3 {
         return;
     }
     for ref_list in 0..2usize {
         let ref_matches = if ref_list == 0 {
-            cell.ref_frame0 == block.ref_frame0
+            cell.flags.ref_frame0 == block.ref_frame0
         } else {
-            cell.ref_frame1 == Some(block.ref_frame0)
+            cell.flags.ref_frame1 == Some(block.ref_frame0)
         };
         if !ref_matches {
             continue;
         }
-        let corner_mv = if cell.is_warp() {
+        let corner_mv = if cell.flags.is_warp() {
             if ref_list > 0 {
                 return;
             }
-            let Some(params) = cell.warp_params else {
+            let Some(params) = cell.motion.warp_params else {
                 return;
             };
             warp_motion_vector_at(params, block, mv_row + 1, mv_col + 1)
         } else if ref_list == 0 {
-            cell.sub_mv
+            cell.motion.sub_mv
         } else {
-            cell.sub_mv1
+            cell.motion.sub_mv1
         };
         pts[*found] = [(mv_row + 1) * 4, (mv_col + 1) * 4];
         mvs[*found] = [corner_mv.row, corner_mv.col];
