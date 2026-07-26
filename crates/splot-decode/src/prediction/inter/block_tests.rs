@@ -24,7 +24,7 @@ use crate::bitstream::tile_payload::{
 use crate::error::DecodeError;
 use crate::prediction::inter::{
     BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock,
-    find_mv_stack::{BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid, NeighbourYMode},
+    find_mv_stack::{BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid},
     mc::{CompoundBlend, McBlockRect},
 };
 
@@ -38,7 +38,7 @@ fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestRe
         0,
         8,
         8,
-        NeighbourYMode::Other,
+        false,
         Mv::ZERO,
         false,
         3,
@@ -70,7 +70,7 @@ fn extend_warp_base_rejects_tip_candidate_and_uses_matching_fallback() -> TestRe
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv { row: 8, col: 16 },
         false,
         3,

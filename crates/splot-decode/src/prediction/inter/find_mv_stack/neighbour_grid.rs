@@ -159,10 +159,42 @@ impl Default for BlockPrecisionRecord {
     }
 }
 
+/// Flag-plane inputs for one leaf, all of them syntax the entropy pass reads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum NeighbourYMode {
-    NewMv,
-    Other,
+pub(crate) struct NeighbourFlagSyntax {
+    pub(crate) is_inter: bool,
+    pub(crate) ref_frame0: i8,
+    pub(crate) ref_frame1: Option<i8>,
+    pub(crate) newmv: [bool; 2],
+    pub(crate) skip: bool,
+    pub(crate) skip_mode: bool,
+    pub(crate) use_amvd: bool,
+    pub(crate) masked_compound: bool,
+    pub(crate) tip_size_16x16: bool,
+    pub(crate) interp_filter: u8,
+    pub(crate) motion_mode: MotionMode,
+    pub(crate) precision: BlockPrecisionRecord,
+}
+
+/// AV2 § 5.20.7.14 compound motion mode implied by the presence of a per-list
+/// warp model.
+pub(crate) const fn compound_motion_mode(has_warp_model: bool) -> MotionMode {
+    if has_warp_model {
+        MotionMode::LocalWarp
+    } else {
+        MotionMode::Simple
+    }
+}
+
+/// Motion-plane inputs for one leaf, all of them AV2 § 7.12 resolution output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct NeighbourMotionValues {
+    pub(crate) mv: [Mv; 2],
+    pub(crate) cwp_weight: i16,
+    /// Model the neighbour-facing derivations read (AVM `wm_params[0]`).
+    pub(crate) stored_warp: Option<[i32; 6]>,
+    /// Per-list models driving the § 7.12.2.2 sub-MV splat.
+    pub(crate) splat_warp: [Option<[i32; 6]>; 2],
 }
 
 /// Backing storage of both grid planes, recycled as one unit.
@@ -197,6 +229,67 @@ impl NeighbourMvGrid {
         })
     }
 
+    /// Publishes the flag plane for one leaf. The entropy pass calls this as
+    /// soon as the leaf's syntax is parsed, before any § 7.12 resolution.
+    pub(crate) fn record_flags(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        syntax: NeighbourFlagSyntax,
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
+            return;
+        };
+        let flags = NeighbourFlags {
+            bits: NeighbourFlags::flag(syntax.is_inter, NeighbourFlags::IS_INTER)
+                | NeighbourFlags::flag(syntax.newmv[0], NeighbourFlags::NEWMV_LIST0)
+                | NeighbourFlags::flag(syntax.newmv[1], NeighbourFlags::NEWMV_LIST1)
+                | NeighbourFlags::flag(syntax.skip_mode, NeighbourFlags::SKIP_MODE)
+                | NeighbourFlags::flag(syntax.skip, NeighbourFlags::SKIP)
+                | NeighbourFlags::flag(syntax.use_amvd, NeighbourFlags::USE_AMVD)
+                | NeighbourFlags::flag(syntax.masked_compound, NeighbourFlags::MASKED_COMPOUND)
+                | NeighbourFlags::flag(syntax.tip_size_16x16, NeighbourFlags::TIP_SIZE_16X16),
+            ref_frame0: syntax.ref_frame0,
+            ref_frame1: syntax.ref_frame1,
+            interp_filter: syntax.interp_filter.min(SWITCHABLE_FILTERS),
+            motion_mode: syntax.motion_mode,
+            precision: syntax.precision,
+        };
+        self.publish_flags(flags, rows, cols);
+    }
+
+    /// Publishes the motion plane for one leaf, once § 7.12 resolution has
+    /// produced its motion vectors and warp models.
+    pub(crate) fn record_motion(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        values: NeighbourMotionValues,
+    ) {
+        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
+            return;
+        };
+        let motion = NeighbourMotion {
+            mv: values.mv[0],
+            mv1: values.mv[1],
+            sub_mv: values.mv[0],
+            sub_mv1: values.mv[1],
+            warp_params: values.stored_warp,
+            cwp_weight: values.cwp_weight,
+            base_r: r as u32,
+            base_c: c as u32,
+            bw4: n4w as u8,
+            bh4: n4h as u8,
+        };
+        self.publish_motion(motion, (r, c), rows, cols, values.splat_warp);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_block(
         &mut self,
@@ -207,7 +300,7 @@ impl NeighbourMvGrid {
         is_inter: bool,
         ref_frame0: i8,
         ref_frame1: Option<i8>,
-        y_mode: NeighbourYMode,
+        newmv: bool,
         mv: Mv,
         skip: bool,
         interp_filter: u8,
@@ -223,7 +316,7 @@ impl NeighbourMvGrid {
             is_inter,
             ref_frame0,
             ref_frame1,
-            y_mode,
+            newmv,
             mv,
             skip,
             interp_filter,
@@ -235,43 +328,7 @@ impl NeighbourMvGrid {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn record_global_block(
-        &mut self,
-        r: usize,
-        c: usize,
-        n4w: usize,
-        n4h: usize,
-        ref_frame0: i8,
-        y_mode: NeighbourYMode,
-        mv: Mv,
-        skip: bool,
-        interp_filter: u8,
-        use_amvd: bool,
-        warp_params: [i32; 6],
-        precision: BlockPrecisionRecord,
-    ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        self.record_block_with_warp(
-            r,
-            c,
-            n4w,
-            n4h,
-            true,
-            ref_frame0,
-            None,
-            y_mode,
-            mv,
-            skip,
-            interp_filter,
-            use_amvd,
-            MotionMode::Simple,
-            Some(warp_params),
-            false,
-            precision,
-        );
-    }
-
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_warp_block(
         &mut self,
@@ -280,7 +337,7 @@ impl NeighbourMvGrid {
         n4w: usize,
         n4h: usize,
         ref_frame0: i8,
-        y_mode: NeighbourYMode,
+        newmv: bool,
         mv: Mv,
         skip: bool,
         interp_filter: u8,
@@ -298,7 +355,7 @@ impl NeighbourMvGrid {
             true,
             ref_frame0,
             None,
-            y_mode,
+            newmv,
             mv,
             skip,
             interp_filter,
@@ -320,7 +377,7 @@ impl NeighbourMvGrid {
         is_inter: bool,
         ref_frame0: i8,
         ref_frame1: Option<i8>,
-        y_mode: NeighbourYMode,
+        newmv: bool,
         mv: Mv,
         skip: bool,
         interp_filter: u8,
@@ -330,42 +387,41 @@ impl NeighbourMvGrid {
         tip_size_16x16: bool,
         precision: BlockPrecisionRecord,
     ) {
-        let flags = NeighbourFlags {
-            bits: NeighbourFlags::flag(is_inter, NeighbourFlags::IS_INTER)
-                | NeighbourFlags::flag(
-                    matches!(y_mode, NeighbourYMode::NewMv),
-                    NeighbourFlags::NEWMV_LIST0,
-                )
-                | NeighbourFlags::flag(skip, NeighbourFlags::SKIP)
-                | NeighbourFlags::flag(use_amvd, NeighbourFlags::USE_AMVD)
-                | NeighbourFlags::flag(tip_size_16x16, NeighbourFlags::TIP_SIZE_16X16),
-            ref_frame0,
-            ref_frame1,
-            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
-            motion_mode,
-            precision,
-        };
-        let motion = NeighbourMotion {
-            mv,
-            mv1: Mv::ZERO,
-            sub_mv: mv,
-            sub_mv1: Mv::ZERO,
-            warp_params,
-            cwp_weight: CWP_EQUAL,
-            base_r: r as u32,
-            base_c: c as u32,
-            bw4: n4w as u8,
-            bh4: n4h as u8,
-        };
-        let per_cell_warp = warp_params.filter(|_| motion_mode.is_warp());
-        self.publish_block(
-            NeighbourCell { flags, motion },
-            (r, c),
-            (n4h, n4w),
-            [per_cell_warp, None],
+        self.record_flags(
+            r,
+            c,
+            n4w,
+            n4h,
+            NeighbourFlagSyntax {
+                is_inter,
+                ref_frame0,
+                ref_frame1,
+                newmv: [newmv, false],
+                skip,
+                skip_mode: false,
+                use_amvd,
+                masked_compound: false,
+                tip_size_16x16,
+                interp_filter,
+                motion_mode,
+                precision,
+            },
+        );
+        self.record_motion(
+            r,
+            c,
+            n4w,
+            n4h,
+            NeighbourMotionValues {
+                mv: [mv, Mv::ZERO],
+                cwp_weight: CWP_EQUAL,
+                stored_warp: warp_params,
+                splat_warp: [warp_params.filter(|_| motion_mode.is_warp()), None],
+            },
         );
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_tip_block(
         &mut self,
@@ -373,7 +429,7 @@ impl NeighbourMvGrid {
         c: usize,
         n4w: usize,
         n4h: usize,
-        y_mode: NeighbourYMode,
+        newmv: bool,
         mv: Mv,
         skip: bool,
         interp_filter: u8,
@@ -390,7 +446,7 @@ impl NeighbourMvGrid {
             true,
             TIP_REF_FRAME,
             None,
-            y_mode,
+            newmv,
             mv,
             skip,
             interp_filter,
@@ -402,6 +458,7 @@ impl NeighbourMvGrid {
         );
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn record_compound_block(
         &mut self,
@@ -424,62 +481,57 @@ impl NeighbourMvGrid {
         precision: BlockPrecisionRecord,
         warp_params: [Option<[i32; 6]>; 2],
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
-        let flags = NeighbourFlags {
-            bits: NeighbourFlags::IS_INTER
-                | NeighbourFlags::flag(list0_is_newmv, NeighbourFlags::NEWMV_LIST0)
-                | NeighbourFlags::flag(list1_is_newmv, NeighbourFlags::NEWMV_LIST1)
-                | NeighbourFlags::flag(skip_mode, NeighbourFlags::SKIP_MODE)
-                | NeighbourFlags::flag(skip, NeighbourFlags::SKIP)
-                | NeighbourFlags::flag(use_amvd, NeighbourFlags::USE_AMVD)
-                | NeighbourFlags::flag(masked_compound, NeighbourFlags::MASKED_COMPOUND),
-            ref_frame0,
-            ref_frame1: Some(ref_frame1),
-            interp_filter: interp_filter.min(SWITCHABLE_FILTERS),
-            motion_mode: if warp_params[0].is_some() || warp_params[1].is_some() {
-                MotionMode::LocalWarp
-            } else {
-                MotionMode::Simple
+        self.record_flags(
+            r,
+            c,
+            n4w,
+            n4h,
+            NeighbourFlagSyntax {
+                is_inter: true,
+                ref_frame0,
+                ref_frame1: Some(ref_frame1),
+                newmv: [list0_is_newmv, list1_is_newmv],
+                skip,
+                skip_mode,
+                use_amvd,
+                masked_compound,
+                tip_size_16x16: false,
+                interp_filter,
+                motion_mode: compound_motion_mode(
+                    warp_params[0].is_some() || warp_params[1].is_some(),
+                ),
+                precision,
             },
-            precision,
-        };
-        let motion = NeighbourMotion {
-            mv: mv0,
-            mv1,
-            sub_mv: mv0,
-            sub_mv1: mv1,
-            // Neighbour-facing derivations read only the first model (AVM `wm_params[0]`).
-            warp_params: warp_params[0],
-            cwp_weight,
-            base_r: r as u32,
-            base_c: c as u32,
-            bw4: n4w as u8,
-            bh4: n4h as u8,
-        };
-        self.publish_block(
-            NeighbourCell { flags, motion },
-            (r, c),
-            (n4h, n4w),
-            warp_params,
+        );
+        self.record_motion(
+            r,
+            c,
+            n4w,
+            n4h,
+            NeighbourMotionValues {
+                mv: [mv0, mv1],
+                cwp_weight,
+                // Neighbour-facing derivations read only the first model (AVM `wm_params[0]`).
+                stored_warp: warp_params[0],
+                splat_warp: warp_params,
+            },
         );
     }
 
-    fn publish_block(
-        &mut self,
-        cell: NeighbourCell,
-        base: (usize, usize),
-        size: (usize, usize),
-        warp_params: [Option<[i32; 6]>; 2],
-    ) {
+    /// Plane row and column ranges covered by one leaf, `None` when the leaf
+    /// lies entirely outside this tile's grid.
+    fn footprint(
+        &self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+    ) -> Option<(Range<usize>, Range<usize>)> {
         let row_end = self.origin_row.saturating_add(self.mi_rows);
         let col_end = self.origin_col.saturating_add(self.mi_cols);
-        let rows = base.0.max(self.origin_row)..base.0.saturating_add(size.0).min(row_end);
-        let cols = base.1.max(self.origin_col)..base.1.saturating_add(size.1).min(col_end);
-        if rows.is_empty() || cols.is_empty() {
-            return;
-        }
-        self.publish_flags(cell.flags, rows.clone(), cols.clone());
-        self.publish_motion(cell.motion, base, rows, cols, warp_params);
+        let rows = r.max(self.origin_row)..r.saturating_add(n4h).min(row_end);
+        let cols = c.max(self.origin_col)..c.saturating_add(n4w).min(col_end);
+        (!rows.is_empty() && !cols.is_empty()).then_some((rows, cols))
     }
 
     fn publish_flags(&mut self, flags: NeighbourFlags, rows: Range<usize>, cols: Range<usize>) {

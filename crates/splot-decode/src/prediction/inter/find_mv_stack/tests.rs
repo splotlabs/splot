@@ -82,14 +82,7 @@ fn empty_grid() -> NeighbourMvGrid {
     NeighbourMvGrid::new(MI_DIM, MI_DIM).unwrap()
 }
 
-fn record_inter(
-    grid: &mut NeighbourMvGrid,
-    r: usize,
-    c: usize,
-    mode: NeighbourYMode,
-    mv: Mv,
-    skip: bool,
-) {
+fn record_inter(grid: &mut NeighbourMvGrid, r: usize, c: usize, mode: bool, mv: Mv, skip: bool) {
     record_inter_ref(grid, r, c, 0, mode, mv, skip);
 }
 
@@ -98,7 +91,7 @@ fn record_inter_ref(
     r: usize,
     c: usize,
     ref_frame0: i8,
-    mode: NeighbourYMode,
+    mode: bool,
     mv: Mv,
     skip: bool,
 ) {
@@ -153,7 +146,7 @@ fn record_warp_inter(
     grid: &mut NeighbourMvGrid,
     r: usize,
     c: usize,
-    mode: NeighbourYMode,
+    mode: bool,
     mv: Mv,
     skip: bool,
 ) {
@@ -185,7 +178,7 @@ fn neighbour_mv_grid_translates_tile_coordinates() {
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv { row: 4, col: 8 },
         false,
         SWITCHABLE_FILTERS,
@@ -211,7 +204,7 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
     );
 
     let mut single = empty_grid();
-    record_inter_ref(&mut single, 0, 0, 2, NeighbourYMode::Other, Mv::ZERO, false);
+    record_inter_ref(&mut single, 0, 0, 2, false, Mv::ZERO, false);
     assert_eq!(
         block_neighbour_ctx(&single, &block).skip_mode_ref_pair((0, 1)),
         (0, 1)
@@ -261,7 +254,7 @@ fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
         0,
         N4_32,
         N4_32,
-        NeighbourYMode::NewMv,
+        true,
         Mv::ZERO,
         false,
         SWITCHABLE_FILTERS,
@@ -286,15 +279,7 @@ fn tip_neighbour_matches_its_underlying_compound_reference_pair() {
 fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
     let mut grid = empty_grid();
     let base_mv = Mv { row: 3, col: 4 };
-    record_inter_ref(
-        &mut grid,
-        0,
-        0,
-        TIP_REF_FRAME,
-        NeighbourYMode::Other,
-        base_mv,
-        false,
-    );
+    record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, base_mv, false);
     let references = temporal::TipReferencePair {
         past_ref: 0,
         future_ref: 1,
@@ -333,15 +318,7 @@ fn compound_mv_stack_projects_tip_neighbour_to_its_reference_pair() {
 fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
     let mut grid = empty_grid();
     let base_mv = Mv { row: 3, col: 4 };
-    record_inter_ref(
-        &mut grid,
-        0,
-        0,
-        TIP_REF_FRAME,
-        NeighbourYMode::Other,
-        base_mv,
-        false,
-    );
+    record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, base_mv, false);
     let references = temporal::TipReferencePair {
         past_ref: 0,
         future_ref: 1,
@@ -401,15 +378,7 @@ fn single_mv_stack_projects_tip_neighbour_and_derives_other_side() {
 fn single_mv_stack_derives_tip_neighbour_for_another_reference() {
     let mut grid = empty_grid();
     let base_mv = Mv { row: 3, col: 4 };
-    record_inter_ref(
-        &mut grid,
-        0,
-        0,
-        TIP_REF_FRAME,
-        NeighbourYMode::Other,
-        base_mv,
-        false,
-    );
+    record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, base_mv, false);
     let references = temporal::TipReferencePair {
         past_ref: 1,
         future_ref: 0,
@@ -521,7 +490,7 @@ fn compound_mv_stack_aligns_tip_neighbour_to_its_16x16_unit() {
         0,
         N4_32,
         N4_32,
-        NeighbourYMode::Other,
+        false,
         base_mv,
         false,
         SWITCHABLE_FILTERS,
@@ -656,7 +625,7 @@ fn compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order() {
             true,
             ref_frame,
             None,
-            NeighbourYMode::Other,
+            false,
             mv,
             false,
             SWITCHABLE_FILTERS,
@@ -800,7 +769,7 @@ fn warp_sample_storage_keeps_the_first_eight_samples() {
             true,
             0,
             None,
-            NeighbourYMode::Other,
+            false,
             Mv {
                 row: col as i32,
                 col: -(col as i32),
@@ -877,7 +846,7 @@ fn single_ref_stack_admits_both_lists_from_same_ref_compound_neighbour() {
 
 fn grid_with_block0() -> NeighbourMvGrid {
     let mut grid = empty_grid();
-    record_inter(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true);
+    record_inter(&mut grid, 0, 0, true, BLOCK0_MV, true);
     grid
 }
 
@@ -925,7 +894,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv::ZERO,
         false,
         0,
@@ -940,7 +909,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv::ZERO,
         false,
         1,
@@ -965,7 +934,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv::ZERO,
         false,
         1,
@@ -980,7 +949,7 @@ fn interp_filter_context_uses_matching_reference_neighbours() {
         true,
         1,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv::ZERO,
         false,
         0,
@@ -1016,7 +985,7 @@ fn interp_filter_context_suppresses_above_neighbours_at_sb_top() {
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         BLOCK0_MV,
         false,
         0,
@@ -1048,7 +1017,7 @@ fn amvd_context_counts_same_reference_amvd_neighbours() {
         true,
         0,
         None,
-        NeighbourYMode::NewMv,
+        true,
         Mv::ZERO,
         false,
         SWITCHABLE_FILTERS,
@@ -1063,7 +1032,7 @@ fn amvd_context_counts_same_reference_amvd_neighbours() {
         true,
         1,
         None,
-        NeighbourYMode::NewMv,
+        true,
         Mv::ZERO,
         false,
         SWITCHABLE_FILTERS,
@@ -1120,7 +1089,7 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
 #[test]
 fn warp_mode_context_counts_matching_warp_neighbours() {
     let mut grid = empty_grid();
-    record_warp_inter(&mut grid, 0, 0, NeighbourYMode::Other, BLOCK0_MV, true);
+    record_warp_inter(&mut grid, 0, 0, false, BLOCK0_MV, true);
     let block1 = block_at(0, N4_32);
 
     let ctx = find_mode_ctx(&grid, &block1);
@@ -1159,8 +1128,8 @@ fn block2_predicts_block0_mv_via_above_neighbour() {
 #[test]
 fn block3_predicts_block0_mv_via_above_and_left() {
     let mut grid = grid_with_block0();
-    record_inter(&mut grid, 0, N4_32, NeighbourYMode::Other, BLOCK0_MV, true);
-    record_inter(&mut grid, N4_32, 0, NeighbourYMode::Other, BLOCK0_MV, true);
+    record_inter(&mut grid, 0, N4_32, false, BLOCK0_MV, true);
+    record_inter(&mut grid, N4_32, 0, false, BLOCK0_MV, true);
     let block3 = block_at(N4_32, N4_32);
 
     let ctx = find_mode_ctx(&grid, &block3);
@@ -1198,7 +1167,7 @@ fn intra_neighbour_does_not_contribute() {
         false,
         -1,
         None,
-        NeighbourYMode::Other,
+        false,
         Mv::ZERO,
         false,
         SWITCHABLE_FILTERS,
@@ -1237,7 +1206,7 @@ fn intra_neighbour_does_not_contribute() {
 #[test]
 fn mismatched_reference_neighbour_does_not_contribute() {
     let mut grid = empty_grid();
-    record_inter_ref(&mut grid, 0, 0, 1, NeighbourYMode::NewMv, BLOCK0_MV, true);
+    record_inter_ref(&mut grid, 0, 0, 1, true, BLOCK0_MV, true);
     let block1 = block_at(0, N4_32);
 
     let ctx = find_mode_ctx(&grid, &block1);
@@ -1320,8 +1289,8 @@ fn single_ref_mode_ctx_counts_compound_list1_newmv_when_list1_matches() {
 #[test]
 fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
     let mut grid = empty_grid();
-    record_inter(&mut grid, 0, 0, NeighbourYMode::Other, BLOCK0_MV, true);
-    record_inter(&mut grid, N4_32, 0, NeighbourYMode::Other, BLOCK0_MV, true);
+    record_inter(&mut grid, 0, 0, false, BLOCK0_MV, true);
+    record_inter(&mut grid, N4_32, 0, false, BLOCK0_MV, true);
     let block3 = block_at(N4_32, N4_32);
 
     let stack = find_mv_stack(
@@ -1346,30 +1315,9 @@ fn duplicate_mv_neighbours_merge_to_one_stack_entry() {
 #[test]
 fn distinct_left_and_above_mvs_order_left_before_above() {
     let mut grid = empty_grid();
-    record_inter(
-        &mut grid,
-        0,
-        0,
-        NeighbourYMode::NewMv,
-        Mv { row: 0, col: 64 },
-        true,
-    );
-    record_inter(
-        &mut grid,
-        0,
-        N4_32,
-        NeighbourYMode::NewMv,
-        Mv { row: 0, col: -32 },
-        true,
-    );
-    record_inter(
-        &mut grid,
-        N4_32,
-        0,
-        NeighbourYMode::NewMv,
-        Mv { row: 0, col: 32 },
-        true,
-    );
+    record_inter(&mut grid, 0, 0, true, Mv { row: 0, col: 64 }, true);
+    record_inter(&mut grid, 0, N4_32, true, Mv { row: 0, col: -32 }, true);
+    record_inter(&mut grid, N4_32, 0, true, Mv { row: 0, col: 32 }, true);
     let block3 = block_at(N4_32, N4_32);
 
     let stack = find_mv_stack(
@@ -1459,14 +1407,7 @@ fn empty_sb_grid() -> NeighbourMvGrid {
     NeighbourMvGrid::new(GRID_MI_DIM, GRID_MI_DIM).unwrap()
 }
 
-fn record_sb(
-    grid: &mut NeighbourMvGrid,
-    r: usize,
-    c: usize,
-    mode: NeighbourYMode,
-    mv: Mv,
-    skip: bool,
-) {
+fn record_sb(grid: &mut NeighbourMvGrid, r: usize, c: usize, mode: bool, mv: Mv, skip: bool) {
     grid.record_block(
         r,
         c,
@@ -1487,7 +1428,7 @@ fn record_sb(
 #[test]
 fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
     let mut grid = empty_sb_grid();
-    record_sb(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true);
+    record_sb(&mut grid, 0, 0, true, BLOCK0_MV, true);
     let sb2 = sb_block_at(N4_64, 0);
 
     let ctx = find_mode_ctx(&grid, &sb2);
@@ -1560,9 +1501,9 @@ fn undecoded_later_sb_column_yields_no_candidate() {
 #[test]
 fn bottom_right_sb_predicts_from_decoded_above_and_left() {
     let mut grid = empty_sb_grid();
-    record_sb(&mut grid, 0, 0, NeighbourYMode::NewMv, BLOCK0_MV, true);
-    record_sb(&mut grid, 0, N4_64, NeighbourYMode::Other, BLOCK0_MV, true);
-    record_sb(&mut grid, N4_64, 0, NeighbourYMode::Other, BLOCK0_MV, true);
+    record_sb(&mut grid, 0, 0, true, BLOCK0_MV, true);
+    record_sb(&mut grid, 0, N4_64, false, BLOCK0_MV, true);
+    record_sb(&mut grid, N4_64, 0, false, BLOCK0_MV, true);
     let sb3 = sb_block_at(N4_64, N4_64);
 
     let nctx = block_neighbour_ctx(&grid, &sb3);
@@ -1620,7 +1561,7 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
 #[test]
 fn single_ref_ctx_counts_refs_above_two() {
     let mut grid = empty_grid();
-    record_inter_ref(&mut grid, 0, 0, 2, NeighbourYMode::NewMv, Mv::ZERO, true);
+    record_inter_ref(&mut grid, 0, 0, 2, true, Mv::ZERO, true);
     let block = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block);
 
@@ -1657,7 +1598,7 @@ fn compound_group_idx_ctx_combines_left_masked_compound_probes() {
 #[test]
 fn compound_group_idx_ctx_combines_left_furthest_future_probes() {
     let mut grid = empty_grid();
-    record_inter_ref(&mut grid, 0, 0, 2, NeighbourYMode::Other, Mv::ZERO, false);
+    record_inter_ref(&mut grid, 0, 0, 2, false, Mv::ZERO, false);
     let nctx = block_neighbour_ctx(&grid, &block_at(0, N4_32));
 
     assert_eq!(nctx.compound_group_idx_ctx(false, Some(2)), 5);
@@ -1667,15 +1608,7 @@ fn compound_group_idx_ctx_combines_left_furthest_future_probes() {
 fn compound_group_idx_ctx_combines_two_nonzero_neighbours() {
     let mut grid = empty_grid();
     record_compound_ref(&mut grid, N4_32, 0, 0, 1, true);
-    record_inter_ref(
-        &mut grid,
-        0,
-        N4_32,
-        2,
-        NeighbourYMode::Other,
-        Mv::ZERO,
-        false,
-    );
+    record_inter_ref(&mut grid, 0, N4_32, 2, false, Mv::ZERO, false);
     let nctx = block_neighbour_ctx(&grid, &block_at(N4_32, N4_32));
 
     assert_eq!(nctx.compound_group_idx_ctx(false, Some(2)), 4);
@@ -1692,7 +1625,7 @@ fn warp_stack_orders_spatial_before_bank_and_caps_at_four_without_dedup() {
         N4_32,
         N4_32,
         0,
-        NeighbourYMode::Other,
+        false,
         Mv { row: -8, col: 24 },
         false,
         SWITCHABLE_FILTERS,
@@ -1843,7 +1776,7 @@ fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
         2,
         1,
         0,
-        NeighbourYMode::Other,
+        false,
         Mv { row: 4, col: -12 },
         false,
         SWITCHABLE_FILTERS,
@@ -1890,7 +1823,7 @@ fn row_above_seed_walk_uses_tile_global_right_edge() {
         true,
         0,
         None,
-        NeighbourYMode::Other,
+        false,
         expected,
         false,
         SWITCHABLE_FILTERS,
@@ -1916,7 +1849,7 @@ fn corner_derivation_matches_the_hand_computed_model() {
             true,
             0,
             None,
-            NeighbourYMode::Other,
+            false,
             mv,
             false,
             SWITCHABLE_FILTERS,
@@ -2048,7 +1981,7 @@ fn record_unit_inter_with_ref(
         true,
         ref_frame0,
         None,
-        NeighbourYMode::NewMv,
+        true,
         mv,
         true,
         SWITCHABLE_FILTERS,
@@ -2209,15 +2142,7 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
 #[test]
 fn same_side_spatial_projection_survives_disabled_temporal_scan() {
     let mut grid = empty_grid();
-    record_inter_ref(
-        &mut grid,
-        0,
-        0,
-        1,
-        NeighbourYMode::Other,
-        Mv { row: 8, col: 12 },
-        false,
-    );
+    record_inter_ref(&mut grid, 0, 0, 1, false, Mv { row: 8, col: 12 }, false);
     let block = block_at(0, N4_32);
     let frame_size = (MI_DIM * 4, MI_DIM * 4);
     let context = TemporalMvContext::from_references(
@@ -2264,7 +2189,7 @@ fn record_two_wide_column(grid: &mut NeighbourMvGrid, c: usize, mv: Mv) {
         true,
         0,
         None,
-        NeighbourYMode::NewMv,
+        true,
         mv,
         true,
         SWITCHABLE_FILTERS,
@@ -2338,7 +2263,7 @@ fn scan_col_feeds_warp_stack() {
         2,
         8,
         0,
-        NeighbourYMode::Other,
+        false,
         Mv { row: -8, col: 24 },
         false,
         SWITCHABLE_FILTERS,

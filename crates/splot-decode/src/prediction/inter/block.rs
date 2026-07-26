@@ -21,11 +21,10 @@ use splot_recon::{
 };
 
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, ModeContext, MotionMode,
-    MvBlockContext, NeighbourMvGrid, NeighbourYMode, TIP_REF_FRAME, TemporalMotionBlock,
-    TemporalMotionField, TemporalMvContext, TemporalProjectionConfig, block_neighbour_ctx,
-    find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
-    find_mv_stack_with_temporal, warp_predicted_mv,
+    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MotionMode, MvBlockContext,
+    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    TemporalProjectionConfig, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
+    find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_with_temporal, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -915,7 +914,7 @@ fn decode_block<T: ReconSample>(
                 true,
                 -1,
                 None,
-                NeighbourYMode::Other,
+                false,
                 Mv::ZERO,
                 prelude.skip_flag,
                 interp_filter_no_neighbour_ctx(false) as u8,
@@ -975,7 +974,7 @@ fn decode_block<T: ReconSample>(
                 false,
                 -1,
                 None,
-                NeighbourYMode::Other,
+                false,
                 Mv::ZERO,
                 false,
                 interp_filter_no_neighbour_ctx(false) as u8,
@@ -1066,9 +1065,11 @@ fn decode_block<T: ReconSample>(
             frontier,
             mv_grid,
             temporal_stack_context,
+            temporal_context.order_hint_mv_context(),
             &mut block_ctx,
             &neighbour_ctx,
             ref_mv_bank,
+            warp_param_bank,
             deblock_blocks,
             chroma_deblock_blocks,
             tx_skip_records,
@@ -1077,13 +1078,8 @@ fn decode_block<T: ReconSample>(
             reference,
             num_total_refs,
             skip,
-            n4w,
-            n4h,
-            mi_row,
-            mi_col,
             mi_rows,
             mi_cols,
-            sb_h4,
             max_drl_bits_minus_1,
             drl_reorder,
             residual_tool_policy,
@@ -1149,11 +1145,8 @@ fn decode_block<T: ReconSample>(
             skip,
             n4w,
             n4h,
-            mi_row,
-            mi_col,
             mi_rows,
             mi_cols,
-            sb_h4,
             max_drl_bits_minus_1,
             drl_reorder,
             temporal_first_frame,
@@ -1204,16 +1197,6 @@ fn decode_block<T: ReconSample>(
         SINGLE_REF_FRAME0
     };
     block_ctx.ref_frame0 = ref_frame0;
-    let global_mv = if tip_ref {
-        Mv::ZERO
-    } else {
-        global_motion_mv(
-            core,
-            ref_frame0,
-            &block_ctx,
-            frame_mv_precision(core, tile_offset)?,
-        )
-    };
     let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
     let force_integer_mv = effective_force_integer_mv(core);
     let warp_mode = if tip_ref {
@@ -1239,21 +1222,6 @@ fn decode_block<T: ReconSample>(
                 current_order_hint,
                 ref_frame0,
             );
-        let stack = find_mv_stack_with_temporal(
-            mv_grid,
-            &block_ctx,
-            global_mv,
-            global_motion_model(core, ref_frame0).gm_params,
-            ref_mv_bank
-                .as_ref()
-                .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
-            warp_param_bank,
-            derive_wrl,
-            drl_reorder,
-            temporal_stack_context,
-            Some(temporal_context.order_hint_mv_context()),
-            use_temporal_first,
-        );
         let mv_config = inter_mv_read_config(core, tile_offset)?;
         let motion_mode = if warp_mode == WarpInterMode::WarpNewmv {
             read_warp_newmv_motion_mode_syntax(
@@ -1276,15 +1244,7 @@ fn decode_block<T: ReconSample>(
                     core,
                     &neighbour_ctx,
                     mv_config,
-                    mv_grid,
-                    &block_ctx,
-                    &mode_ctx,
                     motion_mode,
-                    mi_row,
-                    mi_col,
-                    n4w,
-                    n4h,
-                    &stack,
                     mode_ctx.new_mv_context,
                     max_drl_bits_minus_1,
                     tile_offset,
@@ -1298,17 +1258,12 @@ fn decode_block<T: ReconSample>(
                 &neighbour_ctx,
                 mv_config,
                 frontier.b_size.index(),
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                &stack,
                 mode_ctx.new_mv_context,
                 max_drl_bits_minus_1,
                 tile_offset,
             )?,
             (WarpInterMode::Warpmv, _) => {
-                read_warpmv_delta_syntax(cdfs, symbols, mv_config, &block_ctx, &stack, tile_offset)?
+                read_warpmv_delta_syntax(cdfs, symbols, mv_config, tile_offset)?
             }
         };
         let warp_inter_intra = if warp_mode == WarpInterMode::Warpmv {
@@ -1361,36 +1316,6 @@ fn decode_block<T: ReconSample>(
             current_residual_lossless(work_unit),
             tile_offset,
         )?;
-        mv_grid.record_warp_block(
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            ref_frame0,
-            NeighbourYMode::Other,
-            warp.mv,
-            skip == 1,
-            interp_filter_symbol(ReconInterpolationFilter::EightTap),
-            false,
-            motion_mode,
-            warp.warp_params,
-            warp.block_precision,
-        );
-        warp_param_bank.update(ref_frame0, warp.warp_params);
-        if let Some(bank) = ref_mv_bank.as_mut() {
-            bank.update_for_block(
-                ref_frame0,
-                None,
-                warp.mv,
-                None,
-                mc::CWP_EQUAL,
-                mi_row,
-                mi_col,
-                n4w,
-                n4h,
-                sb_h4,
-            );
-        }
         intrabc_state.record_block(
             frontier.r,
             frontier.c,
@@ -1406,22 +1331,46 @@ fn decode_block<T: ReconSample>(
             .mark_inter(),
             tile_offset,
         )?;
-
-        let placed = placed_block(InterBlock {
-            ref_frame0,
-            ref_frame1: None,
-            mv: warp.mv,
-            mv1: Mv::ZERO,
+        let syntax = InterBlockSyntax {
+            block_ctx,
+            motion: InterMotionSyntax::Warp(WarpMotionSyntax {
+                source: warp.source,
+                ref_mv_idx: warp.ref_mv_idx,
+                ref_warp_idx: warp.ref_warp_idx,
+                mvd: warp.mvd,
+                extend_delta: mode_ctx.extend_delta,
+                derive_wrl,
+                use_temporal_first,
+            }),
             interp: ReconInterpolationFilter::EightTap,
-            warp_params: [Some(warp.warp_params), None],
+            precision: warp.precision,
+            skip: skip == 1,
+            use_amvd: false,
+            tip_size_16x16: false,
+            blend: mc::CompoundBlend::default(),
             bawp: BawpSyntax::default(),
             interintra: warp_interintra_mode,
-            compound_blend: mc::CompoundBlend::default(),
             optflow_distances: None,
             residual,
-        });
+        };
+        mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
+        let resolved = resolve_inter_block(
+            &syntax,
+            &mut MvResolutionState {
+                grid: mv_grid,
+                ref_mv_bank,
+                warp_param_bank,
+                core,
+                temporal: temporal_stack_context,
+                order_hints: temporal_context.order_hint_mv_context(),
+                drl_reorder,
+                max_drl_bits_minus_1,
+                frame_precision: frame_mv_precision(core, tile_offset)?,
+                tile_offset,
+            },
+        )?;
         let command = deferred_recon::InterReconCommand::new(
-            placed,
+            placed_block(single_inter_block(syntax, &resolved)),
             deferred_recon::PendingKind::Single,
             block_qindex,
             tile_offset,
@@ -1534,21 +1483,6 @@ fn decode_block<T: ReconSample>(
             current_order_hint,
             ref_frame0,
         );
-    let stack = find_mv_stack_with_temporal(
-        mv_grid,
-        &block_ctx,
-        global_mv,
-        DEFAULT_WARP_PARAMS,
-        ref_mv_bank
-            .as_ref()
-            .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2)),
-        warp_param_bank,
-        false,
-        drl_reorder,
-        temporal_stack_context,
-        Some(temporal_context.order_hint_mv_context()),
-        use_temporal_first,
-    );
 
     let ref_mv_idx = if single_mode == SINGLE_MODE_NEARMV || single_mode == SINGLE_MODE_NEWMV {
         if tip_ref {
@@ -1578,45 +1512,31 @@ fn decode_block<T: ReconSample>(
         tile_offset,
     )?;
 
-    let pred_mv = stack.candidate(ref_mv_idx);
-    let mv = match single_mode {
-        SINGLE_MODE_GLOBALMV => {
-            global_motion_mv(core, ref_frame0, &block_ctx, precision.mv_precision)
-        }
-        SINGLE_MODE_NEARMV => pred_mv,
-        _ => {
-            let config = MvReadConfig::inter(precision.mv_precision);
-            let diff = if use_amvd {
-                let magnitude = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
-                apply_inter_mvd_signs(magnitude, symbols, tile_offset, config, false, 1)?
-            } else {
-                let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
-                apply_inter_mvd_signs(
-                    magnitude,
-                    symbols,
-                    tile_offset,
+    let mvd = if single_mode == SINGLE_MODE_NEWMV {
+        let config = MvReadConfig::inter(precision.mv_precision);
+        if use_amvd {
+            let magnitude = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
+            apply_inter_mvd_signs(magnitude, symbols, tile_offset, config, false, 1)?
+        } else {
+            let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
+            apply_inter_mvd_signs(
+                magnitude,
+                symbols,
+                tile_offset,
+                config,
+                inter_mvd_sign_derivation_allowed(
+                    sequence,
+                    core,
+                    single_mode,
+                    use_amvd,
+                    frame_mv_config,
                     config,
-                    inter_mvd_sign_derivation_allowed(
-                        sequence,
-                        core,
-                        single_mode,
-                        use_amvd,
-                        frame_mv_config,
-                        config,
-                    ),
-                    1,
-                )?
-            };
-            let pred_mv = if use_amvd {
-                pred_mv
-            } else {
-                lowered_pred_mv(precision, pred_mv)
-            };
-            Mv {
-                row: mv_clamp_to_integer(pred_mv.row + diff.row),
-                col: mv_clamp_to_integer(pred_mv.col + diff.col),
-            }
+                ),
+                1,
+            )?
         }
+    } else {
+        Mv::ZERO
     };
     let interp = if tip_ref {
         ReconInterpolationFilter::EightTapSharp
@@ -1679,79 +1599,6 @@ fn decode_block<T: ReconSample>(
         current_residual_lossless(work_unit),
         tile_offset,
     )?;
-    let y_mode = if single_mode == SINGLE_MODE_NEWMV {
-        NeighbourYMode::NewMv
-    } else {
-        NeighbourYMode::Other
-    };
-    let warp_params = if !tip_ref && single_mode == SINGLE_MODE_GLOBALMV {
-        [
-            global_motion_warp(core, ref_frame0, force_integer_mv, n4w, n4h),
-            None,
-        ]
-    } else {
-        [None, None]
-    };
-    if tip_ref {
-        mv_grid.record_tip_block(
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            y_mode,
-            mv,
-            skip == 1,
-            interp_filter_symbol(interp),
-            use_amvd,
-            tip_uses_16x16_units,
-            precision,
-        );
-    } else if let Some(params) = warp_params[0] {
-        mv_grid.record_global_block(
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            ref_frame0,
-            y_mode,
-            mv,
-            skip == 1,
-            interp_filter_symbol(interp),
-            use_amvd,
-            params,
-            precision,
-        );
-    } else {
-        mv_grid.record_block(
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            true,
-            ref_frame0,
-            None,
-            y_mode,
-            mv,
-            skip == 1,
-            interp_filter_symbol(interp),
-            use_amvd,
-            precision,
-        );
-    }
-    if let Some(bank) = ref_mv_bank.as_mut() {
-        bank.update_for_block(
-            ref_frame0,
-            None,
-            mv,
-            None,
-            mc::CWP_EQUAL,
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            sb_h4,
-        );
-    }
     intrabc_state.record_block(
         frontier.r,
         frontier.c,
@@ -1767,26 +1614,56 @@ fn decode_block<T: ReconSample>(
         .mark_inter(),
         tile_offset,
     )?;
-
-    let placed = placed_block(InterBlock {
-        ref_frame0,
-        ref_frame1: None,
-        mv,
-        mv1: Mv::ZERO,
+    let syntax = InterBlockSyntax {
+        block_ctx,
+        motion: InterMotionSyntax::Single(SingleMotionSyntax {
+            mode: single_mode,
+            tip_ref,
+            ref_mv_idx,
+            mvd,
+            use_temporal_first,
+            global_warp: (!tip_ref && single_mode == SINGLE_MODE_GLOBALMV)
+                .then(|| global_motion_warp(core, ref_frame0, force_integer_mv, n4w, n4h))
+                .flatten(),
+        }),
         interp,
-        warp_params,
+        precision,
+        skip: skip == 1,
+        use_amvd,
+        tip_size_16x16: tip_ref && tip_uses_16x16_units,
+        blend: mc::CompoundBlend::default(),
         bawp,
         interintra,
-        compound_blend: mc::CompoundBlend::default(),
         optflow_distances: None,
         residual,
-    });
+    };
+    mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
+    let resolved = resolve_inter_block(
+        &syntax,
+        &mut MvResolutionState {
+            grid: mv_grid,
+            ref_mv_bank,
+            warp_param_bank,
+            core,
+            temporal: temporal_stack_context,
+            order_hints: temporal_context.order_hint_mv_context(),
+            drl_reorder,
+            max_drl_bits_minus_1,
+            frame_precision: frame_mv_precision(core, tile_offset)?,
+            tile_offset,
+        },
+    )?;
     let kind = if tip_ref {
         deferred_recon::PendingKind::Tip
     } else {
         deferred_recon::PendingKind::Single
     };
-    let command = deferred_recon::InterReconCommand::new(placed, kind, block_qindex, tile_offset);
+    let command = deferred_recon::InterReconCommand::new(
+        placed_block(single_inter_block(syntax, &resolved)),
+        kind,
+        block_qindex,
+        tile_offset,
+    );
     Ok((non_intra_leaf_mode(frontier), ReconCommand::Inter(command)))
 }
 
@@ -1829,6 +1706,7 @@ mod intrabc;
 mod pixel_commit;
 mod prediction;
 mod residual;
+mod resolve;
 mod row_gate;
 mod syntax;
 mod temporal;
@@ -1839,6 +1717,11 @@ mod warp;
 use self::filter_records::record_inter_deblock_geometry;
 use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
+use self::resolve::{
+    CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
+    MvResolutionState, SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax,
+    compound_inter_block, resolve_inter_block, single_inter_block,
+};
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{
     effective_force_integer_mv, frame_mv_precision, interp_filter_symbol, lowered_pred_mv,
