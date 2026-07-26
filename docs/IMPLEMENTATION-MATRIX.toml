@@ -22201,3 +22201,51 @@ fixtures = [
     ".github/workflows/ci.yml",
 ]
 diagnostics = []
+
+[[feature]]
+id = "INFRA-DECODE-FRAME-PIPELINING"
+name = "Decode frame-delay finish-phase pipelining"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.2"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/pipeline/inflight.rs"
+change_id = "decode-frame-pipelining"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Frame-delay-deep pipelining of the per-frame finish phases on top of INFRA-DECODE-PARALLEL-STAGES. The plan driver moves frames through a bounded in-flight ring: each walked frame's shared § 7.2 in-loop filter chain and frame freeze run as one worker-pool task while the driver walks the next frame. Reference gating is driver-only — the driver waits for a frame's pixel-reference slots before walking it, harvests the oldest in-flight finish before admitting another frame, and waits for a frame before reading its pixels; worker tasks never block on a slot. The depth resolves once per DecodeContext from DecodeRuntimeConfig::frame_delay: `auto` (the default, exposed as `splot decode --frame-delay`) is the resolved worker-thread count, a fixed depth is clamped to that count, and a resolved depth of one or an off-pool run takes the inline serial path unchanged. Emission, show-existing-frame handling, the output-frame limit, and EOF all harvest every outstanding finish, and failures surface lowest-decode-index-first, so a pipelined run reproduces the serial decode's diagnostic. Bit-exact: decoded-frame hash digests are identical across `--threads` 1/2/4/10 and across `--frame-delay` 1/2/4/auto on the canonical 30-frame 1080p10 performance stream, and the full 240-vector conformance corpus decodes byte-identical at eight threads against the serial path. Wall-clock tuning is still ongoing, so `perf` stays partial until paired per-depth medians are recorded."
+replaces = []
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "partial"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/tests/frame_pipelining.rs",
+    "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_hashes_are_frame_delay_deterministic",
+    "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_outputs_are_frame_delay_deterministic",
+    "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_outputs_are_frame_delay_deterministic",
+]
+commands = [
+    "cargo test -p splot-decode --test frame_pipelining --locked",
+    "cargo test -p splot-cli --locked",
+    "cargo build --release --locked",
+    "./target/release/splot decode --threads 4 --frame-delay 1 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --threads 4 --frame-delay 4 --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+    "./target/release/splot decode --threads 10 --frame-delay auto --output-format hash --limit=30 $SPLOT_LOCAL_DECODER_MISSION_IVF",
+]
+fixtures = []
+diagnostics = []

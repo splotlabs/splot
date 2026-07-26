@@ -19,7 +19,7 @@ use splot_decode::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeLimitError, DecodeLimitName,
     DecodeOptions, DecodeOutputError, DecodeOutputOperation, DecodeRuntimeConfig,
 };
-use splot_parallel::ThreadCount;
+use splot_parallel::{FrameDelay, ThreadCount};
 
 static OUTPUT_TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -83,6 +83,11 @@ pub struct DecodeArgs {
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     pub threads: ThreadCount,
+    /// Frame-pipelining depth: `auto` (default) matches the resolved `--threads` count, and a
+    /// positive integer is clamped to it. `1` decodes frames strictly serially; `0` is an alias
+    /// for auto.
+    #[arg(long, default_value_t = FrameDelay::Auto)]
+    pub frame_delay: FrameDelay,
     /// Stop after emitting this many output frames.
     #[arg(long)]
     pub limit: Option<NonZeroU64>,
@@ -449,7 +454,9 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
     let report = match input {
         DecodeInputRead::Bytes(bytes) => {
             let context_started = timing_start();
-            let context = DecodeContext::new(DecodeRuntimeConfig::new(args.threads))?;
+            let context = DecodeContext::new(
+                DecodeRuntimeConfig::new(args.threads).with_frame_delay(args.frame_delay),
+            )?;
             timing_report("context_new", context_started);
             match target {
                 DecodeOutputTarget::Hash { path } => {
