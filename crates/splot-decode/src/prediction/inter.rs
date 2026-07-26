@@ -102,7 +102,8 @@ impl Mv {
 fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> {
     let (frame, core, frame_cdfs, ccso_grid, motion_field) = output;
     FrameWalk {
-        stage: WalkStage::complete(frame, core),
+        stage: WalkStage::complete(frame),
+        core: Arc::new(core),
         frame_cdfs,
         ccso_grid,
         motion_field,
@@ -336,15 +337,17 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
     let deblock_quant_deltas = crate::pipeline::deblock_quant_deltas(sequence, &core);
+    let core = Arc::new(core);
 
     Ok(FrameWalk {
         stage: WalkStage::pending(WalkedFrame::new(
             filter_sink,
-            core,
+            Arc::clone(&core),
             disable_loopfilters_across_tiles,
             deblock_quant_deltas,
             offset,
         )),
+        core,
         frame_cdfs,
         ccso_grid,
         motion_field,

@@ -125,6 +125,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.filter_records = records;
     }
 
+    /// Returns the geometry the frozen frame will report: the filter chain
+    /// publishes into a workspace built from this one's metadata, so the
+    /// decoded-frame info is known before the samples are filtered.
+    pub(crate) fn frame_info(&self) -> splot_recon::DecodedFrameInfo {
+        self.workspace.info()
+    }
+
     pub(crate) fn set_cdef_grid(&mut self, grid: Option<crate::filters::cdef::CdefUnitGrid>) {
         self.cdef_grid = grid;
     }

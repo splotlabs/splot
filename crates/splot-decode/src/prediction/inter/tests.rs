@@ -319,7 +319,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
             .expect("fixture inter core has quantization params"),
     );
     super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
-    let (frame, ..) = crate::pipeline::frame_engine::decode_frame(
+    let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),
         &plan,
         inter_candidate,
@@ -331,7 +331,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
         &crate::pipeline::frame_engine::FrameSetup::Inter(&inter_state),
         BitDepth::Eight,
     )?;
-    Ok(frame)
+    crate::pipeline::frame_engine::finish::finish_walk_inline(walk.stage)
 }
 
 pub(super) fn parse_inter_core_for_validation(

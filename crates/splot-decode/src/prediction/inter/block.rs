@@ -162,6 +162,11 @@ impl<T: ReconSample> InterDecodeScratch<T> {
     ) {
         self.frame_filter_records = records;
     }
+
+    #[cfg(test)]
+    pub(crate) fn frame_filter_records_capacity(&self) -> usize {
+        self.frame_filter_records.deblock_blocks.capacity()
+    }
 }
 
 enum ReconCommand {

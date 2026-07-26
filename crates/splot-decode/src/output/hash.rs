@@ -24,22 +24,37 @@ pub(crate) fn decode_hash_report_from_plan(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     resolved_threads: NonZeroUsize,
+    frame_delay: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
     if discard_hash() {
-        crate::pipeline::emit_frames_from_prepared(bytes, parsed, options, plan, |_| Ok(()))?;
+        crate::pipeline::emit_frames_from_prepared(
+            bytes,
+            parsed,
+            options,
+            plan,
+            frame_delay,
+            |_| Ok(()),
+        )?;
         return Ok(DecodeHashReport::raw_intermediate_output(
             resolved_threads.to_string(),
             Vec::new(),
         ));
     }
     let report_frames = if splot_parallel::on_multiworker_pool() {
-        decode_hash_frames_pipelined(bytes, parsed, options, plan)?
+        decode_hash_frames_pipelined(bytes, parsed, options, plan, frame_delay)?
     } else {
         let mut frames = Vec::new();
-        crate::pipeline::emit_frames_from_prepared(bytes, parsed, options, plan, |output| {
-            frames.push(hash_pipeline_frame(&output.ready_frame()?));
-            Ok(())
-        })?;
+        crate::pipeline::emit_frames_from_prepared(
+            bytes,
+            parsed,
+            options,
+            plan,
+            frame_delay,
+            |output| {
+                frames.push(hash_pipeline_frame(&output.ready_frame()?));
+                Ok(())
+            },
+        )?;
         frames
     };
 
@@ -49,12 +64,20 @@ pub(crate) fn decode_hash_report_from_plan(
     ))
 }
 
+/// Hashes decoded frames on a dedicated worker task while the driver decodes.
+///
+/// The hasher task parks on the queue for the whole decode, so the decode's own
+/// frame-pipelining depth is reduced by the worker it holds: the driver plus its
+/// in-flight filter phases must still fit the pool, or the driver could park on
+/// a filter phase no worker is left to run.
 fn decode_hash_frames_pipelined(
     bytes: &[u8],
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
 ) -> Result<Vec<DecodeHashFrame>> {
+    let frame_delay = NonZeroUsize::new(frame_delay.get() - 1).unwrap_or(NonZeroUsize::MIN);
     let completed = Mutex::new(Vec::new());
     let capacity = splot_parallel::QueueCapacity::new(NonZeroUsize::MIN.saturating_add(1));
     let (sender, receiver) = splot_parallel::bounded_queue::<PipelineDecodedFrame>(capacity);
@@ -70,8 +93,13 @@ fn decode_hash_frames_pipelined(
             }
         });
 
-        let decoded =
-            crate::pipeline::emit_frames_from_prepared(bytes, parsed, options, plan, |output| {
+        let decoded = crate::pipeline::emit_frames_from_prepared(
+            bytes,
+            parsed,
+            options,
+            plan,
+            frame_delay,
+            |output| {
                 if let Err(disconnected) = sender.send(output.ready_frame()?) {
                     let frame = disconnected.0;
                     let hashed = hash_pipeline_frame(&frame);
@@ -81,7 +109,8 @@ fn decode_hash_frames_pipelined(
                         .push(hashed);
                 }
                 Ok(())
-            });
+            },
+        );
         drop(sender);
         decoded
     })??;

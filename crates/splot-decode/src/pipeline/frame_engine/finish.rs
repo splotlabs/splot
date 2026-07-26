@@ -10,12 +10,16 @@
 //! reference state. [`finish_walked_frame`] consumes it and yields a
 //! [`FinishedFrame`]. TIP output and bridge frames have no filter phase and so
 //! leave the walk already final, as [`WalkStage::Complete`].
+//!
+//! The frame header is shared as an [`Arc`] between the walk output the driver
+//! reads and the walked frame the filter phase consumes, so a deferred filter
+//! phase owns everything it reads without copying a header per frame.
 
 use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::span::ByteOffset;
-use splot_recon::{DecodedFrame, ReconSample};
+use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample};
 
 use crate::Result;
 use crate::bitstream::tile_payload::FrameCdfSubset;
@@ -30,6 +34,8 @@ use crate::prediction::inter::TemporalMotionField;
 pub(crate) struct FrameWalk<T: ReconSample> {
     /// How far the frame's samples got during the walk.
     pub(crate) stage: WalkStage<T>,
+    /// The frame header the walk consumed, shared with the filter phase.
+    pub(crate) core: Arc<FrameHeaderCore>,
     /// The frame's end-of-walk CDF subset.
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     /// The walk-parsed CCSO unit grid, retained for the reference update.
@@ -40,13 +46,13 @@ pub(crate) struct FrameWalk<T: ReconSample> {
 
 /// How far one frame's samples got during its walk.
 ///
-/// Both payloads are boxed: a frame header is large, so an unboxed variant would
-/// dominate the size of every walk output.
+/// Both payloads are boxed: a reconstruction workspace is large, so an unboxed
+/// variant would dominate the size of every walk output.
 pub(crate) enum WalkStage<T: ReconSample> {
     /// The filter stages are still owed; [`finish_walked_frame`] runs them.
     Pending(Box<WalkedFrame<T>>),
     /// The frame has no filter phase and left the walk final.
-    Complete(Box<CompletedFrame<T>>),
+    Complete(Box<DecodedFrame<T>>),
 }
 
 impl<T: ReconSample> WalkStage<T> {
@@ -56,23 +62,15 @@ impl<T: ReconSample> WalkStage<T> {
     }
 
     /// Records that a frame left the walk without owing a filter phase.
-    pub(crate) fn complete(frame: DecodedFrame<T>, core: FrameHeaderCore) -> Self {
-        Self::Complete(Box::new(CompletedFrame { frame, core }))
+    pub(crate) fn complete(frame: DecodedFrame<T>) -> Self {
+        Self::Complete(Box::new(frame))
     }
-}
-
-/// A frame that reached its final samples without a filter phase.
-pub(crate) struct CompletedFrame<T: ReconSample> {
-    /// The decoded frame.
-    pub(crate) frame: DecodedFrame<T>,
-    /// The frame header the walk consumed.
-    pub(crate) core: FrameHeaderCore,
 }
 
 /// Everything one frame's filter stages and freeze need, fully owned and `Send`.
 pub(crate) struct WalkedFrame<T: ReconSample> {
     sink: WienerNsLrReconSink<T>,
-    core: FrameHeaderCore,
+    core: Arc<FrameHeaderCore>,
     disable_loopfilters_across_tiles: bool,
     deblock_quant_deltas: DeblockQuantDeltas,
     offset: ByteOffset,
@@ -82,7 +80,7 @@ impl<T: ReconSample> WalkedFrame<T> {
     /// Captures one frame's end-of-walk filter state.
     pub(crate) const fn new(
         sink: WienerNsLrReconSink<T>,
-        core: FrameHeaderCore,
+        core: Arc<FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: DeblockQuantDeltas,
         offset: ByteOffset,
@@ -95,14 +93,18 @@ impl<T: ReconSample> WalkedFrame<T> {
             offset,
         }
     }
+
+    /// Returns the geometry the finished frame will report, which the filter
+    /// chain carries through unchanged from the reconstruction workspace.
+    pub(crate) fn info(&self) -> DecodedFrameInfo {
+        self.sink.frame_info()
+    }
 }
 
 /// One frame after its filter stages, with the filter records to recycle.
 pub(crate) struct FinishedFrame<T: ReconSample> {
     /// The filtered, frozen frame.
     pub(crate) frame: DecodedFrame<T>,
-    /// The frame header the filter stages read.
-    pub(crate) core: FrameHeaderCore,
     /// The filter-record buffers to hand back to the decode scratch.
     pub(crate) filter_records: FrameFilterRecords,
 }
@@ -131,8 +133,20 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
     )?;
     Ok(FinishedFrame {
         frame,
-        core,
         filter_records,
+    })
+}
+
+/// Runs any owed filter phase inline and returns the frozen frame.
+///
+/// # Errors
+///
+/// Returns the filter chain's own diagnostic when a filter stage fails.
+#[cfg(test)]
+pub(crate) fn finish_walk_inline<T: ReconSample>(stage: WalkStage<T>) -> Result<DecodedFrame<T>> {
+    Ok(match stage {
+        WalkStage::Complete(frame) => *frame,
+        WalkStage::Pending(walked) => finish_walked_frame(*walked)?.frame,
     })
 }
 

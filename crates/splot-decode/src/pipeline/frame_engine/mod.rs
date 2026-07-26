@@ -3,10 +3,10 @@
 
 //! The unified generic AV2 §7 frame-decode engine.
 //!
-//! [`decode_frame`] is the single entry for every frame, and is exactly
-//! [`walk_frame`] followed inline by [`finish::finish_walked_frame`]: the walk
-//! phase runs the entropy walk and reconstruction, the finish phase runs the
-//! loop filters and freezes the result. [`FrameSetup`] carries
+//! [`walk_frame`] is the single entry for every frame: it runs the entropy walk
+//! and reconstruction and leaves the filter phase owed as a
+//! [`finish::WalkedFrame`], which the driver either finishes inline or hands to
+//! a worker task (see [`crate::pipeline::inflight`]). [`FrameSetup`] carries
 //! the frame-level branch between key (intra) and inter frames — the genuinely
 //! frame-level divergence (references, CDF load, order-hint history, warp /
 //! temporal-MV banks, skip-mode, segmentation, CfL enable). Below the setup, the
@@ -20,24 +20,15 @@
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, DecodedFrame, ReconSample};
+use splot_recon::{BitDepth, ReconSample};
 
-use crate::bitstream::tile_payload::FrameCdfSubset;
-use crate::prediction::inter::{self, InterReferenceState, TemporalMotionField};
+use crate::prediction::inter::{self, InterReferenceState};
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
 pub(crate) mod finish;
 pub(crate) mod intra;
 
-use self::finish::{FrameWalk, WalkStage, finish_walked_frame};
-
-type FrameDecodeOutput<T> = (
-    DecodedFrame<T>,
-    FrameHeaderCore,
-    std::sync::Arc<FrameCdfSubset>,
-    Option<crate::filters::ccso::CcsoUnitGrid>,
-    TemporalMotionField,
-);
+use self::finish::FrameWalk;
 
 pub(crate) enum FrameSetup<'a, T: ReconSample> {
     Intra,
@@ -89,46 +80,4 @@ pub(crate) fn walk_frame<T: ReconSample>(
             bit_depth,
         ),
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_frame<T: ReconSample>(
-    scratch: &mut inter::InterDecodeScratch<T>,
-    plan: &DecodeStreamPlan,
-    candidate: &DecodePlannedObu,
-    bytes: &[u8],
-    frame_envelope: ObuEnvelope<'_>,
-    core: FrameHeaderCore,
-    sequence: &SequenceHeader,
-    options: &DecodeOptions,
-    setup: &FrameSetup<'_, T>,
-    bit_depth: BitDepth,
-) -> Result<FrameDecodeOutput<T>> {
-    let walk = walk_frame(
-        scratch,
-        plan,
-        candidate,
-        bytes,
-        frame_envelope,
-        core,
-        sequence,
-        options,
-        setup,
-        bit_depth,
-    )?;
-    let (frame, core) = match walk.stage {
-        WalkStage::Complete(completed) => (completed.frame, completed.core),
-        WalkStage::Pending(walked) => {
-            let finished = finish_walked_frame(*walked)?;
-            scratch.recycle_frame_filter_records(finished.filter_records);
-            (finished.frame, finished.core)
-        }
-    };
-    Ok((
-        frame,
-        core,
-        walk.frame_cdfs,
-        walk.ccso_grid,
-        walk.motion_field,
-    ))
 }

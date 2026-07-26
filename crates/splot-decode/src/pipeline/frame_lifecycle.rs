@@ -134,6 +134,16 @@ impl PipelineFrame {
     pub(crate) fn ready_frame(&self) -> Result<PipelineDecodedFrame> {
         self.frame.ready()
     }
+
+    /// Blocks the driver thread until the samples land, then shares them.
+    pub(crate) fn wait_ready_frame(&self) -> Result<PipelineDecodedFrame> {
+        self.frame.wait_ready()
+    }
+
+    /// Blocks the driver thread until the frame's filter phase has settled.
+    pub(crate) fn wait_settled(&self) -> Result<()> {
+        self.frame.wait_settled()
+    }
     #[cfg(test)]
     #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {

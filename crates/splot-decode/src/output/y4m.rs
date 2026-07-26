@@ -5,6 +5,8 @@
 //!
 //! Feature tracking: `DECODE-Y4M-RUNTIME-OUTPUT`.
 
+use core::num::NonZeroUsize;
+
 use splot_core::ivf::IvfHeader;
 use splot_recon::{
     BitDepth, DecodedFrame, PixelFormat, PlaneSize, ReconSample, Y4mFrameFormat, Y4mFrameHeader,
@@ -27,6 +29,7 @@ pub(crate) fn encode_y4m_stream_from_plan(
     parsed: &FlatParsedBitstream<'_>,
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
 ) -> Result<Vec<u8>> {
     let limits = options.limits();
     let outputs = crate::pipeline::decode_frames_from_prepared_with_ivf_preflight(
@@ -34,6 +37,7 @@ pub(crate) fn encode_y4m_stream_from_plan(
         parsed,
         options,
         plan,
+        frame_delay,
         |header| {
             let Some(header) = header else {
                 return Err(crate::pipeline::unsupported(

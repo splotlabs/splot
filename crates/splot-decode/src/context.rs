@@ -26,16 +26,32 @@ use crate::runtime::DecodeRuntimeConfig;
 pub struct DecodeContext {
     runtime: DecodeRuntimeConfig,
     pool: WorkerPool,
+    frame_delay: NonZeroUsize,
 }
 
 impl DecodeContext {
     /// Creates a decode context and its single owned worker pool.
     ///
+    /// The configured frame-pipelining depth is resolved once here against the
+    /// pool's worker-thread count, so no decode path re-resolves it.
+    ///
     /// # Errors
     /// Returns [`crate::DecodeError::Pool`] if the worker pool cannot be built.
     pub fn new(runtime: DecodeRuntimeConfig) -> Result<Self> {
         let pool = WorkerPool::new(runtime.thread_count)?;
-        Ok(Self { runtime, pool })
+        let frame_delay = runtime.frame_delay.resolve(pool.threads());
+        Ok(Self {
+            runtime,
+            pool,
+            frame_delay,
+        })
+    }
+
+    /// The resolved, non-zero frame-pipelining depth: how many frames may be in
+    /// flight at once. One means serial decode.
+    #[must_use]
+    pub fn frame_delay(&self) -> NonZeroUsize {
+        self.frame_delay
     }
 
     /// The runtime (non-bitstream) configuration.
@@ -102,6 +118,7 @@ impl DecodeContext {
                 &options,
                 prepared.plan(),
                 self.threads(),
+                self.frame_delay,
             )
         });
         crate::timing::report("runtime_decode", runtime_started);
@@ -152,6 +169,7 @@ impl DecodeContext {
                 prepared.parsed(),
                 &options,
                 prepared.plan(),
+                self.frame_delay,
             )
         })
     }
@@ -180,6 +198,7 @@ impl DecodeContext {
                 prepared.parsed(),
                 &options,
                 prepared.plan(),
+                self.frame_delay,
             )
         })?;
         std::io::Write::write_all(&mut writer, &y4m).map_err(|source| {
