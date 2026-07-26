@@ -16,9 +16,7 @@ use std::sync::Arc;
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::{FrameHeaderCore, InterpolationFilter};
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{
-    BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample, ReferenceFrameStore,
-};
+use splot_recon::{BitDepth, DecodedFrame, PixelFormat, QmFrameLevels, ReconSample};
 
 use crate::bitstream::tile_payload::{FrameCdfSubset, FrameQmScope, FrameQuantizerDeltasScope};
 use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
@@ -119,14 +117,13 @@ pub(crate) fn decode_intra_frame<T: ReconSample>(
         visible_luma_rect,
     )?;
 
-    let store = ReferenceFrameStore::<&DecodedFrame<T>>::with_capacity(1).map_err(|_| {
+    let reference = InterReferenceState::<T>::empty().map_err(|_| {
         unsupported_at(
             "frame_engine_intra_reference_store",
             offset,
             "intra frame decode requires a reference store",
         )
     })?;
-    let reference = InterReferenceState::empty(&store);
 
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(core));

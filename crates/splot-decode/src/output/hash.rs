@@ -37,7 +37,7 @@ pub(crate) fn decode_hash_report_from_plan(
     } else {
         let mut frames = Vec::new();
         crate::pipeline::emit_frames_from_prepared(bytes, parsed, options, plan, |output| {
-            frames.push(hash_pipeline_frame(&output.frame));
+            frames.push(hash_pipeline_frame(&output.ready_frame()?));
             Ok(())
         })?;
         frames
@@ -72,7 +72,7 @@ fn decode_hash_frames_pipelined(
 
         let decoded =
             crate::pipeline::emit_frames_from_prepared(bytes, parsed, options, plan, |output| {
-                if let Err(disconnected) = sender.send(output.share_decoded_frame()) {
+                if let Err(disconnected) = sender.send(output.ready_frame()?) {
                     let frame = disconnected.0;
                     let hashed = hash_pipeline_frame(&frame);
                     completed

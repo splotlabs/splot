@@ -22,8 +22,11 @@ use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
-use splot_recon::{DecodedFrame, DecodedFrameHashInput, PlaneRect, ReconError, SharedFrame};
+#[cfg(test)]
+use splot_recon::DecodedFrame;
+use splot_recon::{PlaneRect, ReconError, SharedFrame};
 
+use super::inflight::{PipelineFrameSlot, RefFrameSlot};
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::{DecodeError, Result};
 use crate::filters::deblock;
@@ -44,32 +47,6 @@ pub(crate) fn effective_allow_screen_content_tools(core: &FrameHeaderCore) -> bo
 pub(crate) enum PipelineDecodedFrame {
     Eight(SharedFrame<u8>),
     Ten(SharedFrame<u16>),
-}
-
-impl PipelineDecodedFrame {
-    fn share(&self) -> Self {
-        match self {
-            Self::Eight(frame) => Self::Eight(frame.share()),
-            Self::Ten(frame) => Self::Ten(frame.share()),
-        }
-    }
-
-    pub(super) fn handle_count(&self) -> usize {
-        match self {
-            Self::Eight(frame) => frame.handle_count(),
-            Self::Ten(frame) => frame.handle_count(),
-        }
-    }
-
-    /// Retires the frame, returning its plane sample buffers to the
-    /// reconstruction-plane pool when this is the sole handle (a shared
-    /// show-existing-frame source is left untouched).
-    pub(super) fn reclaim_planes(self) {
-        match self {
-            Self::Eight(frame) => frame.reclaim_planes(),
-            Self::Ten(frame) => frame.reclaim_planes(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,7 +70,7 @@ pub(crate) fn deblock_quant_deltas(
 }
 
 pub(crate) struct PipelineFrame {
-    pub(crate) frame: PipelineDecodedFrame,
+    pub(crate) frame: PipelineFrameSlot,
     pub(crate) display_grain: Option<ActiveFilmGrain>,
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
@@ -125,20 +102,20 @@ impl PipelineFrameRate {
 }
 
 impl PipelineFrame {
-    pub(crate) fn frame_eight(&self) -> Result<&DecodedFrame<u8>> {
+    pub(crate) fn slot_eight(&self) -> Result<RefFrameSlot<u8>> {
         match &self.frame {
-            PipelineDecodedFrame::Eight(frame) => Ok(frame.get()),
-            PipelineDecodedFrame::Ten(_) => Err(unsupported(
+            PipelineFrameSlot::Eight(slot) => Ok(slot.share()),
+            PipelineFrameSlot::Ten(_) => Err(unsupported(
                 "unsupported_10bit_reference_retention",
                 None,
                 missing_capability_message!("reference.retention bit_depth=10"),
             )),
         }
     }
-    pub(crate) fn frame_ten(&self) -> Result<&DecodedFrame<u16>> {
+    pub(crate) fn slot_ten(&self) -> Result<RefFrameSlot<u16>> {
         match &self.frame {
-            PipelineDecodedFrame::Ten(frame) => Ok(frame.get()),
-            PipelineDecodedFrame::Eight(_) => Err(unsupported(
+            PipelineFrameSlot::Ten(slot) => Ok(slot.share()),
+            PipelineFrameSlot::Eight(_) => Err(unsupported(
                 "unsupported_8bit_reference_for_10bit_decode",
                 None,
                 "inter decode pipeline requires reference frames to match the active 10-bit storage",
@@ -146,29 +123,25 @@ impl PipelineFrame {
         }
     }
     pub(crate) fn byte_len(&self) -> Result<usize> {
-        match &self.frame {
-            PipelineDecodedFrame::Eight(frame) => {
-                Ok(DecodedFrameHashInput::new(frame.get()).byte_len()?)
-            }
-            PipelineDecodedFrame::Ten(frame) => {
-                Ok(DecodedFrameHashInput::new(frame.get()).byte_len()?)
-            }
-        }
+        Ok(splot_recon::visible_byte_len(self.frame.info())?)
     }
 
     pub(crate) fn validate_output_effects(&self) -> Result<()> {
         self.output_effects.validate_for_output()
     }
 
-    pub(crate) fn share_decoded_frame(&self) -> PipelineDecodedFrame {
-        self.frame.share()
+    /// Shares the decoded samples, failing closed when they have not landed.
+    pub(crate) fn ready_frame(&self) -> Result<PipelineDecodedFrame> {
+        self.frame.ready()
     }
     #[cfg(test)]
     #[allow(clippy::panic)]
     pub(crate) fn frame(&self) -> &DecodedFrame<u8> {
         match &self.frame {
-            PipelineDecodedFrame::Eight(frame) => frame.get(),
-            PipelineDecodedFrame::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
+            PipelineFrameSlot::Eight(slot) => slot
+                .try_frozen()
+                .unwrap_or_else(|| panic!("frame() called before the samples landed")),
+            PipelineFrameSlot::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
         }
     }
 }

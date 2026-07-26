@@ -15,6 +15,7 @@ use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
 use crate::output::film_grain;
 use crate::pipeline::PipelineDecodedFrame;
+use crate::pipeline::inflight::PipelineFrameSlot;
 use crate::support::pipeline_limits::{checked_add, checked_mul};
 use crate::{DecodeLimitName, DecodeLimits, DecodeOptions, DecodeStreamPlan};
 
@@ -54,7 +55,7 @@ pub(crate) fn encode_y4m_stream_from_plan(
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
 
     let mut y4m = Vec::new();
-    match &first.frame {
+    match &first.ready_frame()? {
         PipelineDecodedFrame::Eight(first_frame) => {
             write_y4m_stream(
                 &mut y4m,
@@ -62,8 +63,8 @@ pub(crate) fn encode_y4m_stream_from_plan(
                 frame_rate,
                 &outputs,
                 |output| match &output.frame {
-                    PipelineDecodedFrame::Eight(frame) => Some(frame.get()),
-                    PipelineDecodedFrame::Ten(_) => None,
+                    PipelineFrameSlot::Eight(slot) => slot.try_frozen(),
+                    PipelineFrameSlot::Ten(_) => None,
                 },
             )?;
         }
@@ -74,8 +75,8 @@ pub(crate) fn encode_y4m_stream_from_plan(
                 frame_rate,
                 &outputs,
                 |output| match &output.frame {
-                    PipelineDecodedFrame::Ten(frame) => Some(frame.get()),
-                    PipelineDecodedFrame::Eight(_) => None,
+                    PipelineFrameSlot::Ten(slot) => slot.try_frozen(),
+                    PipelineFrameSlot::Eight(_) => None,
                 },
             )?;
         }

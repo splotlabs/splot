@@ -37,6 +37,7 @@ use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget}
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
+pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
 mod stream_schedule;
@@ -133,10 +134,13 @@ fn reclaim_unowned_frames(
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
     for frame_index in 0..frames.len() {
-        if frames[frame_index].is_none() {
+        let Some(frame) = frames[frame_index].as_ref() else {
             continue;
-        }
-        if reference.retains(frame_index) || scheduler.retains(frame_index) {
+        };
+        if reference.retains(frame_index)
+            || scheduler.retains(frame_index)
+            || !frame.frame.is_settled()
+        {
             continue;
         }
         let Some(frame) = frames.get_mut(frame_index).and_then(Option::take) else {
@@ -173,7 +177,7 @@ fn parse_key_core_with_effects(
 fn parse_olk_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &inter::InterReferenceState<'_, impl splot_recon::ReconSample>,
+    reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
@@ -350,7 +354,7 @@ fn resolve_mfh_record<'a>(
 fn parse_inter_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &inter::InterReferenceState<'_, impl splot_recon::ReconSample>,
+    reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
@@ -472,7 +476,7 @@ fn decode_key_frame_with_effects(
         };
     let frame_rate = output_effects.frame_rate(frame_rate);
     Ok(PipelineFrame {
-        frame,
+        frame: inflight::PipelineFrameSlot::completed(frame),
         display_grain,
         output_effects,
         frame_cdfs,
@@ -549,7 +553,7 @@ fn decode_frames_from_plan_impl(
         ObuType::OpenLoopKey => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -560,7 +564,7 @@ fn decode_frames_from_plan_impl(
             }
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 parse_olk_core_with_effects(
                     key_envelope,
                     &sequence,
@@ -573,7 +577,7 @@ fn decode_frames_from_plan_impl(
         ObuType::RasFrame => match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 let activation =
                     inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
                 in_band_long_term_prelude.validate_required(
@@ -591,7 +595,7 @@ fn decode_frames_from_plan_impl(
             }
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 let activation =
                     inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
                 in_band_long_term_prelude.validate_required(
@@ -648,7 +652,7 @@ fn decode_frames_from_plan_impl(
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
@@ -669,7 +673,9 @@ fn decode_frames_from_plan_impl(
                     )?;
                 let rate = key_output_effects.frame_rate(frame_rate);
                 PipelineFrame {
-                    frame: PipelineDecodedFrame::Eight(SharedFrame::new(frame)),
+                    frame: inflight::PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(
+                        SharedFrame::new(frame),
+                    )),
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs,
@@ -682,7 +688,7 @@ fn decode_frames_from_plan_impl(
             }
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
-                let state = inter::InterReferenceState::from_metadata(&store, meta);
+                let state = inter::InterReferenceState::from_metadata(store, meta);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
                 let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
@@ -703,7 +709,9 @@ fn decode_frames_from_plan_impl(
                     )?;
                 let rate = key_output_effects.frame_rate(frame_rate);
                 PipelineFrame {
-                    frame: PipelineDecodedFrame::Ten(SharedFrame::new(frame)),
+                    frame: inflight::PipelineFrameSlot::completed(PipelineDecodedFrame::Ten(
+                        SharedFrame::new(frame),
+                    )),
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs,
@@ -852,7 +860,7 @@ fn decode_frames_from_plan_impl(
                 let sef_core = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
-                        let state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let state = inter::InterReferenceState::from_metadata(store, meta);
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -863,7 +871,7 @@ fn decode_frames_from_plan_impl(
                     }
                     BitDepthIdc::Ten => {
                         let (store, meta) = reference.build_store_ten(&frames)?;
-                        let state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let state = inter::InterReferenceState::from_metadata(store, meta);
                         parse_inter_core_with_effects(
                             sef_envelope,
                             &sequence,
@@ -915,7 +923,7 @@ fn decode_frames_from_plan_impl(
                         )
                     })?;
                 let sef_frame = PipelineFrame {
-                    frame: source.share_decoded_frame(),
+                    frame: inflight::PipelineFrameSlot::completed(source.ready_frame()?),
                     display_grain,
                     output_effects,
                     frame_cdfs: source.frame_cdfs.clone(),
@@ -1019,7 +1027,7 @@ fn decode_frames_from_plan_impl(
                     let activation = match sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
                             let (store, meta) = reference.build_store_eight(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1029,7 +1037,7 @@ fn decode_frames_from_plan_impl(
                         }
                         BitDepthIdc::Ten => {
                             let (store, meta) = reference.build_store_ten(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             inter::parse_inter_frame_activation(
                                 inter_envelope,
                                 &sequence,
@@ -1074,7 +1082,7 @@ fn decode_frames_from_plan_impl(
                 {
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1134,7 +1142,7 @@ fn decode_frames_from_plan_impl(
                     }
                     BitDepthIdc::Ten => {
                         let (store, meta) = reference.build_store_ten(&frames)?;
-                        let inter_state = inter::InterReferenceState::from_metadata(&store, meta);
+                        let inter_state = inter::InterReferenceState::from_metadata(store, meta);
                         let inter_core = parse_inter_core_with_effects(
                             inter_envelope,
                             &sequence,
@@ -1209,7 +1217,7 @@ fn decode_frames_from_plan_impl(
                     inter_envelope.header.embedded_layer_id,
                 )?;
                 let inter_frame = PipelineFrame {
-                    frame: inter_frame,
+                    frame: inflight::PipelineFrameSlot::completed(inter_frame),
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
                     frame_cdfs: Arc::clone(&inter_update.frame_cdfs),
@@ -1389,7 +1397,7 @@ fn decode_frames_from_plan_impl(
                     match key_sequence.general.bit_depth_idc {
                         BitDepthIdc::Eight => {
                             let (store, meta) = reference.build_store_eight(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,
@@ -1400,7 +1408,7 @@ fn decode_frames_from_plan_impl(
                         }
                         BitDepthIdc::Ten => {
                             let (store, meta) = reference.build_store_ten(&frames)?;
-                            let state = inter::InterReferenceState::from_metadata(&store, meta);
+                            let state = inter::InterReferenceState::from_metadata(store, meta);
                             parse_olk_core_with_effects(
                                 key_envelope,
                                 &key_sequence,

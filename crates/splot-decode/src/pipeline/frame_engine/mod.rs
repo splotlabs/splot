@@ -35,7 +35,7 @@ type FrameDecodeOutput<T> = (
 
 pub(crate) enum FrameSetup<'a, T: ReconSample> {
     Intra,
-    Inter(&'a InterReferenceState<'a, T>),
+    Inter(&'a InterReferenceState<T>),
 }
 
 #[allow(clippy::too_many_arguments)]

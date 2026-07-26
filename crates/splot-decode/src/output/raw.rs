@@ -25,15 +25,7 @@ pub(crate) fn encode_raw_stream_from_plan(
     let serialize_started = crate::timing::start();
     let mut total_bytes = 0usize;
     for output in &outputs {
-        let frame_bytes = match &output.frame {
-            PipelineDecodedFrame::Eight(frame) => {
-                DecodedFrameHashInput::new(frame.get()).byte_len()?
-            }
-            PipelineDecodedFrame::Ten(frame) => {
-                DecodedFrameHashInput::new(frame.get()).byte_len()?
-            }
-        };
-        total_bytes = total_bytes.saturating_add(frame_bytes);
+        total_bytes = total_bytes.saturating_add(output.byte_len()?);
     }
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(total_bytes).map_err(|source| {
@@ -43,7 +35,7 @@ pub(crate) fn encode_raw_stream_from_plan(
         )
     })?;
     for output in &outputs {
-        match &output.frame {
+        match &output.ready_frame()? {
             PipelineDecodedFrame::Eight(frame) => {
                 let display =
                     film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;

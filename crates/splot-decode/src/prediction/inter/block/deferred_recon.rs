@@ -58,8 +58,8 @@ pub(super) struct InterReconScratch<T: ReconSample> {
     mc: super::super::mc::McScratch,
 }
 
-struct ReconShared<'a, 'r, T: ReconSample> {
-    reference: &'a InterReferenceState<'r, T>,
+struct ReconShared<'a, T: ReconSample> {
+    reference: &'a InterReferenceState<T>,
     ref_frame_idx: &'a [u32],
     temporal_context: &'a TemporalMvContext,
     sequence: &'a SequenceHeader,
@@ -215,7 +215,7 @@ impl InterReconCommand {
         block_decoded: &TileBlockDecodedState,
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
-        shared: &ReconShared<'_, '_, T>,
+        shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch<T>,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
@@ -358,7 +358,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         temporal_records: &mut Vec<TemporalMotionBlock>,
         residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<'_, T>,
+        reference: &InterReferenceState<T>,
         ref_frame_idx: &[u32],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
@@ -411,7 +411,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         motion_field: &mut TemporalMotionField,
         residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
-        reference: &InterReferenceState<'_, T>,
+        reference: &InterReferenceState<T>,
         ref_frame_idx: &[u32],
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,

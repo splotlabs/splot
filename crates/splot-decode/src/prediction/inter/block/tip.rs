@@ -438,7 +438,7 @@ pub(super) fn reconstruct<T: ReconSample>(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     qindex: u32,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
@@ -791,7 +791,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     decode_scratch: &mut super::InterDecodeScratch<T>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     offset: ByteOffset,
 ) -> Result<(DecodedFrame<T>, TemporalMotionField)> {

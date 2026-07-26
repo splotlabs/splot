@@ -139,14 +139,12 @@ fn large_chroma_smooth_corner_cap_fixture_decodes_to_oracle() {
             crate::pipeline::decode_frame_from_plan(CHROMA_CORNER_CAP_FIXTURE, &options, &plan)
         })
         .expect("decode fixture");
+    let ready = decoded.ready_frame().expect("ready frame");
     assert!(
-        matches!(
-            &decoded.frame,
-            crate::pipeline::PipelineDecodedFrame::Eight(_)
-        ),
+        matches!(&ready, crate::pipeline::PipelineDecodedFrame::Eight(_)),
         "fixture decoded at the wrong bit depth"
     );
-    let crate::pipeline::PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+    let crate::pipeline::PipelineDecodedFrame::Eight(frame) = ready else {
         return;
     };
 

@@ -26,6 +26,7 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::error::DecodeError;
+use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
@@ -107,7 +108,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
@@ -338,7 +339,7 @@ fn decode_tip_output_frame<T: ReconSample>(
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
@@ -380,7 +381,7 @@ fn decode_bridge_frame<T: ReconSample>(
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
     options: &DecodeOptions,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
@@ -461,7 +462,7 @@ fn decode_bridge_frame<T: ReconSample>(
 fn resolve_initial_frame_cdfs(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
 ) -> Result<Arc<FrameCdfSubset>> {
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
@@ -532,7 +533,7 @@ const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFr
 #[allow(clippy::too_many_arguments)]
 pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
-    reference: &'a InterReferenceState<'a, T>,
+    reference: &'a InterReferenceState<T>,
     placed: &PlacedInterBlock,
     rect: mc::McBlockRect,
     offset: ByteOffset,
@@ -573,7 +574,7 @@ pub(in crate::prediction::inter) fn resolve_inter_block_params<'a, T: ReconSampl
 
 fn resolve_block_reference_frame<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
-    reference: &'a InterReferenceState<'a, T>,
+    reference: &'a InterReferenceState<T>,
     ref_frame: i8,
     offset: ByteOffset,
 ) -> Result<&'a DecodedFrame<T>> {
@@ -952,8 +953,8 @@ pub(crate) struct InterResidualBlock {
     pub(crate) cctx_pair_delta: i16,
     pub(crate) coeffs: crate::bitstream::tile_payload::LumaCoeffBlock,
 }
-pub(crate) struct InterReferenceState<'a, T: ReconSample> {
-    pub(crate) store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>,
+pub(crate) struct InterReferenceState<T: ReconSample> {
+    pub(crate) store: ReferenceFrameStore<RefFrameSlot<T>>,
     pub(crate) ref_valid: Vec<bool>,
     pub(crate) ref_order_hint: Vec<u32>,
     pub(crate) ref_order_hint_lsbs: Vec<u32>,
@@ -982,10 +983,15 @@ pub(crate) struct InterReferenceState<'a, T: ReconSample> {
     pub(crate) ref_motion_fields: Vec<Option<Arc<TemporalMotionField>>>,
 }
 
-impl<'a, T: ReconSample> InterReferenceState<'a, T> {
-    pub(crate) fn empty(store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>) -> Self {
-        Self {
-            store,
+impl<T: ReconSample> InterReferenceState<T> {
+    /// Builds a reference-free state over a minimal empty store.
+    ///
+    /// # Errors
+    /// Returns [`splot_recon::ReconError`] when the minimal store capacity is
+    /// rejected.
+    pub(crate) fn empty() -> splot_recon::Result<Self> {
+        Ok(Self {
+            store: ReferenceFrameStore::with_capacity(1)?,
             ref_valid: Vec::new(),
             ref_order_hint: Vec::new(),
             ref_order_hint_lsbs: Vec::new(),
@@ -1010,11 +1016,11 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
             ref_ccso_params: Vec::new(),
             ref_ccso_unit_grids: Vec::new(),
             ref_motion_fields: Vec::new(),
-        }
+        })
     }
 
     pub(crate) fn from_metadata(
-        store: &'a ReferenceFrameStore<&'a DecodedFrame<T>>,
+        store: ReferenceFrameStore<RefFrameSlot<T>>,
         metadata: ReferenceMetadata,
     ) -> Self {
         let ref_chroma_ac_deltas = metadata
@@ -1054,7 +1060,7 @@ impl<'a, T: ReconSample> InterReferenceState<'a, T> {
     }
 }
 
-impl<T: ReconSample> Drop for InterReferenceState<'_, T> {
+impl<T: ReconSample> Drop for InterReferenceState<T> {
     fn drop(&mut self) {
         let meta = crate::reference::buffer::ReferenceMetadata {
             ref_valid: std::mem::take(&mut self.ref_valid),
@@ -1087,10 +1093,14 @@ impl<T: ReconSample> Drop for InterReferenceState<'_, T> {
     }
 }
 
-impl<T: ReconSample> InterReferenceState<'_, T> {
+impl<T: ReconSample> InterReferenceState<T> {
     fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
-        self.store.get(slot).ok().flatten().copied()
+        self.store
+            .get(slot)
+            .ok()
+            .flatten()
+            .and_then(RefFrameSlot::try_frozen)
     }
 
     fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<Arc<FrameCdfSubset>> {
@@ -1153,7 +1163,7 @@ impl<T: ReconSample> InterReferenceState<'_, T> {
 pub(crate) fn parse_inter_frame_activation(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
     if envelope.header.obu_type.is_sef() {
@@ -1168,7 +1178,7 @@ pub(crate) fn parse_inter_frame_activation(
 pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
@@ -1213,7 +1223,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
 fn parse_sef_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
@@ -1260,7 +1270,7 @@ fn validate_sef_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result
 fn parse_tip_output_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
@@ -1286,7 +1296,7 @@ fn parse_tip_output_frame_core(
 fn infer_tip_output_quantization(
     core: &mut FrameHeaderCore,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
 ) -> Result<()> {
     if core.quantization_params.is_some()
@@ -1374,7 +1384,7 @@ fn validate_tip_output_frame_core(core: &FrameHeaderCore, offset: ByteOffset) ->
 
 fn resolve_ccso_reference_reuse(
     core: &mut FrameHeaderCore,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
 ) -> Result<()> {
     let Some(inter) = core.inter.as_ref() else {
@@ -1423,7 +1433,7 @@ fn resolve_ccso_reference_reuse(
 fn parse_inter_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
@@ -1568,7 +1578,7 @@ fn validate_inter_frame_core(
 
 fn validate_ras_reference_ids(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, impl ReconSample>,
+    reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
 ) -> Result<()> {
     if core.obu_type != ObuType::RasFrame {

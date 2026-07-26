@@ -210,7 +210,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     reference_select: bool,
     num_same_ref_compound: u8,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     qindex: u32,
     luma_use_tcq: bool,
@@ -600,7 +600,7 @@ fn decode_block<T: ReconSample>(
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     ref_frame_idx: &[u32],
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
     enable_adaptive_mvd: bool,
     allow_bawp: bool,
@@ -2023,7 +2023,7 @@ fn read_bawp_syntax(
 
 fn block_reference_is_scaled<T: ReconSample>(
     core: &FrameHeaderCore,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame: i8,
     tile_offset: ByteOffset,

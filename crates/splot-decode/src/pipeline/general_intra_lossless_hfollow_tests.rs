@@ -144,7 +144,7 @@ fn assert_lossless_sdp_d113follow_oracle(fixture: &[u8], expected_len: usize, ex
         .pool()
         .install(|| decode_frame_from_plan(fixture, &options, &plan))
         .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
         panic!("fixture decoded as 10-bit");
     };
 
@@ -220,7 +220,7 @@ fn assert_lossless_sdp_directional_follow_oracle(
         .pool()
         .install(|| decode_frame_from_plan(fixture, &options, &plan))
         .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
         panic!("fixture decoded as 10-bit");
     };
 
@@ -290,7 +290,7 @@ fn lossless_nondc_chroma_v_leftedge_frame_decodes_to_oracle() {
             .pool()
             .install(|| decode_frame_from_plan(fixture, &options, &plan))
             .expect("decode");
-        let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+        let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
             panic!("fixture decoded as 10-bit");
         };
 
@@ -401,7 +401,7 @@ fn assert_lossless_ramped_leftedge_oracle(oracle: &LosslessRampedLeftedgeOracle)
         .pool()
         .install(|| decode_frame_from_plan(oracle.fixture, &options, &plan))
         .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
         panic!("fixture decoded as 10-bit");
     };
 

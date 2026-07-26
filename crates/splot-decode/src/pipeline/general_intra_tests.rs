@@ -180,7 +180,8 @@ fn decode_fixture(fixture: &[u8]) -> PipelineDecodedFrame {
         .pool()
         .install(|| decode_frame_from_plan(fixture, &options, &plan))
         .expect("decode")
-        .frame
+        .ready_frame()
+        .expect("ready")
 }
 
 pub(super) fn decode_eight(fixture: &[u8]) -> SharedFrame<u8> {

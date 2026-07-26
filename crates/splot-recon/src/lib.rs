@@ -83,7 +83,7 @@ pub use film_grain::apply_film_grain;
 pub use format::{BitDepth, PixelFormat, PlaneId, ReconSample};
 pub use frame::{DecodedFrame, DecodedFrameInfo, FramePlanes, SharedFrame};
 pub use geometry::{OutputIndex, PlaneRect, PlaneSize};
-pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput};
+pub use hash_input::{DecodedFrameHash, DecodedFrameHashInput, visible_byte_len};
 pub use intra::{
     IntraDcEdge, IntraDcEdges, IntraRectBlockSize, IntraSquareBlockSize,
     SquareIntraPredictionBlock, SquareIntraPredictionRows, predict_intra_dc_rect_into,

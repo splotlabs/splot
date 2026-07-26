@@ -326,7 +326,7 @@ struct TileFilterRecords {
     tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
 }
 
-struct TileDecodeContext<'a, 'reference, T: ReconSample> {
+struct TileDecodeContext<'a, T: ReconSample> {
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
     limits: crate::DecodeLimits,
@@ -340,7 +340,7 @@ struct TileDecodeContext<'a, 'reference, T: ReconSample> {
     reference_select: bool,
     num_same_ref_compound: u8,
     temporal_context: &'a TemporalMvContext,
-    reference: &'a InterReferenceState<'reference, T>,
+    reference: &'a InterReferenceState<T>,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
     ref_frame_idx: &'a [u32],
@@ -389,7 +389,7 @@ struct TileParserOutput {
 impl<'tile, 'payload> TileParser<'tile, 'payload> {
     fn new<T: ReconSample>(
         tile: &'tile mut DecodeTileWorkUnit<'payload>,
-        context: &TileDecodeContext<'_, '_, T>,
+        context: &TileDecodeContext<'_, T>,
         cdef_state: CdefState,
         gdf_state: GdfState,
         ccso_state: CcsoState,
@@ -510,7 +510,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
 
     fn next_unit<T: ReconSample>(
         &mut self,
-        context: &TileDecodeContext<'_, '_, T>,
+        context: &TileDecodeContext<'_, T>,
         granularity: ParserGranularity,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
@@ -704,14 +704,14 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
 
     fn next_row<T: ReconSample>(
         &mut self,
-        context: &TileDecodeContext<'_, '_, T>,
+        context: &TileDecodeContext<'_, T>,
     ) -> ParserStep<ReconRow> {
         self.next_unit(context, ParserGranularity::Row, None)
     }
 
     fn next_row_reusing<T: ReconSample>(
         &mut self,
-        context: &TileDecodeContext<'_, '_, T>,
+        context: &TileDecodeContext<'_, T>,
         buffers: ReconRowBuffers,
     ) -> ParserStep<ReconRow> {
         self.next_unit(context, ParserGranularity::Row, Some(buffers))
@@ -719,7 +719,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
 
     fn next_superblock_reusing<T: ReconSample>(
         &mut self,
-        context: &TileDecodeContext<'_, '_, T>,
+        context: &TileDecodeContext<'_, T>,
         buffers: ReconRowBuffers,
     ) -> ParserStep<ReconRow> {
         self.next_unit(context, ParserGranularity::Superblock, Some(buffers))
@@ -937,7 +937,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
     block_decoded: &TileBlockDecodedState,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -983,7 +983,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     block_decoded: &TileBlockDecodedState,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1083,7 +1083,7 @@ fn replay_recon_row<T: ReconSample>(
     motion_field: &mut TemporalMotionField,
     filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     temporal_context: &TemporalMvContext,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1231,7 +1231,7 @@ struct PreparedTile {
 
 fn tile_block_decoded<T: ReconSample>(
     tile: &DecodeTileWorkUnit<'_>,
-    context: &TileDecodeContext<'_, '_, T>,
+    context: &TileDecodeContext<'_, T>,
 ) -> Result<TileBlockDecodedState> {
     let chroma = context.sequence.general.chroma_format_idc;
     let (subsampling_x, subsampling_y) = chroma_subsampling(chroma);
@@ -1347,7 +1347,7 @@ fn tile_superblock_luma_rects<T: ReconSample>(
 fn prepare_tile<T: ReconSample>(
     tile: &mut DecodeTileWorkUnit<'_>,
     mut surface: splot_recon::CurrentFrameRect<'_, T>,
-    context: &TileDecodeContext<'_, '_, T>,
+    context: &TileDecodeContext<'_, T>,
     cdef_state: &CdefState,
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
@@ -1452,7 +1452,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     reference_select: bool,
     num_same_ref_compound: u8,
     temporal_context: &TemporalMvContext,
-    reference: &InterReferenceState<'_, T>,
+    reference: &InterReferenceState<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
     luma_use_tcq: bool,
     residual_use_ddt: bool,

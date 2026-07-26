@@ -91,7 +91,7 @@ fn assert_lossless_yuv420_oracle(
         .pool()
         .install(|| decode_frame_from_plan(fixture, &options, &plan))
         .expect("decode");
-    let PipelineDecodedFrame::Eight(frame) = decoded.frame else {
+    let PipelineDecodedFrame::Eight(frame) = decoded.ready_frame().expect("ready") else {
         panic!("fixture decoded as 10-bit");
     };
 

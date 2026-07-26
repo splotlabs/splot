@@ -103,7 +103,9 @@ fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
 
 fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
     PipelineFrame {
-        frame: PipelineDecodedFrame::Eight(SharedFrame::new(decoded_frame(width, height))),
+        frame: crate::pipeline::inflight::PipelineFrameSlot::completed(
+            PipelineDecodedFrame::Eight(SharedFrame::new(decoded_frame(width, height))),
+        ),
         display_grain: None,
         output_effects: crate::pipeline::output_effects::FrameOutputEffects::empty(),
         frame_cdfs: Arc::new(FrameCdfSubset::from_defaults()),

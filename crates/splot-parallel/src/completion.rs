@@ -38,6 +38,22 @@ impl<V> CompletionCell<V> {
         }
     }
 
+    /// Creates a cell that already holds `value`.
+    #[must_use]
+    pub fn completed(value: V) -> Self {
+        Self {
+            value: OnceLock::from(value),
+            done: Mutex::new(true),
+            cond: Condvar::new(),
+        }
+    }
+
+    /// Consumes the cell, returning the published value if there is one.
+    #[must_use]
+    pub fn into_inner(self) -> Option<V> {
+        self.value.into_inner()
+    }
+
     /// Publishes `value` and wakes every waiter.
     ///
     /// # Errors
@@ -124,6 +140,21 @@ mod tests {
     fn default_is_empty() {
         let cell = CompletionCell::<u8>::default();
         assert!(!cell.is_set());
+    }
+
+    #[test]
+    fn completed_starts_settled_and_rejects_a_later_set() {
+        let cell = CompletionCell::completed(5u32);
+        assert!(cell.is_set());
+        assert_eq!(cell.get(), Some(&5));
+        assert_eq!(cell.wait(), &5);
+        assert_eq!(cell.set(6), Err(6));
+    }
+
+    #[test]
+    fn into_inner_yields_the_published_value_only() {
+        assert_eq!(CompletionCell::completed(3u32).into_inner(), Some(3));
+        assert_eq!(CompletionCell::<u32>::new().into_inner(), None);
     }
 
     #[test]
