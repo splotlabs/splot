@@ -26,6 +26,7 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::error::DecodeError;
+use crate::pipeline::frame_engine::finish::{FrameWalk, WalkStage, WalkedFrame};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
@@ -98,8 +99,18 @@ pub(crate) struct Mv {
 impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
+fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> {
+    let (frame, core, frame_cdfs, ccso_grid, motion_field) = output;
+    FrameWalk {
+        stage: WalkStage::complete(frame, core),
+        frame_cdfs,
+        ccso_grid,
+        motion_field,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_frame<T: ReconSample>(
+pub(crate) fn walk_inter_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
@@ -110,7 +121,7 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     options: &DecodeOptions,
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
-) -> Result<InterDecodeOutput<T>> {
+) -> Result<FrameWalk<T>> {
     let offset = frame_envelope.offset;
 
     if frame_envelope.header.obu_type == ObuType::BridgeFrame {
@@ -121,7 +132,8 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             options,
             reference,
             bit_depth,
-        );
+        )
+        .map(completed_walk);
     }
     if frame_envelope.header.obu_type.is_tip_frame() {
         return decode_tip_output_frame(
@@ -132,7 +144,8 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
             options,
             reference,
             bit_depth,
-        );
+        )
+        .map(completed_walk);
     }
     if !matches!(
         frame_envelope.header.obu_type,
@@ -322,15 +335,20 @@ pub(crate) fn decode_inter_frame<T: ReconSample>(
     let disable_loopfilters_across_tiles = sequence
         .filter
         .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let (frame, filter_records) = filter_sink.into_filtered_frame(
-        &core,
-        disable_loopfilters_across_tiles,
-        crate::pipeline::deblock_quant_deltas(sequence, &core),
-        offset,
-    )?;
-    scratch.recycle_frame_filter_records(filter_records);
+    let deblock_quant_deltas = crate::pipeline::deblock_quant_deltas(sequence, &core);
 
-    Ok((frame, core, frame_cdfs, ccso_grid, motion_field))
+    Ok(FrameWalk {
+        stage: WalkStage::pending(WalkedFrame::new(
+            filter_sink,
+            core,
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            offset,
+        )),
+        frame_cdfs,
+        ccso_grid,
+        motion_field,
+    })
 }
 
 fn decode_tip_output_frame<T: ReconSample>(

@@ -3,7 +3,10 @@
 
 //! The unified generic AV2 §7 frame-decode engine.
 //!
-//! [`decode_frame`] is the single entry for every frame. [`FrameSetup`] carries
+//! [`decode_frame`] is the single entry for every frame, and is exactly
+//! [`walk_frame`] followed inline by [`finish::finish_walked_frame`]: the walk
+//! phase runs the entropy walk and reconstruction, the finish phase runs the
+//! loop filters and freezes the result. [`FrameSetup`] carries
 //! the frame-level branch between key (intra) and inter frames — the genuinely
 //! frame-level divergence (references, CDF load, order-hint history, warp /
 //! temporal-MV banks, skip-mode, segmentation, CfL enable). Below the setup, the
@@ -23,7 +26,10 @@ use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::prediction::inter::{self, InterReferenceState, TemporalMotionField};
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
+pub(crate) mod finish;
 pub(crate) mod intra;
+
+use self::finish::{FrameWalk, WalkStage, finish_walked_frame};
 
 type FrameDecodeOutput<T> = (
     DecodedFrame<T>,
@@ -36,6 +42,53 @@ type FrameDecodeOutput<T> = (
 pub(crate) enum FrameSetup<'a, T: ReconSample> {
     Intra,
     Inter(&'a InterReferenceState<T>),
+}
+
+/// Runs one frame's walk phase: the entropy walk and reconstruction, up to the
+/// end-of-walk artifacts the filter phase and the driver each consume.
+///
+/// # Errors
+///
+/// Returns the walk's own diagnostic when the header, tile plan, or block walk
+/// fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn walk_frame<T: ReconSample>(
+    scratch: &mut inter::InterDecodeScratch<T>,
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    bytes: &[u8],
+    frame_envelope: ObuEnvelope<'_>,
+    core: FrameHeaderCore,
+    sequence: &SequenceHeader,
+    options: &DecodeOptions,
+    setup: &FrameSetup<'_, T>,
+    bit_depth: BitDepth,
+) -> Result<FrameWalk<T>> {
+    match *setup {
+        FrameSetup::Inter(reference) => inter::walk_inter_frame(
+            scratch,
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            core,
+            sequence,
+            options,
+            reference,
+            bit_depth,
+        ),
+        FrameSetup::Intra => intra::walk_intra_frame::<T>(
+            scratch,
+            plan,
+            candidate,
+            bytes,
+            frame_envelope,
+            core,
+            sequence,
+            options,
+            bit_depth,
+        ),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -51,38 +104,31 @@ pub(crate) fn decode_frame<T: ReconSample>(
     setup: &FrameSetup<'_, T>,
     bit_depth: BitDepth,
 ) -> Result<FrameDecodeOutput<T>> {
-    match *setup {
-        FrameSetup::Inter(reference) => inter::decode_inter_frame(
-            scratch,
-            plan,
-            candidate,
-            bytes,
-            frame_envelope,
-            core,
-            sequence,
-            options,
-            reference,
-            bit_depth,
-        ),
-        FrameSetup::Intra => {
-            let (frame, frame_cdfs, ccso_grid) = intra::decode_intra_frame::<T>(
-                scratch,
-                plan,
-                candidate,
-                bytes,
-                frame_envelope,
-                &core,
-                sequence,
-                options,
-                bit_depth,
-            )?;
-            Ok((
-                frame,
-                core,
-                frame_cdfs,
-                ccso_grid,
-                TemporalMotionField::empty(),
-            ))
+    let walk = walk_frame(
+        scratch,
+        plan,
+        candidate,
+        bytes,
+        frame_envelope,
+        core,
+        sequence,
+        options,
+        setup,
+        bit_depth,
+    )?;
+    let (frame, core) = match walk.stage {
+        WalkStage::Complete(completed) => (completed.frame, completed.core),
+        WalkStage::Pending(walked) => {
+            let finished = finish_walked_frame(*walked)?;
+            scratch.recycle_frame_filter_records(finished.filter_records);
+            (finished.frame, finished.core)
         }
-    }
+    };
+    Ok((
+        frame,
+        core,
+        walk.frame_cdfs,
+        walk.ccso_grid,
+        walk.motion_field,
+    ))
 }
