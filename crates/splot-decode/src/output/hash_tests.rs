@@ -5,7 +5,7 @@
 
 use std::num::NonZeroU64;
 
-use splot_parallel::ThreadCount;
+use splot_parallel::{FrameDelay, ThreadCount};
 
 use super::*;
 use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
@@ -715,6 +715,31 @@ fn partition_frontier_limit_preserves_resource_limit() {
         DecodeLimits::default().with_max_tile_partition_steps(DecodeLimitThreshold::Max(0)),
         DecodeLimitName::MaxTilePartitionSteps,
     );
+}
+
+#[test]
+fn hash_report_numbers_frames_in_emission_order() {
+    for threads in [1usize, 4] {
+        for frame_delay in [FrameDelay::Fixed(NonZeroUsize::MIN), FrameDelay::Auto] {
+            let context = DecodeContext::new(
+                DecodeRuntimeConfig::new(ThreadCount::from(threads)).with_frame_delay(frame_delay),
+            )
+            .unwrap();
+            let report = context
+                .decode_hash_report_bytes(ORDER_HINT_WRAP_FIXTURE, DecodeOptions::default())
+                .unwrap();
+
+            assert_eq!(report.frames.len(), 121);
+            assert!(
+                report
+                    .frames
+                    .iter()
+                    .map(|frame| frame.output_index)
+                    .eq(0..121),
+                "threads {threads}, frame delay {frame_delay:?}"
+            );
+        }
+    }
 }
 
 #[test]

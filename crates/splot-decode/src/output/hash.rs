@@ -51,7 +51,8 @@ pub(crate) fn decode_hash_report_from_plan(
             plan,
             frame_delay,
             |output| {
-                frames.push(hash_pipeline_frame(&output.ready_frame()?));
+                let emitted = frames.len() as u64;
+                frames.push(hash_pipeline_frame(&output.ready_frame()?, emitted));
                 Ok(())
             },
         )?;
@@ -80,12 +81,12 @@ fn decode_hash_frames_pipelined(
     let frame_delay = NonZeroUsize::new(frame_delay.get() - 1).unwrap_or(NonZeroUsize::MIN);
     let completed = Mutex::new(Vec::new());
     let capacity = splot_parallel::QueueCapacity::new(NonZeroUsize::MIN.saturating_add(1));
-    let (sender, receiver) = splot_parallel::bounded_queue::<PipelineDecodedFrame>(capacity);
+    let (sender, receiver) = splot_parallel::bounded_queue::<(u64, PipelineDecodedFrame)>(capacity);
     splot_parallel::ready_task_scope(|scope| {
         let completed = &completed;
         scope.spawn(move |_| {
-            while let Ok(frame) = receiver.recv() {
-                let hashed = hash_pipeline_frame(&frame);
+            while let Ok((emitted, frame)) = receiver.recv() {
+                let hashed = hash_pipeline_frame(&frame, emitted);
                 completed
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -93,6 +94,7 @@ fn decode_hash_frames_pipelined(
             }
         });
 
+        let mut emitted = 0u64;
         let decoded = crate::pipeline::emit_frames_from_prepared(
             bytes,
             parsed,
@@ -100,9 +102,12 @@ fn decode_hash_frames_pipelined(
             plan,
             frame_delay,
             |output| {
-                if let Err(disconnected) = sender.send(output.ready_frame()?) {
-                    let frame = disconnected.0;
-                    let hashed = hash_pipeline_frame(&frame);
+                let ready = output.ready_frame()?;
+                let index = emitted;
+                emitted += 1;
+                if let Err(disconnected) = sender.send((index, ready)) {
+                    let (index, frame) = disconnected.0;
+                    let hashed = hash_pipeline_frame(&frame, index);
                     completed
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -125,16 +130,21 @@ fn discard_hash() -> bool {
     *DISCARD_HASH.get_or_init(|| std::env::var_os("SPLOT_DECODE_DISCARD_HASH").is_some())
 }
 
-fn hash_pipeline_frame(frame: &PipelineDecodedFrame) -> DecodeHashFrame {
+/// Hashes one emitted frame, recording `emitted` as its report row index.
+///
+/// `emitted` is the frame's 0-based emission ordinal, counted where the driver
+/// hands the frame to the report; frame pipelining may finish frames out of
+/// order, but it never reorders emission.
+fn hash_pipeline_frame(frame: &PipelineDecodedFrame, emitted: u64) -> DecodeHashFrame {
     let timer = crate::timing::start();
     let output = match frame {
         PipelineDecodedFrame::Eight(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
-            hash_frame_from_decoded(frame.get(), hash.to_hex())
+            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
         }
         PipelineDecodedFrame::Ten(frame) => {
             let hash = DecodedFrameHashInput::new(frame.get()).compute_hash();
-            hash_frame_from_decoded(frame.get(), hash.to_hex())
+            hash_frame_from_decoded(frame.get(), hash.to_hex(), emitted)
         }
     };
     crate::timing::report("output_hash", timer);
@@ -144,6 +154,7 @@ fn hash_pipeline_frame(frame: &PipelineDecodedFrame) -> DecodeHashFrame {
 fn hash_frame_from_decoded<T: ReconSample>(
     frame: &DecodedFrame<T>,
     digest_hex: String,
+    emitted: u64,
 ) -> DecodeHashFrame {
     let visible = frame.visible_luma_rect();
     let chroma = frame
@@ -152,7 +163,7 @@ fn hash_frame_from_decoded<T: ReconSample>(
         .ok()
         .flatten();
     DecodeHashFrame {
-        output_index: frame.output_index().get(),
+        output_index: emitted,
         visible_luma_left: visible.x() as u32,
         visible_luma_top: visible.y() as u32,
         visible_luma_width: visible.width() as u32,
