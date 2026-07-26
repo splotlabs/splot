@@ -131,12 +131,42 @@ fn ring_admission_harvests_the_oldest_entry_first() {
 
     ring.reserve(&mut eight, &mut ten);
 
-    assert_eq!(ring.entries.len(), 1);
-    assert_eq!(ring.entries.front().map(|entry| entry.frame_index), Some(2));
+    assert_eq!(ring.entries.len(), 2);
+    assert_eq!(ring.entries.front().map(|entry| entry.frame_index), Some(1));
 
     ring.harvest_all(&mut eight, &mut ten);
 
     assert!(ring.entries.is_empty());
+}
+
+#[test]
+fn a_depth_of_two_walks_one_frame_beside_one_uncollected_finish() {
+    let mut eight = InterDecodeScratch::<u8>::default();
+    let mut ten = InterDecodeScratch::<u16>::default();
+    let mut ring = InflightRing::new(nz(2));
+
+    let (first, _first_outcome) = pending_entry(&mut ring, 0);
+    first.complete(SharedFrame::new(decoded_frame(4, 4)));
+    ring.reserve(&mut eight, &mut ten);
+
+    assert!(
+        ring.holds(0),
+        "admitting frame 1 must not harvest frame 0 at depth two"
+    );
+
+    let (second, _second_outcome) = pending_entry(&mut ring, 1);
+    second.complete(SharedFrame::new(decoded_frame(4, 4)));
+    assert_eq!(ring.max_in_flight(), 2);
+
+    ring.reserve(&mut eight, &mut ten);
+
+    assert!(!ring.holds(0), "frame 0 must be harvested to admit frame 2");
+    assert!(ring.holds(1));
+    assert_eq!(ring.entries.len(), 1);
+
+    ring.harvest_all(&mut eight, &mut ten);
+
+    assert!(!ring.holds(1));
 }
 
 #[test]

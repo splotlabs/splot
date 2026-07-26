@@ -41,7 +41,13 @@ pub(crate) fn decode_hash_report_from_plan(
         ));
     }
     let report_frames = if splot_parallel::on_multiworker_pool() {
-        decode_hash_frames_pipelined(bytes, parsed, options, plan, frame_delay)?
+        decode_hash_frames_pipelined(
+            bytes,
+            parsed,
+            options,
+            plan,
+            hasher_frame_delay(frame_delay, resolved_threads),
+        )?
     } else {
         let mut frames = Vec::new();
         crate::pipeline::emit_frames_from_prepared(
@@ -65,12 +71,19 @@ pub(crate) fn decode_hash_report_from_plan(
     ))
 }
 
-/// Hashes decoded frames on a dedicated worker task while the driver decodes.
+/// The pipelining depth the decode driver keeps once the hasher takes a worker.
 ///
-/// The hasher task parks on the queue for the whole decode, so the decode's own
-/// frame-pipelining depth is reduced by the worker it holds: the driver plus its
-/// in-flight filter phases must still fit the pool, or the driver could park on
-/// a filter phase no worker is left to run.
+/// The hasher task parks on the queue for the whole decode, so the driver plus
+/// the `depth - 1` filter phases it keeps in flight must fit the remaining
+/// workers, or the driver could park on a filter phase no worker is left to run.
+/// Only a depth that would overrun those workers is clamped; a depth the pool
+/// can still afford is kept, so `--threads 4 --frame-delay 2` stays pipelined.
+fn hasher_frame_delay(frame_delay: NonZeroUsize, resolved_threads: NonZeroUsize) -> NonZeroUsize {
+    NonZeroUsize::new(resolved_threads.get() - 1)
+        .map_or(NonZeroUsize::MIN, |available| frame_delay.min(available))
+}
+
+/// Hashes decoded frames on a dedicated worker task while the driver decodes.
 fn decode_hash_frames_pipelined(
     bytes: &[u8],
     parsed: &FlatParsedBitstream<'_>,
@@ -78,7 +91,6 @@ fn decode_hash_frames_pipelined(
     plan: &DecodeStreamPlan,
     frame_delay: NonZeroUsize,
 ) -> Result<Vec<DecodeHashFrame>> {
-    let frame_delay = NonZeroUsize::new(frame_delay.get() - 1).unwrap_or(NonZeroUsize::MIN);
     let completed = Mutex::new(Vec::new());
     let capacity = splot_parallel::QueueCapacity::new(NonZeroUsize::MIN.saturating_add(1));
     let (sender, receiver) = splot_parallel::bounded_queue::<(u64, PipelineDecodedFrame)>(capacity);

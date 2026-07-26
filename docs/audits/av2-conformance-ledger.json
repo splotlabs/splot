@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8e1c6a4bbf0b3aade051bf279aaef03b2bdfab97",
+  "audited_commit": "a60416d68de0409a6bbedaad3a40fd411ec12ae7",
   "outcome": "success",
   "files": [
     {
@@ -2718,7 +2718,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon.rs",
-      "sha256": "03b5467fdc6b465e6a781abfcd901cd6b1755c27bea0e642be826deaa602c4d1",
+      "sha256": "d78e2223f55200654130a98cd4a9b75a9d311c1b6410850fe0254da9442c2697",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"
@@ -2873,7 +2873,7 @@
     },
     {
       "path": "crates/splot-decode/src/output/hash.rs",
-      "sha256": "f67b682459504093e2ee36677559827680497e9fe2c9a90f08868f3955b08a2d",
+      "sha256": "5936b1b4be365a8b324ae346bf008dacaf9a4d8c362790009ad4a1c949e81d69",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-MINIMAL-TIER-RUNTIME-SUCCESS"
@@ -2882,7 +2882,7 @@
     },
     {
       "path": "crates/splot-decode/src/output/hash_tests.rs",
-      "sha256": "9c8778f1e7c19f77769e06a6dc126e218edbe6eb57c67b12a9a5e6307f1d08a4",
+      "sha256": "93730dbf3af17e37df5cda5df437c889bc1ea59c6efed36be5e3bbd0601e08d2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2928,7 +2928,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_engine/finish.rs",
-      "sha256": "477c38c7ee4e67b180c10f46afd2b93625587a9d21a00037e9290818d1c87ce6",
+      "sha256": "077893bc6fc4cef910fc3ac4c5d48617eac22e8ae4b143e5e991a2f9167aa152",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2942,7 +2942,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/frame_engine/intra_tests.rs",
-      "sha256": "2038c3b8f5904a76b993b3358a13cd1b6a93f782b2dfa54d3591347e1bffe52d",
+      "sha256": "da8ecaeed314cc1301525098833292c02825b108258f06cdedeb849d4d8bb84a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2961,6 +2961,22 @@
       "feature_ids": [
         "DECODE-SEQUENCE-CROP-WINDOW"
       ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/pipeline/frame_progress.rs",
+      "sha256": "cf491727e3d50c09d604d53bbf18188cde453b27b70e284df3c348ccfd6b20c3",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "INFRA-DECODE-FRAME-PIPELINING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/pipeline/frame_progress_tests.rs",
+      "sha256": "e4a464e2ce93464d4347c450859ffe129b509340982ac535fdb4184c5aeb86da",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
       "outcome": "success"
     },
     {
@@ -3073,7 +3089,7 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/inflight.rs",
-      "sha256": "53e863171b9d4055922794a3b02f679d739bedc7e3aba9a1558362ac5ec4383b",
+      "sha256": "f8af6f9acd845594f010f98ffe40ff0bd0cdbcf2fade154fb6f2b47e6b141940",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING"
@@ -3082,14 +3098,14 @@
     },
     {
       "path": "crates/splot-decode/src/pipeline/inflight_tests.rs",
-      "sha256": "057e6bbaf4f038bdadccb288972ad90219ed10579e96ebbc052d37295d3a7960",
+      "sha256": "7643de92c975e1c27d1c17da260f9cc989559cdc5f2784c17d2468fe1011a1ce",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/pipeline/mod.rs",
-      "sha256": "a3d559ec6616766e04ce19b1e34f22738a66a6b6aeda59467585e38897cee493",
+      "sha256": "67727d8bc6580988b4acaf505cd2b2db557e625c8b0f320153d70b318b9bd635",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.3-RESERVED-OBU",
@@ -3248,7 +3264,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter.rs",
-      "sha256": "591ea59fb2858e17f38cc441f917d50bb85dc7ba1297c821a3975ffaf32256d9",
+      "sha256": "161af966b70483f8a0a9ee821708cbcbd14d6e1498a7f54d453371ac3008a23d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-GLOBAL-MOTION",
@@ -3260,21 +3276,21 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/bawp.rs",
-      "sha256": "95303cd895f83d8966a1f21d5f799faef84f1410eb4eea5fba54b10da4680d00",
+      "sha256": "94873dcd87ceaf21019039033d6138f50c83a854f02fde03d2e16d9e9c7a8593",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/bawp_tests.rs",
-      "sha256": "2598c7844a9cd875c2ef95fa83c88f9ea43f9a789589d71bf751913ac30ab4f7",
+      "sha256": "51b59de3a39ef1ec8c68d3bae27552c583429396199f5ff911816e3f0a280213",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "9cf9b3fc30fd7102bcef71ec0778be05753c7ef1185de24c63edda3e8c09980f",
+      "sha256": "e68b9ab310bbebac30bdc98d524ca505d0cd85083b3e2886f01ced018bbd70df",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3300,7 +3316,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/deferred_recon.rs",
-      "sha256": "db60ebe1ad959202fb766cacb950abba08ca2575e80ff2763d1f9ccf69e05def",
+      "sha256": "a64f9e3b6d18b779d5c412d9dc389a0ae84e495e1c5991561563b37f7e5add51",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"
@@ -3333,8 +3349,17 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/prediction/inter/block/pixel_commit.rs",
+      "sha256": "3cc156f67730983c2276d7f66cdd2a0dbb1996fc0bc084284d2a1e880ebb7707",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "INFRA-DECODE-FRAME-PIPELINING"
+      ],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/prediction/inter/block/prediction.rs",
-      "sha256": "9843d5bc613f6d6b822a516f767c803fd981f9f28134874a4ea6e11d809c4e56",
+      "sha256": "086aafda159eb23d27eafe5bd1b0bd100e7769750abf5e901c53489f84fda952",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3351,6 +3376,22 @@
     {
       "path": "crates/splot-decode/src/prediction/inter/block/residual_tests.rs",
       "sha256": "a769bb0d26f3683ec2d2496274f33462956cabe40c4840ddac1fdf17ce5c2723",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/prediction/inter/block/row_gate.rs",
+      "sha256": "c4da7dadc08b1789652cbe7ab52413ee5326398f79e89e8d7b8c51b2ed337bcf",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "INFRA-DECODE-FRAME-PIPELINING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/prediction/inter/block/row_gate_tests.rs",
+      "sha256": "55fdb0d9f76b387d58b1e9fd4edf63a5ce37647f6a6596f2e637edb768022460",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3378,7 +3419,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tile.rs",
-      "sha256": "1c210b52b598e81a9dab52ac06ca79aa1e6e48c621e1319ed3f250230b2548b2",
+      "sha256": "938182eb76bbdac3d112fa6841002b65754edae976a125cdb00e06bff0e5c7d9",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-PARALLEL-STAGES"
@@ -3386,8 +3427,15 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/prediction/inter/block/tile_ready_row_tests.rs",
+      "sha256": "61686cba429daf0e324c1f149344f9ae537d54d85c36057d12d24abdf6a0e79b",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/prediction/inter/block/tip.rs",
-      "sha256": "518553924607d269cbcefaf83f0e72dd9cc2b213ad284a7adcc472954d6fe155",
+      "sha256": "7bf3683f6702f87b5ee27af5637669e8b19ba5c7953f86f405c2709cbd6ae819",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-TIP-OUTPUT"
@@ -3410,7 +3458,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/bridge.rs",
-      "sha256": "7ad6055a5afdc460f8c3552816b1210ebadeae901747c9b3dcc4a53d7079a847",
+      "sha256": "67e799d980ed4c7095d91eb5abfe49ecccc7ff34038817e31a112383b37b7a00",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3513,7 +3561,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/mc.rs",
-      "sha256": "5d9917830702b88738fb82dd8319c73146ba789e995e58e87a589ab0ecc163a6",
+      "sha256": "436f943705434f0da7119bf86db73bd13c3e34266cde6137df9740cf6ac7e678",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-NON420-CHROMA"
@@ -3522,7 +3570,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/mc/optflow.rs",
-      "sha256": "d5083403319200752d7868587d85fb3b6e79b2231c114fc174bf6787335615c2",
+      "sha256": "67a014d8f3c722a5a507f4a06e52272239b5aab5084f43b41708110edcf921b4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3545,7 +3593,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/mc_tests.rs",
-      "sha256": "184f82327a119b7cf8010c745dcc9db2c946261c79d0a27e745a19bfd2ccc937",
+      "sha256": "e23e3004119262769891de789dbe00a15a887b12508434278b63bfc5fcf7922d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3583,6 +3631,22 @@
       "outcome": "success"
     },
     {
+      "path": "crates/splot-decode/src/prediction/inter/reference.rs",
+      "sha256": "f4fb475085a512571ce9588616408a7ea2669a3db4fb77bacacfbf7c98b3ef76",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [
+        "INFRA-DECODE-FRAME-PIPELINING"
+      ],
+      "outcome": "success"
+    },
+    {
+      "path": "crates/splot-decode/src/prediction/inter/reference_tests.rs",
+      "sha256": "f19e5a600e8a7557b5078cafae7ce09419e860c74e87418dabb0c601cafd1e5f",
+      "scope_kind": "workspace:splot-decode",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
       "path": "crates/splot-decode/src/prediction/inter/single_ref.rs",
       "sha256": "d99c990f5c87b75f2c7ea02f7524fffbc32c048016cb139100fd1608aff46df7",
       "scope_kind": "workspace:splot-decode",
@@ -3607,7 +3671,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/tests.rs",
-      "sha256": "693f6f854133b4449df1c2edec3f8347e100e43280ebbe66f7676cc5ed5857af",
+      "sha256": "b95a945ac57c2ca569a08d235dc1157cd59c37b81f2f5a82b66f8e7e5a51b0b8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "AV2-5.18.7-SEGMENTATION-TILING"
@@ -4595,7 +4659,7 @@
     },
     {
       "path": "crates/splot-parallel/src/completion.rs",
-      "sha256": "a6f5bae3d4189106e3981294aaa0a45974d07a76e3208aaea12b3e478165b257",
+      "sha256": "5141291f865c15324a03fbeb8b137b38a6b607bf8a2a91597ca91928007f2b51",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"
@@ -4616,7 +4680,7 @@
     },
     {
       "path": "crates/splot-parallel/src/lib.rs",
-      "sha256": "3290231b65fd201b3710bf2f475199d53386aafa334b651d4632e7ab37e259f5",
+      "sha256": "98c9f73d36b201f66ed9cba14129ca08cab8b4a65d5859f63c268efb7ac3b4f0",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [
         "INFRA-PARALLEL-RUNTIME-POLICY"
@@ -4625,7 +4689,7 @@
     },
     {
       "path": "crates/splot-parallel/src/pool.rs",
-      "sha256": "df5624b937978f881994264eff7cc9d20eaf6151ffe1c0d41ed1c7ff161a2edd",
+      "sha256": "fe93821bd17681d0262a099b9cd4288572d920dba1339a31bb03de8a7639b2f6",
       "scope_kind": "workspace:splot-parallel",
       "feature_ids": [],
       "outcome": "success"

@@ -15,14 +15,14 @@
 //! [pending](RefFrameSlot::pending); the task publishes the samples through a
 //! single-use [`FrameSlotWriter`]. The driver tracks the frames whose filter
 //! phase it has not collected in an [`InflightRing`] bounded by the resolved
-//! frame-delay depth, and is the only thread that ever blocks on a slot: before
-//! admitting a new frame it harvests the oldest in-flight entry, and before
-//! reading a frame's pixels it waits for that frame. A frame's own pixel
-//! references are gated inside its walk instead
-//! ([`crate::prediction::inter::PixelReferenceGate`]), so the walk's parse work
-//! overlaps a reference frame's filter phase. Worker tasks never wait on any
-//! slot. Those driver waits run pool jobs instead of parking idle, so a blocked
-//! driver still finishes frames.
+//! frame-delay depth, and is the only thread that ever blocks on a slot: it
+//! harvests the oldest in-flight entries only once admitting a new frame would
+//! overlap more frames than that depth, and before reading a frame's pixels it
+//! waits for that frame. A frame's own pixel references are gated inside its
+//! walk instead ([`crate::prediction::inter::PixelReferenceGate`]), so the
+//! walk's parse work overlaps a reference frame's filter phase. Worker tasks
+//! never wait on any slot. Those driver waits run pool jobs instead of parking
+//! idle, so a blocked driver still finishes frames.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
@@ -334,10 +334,18 @@ struct InflightEntry {
 
 /// The bounded set of frames whose filter phase runs on the pool.
 ///
-/// The ring holds at most `depth - 1` entries, so the frame being walked plus
-/// the frames still being filtered never exceed the resolved frame-delay depth,
-/// which [`splot_parallel::FrameDelay::resolve`] already clamps to the pool
-/// width.
+/// A resolved frame-delay depth of `D` overlaps `D` frames: the frame the driver
+/// walks plus the `D - 1` filter phases it has not collected. The ring therefore
+/// keeps up to `D - 1` entries across an admission, and reaches `D` only between
+/// a frame's own push and the next admission, which harvests back down. A depth
+/// of one keeps nothing in flight, which is the serial path.
+///
+/// [`splot_parallel::FrameDelay::resolve`] clamps `D` to the pool width, so the
+/// driver plus the `D - 1` phases running beside it fit the workers. The
+/// transient `D`-th entry cannot strand the pipeline either: filter tasks never
+/// block on a slot, and every driver wait runs pool jobs
+/// ([`CompletionCell::wait_with_pool_assist`]) instead of parking, so the driver
+/// itself executes a task the pool has no free worker for.
 pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
@@ -349,20 +357,29 @@ impl InflightRing {
     /// Builds the in-flight ring for a resolved frame-delay depth.
     pub(crate) fn new(depth: NonZeroUsize) -> Self {
         Self {
-            capacity: depth.get() - 1,
+            capacity: depth.get(),
             entries: VecDeque::new(),
             failure: None,
             max_in_flight: 0,
         }
     }
 
-    /// The high-water mark of frames whose filter phase ran concurrently.
+    /// The high-water mark of frames whose filter phase the driver had handed
+    /// out but not yet collected, which bounds how many ran at once.
     pub(crate) const fn max_in_flight(&self) -> usize {
         self.max_in_flight
     }
 
-    /// Makes room for one more in-flight frame, harvesting the oldest entries
-    /// until the ring is under capacity.
+    /// Whether the ring still holds this frame's second slot handle, which keeps
+    /// the frame's sample storage alive however few other owners remain.
+    pub(crate) fn holds(&self, frame_index: usize) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.frame_index == frame_index)
+    }
+
+    /// Admits one more frame, harvesting the oldest entries until the frame
+    /// about to be walked plus the uncollected filter phases fit the depth.
     pub(crate) fn reserve(
         &mut self,
         eight: &mut InterDecodeScratch<u8>,

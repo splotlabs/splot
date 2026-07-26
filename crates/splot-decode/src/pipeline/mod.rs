@@ -166,10 +166,20 @@ pub(crate) fn emit_frames_from_prepared(
     .map(drop)
 }
 
+/// Retires the settled frames nothing owns any more, subtracting their bytes
+/// from the live-frame accounting.
+///
+/// A frame the in-flight ring still holds is skipped: the ring keeps a second
+/// slot handle, so its planes stay alive whatever else releases them, and
+/// subtracting the bytes would let the live-frame peak run above
+/// [`crate::DecodeLimitName::MaxReferenceStoreBytes`]. The driver rescans every
+/// frame on each call, so the skipped frame is reclaimed on the first pass after
+/// its finish is harvested.
 fn reclaim_unowned_frames(
     frames: &mut [Option<PipelineFrame>],
     reference: &reference_buffer::RuntimeReferenceBuffer,
     scheduler: &OutputScheduler,
+    ring: &inflight::InflightRing,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
     for frame_index in 0..frames.len() {
@@ -178,6 +188,7 @@ fn reclaim_unowned_frames(
         };
         if reference.retains(frame_index)
             || scheduler.retains(frame_index)
+            || ring.holds(frame_index)
             || !frame.frame.is_settled()
         {
             continue;
@@ -989,6 +1000,7 @@ fn decode_frames_in_order(
             &mut frames,
             &reference,
             &scheduler,
+            ring,
             &mut retained_frame_bytes,
         )?;
     }
@@ -1153,6 +1165,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
@@ -1493,6 +1506,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
@@ -1656,6 +1670,7 @@ fn decode_frames_in_order(
                             &mut frames,
                             &reference,
                             &scheduler,
+                            ring,
                             &mut retained_frame_bytes,
                         )?;
                     }
@@ -1767,6 +1782,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        ring,
                         &mut retained_frame_bytes,
                     )?;
                 }
@@ -1796,10 +1812,12 @@ fn decode_frames_in_order(
             &mut emit,
         )?;
         if !retain_decoded_frames {
+            ring.harvest_all(decode_scratch_eight, decode_scratch_ten);
             reclaim_unowned_frames(
                 &mut frames,
                 &reference,
                 &scheduler,
+                ring,
                 &mut retained_frame_bytes,
             )?;
         }
