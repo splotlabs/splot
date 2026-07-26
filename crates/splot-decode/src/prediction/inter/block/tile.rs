@@ -41,6 +41,8 @@ struct ReadyRowCoordinator<Parser, Ready, Done, Commit, E> {
     parser: Option<Parser>,
     ready: VecDeque<Ready>,
     ready_limit: usize,
+    deferred: VecDeque<Ready>,
+    gate_open: bool,
     done: Vec<Option<Done>>,
     done_limit: usize,
     committed: usize,
@@ -54,7 +56,11 @@ struct ReadyRowCoordinator<Parser, Ready, Done, Commit, E> {
     active_tasks: usize,
     active_limit: usize,
     max_pending: usize,
+    max_deferred: usize,
     max_active: usize,
+    parse_timer: Option<std::time::Instant>,
+    drain_timer: Option<std::time::Instant>,
+    flip_timer: Option<std::time::Instant>,
 }
 
 fn lock_ready_rows<Parser, Ready, Done, Commit, E>(
@@ -65,10 +71,25 @@ fn lock_ready_rows<Parser, Ready, Done, Commit, E>(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Re-reads the reference-pixel predicate, opening the enqueue gate on the flip.
+fn note_ready_row_gate<Parser, Ready, Done, Commit, E>(
+    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
+    gate: &impl Fn() -> bool,
+) {
+    if !state.gate_open && gate() {
+        state.gate_open = true;
+        crate::timing::report("walk_refs_flip", state.flip_timer.take());
+    }
+}
+
 fn take_ordered_commit<Parser, Ready, Done, Commit, E>(
     state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
 ) -> Option<(Done, Commit)> {
-    if state.commit_active || state.capacity_error || state.commit_error.is_some() {
+    if !state.gate_open
+        || state.commit_active
+        || state.capacity_error
+        || state.commit_error.is_some()
+    {
         return None;
     }
     let index = state.next_commit;
@@ -84,41 +105,35 @@ fn take_ordered_commit<Parser, Ready, Done, Commit, E>(
     Some((done, commit))
 }
 
-fn schedule_ready_rows<'scope, Parser, Work, Ready, Done, Commit, E>(
+fn schedule_ready_rows<'scope, Parser, Work, Gate, Ready, Done, Commit, E>(
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     coordinator: &'scope Mutex<ReadyRowCoordinator<Parser, Ready, Done, Commit, E>>,
     work: &'scope Work,
+    gate: &'scope Gate,
 ) where
     Parser: FnMut() -> ParserStep<Ready> + Send + 'scope,
     Work: Fn(Ready) -> Done + Sync + 'scope,
+    Gate: Fn() -> bool + Sync + 'scope,
     Ready: Send + 'scope,
     Done: OrderedDone + Send + 'scope,
     Commit: FnMut(Done) -> core::result::Result<(), E> + Send + 'scope,
     E: Send + 'scope,
 {
-    let (spawn_parser, ready, ordered_commit) = {
+    let (spawn_parser, ordered_commit) = {
         let mut state = lock_ready_rows(coordinator);
+        note_ready_row_gate(&mut state, gate);
         if state.capacity_error || state.commit_error.is_some() {
-            (false, None, None)
+            (false, None)
         } else {
             let spawn_parser = !state.parser_done
                 && !state.parser_active
                 && state.parser.is_some()
-                && state.ready.len() < state.ready_limit;
+                && (!state.gate_open || state.ready.len() < state.ready_limit);
             if spawn_parser {
                 state.parser_active = true;
             }
-            let ready = if state.active_tasks < state.active_limit {
-                state.ready.pop_front()
-            } else {
-                None
-            };
-            if ready.is_some() {
-                state.active_tasks += 1;
-                state.max_active = state.max_active.max(state.active_tasks);
-            }
             let ordered_commit = take_ordered_commit(&mut state);
-            (spawn_parser, ready, ordered_commit)
+            (spawn_parser, ordered_commit)
         }
     };
     if let Some((done, mut commit)) = ordered_commit {
@@ -136,7 +151,7 @@ fn schedule_ready_rows<'scope, Parser, Work, Ready, Done, Commit, E>(
                     Err(error) => state.commit_error = Some(error),
                 }
             }
-            schedule_ready_rows(scope, coordinator, work);
+            schedule_ready_rows(scope, coordinator, work, gate);
         });
     }
     if spawn_parser {
@@ -152,25 +167,29 @@ fn schedule_ready_rows<'scope, Parser, Work, Ready, Done, Commit, E>(
                 ParserStep::More(row) => (row, false),
                 ParserStep::Last(row) => (row, true),
             };
-            let mut overflow = None;
-            {
+            let overflow = {
                 let mut state = lock_ready_rows(coordinator);
                 state.parser = parser;
                 state.parser_active = false;
-                state.parser_done |= last;
-                if state.capacity_error || state.ready.len() >= state.ready_limit {
-                    state.capacity_error = true;
-                    overflow = Some(row);
-                } else {
-                    state.ready.push_back(row);
-                    state.max_pending = state.max_pending.max(state.ready.len());
+                if last {
+                    crate::timing::report("walk_parse", state.parse_timer.take());
+                    state.drain_timer = crate::timing::start();
                 }
-            }
+                state.parser_done |= last;
+                admit_parsed_row(&mut state, row)
+            };
             drop(overflow);
-            schedule_ready_rows(scope, coordinator, work);
+            schedule_ready_rows(scope, coordinator, work, gate);
         });
     }
-    if let Some(ready) = ready {
+    loop {
+        let ready = {
+            let mut state = lock_ready_rows(coordinator);
+            take_ready_row(&mut state)
+        };
+        let Some(ready) = ready else {
+            break;
+        };
         scope.spawn(move |scope| {
             let done = work(ready);
             let mut overflow = None;
@@ -190,27 +209,87 @@ fn schedule_ready_rows<'scope, Parser, Work, Ready, Done, Commit, E>(
                 }
             }
             drop(overflow);
-            schedule_ready_rows(scope, coordinator, work);
+            schedule_ready_rows(scope, coordinator, work, gate);
         });
     }
+}
+
+/// Queues one parsed row, deferring it while the reference-pixel gate is shut.
+fn admit_parsed_row<Parser, Ready, Done, Commit, E>(
+    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
+    row: Ready,
+) -> Option<Ready> {
+    if state.capacity_error {
+        return Some(row);
+    }
+    if !state.gate_open {
+        if state.deferred.len() >= state.done_limit {
+            state.capacity_error = true;
+            return Some(row);
+        }
+        state.deferred.push_back(row);
+        state.max_deferred = state.max_deferred.max(state.deferred.len());
+        return None;
+    }
+    if state.ready.len() >= state.ready_limit {
+        state.capacity_error = true;
+        return Some(row);
+    }
+    state.ready.push_back(row);
+    state.max_pending = state.max_pending.max(state.ready.len());
+    None
+}
+
+/// Claims one row for a precompute task, deferred rows first so the enqueue
+/// order stays the parse order.
+fn take_ready_row<Parser, Ready, Done, Commit, E>(
+    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
+) -> Option<Ready> {
+    if !state.gate_open
+        || state.capacity_error
+        || state.commit_error.is_some()
+        || state.active_tasks >= state.active_limit
+    {
+        return None;
+    }
+    let ready = if state.deferred.is_empty() {
+        state.ready.pop_front()?
+    } else {
+        state.deferred.pop_front()?
+    };
+    state.active_tasks += 1;
+    state.max_active = state.max_active.max(state.active_tasks);
+    Some(ready)
 }
 
 struct ReadyPipelineStats {
     committed: usize,
     ready_limit: usize,
     max_pending: usize,
+    max_deferred: usize,
     max_active: usize,
 }
 
-fn run_ready_row_prepass_with_commit<Parser, Work, Ready, Done, Commit, E>(
+/// Runs one tile's parse-ahead prepass, holding reconstruction work back until
+/// `gate` reports this frame's reference samples have landed.
+///
+/// Parsing never waits on the gate: rows parsed while it is shut queue up and
+/// are enqueued in parse order on the flip. When parsing outruns the gate
+/// entirely, `settle` blocks the driver once and the queued rows then drain
+/// through the normal path.
+fn run_ready_row_prepass_with_commit<Parser, Work, Gate, Settle, Ready, Done, Commit, E>(
     parser: Parser,
     work: Work,
     commit: Commit,
     done_limit: usize,
+    gate: Gate,
+    settle: Settle,
 ) -> core::result::Result<ReadyPipelineStats, ReadyRowPipelineError<E>>
 where
     Parser: FnMut() -> ParserStep<Ready> + Send,
     Work: Fn(Ready) -> Done + Send + Sync,
+    Gate: Fn() -> bool + Send + Sync,
+    Settle: FnOnce() -> core::result::Result<(), E>,
     Ready: Send,
     Done: OrderedDone + Send,
     Commit: FnMut(Done) -> core::result::Result<(), E> + Send,
@@ -231,6 +310,8 @@ where
         parser: Some(parser),
         ready: VecDeque::with_capacity(ready_limit),
         ready_limit,
+        deferred: VecDeque::new(),
+        gate_open: false,
         done,
         done_limit,
         committed: 0,
@@ -244,13 +325,32 @@ where
         active_tasks: 0,
         active_limit,
         max_pending: 0,
+        max_deferred: 0,
         max_active: 0,
+        parse_timer: crate::timing::start(),
+        drain_timer: None,
+        flip_timer: crate::timing::start(),
     });
-    splot_parallel::ready_task_scope(|scope| schedule_ready_rows(scope, &coordinator, &work))
+    splot_parallel::ready_task_scope(|scope| {
+        schedule_ready_rows(scope, &coordinator, &work, &gate);
+    })
+    .map_err(|_| ReadyRowPipelineError::Parallel)?;
+    if ready_rows_await_references(&coordinator) {
+        settle().map_err(ReadyRowPipelineError::Codec)?;
+        {
+            let mut state = lock_ready_rows(&coordinator);
+            state.gate_open = true;
+            crate::timing::report("walk_refs_flip", state.flip_timer.take());
+        }
+        splot_parallel::ready_task_scope(|scope| {
+            schedule_ready_rows(scope, &coordinator, &work, &gate);
+        })
         .map_err(|_| ReadyRowPipelineError::Parallel)?;
+    }
     let state = coordinator
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    crate::timing::report("walk_commit_drain", state.drain_timer);
     if let Some(error) = state.commit_error {
         return Err(ReadyRowPipelineError::Codec(error));
     }
@@ -260,6 +360,7 @@ where
         || state.commit_active
         || state.active_tasks != 0
         || !state.ready.is_empty()
+        || !state.deferred.is_empty()
         || state.done.iter().any(Option::is_some)
     {
         return Err(ReadyRowPipelineError::Capacity);
@@ -268,8 +369,17 @@ where
         committed: state.committed,
         ready_limit: state.ready_limit,
         max_pending: state.max_pending,
+        max_deferred: state.max_deferred,
         max_active: state.max_active,
     })
+}
+
+/// Whether the prepass ran out of parse work with the reference gate still shut.
+fn ready_rows_await_references<Parser, Ready, Done, Commit, E>(
+    coordinator: &Mutex<ReadyRowCoordinator<Parser, Ready, Done, Commit, E>>,
+) -> bool {
+    let state = lock_ready_rows(coordinator);
+    !state.gate_open && !state.capacity_error && state.commit_error.is_none()
 }
 
 fn run_ready_row_pipeline_serial<Parser, Recon, Row, E>(
@@ -1504,10 +1614,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
     let chunk_offset = work_units
         .first()
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
+    let gate = reference.pixel_reference_gate(super::super::named_pixel_reference_slots(core));
     let parallel_tiles = work_units.len() > 1
         && splot_parallel::current_pool_width() > 1
         && !super::intrabc::global_intrabc_enabled(core.intrabc);
+    let parallel_prepass = splot_parallel::current_pool_width() >= 4
+        && !super::intrabc::global_intrabc_enabled(core.intrabc);
     if parallel_tiles {
+        gate.wait("arm=tiles")?;
         let mut luma_rects = Vec::new();
         luma_rects
             .try_reserve_exact(work_units.len())
@@ -1688,14 +1802,15 @@ pub(super) fn decode_tiles<T: ReconSample>(
             motion_field,
         });
     }
+    if !parallel_prepass {
+        gate.wait("arm=serial")?;
+    }
     for tile in work_units.iter_mut() {
         let tile_offset = tile.tile_byte_span().start;
         let mut block_decoded = tile_block_decoded(tile, &context)?;
         let mut current_block_decoded_superblock = None;
         let quantizer = FrameQuantizerSnapshot::capture();
         let mut recon_ordinal = 0usize;
-        let parallel_prepass = splot_parallel::current_pool_width() >= 4
-            && !super::intrabc::global_intrabc_enabled(core.intrabc);
         let superblock_rects = if parallel_prepass {
             Some(tile_superblock_luma_rects(tile, workspace, sb_h4)?)
         } else {
@@ -1813,6 +1928,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     Ok(())
                 },
                 done_limit,
+                || gate.is_ready(),
+                || gate.wait("arm=rows"),
             )
             .map_err(|error| match error {
                 ReadyRowPipelineError::Parallel => inter_cap!(
@@ -1834,12 +1951,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     "inter_row_prepass",
                     timer,
                     &format!(
-                        "units={} committed={} threads={} workers_used={} max_pending={} max_active={}",
+                        "units={} committed={} threads={} workers_used={} max_pending={} max_deferred={} max_active={}",
                         prepared.committed,
                         prepared.committed,
                         splot_parallel::current_pool_width(),
                         tally.workers_used(),
                         prepared.max_pending,
+                        prepared.max_deferred,
                         prepared.max_active
                     ),
                 );
@@ -1948,6 +2066,7 @@ mod ready_row_tests {
     #![allow(clippy::expect_used)]
 
     use std::num::NonZeroUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier, Mutex};
 
     use splot_parallel::{ThreadCount, WorkerPool};
@@ -2093,6 +2212,8 @@ mod ready_row_tests {
                         Ok::<_, ()>(())
                     },
                     6,
+                    || true,
+                    || Ok(()),
                 )
             })
             .expect("row pipeline");
@@ -2121,7 +2242,14 @@ mod ready_row_tests {
         .expect("worker pool");
 
         let result = pool.install(|| {
-            run_ready_row_prepass_with_commit(parser, |row| row, |_| Ok::<_, ()>(()), 1)
+            run_ready_row_prepass_with_commit(
+                parser,
+                |row| row,
+                |_| Ok::<_, ()>(()),
+                1,
+                || true,
+                || Ok(()),
+            )
         });
 
         assert!(matches!(result, Err(ReadyRowPipelineError::Capacity)));
@@ -2156,12 +2284,136 @@ mod ready_row_tests {
                         Ok::<_, ()>(())
                     },
                     6,
+                    || true,
+                    || Ok(()),
                 )
             })
             .expect("ordered pipeline");
 
         assert_eq!(prepared.committed, 6);
         assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_shut_reference_gate_defers_rows_and_commits_them_in_parse_order() {
+        let parsed = Arc::new(AtomicUsize::new(0));
+        let parsed_for_parser = Arc::clone(&parsed);
+        let parser = move || {
+            let row = parsed_for_parser.fetch_add(1, Ordering::SeqCst);
+            if row == 5 {
+                ParserStep::Last(row)
+            } else {
+                ParserStep::More(row)
+            }
+        };
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let committed_for_frontier = Arc::clone(&committed);
+        let pool = WorkerPool::new(ThreadCount::Fixed(
+            NonZeroUsize::new(4).expect("four workers"),
+        ))
+        .expect("worker pool");
+
+        let prepared = pool
+            .install(|| {
+                run_ready_row_prepass_with_commit(
+                    parser,
+                    |row| row,
+                    move |row| {
+                        committed_for_frontier.lock().expect("commit log").push(row);
+                        Ok::<_, ()>(())
+                    },
+                    6,
+                    || parsed.load(Ordering::SeqCst) >= 3,
+                    || Ok(()),
+                )
+            })
+            .expect("gated pipeline");
+
+        assert!(prepared.max_deferred >= 3, "rows must queue while gated");
+        assert_eq!(prepared.committed, 6);
+        assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_gate_that_outlives_parsing_settles_once_and_then_drains() {
+        let mut next = 0usize;
+        let parser = move || {
+            let row = next;
+            next += 1;
+            if row == 5 {
+                ParserStep::Last(row)
+            } else {
+                ParserStep::More(row)
+            }
+        };
+        let committed = Arc::new(Mutex::new(Vec::new()));
+        let committed_for_frontier = Arc::clone(&committed);
+        let settled = Arc::new(AtomicUsize::new(0));
+        let settled_for_wait = Arc::clone(&settled);
+        let pool = WorkerPool::new(ThreadCount::Fixed(
+            NonZeroUsize::new(4).expect("four workers"),
+        ))
+        .expect("worker pool");
+
+        let prepared = pool
+            .install(|| {
+                run_ready_row_prepass_with_commit(
+                    parser,
+                    |row| row,
+                    move |row| {
+                        committed_for_frontier.lock().expect("commit log").push(row);
+                        Ok::<_, ()>(())
+                    },
+                    6,
+                    || false,
+                    move || {
+                        settled_for_wait.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    },
+                )
+            })
+            .expect("settled pipeline");
+
+        assert_eq!(settled.load(Ordering::SeqCst), 1);
+        assert_eq!(prepared.max_deferred, 6);
+        assert_eq!(prepared.committed, 6);
+        assert_eq!(*committed.lock().expect("commit log"), [0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn a_failed_reference_settle_surfaces_the_codec_diagnostic() {
+        let mut next = 0usize;
+        let parser = move || {
+            let row = next;
+            next += 1;
+            if row == 1 {
+                ParserStep::Last(row)
+            } else {
+                ParserStep::More(row)
+            }
+        };
+        let pool = WorkerPool::new(ThreadCount::Fixed(
+            NonZeroUsize::new(4).expect("four workers"),
+        ))
+        .expect("worker pool");
+
+        let result = pool.install(|| {
+            run_ready_row_prepass_with_commit(
+                parser,
+                |row| row,
+                |_| Ok::<_, &str>(()),
+                2,
+                || false,
+                || Err("reference filter phase failed"),
+            )
+        });
+
+        assert!(matches!(
+            result,
+            Err(ReadyRowPipelineError::Codec(
+                "reference filter phase failed"
+            ))
+        ));
     }
 
     #[test]

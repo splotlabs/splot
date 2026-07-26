@@ -126,6 +126,9 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     let offset = frame_envelope.offset;
 
     if frame_envelope.header.obu_type == ObuType::BridgeFrame {
+        reference
+            .pixel_reference_gate(named_pixel_reference_slots(&core))
+            .wait("arm=bridge")?;
         return decode_bridge_frame(
             frame_envelope,
             core,
@@ -137,6 +140,9 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         .map(completed_walk);
     }
     if frame_envelope.header.obu_type.is_tip_frame() {
+        reference
+            .pixel_reference_gate(named_pixel_reference_slots(&core))
+            .wait("arm=tip")?;
         return decode_tip_output_frame(
             scratch,
             frame_envelope,
@@ -1114,7 +1120,73 @@ impl<T: ReconSample> Drop for InterReferenceState<T> {
     }
 }
 
+/// The settled state of the reference frames one frame's prediction reads.
+///
+/// A frame's entropy walk parses without reference samples; only reconstruction
+/// reads them. A caller polls [`Self::is_ready`] before enqueuing work that
+/// reads samples, and blocks on [`Self::wait`] when it is about to read them on
+/// the driver thread itself.
+pub(crate) struct PixelReferenceGate<'a, T: ReconSample> {
+    slots: Vec<&'a RefFrameSlot<T>>,
+}
+
+/// The reference slots a parsed frame header names for pixel prediction.
+pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterator<Item = u32> {
+    core.inter
+        .as_ref()
+        .map_or(&[][..], |inter| &inter.ref_frame_idx[..])
+        .iter()
+        .copied()
+        .chain(core.bridge_frame_ref_idx)
+}
+
+impl<T: ReconSample> PixelReferenceGate<'_, T> {
+    /// Whether every named reference frame has settled.
+    pub(crate) fn is_ready(&self) -> bool {
+        self.slots.iter().all(|slot| slot.is_settled())
+    }
+
+    /// Blocks the calling driver thread until every named reference frame has
+    /// settled, running pool jobs instead of parking idle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an internal diagnostic when a referenced frame's filter phase
+    /// failed; the driver replaces it with that frame's own recorded failure.
+    pub(crate) fn wait(&self, arm: &str) -> Result<()> {
+        let started = crate::timing::start();
+        for slot in &self.slots {
+            slot.wait_settled()?;
+        }
+        crate::timing::report_detail("pipeline_gate_wait", started, arm);
+        Ok(())
+    }
+}
+
 impl<T: ReconSample> InterReferenceState<T> {
+    /// Gates on the stored frames the named reference slots resolve to.
+    ///
+    /// Slots without a stored frame are left out: reading one is already a
+    /// fail-closed diagnostic at the point of use.
+    pub(crate) fn pixel_reference_gate(
+        &self,
+        named: impl IntoIterator<Item = u32>,
+    ) -> PixelReferenceGate<'_, T> {
+        let mut slots: Vec<&RefFrameSlot<T>> = Vec::new();
+        for slot in named {
+            let Ok(index) = ReferenceSlot::new(slot as usize) else {
+                continue;
+            };
+            let Ok(Some(frame)) = self.store.get(index) else {
+                continue;
+            };
+            if !slots.iter().any(|held| core::ptr::eq(*held, frame)) {
+                slots.push(frame);
+            }
+        }
+        PixelReferenceGate { slots }
+    }
+
     fn frame_for_slot(&self, slot: u32) -> Option<&DecodedFrame<T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
         self.store

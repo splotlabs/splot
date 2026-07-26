@@ -818,7 +818,6 @@ fn decode_frames_in_order(
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
                 let state = inter::InterReferenceState::from_metadata(store, meta);
-                inflight::wait_for_pixel_references(&frames, &reference, &key_core, "arm=ras")?;
                 ring.reserve(decode_scratch_eight, decode_scratch_ten);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
@@ -862,7 +861,6 @@ fn decode_frames_in_order(
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
                 let state = inter::InterReferenceState::from_metadata(store, meta);
-                inflight::wait_for_pixel_references(&frames, &reference, &key_core, "arm=ras")?;
                 ring.reserve(decode_scratch_eight, decode_scratch_ten);
                 let _user_qm_scope =
                     crate::bitstream::tile_payload::FrameUserQmScope::install(key_user_qm);
@@ -1299,12 +1297,6 @@ fn decode_frames_in_order(
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        inflight::wait_for_pixel_references(
-                            &frames,
-                            &reference,
-                            &inter_core,
-                            "arm=inter",
-                        )?;
                         ring.reserve(decode_scratch_eight, decode_scratch_ten);
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
@@ -1373,12 +1365,6 @@ fn decode_frames_in_order(
                             &inter_core,
                             &sequence,
                             inter_envelope.offset,
-                        )?;
-                        inflight::wait_for_pixel_references(
-                            &frames,
-                            &reference,
-                            &inter_core,
-                            "arm=inter",
                         )?;
                         ring.reserve(decode_scratch_eight, decode_scratch_ten);
                         let _user_qm_scope =

@@ -15,28 +15,27 @@
 //! [pending](RefFrameSlot::pending); the task publishes the samples through a
 //! single-use [`FrameSlotWriter`]. The driver tracks the frames whose filter
 //! phase it has not collected in an [`InflightRing`] bounded by the resolved
-//! frame-delay depth, and is the only thread that ever blocks on a slot:
-//! before walking a frame it waits for that frame's pixel references
-//! ([`wait_for_pixel_references`]), before admitting a new frame it harvests the
-//! oldest in-flight entry, and before reading a frame's pixels it waits for that
-//! frame. Worker tasks never wait on any slot. Those driver waits run pool jobs
-//! instead of parking idle, so a blocked driver still finishes frames; every
-//! wait site sits between frames, holding no thread-local frame scope.
+//! frame-delay depth, and is the only thread that ever blocks on a slot: before
+//! admitting a new frame it harvests the oldest in-flight entry, and before
+//! reading a frame's pixels it waits for that frame. A frame's own pixel
+//! references are gated inside its walk instead
+//! ([`crate::prediction::inter::PixelReferenceGate`]), so the walk's parse work
+//! overlaps a reference frame's filter phase. Worker tasks never wait on any
+//! slot. Those driver waits run pool jobs instead of parking idle, so a blocked
+//! driver still finishes frames.
 
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use splot_core::headers::frame::FrameHeaderCore;
 use splot_parallel::{CompletionCell, TaskScope};
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
 use super::frame_engine::finish::{WalkStage, finish_walked_frame};
-use super::{PipelineDecodedFrame, PipelineFrame, unsupported};
+use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::prediction::inter::InterDecodeScratch;
-use crate::reference::buffer::RuntimeReferenceBuffer;
 
 /// The one-shot value a decoded-frame slot publishes.
 enum SlotValue<T: ReconSample> {
@@ -443,40 +442,6 @@ pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
         outcome,
     });
     Ok(erase(slot))
-}
-
-/// Blocks the driver until every frame this frame predicts from has settled.
-///
-/// The pixel-reference set is read from the parsed header: the reference slots
-/// an inter, Switch, RAS, or TIP frame names in `ref_frame_idx`, plus a bridge
-/// frame's own reference slot. Intra, key, and show-existing frames name none.
-///
-/// # Errors
-///
-/// Returns an internal diagnostic when a referenced frame's filter phase
-/// failed; the driver replaces it with that frame's own recorded failure.
-pub(crate) fn wait_for_pixel_references(
-    frames: &[Option<PipelineFrame>],
-    reference: &RuntimeReferenceBuffer,
-    core: &FrameHeaderCore,
-    arm: &str,
-) -> Result<()> {
-    let started = crate::timing::start();
-    let named: &[u32] = core
-        .inter
-        .as_ref()
-        .map_or(&[], |inter| &inter.ref_frame_idx[..]);
-    for slot in named.iter().copied().chain(core.bridge_frame_ref_idx) {
-        let Ok(frame_index) = reference.frame_index_for_slot(slot) else {
-            continue;
-        };
-        let Some(frame) = frames.get(frame_index).and_then(Option::as_ref) else {
-            continue;
-        };
-        frame.wait_settled()?;
-    }
-    crate::timing::report_detail("pipeline_gate_wait", started, arm);
-    Ok(())
 }
 
 fn unsettled_slot() -> DecodeError {
