@@ -5,10 +5,8 @@
 
 use super::*;
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame};
-use splot_recon::{
-    BitDepth, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane,
-    PlaneRect, PlaneSize, SharedFrame,
-};
+use crate::test_support::decoded_frame;
+use splot_recon::SharedFrame;
 
 fn key_update() -> FrameRefUpdate {
     FrameRefUpdate {
@@ -84,21 +82,6 @@ fn bridge_overwrite_marks_every_refreshed_slot_valid() {
     assert!(buf.slots[2].valid);
     assert!(buf.slots[5].valid);
     assert_eq!(valid_count(&buf), 2);
-}
-
-fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
-    let size = PlaneSize::new(width, height).unwrap();
-    let rect = PlaneRect::new(0, 0, width, height).unwrap();
-    let info = DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        BitDepth::Eight,
-        PixelFormat::Monochrome,
-        size,
-        rect,
-    )
-    .unwrap();
-    let y = Plane::from_vec(size, width, rect, vec![0; width * height]).unwrap();
-    DecodedFrame::try_new(info, FramePlanes::new(y, None, None)).unwrap()
 }
 
 fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {

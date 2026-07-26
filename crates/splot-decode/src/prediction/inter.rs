@@ -1306,10 +1306,8 @@ pub(crate) fn parse_inter_frame_activation(
     reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
 ) -> Result<FrameHeaderCore> {
-    if envelope.header.obu_type.is_sef() {
-        parse_sef_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
-    } else if envelope.header.obu_type.is_tip_frame() {
-        parse_tip_output_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
+    if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
+        parse_sef_or_tip_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
     } else {
         parse_inter_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
     }
@@ -1322,16 +1320,8 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
 ) -> Result<FrameHeaderCore> {
-    let mut core = if envelope.header.obu_type.is_sef() {
-        parse_sef_frame_core(
-            envelope,
-            sequence,
-            reference,
-            first_picture_in_tu,
-            mfh_record,
-        )?
-    } else if envelope.header.obu_type.is_tip_frame() {
-        parse_tip_output_frame_core(
+    let mut core = if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
+        parse_sef_or_tip_frame_core(
             envelope,
             sequence,
             reference,
@@ -1360,7 +1350,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     Ok(core)
 }
 
-fn parse_sef_frame_core(
+fn parse_sef_or_tip_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<impl ReconSample>,
@@ -1377,12 +1367,21 @@ fn parse_sef_frame_core(
         mode: FrameHeaderParseMode::Core,
     };
     parse_frame_header_core(&mut reader, &input).map_err(|_| {
-        inter_missing!(
-            "sef_frame_header_parse",
-            envelope.offset,
-            "show_existing.frame_header_core",
-            SPEC_HEADER
-        )
+        if envelope.header.obu_type.is_sef() {
+            inter_missing!(
+                "sef_frame_header_parse",
+                envelope.offset,
+                "show_existing.frame_header_core",
+                SPEC_HEADER
+            )
+        } else {
+            inter_missing!(
+                "tip_output_frame_header_parse",
+                envelope.offset,
+                "inter.tip_output.frame_header_core",
+                SPEC_HEADER
+            )
+        }
     })
 }
 
@@ -1405,32 +1404,6 @@ fn validate_sef_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result
         ));
     }
     Ok(())
-}
-
-fn parse_tip_output_frame_core(
-    envelope: ObuEnvelope<'_>,
-    sequence: &SequenceHeader,
-    reference: &InterReferenceState<impl ReconSample>,
-    first_picture_in_tu: bool,
-    mfh_record: Option<&MultiFrameHeaderRecord>,
-) -> Result<FrameHeaderCore> {
-    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-    let input = FrameHeaderParseInput {
-        obu_type: envelope.header.obu_type,
-        first_picture_in_tu,
-        active_sequence: Some(sequence),
-        mfh_record,
-        reference_state: reference.header_view(),
-        mode: FrameHeaderParseMode::Core,
-    };
-    parse_frame_header_core(&mut reader, &input).map_err(|_| {
-        inter_missing!(
-            "tip_output_frame_header_parse",
-            envelope.offset,
-            "inter.tip_output.frame_header_core",
-            SPEC_HEADER
-        )
-    })
 }
 
 fn infer_tip_output_quantization(

@@ -103,24 +103,14 @@ impl PipelineFrameRate {
 
 impl PipelineFrame {
     pub(crate) fn slot_eight(&self) -> Result<RefFrameSlot<u8>> {
-        match &self.frame {
-            PipelineFrameSlot::Eight(slot) => Ok(slot.share()),
-            PipelineFrameSlot::Ten(_) => Err(unsupported(
-                "unsupported_10bit_reference_retention",
-                None,
-                missing_capability_message!("reference.retention bit_depth=10"),
-            )),
-        }
+        self.frame
+            .eight()
+            .ok_or_else(|| mismatched_slot_storage(&self.frame))
     }
     pub(crate) fn slot_ten(&self) -> Result<RefFrameSlot<u16>> {
-        match &self.frame {
-            PipelineFrameSlot::Ten(slot) => Ok(slot.share()),
-            PipelineFrameSlot::Eight(_) => Err(unsupported(
-                "unsupported_8bit_reference_for_10bit_decode",
-                None,
-                "inter decode pipeline requires reference frames to match the active 10-bit storage",
-            )),
-        }
+        self.frame
+            .ten()
+            .ok_or_else(|| mismatched_slot_storage(&self.frame))
     }
     pub(crate) fn byte_len(&self) -> Result<usize> {
         Ok(splot_recon::visible_byte_len(self.frame.info())?)
@@ -153,6 +143,22 @@ impl PipelineFrame {
                 .unwrap_or_else(|| panic!("frame() called before the samples landed")),
             PipelineFrameSlot::Ten(_) => panic!("frame() called on a 10-bit PipelineFrame"),
         }
+    }
+}
+
+/// Reports the slot whose storage depth does not match the requested one.
+fn mismatched_slot_storage(frame: &PipelineFrameSlot) -> DecodeError {
+    match frame {
+        PipelineFrameSlot::Eight(_) => unsupported(
+            "unsupported_8bit_reference_for_10bit_decode",
+            None,
+            "inter decode pipeline requires reference frames to match the active 10-bit storage",
+        ),
+        PipelineFrameSlot::Ten(_) => unsupported(
+            "unsupported_10bit_reference_retention",
+            None,
+            missing_capability_message!("reference.retention bit_depth=10"),
+        ),
     }
 }
 

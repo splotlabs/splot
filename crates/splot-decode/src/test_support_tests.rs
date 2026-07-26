@@ -10,8 +10,8 @@
 #![allow(clippy::unwrap_used)]
 
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect,
-    PlaneSize, ReconSample,
+    BitDepth, CurrentFrameWorkspace, DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex,
+    PixelFormat, Plane, PlaneRect, PlaneSize, ReconSample,
 };
 
 /// The committed conformant luma-skip fixture exercised by every minimal-tier
@@ -52,4 +52,19 @@ pub(crate) fn yuv420_workspace_with<T: ReconSample>(
 
 pub(crate) fn yuv420_workspace(width: usize, height: usize, fill: u8) -> CurrentFrameWorkspace<u8> {
     yuv420_workspace_with(BitDepth::Eight, width, height, fill)
+}
+
+pub(crate) fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
+    let size = PlaneSize::new(width, height).unwrap();
+    let rect = PlaneRect::new(0, 0, width, height).unwrap();
+    let info = DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Monochrome,
+        size,
+        rect,
+    )
+    .unwrap();
+    let y = Plane::from_vec(size, width, rect, vec![0; width * height]).unwrap();
+    DecodedFrame::try_new(info, FramePlanes::new(y, None, None)).unwrap()
 }

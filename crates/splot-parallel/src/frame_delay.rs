@@ -6,7 +6,7 @@ use core::fmt;
 use core::num::NonZeroUsize;
 use core::str::FromStr;
 
-use crate::error::FrameDelayParseError;
+use crate::error::{FrameDelayParseError, parse_auto_or_count};
 
 /// How many frames a pipelined decoder may keep in flight at once.
 ///
@@ -61,19 +61,7 @@ impl FromStr for FrameDelay {
     type Err = FrameDelayParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(FrameDelayParseError::Empty);
-        }
-        if trimmed.eq_ignore_ascii_case("auto") {
-            return Ok(Self::Auto);
-        }
-        match trimmed.parse::<usize>() {
-            Ok(depth) => Ok(Self::from_count_or_auto(depth)),
-            Err(_) => Err(FrameDelayParseError::Invalid {
-                input: trimmed.to_owned(),
-            }),
-        }
+        Ok(Self::from_count_or_auto(parse_auto_or_count(s)?))
     }
 }
 
@@ -112,27 +100,19 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_whitespace_are_empty_error() {
-        assert_eq!(
-            "".parse::<FrameDelay>().unwrap_err(),
-            FrameDelayParseError::Empty
-        );
-        assert_eq!(
-            "   ".parse::<FrameDelay>().unwrap_err(),
-            FrameDelayParseError::Empty
-        );
-    }
-
-    #[test]
-    fn non_numeric_inputs_are_invalid_error() {
-        for input in ["-1", "x", "3.5"] {
-            assert_eq!(
-                input.parse::<FrameDelay>().unwrap_err(),
-                FrameDelayParseError::Invalid {
-                    input: input.to_owned(),
-                },
-                "expected Invalid for {input:?}",
-            );
+    fn parse_error_table_covers_empty_and_non_numeric_inputs() {
+        let invalid = |input: &str| FrameDelayParseError::Invalid {
+            input: input.to_owned(),
+        };
+        let cases = [
+            ("", FrameDelayParseError::Empty),
+            ("   ", FrameDelayParseError::Empty),
+            ("-1", invalid("-1")),
+            ("x", invalid("x")),
+            ("3.5", invalid("3.5")),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(input.parse::<FrameDelay>().unwrap_err(), expected);
         }
     }
 

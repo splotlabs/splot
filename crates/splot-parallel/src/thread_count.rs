@@ -6,7 +6,7 @@ use core::fmt;
 use core::num::NonZeroUsize;
 use core::str::FromStr;
 
-use crate::error::ThreadCountParseError;
+use crate::error::{ThreadCountParseError, parse_auto_or_count};
 
 /// How many worker threads a codec context should use.
 ///
@@ -57,19 +57,7 @@ impl FromStr for ThreadCount {
     type Err = ThreadCountParseError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(ThreadCountParseError::Empty);
-        }
-        if trimmed.eq_ignore_ascii_case("auto") {
-            return Ok(Self::Auto);
-        }
-        match trimmed.parse::<usize>() {
-            Ok(count) => Ok(Self::from_count_or_auto(count)),
-            Err(_) => Err(ThreadCountParseError::Invalid {
-                input: trimmed.to_owned(),
-            }),
-        }
+        Ok(Self::from_count_or_auto(parse_auto_or_count(s)?))
     }
 }
 

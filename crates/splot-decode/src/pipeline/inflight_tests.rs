@@ -7,24 +7,7 @@
 
 use super::*;
 
-use splot_recon::{
-    BitDepth, DecodedFrame, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneRect, PlaneSize,
-};
-
-fn decoded_frame(width: usize, height: usize) -> DecodedFrame<u8> {
-    let size = PlaneSize::new(width, height).unwrap();
-    let rect = PlaneRect::new(0, 0, width, height).unwrap();
-    let info = DecodedFrameInfo::new(
-        OutputIndex::new(0),
-        BitDepth::Eight,
-        PixelFormat::Monochrome,
-        size,
-        rect,
-    )
-    .unwrap();
-    let y = Plane::from_vec(size, width, rect, vec![0; width * height]).unwrap();
-    DecodedFrame::try_new(info, FramePlanes::new(y, None, None)).unwrap()
-}
+use crate::test_support::decoded_frame;
 
 fn nz(value: usize) -> NonZeroUsize {
     NonZeroUsize::new(value).unwrap()

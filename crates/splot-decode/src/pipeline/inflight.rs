@@ -258,6 +258,22 @@ impl PipelineFrameSlot {
         }
     }
 
+    /// Shares the eight-bit storage, or `None` when the slot is ten-bit.
+    pub(crate) fn eight(&self) -> Option<RefFrameSlot<u8>> {
+        match self {
+            Self::Eight(slot) => Some(slot.share()),
+            Self::Ten(_) => None,
+        }
+    }
+
+    /// Shares the ten-bit storage, or `None` when the slot is eight-bit.
+    pub(crate) fn ten(&self) -> Option<RefFrameSlot<u16>> {
+        match self {
+            Self::Ten(slot) => Some(slot.share()),
+            Self::Eight(_) => None,
+        }
+    }
+
     /// Whether the slot has settled, either with samples or with a failure.
     pub(crate) fn is_settled(&self) -> bool {
         match self {
