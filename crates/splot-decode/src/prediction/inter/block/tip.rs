@@ -7,7 +7,7 @@ use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
 use splot_recon::{DecodedFrame, PixelFormat, ReconError};
 
-use super::super::reference::ReferenceSamples;
+use super::super::reference::{HeldFrameSamples, ReferenceSamples};
 
 use super::super::find_mv_stack::TemporalMotionBlock;
 
@@ -61,6 +61,81 @@ impl<'a, T: ReconSample> TipPrediction<'a, T> {
             .with_refinemv(self.use_refinemv)
             .with_refinemv_search(self.search_refinemv)
             .with_optflow_sad_threshold(self.optflow_sad_threshold)
+    }
+}
+
+/// The reference pair and § 7.13.5 prediction settings one TIP block reads
+/// through, resolved once so the borrows can be retaken per unit batch.
+struct TipReferencePlan {
+    past: u32,
+    future: Option<u32>,
+    interpolation_filter: ReconInterpolationFilter,
+    blend: mc::CompoundBlend,
+    optflow_distances: Option<[i32; 2]>,
+    use_refinemv: bool,
+    search_refinemv: bool,
+    optflow_sad_threshold: Option<u32>,
+}
+
+/// One batch of TIP prediction units' borrow of the block's reference pair.
+struct TipHeldReferences<'a, T: ReconSample> {
+    past: HeldFrameSamples<'a, T>,
+    /// The future reference's borrow, absent when it names the past slot.
+    future: Option<HeldFrameSamples<'a, T>>,
+    compound: bool,
+}
+
+impl TipReferencePlan {
+    /// Borrows the reference pair for one batch of prediction units.
+    ///
+    /// A still-filtering reference is readable only while the borrow lives, and
+    /// that borrow holds the reference's shared workspace lock, so the batch —
+    /// not the whole TIP block — is the unit of the hold: the § 7.2 filter phase
+    /// publishing that same frame's later stripes waits out one batch instead of
+    /// every unit the block covers.
+    fn hold<'a, T: ReconSample>(
+        &self,
+        reference: &'a InterReferenceState<T>,
+        tile_offset: ByteOffset,
+    ) -> Result<TipHeldReferences<'a, T>> {
+        Ok(TipHeldReferences {
+            past: super::super::hold_reference_slot(reference, self.past, tile_offset)?,
+            future: match self.future {
+                Some(slot) if slot != self.past => Some(super::super::hold_reference_slot(
+                    reference,
+                    slot,
+                    tile_offset,
+                )?),
+                _ => None,
+            },
+            compound: self.future.is_some(),
+        })
+    }
+}
+
+impl<T: ReconSample> TipHeldReferences<'_, T> {
+    /// Whether both borrows name settled frames, which hold no lock and never
+    /// unsettle, so one borrow covers every unit the block predicts.
+    const fn settled(&self) -> bool {
+        matches!(self.past, HeldFrameSamples::Settled(_))
+            && !matches!(self.future, Some(HeldFrameSamples::Filtering(_)))
+    }
+
+    /// Resolves the borrow into the samples one batch's units read.
+    fn prediction(&self, plan: &TipReferencePlan) -> Result<TipPrediction<'_, T>> {
+        Ok(TipPrediction {
+            reference0: self.past.samples()?,
+            reference1: self
+                .compound
+                .then(|| self.future.as_ref().unwrap_or(&self.past).samples())
+                .transpose()?,
+            interpolation_filter: plan.interpolation_filter,
+            blend: plan.blend,
+            optflow_distances: plan.optflow_distances,
+            use_refinemv: plan.use_refinemv,
+            search_refinemv: plan.search_refinemv,
+            optflow_sad_threshold: plan.optflow_sad_threshold,
+        })
     }
 }
 
@@ -559,14 +634,14 @@ pub(super) fn reconstruct<T: ReconSample>(
         )
     })?;
     let units_timer = crate::timing::start();
-    let held = (block_w > 0 && block_h > 0)
+    let plan = (block_w > 0 && block_h > 0)
         .then(|| {
-            let past_slot = super::super::block_reference_slot(
+            let past = super::super::block_reference_slot(
                 ref_frame_idx,
                 references.past_ref,
                 tile_offset,
             )?;
-            let future_slot = two_references
+            let future = two_references
                 .then(|| {
                     super::super::block_reference_slot(
                         ref_frame_idx,
@@ -575,26 +650,9 @@ pub(super) fn reconstruct<T: ReconSample>(
                     )
                 })
                 .transpose()?;
-            let past = super::super::hold_reference_slot(reference, past_slot, tile_offset)?;
-            let future = match future_slot {
-                Some(slot) if slot != past_slot => Some(super::super::hold_reference_slot(
-                    reference,
-                    slot,
-                    tile_offset,
-                )?),
-                _ => None,
-            };
-            Ok::<_, crate::error::DecodeError>((past, future, future_slot.is_some()))
-        })
-        .transpose()?;
-    let prediction = held
-        .as_ref()
-        .map(|(past, future, compound)| {
-            Ok::<_, crate::error::DecodeError>(TipPrediction {
-                reference0: past.samples()?,
-                reference1: compound
-                    .then(|| future.as_ref().unwrap_or(past).samples())
-                    .transpose()?,
+            Ok::<_, crate::error::DecodeError>(TipReferencePlan {
+                past,
+                future,
                 interpolation_filter,
                 blend,
                 optflow_distances: use_optflow
@@ -700,14 +758,15 @@ pub(super) fn reconstruct<T: ReconSample>(
     }
     let prediction_timer = crate::timing::start();
     let batch_metadata = if batched_output {
-        let prediction = prediction
+        let plan = plan
             .as_ref()
             .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
+        let held = plan.hold(reference, tile_offset)?;
         Some(compute_batched_output(
             sink,
             &scratch.units,
             &mut scratch.output_samples,
-            prediction,
+            &held.prediction(plan)?,
             batch_rect,
             batch_has_chroma,
             block_w.div_ceil(unit_size),
@@ -718,14 +777,15 @@ pub(super) fn reconstruct<T: ReconSample>(
     };
     if parallel_output
         && !batched_output
-        && let Some(prediction) = prediction.as_ref()
+        && let Some(plan) = plan.as_ref()
     {
+        let held = plan.hold(reference, tile_offset)?;
         compute_parallel_outputs(
             sink,
             &mut scratch.units,
             &mut scratch.output_samples,
             output_stride,
-            prediction,
+            &held.prediction(plan)?,
             tile_offset,
         )?;
     }
@@ -743,50 +803,80 @@ pub(super) fn reconstruct<T: ReconSample>(
         metadata.publish(&scratch.output_samples, sink)?;
     }
     let mut output_chunks = scratch.output_samples.chunks_exact(output_stride);
-    for (index, unit) in scratch.units.drain(..).enumerate() {
-        let stored_mvs = if let Some(metadata) = batch_metadata.as_ref() {
-            metadata.stored_mvs_at_index(index)?.unwrap_or(unit.mvs)
-        } else if let Some(metadata) = unit.metadata {
-            let samples = output_chunks
-                .next()
-                .ok_or(ReconError::BufferLengthMismatch {
-                    expected: output_stride,
-                    actual: 0,
-                })?;
-            metadata.publish(samples, sink)?;
-            unit.mvs
-        } else if use_optflow {
-            let params = prediction
-                .as_ref()
-                .ok_or_else(|| tip_reference_pair_error(tile_offset))?
-                .block_params(&unit);
-            mc::motion_compensate_inter_block_with_optflow_mvs_into(sink, params, 8, tile_offset)?
-                .unwrap_or(unit.mvs)
-        } else {
-            let params = prediction
-                .as_ref()
-                .ok_or_else(|| tip_reference_pair_error(tile_offset))?
-                .block_params(&unit);
-            mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
-            unit.mvs
-        };
-        temporal_records.push(super::temporal::temporal_motion_block(
-            reference,
-            ref_frame_idx,
-            unit.rect.luma_y / 4,
-            unit.rect.luma_x / 4,
-            unit.rect.luma_w.div_ceil(4),
-            unit.rect.luma_h.div_ceil(4),
-            frame_mi_rows,
-            frame_mi_cols,
-            core.display_order_hint().unwrap_or(0),
-            references.past_ref,
-            two_references.then_some(references.future_ref),
-            stored_mvs[0],
-            stored_mvs[1],
-            [None, None],
-        ));
+    let mut units_per_hold = scratch.units.len().max(1);
+    if batch_metadata.is_none()
+        && scratch.units.iter().any(|unit| unit.metadata.is_none())
+        && let Some(plan) = plan.as_ref()
+        && !plan.hold(reference, tile_offset)?.settled()
+    {
+        units_per_hold = block_w.div_ceil(unit_size).max(1);
     }
+    let mut index = 0usize;
+    for batch in scratch.units.chunks_mut(units_per_hold) {
+        let held = (batch_metadata.is_none() && batch.iter().any(|unit| unit.metadata.is_none()))
+            .then(|| {
+                plan.as_ref()
+                    .ok_or_else(|| tip_reference_pair_error(tile_offset))
+                    .and_then(|plan| plan.hold(reference, tile_offset))
+            })
+            .transpose()?;
+        let prediction = held
+            .as_ref()
+            .zip(plan.as_ref())
+            .map(|(held, plan)| held.prediction(plan))
+            .transpose()?;
+        for unit in batch {
+            let stored_mvs = if let Some(metadata) = batch_metadata.as_ref() {
+                metadata.stored_mvs_at_index(index)?.unwrap_or(unit.mvs)
+            } else if let Some(metadata) = unit.metadata.take() {
+                let samples = output_chunks
+                    .next()
+                    .ok_or(ReconError::BufferLengthMismatch {
+                        expected: output_stride,
+                        actual: 0,
+                    })?;
+                metadata.publish(samples, sink)?;
+                unit.mvs
+            } else if use_optflow {
+                let params = prediction
+                    .as_ref()
+                    .ok_or_else(|| tip_reference_pair_error(tile_offset))?
+                    .block_params(unit);
+                mc::motion_compensate_inter_block_with_optflow_mvs_into(
+                    sink,
+                    params,
+                    8,
+                    tile_offset,
+                )?
+                .unwrap_or(unit.mvs)
+            } else {
+                let params = prediction
+                    .as_ref()
+                    .ok_or_else(|| tip_reference_pair_error(tile_offset))?
+                    .block_params(unit);
+                mc::motion_compensate_inter_block_into(sink, params, tile_offset)?;
+                unit.mvs
+            };
+            temporal_records.push(super::temporal::temporal_motion_block(
+                reference,
+                ref_frame_idx,
+                unit.rect.luma_y / 4,
+                unit.rect.luma_x / 4,
+                unit.rect.luma_w.div_ceil(4),
+                unit.rect.luma_h.div_ceil(4),
+                frame_mi_rows,
+                frame_mi_cols,
+                core.display_order_hint().unwrap_or(0),
+                references.past_ref,
+                two_references.then_some(references.future_ref),
+                stored_mvs[0],
+                stored_mvs[1],
+                [None, None],
+            ));
+            index += 1;
+        }
+    }
+    scratch.units.clear();
     crate::timing::report("inter_tip_publish", publish_timer);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
