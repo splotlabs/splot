@@ -17,6 +17,19 @@ pub enum ParallelError {
     /// A ready-task scope was started outside a splot worker.
     #[error("ready-task scope requires a splot worker pool")]
     NotOnWorkerPool,
+    /// Jobs submitted to a [`crate::AdmissionScheduler`] never became
+    /// admissible: a condition source that never published (a producer that
+    /// failed without publishing [`crate::WatermarkCell::FAILED`]) or a cycle in
+    /// the caller's dependency graph.
+    #[error(
+        "{count} scheduled job(s) never became admissible (lowest order key {lowest_order_key})"
+    )]
+    JobsNeverAdmitted {
+        /// How many submitted jobs were still waiting on a condition.
+        count: usize,
+        /// The lowest `order_key` among them, to locate the stalled stage.
+        lowest_order_key: u64,
+    },
 }
 
 /// The rejection reason from the shared `auto` / `0` / positive-integer grammar.

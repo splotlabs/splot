@@ -14,8 +14,15 @@
 //! work runs on the configured pool rather than Rayon's global pool. See the
 //! [`prelude`] docs and `docs/ARCHITECTURE.md` for the required pattern.
 //!
+//! Pipelined stages whose work depends on another stage's progress use
+//! [`AdmissionScheduler`] rather than blocking: a pool task must never wait,
+//! because work stealing can resume it only from below its own stack. Such a
+//! task is submitted with the [`WatermarkCell`] / [`CompletionCell`] conditions
+//! it needs and is spawned by whoever publishes the last of them.
+//!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
+pub mod admission;
 pub mod completion;
 pub mod error;
 pub mod frame_delay;
@@ -23,7 +30,9 @@ pub mod pool;
 pub mod prelude;
 pub mod queue;
 pub mod thread_count;
+pub mod watermark;
 
+pub use admission::{AdmissionScheduler, AdmissionWaiter, Admit, CompletionSource, Condition, Job};
 pub use completion::CompletionCell;
 pub use error::{FrameDelayParseError, ParallelError, ThreadCountParseError};
 pub use frame_delay::FrameDelay;
@@ -36,3 +45,4 @@ pub use queue::{
     bounded_queue,
 };
 pub use thread_count::ThreadCount;
+pub use watermark::WatermarkCell;

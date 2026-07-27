@@ -3,8 +3,9 @@
 
 //! A one-shot completion slot ([`CompletionCell`]) for pipeline hand-off.
 use core::time::Duration;
-use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
+use crate::admission::AdmissionWaiter;
 use crate::pool::{PoolAssist, assist_installed_pool};
 
 /// How long an assisted wait parks when the pool has no job to run, before it
@@ -33,8 +34,18 @@ pub(crate) const ASSIST_PARK: Duration = Duration::from_micros(100);
 #[derive(Debug)]
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
-    done: Mutex<bool>,
+    state: Mutex<CompletionState>,
     cond: Condvar,
+}
+
+/// Whether the value landed, plus the admission waiters still to be fired.
+///
+/// Both live under one mutex so a registration either sees the settled cell or
+/// is guaranteed to be fired by the [`CompletionCell::set`] that settles it.
+#[derive(Debug)]
+struct CompletionState {
+    done: bool,
+    waiters: Vec<Arc<dyn AdmissionWaiter>>,
 }
 
 impl<V> CompletionCell<V> {
@@ -43,7 +54,10 @@ impl<V> CompletionCell<V> {
     pub const fn new() -> Self {
         Self {
             value: OnceLock::new(),
-            done: Mutex::new(false),
+            state: Mutex::new(CompletionState {
+                done: false,
+                waiters: Vec::new(),
+            }),
             cond: Condvar::new(),
         }
     }
@@ -53,7 +67,10 @@ impl<V> CompletionCell<V> {
     pub fn completed(value: V) -> Self {
         Self {
             value: OnceLock::from(value),
-            done: Mutex::new(true),
+            state: Mutex::new(CompletionState {
+                done: true,
+                waiters: Vec::new(),
+            }),
             cond: Condvar::new(),
         }
     }
@@ -71,11 +88,32 @@ impl<V> CompletionCell<V> {
     /// value is never overwritten.
     pub fn set(&self, value: V) -> Result<(), V> {
         self.value.set(value)?;
-        let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
-        *done = true;
-        drop(done);
+        let waiters = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.done = true;
+            core::mem::take(&mut state.waiters)
+        };
         self.cond.notify_all();
+        for waiter in waiters {
+            waiter.satisfy();
+        }
         Ok(())
+    }
+
+    /// Registers `waiter` to fire when the value is published.
+    ///
+    /// Returns `false` when the cell is already set; the waiter is then not
+    /// stored and never called, so the caller must treat the condition as
+    /// satisfied itself. Returning `true` promises exactly one later
+    /// [`AdmissionWaiter::satisfy`] call, made by [`CompletionCell::set`] after
+    /// it releases the cell's lock.
+    pub fn register_waiter(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if state.done {
+            return false;
+        }
+        state.waiters.push(waiter);
+        true
     }
 
     /// Returns the value if it has been published, without blocking.
@@ -100,9 +138,12 @@ impl<V> CompletionCell<V> {
             if let Some(value) = self.value.get() {
                 return value;
             }
-            let mut done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
-            while !*done {
-                done = self.cond.wait(done).unwrap_or_else(PoisonError::into_inner);
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while !state.done {
+                state = self
+                    .cond
+                    .wait(state)
+                    .unwrap_or_else(PoisonError::into_inner);
             }
         }
     }
@@ -139,11 +180,11 @@ impl<V> CompletionCell<V> {
 
     /// Parks for at most [`ASSIST_PARK`], returning early when the value lands.
     fn park_briefly(&self) {
-        let done = self.done.lock().unwrap_or_else(PoisonError::into_inner);
-        if !*done {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !state.done {
             drop(
                 self.cond
-                    .wait_timeout(done, ASSIST_PARK)
+                    .wait_timeout(state, ASSIST_PARK)
                     .unwrap_or_else(PoisonError::into_inner),
             );
         }
@@ -257,6 +298,40 @@ mod tests {
             .unwrap()
         });
         assert_eq!(observed, 23, "the only worker must run the task it awaits");
+    }
+
+    /// A waiter that records how often it was satisfied.
+    #[derive(Debug, Default)]
+    struct CountingWaiter(std::sync::atomic::AtomicUsize);
+
+    impl AdmissionWaiter for CountingWaiter {
+        fn satisfy(&self) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    #[test]
+    fn a_registered_waiter_fires_once_on_set() {
+        let cell = CompletionCell::new();
+        let waiter = Arc::new(CountingWaiter::default());
+        assert!(cell.register_waiter(waiter.clone()));
+        assert_eq!(waiter.0.load(Ordering::Acquire), 0);
+        assert_eq!(cell.set(1u32), Ok(()));
+        assert_eq!(waiter.0.load(Ordering::Acquire), 1);
+        assert_eq!(cell.set(2u32), Err(2), "a rejected set fires nothing");
+        assert_eq!(waiter.0.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn registering_on_a_settled_cell_reports_the_condition_holds() {
+        let waiter = Arc::new(CountingWaiter::default());
+        let settled = CompletionCell::completed(3u32);
+        assert!(!settled.register_waiter(waiter.clone()));
+
+        let cell = CompletionCell::new();
+        assert_eq!(cell.set(4u32), Ok(()));
+        assert!(!cell.register_waiter(waiter.clone()));
+        assert_eq!(waiter.0.load(Ordering::Acquire), 0);
     }
 
     #[test]
