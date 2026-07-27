@@ -240,8 +240,19 @@ pub fn inverse_transform_2d_outer(
         });
     }
 
-    let mut adjusted = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
     let mut transform_scratch = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
+    if orig_pels == adj_pels {
+        return inverse_transform_2d_outer_adjusted_inner(
+            params,
+            dequant,
+            residual,
+            &mut transform_scratch,
+            adj_w,
+            adj_h,
+        );
+    }
+
+    let mut adjusted = [0i32; MAX_ADJ_DIM * MAX_ADJ_DIM];
     let adj = &mut adjusted[..adj_pels];
     inverse_transform_2d_outer_adjusted_inner(
         params,
