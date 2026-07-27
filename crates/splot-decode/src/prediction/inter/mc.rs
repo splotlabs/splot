@@ -18,7 +18,9 @@ use splot_recon::{
 
 use super::Mv;
 use super::mv_scaling::{PlaneScaling, derive_plane_scaling};
-use super::reference::{ALL_ROWS, ReferenceSamples, compound_last_row, subpel_last_reference_row};
+use super::reference::{
+    ReferenceSamples, compound_last_row, subpel_last_reference_row, warp_plane_last_row,
+};
 use crate::Result;
 use splot_core::span::ByteOffset;
 use splot_recon::math::{clip3, round2_i32};
@@ -1010,8 +1012,6 @@ fn predict_warp_plane<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<()> {
-    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, ALL_ROWS, offset)?;
-    let (ref_width, ref_height) = (view.width(), view.height());
     let destination_size = sink.plane_storage_size(plane)?;
     let (destination_width, destination_height) =
         (destination_size.width(), destination_size.height());
@@ -1032,6 +1032,15 @@ fn predict_warp_plane<T: ReconSample>(
         frame_size.width() as i32,
         frame_size.height() as i32,
     );
+    let last_row = warp_plane_last_row(
+        warp_params,
+        (plane_x, plane_y, block_w, block_h),
+        sub_x,
+        sub_y,
+        scaling,
+    );
+    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, last_row, offset)?;
+    let (ref_width, ref_height) = (view.width(), view.height());
     let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
         || block_w < WARPED_BLOCK_SIZE
         || block_h < WARPED_BLOCK_SIZE
@@ -1767,7 +1776,6 @@ fn compound_ref_intermediate<T: ReconSample>(
     sub_y: u32,
     offset: ByteOffset,
 ) -> Result<CompoundRefIntermediate> {
-    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, ALL_ROWS, offset)?;
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
     let reference_size = reference.info().coded_luma_size();
@@ -1784,6 +1792,19 @@ fn compound_ref_intermediate<T: ReconSample>(
         frame_size.width() as i32,
         frame_size.height() as i32,
     );
+    let last_row = warp_params.map_or_else(
+        || compound_last_row(scaling.start_y, scaling.step_y, block_h, scaling.last_y),
+        |warp_params| {
+            warp_plane_last_row(
+                warp_params,
+                (plane_x, plane_y, block_w, block_h),
+                sub_x,
+                sub_y,
+                scaling,
+            )
+        },
+    );
+    let (view, ref_mi_cols, ref_mi_rows) = reference.plane_view(plane, last_row, offset)?;
     let Some(warp_params) = warp_params else {
         let params = SubpelPredictParams {
             interp,

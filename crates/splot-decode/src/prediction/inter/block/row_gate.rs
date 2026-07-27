@@ -12,18 +12,29 @@
 //! reference rows its own reconstruction will reach, and is released as soon as
 //! its references have published them.
 //!
-//! [`RowReferenceGate::bounds_for_row`] derives that requirement from parse data
-//! alone, per reference list, as the last luma row of the reference the row's
-//! § 7.13.3.18 subpel reads can touch:
+//! [`RowReferenceGate::bounds_for_row`] derives that requirement per reference
+//! list, as the last luma row of the reference the row's reads can touch. It
+//! runs after the row's § 7.12 resolve pass, so warp models, final motion
+//! vectors and the § 7.13.5 TIP motion field are all settled by then:
 //!
 //! - single-reference translational prediction is exact: the row's blocks read
 //!   through the same § 7.13.3.18 scaling the prediction derives, so the bound
-//!   is [`subpel_last_row`] over the parsed motion vector;
+//!   is [`subpel_last_row`] over the resolved motion vector;
 //! - compound prediction uses [`compound_last_row`], which adds the vertical
 //!   excursion § 7.13.3.6 refine-MV and § 7.13.3.9 optical-flow refinement can
-//!   reach past the parsed motion vector;
-//! - warped, BAWP and § 7.13.5 TIP blocks read through geometry the parse data
-//!   does not bound, so a row holding one requires its references to settle.
+//!   reach past the resolved motion vector;
+//! - a warped list adds [`warp_last_row`], the largest row the § 7.13.3.23
+//!   model projects the block's plane rectangle onto;
+//! - a § 7.13.3.25 BAWP list adds [`bawp_reference_luma_rows`], the template
+//!   window below the block's full-pel reference position;
+//! - a § 7.13.5 TIP block reads the frame's TIP reference pair through the
+//!   projected motion field, so it is bounded band by band over the 8x8 field
+//!   cells its prediction units sample.
+//!
+//! What is left is genuinely unboundable here: a list that resolves to no slot,
+//! a scaled reference read through the § 7.13.3.20 extended warp, and a TIP
+//! block whose reference pair or motion field is missing. Those rows require
+//! their references to settle.
 //!
 //! The requirement is an upper bound on the rows a read can reach, never a
 //! licence to read: the per-block admission check in
@@ -36,9 +47,11 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{DecodedFrameInfo, PlaneId, ReconSample, ReferenceSlot};
 
-use super::super::mc::mc_planes;
+use super::super::bawp::bawp_reference_luma_rows;
+use super::super::find_mv_stack::{TemporalMvContext, TipReferencePair};
+use super::super::mc::{McBlockRect, mc_planes};
 use super::super::mv_scaling::derive_plane_scaling;
-use super::super::reference::{compound_last_row, subpel_last_row};
+use super::super::reference::{compound_last_row, subpel_last_row, warp_last_row};
 use super::super::{
     InterReferenceState, Mv, PixelReferenceGate, PlacedInterBlock, named_pixel_reference_slots,
 };
@@ -51,15 +64,21 @@ use crate::pipeline::inflight::RefFrameSlot;
 /// bridge slot.
 const MAX_LISTS: usize = 8;
 
-/// Why one block's reference reads cannot be bounded from parse data.
+/// Luma side of the § 7.13.5 motion-field cell one TIP prediction unit samples.
+const TIP_FIELD_CELL: usize = 8;
+
+/// Largest § 7.13.5 prediction unit, the luma rows one field cell's motion
+/// vector can predict.
+const TIP_MAX_UNIT: usize = 16;
+
+/// Why one block's reference reads cannot be bounded from resolved data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SettleReason {
-    /// § 7.13.3.19 warped motion reads through a model, not a translation.
+    /// § 7.13.3.20 extended warp resamples a scaled reference, which the
+    /// § 7.13.3.23 corner projection does not bound.
     Warp,
-    /// § 7.13.5 TIP synthesis reads through the TIP motion field.
+    /// § 7.13.5 TIP synthesis has no reference pair or motion field to project.
     Tip,
-    /// § 7.13.3.29 BAWP derives its own reference window.
-    Bawp,
     /// The block's reference list does not resolve to a known slot.
     Slot,
 }
@@ -69,7 +88,6 @@ enum SettleReason {
 struct RowGateFallbacks {
     warp: AtomicUsize,
     tip: AtomicUsize,
-    bawp: AtomicUsize,
     slot: AtomicUsize,
 }
 
@@ -78,7 +96,6 @@ impl RowGateFallbacks {
         let counter = match reason {
             SettleReason::Warp => &self.warp,
             SettleReason::Tip => &self.tip,
-            SettleReason::Bawp => &self.bawp,
             SettleReason::Slot => &self.slot,
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -86,28 +103,23 @@ impl RowGateFallbacks {
 
     fn summary(&self) -> String {
         format!(
-            "settle_warp={} settle_tip={} settle_bawp={} settle_slot={}",
+            "settle_warp={} settle_tip={} settle_slot={}",
             self.warp.load(Ordering::Relaxed),
             self.tip.load(Ordering::Relaxed),
-            self.bawp.load(Ordering::Relaxed),
             self.slot.load(Ordering::Relaxed),
         )
     }
 }
 
-/// Whether one block's prediction reads through geometry the parse data does
-/// not bound, and if so which reader.
-fn settle_reason(command: &InterReconCommand) -> Option<SettleReason> {
-    let block = &command.placed().block;
-    if command.is_tip() {
-        Some(SettleReason::Tip)
-    } else if block.bawp.enabled {
-        Some(SettleReason::Bawp)
-    } else if block.warp_params.iter().any(Option::is_some) {
-        Some(SettleReason::Warp)
-    } else {
-        None
-    }
+/// How far past its plane rectangle one list's reads reach.
+#[derive(Clone, Copy, Default)]
+struct ListReach {
+    /// Whether § 7.13.3.16 compound refinement may move the read.
+    compound: bool,
+    /// The list's § 7.13.3.23 warp model, when it has one.
+    warp: Option<[i32; 6]>,
+    /// Luma rows the § 7.13.3.25 BAWP template needs, or zero.
+    bawp: u32,
 }
 
 /// One parsed row's reference requirement.
@@ -126,6 +138,8 @@ pub(super) struct RowReferenceGate<'a, T: ReconSample> {
     lists: [Option<&'a RefFrameSlot<T>>; MAX_LISTS],
     settle: PixelReferenceGate<'a, T>,
     frame: DecodedFrameInfo,
+    temporal: &'a TemporalMvContext,
+    tip: Option<TipReferencePair>,
     fallbacks: RowGateFallbacks,
 }
 
@@ -137,6 +151,7 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         frame: DecodedFrameInfo,
+        temporal: &'a TemporalMvContext,
     ) -> Self {
         let mut lists = [None; MAX_LISTS];
         for (entry, slot) in lists.iter_mut().zip(ref_frame_idx) {
@@ -148,6 +163,8 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             lists,
             settle: reference.pixel_reference_gate(named_pixel_reference_slots(core)),
             frame,
+            temporal,
+            tip: temporal.tip_references(),
             fallbacks: RowGateFallbacks::default(),
         }
     }
@@ -201,15 +218,90 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     fn note_block(&self, command: &InterReconCommand, bounds: &mut RowReferenceBounds) {
         let placed = command.placed();
         let block = &placed.block;
-        if let Some(reason) = settle_reason(command) {
-            self.fallbacks.note(reason);
-            bounds.settle = true;
+        if command.is_tip() {
+            self.note_tip(placed, bounds);
             return;
         }
         let compound = block.ref_frame1.is_some();
-        self.note_list(bounds, block.ref_frame0, block.mv, placed, compound);
+        let bawp = if block.bawp.enabled {
+            bawp_reference_luma_rows(placed.luma_y, placed.luma_h, block.mv.row)
+        } else {
+            0
+        };
+        let reach = ListReach {
+            compound,
+            warp: block.warp_params[0],
+            bawp,
+        };
+        self.note_list(
+            bounds,
+            block.ref_frame0,
+            block.mv,
+            placed.motion_compensation_rect(),
+            placed.predict_chroma,
+            reach,
+        );
         if let Some(ref_frame1) = block.ref_frame1 {
-            self.note_list(bounds, ref_frame1, block.mv1, placed, compound);
+            self.note_list(
+                bounds,
+                ref_frame1,
+                block.mv1,
+                placed.motion_compensation_rect(),
+                placed.predict_chroma,
+                ListReach {
+                    compound,
+                    warp: block.warp_params[1],
+                    bawp: 0,
+                },
+            );
+        }
+    }
+
+    /// Bounds one § 7.13.5 TIP block against the frame's TIP reference pair.
+    ///
+    /// The block's prediction units read the projected motion field at
+    /// [`TIP_FIELD_CELL`] granularity and predict at most [`TIP_MAX_UNIT`] rows
+    /// from each cell they sample, so each band of cells is bounded as a
+    /// [`TIP_MAX_UNIT`]-tall rectangle carrying that band's furthest-reaching
+    /// projected vector. Both lists are bounded even when the frame's weighting
+    /// leaves the future reference unread, which only delays admission.
+    fn note_tip(&self, placed: &PlacedInterBlock, bounds: &mut RowReferenceBounds) {
+        let Some(references) = self.tip else {
+            self.fallbacks.note(SettleReason::Tip);
+            bounds.settle = true;
+            return;
+        };
+        let base = placed.block.mv;
+        for band in (0..placed.luma_h).step_by(TIP_FIELD_CELL) {
+            let luma_y = placed.luma_y.saturating_add(band);
+            let mut furthest = [Mv::ZERO; 2];
+            for column in (0..placed.luma_w).step_by(TIP_FIELD_CELL) {
+                let luma_x = placed.luma_x.saturating_add(column);
+                let Some(mvs) = self.temporal.tip_candidate(
+                    luma_y / TIP_FIELD_CELL,
+                    luma_x / TIP_FIELD_CELL,
+                    base,
+                ) else {
+                    self.fallbacks.note(SettleReason::Tip);
+                    bounds.settle = true;
+                    return;
+                };
+                for (reach, candidate) in furthest.iter_mut().zip(mvs) {
+                    reach.row = reach.row.max(candidate.row);
+                }
+            }
+            let rect =
+                McBlockRect::from_luma_rect(placed.luma_x, luma_y, placed.luma_w, TIP_MAX_UNIT);
+            let reach = ListReach {
+                compound: true,
+                ..ListReach::default()
+            };
+            for (list, mv) in [references.past_ref, references.future_ref]
+                .into_iter()
+                .zip(furthest)
+            {
+                self.note_list(bounds, list, mv, rect, placed.predict_chroma, reach);
+            }
         }
     }
 
@@ -218,8 +310,9 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         bounds: &mut RowReferenceBounds,
         ref_frame: i8,
         mv: Mv,
-        placed: &PlacedInterBlock,
-        compound: bool,
+        rect: McBlockRect,
+        predict_chroma: bool,
+        reach: ListReach,
     ) {
         let list = usize::try_from(ref_frame).ok();
         let slot = list.and_then(|list| self.lists.get(list).copied().flatten());
@@ -231,31 +324,40 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
         if slot.is_settled() {
             return;
         }
-        let rows = block_published_rows(self.frame, slot.info(), placed, mv, compound);
+        let Some(rows) =
+            block_published_rows(self.frame, slot.info(), rect, predict_chroma, mv, reach)
+        else {
+            self.fallbacks.note(SettleReason::Warp);
+            bounds.settle = true;
+            return;
+        };
         if let Some(entry) = bounds.needs.get_mut(list) {
             *entry = (*entry).max(rows);
         }
     }
 }
 
-/// The luma rows one block's reference must have published, over every plane
-/// the block predicts.
+/// The luma rows one list's reference must have published for one block
+/// rectangle, over every plane the block predicts.
+///
+/// Returns `None` when a warped list resamples a scaled reference, which
+/// [`warp_last_row`] does not bound.
 fn block_published_rows(
     frame: DecodedFrameInfo,
     reference: DecodedFrameInfo,
-    placed: &PlacedInterBlock,
+    rect: McBlockRect,
+    predict_chroma: bool,
     mv: Mv,
-    compound: bool,
-) -> u32 {
-    let rect = placed.motion_compensation_rect();
+    reach: ListReach,
+) -> Option<u32> {
     let reference_size = reference.coded_luma_size();
     let frame_size = frame.coded_luma_size();
-    let mut rows = 0u32;
+    let mut rows = reach.bawp.min(reference_size.height() as u32);
     for (plane, sub_x, sub_y) in mc_planes(frame.pixel_format()) {
-        if plane == PlaneId::V || (plane != PlaneId::Y && !placed.predict_chroma) {
+        if plane == PlaneId::V || (plane != PlaneId::Y && !predict_chroma) {
             continue;
         }
-        let (plane_x, plane_y, _, height) = rect.plane_rect(plane, sub_x, sub_y);
+        let (plane_x, plane_y, width, height) = rect.plane_rect(plane, sub_x, sub_y);
         let scaling = derive_plane_scaling(
             plane_x as i32,
             plane_y as i32,
@@ -268,14 +370,26 @@ fn block_published_rows(
             frame_size.width() as i32,
             frame_size.height() as i32,
         );
-        let last = if compound {
+        let mut last = if reach.compound {
             compound_last_row(scaling.start_y, scaling.step_y, height, scaling.last_y)
         } else {
             subpel_last_row(scaling.start_y, scaling.step_y, height, scaling.last_y)
         };
+        if let Some(warp_params) = reach.warp {
+            if scaling.is_scaled() {
+                return None;
+            }
+            last = last.max(warp_last_row(
+                warp_params,
+                (plane_x, plane_y, width, height),
+                sub_x,
+                sub_y,
+                scaling.last_y,
+            ));
+        }
         rows = rows.max((last.max(0) as u32).saturating_add(1) << sub_y);
     }
-    rows
+    Some(rows)
 }
 
 /// Whether every list the row reads has published the rows it needs.

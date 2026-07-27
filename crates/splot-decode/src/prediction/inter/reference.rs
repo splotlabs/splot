@@ -28,6 +28,7 @@ use splot_recon::{
     ReferencePlaneView, SubpelPredictParams,
 };
 
+use super::mv_scaling::PlaneScaling;
 use super::{SPEC_MC, unsupported_at};
 use crate::Result;
 use crate::pipeline::frame_progress::PublishedFrame;
@@ -39,8 +40,15 @@ pub(crate) const ALL_ROWS: i32 = i32::MAX;
 /// Fractional bits carried by a § 7.13.3.18 scaled reference position.
 const SCALE_SUBPEL_BITS: u32 = 10;
 
+/// Fractional bits carried by a § 7.13.3.23 affine warp model.
+const WARPEDMODEL_PREC_BITS: u32 = 16;
+
 /// Rows the § 7.13.3.18 vertical filter reaches past the last predicted row.
 const SUBPEL_TAP_REACH: i64 = 4;
+
+/// Rows a warp kernel reaches past the row its projected sampling point lands
+/// on; see [`warp_last_row`] for the derivation.
+const WARP_ROW_REACH: i64 = 7;
 
 /// Current-frame rows a compound prediction reaches past its parsed motion
 /// vector; see [`compound_last_row`] for the derivation.
@@ -229,6 +237,67 @@ pub(crate) fn compound_last_row(start_y: i32, step_y: i32, height: usize, last_y
     let reach = ((i64::from(COMPOUND_REFINE_REACH) * i64::from(step_y)) >> SCALE_SUBPEL_BITS) + 1;
     (i64::from(subpel_last_row(start_y, step_y, height, last_y)).saturating_add(reach))
         .clamp(0, i64::from(last_y).max(0)) as i32
+}
+
+/// The last reference row a § 7.13.3.19 block-warp or § 7.13.3.20 extended-warp
+/// plane prediction reads, over every section and unit the block splits into.
+///
+/// Both kernels project a sampling point through the § 7.13.3.23 model and read
+/// a fixed window around the projected row: the block warp reads
+/// `y4Int - 7 ..= y4Int + 7` (`splot-recon` `warp_prediction.rs`
+/// `build_intermediate`), and the extended warp reads `iy4 - 4 ..= iy4 + 4`
+/// (`ext_warp_predict_unit`), both clamped into the caller's reference
+/// rectangle. Every sampling point either kernel projects — a section centre at
+/// `blockX + 4` or a unit centre at `blockX + 4 j4 + 2` — lies inside the
+/// block's plane rectangle, and the model is affine, so projecting the four
+/// corners of that rectangle and taking the largest row dominates all of them.
+/// [`WARP_ROW_REACH`] then covers the wider of the two read windows.
+///
+/// `warp_params[1]`, `[4]` and `[5]` are the vertical row of the model, applied
+/// to luma-resolution source coordinates; the projection is shifted back into
+/// plane rows exactly as both kernels shift it.
+///
+/// A scaled reference is out of scope: § 7.13.3.20 then resamples through the
+/// § 7.13.3.18 scaling instead, and the caller bounds it another way.
+pub(crate) fn warp_last_row(
+    warp_params: [i32; 6],
+    (plane_x, plane_y, block_w, block_h): (usize, usize, usize, usize),
+    sub_x: u32,
+    sub_y: u32,
+    last_y: i32,
+) -> i32 {
+    let projected = |x: usize, y: usize| {
+        let source_x = (x as i64) << sub_x;
+        let source_y = (y as i64) << sub_y;
+        let destination = i64::from(warp_params[4]) * source_x
+            + i64::from(warp_params[5]) * source_y
+            + i64::from(warp_params[1]);
+        (destination >> sub_y) >> WARPEDMODEL_PREC_BITS
+    };
+    let bottom = plane_y.saturating_add(block_h);
+    let right = plane_x.saturating_add(block_w);
+    projected(plane_x, plane_y)
+        .max(projected(right, plane_y))
+        .max(projected(plane_x, bottom))
+        .max(projected(right, bottom))
+        .saturating_add(WARP_ROW_REACH)
+        .clamp(0, i64::from(last_y).max(0)) as i32
+}
+
+/// The last reference row one warped plane prediction reads, or [`ALL_ROWS`]
+/// when § 7.13.3.20 resamples a scaled reference through the § 7.13.3.18
+/// scaling, which [`warp_last_row`]'s corner projection does not bound.
+pub(crate) fn warp_plane_last_row(
+    warp_params: [i32; 6],
+    plane_rect: (usize, usize, usize, usize),
+    sub_x: u32,
+    sub_y: u32,
+    scaling: PlaneScaling,
+) -> i32 {
+    if scaling.is_scaled() {
+        return ALL_ROWS;
+    }
+    warp_last_row(warp_params, plane_rect, sub_x, sub_y, scaling.last_y)
 }
 
 /// A borrow of one reference slot's samples, held for one block's reads.

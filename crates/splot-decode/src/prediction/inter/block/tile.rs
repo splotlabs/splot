@@ -1401,8 +1401,13 @@ pub(super) fn decode_tiles<T: ReconSample>(
     let chunk_offset = work_units
         .first()
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
-    let row_gate =
-        row_gate::RowReferenceGate::new(reference, core, ref_frame_idx, workspace.info());
+    let row_gate = row_gate::RowReferenceGate::new(
+        reference,
+        core,
+        ref_frame_idx,
+        workspace.info(),
+        temporal_context,
+    );
     let parallel_tiles = work_units.len() > 1
         && splot_parallel::current_pool_width() > 1
         && !super::intrabc::global_intrabc_enabled(core.intrabc);

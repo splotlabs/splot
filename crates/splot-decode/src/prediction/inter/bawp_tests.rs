@@ -6,7 +6,10 @@ use splot_recon::{
     InterpolationFilter, OutputIndex, PixelFormat, Plane, PlaneId, PlaneRect, PlaneSize,
 };
 
-use super::{ReferenceSamples, apply_bawp, apply_intrabc_morph_pred, bawp_template_counts};
+use super::{
+    ReferenceSamples, apply_bawp, apply_intrabc_morph_pred, bawp_reference_luma_rows,
+    bawp_template_counts,
+};
 use crate::prediction::inter::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, mc::CompoundBlend};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -152,6 +155,51 @@ fn inter_bawp_uses_full_resolution_444_chroma_geometry() -> TestResult {
     assert_eq!(workspace.reconstructed_sample(PlaneId::U, 4, 4)?, 60);
     assert_eq!(workspace.reconstructed_sample(PlaneId::V, 4, 4)?, 60);
     assert_eq!(workspace.reconstructed_sample(PlaneId::U, 2, 2)?, 40);
+    Ok(())
+}
+
+/// A block at luma row 16 reads its reference template over rows 15..=31, so
+/// [`bawp_reference_luma_rows`] is exact here: publishing its 32 rows admits the
+/// read and one row fewer must fail closed.
+#[test]
+fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult {
+    let reference = workspace(160, 160, 20)?;
+    let placed = placed_luma_block(16, 16, 128, 128);
+    let syntax = BawpSyntax {
+        enabled: true,
+        ..BawpSyntax::default()
+    };
+    let needed = bawp_reference_luma_rows(16, 128, 0) as usize;
+    assert_eq!(needed, 32);
+
+    let mut admitted = workspace(160, 160, 40)?;
+    apply_bawp(
+        &mut admitted,
+        ReferenceSamples::filtering(&reference, needed, 80),
+        &placed,
+        syntax,
+        Mv::ZERO,
+        splot_core::span::ByteOffset::new(0),
+    )?;
+    assert_eq!(admitted.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);
+
+    let mut short = workspace(160, 160, 40)?;
+    let refused = apply_bawp(
+        &mut short,
+        ReferenceSamples::filtering(&reference, needed - 1, 80),
+        &placed,
+        syntax,
+        Mv::ZERO,
+        splot_core::span::ByteOffset::new(0),
+    );
+    let refused = refused
+        .err()
+        .map(|error| format!("{error}"))
+        .unwrap_or_default();
+    assert!(
+        refused.contains("published"),
+        "one row short of the bound must fail closed, got {refused:?}"
+    );
     Ok(())
 }
 
