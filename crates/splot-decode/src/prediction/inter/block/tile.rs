@@ -1073,6 +1073,8 @@ where
     let parse_ready = || admit_ready_row(next_unit(), &mut surfaces, row_gate);
     let timer = crate::timing::start();
     let tally = crate::timing::WorkerTally::new();
+    let first_commit_ns = std::sync::atomic::AtomicU64::new(0);
+    let first_commit_ns = &first_commit_ns;
     let prepared = run_ready_row_prepass_with_commit(
         parse_ready,
         |ready| {
@@ -1099,7 +1101,19 @@ where
             })
         },
         |ready| {
+            let _commit_scope =
+                crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Commit);
+            if first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) == 0
+                && let Some(started) = timer
+            {
+                first_commit_ns.store(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
             if let Some(surface) = ready.surface.as_ref() {
+                let _scope =
+                    crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::CommitPublish);
                 surface.publish_into(sinks.workspace)?;
             }
             let buffers = pixel_commit::replay_recon_row(
@@ -1154,9 +1168,10 @@ where
             "inter_row_prepass",
             timer,
             &format!(
-                "units={} committed={} threads={} workers_used={} max_pending={} max_deferred={} max_active={} settled_arm={} {}",
+                "units={} committed={} c_first_ms={:.3} threads={} workers_used={} max_pending={} max_deferred={} max_active={} settled_arm={} {}",
                 prepared.committed,
                 prepared.committed,
+                first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1.0e6,
                 splot_parallel::current_pool_width(),
                 tally.workers_used(),
                 prepared.max_pending,

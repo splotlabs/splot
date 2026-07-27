@@ -68,9 +68,21 @@ pub(crate) enum WalkPhase {
     Records,
     /// General-intra leaf parse, coefficients and records included.
     IntraLeaf,
+    /// One unit's whole ordered commit, publication included.
+    Commit,
+    /// Publication of one unit's precomputed surface into the frame.
+    CommitPublish,
+    /// General-intra reconstruction on the ordered commit.
+    CommitIntra,
+    /// IntraBC reconstruction on the ordered commit.
+    CommitIntrabc,
+    /// Inter reconstruction the prepass left to the ordered commit.
+    CommitInter,
+    /// Motion-record replay and block-decoded maintenance on the commit.
+    CommitReplay,
 }
 
-const WALK_PHASE_NAMES: [&str; 10] = [
+const WALK_PHASE_NAMES: [&str; 16] = [
     "row",
     "block",
     "resolve_row",
@@ -81,6 +93,12 @@ const WALK_PHASE_NAMES: [&str; 10] = [
     "coeff",
     "records",
     "intra_leaf",
+    "commit",
+    "commit_publish",
+    "commit_intra",
+    "commit_intrabc",
+    "commit_inter",
+    "commit_replay",
 ];
 
 static WALK_PHASE_NS: [AtomicU64; WALK_PHASE_NAMES.len()] =

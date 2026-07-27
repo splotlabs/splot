@@ -114,6 +114,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             if let Some(command) = entry.command.take() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
+                        let _scope = crate::timing::WalkPhaseScope::new(
+                            crate::timing::WalkPhase::CommitIntra,
+                        );
                         command.reconstruct(
                             scratch.general_intra_mut(),
                             workspace,
@@ -121,28 +124,38 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         )?;
                     }
                     ReconCommand::Intrabc(command) => {
+                        let _scope = crate::timing::WalkPhaseScope::new(
+                            crate::timing::WalkPhase::CommitIntrabc,
+                        );
                         scratch.reconstruct_intrabc(command, &residual_blocks, workspace)?;
                     }
-                    ReconCommand::Inter(command) => scratch.reconstruct(
-                        &command,
-                        workspace,
-                        block_decoded,
-                        motion_field,
-                        &residual_blocks,
-                        temporal_context,
-                        reference,
-                        ref_frame_idx,
-                        sequence,
-                        core,
-                        mi_rows,
-                        mi_cols,
-                        current_order_hint,
-                        luma_use_tcq,
-                        residual_use_ddt,
-                        bit_depth,
-                    )?,
+                    ReconCommand::Inter(command) => {
+                        let _scope = crate::timing::WalkPhaseScope::new(
+                            crate::timing::WalkPhase::CommitInter,
+                        );
+                        scratch.reconstruct(
+                            &command,
+                            workspace,
+                            block_decoded,
+                            motion_field,
+                            &residual_blocks,
+                            temporal_context,
+                            reference,
+                            ref_frame_idx,
+                            sequence,
+                            core,
+                            mi_rows,
+                            mi_cols,
+                            current_order_hint,
+                            luma_use_tcq,
+                            residual_use_ddt,
+                            bit_depth,
+                        )?;
+                    }
                 }
             } else {
+                let _scope =
+                    crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::CommitReplay);
                 let records = temporal.get(entry.temporal.clone()).ok_or_else(|| {
                     inter_cap!(
                         "inter_row_replay_temporal_range",
