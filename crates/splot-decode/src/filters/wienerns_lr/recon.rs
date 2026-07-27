@@ -49,10 +49,10 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
         }
     }
 
-    fn with_workspace_mut(
+    fn with_workspace_mut<R>(
         &self,
-        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<()>,
-    ) -> Result<()> {
+        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
+    ) -> Result<R> {
         match self {
             Self::Local(workspace) => publish(
                 &mut workspace
@@ -60,6 +60,22 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             ),
             Self::Published(progress) => progress.with_workspace_mut(publish),
+        }
+    }
+
+    /// Runs `publish` against the output when it is free, and reports that it is
+    /// busy otherwise.
+    fn try_with_workspace_mut<R>(
+        &self,
+        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
+    ) -> Option<Result<R>> {
+        match self {
+            Self::Local(workspace) => Some(publish(
+                &mut workspace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            )),
+            Self::Published(progress) => progress.try_with_workspace_mut(publish),
         }
     }
 
@@ -326,6 +342,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }),
             max_sample_fits: T::try_from_u16(bit_depth.max_sample()).is_ok(),
         };
+        let filtered = Mutex::new(Vec::new());
         let filter_timer = crate::timing::start();
         let run_stripe = |deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
                           &(start, end): &(usize, usize)|
@@ -404,18 +421,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             if let Some(plane) = frame.v.as_ref() {
                 chain.validate_filter_stripe(PlaneId::V, plane, offset)?;
             }
-            sink.with_workspace_mut(|output| {
-                publish_filter_stripe_to(output, PlaneId::Y, &frame.y, offset)?;
-                if let Some(plane) = frame.u.as_ref() {
-                    publish_filter_stripe_to(output, PlaneId::U, plane, offset)?;
-                }
-                if let Some(plane) = frame.v.as_ref() {
-                    publish_filter_stripe_to(output, PlaneId::V, plane, offset)?;
-                }
-                Ok(())
-            })?;
-            sink.publish(stripe);
-            Ok(())
+            filtered
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push((stripe, frame));
+            drain_filtered_stripes(&sink, &filtered, offset, DrainMode::WhenFree)
         };
         let mut sections = match core
             .deblocking_filter_params
@@ -495,12 +505,74 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if let Some(sections) = sections {
             sections.finish();
         }
+        drain_filtered_stripes(&sink, &filtered, offset, DrainMode::BeforeFreeze)?;
         crate::timing::report("filter_stripes", filter_timer);
         filter_records.lr_source_blocks = lr_source_blocks;
         filter_records.lr_unit_filters = lr_unit_filters;
         let frame = sink.freeze(publish)?;
         workspace.recycle_planes();
         Ok((frame, filter_records))
+    }
+}
+
+/// Whether a drain may leave the output to another stripe.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum DrainMode {
+    /// Copy what is waiting only if the output is free right now.
+    WhenFree,
+    /// Copy everything still waiting, blocking for the output if it is busy.
+    BeforeFreeze,
+}
+
+/// Copies every stripe waiting for the output workspace into it and publishes
+/// what landed.
+///
+/// A finished stripe leaves its planes in `filtered` and drains
+/// [`DrainMode::WhenFree`]: the workspace lock's other users are the blocks of
+/// the next frame reading this frame's published prefix, and a stripe that
+/// queued behind them would stall its own worker and, under a writer-preferring
+/// lock, hold up every reader arriving behind it. Whichever stripe does find the
+/// output free copies the whole backlog, so the copies stay on the filter phase
+/// and nothing lands twice. The phase drains [`DrainMode::BeforeFreeze`] once
+/// its stripes have all run, which is what makes every stripe's samples present
+/// before the freeze even when the output was busy each time.
+fn drain_filtered_stripes<T: ReconSample>(
+    sink: &FilteredFrameSink<'_, T>,
+    filtered: &Mutex<Vec<(usize, final_filters::FilteredStripe)>>,
+    offset: ByteOffset,
+    mode: DrainMode,
+) -> Result<()> {
+    loop {
+        let copy = |output: &mut CurrentFrameWorkspace<T>| {
+            let batch = core::mem::take(
+                &mut *filtered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+            for (_, stripe) in &batch {
+                publish_filter_stripe_to(output, PlaneId::Y, &stripe.y, offset)?;
+                if let Some(plane) = stripe.u.as_ref() {
+                    publish_filter_stripe_to(output, PlaneId::U, plane, offset)?;
+                }
+                if let Some(plane) = stripe.v.as_ref() {
+                    publish_filter_stripe_to(output, PlaneId::V, plane, offset)?;
+                }
+            }
+            Ok(batch)
+        };
+        let batch = match mode {
+            DrainMode::BeforeFreeze => sink.with_workspace_mut(copy)?,
+            DrainMode::WhenFree => match sink.try_with_workspace_mut(copy) {
+                Some(batch) => batch?,
+                None => return Ok(()),
+            },
+        };
+        for (stripe, _) in &batch {
+            sink.publish(*stripe);
+        }
+        if mode == DrainMode::WhenFree || batch.is_empty() {
+            return Ok(());
+        }
     }
 }
 

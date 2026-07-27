@@ -21,7 +21,7 @@
 //! observe a row the filter chain has not written.
 
 use core::num::NonZeroUsize;
-use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
+use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, TryLockError};
 
 use splot_parallel::WatermarkCell;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, ReconSample};
@@ -177,6 +177,29 @@ impl<T: ReconSample> FrameProgress<T> {
             .unwrap_or_else(PoisonError::into_inner);
         let workspace = workspace.as_mut().ok_or_else(taken_workspace)?;
         publish(workspace)
+    }
+
+    /// Runs `publish` against the filtered workspace when its exclusive lock is
+    /// free, and reports that it is taken otherwise.
+    ///
+    /// A stripe that finds the lock taken leaves its samples for whichever
+    /// stripe holds it next instead of queueing: the lock's other users are the
+    /// blocks of the next frame reading this one's published prefix, so a
+    /// waiting writer would both stall its own worker and, under a
+    /// writer-preferring lock, hold up every reader that arrives behind it.
+    pub(crate) fn try_with_workspace_mut<R>(
+        &self,
+        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
+    ) -> Option<Result<R>> {
+        let mut workspace = match self.workspace.try_write() {
+            Ok(workspace) => workspace,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(match workspace.as_mut() {
+            Some(workspace) => publish(workspace),
+            None => Err(taken_workspace()),
+        })
     }
 
     /// Freezes the filtered workspace and publishes the frozen frame, both
