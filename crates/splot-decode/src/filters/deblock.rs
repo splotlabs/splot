@@ -197,13 +197,10 @@ pub(crate) struct FrameDeblock<'a> {
     next_pass_1_mi_row: usize,
 }
 
-/// One plane's share of a deblock section: its own samples and the passes it
-/// still owes over the section's rows.
+/// One plane band's share of a deblock section: the rows it owns and the passes
+/// it still owes over them.
 struct PlaneJob<'a, T> {
-    samples: &'a mut [T],
-    stride: usize,
-    width: usize,
-    height: usize,
+    band: PlaneBand<'a, T>,
     grid: &'a MiGrid<'a>,
     passes: [Option<PlanePass>; 2],
 }
@@ -236,6 +233,12 @@ pub(crate) const DEBLOCK_PASS_1_REACH: usize = 8;
 /// walk does, since a vertical edge stays inside its own mode-info unit and so
 /// never reaches back into a row the horizontal pass has already rewritten.
 const PASS_0_LEAD_MI_ROWS: usize = 4;
+
+/// How many mode-info rows one primed vertical band covers.
+///
+/// Wide enough that a band a worker steals pays for the steal, and a multiple of
+/// the chroma row step so a band's plane rows split on a mode-info boundary.
+const VERTICAL_BAND_MI_ROWS: usize = 32;
 
 impl<'a> FrameDeblock<'a> {
     /// Builds the frame's mode-info grids, or reports that the frame has no
@@ -286,6 +289,99 @@ impl<'a> FrameDeblock<'a> {
         }))
     }
 
+    /// Runs the whole frame's vertical pass in parallel row bands.
+    ///
+    /// A vertical edge stays inside its own mode-info row, so contiguous row
+    /// bands filter exactly the samples one ascending walk does, and running
+    /// them all up front leaves only the horizontal pass — which no row band can
+    /// split, since consecutive horizontal edges overlap — pacing how early
+    /// [`Self::advance`] can call a stripe's rows final.
+    pub(crate) fn prime_vertical_pass<T: ReconSample>(
+        &mut self,
+        workspace: &mut CurrentFrameWorkspace<T>,
+        bit_depth: BitDepth,
+    ) -> Result<(), DeblockError> {
+        let range = self.next_pass_0_mi_row..self.mi_rows;
+        if range.is_empty() {
+            return Ok(());
+        }
+        let pixel_format = workspace.info().pixel_format();
+        let mut dimensions = [None; 3];
+        for (plane, slot) in dimensions.iter_mut().enumerate() {
+            let plane_id = plane_index_to_id(plane);
+            if workspace.plane(plane_id).is_ok() {
+                *slot = Some(coded_plane_dimensions(workspace, plane_id)?);
+            }
+        }
+        let (y, u, v) = workspace.as_frame_mut().into_planes();
+        let mut jobs = Vec::new();
+        for (plane, samples) in [Some(y), u, v].into_iter().enumerate() {
+            let (Some(samples), Some((width, height))) = (samples, dimensions[plane]) else {
+                continue;
+            };
+            if plane != 0 && !self.filter.apply_deblocking_filter[plane + 1] {
+                continue;
+            }
+            let Some(plane_pass) = PlanePass::active(
+                plane,
+                0,
+                self.filter,
+                self.quant_deltas,
+                bit_depth,
+                pixel_format,
+                &range,
+            ) else {
+                continue;
+            };
+            let stride = samples.stride_samples();
+            let band_rows = (VERTICAL_BAND_MI_ROWS * MI_SIZE) >> plane_pass.plane_sub_y;
+            let plane_samples = samples
+                .into_samples()
+                .get_mut(..stride.checked_mul(height).ok_or(DeblockError::Workspace)?)
+                .ok_or(DeblockError::Workspace)?;
+            let band_samples = band_rows
+                .checked_mul(stride)
+                .ok_or(DeblockError::Workspace)?;
+            for (band, samples) in plane_samples.chunks_mut(band_samples).enumerate() {
+                let mi_start = range.start.max(band * VERTICAL_BAND_MI_ROWS);
+                let mi_end = band
+                    .saturating_add(1)
+                    .saturating_mul(VERTICAL_BAND_MI_ROWS)
+                    .min(range.end);
+                if mi_start >= mi_end {
+                    continue;
+                }
+                let y_origin = band * band_rows;
+                jobs.push(PlaneJob {
+                    band: PlaneBand {
+                        rows: samples.len() / stride,
+                        samples,
+                        stride,
+                        width,
+                        height,
+                        y_origin,
+                    },
+                    grid: self.plane_grid(plane),
+                    passes: [
+                        Some(PlanePass {
+                            mi_row_range: (mi_start, mi_end),
+                            ..plane_pass
+                        }),
+                        None,
+                    ],
+                });
+            }
+        }
+        let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
+        if jobs.len() > 1 && splot_parallel::on_multiworker_pool() {
+            jobs.into_par_iter().try_for_each(run)?;
+        } else {
+            jobs.into_iter().try_for_each(run)?;
+        }
+        self.next_pass_0_mi_row = self.mi_rows;
+        Ok(())
+    }
+
     /// Deblocks every mode-info row before `mi_row_end` that is still owed.
     pub(crate) fn advance<T: ReconSample>(
         &mut self,
@@ -293,10 +389,11 @@ impl<'a> FrameDeblock<'a> {
         mi_row_end: usize,
         bit_depth: BitDepth,
     ) -> Result<(), DeblockError> {
-        let pass_1_end = mi_row_end.min(self.mi_rows);
+        let pass_1_end = mi_row_end.min(self.mi_rows).max(self.next_pass_1_mi_row);
         let pass_0_end = mi_row_end
             .saturating_add(PASS_0_LEAD_MI_ROWS)
-            .min(self.mi_rows);
+            .min(self.mi_rows)
+            .max(self.next_pass_0_mi_row);
         let ranges = [
             self.next_pass_0_mi_row..pass_0_end,
             self.next_pass_1_mi_row..pass_1_end,
@@ -341,14 +438,8 @@ impl<'a> FrameDeblock<'a> {
             }
             let stride = samples.stride_samples();
             jobs.push(PlaneJob {
-                samples: samples.into_samples(),
-                stride,
-                width,
-                height,
-                grid: match plane.checked_sub(1) {
-                    Some(chroma) => self.chroma[chroma].as_ref().unwrap_or(&self.grid),
-                    None => &self.grid,
-                },
+                band: PlaneBand::plane(samples.into_samples(), stride, width, height),
+                grid: self.plane_grid(plane),
                 passes,
             });
         }
@@ -370,23 +461,14 @@ impl<'a> FrameDeblock<'a> {
     /// stay ordered.
     fn run_plane_job<T: ReconSample>(&self, job: PlaneJob<'_, T>) -> Result<(), DeblockError> {
         let PlaneJob {
-            samples,
-            stride,
-            width,
-            height,
+            mut band,
             grid,
             passes,
         } = job;
-        for (pass, plane_pass) in passes.into_iter().enumerate() {
-            let Some(plane_pass) = plane_pass else {
-                continue;
-            };
+        for plane_pass in passes.into_iter().flatten() {
             let pass_timer = crate::timing::start();
             deblock_plane_pass_serial(
-                samples,
-                stride,
-                width,
-                height,
+                &mut band,
                 grid,
                 plane_pass,
                 self.mi_rows,
@@ -398,11 +480,19 @@ impl<'a> FrameDeblock<'a> {
                 crate::timing::report_detail(
                     "deblock_plane_pass",
                     pass_timer,
-                    &format!("plane={} pass={pass}", plane_pass.plane),
+                    &format!("plane={} pass={}", plane_pass.plane, plane_pass.pass),
                 );
             }
         }
         Ok(())
+    }
+
+    /// The mode-info grid one plane's edges read.
+    fn plane_grid(&self, plane: usize) -> &MiGrid<'a> {
+        match plane.checked_sub(1) {
+            Some(chroma) => self.chroma[chroma].as_ref().unwrap_or(&self.grid),
+            None => &self.grid,
+        }
     }
 
     /// The luma rows whose deblocked samples are final now, given how far
@@ -475,7 +565,8 @@ pub(crate) fn deblock_tip_frame<T: ReconSample>(
         let mut frame = workspace.as_frame_mut();
         let view = frame.plane_mut(plane_id).ok_or(DeblockError::Workspace)?;
         let stride = view.stride_samples();
-        let mut plane_ctx = PlaneCtx::new(view.samples_mut(), stride, width, height)?;
+        let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
+        let mut plane_ctx = PlaneCtx::new(&mut band)?;
         for y in (0..height).step_by(MI_SIZE) {
             for x in (unit_width..width).step_by(unit_width) {
                 let tile_edge = tip_tile_edge(tile_starts.map(|(cols, _)| cols), x, sub_x);
@@ -592,10 +683,7 @@ fn apply_tip_filter_edge<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn deblock_plane_pass_serial<T: ReconSample>(
-    samples: &mut [T],
-    stride: usize,
-    width: usize,
-    height: usize,
+    band: &mut PlaneBand<'_, T>,
     grid: &MiGrid<'_>,
     plane_pass: PlanePass,
     mi_rows: usize,
@@ -603,39 +691,29 @@ fn deblock_plane_pass_serial<T: ReconSample>(
     tile_starts: Option<&[u32]>,
     disable_loopfilters_across_tiles: bool,
 ) -> Result<(), DeblockError> {
-    macro_rules! dispatch {
-        ($plane:literal, $pass:literal) => {
-            deblock_plane_pass_serial_specialized::<T, $plane, $pass>(
-                samples,
-                stride,
-                width,
-                height,
-                grid,
-                plane_pass,
-                mi_rows,
-                mi_cols,
-                tile_starts,
-                disable_loopfilters_across_tiles,
-            )
-        };
-    }
-    match (plane_pass.plane, plane_pass.pass) {
-        (0, 0) => dispatch!(0, 0),
-        (0, _) => dispatch!(0, 1),
-        (1, 0) => dispatch!(1, 0),
-        (1, _) => dispatch!(1, 1),
-        (2, 0) => dispatch!(2, 0),
-        _ => dispatch!(2, 1),
-    }
+    let walk = match (plane_pass.plane, plane_pass.pass) {
+        (0, 0) => deblock_plane_pass_serial_specialized::<T, 0, 0>,
+        (0, _) => deblock_plane_pass_serial_specialized::<T, 0, 1>,
+        (1, 0) => deblock_plane_pass_serial_specialized::<T, 1, 0>,
+        (1, _) => deblock_plane_pass_serial_specialized::<T, 1, 1>,
+        (2, 0) => deblock_plane_pass_serial_specialized::<T, 2, 0>,
+        _ => deblock_plane_pass_serial_specialized::<T, 2, 1>,
+    };
+    walk(
+        band,
+        grid,
+        plane_pass,
+        mi_rows,
+        mi_cols,
+        tile_starts,
+        disable_loopfilters_across_tiles,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, const PASS: usize>(
-    samples: &mut [T],
-    stride: usize,
-    width: usize,
-    height: usize,
+    band: &mut PlaneBand<'_, T>,
     grid: &MiGrid<'_>,
     plane_pass: PlanePass,
     mi_rows: usize,
@@ -646,7 +724,7 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     debug_assert_eq!(plane_pass.plane, PLANE);
     debug_assert_eq!(plane_pass.pass, PASS);
     let mi_row_range = plane_pass.mi_row_range.0..plane_pass.mi_row_range.1.min(mi_rows);
-    let mut ctx = PlaneCtx::new(samples, stride, width, height)?;
+    let mut ctx = PlaneCtx::new(band)?;
     let strengths = StrengthCache::new(
         plane_pass.quant_delta,
         plane_pass.df_delta_q,
@@ -765,48 +843,84 @@ struct PlaneCtx<'samples, T: ReconSample> {
     height: usize,
     x_origin: usize,
     y_origin: usize,
+    band_rows: usize,
 }
 
-fn validated_plane_samples<T>(
-    samples: &mut [T],
+/// The plane rows one deblock job filters: a whole plane, or a contiguous band
+/// of one.
+///
+/// `height` stays the plane's own height so edge geometry is unchanged by
+/// banding, while `y_origin` and `rows` name the rows the job owns.
+struct PlaneBand<'a, T> {
+    samples: &'a mut [T],
     stride: usize,
     width: usize,
     height: usize,
-) -> Result<&mut [T], DeblockError> {
-    let required = stride.checked_mul(height).ok_or(DeblockError::Workspace)?;
-    if width > stride || stride == 0 {
-        return Err(DeblockError::Workspace);
+    y_origin: usize,
+    rows: usize,
+}
+
+impl<'a, T> PlaneBand<'a, T> {
+    const fn plane(samples: &'a mut [T], stride: usize, width: usize, height: usize) -> Self {
+        Self {
+            samples,
+            stride,
+            width,
+            height,
+            y_origin: 0,
+            rows: height,
+        }
     }
-    samples.get_mut(..required).ok_or(DeblockError::Workspace)
 }
 
 impl<'samples, T: ReconSample> PlaneCtx<'samples, T> {
-    fn new(
-        samples: &'samples mut [T],
-        stride: usize,
-        width: usize,
-        height: usize,
-    ) -> Result<Self, DeblockError> {
-        let samples = validated_plane_samples(samples, stride, width, height)?;
+    /// Views the plane rows `y_origin..y_origin + rows` of a `height`-row plane.
+    ///
+    /// Coordinates stay in plane space, so a band filters exactly the samples
+    /// the whole-plane view does; a row outside the band is not addressable.
+    fn new(band: &'samples mut PlaneBand<'_, T>) -> Result<Self, DeblockError> {
+        let (stride, width, height) = (band.stride, band.width, band.height);
+        let (y_origin, rows) = (band.y_origin, band.rows);
+        if width > stride || stride == 0 || y_origin.checked_add(rows) > Some(height) {
+            return Err(DeblockError::Workspace);
+        }
+        let required = stride.checked_mul(rows).ok_or(DeblockError::Workspace)?;
+        let samples = band
+            .samples
+            .get_mut(..required)
+            .ok_or(DeblockError::Workspace)?;
         Ok(Self {
             rows: PlaneRows { samples, stride },
             width,
             height,
             x_origin: 0,
-            y_origin: 0,
+            y_origin,
+            band_rows: rows,
         })
     }
 
-    fn sample(&self, x: usize, y: usize) -> T {
-        let row = y - self.y_origin;
-        let col = x - self.x_origin;
-        self.rows.samples[row * self.rows.stride + col]
+    fn index(&self, x: usize, y: usize) -> Option<usize> {
+        y.checked_sub(self.y_origin)
+            .filter(|row| *row < self.band_rows)?
+            .checked_mul(self.rows.stride)?
+            .checked_add(x.checked_sub(self.x_origin)?)
     }
 
-    fn set_sample(&mut self, x: usize, y: usize, value: T) {
-        let row = y - self.y_origin;
-        let col = x - self.x_origin;
-        self.rows.samples[row * self.rows.stride + col] = value;
+    fn sample(&self, x: usize, y: usize) -> T {
+        self.index(x, y)
+            .and_then(|index| self.rows.samples.get(index))
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn set_sample(&mut self, x: usize, y: usize, value: T) -> Result<(), DeblockError> {
+        let index = self.index(x, y).ok_or(DeblockError::Workspace)?;
+        *self
+            .rows
+            .samples
+            .get_mut(index)
+            .ok_or(DeblockError::Workspace)? = value;
+        Ok(())
     }
 }
 
@@ -1573,7 +1687,7 @@ fn apply_sample_filter<T: ReconSample>(
         if fx >= plane_ctx.width || fy >= plane_ctx.height {
             return Err(DeblockError::Workspace);
         }
-        plane_ctx.set_sample(fx, fy, new);
+        plane_ctx.set_sample(fx, fy, new)?;
     }
     Ok(())
 }
@@ -1623,11 +1737,12 @@ fn gather_line<T: ReconSample>(
         }
     }
     let max_x = plane_ctx.width.saturating_sub(1) as isize;
-    let max_y = plane_ctx.height.saturating_sub(1) as isize;
+    let min_y = plane_ctx.y_origin as isize;
+    let max_y = (plane_ctx.y_origin + plane_ctx.band_rows).saturating_sub(1) as isize;
     for (idx, lane) in line.iter_mut().enumerate() {
         let offset = idx as isize - GATHER_HALF as isize;
         let sx = (perp.x as isize + offset * perp.dx as isize).clamp(0, max_x) as usize;
-        let sy = (perp.y as isize + offset * perp.dy as isize).clamp(0, max_y) as usize;
+        let sy = (perp.y as isize + offset * perp.dy as isize).clamp(min_y, max_y) as usize;
         *lane = plane_ctx.sample(sx, sy);
     }
     line

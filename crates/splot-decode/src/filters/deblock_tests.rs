@@ -23,7 +23,8 @@ fn with_plane_ctx<T: ReconSample, R>(
     let mut frame = ws.as_frame_mut();
     let view = frame.plane_mut(plane).unwrap();
     let stride = view.stride_samples();
-    let mut ctx = PlaneCtx::new(view.samples_mut(), stride, width, height).unwrap();
+    let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
+    let mut ctx = PlaneCtx::new(&mut band).unwrap();
     f(&mut ctx)
 }
 

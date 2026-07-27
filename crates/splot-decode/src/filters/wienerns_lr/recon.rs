@@ -448,6 +448,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             None => None,
         };
         if ranges.len() > 1 && splot_parallel::on_multiworker_pool() {
+            if let Some(sections) = sections.as_mut() {
+                let prime_timer = crate::timing::start();
+                sections
+                    .prime_vertical_pass(&mut workspace, bit_depth)
+                    .map_err(|_| deblock_filter_error(offset))?;
+                crate::timing::report("filter_deblock_prime", prime_timer);
+            }
             let mut slots: Vec<Option<Result<()>>> = (0..ranges.len()).map(|_| None).collect();
             let mut owed: Option<crate::error::DecodeError> = None;
             let scheduled = splot_parallel::ready_task_scope(|scope| {
