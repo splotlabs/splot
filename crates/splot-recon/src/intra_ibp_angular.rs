@@ -14,6 +14,7 @@ use crate::intra_directional_angle::{
     DR_INTRA_DERIVATIVE, ZONE_1_MAX, ZONE_3_INDEX_BASE, ZONE_3_MIN,
 };
 use crate::{ReconError, ReconSample, Result};
+use std::sync::OnceLock;
 
 const IBP_WEIGHT_SIZE_LOG2: u32 = 4;
 const IBP_WEIGHT_SIZE: usize = 1 << IBP_WEIGHT_SIZE_LOG2;
@@ -59,7 +60,32 @@ fn enabled_weight_angle(p_angle: u16) -> Option<u16> {
         .then_some(weight_angle)
 }
 
-fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]> {
+/// AV2 § 7.13.2.9 blend weights for one angle.
+type IbpWeights = [[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE];
+
+/// Derived § 7.13.2.9 weight tables, one slot per clamped weight angle.
+static IBP_WEIGHT_TABLES: [OnceLock<IbpWeights>; ZONE_1_MAX as usize + 1] =
+    [const { OnceLock::new() }; ZONE_1_MAX as usize + 1];
+
+/// Returns the § 7.13.2.9 weight table for `p_angle`, deriving it once.
+///
+/// The table depends only on the clamped weight angle, so the per-block
+/// derivation is memoized rather than repeated for every predicted block. The
+/// slot lookup rejects exactly the angles [`ibp_weights`] rejects.
+fn ibp_weight_table(p_angle: u16) -> Result<&'static IbpWeights> {
+    let slot = IBP_WEIGHT_TABLES
+        .get(usize::from(p_angle.max(IBP_WEIGHT_MIN_ANGLE)))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "IBP angular weight angle index",
+        })?;
+    if let Some(weights) = slot.get() {
+        return Ok(weights);
+    }
+    let weights = ibp_weights(p_angle)?;
+    Ok(slot.get_or_init(|| weights))
+}
+
+fn ibp_weights(p_angle: u16) -> Result<IbpWeights> {
     let p_angle = p_angle.max(IBP_WEIGHT_MIN_ANGLE);
     let index = usize::from(ZONE_1_MAX.checked_sub(p_angle).ok_or(
         ReconError::ArithmeticOverflow {
@@ -73,7 +99,7 @@ fn ibp_weights(p_angle: u16) -> Result<[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE]
                 context: "IBP angular weight derivative lookup",
             })?,
     );
-    let mut weights = [[0u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE];
+    let mut weights: IbpWeights = [[0; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE];
     for (r, row) in weights.iter_mut().enumerate() {
         let mut y = dy;
         for slot in row.iter_mut() {
@@ -135,7 +161,7 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
             context: "IBP angular blend buffer too small",
         });
     }
-    let weights = ibp_weights(weight_angle)?;
+    let weights = ibp_weight_table(weight_angle)?;
     let zone1 = p_angle < ZONE_1_MAX;
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
@@ -145,9 +171,9 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
         for column in 0..width {
             let col_idx = (column as u32 >> c_shift) as usize;
             let s = if zone1 {
-                weight_at(&weights, row_idx, col_idx)?
+                weight_at(weights, row_idx, col_idx)?
             } else {
-                weight_at(&weights, col_idx, row_idx)?
+                weight_at(weights, col_idx, row_idx)?
             };
             let index = row * width + column;
             let primary_value = u32::from(primary[index].to_u16());
@@ -163,11 +189,7 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     Ok(())
 }
 
-fn weight_at(
-    weights: &[[u16; IBP_WEIGHT_SIZE]; IBP_WEIGHT_SIZE],
-    outer: usize,
-    inner: usize,
-) -> Result<u16> {
+fn weight_at(weights: &IbpWeights, outer: usize, inner: usize) -> Result<u16> {
     weights
         .get(outer)
         .and_then(|row| row.get(inner))

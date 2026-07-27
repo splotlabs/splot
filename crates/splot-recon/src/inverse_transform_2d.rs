@@ -179,12 +179,10 @@ pub(super) fn inverse_transform_2d_with_scratch(
             for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
                 *slot = round2_2896(coeff);
             }
+            run_1d(&buf_in[..w], intermediate_row, row_pass)?;
         } else {
-            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
-                *slot = coeff;
-            }
+            run_1d(dequant_row, intermediate_row, row_pass)?;
         }
-        run_1d(&buf_in[..w], intermediate_row, row_pass)?;
     }
 
     let col_pass = Pass {

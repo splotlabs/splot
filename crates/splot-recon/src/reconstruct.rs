@@ -19,6 +19,9 @@
 //! requirement are out of scope and tracked by their own future rows. The caller
 //! supplies the prediction samples and the residual.
 
+use std::simd::num::{SimdInt as _, SimdUint as _};
+use std::simd::{Simd, cmp::SimdOrd as _};
+
 use crate::intra_dc_math::validate_sample_type;
 use crate::{BitDepth, ReconError, ReconSample, Result};
 
@@ -76,11 +79,53 @@ pub fn reconstruct_add_residual<T: ReconSample>(
     }
 
     let max = i32::from(max_sample);
+    if let Some(prediction) = T::u16_slice(prediction)
+        && let Some(out) = T::u16_slice_mut(out)
+    {
+        add_residual_u16(prediction, residual, max, out);
+        return Ok(());
+    }
     for ((slot, &pred), &res) in out.iter_mut().zip(prediction).zip(residual) {
         let reconstructed = i32::from(pred.to_u16()).saturating_add(res).clamp(0, max);
         *slot = T::try_from_u16(reconstructed as u16)?;
     }
     Ok(())
+}
+
+/// Adds the § 7.14.3 residual over `u16` storage, widest lane group first.
+///
+/// Each lane repeats the scalar `Clip1(prediction + residual)` step with the
+/// same saturating `i32` addition, so every output sample is bit-identical;
+/// `Clip1` bounds the result to `0..=max`, which the `u16` storage represents
+/// exactly.
+fn add_residual_u16(prediction: &[u16], residual: &[i32], max: i32, out: &mut [u16]) {
+    let len = out.len();
+    let mut index = 0usize;
+    macro_rules! add_lane_group {
+        ($lanes:literal) => {
+            while index + $lanes <= len {
+                let pred = Simd::<u16, $lanes>::from_slice(&prediction[index..]).cast::<i32>();
+                let res = Simd::<i32, $lanes>::from_slice(&residual[index..]);
+                let values = pred
+                    .saturating_add(res)
+                    .simd_clamp(Simd::splat(0), Simd::splat(max))
+                    .cast::<u16>()
+                    .to_array();
+                out[index..index + $lanes].copy_from_slice(&values); // splot-copy-ok: publish a § 7.14.3 residual-addition lane group
+                index += $lanes;
+            }
+        };
+    }
+    add_lane_group!(16);
+    add_lane_group!(8);
+    add_lane_group!(4);
+    for ((slot, &pred), &res) in out[index..]
+        .iter_mut()
+        .zip(&prediction[index..])
+        .zip(&residual[index..])
+    {
+        *slot = i32::from(pred).saturating_add(res).clamp(0, max) as u16;
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +172,43 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, [255, 0]);
+    }
+
+    /// The `u16` lane groups must reproduce the scalar `Clip1` step exactly for
+    /// every block length, over randomized predictions and residuals including
+    /// the `i32` extremes.
+    #[test]
+    fn u16_lane_groups_match_the_scalar_reference() {
+        let mut state = 0x1234_5678_9abc_def1u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for len in 1..=64usize {
+            for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+                let max = i32::from(bit_depth.max_sample());
+                let prediction: Vec<u16> = (0..len)
+                    .map(|_| (next() % (max as u64 + 1)) as u16)
+                    .collect();
+                let residual: Vec<i32> = (0..len)
+                    .map(|index| match index % 8 {
+                        0 => i32::MAX,
+                        1 => i32::MIN,
+                        _ => (next() as i32) >> (next() % 20) as i32,
+                    })
+                    .collect();
+                let expected: Vec<u16> = prediction
+                    .iter()
+                    .zip(&residual)
+                    .map(|(&pred, &res)| i32::from(pred).saturating_add(res).clamp(0, max) as u16)
+                    .collect();
+                let mut actual = vec![0u16; len];
+                add_residual_u16(&prediction, &residual, max, &mut actual);
+                assert_eq!(actual, expected, "len {len} {bit_depth:?}");
+            }
+        }
     }
 
     #[test]
