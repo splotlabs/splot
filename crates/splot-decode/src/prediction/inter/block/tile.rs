@@ -19,6 +19,9 @@ use ready_rows::{
     run_ready_row_prepass_with_commit,
 };
 
+use super::super::MotionFieldHandle;
+use super::temporal::MotionFieldUnits;
+
 pub(super) struct TileDecodeOutput {
     pub(super) cdef_state: CdefState,
     pub(super) gdf_state: GdfState,
@@ -345,6 +348,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             temporal,
             flag_log,
             filter_records: TileFilterRecords::default(),
+            motion_folded: false,
             terminal: None,
         };
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
@@ -696,6 +700,9 @@ pub(super) struct ReconRow {
     /// on a grid of its own. Empty unless the parser was logging.
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
+    /// Whether the prepass already folded this unit's records into the frame's
+    /// motion field, which it does for a unit it reconstructed in full.
+    pub(super) motion_folded: bool,
     pub(super) terminal: Option<crate::DecodeError>,
 }
 
@@ -864,6 +871,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
     mut ready: ReadyReconRow<'surface, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
+    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -887,6 +895,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
         &mut surface,
         scratch,
         block_decoded,
+        motion,
         quantizer,
         temporal_context,
         reference,
@@ -910,6 +919,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
+    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -996,6 +1006,14 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             }
         }
     }
+    row.motion_folded = row
+        .entries
+        .iter()
+        .all(|entry| !matches!(entry.command, Some(ReconCommand::Inter(_))));
+    if row.motion_folded {
+        motion.fold(&row.temporal);
+        motion.unit_landed();
+    }
     row
 }
 
@@ -1033,7 +1051,7 @@ struct PrepassSinks<'a, T: ReconSample> {
     ordered: &'a mut deferred_recon::InterReconScratch<T>,
     workspace: &'a mut CurrentFrameWorkspace<T>,
     block_decoded: &'a mut TileBlockDecodedState,
-    motion_field: &'a mut TemporalMotionField,
+    motion: &'a MotionFieldUnits,
     frame_filter_records: &'a mut crate::filters::wienerns_lr::FrameFilterRecords,
     decoded_any: &'a mut bool,
 }
@@ -1070,6 +1088,7 @@ where
     } = cursor;
     let mut surfaces = shadow.rect_surfaces(rects)?.into_iter();
     let prepass_block_decoded = &*prepass_block_decoded;
+    let sinks_motion = sinks.motion;
     let parse_ready = || admit_ready_row(next_unit(), &mut surfaces, row_gate);
     let timer = crate::timing::start();
     let tally = crate::timing::WorkerTally::new();
@@ -1084,6 +1103,7 @@ where
                     ready,
                     scratch,
                     prepass_block_decoded,
+                    sinks_motion,
                     quantizer,
                     temporal_context,
                     context.reference,
@@ -1125,7 +1145,7 @@ where
                 sinks.workspace,
                 sinks.block_decoded,
                 current_block_decoded_superblock,
-                sinks.motion_field,
+                sinks.motion,
                 sinks.frame_filter_records,
                 temporal_context,
                 context.reference,
@@ -1435,7 +1455,8 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     workspace: &mut CurrentFrameWorkspace<T>,
-    mut motion_field: TemporalMotionField,
+    motion_field: TemporalMotionField,
+    motion_handle: MotionFieldHandle,
 ) -> Result<TemporalMotionField> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1469,6 +1490,7 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
+    let motion = MotionFieldUnits::publishing(motion_field, parsed.rows.len(), motion_handle);
     let mut cursor = PrepassCursor::new(workspace, &parsed.block_decoded)?;
     let mut block_decoded = parsed.block_decoded.clone();
     let row_buffers = ReconRowBufferPool::new(0);
@@ -1511,7 +1533,7 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
             ordered,
             workspace,
             block_decoded: &mut block_decoded,
-            motion_field: &mut motion_field,
+            motion: &motion,
             frame_filter_records,
             decoded_any: &mut decoded_any,
         },
@@ -1524,7 +1546,7 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
             SPEC_MODE_INFO
         ));
     }
-    Ok(motion_field)
+    Ok(motion.into_field())
 }
 
 /// One unit carrying nothing but the diagnostic that ends its tile's stream.
@@ -1539,6 +1561,7 @@ fn terminal_recon_row(ordinal: usize, terminal: crate::DecodeError) -> ReconRow 
         temporal: Vec::new(),
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
+        motion_folded: false,
         terminal: Some(terminal),
     }
 }
@@ -1699,6 +1722,7 @@ fn prepare_tile<T: ReconSample>(
     mut surface: splot_recon::CurrentFrameRect<'_, T>,
     context: &TileDecodeContext<'_, T>,
     temporal_context: &TemporalMvContext,
+    motion: &MotionFieldUnits,
     cdef_state: &CdefState,
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
@@ -1764,6 +1788,7 @@ fn prepare_tile<T: ReconSample>(
                 &mut sink,
                 scratch,
                 &block_decoded,
+                motion,
                 &quantizer,
                 temporal_context,
                 context.reference,
@@ -1810,7 +1835,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     mut cdef_state: CdefState,
     mut gdf_state: GdfState,
     mut ccso_state: CcsoState,
-    mut motion_field: TemporalMotionField,
+    motion_field: TemporalMotionField,
 ) -> Result<TileDecodeOutput> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1830,6 +1855,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         ..
     } = params;
     frame_filter_records.clear();
+    let motion = MotionFieldUnits::new(motion_field);
     let mut decoded_any = false;
     let chunk_offset = work_units
         .first()
@@ -1886,6 +1912,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             {
                 let tally = &tally;
                 let context = &context;
+                let motion = &motion;
                 let cdef_state = &cdef_state;
                 let gdf_state = &gdf_state;
                 let ccso_state = &ccso_state;
@@ -1898,6 +1925,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                         surface,
                         context,
                         temporal_context,
+                        motion,
                         cdef_state,
                         gdf_state,
                         ccso_state,
@@ -1988,7 +2016,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     workspace,
                     &mut tile.block_decoded,
                     &mut current_block_decoded_superblock,
-                    &mut motion_field,
+                    &motion,
                     frame_filter_records,
                     temporal_context,
                     reference,
@@ -2017,7 +2045,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             cdef_state,
             gdf_state,
             ccso_state,
-            motion_field,
+            motion_field: motion.into_field(),
         });
     }
     if !parallel_prepass {
@@ -2100,7 +2128,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     ordered,
                     workspace,
                     block_decoded: &mut block_decoded,
-                    motion_field: &mut motion_field,
+                    motion: &motion,
                     frame_filter_records,
                     decoded_any: &mut decoded_any,
                 },
@@ -2131,7 +2159,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     workspace,
                     &mut block_decoded,
                     &mut current_block_decoded_superblock,
-                    &mut motion_field,
+                    &motion,
                     frame_filter_records,
                     temporal_context,
                     reference,
@@ -2189,7 +2217,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         cdef_state,
         gdf_state,
         ccso_state,
-        motion_field,
+        motion_field: motion.into_field(),
     })
 }
 

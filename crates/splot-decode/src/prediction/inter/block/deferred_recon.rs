@@ -11,13 +11,13 @@ use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::compound::CompoundBlockSyntax;
-use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField, TemporalMvContext};
+use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
 use super::super::mc::WorkspaceSink;
 use super::super::{
     InterReferenceState, InterResidualBlock, InterResidualReconScratch, PlacedInterBlock,
 };
 use super::compound_path::append_compound_temporal_motion;
-use super::temporal::{commit_temporal_motion_blocks, temporal_motion_block};
+use super::temporal::{MotionFieldUnits, temporal_motion_block};
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
@@ -439,7 +439,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         command: &InterReconCommand,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
-        motion_field: &mut TemporalMotionField,
+        motion: &MotionFieldUnits,
         residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
         reference: &InterReferenceState<T>,
@@ -474,7 +474,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             bit_depth,
         );
         if result.is_ok() {
-            commit_temporal_motion_blocks(motion_field, &temporal);
+            motion.fold(&temporal);
         }
         temporal.clear();
         self.temporal = temporal;

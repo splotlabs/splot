@@ -335,8 +335,8 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
 
 impl<T: ReconSample> DeferredInterWalk<T> {
     /// Runs the frame's § 7.9 prelude, § 7.12 resolve pass and reconstruction,
-    /// publishes its motion field, and yields the walked frame the § 7.2 filter
-    /// chain consumes.
+    /// publishes its motion field as soon as the walk's last unit lands, and
+    /// yields the walked frame the § 7.2 filter chain consumes.
     ///
     /// The frame's quantizer scopes are reinstalled here, since the driver's
     /// thread-local state has already moved on to the next frame.
@@ -360,15 +360,15 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             quantizer,
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
-        let mut filter_inputs = parse.reconstruct(
+        let filter_inputs = parse.reconstruct(
             scratch,
             &sequence,
             &core,
             &ref_frame_idx,
             &reference,
             &mut workspace,
+            motion,
         )?;
-        motion.publish(filter_inputs.take_motion_field());
         Ok(setup.walked_frame(workspace, filter_inputs, core))
     }
 }

@@ -11,6 +11,7 @@
 //! temporal prelude, the § 7.12 resolve pass and reconstruction, which
 //! [`InterFrameParse::reconstruct`] runs once the driver reaches them.
 
+use super::super::MotionFieldHandle;
 use super::*;
 
 /// One inter frame after its entropy pass, owned so its reconstruction can run
@@ -126,7 +127,10 @@ impl InterFrameParse {
     /// reconstruction, and returns what the § 7.2 filter chain reads.
     ///
     /// The prelude reads the reference frames' published motion fields, so the
-    /// caller must have reconstructed every earlier frame in decode order.
+    /// caller must have reconstructed every earlier frame in decode order. This
+    /// frame's own field publishes through `motion_handle` as soon as its last
+    /// parse unit's records land, which is before the ordered pixel commit ends.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
         scratch: &mut InterDecodeScratch<T>,
@@ -135,6 +139,7 @@ impl InterFrameParse {
         ref_frame_idx: &[u32],
         reference: &InterReferenceState<T>,
         workspace: &mut CurrentFrameWorkspace<T>,
+        motion_handle: MotionFieldHandle,
     ) -> Result<InterFilterInputs> {
         let Self {
             parsed,
@@ -170,6 +175,7 @@ impl InterFrameParse {
             ref_frame_idx,
             workspace,
             motion_field,
+            motion_handle,
         )?;
         Ok(InterFilterInputs {
             records,
