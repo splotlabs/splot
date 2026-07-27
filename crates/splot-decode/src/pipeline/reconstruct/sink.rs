@@ -12,6 +12,7 @@ use splot_recon::{
 use crate::Result;
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaCoeffBlock, LumaPalette, LumaTransformTypeContext,
+    reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
 };
@@ -300,42 +301,86 @@ pub(crate) fn write_intra_prediction_block<T: ReconSample>(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let log2_width = u32::from(block_size.log2_width());
-    let log2_height = u32::from(block_size.log2_height());
-    if block.all_zero {
-        let result = workspace.write_rect_block(plane_id, x, y, block_size, &prediction);
-        workspace
-            .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
-        return result.map_err(Into::into);
-    }
-    let mut out = match workspace.take_intra_prediction_buffer(
-        IntraPredictionScratchBuffer::Secondary,
-        plane_id,
-        block_size.sample_count(),
-        T::default(),
-    ) {
-        Ok(out) => out,
-        Err(source) => {
-            workspace
-                .recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
-            return Err(source.into());
-        }
-    };
-    let reconstructed = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+    let result = commit_intra_prediction(
+        workspace,
         block,
         &prediction,
-        &mut out,
-        qindex,
         plane_id,
-        log2_width,
-        log2_height,
+        x,
+        y,
+        block_size,
+        qindex,
         use_tcq,
         luma_context,
         dpcm,
         bit_depth,
     );
     workspace.recycle_intra_prediction_buffer(IntraPredictionScratchBuffer::Primary, prediction);
-    let result = reconstructed.and_then(|()| {
+    result
+}
+
+/// Commits one intra block's prediction and residual into the current frame.
+///
+/// A coefficient-free block writes its prediction directly. Otherwise the block
+/// reconstructs write-through, straight into the frame rows, and only a block
+/// [`reconstruct_general_intra_coeff_block_rect_into_frame`] declines falls back
+/// to reconstructing through a staging buffer and copying that into the frame.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn commit_intra_prediction<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+) -> core::result::Result<(), GeneralIntraResidualError> {
+    if block.all_zero {
+        return workspace
+            .write_rect_block(plane_id, x, y, block_size, prediction)
+            .map_err(Into::into);
+    }
+    if reconstruct_general_intra_coeff_block_rect_into_frame(
+        workspace,
+        block,
+        prediction,
+        plane_id,
+        x,
+        y,
+        block_size,
+        qindex,
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )? {
+        return Ok(());
+    }
+    let mut out = workspace.take_intra_prediction_buffer(
+        IntraPredictionScratchBuffer::Secondary,
+        plane_id,
+        block_size.sample_count(),
+        T::default(),
+    )?;
+    let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        block,
+        prediction,
+        &mut out,
+        qindex,
+        plane_id,
+        u32::from(block_size.log2_width()),
+        u32::from(block_size.log2_height()),
+        use_tcq,
+        luma_context,
+        dpcm,
+        bit_depth,
+    )
+    .and_then(|()| {
         workspace
             .write_rect_block(plane_id, x, y, block_size, &out)
             .map_err(Into::into)

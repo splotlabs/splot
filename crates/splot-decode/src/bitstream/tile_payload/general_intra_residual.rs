@@ -64,6 +64,7 @@ pub(crate) use luma_transform_partition::{
 };
 use reconstruct::reconstruct_block_setup;
 pub(crate) use reconstruct::{
+    reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
 };

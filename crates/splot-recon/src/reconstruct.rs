@@ -67,6 +67,99 @@ pub fn reconstruct_add_residual<T: ReconSample>(
     }
 
     let max_sample = bit_depth.max_sample();
+    validate_prediction_range(prediction, max_sample)?;
+    add_residual_row(prediction, residual, i32::from(max_sample), out)
+}
+
+/// Applies the AV2 § 7.14.3 residual-addition step of one contiguous prediction
+/// block directly to strided destination rows.
+///
+/// `out` starts at the destination rectangle's first sample and spans through
+/// its final row, advancing `out_stride` samples per row; `prediction` and
+/// `residual` hold `width * height` samples in block raster order. Callers own
+/// the `out_stride >= width` geometry invariant, which the current-frame
+/// rectangle view establishes before building `out`.
+///
+/// This is [`reconstruct_add_residual`] without the block staging buffer: it
+/// writes `Clip1(prediction + residual)` where the copy-based path would first
+/// fill a block, range-scan it, and copy it row by row into the destination.
+/// Every input is validated before the first destination sample changes, and
+/// `Clip1` bounds each written value to the active bit depth, so no destination
+/// write can fail once those checks pass.
+///
+/// # Errors
+/// Returns [`ReconError::SampleTypeUnsupportedBitDepth`] if `T` cannot represent
+/// `bit_depth`, [`ReconError::ZeroDimension`] for an empty rectangle,
+/// [`ReconError::ReconstructLengthMismatch`] if `prediction` or `residual` is
+/// not `width * height` samples, [`ReconError::ArithmeticOverflow`] or
+/// [`ReconError::BufferLengthMismatch`] if the destination rows do not fit
+/// `out`, and [`ReconError::ReconstructPredictionOutOfRange`] if a prediction
+/// sample exceeds the active bit depth.
+pub(crate) fn add_block_residual_into_rows<T: ReconSample>(
+    prediction: &[T],
+    residual: &[i32],
+    bit_depth: BitDepth,
+    out: &mut [T],
+    out_stride: usize,
+    width: usize,
+    height: usize,
+) -> Result<()> {
+    validate_sample_type::<T>(bit_depth)?;
+    if width == 0 || height == 0 {
+        return Err(ReconError::ZeroDimension {
+            field: "residual destination rectangle",
+        });
+    }
+    debug_assert!(out_stride >= width);
+    let samples = width
+        .checked_mul(height)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "residual destination sample count",
+        })?;
+    if prediction.len() != samples || residual.len() != samples {
+        return Err(ReconError::ReconstructLengthMismatch {
+            prediction_len: prediction.len(),
+            residual_len: residual.len(),
+            out_len: samples,
+        });
+    }
+    let span = (height - 1)
+        .checked_mul(out_stride)
+        .and_then(|offset| offset.checked_add(width))
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "residual destination row span",
+        })?;
+    if out.len() < span {
+        return Err(ReconError::BufferLengthMismatch {
+            expected: span,
+            actual: out.len(),
+        });
+    }
+
+    let max_sample = bit_depth.max_sample();
+    validate_prediction_range(prediction, max_sample)?;
+    let max = i32::from(max_sample);
+    for row in 0..height {
+        let source = row * width;
+        let target = row * out_stride;
+        add_residual_row(
+            &prediction[source..source + width],
+            &residual[source..source + width],
+            max,
+            &mut out[target..target + width],
+        )?;
+    }
+    Ok(())
+}
+
+/// Rejects a prediction sample the active bit depth cannot represent, scanning
+/// `u16` storage a lane group at a time.
+fn validate_prediction_range<T: ReconSample>(prediction: &[T], max_sample: u16) -> Result<()> {
+    if let Some(samples) = T::u16_slice(prediction)
+        && !crate::workspace::u16_samples_exceed(samples, max_sample)
+    {
+        return Ok(());
+    }
     for (sample_index, &pred) in prediction.iter().enumerate() {
         let value = pred.to_u16();
         if value > max_sample {
@@ -77,8 +170,16 @@ pub fn reconstruct_add_residual<T: ReconSample>(
             });
         }
     }
+    Ok(())
+}
 
-    let max = i32::from(max_sample);
+/// Writes `Clip1(prediction + residual)` over one destination row.
+fn add_residual_row<T: ReconSample>(
+    prediction: &[T],
+    residual: &[i32],
+    max: i32,
+    out: &mut [T],
+) -> Result<()> {
     if let Some(prediction) = T::u16_slice(prediction)
         && let Some(out) = T::u16_slice_mut(out)
     {
