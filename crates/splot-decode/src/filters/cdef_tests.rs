@@ -5,7 +5,10 @@
 
 use super::*;
 use crate::test_support::yuv420_workspace as workspace_8bit;
-use splot_recon::{DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize, cdef_filter_sample};
+use splot_recon::{
+    CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
+    cdef_filter_sample,
+};
 
 fn constant_cdef_grid(
     mi_rows: usize,
@@ -52,13 +55,18 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
         .map_err(|_| CdefError::Workspace)?
         .storage_size()
         .height();
+    let format = workspace.info().pixel_format();
     let frame = cdef_stripe(
-        workspace,
+        DeblockedPlanes::frame(workspace).ok_or(CdefError::Workspace)?,
         Some(strengths),
         Some(grid),
         skip_grid,
         lossless_grid,
         mi_grid,
+        (
+            usize::from(format.subsampling_x()),
+            usize::from(format.subsampling_y()),
+        ),
         bit_depth,
         0,
         height,
@@ -515,12 +523,13 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
         .into_iter()
         .map(|(start, end)| {
             cdef_stripe(
-                &striped,
+                DeblockedPlanes::frame(&striped).unwrap(),
                 Some(&[params]),
                 Some(&grid),
                 None,
                 None,
                 (32, 32),
+                (1, 1),
                 BitDepth::Eight,
                 start,
                 end,

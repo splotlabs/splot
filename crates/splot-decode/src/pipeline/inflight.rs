@@ -90,6 +90,7 @@ impl<T: ReconSample> RefFrameSlot<T> {
         let progress = Arc::new(FrameProgress::new(info)?);
         let writer = FrameSlotWriter {
             cell: Arc::clone(&cell),
+            progress: Some(Arc::clone(&progress)),
             info,
         };
         let slot = Self {
@@ -210,8 +211,13 @@ impl<T: ReconSample> RefFrameSlot<T> {
 ///
 /// Dropping the writer settles the slot as failed, so a filter phase that
 /// unwinds can never leave the driver blocked on a slot nobody will publish.
+///
+/// Both endings also publish a terminal row watermark, so a consumer that
+/// stated a row threshold against the frame's progress is released whichever
+/// way the phase ended instead of waiting for a row that will never land.
 pub(crate) struct FrameSlotWriter<T: ReconSample> {
     cell: Arc<CompletionCell<SlotValue<T>>>,
+    progress: Option<Arc<FrameProgress<T>>>,
     info: DecodedFrameInfo,
 }
 
@@ -224,12 +230,19 @@ impl<T: ReconSample> FrameSlotWriter<T> {
     pub(crate) fn complete(self, frame: SharedFrame<T>) {
         debug_assert_eq!(frame.get().info(), self.info);
         let _ = self.cell.set(SlotValue::Ready(frame));
+        if let Some(progress) = self.progress.as_deref() {
+            progress.publish_terminal(true);
+        }
     }
 }
 
 impl<T: ReconSample> Drop for FrameSlotWriter<T> {
     fn drop(&mut self) {
+        let settled = self.cell.is_set();
         let _ = self.cell.set(SlotValue::Failed);
+        if !settled && let Some(progress) = self.progress.as_deref() {
+            progress.publish_terminal(false);
+        }
     }
 }
 

@@ -21,9 +21,9 @@
 //! observe a row the filter chain has not written.
 
 use core::num::NonZeroUsize;
-use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard};
 
+use splot_parallel::WatermarkCell;
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, ReconSample};
 
 use crate::error::{DecodeError, Result};
@@ -43,7 +43,8 @@ struct ProgressLayout {
 pub(crate) struct FrameProgress<T: ReconSample> {
     workspace: RwLock<Option<CurrentFrameWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
-    published_luma_rows: AtomicUsize,
+    published_luma_rows: WatermarkCell,
+    luma_height: usize,
     subsampling_y: usize,
 }
 
@@ -59,9 +60,24 @@ impl<T: ReconSample> FrameProgress<T> {
         Ok(Self {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
-            published_luma_rows: AtomicUsize::new(0),
+            published_luma_rows: WatermarkCell::new(),
+            luma_height: info.coded_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
         })
+    }
+
+    /// Publishes the terminal watermark of a filter phase that ended.
+    ///
+    /// `filtered` publishes the whole frame height, which every row threshold
+    /// satisfies with rows that are genuinely final; a phase that failed
+    /// publishes [`WatermarkCell::FAILED`] instead, so a consumer waiting on a
+    /// row it will never get is released and fails closed on the settled slot.
+    pub(crate) fn publish_terminal(&self, filtered: bool) {
+        self.published_luma_rows.publish(if filtered {
+            self.luma_height
+        } else {
+            WatermarkCell::FAILED
+        });
     }
 
     /// Installs the stripe geometry the filter phase will publish through.
@@ -110,12 +126,18 @@ impl<T: ReconSample> FrameProgress<T> {
             .checked_sub(1)
             .and_then(|last| layout.stripe_ends.get(last).copied())
             .unwrap_or_default();
-        self.published_luma_rows.store(rows, Ordering::Release);
+        drop(layout);
+        self.published_luma_rows.publish(rows);
     }
 
     /// The number of luma rows from the frame top whose samples are final.
+    ///
+    /// The watermark also carries the terminal values a finished or failed
+    /// filter phase publishes, so the row count is clamped to the frame: a
+    /// failed phase publishes [`WatermarkCell::FAILED`], which admits every
+    /// waiter but names no readable row.
     pub(crate) fn published_luma_rows(&self) -> usize {
-        self.published_luma_rows.load(Ordering::Acquire)
+        self.published_luma_rows.current().min(self.luma_height)
     }
 
     /// Borrows the published prefix of the frame's filtered samples.

@@ -4,12 +4,12 @@
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
     BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR,
-    CdefBlockFilter, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, PlaneId, PlaneRect,
-    ReconSample, cdef_direction, cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
+    CdefBlockFilter, CdefSampleTaps, CdefTap, PlaneId, PlaneRect, ReconSample, cdef_direction,
+    cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 
-use super::source::{FramePlane, StripePlane};
+use super::source::{DeblockedPlanes, FramePlane, StripePlane};
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
@@ -206,12 +206,13 @@ impl CdefBlockLookup<'_> {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cdef_stripe<'a, T: ReconSample>(
-    workspace: &'a CurrentFrameWorkspace<T>,
+    deblocked: DeblockedPlanes<'a, T>,
     strengths: Option<&[CdefFrameParams]>,
     grid: Option<&CdefUnitGrid>,
     skip_grid: Option<&CdefSkipGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     mi_size: (usize, usize),
+    subsampling: (usize, usize),
     bit_depth: BitDepth,
     luma_start: usize,
     luma_end: usize,
@@ -222,18 +223,16 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     }
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
-    let pixel_format = workspace.info().pixel_format();
-    let sub_x = usize::from(pixel_format.subsampling_x());
-    let sub_y = usize::from(pixel_format.subsampling_y());
-    let has_chroma = !pixel_format.is_monochrome();
-    let deblocked_y = FramePlane::new(workspace, PlaneId::Y).ok_or(CdefError::Workspace)?;
+    let (sub_x, sub_y) = subsampling;
+    let has_chroma = deblocked.u.is_some();
+    let deblocked_y = deblocked.y;
     let filtered_y =
         StripePlane::copy_from(deblocked_y, luma_start, luma_end).ok_or(CdefError::Geometry)?;
     let chroma_start = luma_start >> sub_y;
     let chroma_end = luma_end.div_ceil(1usize << sub_y);
     let (deblocked_u, deblocked_v, filtered_u, filtered_v) = if has_chroma {
-        let u = FramePlane::new(workspace, PlaneId::U).ok_or(CdefError::Workspace)?;
-        let v = FramePlane::new(workspace, PlaneId::V).ok_or(CdefError::Workspace)?;
+        let u = deblocked.u.ok_or(CdefError::Workspace)?;
+        let v = deblocked.v.ok_or(CdefError::Workspace)?;
         let filtered_u =
             StripePlane::copy_from(u, chroma_start, chroma_end).ok_or(CdefError::Geometry)?;
         let filtered_v =
@@ -520,11 +519,13 @@ fn gather_interior_pad<S: ReconSample>(
     w: usize,
     h: usize,
 ) -> Result<(), CdefError> {
-    match (S::u16_slice(snap.samples()), w) {
-        (Some(samples), 8) => {
+    let inside = y0 >= snap.origin_y() + CDEF_TAP_REACH && y0 + h + CDEF_TAP_REACH <= snap.end_y();
+    let window_y = inside.then(|| y0 - snap.origin_y());
+    match (S::u16_slice(snap.samples()), window_y, w) {
+        (Some(samples), Some(y0), 8) => {
             gather_interior_rows::<12>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
         }
-        (Some(samples), 4) => {
+        (Some(samples), Some(y0), 4) => {
             gather_interior_rows::<8>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
         }
         _ => {

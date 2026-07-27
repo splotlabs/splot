@@ -85,22 +85,24 @@ fn apply_luma_lr(
     blocks: &[WienerNsLrSourceBlock],
 ) {
     let cdef = crate::filters::cdef::cdef_stripe(
-        &sink.workspace,
+        crate::filters::source::DeblockedPlanes::frame(&sink.workspace).unwrap(),
         None,
         None,
         None,
         None,
         (4, 4),
+        (1, 1),
         splot_recon::BitDepth::Eight,
         0,
         16,
     )
     .unwrap();
     let filtered = sink
+        .stripe_chain()
         .apply_lr_stripe(core, ByteOffset::new(0), cdef, [blocks, &[], &[]], &[])
         .unwrap()
         .into_filtered();
-    WienerNsLrReconSink::publish_filter_stripe_to(
+    super::super::publish_filter_stripe_to(
         &mut sink.workspace,
         PlaneId::Y,
         &filtered.y,
@@ -113,12 +115,13 @@ fn apply_luma_lr(
 fn inactive_filter_planes_reuse_cdef_storage() {
     let sink = lr_sink(&[0; 16 * 16]);
     let cdef = crate::filters::cdef::cdef_stripe(
-        &sink.workspace,
+        crate::filters::source::DeblockedPlanes::frame(&sink.workspace).unwrap(),
         None,
         None,
         None,
         None,
         (4, 4),
+        (1, 1),
         splot_recon::BitDepth::Eight,
         0,
         16,
@@ -126,6 +129,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
     .unwrap();
     let cdef_ptr = cdef.filtered_y.samples().as_ptr();
     let filtered = sink
+        .stripe_chain()
         .apply_lr_stripe(
             &switchable_core(),
             ByteOffset::new(0),

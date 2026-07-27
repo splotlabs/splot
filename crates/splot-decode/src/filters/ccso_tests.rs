@@ -290,14 +290,7 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
 
         ccso_apply(
             &mut expected,
-            &PlaneView {
-                samples: &curr_luma,
-                width: luma_width,
-                frame_height: luma_height,
-                stride: luma_width,
-                origin_y: 0,
-                height: luma_height,
-            },
+            FramePlane::window(&curr_luma, luma_width, luma_height, 0, luma_height).unwrap(),
             plane,
             &prepared,
             &grid,
@@ -306,14 +299,7 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
         .unwrap();
         ccso_apply(
             &mut actual,
-            &PlaneView {
-                samples: &curr_luma,
-                width: luma_width,
-                frame_height: luma_height,
-                stride: luma_width,
-                origin_y: 0,
-                height: luma_height,
-            },
+            FramePlane::window(&curr_luma, luma_width, luma_height, 0, luma_height).unwrap(),
             plane,
             &prepared,
             &grid,

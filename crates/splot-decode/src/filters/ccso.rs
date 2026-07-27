@@ -120,29 +120,6 @@ struct CcsoPlaneConfig {
     offset_lut_simd: [[u8; 16]; 5],
 }
 
-struct PlaneView<'a, T> {
-    samples: &'a [T],
-    width: usize,
-    frame_height: usize,
-    stride: usize,
-    origin_y: usize,
-    height: usize,
-}
-
-impl<'a, T> PlaneView<'a, T> {
-    fn row(&self, y: usize) -> Option<&'a [T]> {
-        if y >= self.frame_height {
-            return None;
-        }
-        let row = y.checked_sub(self.origin_y)?;
-        if row >= self.height {
-            return None;
-        }
-        let start = row.checked_mul(self.stride)?;
-        self.samples.get(start..start.checked_add(self.width)?)
-    }
-}
-
 pub(crate) fn prepare_ccso(
     core: &FrameHeaderCore,
     grid: &CcsoUnitGrid,
@@ -254,7 +231,7 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
     config: &CcsoFrameConfig,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
 ) -> Result<(), CcsoError> {
-    let luma = frame_view(frame.deblocked(PlaneId::Y).ok_or(CcsoError::Workspace)?);
+    let luma = frame.deblocked(PlaneId::Y).ok_or(CcsoError::Workspace)?;
     let destinations = [
         Some(&mut frame.filtered_y),
         frame.filtered_u.as_mut(),
@@ -265,7 +242,7 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
             continue;
         };
         let destination = destination.ok_or(CcsoError::Workspace)?;
-        ccso_apply(destination, &luma, plane, prepared, grid, lossless_grid)?;
+        ccso_apply(destination, luma, plane, prepared, grid, lossless_grid)?;
     }
     Ok(())
 }
@@ -296,14 +273,8 @@ fn ccso_plane<T: ReconSample>(
     let mut filtered = StripePlane::copy_from(source, 0, height).ok_or(CcsoError::Workspace)?;
     ccso_apply(
         &mut filtered,
-        &PlaneView {
-            samples: curr_luma,
-            width: luma_width,
-            frame_height: luma_height,
-            stride: luma_width,
-            origin_y: 0,
-            height: luma_height,
-        },
+        FramePlane::window(curr_luma, luma_width, luma_height, 0, luma_height)
+            .ok_or(CcsoError::Workspace)?,
         plane,
         &prepared,
         grid,
@@ -327,26 +298,24 @@ fn ccso_plane<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 fn ccso_apply<L: ReconSample>(
     destination: &mut StripePlane,
-    curr_luma: &PlaneView<'_, L>,
+    curr_luma: FramePlane<'_, L>,
     plane: usize,
     config: &CcsoPlaneConfig,
     grid: &CcsoUnitGrid,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
 ) -> Result<(), CcsoError> {
     let destination_end_y = destination.end_y().ok_or(CcsoError::Geometry)?;
-    let luma_len = curr_luma
-        .height
+    let luma_len = (curr_luma.end_y() - curr_luma.origin_y())
         .saturating_sub(1)
-        .checked_mul(curr_luma.stride)
-        .and_then(|start| start.checked_add(curr_luma.width))
+        .checked_mul(curr_luma.stride())
+        .and_then(|start| start.checked_add(curr_luma.width()))
         .ok_or(CcsoError::Geometry)?;
     if destination.width() == 0
         || destination_end_y > destination.frame_height()
-        || curr_luma.width == 0
-        || curr_luma.origin_y != 0
-        || curr_luma.height != curr_luma.frame_height
-        || curr_luma.stride < curr_luma.width
-        || curr_luma.samples.len() < luma_len
+        || curr_luma.width() == 0
+        || curr_luma.end_y() > curr_luma.frame_height()
+        || curr_luma.stride() < curr_luma.width()
+        || curr_luma.samples().len() < luma_len
     {
         return Err(CcsoError::Geometry);
     }
@@ -354,7 +323,7 @@ fn ccso_apply<L: ReconSample>(
     let timer = crate::timing::start();
     let plane_id = plane_id(plane);
     let first_unit_y = destination.origin_y() / config.blk_h * config.blk_h;
-    let max_luma_x = curr_luma.width - 1;
+    let max_luma_x = curr_luma.width() - 1;
     let mut unit_count = 0usize;
     for y in (first_unit_y..destination_end_y).step_by(config.blk_h) {
         for x in (0..destination.width()).step_by(config.blk_w) {
@@ -528,17 +497,6 @@ fn ccso_simd_row<L: ReconSample>(
     x
 }
 
-fn frame_view<T: ReconSample>(plane: FramePlane<'_, T>) -> PlaneView<'_, T> {
-    PlaneView {
-        samples: plane.samples(),
-        width: plane.width(),
-        frame_height: plane.frame_height(),
-        stride: plane.stride(),
-        origin_y: 0,
-        height: plane.frame_height(),
-    }
-}
-
 fn ccso_offset_lut(
     params: &CcsoPlaneParams,
     expected_offsets: usize,
@@ -557,8 +515,11 @@ fn ccso_offset_lut(
     Ok(lut)
 }
 
-fn clamped_luma_row<'a, T>(curr_luma: &PlaneView<'a, T>, y: isize) -> Result<&'a [T], CcsoError> {
-    let sy = y.clamp(0, curr_luma.frame_height.saturating_sub(1) as isize) as usize;
+fn clamped_luma_row<T: ReconSample>(
+    curr_luma: FramePlane<'_, T>,
+    y: isize,
+) -> Result<&'_ [T], CcsoError> {
+    let sy = y.clamp(0, curr_luma.frame_height().saturating_sub(1) as isize) as usize;
     curr_luma.row(sy).ok_or(CcsoError::Geometry)
 }
 

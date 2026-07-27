@@ -61,4 +61,4 @@
 # Sharing the workspace rectangular-intra target resolution (block rectangle,
 # writable plane, active bit depth) across the five prediction entry points
 # lowered it 2664 -> 2640.
-max_deletable_lines = 2640
+max_deletable_lines = 2619

@@ -711,6 +711,7 @@ fn chroma_plane_pass_uses_yuv422_subsampling() {
         DeblockQuantDeltas::ZERO,
         BitDepth::Eight,
         PixelFormat::Yuv422,
+        &(0..1),
     )
     .unwrap();
     assert_eq!(pass.plane_sub_x, 1);
@@ -993,8 +994,6 @@ fn skip_suppresses_internal_tx_edge_filtering() {
             ctx,
             &edge_test_grid(true),
             EdgeContext {
-                plane: 0,
-                pass: 0,
                 row: 0,
                 col: 5,
                 plane_sub_x: 0,
@@ -1026,8 +1025,6 @@ fn skip_suppresses_internal_tx_edge_filtering() {
             ctx,
             &edge_test_grid(false),
             EdgeContext {
-                plane: 0,
-                pass: 0,
                 row: 0,
                 col: 5,
                 plane_sub_x: 0,
@@ -1058,8 +1055,6 @@ fn tile_boundary_filtering_obeys_sequence_flag() {
                 ctx,
                 &edge_test_grid(false),
                 EdgeContext {
-                    plane: 0,
-                    pass: 0,
                     row: 0,
                     col: 5,
                     plane_sub_x: 0,
@@ -1099,8 +1094,6 @@ fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
                 ctx,
                 &grid,
                 EdgeContext {
-                    plane: 0,
-                    pass: 0,
                     row: 0,
                     col: 5,
                     plane_sub_x: 0,
