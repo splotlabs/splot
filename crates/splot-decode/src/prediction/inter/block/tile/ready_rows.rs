@@ -85,16 +85,15 @@ fn release_ready_rows<Parser, Ready, Done, Commit, E>(
     gate: &impl Fn(&Ready) -> bool,
 ) -> bool {
     let mut released = false;
-    let mut scanned = state.deferred.len();
-    while scanned > 0 && state.ready.len() < state.ready_limit {
-        scanned -= 1;
-        let Some(row) = state.deferred.pop_front() else {
-            break;
-        };
-        if !state.settled && !gate(&row) {
-            state.deferred.push_back(row);
+    let mut scanned = 0;
+    while scanned < state.deferred.len() && state.ready.len() < state.ready_limit {
+        if !state.settled && !state.deferred.get(scanned).is_some_and(gate) {
+            scanned += 1;
             continue;
         }
+        let Some(row) = state.deferred.remove(scanned) else {
+            break;
+        };
         state.ready.push_back(row);
         state.max_pending = state.max_pending.max(state.ready.len());
         released = true;
