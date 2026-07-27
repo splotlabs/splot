@@ -105,6 +105,19 @@ fn release_ready_rows<Parser, Ready, Done, Commit, E>(
     released
 }
 
+/// Takes the next unit the ordered commit frontier is waiting for, so a commit
+/// task that has just published one unit keeps the frontier on its own stack
+/// instead of paying a task dispatch per unit.
+fn take_next_ordered_done<Parser, Ready, Done, Commit, E>(
+    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
+) -> Option<Done> {
+    if state.capacity_error || state.commit_error.is_some() {
+        return None;
+    }
+    let index = state.next_commit;
+    state.done.get_mut(index).and_then(Option::take)
+}
+
 fn take_ordered_commit<Parser, Ready, Done, Commit, E>(
     state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
 ) -> Option<(Done, Commit)> {
@@ -155,50 +168,72 @@ fn schedule_ready_rows<'scope, Parser, Work, Gate, Ready, Done, Commit, E>(
             (spawn_parser, ordered_commit)
         }
     };
-    if let Some((done, mut commit)) = ordered_commit {
+    if let Some((done, commit)) = ordered_commit {
         scope.spawn(move |scope| {
-            let result = commit(done);
-            {
-                let mut state = lock_ready_rows(coordinator);
-                state.commit = Some(commit);
-                state.commit_active = false;
-                match result {
-                    Ok(()) => {
-                        state.committed = state.committed.saturating_add(1);
-                        state.next_commit = state.next_commit.saturating_add(1);
+            let mut held = Some(commit);
+            let mut next = Some(done);
+            while let (Some(mut commit), Some(done)) = (held.take(), next.take()) {
+                let result = commit(done);
+                {
+                    let mut state = lock_ready_rows(coordinator);
+                    match result {
+                        Ok(()) => {
+                            state.committed = state.committed.saturating_add(1);
+                            state.next_commit = state.next_commit.saturating_add(1);
+                        }
+                        Err(error) => state.commit_error = Some(error),
                     }
-                    Err(error) => state.commit_error = Some(error),
+                    next = take_next_ordered_done(&mut state);
+                    if next.is_some() {
+                        held = Some(commit);
+                    } else {
+                        state.commit = Some(commit);
+                        state.commit_active = false;
+                    }
                 }
+                schedule_ready_rows(scope, coordinator, work, gate);
             }
-            schedule_ready_rows(scope, coordinator, work, gate);
         });
     }
     if spawn_parser {
         scope.spawn(move |scope| {
             let mut parser = lock_ready_rows(coordinator).parser.take();
-            let Some(parser_state) = parser.as_mut() else {
-                let mut state = lock_ready_rows(coordinator);
-                state.parser_active = false;
-                state.capacity_error = true;
-                return;
-            };
-            let (row, last) = match parser_state() {
-                ParserStep::More(row) => (row, false),
-                ParserStep::Last(row) => (row, true),
-            };
-            let overflow = {
-                let mut state = lock_ready_rows(coordinator);
-                state.parser = parser;
-                state.parser_active = false;
-                if last {
-                    crate::timing::report("walk_parse", state.parse_timer.take());
-                    state.drain_timer = crate::timing::start();
+            loop {
+                let Some(step) = parser.as_mut().map(|parser_state| parser_state()) else {
+                    let mut state = lock_ready_rows(coordinator);
+                    state.parser_active = false;
+                    state.capacity_error = true;
+                    return;
+                };
+                let (row, last) = match step {
+                    ParserStep::More(row) => (row, false),
+                    ParserStep::Last(row) => (row, true),
+                };
+                let (overflow, exhausted) = {
+                    let mut state = lock_ready_rows(coordinator);
+                    if last {
+                        crate::timing::report("walk_parse", state.parse_timer.take());
+                        state.drain_timer = crate::timing::start();
+                    }
+                    state.parser_done |= last;
+                    let overflow = admit_parsed_row(&mut state, row);
+                    let exhausted = last
+                        || overflow.is_some()
+                        || state.capacity_error
+                        || state.commit_error.is_some()
+                        || state.ready.len() >= state.ready_limit;
+                    if exhausted {
+                        state.parser = parser.take();
+                        state.parser_active = false;
+                    }
+                    (overflow, exhausted)
+                };
+                drop(overflow);
+                schedule_ready_rows(scope, coordinator, work, gate);
+                if exhausted {
+                    return;
                 }
-                state.parser_done |= last;
-                admit_parsed_row(&mut state, row)
-            };
-            drop(overflow);
-            schedule_ready_rows(scope, coordinator, work, gate);
+            }
         });
     }
     loop {
