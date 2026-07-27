@@ -223,8 +223,116 @@ impl TrajectoryState {
         &self.fields
     }
 
-    fn valid_grid_index(&self, y8: usize, x8: usize) -> usize {
-        y8 * self.width8 + x8
+    /// Splits every trajectory grid into `band_rows`-tall row bands.
+    ///
+    /// Bands are unit-aligned, and AV2 § 7.9.8 keeps each projected sample in
+    /// the TMVP unit row of the position it was sampled from, so the bands
+    /// partition every write the § 7.9.3 scan makes. Returns `None` when a grid
+    /// is not sized to this state's geometry, leaving the caller whole-field.
+    pub(super) fn bands(&mut self, band_rows: usize) -> Option<Vec<TrajectoryBand<'_>>> {
+        let Self {
+            fields,
+            positions,
+            projection_offsets,
+            step,
+            step_mask,
+            unit_size8,
+            unit_mask,
+            unit_shift,
+            width8,
+            height8,
+        } = self;
+        let (width8, height8) = (*width8, *height8);
+        let total = width8.checked_mul(height8)?;
+        let stride = band_rows.checked_mul(width8)?;
+        if band_rows == 0
+            || projection_offsets.len() != total
+            || fields.iter().any(|field| field.cells.len() != total)
+            || positions.iter().any(|slots| slots.len() != total)
+        {
+            return None;
+        }
+        let mut bands = projection_offsets
+            .chunks_mut(stride.max(1))
+            .enumerate()
+            .map(|(index, projection_offsets)| TrajectoryBand {
+                fields: Vec::with_capacity(fields.len()),
+                positions: Vec::with_capacity(positions.len()),
+                projection_offsets,
+                row_base: index * band_rows,
+                step: *step,
+                step_mask: *step_mask,
+                unit_size8: *unit_size8,
+                unit_mask: *unit_mask,
+                unit_shift: *unit_shift,
+                width8,
+                height8,
+            })
+            .collect::<Vec<_>>();
+        for field in fields.iter_mut() {
+            for (band, cells) in bands.iter_mut().zip(field.cells.chunks_mut(stride.max(1))) {
+                band.fields.push(cells);
+            }
+        }
+        for slots in positions.iter_mut() {
+            for (band, slots) in bands.iter_mut().zip(slots.chunks_mut(stride.max(1))) {
+                band.positions.push(slots);
+            }
+        }
+        Some(bands)
+    }
+
+    #[cfg(test)]
+    pub(super) fn whole_band(&mut self) -> Option<TrajectoryBand<'_>> {
+        let height8 = self.height8;
+        self.bands(height8).and_then(|mut bands| bands.pop())
+    }
+
+    pub(super) fn fill_gaps(&mut self) {
+        if self.step != 2 {
+            return;
+        }
+        for field in &mut self.fields {
+            fill_field_gaps(field, self.unit_size8);
+        }
+    }
+}
+
+/// One unit-aligned row band of a [`TrajectoryState`].
+///
+/// Geometry stays whole-frame — projections are sampled against the full grid
+/// — while the storage slices cover `row_base .. row_base + band_rows` only.
+pub(super) struct TrajectoryBand<'a> {
+    fields: Vec<&'a mut [Mv]>,
+    positions: Vec<&'a mut [TrajectoryPositions]>,
+    projection_offsets: &'a mut [i32],
+    row_base: usize,
+    step: usize,
+    step_mask: usize,
+    unit_size8: usize,
+    unit_mask: usize,
+    unit_shift: u32,
+    width8: usize,
+    height8: usize,
+}
+
+impl TrajectoryBand<'_> {
+    fn band_index(&self, y8: usize, x8: usize) -> Option<usize> {
+        y8.checked_sub(self.row_base)
+            .map(|row| row * self.width8 + x8)
+    }
+
+    fn positions_at(&self, reference: usize, at: Position) -> Option<&TrajectoryPositions> {
+        let index = self.band_index(at.0, at.1)?;
+        self.positions.get(reference)?.get(index)
+    }
+
+    fn trajectory_mv(&self, reference: usize, index: usize) -> Mv {
+        self.fields
+            .get(reference)
+            .and_then(|field| field.get(index))
+            .copied()
+            .unwrap_or(INVALID_TRAJECTORY_MV)
     }
 
     fn set_position_at(
@@ -249,12 +357,9 @@ impl TrajectoryState {
     }
 
     fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
-        self.set_position_at(
-            reference,
-            self.valid_grid_index(at.0, at.1),
-            phase,
-            position,
-        );
+        if let Some(index) = self.band_index(at.0, at.1) {
+            self.set_position_at(reference, index, phase, position);
+        }
     }
 
     fn phase(&self, x8: usize) -> usize {
@@ -299,8 +404,12 @@ impl TrajectoryState {
     }
 
     fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
-        if let Some(field) = self.fields.get_mut(reference) {
-            field.set_at(index, clamp_mv(mv));
+        if let Some(slot) = self
+            .fields
+            .get_mut(reference)
+            .and_then(|field| field.get_mut(index))
+        {
+            *slot = clamp_mv(mv);
         }
     }
 
@@ -321,27 +430,31 @@ impl TrajectoryState {
         {
             return None;
         }
-        let source_index = self.valid_grid_index(y8, x8);
-        let source_positions = self.positions[source][source_index];
-        let source_mask = source_positions.mask;
+        let source_mask = self
+            .positions_at(source, (y8, x8))
+            .map_or(0, |slots| slots.mask);
         if source_mask != 0 {
-            let phases = source_positions.phases;
+            let phases = self
+                .positions_at(source, (y8, x8))
+                .map_or(TrajectoryPositions::EMPTY.phases, |slots| slots.phases);
             for (phase, packed) in phases.into_iter().enumerate() {
                 if source_mask & (1 << phase) == 0 {
                     continue;
                 }
                 let trajectory = (packed.y as usize, packed.x as usize);
                 let bounds = self.position_bounds(trajectory);
-                let traj_index = self.valid_grid_index(trajectory.0, trajectory.1);
-                if self.fields[end].cells[traj_index] != INVALID_TRAJECTORY_MV {
+                let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
+                    continue;
+                };
+                if self.trajectory_mv(end, traj_index) != INVALID_TRAJECTORY_MV {
                     continue;
                 }
-                let source_mv = self.fields[source].cells[traj_index];
+                let source_mv = self.trajectory_mv(source, traj_index);
                 if source_mv == INVALID_TRAJECTORY_MV {
                     continue;
                 }
                 let end_mv = add_mv(source_mv, mv);
-                self.fields[end].cells[traj_index] = clamp_mv(end_mv);
+                self.set_field_at(end, traj_index, end_mv);
                 if let Some(position) = self
                     .sampled_position(trajectory.0, trajectory.1, end_mv)
                     .filter(|&position| Self::position_allowed(position, bounds))
@@ -352,13 +465,18 @@ impl TrajectoryState {
         }
 
         let end_position = self.sampled_position(y8, x8, mv)?;
-        let end_index = self.valid_grid_index(end_position.0, end_position.1);
-        let end_positions = self.positions[end][end_index];
-        let end_mask = end_positions.mask;
+        if self.unit_base(end_position.0) != self.unit_base(y8) {
+            return Some(end_position);
+        }
+        let end_mask = self
+            .positions_at(end, end_position)
+            .map_or(0, |slots| slots.mask);
         if end_mask == 0 {
             return Some(end_position);
         }
-        let phases = end_positions.phases;
+        let phases = self
+            .positions_at(end, end_position)
+            .map_or(TrajectoryPositions::EMPTY.phases, |slots| slots.phases);
         for (phase, packed) in phases.into_iter().enumerate() {
             if end_mask & (1 << phase) == 0 {
                 continue;
@@ -368,16 +486,18 @@ impl TrajectoryState {
             if !Self::position_allowed((y8, x8), bounds) {
                 continue;
             }
-            let traj_index = self.valid_grid_index(trajectory.0, trajectory.1);
-            if self.fields[source].cells[traj_index] != INVALID_TRAJECTORY_MV {
+            let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
+                continue;
+            };
+            if self.trajectory_mv(source, traj_index) != INVALID_TRAJECTORY_MV {
                 continue;
             }
-            let end_mv = self.fields[end].cells[traj_index];
+            let end_mv = self.trajectory_mv(end, traj_index);
             if end_mv == INVALID_TRAJECTORY_MV {
                 continue;
             }
             let source_mv = subtract_mv(end_mv, mv);
-            self.fields[source].cells[traj_index] = clamp_mv(source_mv);
+            self.set_field_at(source, traj_index, source_mv);
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
                 .filter(|&position| Self::position_allowed(position, bounds))
@@ -457,8 +577,10 @@ impl TrajectoryState {
         if y8 >= self.height8 || x8 >= self.width8 {
             return;
         }
-        let index = self.valid_grid_index(position.0, position.1);
-        let Some(recorded_offset) = self.projection_offsets.get_mut(index) else {
+        let Some(recorded_offset) = self
+            .band_index(position.0, position.1)
+            .and_then(|index| self.projection_offsets.get_mut(index))
+        else {
             return;
         };
         let replace = *recorded_offset == INVALID_PROJECTION_OFFSET
@@ -468,6 +590,9 @@ impl TrajectoryState {
         }
         *recorded_offset = reference_offset;
         let phase = self.phase(position.1);
+        let Some(index) = self.band_index(position.0, position.1) else {
+            return;
+        };
         self.set_position(source, (y8, x8), phase, position);
         self.set_field_at(
             source,
@@ -494,15 +619,6 @@ impl TrajectoryState {
             .filter(|&target_position| Self::position_allowed(target_position, bounds))
         {
             self.set_position(end, target_position, phase, position);
-        }
-    }
-
-    pub(super) fn fill_gaps(&mut self) {
-        if self.step != 2 {
-            return;
-        }
-        for field in &mut self.fields {
-            fill_field_gaps(field, self.unit_size8);
         }
     }
 }
@@ -602,7 +718,17 @@ mod tests {
     #[test]
     fn direct_projection_records_reference_specific_trajectories() {
         let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
-        state.observe_projection(1, Some(0), None, 1, 1, Mv { row: 16, col: 32 }, 2, 4, false);
+        state.whole_band().unwrap().observe_projection(
+            1,
+            Some(0),
+            None,
+            1,
+            1,
+            Mv { row: 16, col: 32 },
+            2,
+            4,
+            false,
+        );
 
         assert_eq!(state.fields[1].cell(1, 1), Some(Mv { row: -8, col: -16 }));
         assert_eq!(state.fields[0].cell(1, 1), Some(Mv { row: 8, col: 16 }));
@@ -612,7 +738,10 @@ mod tests {
     fn zero_offset_projection_records_the_source_trajectory() {
         let mut state = TrajectoryState::new((8, 8), 1, 1, 8).unwrap();
 
-        state.observe_projection(0, None, None, 1, 1, Mv::ZERO, 2, 0, false);
+        state
+            .whole_band()
+            .unwrap()
+            .observe_projection(0, None, None, 1, 1, Mv::ZERO, 2, 0, false);
 
         assert_eq!(state.fields[0].cell(1, 1), Some(Mv::ZERO));
     }
@@ -620,7 +749,7 @@ mod tests {
     #[test]
     fn direct_projection_checks_source_against_destination_unit() {
         let mut state = TrajectoryState::new((4, 32), 2, 1, 8).unwrap();
-        state.observe_projection(
+        state.whole_band().unwrap().observe_projection(
             0,
             Some(1),
             None,
@@ -639,8 +768,21 @@ mod tests {
     #[test]
     fn intersecting_projection_extends_the_reference_path() {
         let mut state = TrajectoryState::new((8, 8), 3, 1, 8).unwrap();
-        state.observe_projection(0, Some(1), None, 1, 1, Mv { row: 0, col: 64 }, 2, 4, false);
-        state.check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
+        state.whole_band().unwrap().observe_projection(
+            0,
+            Some(1),
+            None,
+            1,
+            1,
+            Mv { row: 0, col: 64 },
+            2,
+            4,
+            false,
+        );
+        state
+            .whole_band()
+            .unwrap()
+            .check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
 
         assert_eq!(state.fields[2].cell(1, 1), Some(Mv { row: 0, col: 96 }));
     }
