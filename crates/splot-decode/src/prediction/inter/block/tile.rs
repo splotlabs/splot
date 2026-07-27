@@ -331,6 +331,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             pending_inter,
             residual_blocks,
             temporal,
+            flag_log,
             filter_records,
         } = buffers.unwrap_or_default();
         self.filter_records = filter_records;
@@ -342,6 +343,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             pending_inter,
             residual_blocks,
             temporal,
+            flag_log,
             filter_records: TileFilterRecords::default(),
             terminal: None,
         };
@@ -464,6 +466,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             return ParserStep::Last(recon_row);
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
+        self.mv_grid.take_flag_log(&mut recon_row.flag_log);
         self.entry_capacity = self.entry_capacity.max(recon_row.entries.capacity());
         self.superblock_capacity = self
             .superblock_capacity
@@ -689,6 +692,9 @@ pub(super) struct ReconRow {
     pub(super) pending_inter: Vec<PendingInterBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
+    /// The unit's flag-plane publications, replayed by a resolve pass that runs
+    /// on a grid of its own. Empty unless the parser was logging.
+    pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
     pub(super) terminal: Option<crate::DecodeError>,
 }
@@ -701,6 +707,7 @@ pub(super) struct ReconRowBuffers {
     pub(super) pending_inter: Vec<PendingInterBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
+    pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
 }
 
@@ -752,6 +759,19 @@ impl ReconRowBufferPool {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(buffers);
     }
+}
+
+/// Takes one recycled set of per-unit buffers from the process-wide retention.
+///
+/// The parse-ahead path holds every unit of a frame at once, so it cannot draw
+/// from a per-tile pool; it borrows from the same retention the fused walk's
+/// pools fill and returns each set as its unit commits.
+fn take_retained_recon_row_buffers() -> ReconRowBuffers {
+    RETAINED_RECON_ROW_BUFFERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop()
+        .unwrap_or_default()
 }
 
 impl Drop for ReconRowBufferPool {
@@ -979,6 +999,35 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     row
 }
 
+/// The prepass state one tile carries across calls: the out-of-order surface
+/// its precompute writes into, the block-decoded snapshot that precompute
+/// reads, and the ordered commit frontier.
+///
+/// A fused walk runs one call per tile and could keep these on its stack; a
+/// batched driver resumes the same tile once its next unit's references have
+/// been published, and must find the frontier exactly where it left it.
+struct PrepassCursor<T: ReconSample> {
+    shadow: CurrentFrameWorkspace<T>,
+    prepass_block_decoded: TileBlockDecodedState,
+    recon_ordinal: usize,
+    current_block_decoded_superblock: Option<[usize; 2]>,
+}
+
+impl<T: ReconSample> PrepassCursor<T> {
+    /// Opens the cursor for one tile, before any unit is committed.
+    fn new(
+        workspace: &CurrentFrameWorkspace<T>,
+        block_decoded: &TileBlockDecodedState,
+    ) -> Result<Self> {
+        Ok(Self {
+            shadow: CurrentFrameWorkspace::new(workspace.info(), T::default())?,
+            prepass_block_decoded: block_decoded.clone(),
+            recon_ordinal: 0,
+            current_block_decoded_superblock: None,
+        })
+    }
+}
+
 /// Everything one superblock prepass commits into.
 struct PrepassSinks<'a, T: ReconSample> {
     ordered: &'a mut deferred_recon::InterReconScratch<T>,
@@ -999,6 +1048,7 @@ struct PrepassSinks<'a, T: ReconSample> {
 fn run_superblock_prepass<T: ReconSample, P>(
     mut next_unit: P,
     rects: &[splot_recon::PlaneRect],
+    done_limit: usize,
     tile_offset: ByteOffset,
     context: &TileDecodeContext<'_, T>,
     temporal_context: &TemporalMvContext,
@@ -1006,24 +1056,20 @@ fn run_superblock_prepass<T: ReconSample, P>(
     row_gate: &row_gate::RowReferenceGate<'_, T>,
     row_buffers: &ReconRowBufferPool,
     workers: &InterReconScratchPool<T>,
+    cursor: &mut PrepassCursor<T>,
     sinks: &mut PrepassSinks<'_, T>,
 ) -> Result<()>
 where
     P: FnMut() -> ParserStep<ReconRow> + Send,
 {
-    let done_limit = rects.len().checked_add(1).ok_or_else(|| {
-        inter_cap!(
-            "inter_superblock_done_limit_overflow",
-            tile_offset,
-            "inter.superblock.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
-    let mut shadow = CurrentFrameWorkspace::new(sinks.workspace.info(), T::default())?;
+    let PrepassCursor {
+        shadow,
+        prepass_block_decoded,
+        recon_ordinal,
+        current_block_decoded_superblock,
+    } = cursor;
     let mut surfaces = shadow.rect_surfaces(rects)?.into_iter();
-    let prepass_block_decoded = sinks.block_decoded.clone();
-    let mut recon_ordinal = 0usize;
-    let mut current_block_decoded_superblock = None;
+    let prepass_block_decoded = &*prepass_block_decoded;
     let parse_ready = || admit_ready_row(next_unit(), &mut surfaces, row_gate);
     let timer = crate::timing::start();
     let tally = crate::timing::WorkerTally::new();
@@ -1035,7 +1081,7 @@ where
                 precompute_recon_row(
                     ready,
                     scratch,
-                    &prepass_block_decoded,
+                    prepass_block_decoded,
                     quantizer,
                     temporal_context,
                     context.reference,
@@ -1058,13 +1104,13 @@ where
             }
             let buffers = pixel_commit::replay_recon_row(
                 ready.row,
-                &mut recon_ordinal,
+                recon_ordinal,
                 sinks.decoded_any,
                 quantizer,
                 sinks.ordered,
                 sinks.workspace,
                 sinks.block_decoded,
-                &mut current_block_decoded_superblock,
+                current_block_decoded_superblock,
                 sinks.motion_field,
                 sinks.frame_filter_records,
                 temporal_context,
@@ -1135,6 +1181,353 @@ where
     Ok(())
 }
 
+/// One tile's units after the entropy pass, owned so the § 7.12 resolve pass
+/// and the reconstruction pass can run once the driver has moved on.
+///
+/// The parse pass reads no reference sample and no projected motion field, so
+/// everything here is settled by the bitstream alone; what is still owed is the
+/// resolve pass (which needs the frame's temporal prelude) and reconstruction
+/// (which needs reference pixels).
+pub(super) struct ParsedTile {
+    tile_offset: ByteOffset,
+    mi_rows: Range<usize>,
+    mi_cols: Range<usize>,
+    rows: Vec<ReconRow>,
+    block_decoded: TileBlockDecodedState,
+    /// `None` when the unit stream ended early, exactly the case in which the
+    /// fused walk never reached its own `into_output`.
+    output: Option<TileParserOutput>,
+}
+
+impl ParsedTile {
+    /// How many unit buffers the tile is holding, which bounds the split
+    /// path's per-frame memory.
+    pub(super) fn unit_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Folds the tile's walk-parsed filter grids and loop-restoration records
+    /// into the frame-level state, which the entropy pass alone settles.
+    ///
+    /// The fused walk does this once the tile's reconstruction is done; a split
+    /// walk does it at the end of the parse pass instead, so the driver already
+    /// holds the frame's filter grids while the reconstruction is still owed.
+    /// The two write disjoint parts of the frame's records.
+    pub(super) fn merge_filter_state(
+        &mut self,
+        frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+        cdef_state: &mut CdefState,
+        gdf_state: &mut GdfState,
+        ccso_state: &mut CcsoState,
+    ) -> Result<()> {
+        let tile_offset = self.tile_offset;
+        let output = self.output.take().ok_or_else(|| {
+            inter_cap!(
+                "inter_parsed_tile_output",
+                tile_offset,
+                "inter.row.parser_output",
+                SPEC_MODE_INFO
+            )
+        })?;
+        merge_tile_filter_state(
+            cdef_state,
+            gdf_state,
+            ccso_state,
+            &output,
+            self.mi_rows.clone(),
+            self.mi_cols.clone(),
+            tile_offset,
+        )?;
+        append_lr_records(
+            &mut frame_filter_records.lr_source_blocks,
+            &mut frame_filter_records.lr_unit_filters,
+            output.active_source_blocks,
+            output.unit_filters,
+        )
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_lr_filter_index_split",
+                tile_offset,
+                "inter.tile.lr_unit_filter_index",
+                SPEC_MODE_INFO
+            )
+        })
+    }
+}
+
+/// How many parse units one tile yields, plus the terminating empty unit.
+fn tile_unit_capacity(
+    mi_rows: &Range<usize>,
+    mi_cols: &Range<usize>,
+    params: &TileWalkParams,
+    granularity: ParserGranularity,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    let sb_rows = mi_rows
+        .end
+        .min(params.mi_rows)
+        .saturating_sub(mi_rows.start)
+        .div_ceil(params.sb_h4);
+    let sb_cols = mi_cols
+        .end
+        .min(params.mi_cols)
+        .saturating_sub(mi_cols.start)
+        .div_ceil(params.sb_h4);
+    let units = match granularity {
+        ParserGranularity::Row => sb_rows,
+        ParserGranularity::Superblock => sb_rows.saturating_mul(sb_cols),
+    };
+    units.checked_add(1).ok_or_else(|| {
+        inter_cap!(
+            "inter_parsed_row_capacity",
+            tile_offset,
+            "inter.tile.task_capacity",
+            SPEC_MODE_INFO
+        )
+    })
+}
+
+/// Runs one tile's entropy pass to the end, keeping every unit.
+///
+/// Each unit carries the flag-plane publications it made, so a resolve pass on
+/// another grid replays exactly what the fused walk published before resolving
+/// the same unit.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn parse_tile_units<T: ReconSample>(
+    tile: &mut DecodeTileWorkUnit<'_>,
+    params: &TileWalkParams,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    cdef_state: &CdefState,
+    gdf_state: &GdfState,
+    ccso_state: &CcsoState,
+    superblock_units: bool,
+) -> Result<ParsedTile> {
+    let context = &params.context(sequence, core, reference, ref_frame_idx);
+    let granularity = if superblock_units {
+        ParserGranularity::Superblock
+    } else {
+        ParserGranularity::Row
+    };
+    let tile_offset = tile.tile_byte_span().start;
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    let block_decoded = tile_block_decoded(tile, context)?;
+    let capacity = tile_unit_capacity(&mi_rows, &mi_cols, params, granularity, tile_offset)?;
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(capacity).map_err(|_| {
+        inter_cap!(
+            "inter_parsed_row_allocation",
+            tile_offset,
+            "inter.tile.task_capacity",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let mut parser = TileParser::new(
+        tile,
+        context,
+        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+    )?;
+    parser.mv_grid.log_flags();
+    let started = crate::timing::start();
+    loop {
+        let step = parser.next_unit(
+            context,
+            granularity,
+            Some(take_retained_recon_row_buffers()),
+        );
+        let (row, last) = match step {
+            ParserStep::More(row) => (row, false),
+            ParserStep::Last(row) => (row, true),
+        };
+        rows.push(row);
+        if last {
+            break;
+        }
+    }
+    crate::timing::report("pass1_parse", started);
+    Ok(ParsedTile {
+        tile_offset,
+        mi_rows,
+        mi_cols,
+        rows,
+        block_decoded,
+        output: parser.into_output().ok(),
+    })
+}
+
+/// Runs one parsed tile's AV2 § 7.12 resolve pass on a grid of its own.
+///
+/// The pass replays each unit's flag plane before resolving it, so the § 7.12
+/// probes see the same published-but-unresolved frontier the fused walk saw,
+/// and shares nothing with the parser's grid. A unit that fails ends the unit
+/// stream exactly where the fused walk's would have: the units behind it were
+/// never resolved there, so they are dropped here.
+fn resolve_parsed_tile<T: ReconSample>(
+    parsed: &mut ParsedTile,
+    context: &TileDecodeContext<'_, T>,
+    temporal_context: &TemporalMvContext,
+) -> Result<()> {
+    let started = crate::timing::start();
+    let tile_offset = parsed.tile_offset;
+    let mut grid = NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_parsed_mv_grid",
+                tile_offset,
+                "inter.mv_grid",
+                SPEC_MODE_INFO
+            )
+        })?;
+    let mut resolve_state = TileResolveState::new(context.sequence);
+    let mut resolved = 0usize;
+    for row in &mut parsed.rows {
+        grid.replay_flag_log(&row.flag_log);
+        resolved += 1;
+        let outcome =
+            resolve_state.resolve_unit(&mut grid, context, temporal_context, row, tile_offset);
+        if let Err(error) = outcome {
+            row.terminal = Some(error);
+            break;
+        }
+        if row.terminal.is_some() {
+            break;
+        }
+    }
+    parsed.rows.truncate(resolved);
+    crate::timing::report("pass2_resolve", started);
+    Ok(())
+}
+
+/// Reconstructs one parsed tile: its § 7.12 resolve pass, then the same
+/// row-gated prepass and ordered commit the fused walk runs.
+///
+/// This is the tail of a walk whose entropy pass ran elsewhere, so it takes the
+/// frame-level state by reference exactly as [`decode_tiles`] does.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
+    scratch: &mut TileDecodeScratch<T>,
+    frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    mut parsed: ParsedTile,
+    params: &TileWalkParams,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    temporal_context: &TemporalMvContext,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    workspace: &mut CurrentFrameWorkspace<T>,
+    mut motion_field: TemporalMotionField,
+) -> Result<TemporalMotionField> {
+    scratch.workers.ensure_workers(
+        splot_parallel::current_pool_width()
+            .saturating_sub(1)
+            .max(1),
+    );
+    let TileDecodeScratch { ordered, workers } = scratch;
+    let context = params.context(sequence, core, reference, ref_frame_idx);
+    let tile_offset = parsed.tile_offset;
+    let row_gate = row_gate::RowReferenceGate::new(
+        reference,
+        core,
+        ref_frame_idx,
+        workspace.info(),
+        temporal_context,
+    );
+    let quantizer = FrameQuantizerSnapshot::capture();
+    resolve_parsed_tile(&mut parsed, &context, temporal_context)?;
+    let rects = superblock_luma_rects(
+        &parsed.mi_rows,
+        &parsed.mi_cols,
+        workspace,
+        params.sb_h4,
+        tile_offset,
+    )?;
+    let done_limit = parsed.rows.len().checked_add(1).ok_or_else(|| {
+        inter_cap!(
+            "inter_parsed_done_limit_overflow",
+            tile_offset,
+            "inter.superblock.task_capacity",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let mut cursor = PrepassCursor::new(workspace, &parsed.block_decoded)?;
+    let mut block_decoded = parsed.block_decoded.clone();
+    let row_buffers = ReconRowBufferPool::new(0);
+    let mut decoded_any = false;
+    let mut units = core::mem::take(&mut parsed.rows).into_iter();
+    let mut fallback_ordinal = 0usize;
+    let next_unit = || {
+        let Some(row) = units.next() else {
+            fallback_ordinal = fallback_ordinal.saturating_add(1);
+            return ParserStep::Last(terminal_recon_row(
+                fallback_ordinal,
+                inter_cap!(
+                    "inter_parsed_unit_stream",
+                    tile_offset,
+                    "inter.row.parser_state",
+                    SPEC_MODE_INFO
+                ),
+            ));
+        };
+        fallback_ordinal = row.ordinal.saturating_add(1);
+        if units.len() == 0 {
+            ParserStep::Last(row)
+        } else {
+            ParserStep::More(row)
+        }
+    };
+    run_superblock_prepass(
+        next_unit,
+        &rects,
+        done_limit,
+        tile_offset,
+        &context,
+        temporal_context,
+        &quantizer,
+        &row_gate,
+        &row_buffers,
+        workers,
+        &mut cursor,
+        &mut PrepassSinks {
+            ordered,
+            workspace,
+            block_decoded: &mut block_decoded,
+            motion_field: &mut motion_field,
+            frame_filter_records,
+            decoded_any: &mut decoded_any,
+        },
+    )?;
+    if !decoded_any {
+        return Err(inter_missing!(
+            "inter_parsed_no_decoded_block",
+            tile_offset,
+            "inter.block",
+            SPEC_MODE_INFO
+        ));
+    }
+    Ok(motion_field)
+}
+
+/// One unit carrying nothing but the diagnostic that ends its tile's stream.
+fn terminal_recon_row(ordinal: usize, terminal: crate::DecodeError) -> ReconRow {
+    ReconRow {
+        ordinal,
+        superblocks: Vec::new(),
+        entries: Vec::new(),
+        motion_queue: Vec::new(),
+        pending_inter: Vec::new(),
+        residual_blocks: Vec::new(),
+        temporal: Vec::new(),
+        flag_log: Vec::new(),
+        filter_records: TileFilterRecords::default(),
+        terminal: Some(terminal),
+    }
+}
+
 struct PreparedTile {
     tile_num: u32,
     tile_offset: ByteOffset,
@@ -1178,26 +1571,34 @@ fn tile_luma_rect<T: ReconSample>(
     tile: &DecodeTileWorkUnit<'_>,
     workspace: &CurrentFrameWorkspace<T>,
 ) -> Result<splot_recon::PlaneRect> {
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    luma_rect(&mi_rows, &mi_cols, workspace)
+}
+
+fn luma_rect<T: ReconSample>(
+    mi_rows: &Range<usize>,
+    mi_cols: &Range<usize>,
+    workspace: &CurrentFrameWorkspace<T>,
+) -> Result<splot_recon::PlaneRect> {
     let storage = workspace.plane(PlaneId::Y)?.storage_size();
-    let mi_rows = tile.mi_row_range();
-    let mi_cols = tile.mi_col_range();
-    let x = (mi_cols.start as usize)
+    let x = (mi_cols.start)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma x",
         })?;
-    let y = (mi_rows.start as usize)
+    let y = (mi_rows.start)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma y",
         })?;
-    let right = (mi_cols.end as usize)
+    let right = (mi_cols.end)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma right edge",
         })?
         .min(storage.width());
-    let bottom = (mi_rows.end as usize)
+    let bottom = (mi_rows.end)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma bottom edge",
@@ -1216,8 +1617,25 @@ fn tile_superblock_luma_rects<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     sb_h4: usize,
 ) -> Result<Vec<splot_recon::PlaneRect>> {
-    let tile_offset = tile.tile_byte_span().start;
-    let bounds = tile_luma_rect(tile, workspace)?;
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    superblock_luma_rects(
+        &mi_rows,
+        &mi_cols,
+        workspace,
+        sb_h4,
+        tile.tile_byte_span().start,
+    )
+}
+
+fn superblock_luma_rects<T: ReconSample>(
+    mi_rows: &Range<usize>,
+    mi_cols: &Range<usize>,
+    workspace: &CurrentFrameWorkspace<T>,
+    sb_h4: usize,
+    tile_offset: ByteOffset,
+) -> Result<Vec<splot_recon::PlaneRect>> {
+    let bounds = luma_rect(mi_rows, mi_cols, workspace)?;
     let side = sb_h4.checked_mul(4).ok_or_else(|| {
         inter_cap!(
             "inter_superblock_surface_size",
@@ -1642,9 +2060,19 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     )
                 })
             };
+            let mut cursor = PrepassCursor::new(workspace, &block_decoded)?;
+            let done_limit = rects.len().checked_add(1).ok_or_else(|| {
+                inter_cap!(
+                    "inter_superblock_done_limit_overflow",
+                    tile_offset,
+                    "inter.superblock.task_capacity",
+                    SPEC_MODE_INFO
+                )
+            })?;
             run_superblock_prepass(
                 next_unit,
                 &rects,
+                done_limit,
                 tile_offset,
                 &context,
                 temporal_context,
@@ -1652,6 +2080,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 &row_gate,
                 &row_buffers,
                 workers,
+                &mut cursor,
                 &mut PrepassSinks {
                     ordered,
                     workspace,

@@ -235,12 +235,32 @@ pub(super) struct GridPlanes {
     pub(super) motion: Vec<NeighbourMotion>,
 }
 
+/// One leaf's flag-plane publication, replayable onto a second grid.
+///
+/// A parse pass that hands its units to a resolve pass running later, or
+/// elsewhere, logs what it published so the resolve pass can rebuild the same
+/// flag plane on its own grid instead of sharing the parser's. The record is
+/// exactly [`NeighbourMvGrid::record_flags`]'s arguments, so a replay is that
+/// call again and cannot drift from it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NeighbourFlagRecord {
+    r: u32,
+    c: u32,
+    n4w: u32,
+    n4h: u32,
+    syntax: NeighbourFlagSyntax,
+}
+
 pub(crate) struct NeighbourMvGrid {
     pub(super) origin_row: usize,
     pub(super) origin_col: usize,
     pub(super) mi_rows: usize,
     pub(super) mi_cols: usize,
     pub(super) planes: GridPlanes,
+    /// Flag publications since the last [`NeighbourMvGrid::take_flag_log`],
+    /// collected only while logging is on.
+    flag_log: Vec<NeighbourFlagRecord>,
+    logging: bool,
 }
 
 impl NeighbourMvGrid {
@@ -257,7 +277,34 @@ impl NeighbourMvGrid {
             mi_rows: rows,
             mi_cols: cols,
             planes: take_neighbour_mv_planes(cells),
+            flag_log: Vec::new(),
+            logging: false,
         })
+    }
+
+    /// Starts logging flag publications for later replay onto another grid.
+    pub(crate) const fn log_flags(&mut self) {
+        self.logging = true;
+    }
+
+    /// Moves the flag publications made since the last call into `into`,
+    /// handing `into`'s emptied storage back to the log.
+    pub(crate) fn take_flag_log(&mut self, into: &mut Vec<NeighbourFlagRecord>) {
+        into.clear();
+        core::mem::swap(&mut self.flag_log, into);
+    }
+
+    /// Replays one unit's logged flag publications onto this grid.
+    pub(crate) fn replay_flag_log(&mut self, records: &[NeighbourFlagRecord]) {
+        for record in records {
+            self.record_flags(
+                record.r as usize,
+                record.c as usize,
+                record.n4w as usize,
+                record.n4h as usize,
+                record.syntax,
+            );
+        }
     }
 
     /// Publishes the flag plane for one leaf. The entropy pass calls this as
@@ -271,6 +318,15 @@ impl NeighbourMvGrid {
         syntax: NeighbourFlagSyntax,
     ) {
         let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        if self.logging {
+            self.flag_log.push(NeighbourFlagRecord {
+                r: r as u32,
+                c: c as u32,
+                n4w: n4w as u32,
+                n4h: n4h as u32,
+                syntax,
+            });
+        }
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
         };

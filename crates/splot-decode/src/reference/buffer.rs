@@ -23,7 +23,7 @@ use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::ActiveFilmGrain;
 use crate::pipeline::PipelineFrame;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::TemporalMotionField;
+use crate::prediction::inter::MotionFieldHandle;
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -49,7 +49,7 @@ struct Slot {
     frame_cdfs: Option<Arc<FrameCdfSubset>>,
     ccso_params: Option<Arc<CcsoParams>>,
     ccso_grid: Option<Arc<CcsoUnitGrid>>,
-    motion_field: Option<Arc<TemporalMotionField>>,
+    motion_field: Option<MotionFieldHandle>,
     long_term_id: Option<u32>,
     display_grain: Option<ActiveFilmGrain>,
     embedded_layer_id: EmbeddedLayerId,
@@ -111,7 +111,7 @@ impl Slot {
             frame_cdfs: Some(Arc::clone(&update.frame_cdfs)),
             ccso_params: update.ccso_params.clone(),
             ccso_grid: update.ccso_grid.clone(),
-            motion_field: Some(Arc::clone(&update.motion_field)),
+            motion_field: Some(update.motion_field.clone()),
             long_term_id: update.long_term_id,
             display_grain: None,
             embedded_layer_id: update.embedded_layer_id,
@@ -143,7 +143,7 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     pub(crate) ccso_params: Option<Arc<CcsoParams>>,
     pub(crate) ccso_grid: Option<Arc<CcsoUnitGrid>>,
-    pub(crate) motion_field: Arc<TemporalMotionField>,
+    pub(crate) motion_field: MotionFieldHandle,
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
 }
@@ -472,7 +472,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<Arc<CcsoParams>>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<Arc<CcsoUnitGrid>>>,
-    pub(crate) ref_motion_fields: Vec<Option<Arc<TemporalMotionField>>>,
+    pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 
 impl ReferenceMetadata {

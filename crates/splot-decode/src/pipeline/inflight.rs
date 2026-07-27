@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use splot_parallel::{CompletionCell, TaskScope};
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
-use super::frame_engine::finish::{WalkStage, finish_walked_frame};
+use super::frame_engine::finish::{WalkStage, WalkedFrame, finish_walked_frame};
 use super::frame_progress::FrameProgress;
 use super::{PipelineDecodedFrame, unsupported};
 use crate::error::{DecodeError, Result};
@@ -492,38 +492,106 @@ pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
         scratch.recycle_frame_filter_records(finished.filter_records);
         return Ok(erase(RefFrameSlot::completed(finished.frame)));
     };
-    let (slot, writer) = RefFrameSlot::pending(walked.info())?;
+    let (slot, pending) = reserve_pending_slot(walked.info(), erase, ring, frame_index)?;
+    pending.spawn_finish(*walked, scope);
+    Ok(slot)
+}
+
+/// The single publisher of one reserved decoded-frame slot, plus the channel
+/// its filter phase reports back through.
+///
+/// A frame whose reconstruction is still owed reserves its slot from its
+/// header and parse products alone, so the driver's bookkeeping can record the
+/// reference update before the samples exist. Dropping the reservation without
+/// spawning settles the slot as failed, which is how a frame whose
+/// reconstruction never ran stops the driver blocking on it.
+pub(crate) struct PendingFinish<T: ReconSample> {
+    writer: FrameSlotWriter<T>,
+    progress: Option<Arc<FrameProgress<T>>>,
+    outcome: Arc<Mutex<FinishOutcome>>,
+}
+
+/// Reserves one frame's decoded-frame handle from its known geometry and
+/// records it on the in-flight ring.
+///
+/// # Errors
+///
+/// Returns the filtered-workspace allocation's own diagnostic.
+pub(crate) fn reserve_pending_slot<T: ReconSample>(
+    info: DecodedFrameInfo,
+    erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
+    ring: &mut InflightRing,
+    frame_index: usize,
+) -> Result<(PipelineFrameSlot, PendingFinish<T>)> {
+    let (slot, writer) = RefFrameSlot::pending(info)?;
     let progress = slot.progress.clone();
     let outcome = Arc::new(Mutex::new(FinishOutcome::default()));
-    let task_outcome = Arc::clone(&outcome);
-    scope.spawn(move |_| {
-        let started = crate::timing::start();
-        match finish_walked_frame(*walked, progress.as_deref(), |frame| {
-            writer.complete(frame);
-        }) {
-            Ok(finished) => {
-                task_outcome
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .records = Some(finished.filter_records);
-                drop(finished.frame);
-            }
-            Err(error) => {
-                task_outcome
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .error = Some(error);
-            }
-        }
-        crate::timing::report("finish_task", started);
-    });
-    let shared = erase(slot.share());
     ring.push(InflightEntry {
         frame_index,
-        slot: shared,
-        outcome,
+        slot: erase(slot.share()),
+        outcome: Arc::clone(&outcome),
     });
-    Ok(erase(slot))
+    Ok((
+        erase(slot),
+        PendingFinish {
+            writer,
+            progress,
+            outcome,
+        },
+    ))
+}
+
+impl<T: ReconSample + Send + 'static> PendingFinish<T> {
+    /// Hands one walked frame's § 7.2 filter phase to a worker task.
+    ///
+    /// The task carries the single-use writer into the freeze, so the slot
+    /// settles before the frame's published row prefix closes; a freeze the
+    /// phase never reaches drops the writer instead, settling the slot as
+    /// failed.
+    pub(crate) fn spawn_finish(self, walked: WalkedFrame<T>, scope: &TaskScope<'_, '_>) {
+        let Self {
+            writer,
+            progress,
+            outcome,
+        } = self;
+        scope.spawn(move |_| {
+            let started = crate::timing::start();
+            match finish_walked_frame(walked, progress.as_deref(), |frame| {
+                writer.complete(frame);
+            }) {
+                Ok(finished) => {
+                    outcome
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .records = Some(finished.filter_records);
+                    drop(finished.frame);
+                }
+                Err(error) => {
+                    outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
+                }
+            }
+            crate::timing::report("finish_task", started);
+        });
+    }
+
+    /// Runs one walked frame's § 7.2 filter phase on the calling thread, for a
+    /// driver that has no scope to spawn into.
+    ///
+    /// # Errors
+    ///
+    /// Returns the filter chain's own diagnostic.
+    pub(crate) fn finish_inline(self, walked: WalkedFrame<T>) -> Result<FrameFilterRecords> {
+        let Self {
+            writer,
+            progress,
+            outcome: _,
+        } = self;
+        let finished = finish_walked_frame(walked, progress.as_deref(), |frame| {
+            writer.complete(frame);
+        })?;
+        drop(finished.frame);
+        Ok(finished.filter_records)
+    }
 }
 
 fn unsettled_slot() -> DecodeError {

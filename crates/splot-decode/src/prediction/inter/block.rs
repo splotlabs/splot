@@ -22,9 +22,9 @@ use splot_recon::{
 
 use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MotionMode, MvBlockContext,
-    NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMvGrid, TIP_REF_FRAME,
-    TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
-    TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
+    NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord, NeighbourFlagSyntax, NeighbourMvGrid,
+    TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
     find_mv_stack_with_temporal, warp_predicted_mv,
 };
@@ -164,6 +164,13 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
+    /// Lends the recycled filter-record buffers to one frame's walk.
+    pub(crate) fn take_frame_filter_records(
+        &mut self,
+    ) -> crate::filters::wienerns_lr::FrameFilterRecords {
+        core::mem::take(&mut self.frame_filter_records)
+    }
+
     pub(crate) fn recycle_frame_filter_records(
         &mut self,
         records: crate::filters::wienerns_lr::FrameFilterRecords,
@@ -210,29 +217,62 @@ impl ReconCommand {
     }
 }
 
+/// The frame-level facts one inter walk derives from its header and tile plan
+/// before any tile syntax is read.
+///
+/// Both the fused walk and the split parse pass derive exactly this, so the two
+/// enter their tile phases from the same frame state.
+pub(crate) struct InterBlockSetup {
+    params: tile::TileWalkParams,
+    prelude: TemporalPrelude,
+    cdef_state: CdefState,
+    gdf_state: GdfState,
+    ccso_state: CcsoState,
+    motion_field: TemporalMotionField,
+    initial_frame_cdfs: Arc<FrameCdfSubset>,
+    first_tile_offset: ByteOffset,
+    offset: ByteOffset,
+    qindex: u32,
+}
+
+/// The per-frame inputs of the entropy pass that neither the header nor the
+/// sequence carries directly.
+#[derive(Clone, Copy)]
+pub(crate) struct InterBlockFacts {
+    pub(crate) frame_interpolation_filter: FrameInterpolationFilter,
+    pub(crate) num_total_refs: usize,
+    pub(crate) reference_select: bool,
+    pub(crate) num_same_ref_compound: u8,
+    pub(crate) qindex: u32,
+    pub(crate) luma_use_tcq: bool,
+    pub(crate) residual_use_ddt: bool,
+    pub(crate) bit_depth: BitDepth,
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn decode_inter_blocks<T: ReconSample>(
-    scratch: &mut InterDecodeScratch<T>,
-    mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
+fn derive_inter_block_setup<T: ReconSample>(
+    work_units: &mut [DecodeTileWorkUnit<'_>],
     frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
-    frame_interpolation_filter: FrameInterpolationFilter,
-    num_total_refs: usize,
-    reference_select: bool,
-    num_same_ref_compound: u8,
+    facts: InterBlockFacts,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    qindex: u32,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
-) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs)> {
+    workspace: &CurrentFrameWorkspace<T>,
+) -> Result<InterBlockSetup> {
+    let InterBlockFacts {
+        frame_interpolation_filter,
+        num_total_refs,
+        reference_select,
+        num_same_ref_compound,
+        qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+    } = facts;
     let offset = frame_envelope.offset;
     let frame_is_intra = core.frame_is_intra == Some(true);
-    let work_units = tile_plan.work_units_mut();
     let Some(first_tile) = work_units.first() else {
         return Err(inter_cap!(
             "inter_walk_unexpected_tile_work_units",
@@ -242,8 +282,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ));
     };
     let first_tile_offset = first_tile.tile_byte_span().start;
-    let frame_cdfs = first_tile.frame_cdfs();
-    let mut saved_cdfs: Option<SavedCdfSubset> = None;
+    let initial_frame_cdfs = first_tile.frame_cdfs();
 
     let max_drl_bits_minus_1 = if frame_is_intra {
         0
@@ -364,23 +403,110 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         current_order_hint,
         tip_ref_pair: expected_tip_pair.map(|pair| (pair.past_ref, pair.future_ref)),
     };
-    let mut records = core::mem::take(&mut scratch.frame_filter_records);
-    let temporal_context = frame_temporal_context(
-        scratch
-            .temporal_context
-            .get_or_insert_with(TemporalMvContext::empty),
+    Ok(InterBlockSetup {
+        params,
+        prelude: TemporalPrelude {
+            sb_h4,
+            dimensions: (mi_rows, mi_cols),
+            current_order_hint,
+            config: temporal_config,
+            expected_tip_pair,
+            offset,
+        },
+        cdef_state,
+        gdf_state,
+        ccso_state,
+        motion_field,
+        initial_frame_cdfs,
+        first_tile_offset,
+        offset,
+        qindex,
+    })
+}
+
+/// Folds every completed tile's saved CDFs into the frame's end-of-walk
+/// subset, which the entropy pass alone settles.
+fn finish_frame_cdfs(
+    initial: &Arc<FrameCdfSubset>,
+    work_units: &[DecodeTileWorkUnit<'_>],
+    qindex: u32,
+    offset: ByteOffset,
+) -> Result<Arc<FrameCdfSubset>> {
+    let mut saved_cdfs: Option<SavedCdfSubset> = None;
+    for tile in work_units {
+        SavedCdfSubset::apply_completed_tile(
+            &mut saved_cdfs,
+            initial.as_ref(),
+            tile.tile_num(),
+            tile.cdf().tile_cdfs(),
+            tile.cdf().save_policy(),
+        );
+    }
+    let mut frame_cdfs = FrameCdfSubset::frame_end_updated(initial.as_ref(), saved_cdfs);
+    frame_cdfs
+        .replicate_coeff_q_context_for_base_q(qindex)
+        .map_err(|_| {
+            inter_cap!(
+                "reference_coefficient_cdf_context",
+                offset,
+                "inter.cdf.reference_coefficient_context",
+                "7.23"
+            )
+        })?;
+    Ok(Arc::new(frame_cdfs))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decode_inter_blocks<T: ReconSample>(
+    scratch: &mut InterDecodeScratch<T>,
+    mut tile_plan: crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
+    frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    options: &DecodeOptions,
+    facts: InterBlockFacts,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<T>,
+    workspace: &mut CurrentFrameWorkspace<T>,
+) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs)> {
+    let work_units = tile_plan.work_units_mut();
+    let setup = derive_inter_block_setup(
+        work_units,
+        frame_envelope,
+        sequence,
         core,
-        sb_h4,
-        (mi_rows, mi_cols),
-        current_order_hint,
-        temporal_config,
+        options,
+        facts,
         ref_frame_idx,
         reference,
-        expected_tip_pair,
+        workspace,
+    )?;
+    let InterBlockSetup {
+        params,
+        prelude,
+        cdef_state,
+        gdf_state,
+        ccso_state,
+        motion_field,
+        initial_frame_cdfs,
+        first_tile_offset,
         offset,
+        qindex,
+    } = setup;
+    let mut records = core::mem::take(&mut scratch.frame_filter_records);
+    let InterDecodeScratch {
+        tile: tile_scratch,
+        temporal_context: temporal_slot,
+        ..
+    } = scratch;
+    let temporal_context = prelude.run(
+        temporal_slot.get_or_insert_with(TemporalMvContext::empty),
+        core,
+        ref_frame_idx,
+        reference,
     )?;
     let walked = tile::decode_tiles(
-        &mut scratch.tile,
+        tile_scratch,
         &mut records,
         work_units,
         &params,
@@ -395,41 +521,50 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
-    for tile in work_units.iter() {
-        SavedCdfSubset::apply_completed_tile(
-            &mut saved_cdfs,
-            frame_cdfs.as_ref(),
-            tile.tile_num(),
-            tile.cdf().tile_cdfs(),
-            tile.cdf().save_policy(),
-        );
-    }
-    let mut frame_cdfs = FrameCdfSubset::frame_end_updated(frame_cdfs.as_ref(), saved_cdfs);
-    frame_cdfs
-        .replicate_coeff_q_context_for_base_q(qindex)
-        .map_err(|_| {
-            inter_cap!(
-                "reference_coefficient_cdf_context",
-                offset,
-                "inter.cdf.reference_coefficient_context",
-                "7.23"
-            )
-        })?;
-    let frame_cdfs = Arc::new(frame_cdfs);
-    let tile::TileDecodeOutput {
-        cdef_state,
-        gdf_state,
-        ccso_state,
-        motion_field,
-    } = walked;
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, offset)?;
     let filter_inputs = InterFilterInputs {
         records,
-        cdef_grid: cdef_state.into_grid(first_tile_offset)?,
-        ccso_grid: ccso_state.into_grid(first_tile_offset)?,
-        gdf_grid: gdf_state.into_grid(first_tile_offset)?,
-        motion_field,
+        cdef_grid: walked.cdef_state.into_grid(first_tile_offset)?,
+        ccso_grid: walked.ccso_state.into_grid(first_tile_offset)?,
+        gdf_grid: walked.gdf_state.into_grid(first_tile_offset)?,
+        motion_field: walked.motion_field,
     };
     Ok((frame_cdfs, filter_inputs))
+}
+
+/// The frame-level inputs of the AV2 § 7.9 temporal prelude, captured so the
+/// prelude can run after the entropy pass instead of before it.
+#[derive(Clone, Copy)]
+pub(crate) struct TemporalPrelude {
+    sb_h4: usize,
+    dimensions: (usize, usize),
+    current_order_hint: u32,
+    config: TemporalProjectionConfig,
+    expected_tip_pair: Option<TipReferencePair>,
+    offset: ByteOffset,
+}
+
+impl TemporalPrelude {
+    fn run<'a, T: ReconSample>(
+        &self,
+        temporal_context: &'a mut TemporalMvContext,
+        core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        reference: &InterReferenceState<T>,
+    ) -> Result<&'a mut TemporalMvContext> {
+        frame_temporal_context(
+            temporal_context,
+            core,
+            self.sb_h4,
+            self.dimensions,
+            self.current_order_hint,
+            self.config,
+            ref_frame_idx,
+            reference,
+            self.expected_tip_pair,
+            self.offset,
+        )
+    }
 }
 
 /// Runs the AV2 § 7.9 temporal prelude: reference motion-field projection and
@@ -453,6 +588,14 @@ fn frame_temporal_context<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<&'a mut TemporalMvContext> {
     let temporal_timer = crate::timing::start();
+    let ref_motion_fields = reference.resolve_motion_fields().ok_or_else(|| {
+        inter_missing!(
+            "inter_reference_motion_field_unpublished",
+            offset,
+            "inter.reference_motion_field",
+            SPEC_MODE_INFO
+        )
+    })?;
     temporal_context
         .refresh_from_references(
             dimensions,
@@ -461,7 +604,7 @@ fn frame_temporal_context<'a, T: ReconSample>(
             ref_frame_idx,
             &reference.ref_valid,
             &reference.ref_order_hint,
-            &reference.ref_motion_fields,
+            &ref_motion_fields,
         )
         .ok_or_else(|| {
             inter_cap!(
@@ -1742,8 +1885,11 @@ fn sequence_enables_ibp(sequence: &SequenceHeader) -> bool {
 mod compound_path;
 mod deferred_recon;
 mod filter_records;
+mod frame_parse;
+pub(crate) use frame_parse::{InterFrameParse, parse_inter_frame_blocks};
 mod interintra;
 mod intrabc;
+pub(crate) use intrabc::global_intrabc_enabled;
 mod pixel_commit;
 mod prediction;
 mod residual;

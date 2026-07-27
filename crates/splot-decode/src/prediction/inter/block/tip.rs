@@ -830,6 +830,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     let sb_h4 = super::superblock_h4(sequence, core)
         .ok_or_else(|| missing("missing required input: inter.tip_output.superblock_size"))?;
     let projection_step = tmvp_projection_step(core);
+    let ref_motion_fields = reference.resolve_motion_fields().ok_or_else(|| {
+        missing("missing required input: inter.tip_output.reference_motion_field")
+    })?;
     let temporal = decode_scratch
         .temporal_context
         .get_or_insert_with(TemporalMvContext::empty);
@@ -857,7 +860,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             ref_frame_idx,
             &reference.ref_valid,
             &reference.ref_order_hint,
-            &reference.ref_motion_fields,
+            &ref_motion_fields,
         )
         .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
     prepare_motion_field(temporal, core, sb_h4);

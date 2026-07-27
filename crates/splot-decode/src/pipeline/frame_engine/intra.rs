@@ -130,17 +130,19 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         sequence,
         &core,
         options,
-        InterpolationFilter::Eighttap,
-        0,
-        false,
-        0,
+        crate::prediction::inter::InterBlockFacts {
+            frame_interpolation_filter: InterpolationFilter::Eighttap,
+            num_total_refs: 0,
+            reference_select: false,
+            num_same_ref_compound: 0,
+            qindex,
+            luma_use_tcq,
+            residual_use_ddt: false,
+            bit_depth,
+        },
         &[],
         &reference,
         &mut workspace,
-        qindex,
-        luma_use_tcq,
-        false,
-        bit_depth,
     )?;
 
     let setup = FilterSinkSetup {
