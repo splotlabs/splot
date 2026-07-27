@@ -24,10 +24,10 @@ use crate::intra_dc_math::validate_sample_type;
 use crate::intra_directional::predict_intra_cardinal_directional_rect_into;
 use crate::intra_smooth::{SmoothSampleEdges, SmoothSamplePosition, predict_smooth_sample_values};
 use crate::{
-    DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef, IntraCardinalDirection,
-    IntraDirectionalAngleEdge, IntraPaethEdge, IntraRectBlockSize, IntraSmoothEdge,
-    IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneMut, PlaneRect,
-    PlaneRef, PlaneRefRows, PlaneSize, ReconError, ReconSample, Result,
+    BitDepth, DecodedFrame, DecodedFrameInfo, FrameMut, FramePlanes, FrameRef,
+    IntraCardinalDirection, IntraDirectionalAngleEdge, IntraPaethEdge, IntraRectBlockSize,
+    IntraSmoothEdge, IntraSmoothMode, IntraSquareBlockSize, PixelFormat, Plane, PlaneId, PlaneMut,
+    PlaneRect, PlaneRef, PlaneRefRows, PlaneSize, ReconError, ReconSample, Result,
 };
 
 #[path = "workspace_edges.rs"]
@@ -1619,10 +1619,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         size: IntraRectBlockSize,
         mode: IntraSmoothMode,
     ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        self.plane_mut(plane)?
-            .predict_intra_smooth_rect(rect, size, mode, bit_depth)
+        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
+        target.predict_intra_smooth_rect(rect, size, mode, bit_depth)
     }
 
     /// Predicts rectangular cardinal directional intra samples into the workspace.
@@ -1641,10 +1639,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         size: IntraRectBlockSize,
         direction: IntraCardinalDirection,
     ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        self.plane_mut(plane)?
-            .predict_intra_cardinal_directional_rect(rect, size, direction, bit_depth)
+        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
+        target.predict_intra_cardinal_directional_rect(rect, size, direction, bit_depth)
     }
 
     /// Takes a reusable, initialized intra-prediction buffer from this workspace.
@@ -1711,6 +1707,20 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 
     fn plane_mut(&mut self, plane: PlaneId) -> Result<&mut CurrentFramePlane<T>> {
         select_plane_mut(plane, &mut self.y, self.u.as_mut(), self.v.as_mut())
+    }
+
+    /// Resolves the writable plane, block rectangle, and active bit depth shared
+    /// by the rectangular intra prediction entry points.
+    fn intra_rect_target(
+        &mut self,
+        plane: PlaneId,
+        x: usize,
+        y: usize,
+        size: IntraRectBlockSize,
+    ) -> Result<(&mut CurrentFramePlane<T>, PlaneRect, BitDepth)> {
+        let rect = block_rect(x, y, size)?;
+        let bit_depth = self.info.bit_depth();
+        Ok((self.plane_mut(plane)?, rect, bit_depth))
     }
 }
 

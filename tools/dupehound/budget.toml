@@ -58,4 +58,7 @@
 # ratcheting; clearing its PR-ratchet findings (one shared `auto`/count policy
 # parser, one folded SEF/TIP frame-header parse, one shared reference-slot
 # storage-mismatch diagnostic) lowered it 2677 -> 2658.
-max_deletable_lines = 2658
+# Sharing the workspace rectangular-intra target resolution (block rectangle,
+# writable plane, active bit depth) across the five prediction entry points
+# lowered it 2664 -> 2640.
+max_deletable_lines = 2640

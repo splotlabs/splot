@@ -3,7 +3,7 @@
 
 //! Current-frame workspace directional-angle intra prediction helpers.
 
-use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
+use super::{CurrentFramePlane, CurrentFrameWorkspace};
 use crate::{
     BitDepth, IntraDirectionalAngle, IntraDirectionalAngleEdge, IntraDirectionalAngleIdifEdges,
     IntraMiddleDirectionalAngle, IntraMiddleDirectionalAngleEdges,
@@ -29,10 +29,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         size: IntraRectBlockSize,
         angle: IntraDirectionalAngle,
     ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        self.plane_mut(plane)?
-            .predict_intra_directional_angle_rect(rect, size, angle, bit_depth)
+        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
+        target.predict_intra_directional_angle_rect(rect, size, angle, bit_depth)
     }
 
     /// Predicts middle directional-angle intra samples into the workspace.
@@ -49,10 +47,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         size: IntraRectBlockSize,
         angle: IntraMiddleDirectionalAngle,
     ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        self.plane_mut(plane)?
-            .predict_intra_middle_directional_angle_rect(rect, size, angle, bit_depth, plane)
+        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
+        target.predict_intra_middle_directional_angle_rect(rect, size, angle, bit_depth, plane)
     }
 }
 
