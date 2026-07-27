@@ -321,7 +321,7 @@ fn tip_tile_edge(starts: Option<&[u32]>, coordinate: usize, subsampling: usize) 
 
 #[allow(clippy::too_many_arguments)]
 fn apply_tip_filter_edge<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     x: usize,
     y: usize,
     dx: usize,
@@ -396,10 +396,8 @@ fn deblock_plane_pass<T: ReconSample>(
     });
 
     let covered_rows = (mi_rows * MI_SIZE) >> plane_pass.plane_sub_y;
-    let covered_cols = (mi_cols * MI_SIZE) >> plane_pass.plane_sub_x;
-    let use_parallel = splot_parallel::on_multiworker_pool()
-        && (plane_pass.pass == 0 && covered_rows <= height
-            || plane_pass.pass == 1 && covered_cols <= width);
+    let use_parallel =
+        splot_parallel::on_multiworker_pool() && plane_pass.pass == 0 && covered_rows <= height;
     if !use_parallel {
         return deblock_plane_pass_serial(
             samples,
@@ -419,69 +417,41 @@ fn deblock_plane_pass<T: ReconSample>(
     let timer = crate::timing::start();
     let tally = crate::timing::WorkerTally::new();
     let samples = validated_plane_samples(samples, stride, width, height)?;
-    let process_band = |unit_start: usize, unit_end: usize, mut ctx: PlaneCtx<'_, '_, T>| {
+    let process_band = |unit_start: usize, unit_end: usize, mut ctx: PlaneCtx<'_, T>| {
         tally.note_worker();
         let strengths = StrengthCache::new(
             plane_pass.quant_delta,
             plane_pass.df_delta_q,
             plane_pass.bit_depth,
         );
-        if plane_pass.pass == 0 {
-            for unit in unit_start..unit_end {
-                let r = unit * plane_pass.row_step;
-                if r >= mi_rows {
-                    break;
-                }
-                for c in (0..mi_cols).step_by(plane_pass.col_step) {
-                    if !grid.is_candidate(
-                        r,
-                        c,
-                        plane_pass.pass,
-                        plane_pass.allow_df_sub_pu,
-                        plane_pass.plane_sub_x,
-                        plane_pass.plane_sub_y,
-                    ) {
-                        continue;
-                    }
-                    deblock_filter_edge_runtime(
-                        &mut ctx,
-                        grid,
-                        plane_pass.edge_context(r, c, tile_starts),
-                        disable_loopfilters_across_tiles,
-                        &strengths,
-                    )?;
-                }
+        for unit in unit_start..unit_end {
+            let r = unit * plane_pass.row_step;
+            if r >= mi_rows {
+                break;
             }
-        } else {
-            for unit in unit_start..unit_end {
-                let c = unit * plane_pass.col_step;
-                if c >= mi_cols {
-                    break;
+            for c in (0..mi_cols).step_by(plane_pass.col_step) {
+                if !grid.is_candidate(
+                    r,
+                    c,
+                    plane_pass.pass,
+                    plane_pass.allow_df_sub_pu,
+                    plane_pass.plane_sub_x,
+                    plane_pass.plane_sub_y,
+                ) {
+                    continue;
                 }
-                for r in (0..mi_rows).step_by(plane_pass.row_step) {
-                    if !grid.is_candidate(
-                        r,
-                        c,
-                        plane_pass.pass,
-                        plane_pass.allow_df_sub_pu,
-                        plane_pass.plane_sub_x,
-                        plane_pass.plane_sub_y,
-                    ) {
-                        continue;
-                    }
-                    deblock_filter_edge_runtime(
-                        &mut ctx,
-                        grid,
-                        plane_pass.edge_context(r, c, tile_starts),
-                        disable_loopfilters_across_tiles,
-                        &strengths,
-                    )?;
-                }
+                deblock_filter_edge_runtime(
+                    &mut ctx,
+                    grid,
+                    plane_pass.edge_context(r, c, tile_starts),
+                    disable_loopfilters_across_tiles,
+                    &strengths,
+                )?;
             }
         }
         Ok(())
     };
-    let (result, band_count) = if plane_pass.pass == 0 {
+    let (result, band_count) = {
         let plane_units = height.div_ceil(MI_SIZE);
         let units_per_band = plane_units.div_ceil(workers * 4).max(1);
         let rows_per_band = units_per_band * MI_SIZE;
@@ -499,46 +469,6 @@ fn deblock_plane_pass<T: ReconSample>(
                     unit_start,
                     unit_start + units_per_band,
                     PlaneCtx::contiguous_band(band_samples, stride, width, height, 0, y_origin),
-                )
-            });
-        (result, band_count)
-    } else {
-        let plane_units = width.div_ceil(MI_SIZE);
-        let units_per_band = plane_units.div_ceil(workers * 2).max(1);
-        let band_count = plane_units.div_ceil(units_per_band);
-        let cols_per_band = units_per_band * MI_SIZE;
-        let split_row_count = band_count
-            .checked_mul(height)
-            .ok_or(DeblockError::Workspace)?;
-        let row_count = height
-            .checked_add(split_row_count)
-            .ok_or(DeblockError::Workspace)?;
-        let mut rows = Vec::new();
-        rows.try_reserve_exact(row_count)
-            .map_err(|_| DeblockError::Workspace)?;
-        for row in samples.chunks_mut(stride) {
-            rows.push(&mut row[..width]);
-        }
-        for _ in 0..band_count {
-            for row in 0..height {
-                let available = core::mem::take(&mut rows[row]);
-                let split_at = cols_per_band.min(available.len());
-                let (column, remainder) = available.split_at_mut(split_at);
-                rows[row] = remainder;
-                rows.push(column);
-            }
-        }
-        let (_, split_rows) = rows.split_at_mut(height);
-        let result = split_rows
-            .par_chunks_mut(height.max(1))
-            .enumerate()
-            .try_for_each(|(band, rows)| {
-                let unit_start = band * units_per_band;
-                let x_origin = unit_start * MI_SIZE;
-                process_band(
-                    unit_start,
-                    unit_start + units_per_band,
-                    PlaneCtx::split_band(rows, width, height, x_origin, 0),
                 )
             });
         (result, band_count)
@@ -704,40 +634,27 @@ fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, con
     Ok(())
 }
 
-enum PlaneRows<'samples, 'rows, T> {
-    Contiguous {
-        samples: &'samples mut [T],
-        stride: usize,
-    },
-    Split(&'rows mut [&'samples mut [T]]),
+struct PlaneRows<'samples, T> {
+    samples: &'samples mut [T],
+    stride: usize,
 }
 
-impl<T> PlaneRows<'_, '_, T> {
+impl<T> PlaneRows<'_, T> {
     fn row(&self, index: usize) -> Option<&[T]> {
-        match self {
-            Self::Contiguous { samples, stride } => {
-                let start = index.checked_mul(*stride)?;
-                let end = start.checked_add(*stride)?;
-                samples.get(start..end)
-            }
-            Self::Split(rows) => rows.get(index).map(|row| &**row),
-        }
+        let start = index.checked_mul(self.stride)?;
+        let end = start.checked_add(self.stride)?;
+        self.samples.get(start..end)
     }
 
     fn row_mut(&mut self, index: usize) -> Option<&mut [T]> {
-        match self {
-            Self::Contiguous { samples, stride } => {
-                let start = index.checked_mul(*stride)?;
-                let end = start.checked_add(*stride)?;
-                samples.get_mut(start..end)
-            }
-            Self::Split(rows) => rows.get_mut(index).map(|row| &mut **row),
-        }
+        let start = index.checked_mul(self.stride)?;
+        let end = start.checked_add(self.stride)?;
+        self.samples.get_mut(start..end)
     }
 }
 
-struct PlaneCtx<'samples, 'rows, T: ReconSample> {
-    rows: PlaneRows<'samples, 'rows, T>,
+struct PlaneCtx<'samples, T: ReconSample> {
+    rows: PlaneRows<'samples, T>,
     width: usize,
     height: usize,
     x_origin: usize,
@@ -757,7 +674,7 @@ fn validated_plane_samples<T>(
     samples.get_mut(..required).ok_or(DeblockError::Workspace)
 }
 
-impl<'samples, 'rows, T: ReconSample> PlaneCtx<'samples, 'rows, T> {
+impl<'samples, T: ReconSample> PlaneCtx<'samples, T> {
     fn new(
         samples: &'samples mut [T],
         stride: usize,
@@ -766,7 +683,7 @@ impl<'samples, 'rows, T: ReconSample> PlaneCtx<'samples, 'rows, T> {
     ) -> Result<Self, DeblockError> {
         let samples = validated_plane_samples(samples, stride, width, height)?;
         Ok(Self {
-            rows: PlaneRows::Contiguous { samples, stride },
+            rows: PlaneRows { samples, stride },
             width,
             height,
             x_origin: 0,
@@ -783,23 +700,7 @@ impl<'samples, 'rows, T: ReconSample> PlaneCtx<'samples, 'rows, T> {
         y_origin: usize,
     ) -> Self {
         Self {
-            rows: PlaneRows::Contiguous { samples, stride },
-            width,
-            height,
-            x_origin,
-            y_origin,
-        }
-    }
-
-    fn split_band(
-        rows: &'rows mut [&'samples mut [T]],
-        width: usize,
-        height: usize,
-        x_origin: usize,
-        y_origin: usize,
-    ) -> Self {
-        Self {
-            rows: PlaneRows::Split(rows),
+            rows: PlaneRows { samples, stride },
             width,
             height,
             x_origin,
@@ -810,19 +711,13 @@ impl<'samples, 'rows, T: ReconSample> PlaneCtx<'samples, 'rows, T> {
     fn sample(&self, x: usize, y: usize) -> T {
         let row = y - self.y_origin;
         let col = x - self.x_origin;
-        match &self.rows {
-            PlaneRows::Contiguous { samples, stride } => samples[row * stride + col],
-            PlaneRows::Split(rows) => rows[row][col],
-        }
+        self.rows.samples[row * self.rows.stride + col]
     }
 
     fn set_sample(&mut self, x: usize, y: usize, value: T) {
         let row = y - self.y_origin;
         let col = x - self.x_origin;
-        match &mut self.rows {
-            PlaneRows::Contiguous { samples, stride } => samples[row * *stride + col] = value,
-            PlaneRows::Split(rows) => rows[row][col] = value,
-        }
+        self.rows.samples[row * self.rows.stride + col] = value;
     }
 }
 
@@ -1018,7 +913,7 @@ fn sub_pu_filter_dimension(tx_size: usize, sub_pu_size: usize, is_tx_edge: bool)
 #[inline(always)]
 #[cfg(test)]
 fn deblock_filter_edge<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
@@ -1036,7 +931,7 @@ fn deblock_filter_edge<T: ReconSample>(
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_filter_edge_runtime<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
@@ -1066,7 +961,7 @@ fn deblock_filter_edge_runtime<T: ReconSample>(
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PASS: usize>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
@@ -1227,7 +1122,8 @@ fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PAS
     if horizontal || vertical {
         let x_origin = plane_ctx.x_origin;
         let y_origin = plane_ctx.y_origin;
-        if let PlaneRows::Contiguous { samples, stride } = &mut plane_ctx.rows {
+        {
+            let PlaneRows { samples, stride } = &mut plane_ctx.rows;
             let stride = *stride;
             let boundary = (y_p - y_origin) * stride + x_p - x_origin;
             let (perpendicular, lane) = if horizontal { (1, stride) } else { (stride, 1) };
@@ -1327,7 +1223,7 @@ fn filter_contiguous_edge<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn choose_filter_width<T: ReconSample>(
-    plane_ctx: &PlaneCtx<'_, '_, T>,
+    plane_ctx: &PlaneCtx<'_, T>,
     x_p: usize,
     y_p: usize,
     dx: usize,
@@ -1357,9 +1253,8 @@ fn choose_filter_width<T: ReconSample>(
         && x_p
             .checked_add(MI_SIZE)
             .is_some_and(|end| end <= plane_ctx.width);
-    if (horizontal || vertical)
-        && let PlaneRows::Contiguous { samples, stride } = &plane_ctx.rows
-    {
+    if horizontal || vertical {
+        let PlaneRows { samples, stride } = &plane_ctx.rows;
         let first_boundary = (y_p - plane_ctx.y_origin) * *stride + x_p - plane_ctx.x_origin;
         let perpendicular_stride = if horizontal { 1 } else { *stride };
         let lane_stride = if horizontal { *stride } else { 1 };
@@ -1440,7 +1335,7 @@ impl PerpLine {
 const GATHER_HALF: usize = 8;
 
 fn apply_edge_samples<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     perp: PerpLine,
     lanes: usize,
     params: DeblockSampleFilter,
@@ -1463,11 +1358,8 @@ fn apply_edge_samples<T: ReconSample>(
         && x >= plane_ctx.x_origin
         && x.checked_add(lanes)
             .is_some_and(|end| end <= plane_ctx.width);
-    if lanes <= MI_SIZE
-        && params.boundary == GATHER_HALF
-        && (horizontal || vertical)
-        && let PlaneRows::Contiguous { samples, stride } = &mut plane_ctx.rows
-    {
+    if lanes <= MI_SIZE && params.boundary == GATHER_HALF && (horizontal || vertical) {
+        let PlaneRows { samples, stride } = &mut plane_ctx.rows;
         let boundary = (y - plane_ctx.y_origin) * *stride + x - plane_ctx.x_origin;
         let perpendicular_stride = if horizontal { 1 } else { *stride };
         let lane_stride = if horizontal { *stride } else { 1 };
@@ -1608,7 +1500,7 @@ fn apply_edge_samples<T: ReconSample>(
 }
 
 fn apply_sample_filter<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, '_, T>,
+    plane_ctx: &mut PlaneCtx<'_, T>,
     perp: PerpLine,
     params: DeblockSampleFilter,
 ) -> Result<(), DeblockError> {
@@ -1632,7 +1524,7 @@ fn apply_sample_filter<T: ReconSample>(
 }
 
 fn gather_line<T: ReconSample>(
-    plane_ctx: &PlaneCtx<'_, '_, T>,
+    plane_ctx: &PlaneCtx<'_, T>,
     perp: PerpLine,
 ) -> [T; 2 * GATHER_HALF] {
     let mut line = [T::default(); 2 * GATHER_HALF];
