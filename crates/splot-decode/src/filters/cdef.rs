@@ -520,18 +520,63 @@ fn gather_interior_pad<S: ReconSample>(
     w: usize,
     h: usize,
 ) -> Result<(), CdefError> {
+    match (S::u16_slice(snap.samples()), w) {
+        (Some(samples), 8) => {
+            gather_interior_rows::<12>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
+        }
+        (Some(samples), 4) => {
+            gather_interior_rows::<8>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
+        }
+        _ => {
+            for r in 0..h + 2 * CDEF_TAP_REACH {
+                let src = snap
+                    .row(y0 - CDEF_TAP_REACH + r)
+                    .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
+                    .ok_or(CdefError::Workspace)?;
+                let dst_start = r * CDEF_PADDED_SIDE;
+                let dst = pad
+                    .get_mut(dst_start..dst_start + src.len())
+                    .ok_or(CdefError::Workspace)?;
+                for (dst, src) in dst.iter_mut().zip(src) {
+                    *dst = src.to_u16();
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// [`gather_interior_pad`] for `u16` plane storage, copying `SPAN` samples per
+/// row off one hoisted row base.
+#[allow(clippy::too_many_arguments)]
+fn gather_interior_rows<const SPAN: usize>(
+    samples: &[u16],
+    width: usize,
+    stride: usize,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+    x0: usize,
+    y0: usize,
+    h: usize,
+) -> Result<(), CdefError> {
+    let left = x0.checked_sub(CDEF_TAP_REACH).ok_or(CdefError::Workspace)?;
+    if left + SPAN > width {
+        return Err(CdefError::Workspace);
+    }
+    let mut base = y0
+        .checked_sub(CDEF_TAP_REACH)
+        .and_then(|top| top.checked_mul(stride))
+        .and_then(|row| row.checked_add(left))
+        .ok_or(CdefError::Workspace)?;
     for r in 0..h + 2 * CDEF_TAP_REACH {
-        let src = snap
-            .row(y0 - CDEF_TAP_REACH + r)
-            .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
+        let src = samples
+            .get(base..base.checked_add(SPAN).ok_or(CdefError::Workspace)?)
             .ok_or(CdefError::Workspace)?;
         let dst_start = r * CDEF_PADDED_SIDE;
         let dst = pad
-            .get_mut(dst_start..dst_start + src.len())
+            .get_mut(dst_start..dst_start + SPAN)
             .ok_or(CdefError::Workspace)?;
-        for (dst, src) in dst.iter_mut().zip(src) {
-            *dst = src.to_u16();
-        }
+        dst.copy_from_slice(src); // splot-copy-ok: gather CDEF taps into the padded scratch
+        base += stride;
     }
     Ok(())
 }
