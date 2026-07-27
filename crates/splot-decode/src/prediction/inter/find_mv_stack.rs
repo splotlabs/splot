@@ -92,7 +92,8 @@ pub(crate) use neighbour_grid::{
 use neighbour_grid::{EMPTY_NEIGHBOUR_FLAGS, NeighbourCell, NeighbourFlags};
 pub(crate) use temporal::{
     OrderHintMvContext, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
-    TemporalProjectionConfig, reference_order_hints, tip_reference_pair_from_hints,
+    TemporalProjectionConfig, TipReferencePair, reference_order_hints,
+    tip_reference_pair_from_hints,
 };
 pub(crate) use warp_bank::{WarpParamBank, WarpParamStack};
 

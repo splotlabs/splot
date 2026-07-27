@@ -24,8 +24,9 @@ use super::find_mv_stack::{
     BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MotionMode, MvBlockContext,
     NON_INTER_FLAG_SYNTAX, NeighbourFlagSyntax, NeighbourMvGrid, TIP_REF_FRAME,
     TemporalMotionBlock, TemporalMotionField, TemporalMvContext, TemporalProjectionConfig,
-    ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx, find_compound_mv_stack_with_temporal,
-    find_mode_ctx, find_mode_ctx_with_tip, find_mv_stack_with_temporal, warp_predicted_mv,
+    TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
+    find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
+    find_mv_stack_with_temporal, warp_predicted_mv,
 };
 use super::read_mv::{
     MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
@@ -145,7 +146,14 @@ pub(crate) struct InterFilterInputs {
     pub(crate) cdef_grid: crate::filters::cdef::CdefUnitGrid,
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
-    pub(crate) motion_field: TemporalMotionField,
+    motion_field: TemporalMotionField,
+}
+
+impl InterFilterInputs {
+    /// Takes the walk-derived temporal motion field, leaving an empty one.
+    pub(crate) fn take_motion_field(&mut self) -> TemporalMotionField {
+        core::mem::replace(&mut self.motion_field, TemporalMotionField::empty())
+    }
 }
 
 #[derive(Default)]
@@ -289,29 +297,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             .as_ref()
             .is_some_and(|tools| tools.reduced_ref_frame_mvs_mode),
     };
-    let temporal_context = scratch
-        .temporal_context
-        .get_or_insert_with(TemporalMvContext::empty);
-    let temporal_timer = crate::timing::start();
-    temporal_context
-        .refresh_from_references(
-            (mi_rows, mi_cols),
-            current_order_hint,
-            temporal_config,
-            ref_frame_idx,
-            &reference.ref_valid,
-            &reference.ref_order_hint,
-            &reference.ref_motion_fields,
-        )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_temporal_motion_context",
-                offset,
-                "inter.temporal_motion_context",
-                SPEC_MODE_INFO
-            )
-        })?;
-    crate::timing::report("inter_temporal_refresh", temporal_timer);
+    let derived_order_hints = super::find_mv_stack::reference_order_hints(
+        ref_frame_idx,
+        &reference.ref_valid,
+        &reference.ref_order_hint,
+    );
+    let expected_tip_pair = derived_tip_reference_pair(core, &derived_order_hints);
     let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols).ok_or_else(|| {
         inter_cap!(
             "inter_temporal_motion_field",
@@ -323,7 +314,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     motion_field.set_reference_metadata(
         !frame_is_intra,
         temporal_config.frame_size,
-        temporal_context.reference_order_hints(),
+        &derived_order_hints,
     );
     let cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
@@ -336,10 +327,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         &reference.ref_ccso_unit_grids,
         first_tile_offset,
     )?;
-    let tip_prepare_timer = crate::timing::start();
-    tip::prepare_motion_field(temporal_context, core, sb_h4);
-    crate::timing::report("inter_tip_prepare", tip_prepare_timer);
-
     let residual_tool_policy = if frame_is_intra {
         crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)
     } else {
@@ -356,14 +343,8 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         .is_some_and(|tail| tail.allow_warpmv_mode);
     let frame_is_switch = core.frame_type == Some(FrameType::Switch);
 
-    let limits = options.limits();
-    let output = tile::decode_tiles(
-        &mut scratch.tile,
-        &mut scratch.frame_filter_records,
-        work_units,
-        sequence,
-        core,
-        limits,
+    let params = tile::TileWalkParams {
+        limits: options.limits(),
         mi_rows,
         mi_cols,
         sb_h4,
@@ -373,18 +354,42 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         num_total_refs,
         reference_select,
         num_same_ref_compound,
-        temporal_context,
-        reference,
-        workspace,
         luma_use_tcq,
         residual_use_ddt,
-        ref_frame_idx,
         bit_depth,
         enable_adaptive_mvd,
         allow_bawp,
         allow_warpmv_mode,
         frame_is_switch,
         current_order_hint,
+        tip_ref_pair: expected_tip_pair.map(|pair| (pair.past_ref, pair.future_ref)),
+    };
+    let mut records = core::mem::take(&mut scratch.frame_filter_records);
+    let temporal_context = frame_temporal_context(
+        scratch
+            .temporal_context
+            .get_or_insert_with(TemporalMvContext::empty),
+        core,
+        sb_h4,
+        (mi_rows, mi_cols),
+        current_order_hint,
+        temporal_config,
+        ref_frame_idx,
+        reference,
+        expected_tip_pair,
+        offset,
+    )?;
+    let walked = tile::decode_tiles(
+        &mut scratch.tile,
+        &mut records,
+        work_units,
+        &params,
+        sequence,
+        core,
+        temporal_context,
+        reference,
+        ref_frame_idx,
+        workspace,
         cdef_state,
         gdf_state,
         ccso_state,
@@ -399,12 +404,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             tile.cdf().save_policy(),
         );
     }
-    let tile::TileDecodeOutput {
-        cdef_state,
-        gdf_state,
-        ccso_state,
-        motion_field,
-    } = output;
     let mut frame_cdfs = FrameCdfSubset::frame_end_updated(frame_cdfs.as_ref(), saved_cdfs);
     frame_cdfs
         .replicate_coeff_q_context_for_base_q(qindex)
@@ -417,8 +416,14 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
             )
         })?;
     let frame_cdfs = Arc::new(frame_cdfs);
+    let tile::TileDecodeOutput {
+        cdef_state,
+        gdf_state,
+        ccso_state,
+        motion_field,
+    } = walked;
     let filter_inputs = InterFilterInputs {
-        records: core::mem::take(&mut scratch.frame_filter_records),
+        records,
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,
         ccso_grid: ccso_state.into_grid(first_tile_offset)?,
         gdf_grid: gdf_state.into_grid(first_tile_offset)?,
@@ -426,6 +431,81 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     };
     Ok((frame_cdfs, filter_inputs))
 }
+
+/// Runs the AV2 § 7.9 temporal prelude: reference motion-field projection and
+/// the § 7.11.3 TIP motion field.
+///
+/// The entropy pass reads the resulting TIP reference pair, and the driver
+/// derived that pair from the reference order hints alone before the prelude
+/// ran, so a disagreement means the prelude could not build the field the parse
+/// pass assumed and the frame fails closed.
+#[allow(clippy::too_many_arguments)]
+fn frame_temporal_context<'a, T: ReconSample>(
+    temporal_context: &'a mut TemporalMvContext,
+    core: &FrameHeaderCore,
+    sb_h4: usize,
+    dimensions: (usize, usize),
+    current_order_hint: u32,
+    temporal_config: TemporalProjectionConfig,
+    ref_frame_idx: &[u32],
+    reference: &InterReferenceState<T>,
+    expected_tip_pair: Option<TipReferencePair>,
+    offset: ByteOffset,
+) -> Result<&'a mut TemporalMvContext> {
+    let temporal_timer = crate::timing::start();
+    temporal_context
+        .refresh_from_references(
+            dimensions,
+            current_order_hint,
+            temporal_config,
+            ref_frame_idx,
+            &reference.ref_valid,
+            &reference.ref_order_hint,
+            &reference.ref_motion_fields,
+        )
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_temporal_motion_context",
+                offset,
+                "inter.temporal_motion_context",
+                SPEC_MODE_INFO
+            )
+        })?;
+    crate::timing::report("inter_temporal_refresh", temporal_timer);
+    let tip_prepare_timer = crate::timing::start();
+    tip::prepare_motion_field(temporal_context, core, sb_h4);
+    crate::timing::report("inter_tip_prepare", tip_prepare_timer);
+    if temporal_context.tip_references() != expected_tip_pair {
+        return Err(inter_cap!(
+            "inter_tip_reference_pair_mismatch",
+            offset,
+            "inter.temporal_motion_context",
+            SPEC_MODE_INFO
+        ));
+    }
+    Ok(temporal_context)
+}
+/// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.
+///
+/// [`tip::prepare_motion_field`] leaves the projected field's pair set exactly
+/// when the frame enables TIP and the reference order hints admit a pair, and
+/// that derivation reads no motion field, so the driver can settle it before
+/// the temporal prelude runs. `decode_inter_blocks` fails closed if the two
+/// ever disagree.
+fn derived_tip_reference_pair(
+    core: &FrameHeaderCore,
+    ref_order_hints: &[Option<u32>],
+) -> Option<super::find_mv_stack::TipReferencePair> {
+    let inter = core.inter.as_ref()?;
+    if inter.tip_frame_mode == Some(TipFrameMode::Disabled) {
+        return None;
+    }
+    super::find_mv_stack::tip_reference_pair_from_hints(
+        core.display_order_hint().unwrap_or(0),
+        ref_order_hints,
+    )
+}
+
 fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
     let partition = sequence.partition?;
     core.frame_is_intra?;
@@ -595,7 +675,7 @@ fn decode_block<T: ReconSample>(
     intrabc_state: &mut TileIntrabcPreludeState,
     segment_id_state: &mut TileSegmentIdState,
     mv_grid: &mut NeighbourMvGrid,
-    temporal_context: &TemporalMvContext,
+    tip_ref_pair: Option<(i8, i8)>,
     y_smooth: &mut crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: &mut crate::prediction::intra_edge::TileChromaSmoothGrid,
     sb_h4: usize,
@@ -692,9 +772,6 @@ fn decode_block<T: ReconSample>(
         !has_past || !has_future
     };
     let use_temporal = frame_uses_temporal_mvs(core);
-    let tip_ref_pair = temporal_context
-        .tip_references()
-        .map(|references| (references.past_ref, references.future_ref));
     let temporal_first_frame = drl_reorder != DrlReorder::Always && use_temporal && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
     let skip_mode = read_skip_mode_syntax(

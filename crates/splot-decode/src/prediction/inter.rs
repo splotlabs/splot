@@ -26,7 +26,7 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::error::DecodeError;
-use crate::pipeline::frame_engine::finish::{FrameWalk, WalkStage, WalkedFrame};
+use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
@@ -313,51 +313,29 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         residual_use_ddt,
         bit_depth,
     )?;
-    let motion_field = filter_inputs.motion_field;
-
-    let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
-        workspace,
-        frame_width as usize,
-        frame_height as usize,
+    let setup = FilterSinkSetup {
+        luma_width: frame_width as usize,
+        luma_height: frame_height as usize,
         bit_depth,
-    );
-    filter_sink.set_gdf_reference_context(Some(
-        crate::filters::gdf::GdfReferenceContext::from_reference_list(
-            core.display_order_hint().unwrap_or(0),
-            ref_frame_idx,
-            &reference.ref_order_hint,
+        gdf_reference: Some(
+            crate::filters::gdf::GdfReferenceContext::from_reference_list(
+                core.display_order_hint().unwrap_or(0),
+                ref_frame_idx,
+                &reference.ref_order_hint,
+            ),
         ),
-    ));
-    filter_sink.set_filter_records(filter_inputs.records);
-    filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
-    let ccso_grid = filter_inputs.ccso_grid.clone();
-    filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
-    filter_sink.set_gdf_grid(filter_inputs.gdf_grid);
-    filter_sink.set_cfl_ds_filter_index(
-        sequence
+        cfl_ds_filter_index: sequence
             .intra
             .as_ref()
             .map_or(0, |intra| intra.cfl_ds_filter_index),
-    );
-    let disable_loopfilters_across_tiles = sequence
-        .filter
-        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let deblock_quant_deltas = crate::pipeline::deblock_quant_deltas(sequence, &core);
+        disable_loopfilters_across_tiles: sequence
+            .filter
+            .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+        deblock_quant_deltas: crate::pipeline::deblock_quant_deltas(sequence, &core),
+        offset,
+    };
     let core = Arc::new(core);
-
-    Ok(FrameWalk {
-        stage: WalkStage::pending(WalkedFrame::new(
-            filter_sink,
-            Arc::clone(&core),
-            disable_loopfilters_across_tiles,
-            deblock_quant_deltas,
-            offset,
-        )),
-        core,
-        frame_cdfs,
-        ccso_grid,
-        motion_field,
-    })
+    Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, true))
 }
 
 fn decode_tip_output_frame<T: ReconSample>(
@@ -1813,7 +1791,7 @@ pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
-pub(crate) use block::{InterDecodeScratch, decode_inter_blocks};
+pub(crate) use block::{InterDecodeScratch, InterFilterInputs, decode_inter_blocks};
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::TemporalMotionField;
 

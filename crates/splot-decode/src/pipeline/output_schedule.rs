@@ -44,7 +44,9 @@ pub(super) fn charge_emitted_outputs(
             )
         })?;
         frame.validate_output_effects()?;
+        let settle_started = crate::timing::start();
         frame.wait_settled()?;
+        crate::timing::report("output_settle_wait", settle_started);
         emit(frame)?;
         if charge_output_bytes {
             output_frame_bytes =
