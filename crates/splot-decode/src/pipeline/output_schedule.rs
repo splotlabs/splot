@@ -14,46 +14,148 @@ use crate::error::Result;
 use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget};
 use crate::{DecodeLimitName, DecodeOptions};
 
+/// The frames the driver owes `emit`, in display order.
+///
+/// [`OutputScheduler`] alone decides which frames are emitted and in what order,
+/// and it decides that from frame headers, before any of those frames' samples
+/// exist. Queueing the handover therefore changes only *when* a frame reaches
+/// `emit`, never which frame does or in what order — in particular
+/// `scheduler.emitted.len()`, which drives the `--limit` early exit, still
+/// advances at exactly the point it did before, so the same frames decode.
+///
+/// The driver drains the queue at every scheduling point, handing over the
+/// longest prefix whose filter phases have already settled without ever
+/// blocking, and [flushes](Self::flush) what is left once the frame loop ends.
+#[derive(Default)]
+pub(super) struct EmissionQueue {
+    pending: std::collections::VecDeque<usize>,
+}
+
+impl EmissionQueue {
+    /// Whether a frame is still owed to `emit`, which keeps it unreclaimed.
+    pub(super) fn holds(&self, frame_index: usize) -> bool {
+        self.pending.contains(&frame_index)
+    }
+
+    /// Queues one frame for emission.
+    fn push(&mut self, frame_index: usize) {
+        self.pending.push_back(frame_index);
+    }
+
+    /// Emits the queued prefix whose frames have settled, leaving the rest.
+    fn drain_settled(
+        &mut self,
+        options: &DecodeOptions,
+        frames: &[Option<PipelineFrame>],
+        output_frame_bytes: u64,
+        charge_output_bytes: bool,
+        emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+    ) -> Result<u64> {
+        self.drain(
+            options,
+            frames,
+            output_frame_bytes,
+            charge_output_bytes,
+            emit,
+            false,
+        )
+    }
+
+    /// Emits every queued frame, waiting for the filter phases still running.
+    pub(super) fn flush(
+        &mut self,
+        options: &DecodeOptions,
+        frames: &[Option<PipelineFrame>],
+        output_frame_bytes: u64,
+        charge_output_bytes: bool,
+        emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+    ) -> Result<u64> {
+        self.drain(
+            options,
+            frames,
+            output_frame_bytes,
+            charge_output_bytes,
+            emit,
+            true,
+        )
+    }
+
+    fn drain(
+        &mut self,
+        options: &DecodeOptions,
+        frames: &[Option<PipelineFrame>],
+        mut output_frame_bytes: u64,
+        charge_output_bytes: bool,
+        emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
+        wait: bool,
+    ) -> Result<u64> {
+        while let Some(&frame_index) = self.pending.front() {
+            let frame = frames
+                .get(frame_index)
+                .and_then(Option::as_ref)
+                .ok_or_else(missing_display_frame)?;
+            if !wait && !frame.frame.is_settled() {
+                break;
+            }
+            let settle_started = crate::timing::start();
+            frame.wait_settled()?;
+            crate::timing::report("output_settle_wait", settle_started);
+            emit(frame)?;
+            if charge_output_bytes {
+                output_frame_bytes =
+                    ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, frame)?;
+            }
+            self.pending.pop_front();
+        }
+        Ok(output_frame_bytes)
+    }
+}
+
+fn missing_display_frame() -> crate::error::DecodeError {
+    unsupported(
+        "displayed_frame_index_unavailable",
+        None,
+        "decode pipeline output ordering references a decoded frame that is unavailable",
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
     frames: &[Option<PipelineFrame>],
     scheduler: &OutputScheduler,
+    queue: &mut EmissionQueue,
     newly: &[usize],
-    mut output_frame_bytes: u64,
+    output_frame_bytes: u64,
     charge_output_bytes: bool,
     emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<u64> {
-    if newly.is_empty() {
-        return Ok(output_frame_bytes);
-    }
-    let requested = options
-        .output_frame_limit()
-        .map_or(u64::MAX, std::num::NonZeroU64::get);
-    let emitted_total = (scheduler.emitted.len() as u64).min(requested);
-    ensure_output_frame_count_limit(options.limits(), emitted_total)?;
-    let first_new = scheduler.emitted.len() - newly.len();
-    for (offset, &frame_index) in newly.iter().enumerate() {
-        if (first_new + offset) as u64 >= requested {
-            break;
-        }
-        let frame = frames.get(frame_index).and_then(Option::as_ref).ok_or_else(|| {
-            unsupported(
-                "displayed_frame_index_unavailable",
-                None,
-                "decode pipeline output ordering references a decoded frame that is unavailable",
-            )
-        })?;
-        frame.validate_output_effects()?;
-        let settle_started = crate::timing::start();
-        frame.wait_settled()?;
-        crate::timing::report("output_settle_wait", settle_started);
-        emit(frame)?;
-        if charge_output_bytes {
-            output_frame_bytes =
-                ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, frame)?;
+    if !newly.is_empty() {
+        let requested = options
+            .output_frame_limit()
+            .map_or(u64::MAX, std::num::NonZeroU64::get);
+        let emitted_total = (scheduler.emitted.len() as u64).min(requested);
+        ensure_output_frame_count_limit(options.limits(), emitted_total)?;
+        let first_new = scheduler.emitted.len() - newly.len();
+        for (offset, &frame_index) in newly.iter().enumerate() {
+            if (first_new + offset) as u64 >= requested {
+                break;
+            }
+            let frame = frames
+                .get(frame_index)
+                .and_then(Option::as_ref)
+                .ok_or_else(missing_display_frame)?;
+            frame.validate_output_effects()?;
+            queue.push(frame_index);
         }
     }
-    Ok(output_frame_bytes)
+    queue.drain_settled(
+        options,
+        frames,
+        output_frame_bytes,
+        charge_output_bytes,
+        emit,
+    )
 }
 
 pub(super) fn output_frame_limit_reached(

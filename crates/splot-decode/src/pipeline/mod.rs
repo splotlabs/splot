@@ -179,6 +179,7 @@ fn reclaim_unowned_frames(
     frames: &mut [Option<PipelineFrame>],
     reference: &reference_buffer::RuntimeReferenceBuffer,
     scheduler: &OutputScheduler,
+    emission: &output_schedule::EmissionQueue,
     ring: &inflight::InflightRing,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
@@ -188,6 +189,7 @@ fn reclaim_unowned_frames(
         };
         if reference.retains(frame_index)
             || scheduler.retains(frame_index)
+            || emission.holds(frame_index)
             || ring.holds(frame_index)
             || !frame.frame.is_settled()
         {
@@ -722,6 +724,7 @@ fn decode_frames_in_order(
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
     let mut frames = Vec::new();
     let mut scheduler = OutputScheduler::new(num_ref_frames);
+    let mut emission_queue = output_schedule::EmissionQueue::default();
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
     in_band_long_term_prelude.begin_frame(true);
     let key_core = match key_envelope.header.obu_type {
@@ -962,6 +965,7 @@ fn decode_frames_in_order(
         options,
         &frames,
         &scheduler,
+        &mut emission_queue,
         &evicted,
         output_frame_bytes,
         retain_decoded_frames,
@@ -990,6 +994,7 @@ fn decode_frames_in_order(
             options,
             &frames,
             &scheduler,
+            &mut emission_queue,
             &emitted,
             output_frame_bytes,
             retain_decoded_frames,
@@ -1001,11 +1006,19 @@ fn decode_frames_in_order(
             &mut frames,
             &reference,
             &scheduler,
+            &emission_queue,
             ring,
             &mut retained_frame_bytes,
         )?;
     }
     if output_frame_limit_reached(options, scheduler.emitted.len()) {
+        emission_queue.flush(
+            options,
+            &frames,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
         return if retain_decoded_frames {
             select_output_frames(frames, scheduler.emitted)
         } else {
@@ -1044,6 +1057,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &flushed,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1156,6 +1170,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &emitted,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1166,6 +1181,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
@@ -1208,6 +1224,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &flushed,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1262,6 +1279,7 @@ fn decode_frames_in_order(
                             options,
                             &frames,
                             &scheduler,
+                            &mut emission_queue,
                             &emitted,
                             output_frame_bytes,
                             retain_decoded_frames,
@@ -1467,6 +1485,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &evicted,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1496,6 +1515,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &emitted,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1507,6 +1527,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
@@ -1595,6 +1616,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &flushed,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1660,6 +1682,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &flushed,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1671,6 +1694,7 @@ fn decode_frames_in_order(
                             &mut frames,
                             &reference,
                             &scheduler,
+                            &emission_queue,
                             ring,
                             &mut retained_frame_bytes,
                         )?;
@@ -1742,6 +1766,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &evicted,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1772,6 +1797,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &emitted,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1783,6 +1809,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
@@ -1807,7 +1834,15 @@ fn decode_frames_in_order(
             options,
             &frames,
             &scheduler,
+            &mut emission_queue,
             &flushed,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
+        output_frame_bytes = emission_queue.flush(
+            options,
+            &frames,
             output_frame_bytes,
             retain_decoded_frames,
             &mut emit,
@@ -1818,11 +1853,20 @@ fn decode_frames_in_order(
                 &mut frames,
                 &reference,
                 &scheduler,
+                &emission_queue,
                 ring,
                 &mut retained_frame_bytes,
             )?;
         }
         let _ = output_frame_bytes;
+    } else {
+        emission_queue.flush(
+            options,
+            &frames,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
     }
     if !retain_decoded_frames {
         return Ok(Vec::new());
