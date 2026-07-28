@@ -177,6 +177,15 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
 }
 
 const MAX_RETAINED_WINDOW_BUFFERS: usize = 64;
+/// The largest window buffer worth keeping, in samples of the stored type.
+///
+/// A window is one stripe's rows plus its margins across the frame width, so a
+/// count cap alone lets a wide frame leave tens of megabytes resident for the
+/// life of the process. This bounds the cache by a constant instead of by the
+/// widest frame the process ever decoded, exactly as the stripe cache's
+/// [`MAX_RETAINED_STRIPE_SAMPLES`] does; a window past it is dropped and the
+/// next stripe allocates its own.
+const MAX_RETAINED_WINDOW_SAMPLES: usize = MAX_RETAINED_STRIPE_SAMPLES;
 static WINDOW_SAMPLE_BUFFERS: Mutex<Vec<Box<dyn Any + Send>>> = Mutex::new(Vec::new());
 
 fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Option<Vec<T>> {
@@ -198,7 +207,7 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Option<Vec<T>> {
 }
 
 fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
-    if buffer.capacity() == 0 {
+    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_WINDOW_SAMPLES {
         return;
     }
     buffer.clear();
@@ -450,3 +459,7 @@ impl Drop for StripePlane {
         recycle_stripe_sample_buffer(core::mem::take(&mut self.samples));
     }
 }
+
+#[cfg(test)]
+#[path = "source_tests.rs"]
+mod tests;

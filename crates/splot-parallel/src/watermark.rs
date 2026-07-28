@@ -74,12 +74,17 @@ impl WatermarkCell {
     /// current one is a no-op that fires nothing, because the publish that
     /// raised the watermark already fired every waiter at or below it.
     ///
+    /// The returned value is the watermark this call observed last, which a
+    /// concurrent publisher may already have raised past `value`; it is never
+    /// below what this call established. A caller that acts on progress
+    /// therefore never acts on a stale figure.
+    ///
     /// Waiters are collected under the lock and notified after it is released,
     /// so no scheduler lock is ever held across a waiter callback.
     pub fn publish(&self, value: usize) -> usize {
         let previous = self.value.fetch_max(value, Ordering::AcqRel);
         if previous >= value {
-            return previous;
+            return self.current();
         }
         let fired = {
             let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
@@ -93,7 +98,7 @@ impl WatermarkCell {
         for entry in fired {
             entry.waiter.satisfy();
         }
-        value
+        self.current()
     }
 
     /// Registers `waiter` to fire when the watermark reaches `threshold`.
@@ -232,6 +237,26 @@ mod tests {
         cell.publish(WatermarkCell::FAILED);
         assert_eq!(waiter.count(), 1);
         assert_eq!(cell.current(), WatermarkCell::FAILED);
+    }
+
+    #[test]
+    fn publish_reports_a_racing_publisher_rather_than_its_own_value() {
+        let cell = Arc::new(WatermarkCell::new());
+        let ahead = Arc::clone(&cell);
+        let waiter = Arc::new(CountingWaiter::default());
+        assert!(cell.register(3, waiter));
+        ahead.publish(10);
+
+        assert_eq!(
+            cell.publish(5),
+            10,
+            "a no-op publish reports the watermark, not the value it submitted"
+        );
+        assert_eq!(
+            cell.publish(20),
+            20,
+            "a raising publish reports the watermark it established"
+        );
     }
 
     #[test]

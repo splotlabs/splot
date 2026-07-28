@@ -645,6 +645,7 @@ fn drive_frames(
     spawner: &inflight::FinishSpawner<'_, '_>,
 ) -> Result<Vec<PipelineFrame>> {
     let inflight_timer = crate::timing::start();
+    let phases_before = crate::timing::phase_totals();
     let mut decode_scratch_eight = inter::InterDecodeScratch::default();
     let mut decode_scratch_ten = inter::InterDecodeScratch::default();
     let mut ring = inflight::InflightRing::new(frame_delay);
@@ -669,7 +670,7 @@ fn drive_frames(
             &format!("max_in_flight={}", ring.max_in_flight()),
         );
     }
-    crate::timing::report_phases();
+    crate::timing::report_phases(&phases_before);
     match ring.take_failure() {
         Some(failure) => Err(failure),
         None => decoded,

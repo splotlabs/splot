@@ -688,13 +688,7 @@ pub(super) fn predict_compound_from_grid<T: ReconSample>(
         if plane != PlaneId::Y && !block.has_chroma {
             continue;
         }
-        let (_, _, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
-        let plane_sample_count =
-            block_w
-                .checked_mul(block_h)
-                .ok_or(ReconError::ArithmeticOverflow {
-                    context: "compound output plane sample count",
-                })?;
+        let plane_sample_count = compound_plane_sample_count(block.rect, plane, sub_x, sub_y)?;
         let (plane_samples, remaining_samples) = samples.split_at_mut(plane_sample_count);
         samples = remaining_samples;
         if plane != PlaneId::Y && block.sub8x8_chroma {
@@ -741,6 +735,22 @@ pub(super) fn predict_compound_from_grid<T: ReconSample>(
     })
 }
 
+/// The samples one plane of a compound block's packed output holds.
+fn compound_plane_sample_count(
+    rect: McBlockRect,
+    plane: PlaneId,
+    sub_x: u32,
+    sub_y: u32,
+) -> Result<usize> {
+    let (_, _, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
+    block_w.checked_mul(block_h).ok_or(
+        ReconError::ArithmeticOverflow {
+            context: "compound output plane sample count",
+        }
+        .into(),
+    )
+}
+
 fn compound_output_sample_count(
     rect: McBlockRect,
     has_chroma: bool,
@@ -751,12 +761,7 @@ fn compound_output_sample_count(
         if plane != PlaneId::Y && !has_chroma {
             continue;
         }
-        let (_, _, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
-        let plane_samples = block_w
-            .checked_mul(block_h)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "compound output plane sample count",
-            })?;
+        let plane_samples = compound_plane_sample_count(rect, plane, sub_x, sub_y)?;
         sample_count =
             sample_count
                 .checked_add(plane_samples)

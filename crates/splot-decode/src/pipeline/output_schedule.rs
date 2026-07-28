@@ -119,6 +119,17 @@ fn missing_display_frame() -> crate::error::DecodeError {
     )
 }
 
+/// Queues the frames one scheduling action newly ordered for output, charges
+/// them against the output limits, and hands over what has settled.
+///
+/// Each frame is queued behind a drain of the ones already owed, so a frame
+/// whose output-effect metadata is refused cannot suppress the valid frames
+/// scheduled ahead of it — one action can order several frames at once, since
+/// [`OutputScheduler::on_immediate`] flushes the older pending ones first.
+///
+/// # Errors
+///
+/// Returns the output-limit, output-effect, or `emit` diagnostic.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
@@ -126,7 +137,7 @@ pub(super) fn charge_emitted_outputs(
     scheduler: &OutputScheduler,
     queue: &mut EmissionQueue,
     newly: &[usize],
-    output_frame_bytes: u64,
+    mut output_frame_bytes: u64,
     charge_output_bytes: bool,
     emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
 ) -> Result<u64> {
@@ -141,6 +152,13 @@ pub(super) fn charge_emitted_outputs(
             if (first_new + offset) as u64 >= requested {
                 break;
             }
+            output_frame_bytes = queue.drain_settled(
+                options,
+                frames,
+                output_frame_bytes,
+                charge_output_bytes,
+                emit,
+            )?;
             let frame = frames
                 .get(frame_index)
                 .and_then(Option::as_ref)
@@ -531,6 +549,84 @@ pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipeline::FrameCdfSubset;
+    use crate::pipeline::frame_lifecycle::PipelineDecodedFrame;
+    use crate::pipeline::inflight::PipelineFrameSlot;
+    use crate::pipeline::output_effects::FrameOutputEffects;
+    use crate::prediction::inter::MotionFieldHandle;
+    use std::sync::Arc;
+
+    use splot_core::headers::metadata::{
+        MetadataHdrCll, MetadataPayload, MetadataType, MetadataUnit,
+    };
+    use splot_recon::SharedFrame;
+
+    /// One settled output frame, `width` wide so `emit` can tell frames apart.
+    fn settled_frame(width: usize, output_effects: FrameOutputEffects) -> PipelineFrame {
+        let frame = crate::test_support::decoded_frame(width, 4);
+        PipelineFrame {
+            frame: PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(SharedFrame::new(
+                frame,
+            ))),
+            display_grain: None,
+            output_effects,
+            frame_cdfs: Arc::new(FrameCdfSubset::from_defaults()),
+            motion_field: MotionFieldHandle::pending(),
+            ccso_params: None,
+            ccso_grid: None,
+            frame_rate_numerator: 1,
+            frame_rate_denominator: 1,
+        }
+    }
+
+    /// Attached metadata AV2 § 6.16.1 refuses: the payload is not the one the
+    /// unit's `metadata_type` selects.
+    fn refused_output_effects() -> FrameOutputEffects {
+        let mut effects = FrameOutputEffects::empty();
+        effects.metadata = vec![MetadataUnit {
+            metadata_type: MetadataType::HdrMdcv,
+            payload_size: 4,
+            payload: MetadataPayload::HdrCll(MetadataHdrCll {
+                max_cll: 0,
+                max_fall: 0,
+            }),
+        }];
+        effects
+    }
+
+    #[test]
+    fn a_refused_frame_does_not_suppress_the_frames_scheduled_ahead_of_it() {
+        let options = DecodeOptions::default();
+        let frames = vec![
+            Some(settled_frame(8, FrameOutputEffects::empty())),
+            Some(settled_frame(16, refused_output_effects())),
+        ];
+        let mut scheduler = OutputScheduler::new(2);
+        scheduler.emitted = vec![0, 1];
+        let mut queue = EmissionQueue::default();
+        let mut widths = Vec::new();
+
+        let result = charge_emitted_outputs(
+            &options,
+            &frames,
+            &scheduler,
+            &mut queue,
+            &[0, 1],
+            0,
+            false,
+            &mut |frame| {
+                widths.push(frame.frame.info().coded_luma_size().width());
+                Ok(())
+            },
+        );
+
+        assert!(result.is_err(), "the refused frame still fails the stream");
+        assert_eq!(
+            widths,
+            vec![8],
+            "the frame scheduled first reached the caller before the refusal"
+        );
+    }
 
     #[test]
     fn new_sequence_flushes_pending_output_and_recreates_slots() {

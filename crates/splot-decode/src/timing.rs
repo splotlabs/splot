@@ -9,7 +9,11 @@
 //! thread-scaling behavior of each stage is visible. Phases that fire per
 //! block, per prediction unit, or per filter stripe accumulate into atomic
 //! totals and emit one summed line each at the end of the stream instead of
-//! printing as they run. Disabled by default; normal CLI output is unchanged.
+//! printing as they run. Those totals are process-global, so a run reports the
+//! delta it added over the totals it started from rather than clearing them:
+//! two decodes traced at once in one process then each report a whole window,
+//! though the windows overlap. Disabled by default; normal CLI output is
+//! unchanged.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -223,18 +227,56 @@ impl Drop for PhaseScope {
     }
 }
 
-/// Emits and clears the accumulated phase totals for the whole stream.
+/// One reading of every phase total, taken at the start of a decode run.
+#[derive(Clone, Copy)]
+pub(crate) struct PhaseTotals([(u64, u64); PHASE_NAMES.len()]);
+
+/// Reads every phase total, so a run can later report only what it added.
+///
+/// The counters are process-global: a second decode running beside this one
+/// adds into the same totals, and no plumbing separates the two without putting
+/// a handle on every hot path. Taking a delta at least keeps the two runs
+/// non-destructive — see [`report_phases`].
+pub(crate) fn phase_totals() -> PhaseTotals {
+    PhaseTotals(core::array::from_fn(|index| {
+        PHASE_COUNTERS.get(index).map_or((0, 0), |counter| {
+            (
+                counter.nanos.load(Ordering::Relaxed),
+                counter.hits.load(Ordering::Relaxed),
+            )
+        })
+    }))
+}
+
+/// The nanoseconds and intervals one phase has added since `since`.
+fn phase_delta(index: usize, since: &PhaseTotals) -> (u64, u64) {
+    let (nanos, hits) = since.0.get(index).copied().unwrap_or_default();
+    PHASE_COUNTERS.get(index).map_or((0, 0), |counter| {
+        (
+            counter.nanos.load(Ordering::Relaxed).saturating_sub(nanos),
+            counter.hits.load(Ordering::Relaxed).saturating_sub(hits),
+        )
+    })
+}
+
+/// Emits the phase totals one decode run added over `since`.
 ///
 /// Each total is the sum over every worker that ran the phase, so a phase
 /// reads above the wall time it occupied whenever it ran in parallel; `n` is
 /// how many intervals the total covers.
-pub(crate) fn report_phases() {
+///
+/// Reporting a delta rather than clearing the counters is what makes a second
+/// concurrent decode's report whole: neither run consumes the other's samples.
+/// A phase another traced decode ran inside this run's window is still counted
+/// in both reports, so attribution across concurrent decodes in one process is
+/// approximate — trace one decode at a time when it has to be exact.
+pub(crate) fn report_phases(since: &PhaseTotals) {
     if !enabled() {
         return;
     }
-    for (name, counter) in PHASE_NAMES.iter().zip(&PHASE_COUNTERS) {
-        let ms = counter.nanos.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
-        let n = counter.hits.swap(0, Ordering::Relaxed);
+    for (index, name) in PHASE_NAMES.iter().enumerate() {
+        let (nanos, n) = phase_delta(index, since);
+        let ms = nanos as f64 / 1.0e6;
         eprintln!("splot.decode_timing {name}_ms={ms:.3} n={n}");
     }
 }
@@ -263,3 +305,7 @@ impl WorkerTally {
             .map_or(0, |mask| mask.load(Ordering::Relaxed).count_ones())
     }
 }
+
+#[cfg(test)]
+#[path = "timing_tests.rs"]
+mod tests;

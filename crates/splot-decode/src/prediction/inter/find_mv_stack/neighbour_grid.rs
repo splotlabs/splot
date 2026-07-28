@@ -707,3 +707,7 @@ impl NeighbourMvGrid {
         matches!(self.flags_at(r, c), Some(flags) if flags.ref_frame0 != TIP_REF_FRAME)
     }
 }
+
+#[cfg(test)]
+#[path = "neighbour_grid_tests.rs"]
+mod tests;

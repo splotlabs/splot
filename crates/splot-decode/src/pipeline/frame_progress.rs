@@ -133,17 +133,25 @@ impl<T: ReconSample> FrameProgress<T> {
     /// The number of luma rows from the frame top whose samples are final.
     ///
     /// The watermark also carries the terminal values a finished or failed
-    /// filter phase publishes, so the row count is clamped to the frame: a
-    /// failed phase publishes [`WatermarkCell::FAILED`], which admits every
-    /// waiter but names no readable row.
+    /// filter phase publishes. A failed phase publishes
+    /// [`WatermarkCell::FAILED`], which admits every waiter but names no
+    /// readable row, so it reports zero rather than clamping to the frame
+    /// height: the rows a failed phase never wrote must fail closed, and the
+    /// waiters it released are admitted by the slot settling as failed.
     pub(crate) fn published_luma_rows(&self) -> usize {
-        self.published_luma_rows.current().min(self.luma_height)
+        let published = self.published_luma_rows.current();
+        if published == WatermarkCell::FAILED {
+            return 0;
+        }
+        published.min(self.luma_height)
     }
 
     /// Borrows the published prefix of the frame's filtered samples.
     ///
     /// Returns `None` once the filter phase has taken the workspace to freeze
-    /// it; the caller then waits for the slot, which is about to settle.
+    /// it; the caller then waits for the slot, which is about to settle. A
+    /// phase that failed publishes no readable row, so it also returns `None`
+    /// and the caller reads the settled failure instead of unfiltered samples.
     pub(crate) fn read(&self) -> Option<PublishedFrame<'_, T>> {
         let rows = self.published_luma_rows();
         let luma_rows = NonZeroUsize::new(rows)?;

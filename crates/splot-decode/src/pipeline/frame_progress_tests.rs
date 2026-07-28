@@ -171,6 +171,39 @@ fn reads_are_refused_before_the_first_stripe_and_after_the_freeze() {
 }
 
 #[test]
+fn a_failed_phase_publishes_no_readable_row() {
+    let progress = new_progress(64, 128, PixelFormat::Yuv420);
+    assert!(progress.begin(&[(0, 64), (64, 128)]));
+    progress.publish(0);
+    assert_eq!(progress.published_luma_rows(), 64);
+
+    progress.publish_terminal(false);
+    assert_eq!(
+        progress.published_luma_rows(),
+        0,
+        "a failed phase names no readable row, not the whole frame"
+    );
+    assert!(
+        progress.read().is_none(),
+        "the never-frozen workspace of a failed phase must not be readable"
+    );
+}
+
+#[test]
+fn a_finished_phase_publishes_the_whole_frame() {
+    let progress = new_progress(64, 128, PixelFormat::Monochrome);
+    assert!(progress.begin(&[(0, 64), (64, 128)]));
+
+    progress.publish_terminal(true);
+    assert_eq!(progress.published_luma_rows(), 128);
+    assert_eq!(
+        progress.read().expect("a published frame").luma_rows(),
+        128,
+        "a phase that filtered every row publishes every row"
+    );
+}
+
+#[test]
 fn the_freeze_publishes_before_it_releases_the_workspace() {
     let progress = new_progress(64, 128, PixelFormat::Monochrome);
     assert!(progress.begin(&[(0, 64), (64, 128)]));

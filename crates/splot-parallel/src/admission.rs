@@ -13,11 +13,20 @@
 //! # Ordering guarantee
 //!
 //! Admissible jobs queue in a min-heap keyed by `order_key`, ties broken by
-//! submission order. Every drain step spawns the lowest-keyed job that is
-//! admissible at that moment, so a drain is oldest-first over the jobs it finds.
-//! There is no global order: a job that becomes admissible after a drain has
-//! passed its key is spawned by a later drain, and the FIFO spawn order only
-//! fixes the pool's enqueue order, never which worker runs what.
+//! submission order, and each pop takes the lowest-keyed job queued at that
+//! moment. A single drain therefore spawns the jobs it finds oldest-first.
+//!
+//! That is the whole guarantee, and it is a scheduling preference, not a
+//! correctness property: what a job may do is fixed by the [`Condition`]s it
+//! was submitted with, never by when it spawns. Two other things follow.
+//! Drains run concurrently, and one that has popped a job but not yet spawned
+//! it does not hold back another drain, so two jobs found by different drains
+//! reach the pool in an unspecified order. And there is no global order at all:
+//! a job that becomes admissible after a drain has passed its key waits for a
+//! later drain. Serializing pop-to-spawn would buy neither, since a publish
+//! that lands a moment later legally reorders the same pair; it would only put
+//! one lock on the path every spawn takes. Spawn order fixes the pool's enqueue
+//! order and nothing else — never which worker runs what, nor when.
 //!
 //! # Drains
 //!
@@ -304,7 +313,8 @@ impl<'job> AdmissionScheduler<'job> {
     ///
     /// The drain is iterative: each spawned job re-drains after its body runs,
     /// so a job that admits further work does not nest drains on one stack. No
-    /// lock is held across a spawn.
+    /// lock is held across a spawn, which is also why concurrent drains
+    /// interleave rather than queue — see the module's ordering guarantee.
     pub fn admit_ready<'scope>(&'scope self, scope: &TaskScope<'_, 'scope>) -> usize
     where
         'job: 'scope,
