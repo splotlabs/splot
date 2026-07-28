@@ -11,7 +11,9 @@
 
 use core::num::NonZeroU64;
 
-use splot_decode::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+use splot_decode::{
+    DecodeContext, DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig,
+};
 use splot_parallel::{FrameDelay, ThreadCount};
 
 const MULTIREF: &[u8] =
@@ -28,6 +30,8 @@ const BRIDGE: &[u8] =
 const TEN_BIT_INTER: &[u8] = include_bytes!(
     "../../../tests/conformance/vectors/valid/syn-3frame-deblock-subpu-chroma-64x32-10bit-q90.ivf"
 );
+const ORDER_HINT_WRAP: &[u8] =
+    include_bytes!("../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf");
 
 const FIXTURES: &[(&str, &[u8])] = &[
     ("syn-3frame-multiref-64x64", MULTIREF),
@@ -167,9 +171,6 @@ fn a_corrupt_stream_fails_with_the_serial_diagnostic_at_every_depth() {
 /// only variable, which is what this stage owns.
 #[test]
 fn frame_delay_does_not_change_output_at_a_fixed_thread_count() {
-    const ORDER_HINT_WRAP: &[u8] =
-        include_bytes!("../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf");
-
     let expected = context(8, FrameDelay::from(1usize))
         .decode_raw_output_bytes(ORDER_HINT_WRAP, DecodeOptions::default())
         .unwrap();
@@ -180,4 +181,17 @@ fn frame_delay_does_not_change_output_at_a_fixed_thread_count() {
             .unwrap();
         assert_eq!(actual, expected, "output diverged at frame delay {depth}");
     }
+}
+
+#[test]
+fn pipelined_hash_decode_keeps_reference_storage_at_the_serial_peak() {
+    let options = DecodeOptions::new(
+        DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_592)),
+    );
+
+    let report = context(3, FrameDelay::from(2usize))
+        .decode_hash_report_bytes(ORDER_HINT_WRAP, options)
+        .unwrap();
+
+    assert_eq!(report.frames.len(), 121);
 }
