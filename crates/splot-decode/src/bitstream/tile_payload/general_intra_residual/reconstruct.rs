@@ -3,14 +3,12 @@
 
 //! Shared transform-block reconstruction setup.
 
-#[cfg(test)]
-use splot_recon::inverse_transform_2d_outer;
 use splot_recon::math::round2_i32;
 use splot_recon::{
-    BitDepth, CurrentFrameSurface, DequantBlockParams, DpcmDirection, IntraRectBlockSize,
-    InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform, ac_quantizer,
-    dc_quantizer, dequant_coefficient, dequantize_block, inverse_transform_2d_outer_adjusted,
-    secondary_inverse_transform, tx_class,
+    BitDepth, CurrentFrameSurface, CurrentFrameWorkspace, DequantBlockParams, DpcmDirection,
+    IntraRectBlockSize, InverseTransform2dOuter, PlaneId, ReconSample, SecondaryInverseTransform,
+    ac_quantizer, dc_quantizer, dequant_coefficient, dequantize_block, inverse_transform_2d_outer,
+    inverse_transform_2d_outer_adjusted, secondary_inverse_transform, tx_class,
 };
 
 use super::super::coeff_loop::max_level::CoeffTransformClass;
@@ -140,6 +138,88 @@ pub(crate) fn reconstruct_general_intra_coeff_block_rect_with_prediction_into<T:
         dpcm,
         bit_depth,
     )
+}
+
+/// Reconstructs one general-intra transform block straight into the current
+/// frame, fusing the AV2 § 7.14.3 residual addition with the block's frame write.
+///
+/// This is the write-through form of
+/// [`reconstruct_general_intra_coeff_block_rect_with_prediction_into`] followed
+/// by `write_rect_block`: it drops the reconstructed-block staging buffer, its
+/// fill, its range scan, and the block-to-plane copy. Returns `Ok(false)`
+/// without touching the frame when the block cannot take the write-through path
+/// — a block overhanging the frame edge, whose in-frame clamp only the buffered
+/// write reproduces, or a caller bit depth other than the frame's, whose
+/// out-of-range samples only the buffered write can reject — leaving the caller
+/// to reconstruct it through the staging buffer.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn reconstruct_general_intra_coeff_block_rect_into_frame<T: ReconSample>(
+    workspace: &mut CurrentFrameWorkspace<T>,
+    block: &LumaCoeffBlock,
+    prediction: &[T],
+    plane_id: PlaneId,
+    x: usize,
+    y: usize,
+    block_size: IntraRectBlockSize,
+    qindex: u32,
+    use_tcq: bool,
+    luma_context: Option<LumaTransformTypeContext>,
+    dpcm: Option<DpcmDirection>,
+    bit_depth: BitDepth,
+) -> Result<bool, GeneralIntraResidualError> {
+    if bit_depth != workspace.info().bit_depth() {
+        return Ok(false);
+    }
+    let log2_width = u32::from(block_size.log2_width());
+    let log2_height = u32::from(block_size.log2_height());
+    let (quant_plane, dpcm, secondary) = if let Some(luma_context) = luma_context {
+        (
+            PlaneId::Y,
+            luma_context.dpcm,
+            resolve_secondary_inverse_transform(
+                block,
+                log2_width,
+                log2_height,
+                bit_depth,
+                Some(luma_context),
+            )?,
+        )
+    } else {
+        (plane_id, dpcm, None)
+    };
+    let setup = reconstruct_block_setup(
+        prediction.len(),
+        qindex,
+        quant_plane,
+        log2_width,
+        log2_height,
+        block.plane_tx_type,
+        use_tcq && block.use_tcq,
+        false,
+        block.lossless,
+        dpcm,
+        bit_depth,
+    )?;
+    if block.quant.len() != setup.adjusted {
+        return Err(GeneralIntraResidualError::QuantLength {
+            expected: setup.adjusted,
+            actual: block.quant.len(),
+        });
+    }
+    let written = workspace.with_rect_block_rows_mut(plane_id, x, y, block_size, |rows| {
+        super::with_residual_scratch(|scratch| {
+            let dequant = &mut scratch.dequant[..setup.adjusted];
+            dequantize_block(&setup.params, &block.quant, dequant)?;
+            if let Some(secondary) = secondary.as_ref() {
+                secondary_inverse_transform(dequant, secondary)?;
+            }
+            let residual = &mut scratch.residual[..setup.samples];
+            inverse_transform_2d_outer(&setup.transform, dequant, residual)?;
+            rows.add_block_residual(prediction, residual)
+        })
+        .map_err(|source| GeneralIntraResidualError::Reconstruct { source })
+    })?;
+    Ok(written.is_some())
 }
 
 #[allow(clippy::too_many_arguments)]

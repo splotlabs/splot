@@ -16,7 +16,7 @@ use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
-    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter, PixelFormat,
+    BitDepth, DecodedFrame, InterpolationFilter as ReconInterpolationFilter,
     PlaneId as ReconPlaneId, PlaneRect, QuantizerDeltas, ReconSample, ReferenceFrameStore,
     ReferenceSlot,
 };
@@ -26,7 +26,7 @@ use crate::bitstream::tile_payload::{
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::error::DecodeError;
-use crate::pipeline::frame_engine::finish::{FrameWalk, WalkStage, WalkedFrame};
+use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
@@ -165,130 +165,24 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             SPEC_HEADER
         ));
     }
-    let initial_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
-
-    let frame_size = core.frame_size.ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_frame_size",
-            offset,
-            "inter.frame_size",
-            SPEC_HEADER
-        )
-    })?;
-    let frame_width = frame_size.width;
-    let frame_height = frame_size.height;
-
-    let inter = core.inter.as_ref().ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_control_region",
-            offset,
-            "inter.control_region",
-            SPEC_HEADER
-        )
-    })?;
-    let tail = core
-        .inter_tail
-        .as_ref()
-        .ok_or_else(|| inter_missing!("inter_missing_tail", offset, "inter.tail", SPEC_HEADER))?;
-    let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    if !(1..=7).contains(&num_total_refs) {
-        return Err(inter_cap!(
-            "inter_unsupported_num_total_refs",
-            offset,
-            "inter.single_ref.num_total_refs not in 1..=7",
-            SPEC_MODE_INFO
-        ));
-    }
-    let ref_frame_idx = &inter.ref_frame_idx;
-    if ref_frame_idx.len() != num_total_refs as usize || ref_frame_idx.is_empty() {
-        return Err(inter_missing!(
-            "inter_missing_ref_frame_idx",
-            offset,
-            "inter.ref_frame_idx",
-            SPEC_HEADER
-        ));
-    }
-
-    let block_reference_select = tail.reference_select;
-    if block_reference_select {
-        validate_compound_sequence_subset(sequence, &core, offset)?;
-    }
-    let limits = options.limits();
-    let tile_plan = crate::pipeline::derive_inter_tile_plan(
+    let frame_walk::InterWalkPrologue {
+        tile_plan,
+        mut workspace,
+        setup,
+        facts,
+        ref_frame_idx,
+        quantizer_deltas,
+    } = frame_walk::derive_inter_walk_prologue(
         plan,
         candidate,
         bytes,
         frame_envelope,
-        sequence,
         &core,
+        sequence,
         options,
-        &initial_cdfs,
-    )?;
-    let tile_size = tile_plan
-        .work_units()
-        .iter()
-        .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
-        .max()
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_missing_tile_work_units",
-                offset,
-                "inter.tile_count > 0",
-                "5.20.1"
-            )
-        })?;
-    ensure_runtime_limits(
-        limits,
-        frame_width,
-        frame_height,
-        tile_size,
+        reference,
         bit_depth,
-        sequence.general.chroma_format_idc,
     )?;
-    let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_interpolation_filter",
-            offset,
-            "inter.interpolation_filter",
-            SPEC_MC
-        )
-    })?;
-
-    let visible_luma_rect = derive_visible_luma_rect(sequence, frame_width, frame_height)?;
-    let mut workspace =
-        crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect::<T>(
-            frame_width as usize,
-            frame_height as usize,
-            bit_depth,
-            PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
-            visible_luma_rect,
-        )?;
-    let quantization = core.quantization_params.as_ref().ok_or_else(|| {
-        unsupported_at(
-            "inter_missing_base_q",
-            offset,
-            "minimal inter residual decode requires a parsed base_q_idx",
-            SPEC_HEADER,
-        )
-    })?;
-    let qindex = quantization.base_q_idx;
-    let quantizer_deltas = effective_quantizer_deltas(sequence, quantization).ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_quantizer_delta_state",
-            offset,
-            "sequence.transform_quant_entropy",
-            SPEC_HEADER
-        )
-    })?;
-    let luma_use_tcq = core
-        .lossless_info
-        .as_ref()
-        .is_some_and(|lossless| lossless.allow_tcq);
-    let residual_use_ddt = sequence
-        .transform_quant_entropy
-        .as_ref()
-        .is_some_and(|tq| tq.enable_inter_ddt);
-
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let (frame_cdfs, filter_inputs) = decode_inter_blocks(
         scratch,
@@ -297,67 +191,13 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         sequence,
         &core,
         options,
-        interpolation_filter,
-        num_total_refs as usize,
-        block_reference_select,
-        sequence
-            .inter
-            .as_ref()
-            .map_or(0, |seq_inter| seq_inter.num_same_ref_compound)
-            .min(u8::try_from(num_total_refs).unwrap_or(u8::MAX)),
-        ref_frame_idx,
+        facts,
+        &ref_frame_idx,
         reference,
         &mut workspace,
-        qindex,
-        luma_use_tcq,
-        residual_use_ddt,
-        bit_depth,
     )?;
-    let motion_field = filter_inputs.motion_field;
-
-    let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
-        workspace,
-        frame_width as usize,
-        frame_height as usize,
-        bit_depth,
-    );
-    filter_sink.set_gdf_reference_context(Some(
-        crate::filters::gdf::GdfReferenceContext::from_reference_list(
-            core.display_order_hint().unwrap_or(0),
-            ref_frame_idx,
-            &reference.ref_order_hint,
-        ),
-    ));
-    filter_sink.set_filter_records(filter_inputs.records);
-    filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
-    let ccso_grid = filter_inputs.ccso_grid.clone();
-    filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
-    filter_sink.set_gdf_grid(filter_inputs.gdf_grid);
-    filter_sink.set_cfl_ds_filter_index(
-        sequence
-            .intra
-            .as_ref()
-            .map_or(0, |intra| intra.cfl_ds_filter_index),
-    );
-    let disable_loopfilters_across_tiles = sequence
-        .filter
-        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let deblock_quant_deltas = crate::pipeline::deblock_quant_deltas(sequence, &core);
     let core = Arc::new(core);
-
-    Ok(FrameWalk {
-        stage: WalkStage::pending(WalkedFrame::new(
-            filter_sink,
-            Arc::clone(&core),
-            disable_loopfilters_across_tiles,
-            deblock_quant_deltas,
-            offset,
-        )),
-        core,
-        frame_cdfs,
-        ccso_grid,
-        motion_field,
-    })
+    Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, true))
 }
 
 fn decode_tip_output_frame<T: ReconSample>(
@@ -1053,7 +893,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
     pub(crate) ref_ccso_params: Vec<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<Arc<crate::filters::ccso::CcsoUnitGrid>>>,
-    pub(crate) ref_motion_fields: Vec<Option<Arc<TemporalMotionField>>>,
+    pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 
 impl<T: ReconSample> InterReferenceState<T> {
@@ -1090,6 +930,21 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_ccso_unit_grids: Vec::new(),
             ref_motion_fields: Vec::new(),
         })
+    }
+
+    /// Shares every reference slot's published § 7.9 motion field.
+    ///
+    /// A slot that names a field whose frame has not reconstructed yet yields
+    /// `None` for the whole list: the § 7.9 projection would otherwise read
+    /// that reference as motionless and silently decode a different frame.
+    pub(crate) fn resolve_motion_fields(&self) -> Option<Vec<Option<Arc<TemporalMotionField>>>> {
+        self.ref_motion_fields
+            .iter()
+            .map(|slot| match slot {
+                None => Some(None),
+                Some(handle) => handle.field().map(|field| Some(Arc::clone(field))),
+            })
+            .collect()
     }
 
     pub(crate) fn from_metadata(
@@ -1807,15 +1662,22 @@ mod bridge;
 mod compound;
 mod cross_frame;
 mod find_mv_stack;
+mod frame_walk;
 pub(crate) mod mc;
+mod motion_field;
 pub(crate) mod mv_scaling;
 pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
-pub(crate) use block::{InterDecodeScratch, decode_inter_blocks};
+pub(crate) use block::{
+    InterBlockFacts, InterDecodeScratch, InterFilterInputs, InterFrameParse, decode_inter_blocks,
+    parse_inter_frame_blocks,
+};
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::TemporalMotionField;
+pub(crate) use frame_walk::{DeferredInterWalk, parse_inter_frame, splittable_inter_frame};
+pub(crate) use motion_field::MotionFieldHandle;
 
 #[cfg(test)]
 #[path = "inter/test_support_tests.rs"]

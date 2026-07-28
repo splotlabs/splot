@@ -17,14 +17,14 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{BitDepth, PixelFormat, QmFrameLevels, ReconSample};
 
 use crate::bitstream::tile_payload::{FrameQmScope, FrameQuantizerDeltasScope};
-use crate::pipeline::frame_engine::finish::{FrameWalk, WalkStage, WalkedFrame};
+use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk};
 use crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect;
 use crate::pipeline::{
     deblock_quant_deltas, derive_tile_plan, derive_visible_luma_rect, ensure_runtime_limits,
     unsupported_at,
 };
 use crate::prediction::inter::{
-    InterReferenceState, TemporalMotionField, decode_inter_blocks, effective_quantizer_deltas,
+    InterReferenceState, decode_inter_blocks, effective_quantizer_deltas,
 };
 use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
 
@@ -130,55 +130,38 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         sequence,
         &core,
         options,
-        InterpolationFilter::Eighttap,
-        0,
-        false,
-        0,
+        crate::prediction::inter::InterBlockFacts {
+            frame_interpolation_filter: InterpolationFilter::Eighttap,
+            num_total_refs: 0,
+            reference_select: false,
+            num_same_ref_compound: 0,
+            qindex,
+            luma_use_tcq,
+            residual_use_ddt: false,
+            bit_depth,
+        },
         &[],
         &reference,
         &mut workspace,
-        qindex,
-        luma_use_tcq,
-        false,
-        bit_depth,
     )?;
 
-    let mut filter_sink = crate::filters::wienerns_lr::recon_final_filter_sink(
-        workspace,
-        frame_width,
-        frame_height,
+    let setup = FilterSinkSetup {
+        luma_width: frame_width,
+        luma_height: frame_height,
         bit_depth,
-    );
-    filter_sink.set_filter_records(filter_inputs.records);
-    filter_sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
-    let ccso_grid = filter_inputs.ccso_grid.clone();
-    filter_sink.set_ccso_grid(filter_inputs.ccso_grid);
-    filter_sink.set_gdf_grid(filter_inputs.gdf_grid);
-    filter_sink.set_cfl_ds_filter_index(
-        sequence
+        gdf_reference: None,
+        cfl_ds_filter_index: sequence
             .intra
             .as_ref()
             .map_or(0, |intra| intra.cfl_ds_filter_index),
-    );
-    let disable_loopfilters_across_tiles = sequence
-        .filter
-        .is_some_and(|filter| filter.disable_loopfilters_across_tiles);
-    let deblock_quant_deltas = deblock_quant_deltas(sequence, &core);
+        disable_loopfilters_across_tiles: sequence
+            .filter
+            .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+        deblock_quant_deltas: deblock_quant_deltas(sequence, &core),
+        offset,
+    };
     let core = std::sync::Arc::new(core);
-
-    Ok(FrameWalk {
-        stage: WalkStage::pending(WalkedFrame::new(
-            filter_sink,
-            std::sync::Arc::clone(&core),
-            disable_loopfilters_across_tiles,
-            deblock_quant_deltas,
-            offset,
-        )),
-        core,
-        frame_cdfs,
-        ccso_grid,
-        motion_field: TemporalMotionField::empty(),
-    })
+    Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, false))
 }
 
 pub(crate) fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {

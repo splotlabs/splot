@@ -38,6 +38,7 @@ impl WarpParamBank {
         mi_col: usize,
         sb_size4: usize,
     ) {
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
         if self.current_sb == Some(sb) {
             return;
@@ -50,15 +51,16 @@ impl WarpParamBank {
             self.starts = [0; WARP_BANK_REFS];
         }
         seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
-            if cell.is_warp()
-                && let Some(params) = cell.warp_params
+            if cell.flags.is_warp()
+                && let Some(params) = cell.motion.warp_params
             {
-                self.update(cell.ref_frame0, params);
+                self.update(cell.flags.ref_frame0, params);
             }
         });
     }
 
     pub(crate) fn update(&mut self, ref_frame0: i8, params: [i32; 6]) {
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         if self.sb_hits >= MAX_WARP_SB_HITS {
             return;
         }
@@ -116,10 +118,10 @@ impl WarpParamStack {
     }
 
     pub(super) fn add_scan_point(&mut self, cell: NeighbourCell, block: &MvBlockContext) {
-        if cell.is_inter()
-            && cell.is_warp()
-            && cell.ref_frame0 == block.ref_frame0
-            && let Some(params) = cell.warp_params
+        if cell.flags.is_inter()
+            && cell.flags.is_warp()
+            && cell.flags.ref_frame0 == block.ref_frame0
+            && let Some(params) = cell.motion.warp_params
         {
             self.insert(params);
         }

@@ -9,15 +9,35 @@ use splot_recon::{
     ReconSample, ReferencePlaneView,
 };
 
-use super::reference::{ALL_ROWS, ReferenceSamples};
+use super::reference::ReferenceSamples;
 use super::{BawpSyntax, Mv, PlacedInterBlock};
 use crate::Result;
 
 const SHIFT: u32 = 8;
 const MAX_BAWP_RECT_DIM: usize = 64;
 
+/// Rows below its top-left reference position a § 7.13.3.25 template reaches:
+/// [`bawp_template_counts`] caps the template side at 16 luma samples.
+const MAX_TEMPLATE_EXTENT: usize = 16;
+
 const fn to_fullmv(mv: i32) -> i32 {
     (mv + 3 + if mv >= 0 { 1 } else { 0 }) >> 3
+}
+
+/// The luma rows of its reference one § 7.13.3.25 BAWP block's template reads.
+///
+/// The template samples the reference at the block's full-pel position
+/// `refY = lumaY + toFullMv(mvRow)`: one row above it for the above arm, and
+/// rows `refY ..= refY + height - 1` for the left arm, where `height` is
+/// [`bawp_template_counts`]'s capped block side — at most
+/// [`MAX_TEMPLATE_EXTENT`] luma samples, and never more than the block's own
+/// height. A chroma arm reads the same window subsampled, whose luma-row
+/// requirement `(refY >> subY) + (height >> subY)` shifted back up never passes
+/// the luma one, so a single luma-row count covers every plane.
+pub(super) fn bawp_reference_luma_rows(luma_y: usize, luma_h: usize, mv_row: i32) -> u32 {
+    let top = (luma_y as i64) + i64::from(to_fullmv(mv_row));
+    let extent = luma_h.min(MAX_TEMPLATE_EXTENT) as i64;
+    top.saturating_add(extent).clamp(0, i64::from(u32::MAX)) as u32
 }
 
 #[derive(Default)]
@@ -225,7 +245,10 @@ fn apply_bawp_plane<T: ReconSample>(
     let plane_y = placed.luma_y >> sub_y;
     let plane_w = placed.luma_w >> sub_x;
     let plane_h = placed.luma_h >> sub_y;
-    let (ref_samples, ref_width, ref_height) = reference_plane(reference, plane, tile_offset)?;
+    let last_row = (bawp_reference_luma_rows(placed.luma_y, placed.luma_h, mv.row) >> sub_y)
+        .saturating_sub(1) as i32;
+    let (ref_samples, ref_width, ref_height) =
+        reference_plane(reference, plane, last_row, tile_offset)?;
     let dy = to_fullmv(mv.row);
     let dx = to_fullmv(mv.col);
     let Some(ref_y) = fullpel_ref_pos(placed.luma_y, dy).map(|y| y >> sub_y) else {
@@ -426,9 +449,10 @@ fn intrabc_morph_sample<T: ReconSample>(
 fn reference_plane<T: ReconSample>(
     reference: ReferenceSamples<'_, T>,
     plane: PlaneId,
+    last_row: i32,
     tile_offset: ByteOffset,
 ) -> Result<(ReferencePlaneView<'_, T>, usize, usize)> {
-    let (view, _, _) = reference.plane_view(plane, ALL_ROWS, tile_offset)?;
+    let (view, _, _) = reference.plane_view(plane, last_row, tile_offset)?;
     let (width, height) = (view.width(), view.height());
     Ok((view, width, height))
 }

@@ -12,7 +12,7 @@ use splot_recon::SharedFrame;
 use super::*;
 use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::DecodeError;
-use crate::pipeline::frame_engine::finish::finish_walked_frame;
+use crate::pipeline::frame_engine::finish::{WalkStage, finish_walked_frame};
 use crate::pipeline::parse_frame_core;
 use crate::{DecodeContext, DecodeRuntimeConfig};
 

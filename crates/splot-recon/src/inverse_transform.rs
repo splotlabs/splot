@@ -26,6 +26,8 @@
 //! tracked by their own future rows. The caller supplies the already-derived 1D
 //! transform type, scale, shift, and `colTx` flag.
 
+use std::simd::{Simd, cmp::SimdOrd as _};
+
 use splot_tables::tables::transform_1d::{
     ADST_KERNEL4, ADST_KERNEL8, ADST_KERNEL16, DCT_KERNEL4, DCT_KERNEL8, DCT_KERNEL16,
     DCT_KERNEL32, DDTX_KERNEL8, DDTX_KERNEL16, FDST_KERNEL4, FDST_KERNEL8, FDST_KERNEL16,
@@ -81,12 +83,10 @@ pub fn inverse_transform_1d(
     bit_depth: BitDepth,
     out: &mut [i32],
 ) -> Result<()> {
-    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
-
     let sz = src.len();
-    if !matches!(sz, 4 | 8 | 16 | 32) {
+    let Some(kernel) = select_kernel(sz, tx_type) else {
         return Err(ReconError::InvalidInverseTransformSize { size: sz });
-    }
+    };
     if out.len() != sz {
         return Err(ReconError::InverseTransformLengthMismatch {
             src_len: sz,
@@ -94,38 +94,169 @@ pub fn inverse_transform_1d(
         });
     }
 
-    match sz {
-        4 => {
-            let kernel = match tx_type {
-                Dct => &DCT_KERNEL4,
-                Adst => &ADST_KERNEL4,
-                Fdst | Ddtx | Fddt => &FDST_KERNEL4,
-            };
-            kernel_transform(src, kernel, false, shift, col_tx, bit_depth, out);
-        }
-        8 => {
-            let (kernel, reversed) = match tx_type {
-                Dct => (&DCT_KERNEL8, false),
-                Adst => (&ADST_KERNEL8, false),
-                Fdst => (&FDST_KERNEL8, false),
-                Ddtx => (&DDTX_KERNEL8, false),
-                Fddt => (&DDTX_KERNEL8, true),
-            };
-            kernel_transform(src, kernel, reversed, shift, col_tx, bit_depth, out);
-        }
-        16 => {
-            let (kernel, reversed) = match tx_type {
-                Dct => (&DCT_KERNEL16, false),
-                Adst => (&ADST_KERNEL16, false),
-                Fdst => (&FDST_KERNEL16, false),
-                Ddtx => (&DDTX_KERNEL16, false),
-                Fddt => (&DDTX_KERNEL16, true),
-            };
-            kernel_transform(src, kernel, reversed, shift, col_tx, bit_depth, out);
-        }
-        _ => kernel_transform(src, &DCT_KERNEL32, false, shift, col_tx, bit_depth, out),
+    match kernel {
+        Kernel1d::N4(k) => kernel_transform(src, k, false, shift, col_tx, bit_depth, out),
+        Kernel1d::N8(k, rev) => kernel_transform(src, k, rev, shift, col_tx, bit_depth, out),
+        Kernel1d::N16(k, rev) => kernel_transform(src, k, rev, shift, col_tx, bit_depth, out),
+        Kernel1d::N32(k) => kernel_transform(src, k, false, shift, col_tx, bit_depth, out),
     }
     Ok(())
+}
+
+/// The § 7.15.2.1 kernel selected for one 1D length, paired with the `FDDT`
+/// reverse flag (the § 7.15.2.1 `else` branch, which indexes the kernel column
+/// in reverse).
+#[derive(Clone, Copy)]
+enum Kernel1d {
+    /// The length-4 kernel; no type reaches the reversed branch at this length.
+    N4(&'static [[i32; 4]; 4]),
+    /// The length-8 kernel.
+    N8(&'static [[i32; 8]; 8], bool),
+    /// The length-16 kernel.
+    N16(&'static [[i32; 16]; 16], bool),
+    /// The length-32 kernel, the only one AV2 defines at this length.
+    N32(&'static [[i32; 32]; 32]),
+}
+
+/// Resolves the § 7.15.2.1 kernel dispatch, or `None` for a length the spec does
+/// not define.
+///
+/// At length 4 only `DCT` and `ADST` have their own kernel and every other type
+/// falls to the `FDST` kernel; at length 32 the `DCT` kernel is used regardless
+/// of type.
+fn select_kernel(sz: usize, tx_type: InverseTransform1dType) -> Option<Kernel1d> {
+    use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+    Some(match sz {
+        4 => Kernel1d::N4(match tx_type {
+            Dct => &DCT_KERNEL4,
+            Adst => &ADST_KERNEL4,
+            Fdst | Ddtx | Fddt => &FDST_KERNEL4,
+        }),
+        8 => match tx_type {
+            Dct => Kernel1d::N8(&DCT_KERNEL8, false),
+            Adst => Kernel1d::N8(&ADST_KERNEL8, false),
+            Fdst => Kernel1d::N8(&FDST_KERNEL8, false),
+            Ddtx => Kernel1d::N8(&DDTX_KERNEL8, false),
+            Fddt => Kernel1d::N8(&DDTX_KERNEL8, true),
+        },
+        16 => match tx_type {
+            Dct => Kernel1d::N16(&DCT_KERNEL16, false),
+            Adst => Kernel1d::N16(&ADST_KERNEL16, false),
+            Fdst => Kernel1d::N16(&FDST_KERNEL16, false),
+            Ddtx => Kernel1d::N16(&DDTX_KERNEL16, false),
+            Fddt => Kernel1d::N16(&DDTX_KERNEL16, true),
+        },
+        32 => Kernel1d::N32(&DCT_KERNEL32),
+        _ => return None,
+    })
+}
+
+/// One § 7.15.4.1 column pass over a row-major block of `stride`-sample rows.
+///
+/// `len` is the column length (the § 7.15.4 adjusted transform height) and
+/// `nonzero_rows` marks the source rows the row pass wrote: a clear bit means
+/// the row is all zero and contributes only zero terms to every column sum, so
+/// the pass never reads it.
+#[derive(Clone, Copy)]
+pub(crate) struct ColumnPass {
+    /// Row stride of both blocks, in samples.
+    pub stride: usize,
+    /// Column length (`1 << Min(log2H, 5)`).
+    pub len: usize,
+    /// Bit `i` marks source row `i` as written and possibly non-zero.
+    pub nonzero_rows: u32,
+    /// Column-pass down-shift (`colShift`).
+    pub shift: u8,
+    /// Active decoded bit depth.
+    pub bit_depth: BitDepth,
+}
+
+/// Applies the AV2 § 7.15.2.1 kernel transform down `LANES` adjacent columns of
+/// `src` at once, writing the same columns of `out`.
+///
+/// Both slices start at the first sample of the column group, so lane `l` of row
+/// `i` is at offset `i * pass.stride + l`. Because each column's § 7.15.2.1 sum
+/// is independent of every other column, running `LANES` of them in lanes
+/// re-associates nothing: every lane performs exactly the scalar
+/// [`kernel_transform`] sequence of `i32` products, adds, `Round2`, and `Clip3`
+/// on its own column. Returns `false` when `pass.len` is not a spec 1D length,
+/// which leaves the block to the caller's per-column path.
+pub(crate) fn inverse_transform_1d_columns<const LANES: usize>(
+    src: &[i32],
+    out: &mut [i32],
+    tx_type: InverseTransform1dType,
+    pass: ColumnPass,
+) -> bool {
+    match select_kernel(pass.len, tx_type) {
+        Some(Kernel1d::N4(k)) => kernel_columns::<4, LANES>(src, out, k, false, pass),
+        Some(Kernel1d::N8(k, rev)) => kernel_columns::<8, LANES>(src, out, k, rev, pass),
+        Some(Kernel1d::N16(k, rev)) => kernel_columns::<16, LANES>(src, out, k, rev, pass),
+        Some(Kernel1d::N32(k)) => kernel_columns::<32, LANES>(src, out, k, false, pass),
+        None => return false,
+    }
+    true
+}
+
+/// One `LANES`-wide column group of [`inverse_transform_1d_columns`].
+///
+/// Each lane repeats [`kernel_transform`] literally: the § 7.14.4 input clamp,
+/// the kernel-row-major `i32` accumulation over the rows `nonzero_rows` marks,
+/// the `FDDT` output reversal, and the § 4.8 `Round2` expanded as
+/// `(v >> n) + ((v >> (n - 1)) & 1)` — the same value the scalar
+/// [`round2_i32`] computes for `1 <= n < 32` — followed by the § 7.15.2.1
+/// `Clip3`.
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.15.4.1 column-pass hot path"
+)]
+#[inline(always)]
+fn kernel_columns<const N: usize, const LANES: usize>(
+    src: &[i32],
+    out: &mut [i32],
+    kernel: &[[i32; N]; N],
+    reversed: bool,
+    pass: ColumnPass,
+) {
+    let input_bound = transform_input_bound(pass.bit_depth);
+    let (lo, hi) = transform_clip_bounds(true, pass.bit_depth);
+    let zero = Simd::<i32, LANES>::splat(0);
+    let mut acc = [zero; N];
+    for (row, kernel_row) in kernel.iter().enumerate() {
+        if row >= u32::BITS as usize || pass.nonzero_rows & (1u32 << row) == 0 {
+            continue;
+        }
+        let start = row * pass.stride;
+        let Some(chunk) = src.get(start..start + LANES) else {
+            break;
+        };
+        let coeff = Simd::<i32, LANES>::from_slice(chunk)
+            .simd_clamp(Simd::splat(-input_bound), Simd::splat(input_bound - 1));
+        for (slot, &k) in acc.iter_mut().zip(kernel_row.iter()) {
+            *slot += Simd::splat(k) * coeff;
+        }
+    }
+
+    let shift = u32::from(pass.shift);
+    let (round_shift, carry_shift) = if shift == 0 || shift >= i32::BITS {
+        (Simd::splat(0), Simd::splat(0))
+    } else {
+        (Simd::splat(shift as i32), Simd::splat(shift as i32 - 1))
+    };
+    let carry_mask = Simd::splat(i32::from(shift != 0 && shift < i32::BITS));
+    let saturate = shift >= i32::BITS;
+    for index in 0..N {
+        let value = acc[if reversed { N - 1 - index } else { index }];
+        let rounded = if saturate {
+            zero
+        } else {
+            (value >> round_shift) + ((value >> carry_shift) & carry_mask)
+        };
+        let clamped = rounded.simd_clamp(Simd::splat(lo), Simd::splat(hi));
+        let start = index * pass.stride;
+        if let Some(dst) = out.get_mut(start..start + LANES) {
+            dst.copy_from_slice(&clamped.to_array()); // splot-copy-ok: a column lane group
+        }
+    }
 }
 
 /// AV2 § 7.15.2.2 inverse Walsh-Hadamard transform: the 4-element lossless

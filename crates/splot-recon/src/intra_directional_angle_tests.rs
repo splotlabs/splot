@@ -1079,3 +1079,34 @@ fn filter_intra_edge_corner_matches_spec_verbatim() {
     assert_eq!(filter_intra_edge_corner(40, 200, 80), 113);
     assert_eq!(filter_intra_edge_corner(7, 255, 3), 99);
 }
+
+/// The row walk must reproduce the per-sample § 7.13.2.8 zone-2 reference
+/// exactly for every block shape, middle angle, and MRL index.
+#[test]
+fn middle_row_walk_matches_the_per_sample_reference() {
+    for p_angle in (ZONE_1_MAX + 1)..ZONE_3_MIN {
+        let angle = IntraMiddleDirectionalAngle::try_from_p_angle(p_angle).unwrap();
+        let branch = angle.branch().unwrap();
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = rect_size(log2_width, log2_height);
+                for mrl_index in 0..4usize {
+                    for row in 0..size.height() {
+                        let mut walk =
+                            MiddleRowWalk::new(row, size.width(), branch, mrl_index).unwrap();
+                        for column in 0..size.width() {
+                            let expected =
+                                middle_sample_reference_mrl(row, column, branch, mrl_index)
+                                    .unwrap();
+                            assert_eq!(
+                                walk.next(),
+                                expected,
+                                "p_angle {p_angle} mrl {mrl_index} at ({row}, {column})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

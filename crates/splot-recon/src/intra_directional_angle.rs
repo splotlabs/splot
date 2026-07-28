@@ -79,6 +79,9 @@ const DR_INTERP_FILTER_TAPS: usize = 4;
 /// `Round2` shift applied to the §7.13.2.8 IDIF 4-tap sum (`pred = Clip1(Round2(s, 7))`).
 const DR_INTERP_FILTER_ROUND: u8 = 7;
 
+/// Widest predicted block side, the largest AV2 transform dimension.
+const MAX_ONE_SIDED_SIDE: usize = 64;
+
 /// AV2 v1.0.0 §7.13.2.8 `Dr_Interp_Filter[32][4]` interpolation filter taps,
 /// used when `enableIdif == 1` (luma): `s = Σ(t=0..3) Dr_Interp_Filter[shift][t]
 /// * Edge[base + t - 1]; pred = Clip1(Round2(s, 7))`. Copied verbatim from the
@@ -1155,8 +1158,9 @@ fn validate_middle_idif_index_bounds(
 ) -> Result<()> {
     let branch = angle.branch()?;
     for row in 0..size.height() {
-        for column in 0..size.width() {
-            let reference = middle_sample_reference(row, column, branch)?;
+        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
+        for _ in 0..size.width() {
+            let reference = walk.next();
             let len = match reference.edge {
                 IntraDirectionalAngleEdge::Left => left_len,
                 IntraDirectionalAngleEdge::Above => above_len,
@@ -1185,8 +1189,9 @@ fn validate_middle_idif_mrl_index_bounds(
 ) -> Result<()> {
     let branch = angle.branch()?;
     for row in 0..size.height() {
-        for column in 0..size.width() {
-            let reference = middle_sample_reference_mrl(row, column, branch, mrl_index)?;
+        let mut walk = MiddleRowWalk::new(row, size.width(), branch, mrl_index)?;
+        for _ in 0..size.width() {
+            let reference = walk.next();
             let len = match reference.edge {
                 IntraDirectionalAngleEdge::Left => left_len,
                 IntraDirectionalAngleEdge::Above => above_len,
@@ -1270,8 +1275,9 @@ fn validate_middle_index_bounds(
 ) -> Result<()> {
     let branch = angle.branch()?;
     for row in 0..size.height() {
-        for column in 0..size.width() {
-            let reference = middle_sample_reference(row, column, branch)?;
+        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
+        for _ in 0..size.width() {
+            let reference = walk.next();
             let len = match reference.edge {
                 IntraDirectionalAngleEdge::Left => left_len,
                 IntraDirectionalAngleEdge::Above => above_len,
@@ -1610,13 +1616,17 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
             }
         }
         DirectionalAngleBranch::Left { .. } => {
+            let mut columns = [OneSidedReference { base: 0, shift: 0 }; MAX_ONE_SIDED_SIDE];
+            for (column, slot) in columns.iter_mut().take(size.width()).enumerate() {
+                *slot = one_sided_idif_reference(branch, 0, column, derivative, mrl_index)?;
+            }
             for row in 0..size.height() {
                 let row_start = row * stride_samples;
-                for column in 0..size.width() {
-                    let reference =
-                        one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
-                    let value = if reference.base <= max_base {
-                        idif_tap(edge, reference.base, reference.shift, bit_depth)?
+                let row_offset = row as i32;
+                for (column, reference) in columns.iter().take(size.width()).enumerate() {
+                    let base = reference.base + row_offset;
+                    let value = if base <= max_base {
+                        idif_tap(edge, base, reference.shift, bit_depth)?
                     } else {
                         logical_idif_edge_sample(edge, max_base)?.to_u16()
                     };
@@ -1715,8 +1725,9 @@ fn write_middle_prediction<T: ReconSample>(
     let branch = angle.branch()?;
     for row in 0..size.height() {
         let row_start = row * stride_samples;
+        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
         for column in 0..size.width() {
-            let reference = middle_sample_reference(row, column, branch)?;
+            let reference = walk.next();
             let edge = match reference.edge {
                 IntraDirectionalAngleEdge::Left => left,
                 IntraDirectionalAngleEdge::Above => above,
@@ -1752,8 +1763,9 @@ fn write_middle_idif_prediction<T: ReconSample>(
     let branch = angle.branch()?;
     for row in 0..size.height() {
         let row_start = row * stride_samples;
+        let mut walk = MiddleRowWalk::new(row, size.width(), branch, 0)?;
         for column in 0..size.width() {
-            let reference = middle_sample_reference(row, column, branch)?;
+            let reference = walk.next();
             let edge = match reference.edge {
                 IntraDirectionalAngleEdge::Left => left,
                 IntraDirectionalAngleEdge::Above => above,
@@ -1773,8 +1785,9 @@ fn write_middle_idif_mrl_prediction<T: ReconSample>(
     let branch = params.angle.branch()?;
     for row in 0..params.size.height() {
         let row_start = row * params.stride_samples;
+        let mut walk = MiddleRowWalk::new(row, params.size.width(), branch, params.mrl_index)?;
         for column in 0..params.size.width() {
-            let reference = middle_sample_reference_mrl(row, column, branch, params.mrl_index)?;
+            let reference = walk.next();
             let edge = match reference.edge {
                 IntraDirectionalAngleEdge::Left => params.left,
                 IntraDirectionalAngleEdge::Above => params.above,
@@ -1897,14 +1910,94 @@ fn logical_idif_edge_offset_mrl(logical_index: i32, len: usize, mrl_index: usize
     Ok(offset)
 }
 
-fn middle_sample_reference(
+/// One row's § 7.13.2.8 zone-2 references, advanced column by column.
+///
+/// Both projections are affine in the column — `aboveIdx = j * 64 - (i + 1 +
+/// mrlIndex) * dx` steps by `64` and `leftIdx = i * 64 - (j + 1 + mrlIndex) *
+/// dy` by `-dy` — so one derivation per row replaces one per sample. The
+/// constructor resolves the row's first and last column with the same checked
+/// arithmetic [`middle_sample_reference_mrl`] uses, which bounds every step in
+/// between.
+#[derive(Clone, Copy)]
+struct MiddleRowWalk {
+    above_idx: i32,
+    left_idx: i32,
+    dy: i32,
+    min_base: i32,
+}
+
+impl MiddleRowWalk {
+    fn new(
+        row: usize,
+        columns: usize,
+        branch: MiddleDirectionalAngleBranch,
+        mrl_index: usize,
+    ) -> Result<Self> {
+        let mrl = i32::try_from(mrl_index).map_err(|_| ReconError::ArithmeticOverflow {
+            context: "middle directional angle MRL index",
+        })?;
+        let first = middle_row_indices(row, 0, branch, mrl)?;
+        let last = columns.saturating_sub(1);
+        middle_row_indices(row, last, branch, mrl)?;
+        Ok(Self {
+            above_idx: first.0,
+            left_idx: first.1,
+            dy: i32::from(branch.dy),
+            min_base: -1 - mrl,
+        })
+    }
+
+    fn next(&mut self) -> MiddleSampleReference {
+        let above_base = self.above_idx >> 6;
+        let reference = if above_base >= self.min_base {
+            MiddleSampleReference {
+                edge: IntraDirectionalAngleEdge::Above,
+                base: above_base,
+                shift: directional_shift(self.above_idx),
+            }
+        } else {
+            MiddleSampleReference {
+                edge: IntraDirectionalAngleEdge::Left,
+                base: self.left_idx >> 6,
+                shift: directional_shift(self.left_idx),
+            }
+        };
+        self.above_idx += 64;
+        self.left_idx -= self.dy;
+        reference
+    }
+}
+
+/// The § 7.13.2.8 zone-2 `(aboveIdx, leftIdx)` pair for one predicted sample.
+fn middle_row_indices(
     row: usize,
     column: usize,
     branch: MiddleDirectionalAngleBranch,
-) -> Result<MiddleSampleReference> {
-    middle_sample_reference_mrl(row, column, branch, 0)
+    mrl: i32,
+) -> Result<(i32, i32)> {
+    let indices = || {
+        let row = i32::try_from(row).ok()?;
+        let column = i32::try_from(column).ok()?;
+        let above_delta = row
+            .checked_add(1)?
+            .checked_add(mrl)?
+            .checked_mul(i32::from(branch.dx))?;
+        let above_idx = column.checked_mul(64)?.checked_sub(above_delta)?;
+        let left_delta = column
+            .checked_add(1)?
+            .checked_add(mrl)?
+            .checked_mul(i32::from(branch.dy))?;
+        let left_idx = row.checked_mul(64)?.checked_sub(left_delta)?;
+        Some((above_idx, left_idx))
+    };
+    indices().ok_or(ReconError::ArithmeticOverflow {
+        context: "middle directional angle index",
+    })
 }
 
+/// The § 7.13.2.8 zone-2 reference for one predicted sample, retained as the
+/// per-sample reference [`MiddleRowWalk`] is proven against.
+#[cfg(test)]
 fn middle_sample_reference_mrl(
     row: usize,
     column: usize,

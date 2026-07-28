@@ -25,6 +25,8 @@
 //! beyond the `Min(32, ·)` block are caller-resolved. User-defined `UserQm`
 //! planes are carried by [`QmDequant`] when `useUserQm` is true.
 
+use std::simd::num::{SimdInt as _, SimdUint as _};
+use std::simd::{Simd, cmp::SimdOrd as _};
 use std::sync::Arc;
 
 use splot_tables::tables::quantizer::QUANTIZER_MATRIX;
@@ -157,6 +159,9 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
             out_len: out.len(),
         });
     }
+    if params.qm.is_none() && dequantize_flat_block(params, quant, out) {
+        return Ok(());
+    }
     for i in 0..tx_height {
         for j in 0..tx_width {
             let idx = i * tx_width + j;
@@ -188,6 +193,83 @@ pub fn dequantize_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i
         }
     }
     Ok(())
+}
+
+/// Dequantizes a whole `useQm == 0` block with the § 7.14.4 quantizer carried in
+/// registers, widest lane group first.
+///
+/// Every coefficient but `(0, 0)` takes `ac_quant`, so the lane groups run the
+/// AC quantizer over the whole block and the DC coefficient is rewritten
+/// afterwards — the same values the per-coefficient loop writes, in the same
+/// slots. Returns `false` when `dq_denom` is not a power of two, which leaves
+/// the § 7.14.4 divide to the caller's per-coefficient loop.
+fn dequantize_flat_block(params: &DequantBlockParams, quant: &[i32], out: &mut [i32]) -> bool {
+    let denom = params.dq_denom.max(1);
+    if !denom.is_power_of_two() {
+        return false;
+    }
+    let denom_shift = denom.trailing_zeros();
+    let bound = 1i32 << (7 + u32::from(params.bit_depth.bits()));
+    let len = quant.len();
+    let mut index = 0usize;
+    macro_rules! dequant_lane_group {
+        ($lanes:literal) => {
+            while index + $lanes <= len {
+                dequant_flat_lanes::<$lanes>(
+                    &mut out[index..],
+                    &quant[index..],
+                    params.ac_quant,
+                    denom_shift,
+                    bound,
+                );
+                index += $lanes;
+            }
+        };
+    }
+    dequant_lane_group!(16);
+    dequant_lane_group!(8);
+    dequant_lane_group!(4);
+    for (slot, &coeff) in out[index..].iter_mut().zip(&quant[index..]) {
+        *slot = dequant_coefficient(coeff, params.ac_quant, denom, params.bit_depth);
+    }
+    if let (Some(slot), Some(&coeff)) = (out.first_mut(), quant.first()) {
+        *slot = dequant_coefficient(coeff, params.dc_quant, denom, params.bit_depth);
+    }
+    true
+}
+
+/// One `LANES`-wide group of [`dequantize_flat_block`].
+///
+/// Each lane repeats [`dequant_coefficient`] literally: `sign`/`unsigned_abs`
+/// as the two's-complement `(c ^ s) - s` pair (exact for `i32::MIN`), the
+/// wrapping product masked to its normative low 24 bits,
+/// `Round2(·, QUANT_TABLE_BITS)` expanded as `(v >> n) + ((v >> (n - 1)) & 1)`,
+/// the power-of-two `dq_denom` divide as a shift, and the § 7.14.4 clamp. The
+/// masked `Round2` result never exceeds `1 << 21`, so restoring the sign and
+/// narrowing to `i32` are both exact.
+#[allow(
+    clippy::inline_always,
+    reason = "measured § 7.14.4 dequantization hot path"
+)]
+#[inline(always)]
+fn dequant_flat_lanes<const LANES: usize>(
+    out: &mut [i32],
+    quant: &[i32],
+    q2: u32,
+    denom_shift: u32,
+    bound: i32,
+) {
+    let coeff = Simd::<i32, LANES>::from_slice(quant);
+    let sign = coeff >> Simd::splat(i32::BITS as i32 - 1);
+    let magnitude = (coeff ^ sign) - sign;
+    let product = (magnitude.cast::<u32>() * Simd::splat(q2)) & Simd::splat(0x00FF_FFFF);
+    let shift = QUANT_TABLE_BITS;
+    let rounded =
+        (product >> Simd::splat(shift)) + ((product >> Simd::splat(shift - 1)) & Simd::splat(1));
+    let scaled = (rounded >> Simd::splat(denom_shift)).cast::<i32>();
+    let signed = (scaled ^ sign) - sign;
+    let clamped = signed.simd_clamp(Simd::splat(-bound), Simd::splat(bound - 1));
+    out[..LANES].copy_from_slice(&clamped.to_array()); // splot-copy-ok: publish a § 7.14.4 dequant lane group
 }
 
 fn user_quantization_matrix_weight(
@@ -438,6 +520,84 @@ mod tests {
         assert_ne!(
             out[15], out[0],
             "a non-identity qm weight changes the dequant"
+        );
+    }
+
+    /// The `useQm == 0` lane groups must reproduce [`dequant_coefficient`]
+    /// exactly for every block shape, bit depth, and `dq_denom` shift, over
+    /// randomized coefficients including the `i32` extremes.
+    #[test]
+    fn flat_lane_groups_match_the_per_coefficient_reference() {
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+            for &tx_width in &[4usize, 8, 16, 32] {
+                for &tx_height in &[4usize, 8, 16, 32] {
+                    for dq_shift in 0..4u32 {
+                        let params = DequantBlockParams {
+                            dc_quant: (next() % 8192) as u32 + 1,
+                            ac_quant: (next() % 8192) as u32 + 1,
+                            tx_width,
+                            tx_height,
+                            dq_denom: 1 << dq_shift,
+                            bit_depth,
+                            qm: None,
+                        };
+                        let samples = tx_width * tx_height;
+                        let mut quant = vec![0i32; samples];
+                        for (index, slot) in quant.iter_mut().enumerate() {
+                            *slot = match index % 16 {
+                                0 => i32::MIN,
+                                1 => i32::MAX,
+                                2 => 0,
+                                _ => (next() as i32) >> (next() % 24) as i32,
+                            };
+                        }
+                        let mut expected = vec![0i32; samples];
+                        for (index, slot) in expected.iter_mut().enumerate() {
+                            let base_q = if index == 0 {
+                                params.dc_quant
+                            } else {
+                                params.ac_quant
+                            };
+                            *slot = dequant_coefficient(
+                                quant[index],
+                                base_q,
+                                params.dq_denom,
+                                bit_depth,
+                            );
+                        }
+                        let mut actual = vec![0i32; samples];
+                        assert!(dequantize_flat_block(&params, &quant, &mut actual));
+                        assert_eq!(
+                            actual, expected,
+                            "{tx_width}x{tx_height} {bit_depth:?} shift {dq_shift}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// A non-power-of-two `dq_denom` has no shift identity, so the fast path
+    /// must decline and leave the § 7.14.4 divide to the per-coefficient loop.
+    #[test]
+    fn flat_block_declines_a_non_power_of_two_denominator() {
+        let params = DequantBlockParams {
+            dq_denom: 3,
+            ..params(4, 4)
+        };
+        let mut out = [0i32; 16];
+        assert!(!dequantize_flat_block(&params, &[7i32; 16], &mut out));
+        dequantize_block(&params, &[7i32; 16], &mut out).unwrap();
+        assert_eq!(
+            out[1],
+            dequant_coefficient(7, params.ac_quant, 3, params.bit_depth)
         );
     }
 

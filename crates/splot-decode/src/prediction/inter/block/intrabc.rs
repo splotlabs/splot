@@ -241,7 +241,7 @@ impl IntrabcReconCommand {
     }
 }
 
-pub(super) fn global_intrabc_enabled(params: Option<IntrabcParams>) -> bool {
+pub(crate) fn global_intrabc_enabled(params: Option<IntrabcParams>) -> bool {
     params.is_some_and(|params| params.allow_global_intrabc == Some(true))
 }
 

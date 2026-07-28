@@ -163,6 +163,7 @@ pub(crate) fn read_inter_residual(
     residual_tool_policy: TransformToolResidualPolicy,
     tile_offset: ByteOffset,
 ) -> Result<InterResidual> {
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::Coeff);
     let block_start = blocks.len();
     let result = (|| -> Result<()> {
         let (subsampling_x, subsampling_y) = chroma_subsampling(sequence.general.chroma_format_idc);

@@ -12,6 +12,9 @@ use std::sync::{Arc, Barrier, Mutex};
 
 use splot_parallel::{ThreadCount, WorkerPool};
 
+use super::ready_rows::{
+    ReadyRowPipelineError, run_ready_row_pipeline_serial, run_ready_row_prepass_with_commit,
+};
 use super::*;
 
 #[test]

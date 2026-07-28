@@ -118,7 +118,10 @@ fn compound_motion_grid_and_block(mv0: Mv, mv1: Mv) -> (NeighbourMvGrid, MvBlock
     (grid, block)
 }
 
-fn compound_motion_contexts() -> (ModeContext, BlockNeighbourContext) {
+fn compound_motion_contexts() -> (
+    crate::prediction::inter::find_mv_stack::ModeContext,
+    BlockNeighbourContext,
+) {
     let (grid, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
     (
         find_mode_ctx(&grid, &block),
@@ -629,9 +632,8 @@ fn compound_opfl_near_near_selects_the_indexed_paired_candidate() {
     };
     let independent_called = core::cell::Cell::new(false);
     let selected = select_near_near_candidates(
-        compound,
+        compound_reads_second_drl(compound).then_some([0, 0]),
         1,
-        [0, 0],
         |idx| stack.candidate(idx).mvs,
         |_| {
             independent_called.set(true);

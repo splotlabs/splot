@@ -5,10 +5,12 @@ use splot_core::symbol::SymbolDecoder;
 use splot_recon::wedge_mask_plane_sample;
 
 use super::super::compound::{
-    CompoundParseInput, CompoundYMode, read_compound_mode_syntax, read_compound_reference_pair,
+    CompoundBlockSyntax, CompoundParseInput, CompoundYMode, read_compound_mode_syntax,
+    read_compound_reference_pair,
 };
-use super::super::find_mv_stack::{OrderHintMvContext, TemporalMotionBlock};
+use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
+use super::prediction::PlacedInterGeometry;
 use super::temporal::temporal_motion_block;
 use super::*;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
@@ -60,13 +62,9 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
-    temporal_context: Option<&TemporalMvContext>,
-    order_hints: OrderHintMvContext<'_>,
     tip_ref_pair: Option<(i8, i8)>,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
-    warp_param_bank: &mut super::super::find_mv_stack::WarpParamBank,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -78,23 +76,16 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     skip: u8,
     n4w: usize,
     n4h: usize,
-    mi_row: usize,
-    mi_col: usize,
     mi_rows: usize,
     mi_cols: usize,
-    sb_h4: usize,
     max_drl_bits_minus_1: u32,
-    drl_reorder: DrlReorder,
     temporal_first_frame: bool,
     enable_adaptive_mvd: bool,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     frame_interpolation_filter: FrameInterpolationFilter,
     tile_offset: ByteOffset,
-) -> Result<(
-    GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand,
-)> {
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs, tile_offset)?;
     let ref_distance_nonnegative = compound_ref_distance_signs(
@@ -231,267 +222,32 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         use_amvd,
         tile_offset,
     )?;
-    let global_mvs = [
-        global_motion_mv(core, compound.ref_frame0, block_ctx, precision.mv_precision),
-        global_motion_mv(core, compound.ref_frame1, block_ctx, precision.mv_precision),
-    ];
-    if compound.y_mode.has_newmv() || compound.y_mode.has_nearmv() {
-        let config = MvReadConfig::inter(precision.mv_precision);
-        let bank = ref_mv_bank
-            .as_ref()
-            .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2));
-        let compound_temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
-        let temporal = if compound_temporal_allowed {
-            temporal_context
-        } else {
-            None
-        };
-        let paired_candidate = |idx| {
-            find_compound_mv_stack_with_temporal(
-                mv_grid,
-                block_ctx,
-                global_mvs,
-                bank,
-                drl_reorder,
-                temporal,
+    let joint = (compound.y_mode == CompoundYMode::JointNew)
+        .then(|| {
+            compound_joint_mv_projection(
+                core,
+                reference,
+                ref_frame_idx,
+                compound.ref_frame0,
+                compound.ref_frame1,
+                tile_offset,
             )
-            .candidate(idx)
-        };
-        let temporal_first0 = compound_temporal_allowed
-            && temporal_first_frame
-            && super::block_ref_within_temporal_distance(
-                reference,
-                ref_frame_idx,
-                core.display_order_hint().unwrap_or(0),
-                compound.ref_frame0,
-            );
-        let temporal_first1 = compound_temporal_allowed
-            && temporal_first_frame
-            && super::block_ref_within_temporal_distance(
-                reference,
-                ref_frame_idx,
-                core.display_order_hint().unwrap_or(0),
-                compound.ref_frame1,
-            );
-        let independent_candidates = |idx0, idx1| {
-            let stack0 = find_mv_stack_with_temporal(
-                mv_grid,
-                &single_ref_block_context(block_ctx, compound.ref_frame0),
-                global_mvs[0],
-                DEFAULT_WARP_PARAMS,
-                bank,
-                warp_param_bank,
-                false,
-                drl_reorder,
-                temporal_context,
-                Some(order_hints),
-                temporal_first0,
-            );
-            let stack1 = find_mv_stack_with_temporal(
-                mv_grid,
-                &single_ref_block_context(block_ctx, compound.ref_frame1),
-                global_mvs[1],
-                DEFAULT_WARP_PARAMS,
-                bank,
-                warp_param_bank,
-                false,
-                drl_reorder,
-                temporal_context,
-                Some(order_hints),
-                temporal_first1,
-            );
-            [stack0.candidate(idx0), stack1.candidate(idx1)]
-        };
-        match compound.y_mode {
-            CompoundYMode::GlobalGlobal => {}
-            CompoundYMode::NearNear => {
-                [compound.mv0, compound.mv1] = select_near_near_candidates(
-                    compound,
-                    ref_mv_idx,
-                    [ref_mv_idx0, ref_mv_idx1],
-                    |idx| paired_candidate(idx).mvs,
-                    |[idx0, idx1]| independent_candidates(idx0, idx1),
-                );
-            }
-            CompoundYMode::NearNew | CompoundYMode::NewNear => {
-                let has_second_drl = compound_reads_second_drl(compound);
-                let candidates = if has_second_drl {
-                    independent_candidates(ref_mv_idx0, ref_mv_idx1)
-                } else {
-                    paired_candidate(ref_mv_idx).mvs
-                };
-                let new_ref = usize::from(compound.y_mode == CompoundYMode::NearNew);
-                let pred_mv = if use_amvd {
-                    candidates[new_ref]
-                } else {
-                    lowered_pred_mv(precision, candidates[new_ref])
-                };
-                let diff = if use_amvd {
-                    let magnitude = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
-                    apply_inter_mvd_signs(
-                        magnitude,
-                        symbols,
-                        tile_offset,
-                        config,
-                        false,
-                        compound.y_mode.mvd_sign_derivation_threshold(),
-                    )?
-                } else {
-                    let magnitude =
-                        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
-                    apply_inter_mvd_signs(
-                        magnitude,
-                        symbols,
-                        tile_offset,
-                        config,
-                        false,
-                        compound.y_mode.mvd_sign_derivation_threshold(),
-                    )?
-                };
-                let mut mvs = candidates;
-                mvs[new_ref] = add_mv_clamped(pred_mv, diff);
-                [compound.mv0, compound.mv1] = mvs;
-            }
-            CompoundYMode::JointNew => {
-                let projection = compound_joint_mv_projection(
-                    core,
-                    reference,
-                    ref_frame_idx,
-                    compound.ref_frame0,
-                    compound.ref_frame1,
-                    tile_offset,
-                )?;
-                let candidates = paired_candidate(ref_mv_idx).mvs;
-                let raw_pred_mv = candidates[projection.base_list];
-                let pred_mv = if use_amvd {
-                    raw_pred_mv
-                } else {
-                    lowered_pred_mv(precision, raw_pred_mv)
-                };
-                let magnitude = if use_amvd {
-                    read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?
-                } else {
-                    read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?
-                };
-                let diff = apply_inter_mvd_signs(
-                    magnitude,
-                    symbols,
-                    tile_offset,
-                    config,
-                    ref_mv_idx == 0
-                        && inter_mvd_sign_derivation_allowed(
-                            sequence,
-                            core,
-                            SINGLE_MODE_NEWMV,
-                            use_amvd,
-                            frame_mv_config,
-                            config,
-                        ),
-                    compound.y_mode.mvd_sign_derivation_threshold(),
-                )?;
-                let base_mv = add_mv_clamped(pred_mv, diff);
-                let projected = scale_joint_projected_mvd(
-                    project_joint_mvd(diff, projection.second_dist, projection.first_dist),
-                    jmvd_scale_mode,
-                    use_amvd,
-                );
-                let other_mv = add_mv_clamped(candidates[1 - projection.base_list], projected);
-                if projection.base_list == 0 {
-                    compound.mv0 = base_mv;
-                    compound.mv1 = other_mv;
-                } else {
-                    compound.mv0 = other_mv;
-                    compound.mv1 = base_mv;
-                }
-            }
-            CompoundYMode::NewNew => {
-                let (diff0, diff1) = if use_amvd {
-                    let magnitude0 = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
-                    let magnitude1 = read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)?;
-                    apply_inter_mvd_sign_pair(
-                        magnitude0,
-                        magnitude1,
-                        symbols,
-                        tile_offset,
-                        config,
-                        false,
-                        compound.y_mode.mvd_sign_derivation_threshold(),
-                    )?
-                } else {
-                    let magnitude0 =
-                        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
-                    let magnitude1 =
-                        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)?;
-                    apply_inter_mvd_sign_pair(
-                        magnitude0,
-                        magnitude1,
-                        symbols,
-                        tile_offset,
-                        config,
-                        ref_mv_idx == 0
-                            && inter_mvd_sign_derivation_allowed(
-                                sequence,
-                                core,
-                                SINGLE_MODE_NEWMV,
-                                use_amvd,
-                                frame_mv_config,
-                                config,
-                            ),
-                        compound.y_mode.mvd_sign_derivation_threshold(),
-                    )?
-                };
-                let candidate = paired_candidate(ref_mv_idx).mvs;
-                let pred_mvs = if use_amvd {
-                    candidate
-                } else {
-                    candidate.map(|mv| lowered_pred_mv(precision, mv))
-                };
-                compound.mv0 = Mv {
-                    row: mv_clamp_to_integer(pred_mvs[0].row + diff0.row),
-                    col: mv_clamp_to_integer(pred_mvs[0].col + diff0.col),
-                };
-                compound.mv1 = Mv {
-                    row: mv_clamp_to_integer(pred_mvs[1].row + diff1.row),
-                    col: mv_clamp_to_integer(pred_mvs[1].col + diff1.col),
-                };
-            }
-        }
-    }
-    if compound.y_mode == CompoundYMode::GlobalGlobal {
-        [compound.mv0, compound.mv1] = global_mvs;
-    }
-    let warp_models = if local_warp {
-        compound_local_warp_models(
-            mv_grid,
-            block_ctx,
-            compound.mv0,
-            compound.mv1,
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            tile_offset,
-        )?
-    } else if compound.y_mode == CompoundYMode::GlobalGlobal {
-        [
-            global_motion_warp(
-                core,
-                compound.ref_frame0,
-                effective_force_integer_mv(core),
-                n4w,
-                n4h,
-            ),
-            global_motion_warp(
-                core,
-                compound.ref_frame1,
-                effective_force_integer_mv(core),
-                n4w,
-                n4h,
-            ),
-        ]
-    } else {
-        [None, None]
-    };
+        })
+        .transpose()?;
+    let mvd = read_compound_mvd_syntax(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        CompoundMvdInput {
+            y_mode: compound.y_mode,
+            use_amvd,
+            ref_mv_idx,
+            precision,
+            frame_mv_config,
+        },
+        tile_offset,
+    )?;
     let refinemv_switchable =
         compound_refinemv_is_switchable(compound, compound_opfl_refine_type(core, tile_offset)?);
     let refinemv_signalled = if !local_warp
@@ -596,13 +352,19 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
-    if let Some(params) = warp_models[0] {
-        warp_param_bank.update(compound.ref_frame0, params);
-    }
-    if let Some(params) = warp_models[1] {
-        warp_param_bank.update(compound.ref_frame1, params);
-    }
-    parse_resolved_compound_inter_block(
+    let force_integer_mv = effective_force_integer_mv(core);
+    let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
+    let temporal_first = |ref_frame| {
+        temporal_allowed
+            && temporal_first_frame
+            && super::block_ref_within_temporal_distance(
+                reference,
+                ref_frame_idx,
+                core.display_order_hint().unwrap_or(0),
+                ref_frame,
+            )
+    };
+    finish_compound_inter_block(
         work_unit,
         symbols,
         coeff_ctx,
@@ -612,32 +374,51 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         core,
         frontier,
         mv_grid,
+        frame_mv_config.precision(),
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
         intrabc_state,
         ref_frame_idx,
         reference,
-        ref_mv_bank,
-        ResolvedCompoundBlock {
-            syntax: compound,
+        ParsedCompoundBlock {
+            block_ctx: *block_ctx,
+            motion: CompoundMotionSyntax {
+                y_mode: compound.y_mode,
+                ref_frame1: compound.ref_frame1,
+                skip_mode: false,
+                use_optflow: compound.use_optflow,
+                local_warp,
+                global_warp: if compound.y_mode == CompoundYMode::GlobalGlobal {
+                    [
+                        global_motion_warp(core, compound.ref_frame0, force_integer_mv, n4w, n4h),
+                        global_motion_warp(core, compound.ref_frame1, force_integer_mv, n4w, n4h),
+                    ]
+                } else {
+                    [None, None]
+                },
+                ref_mv_idx,
+                independent_idx: compound_reads_second_drl(compound)
+                    .then_some([ref_mv_idx0, ref_mv_idx1]),
+                mvd,
+                joint,
+                jmvd_scale_mode,
+                temporal_allowed,
+                temporal_first: [
+                    temporal_first(compound.ref_frame0),
+                    temporal_first(compound.ref_frame1),
+                ],
+            },
             blend: compound_blend,
             interp,
             use_amvd,
             precision,
-            skip_mode: false,
             use_refinemv,
             refinemv_switchable,
-            warp_params: warp_models,
         },
         skip,
-        n4w,
-        n4h,
-        mi_row,
-        mi_col,
         mi_rows,
         mi_cols,
-        sb_h4,
         residual_tool_policy,
         block_qindex,
         tile_offset,
@@ -693,7 +474,7 @@ fn compound_local_warp_signal_allowed(
 /// fails closed: the spec's det==0 identity model and AVM's
 /// `wm_params[ref].invalid` translational fallback diverge in that corner.
 #[allow(clippy::too_many_arguments)]
-fn compound_local_warp_models(
+pub(super) fn compound_local_warp_models(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
     mv0: Mv,
@@ -808,22 +589,21 @@ fn read_compound_motion_mode_syntax(
     Ok(use_local_warp != 0)
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ResolvedCompoundBlock {
-    pub(super) syntax: super::super::compound::CompoundBlockSyntax,
+/// Parsed § 5.20.7.12 compound syntax handed to the § 7.12 resolution step.
+#[derive(Clone, Copy)]
+pub(super) struct ParsedCompoundBlock {
+    pub(super) block_ctx: MvBlockContext,
+    pub(super) motion: CompoundMotionSyntax,
     pub(super) blend: mc::CompoundBlend,
     pub(super) interp: ReconInterpolationFilter,
     pub(super) use_amvd: bool,
     pub(super) precision: BlockPrecisionRecord,
-    pub(super) skip_mode: bool,
     pub(super) use_refinemv: bool,
     pub(super) refinemv_switchable: bool,
-    /// Per-list § 7.13.3.23 LOCALWARP models (`[None, None]` when translational).
-    pub(super) warp_params: [Option<[i32; 6]>; 2],
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
+pub(super) fn finish_compound_inter_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     coeff_ctx: &mut TileCoeffContextState,
@@ -833,74 +613,37 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
+    frame_precision: u8,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     intrabc_state: &mut TileIntrabcPreludeState,
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
-    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
-    resolved: ResolvedCompoundBlock,
+    parsed: ParsedCompoundBlock,
     skip: u8,
-    n4w: usize,
-    n4h: usize,
-    mi_row: usize,
-    mi_col: usize,
     mi_rows: usize,
     mi_cols: usize,
-    sb_h4: usize,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
-) -> Result<(
-    GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand,
-)> {
-    let ResolvedCompoundBlock {
-        syntax: compound,
-        blend: compound_blend,
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
+    let ParsedCompoundBlock {
+        block_ctx,
+        motion,
+        blend,
         interp,
         use_amvd,
         precision,
-        skip_mode,
         use_refinemv,
         refinemv_switchable,
-        warp_params,
-    } = resolved;
-    mv_grid.record_compound_block(
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        compound.ref_frame0,
-        compound.ref_frame1,
-        compound.y_mode.list0_is_newmv(),
-        compound.y_mode.list1_is_newmv(),
-        compound.mv0,
-        compound.mv1,
-        skip == 1,
-        interp_filter_symbol(interp),
-        use_amvd,
-        !matches!(compound_blend, mc::CompoundBlend::Average { .. }),
-        compound_blend.cwp_weight(),
-        skip_mode,
-        precision,
-        warp_params,
+    } = parsed;
+    let (mi_row, mi_col, n4w, n4h) = (
+        block_ctx.mi_row,
+        block_ctx.mi_col,
+        block_ctx.bw4,
+        block_ctx.bh4,
     );
-    if let Some(bank) = ref_mv_bank.as_mut() {
-        bank.update_for_block(
-            compound.ref_frame0,
-            Some(compound.ref_frame1),
-            compound.mv0,
-            Some(compound.mv1),
-            compound_blend.cwp_weight(),
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            sb_h4,
-        );
-    }
     let residual = if skip == 0 {
         Some(read_inter_residual(
             work_unit,
@@ -925,7 +668,7 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
         None
     };
     let sub_pu_size = compound_deblock_sub_pu_size(
-        compound.use_optflow,
+        motion.use_optflow,
         use_refinemv,
         n4w * MI_SIZE,
         n4h * MI_SIZE,
@@ -951,44 +694,26 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
         tile_offset,
     )?;
-    let optflow_distances = if compound.use_optflow {
+    let reference_pair = CompoundBlockSyntax {
+        y_mode: motion.y_mode,
+        use_optflow: motion.use_optflow,
+        ref_frame0: block_ctx.ref_frame0,
+        ref_frame1: motion.ref_frame1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+    let optflow_distances = if motion.use_optflow {
         compound_sized_reference_distances(
             core,
             reference,
             ref_frame_idx,
-            compound,
+            reference_pair,
             CompoundReferencePath::Opfl,
             tile_offset,
         )?
         .map(|(dist0, dist1)| [dist0, dist1])
     } else {
         None
-    };
-    let placed = PlacedInterBlock {
-        luma_x: placed_geometry.luma_x,
-        luma_y: placed_geometry.luma_y,
-        luma_w: placed_geometry.luma_w,
-        luma_h: placed_geometry.luma_h,
-        chroma_luma_x: placed_geometry.chroma_luma_x,
-        chroma_luma_y: placed_geometry.chroma_luma_y,
-        chroma_luma_w: placed_geometry.chroma_luma_w,
-        chroma_luma_h: placed_geometry.chroma_luma_h,
-        predict_chroma: placed_geometry.predict_chroma,
-        sub8x8_chroma: placed_geometry.sub8x8_chroma,
-        interintra_chroma: false,
-        block: InterBlock {
-            ref_frame0: compound.ref_frame0,
-            ref_frame1: Some(compound.ref_frame1),
-            mv: compound.mv0,
-            mv1: compound.mv1,
-            interp,
-            warp_params,
-            bawp: BawpSyntax::default(),
-            interintra: None,
-            compound_blend,
-            optflow_distances,
-            residual,
-        },
     };
     intrabc_state.record_block(
         frontier.r,
@@ -1005,20 +730,129 @@ pub(super) fn parse_resolved_compound_inter_block<T: ReconSample>(
         .mark_inter(),
         tile_offset,
     )?;
-    let command = super::deferred_recon::InterReconCommand::new(
-        placed,
-        super::deferred_recon::PendingKind::Compound {
-            syntax: compound,
-            warp_params,
-            mi_row,
-            mi_col,
-            use_refinemv,
-            refinemv_switchable,
-        },
-        block_qindex,
-        tile_offset,
-    );
-    Ok((non_intra_leaf_mode(frontier), command))
+    let syntax = InterBlockSyntax {
+        block_ctx,
+        motion: InterMotionSyntax::Compound(motion),
+        interp,
+        precision,
+        skip: skip == 1,
+        use_amvd,
+        tip_size_16x16: false,
+        blend,
+        bawp: BawpSyntax::default(),
+        interintra: None,
+        optflow_distances,
+        residual,
+    };
+    mv_grid.record_flags(mi_row, mi_col, n4w, n4h, syntax.flag_syntax());
+    Ok((
+        non_intra_leaf_mode(frontier),
+        pending_inter_leaf(
+            syntax,
+            PlacedInterGeometry {
+                interintra_chroma: false,
+                ..placed_geometry
+            },
+            PendingInterKind::Compound {
+                reference_pair,
+                use_refinemv,
+                refinemv_switchable,
+            },
+            block_qindex,
+            frame_precision,
+        ),
+    ))
+}
+
+/// Input to the § 5.20.7.7 compound motion-vector difference reads.
+#[derive(Clone, Copy)]
+struct CompoundMvdInput {
+    y_mode: CompoundYMode,
+    use_amvd: bool,
+    ref_mv_idx: usize,
+    precision: BlockPrecisionRecord,
+    frame_mv_config: MvReadConfig,
+}
+
+/// AV2 § 5.20.7.7 compound motion-vector differences: one per NEWMV list, with
+/// JOINT_NEWMV reading a single difference the § 7.12.2.4 projection reuses.
+fn read_compound_mvd_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    input: CompoundMvdInput,
+    tile_offset: ByteOffset,
+) -> Result<[Mv; 2]> {
+    if !input.y_mode.has_newmv() {
+        return Ok([Mv::ZERO; 2]);
+    }
+    let config = MvReadConfig::inter(input.precision.mv_precision);
+    let threshold = input.y_mode.mvd_sign_derivation_threshold();
+    let derive_sign = input.ref_mv_idx == 0
+        && inter_mvd_sign_derivation_allowed(
+            sequence,
+            core,
+            SINGLE_MODE_NEWMV,
+            input.use_amvd,
+            input.frame_mv_config,
+            config,
+        );
+    match input.y_mode {
+        CompoundYMode::NearNew | CompoundYMode::NewNear => {
+            let magnitude =
+                read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
+            let diff =
+                apply_inter_mvd_signs(magnitude, symbols, tile_offset, config, false, threshold)?;
+            let mut mvd = [Mv::ZERO; 2];
+            mvd[usize::from(input.y_mode == CompoundYMode::NearNew)] = diff;
+            Ok(mvd)
+        }
+        CompoundYMode::JointNew => {
+            let magnitude =
+                read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
+            let diff = apply_inter_mvd_signs(
+                magnitude,
+                symbols,
+                tile_offset,
+                config,
+                derive_sign,
+                threshold,
+            )?;
+            Ok([diff, Mv::ZERO])
+        }
+        CompoundYMode::NewNew => {
+            let magnitude0 =
+                read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
+            let magnitude1 =
+                read_compound_mvd_magnitude(cdfs, symbols, input.use_amvd, config, tile_offset)?;
+            let (diff0, diff1) = apply_inter_mvd_sign_pair(
+                magnitude0,
+                magnitude1,
+                symbols,
+                tile_offset,
+                config,
+                derive_sign,
+                threshold,
+            )?;
+            Ok([diff0, diff1])
+        }
+        CompoundYMode::NearNear | CompoundYMode::GlobalGlobal => Ok([Mv::ZERO; 2]),
+    }
+}
+
+fn read_compound_mvd_magnitude(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    use_amvd: bool,
+    config: MvReadConfig,
+    tile_offset: ByteOffset,
+) -> Result<Mv> {
+    if use_amvd {
+        read_newmv_amvd_block_mvd(cdfs, symbols, tile_offset)
+    } else {
+        read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, config)
+    }
 }
 
 const fn compound_deblock_sub_pu_size(
@@ -1156,10 +990,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     core: &FrameHeaderCore,
     frontier: &DecodeBlockFrontier,
     mv_grid: &mut NeighbourMvGrid,
-    temporal_context: Option<&TemporalMvContext>,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
-    ref_mv_bank: &mut Option<super::super::find_mv_stack::RefMvBank>,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -1168,22 +1000,13 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     reference: &InterReferenceState<T>,
     num_total_refs: usize,
     skip: u8,
-    n4w: usize,
-    n4h: usize,
-    mi_row: usize,
-    mi_col: usize,
     mi_rows: usize,
     mi_cols: usize,
-    sb_h4: usize,
     max_drl_bits_minus_1: u32,
-    drl_reorder: DrlReorder,
     residual_tool_policy: TransformToolResidualPolicy,
     block_qindex: u32,
     tile_offset: ByteOffset,
-) -> Result<(
-    GeneralIntraLeafMode,
-    super::deferred_recon::InterReconCommand,
-)> {
+) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let current = compound_current_order_hint(core, tile_offset)?;
     let ref_order_hints = if num_total_refs > 1 {
         Some((
@@ -1215,34 +1038,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let bank = ref_mv_bank
-        .as_ref()
-        .map(|bank| (bank, max_drl_bits_minus_1 as usize + 2));
-    let temporal = (ref_frame0 != ref_frame1)
-        .then_some(temporal_context)
-        .flatten();
     let precision = frame_mv_precision(core, tile_offset)?;
-    let candidate = find_compound_mv_stack_with_temporal(
-        mv_grid,
-        block_ctx,
-        [
-            global_motion_mv(core, ref_frame0, block_ctx, precision),
-            global_motion_mv(core, ref_frame1, block_ctx, precision),
-        ],
-        bank,
-        drl_reorder,
-        temporal,
-    )
-    .candidate(ref_mv_idx);
-    let compound = super::super::compound::CompoundBlockSyntax {
-        ref_frame0,
-        ref_frame1,
-        y_mode: CompoundYMode::NearNear,
-        mv0: candidate.mvs[0],
-        mv1: candidate.mvs[1],
-        use_optflow: false,
-    };
-    parse_resolved_compound_inter_block(
+    finish_compound_inter_block(
         work_unit,
         symbols,
         coeff_ctx,
@@ -1252,35 +1049,42 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         core,
         frontier,
         mv_grid,
+        precision,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
         intrabc_state,
         ref_frame_idx,
         reference,
-        ref_mv_bank,
-        ResolvedCompoundBlock {
-            syntax: compound,
+        ParsedCompoundBlock {
+            block_ctx: *block_ctx,
+            motion: CompoundMotionSyntax {
+                y_mode: CompoundYMode::NearNear,
+                ref_frame1,
+                skip_mode: true,
+                use_optflow: false,
+                local_warp: false,
+                global_warp: [None, None],
+                ref_mv_idx,
+                independent_idx: None,
+                mvd: [Mv::ZERO; 2],
+                joint: None,
+                jmvd_scale_mode: 0,
+                temporal_allowed: ref_frame0 != ref_frame1,
+                temporal_first: [false; 2],
+            },
             blend: mc::CompoundBlend::average_with_implicit_mask(
                 CompoundBlendToolConfig::from_sequence(sequence).implicit_mask,
-            )
-            .average_with_cwp_weight(candidate.cwp_weight),
+            ),
             interp: ReconInterpolationFilter::EightTapSharp,
             use_amvd: false,
             precision: BlockPrecisionRecord::most_probable(precision),
-            skip_mode: true,
             use_refinemv: false,
             refinemv_switchable: false,
-            warp_params: [None, None],
         },
         skip,
-        n4w,
-        n4h,
-        mi_row,
-        mi_col,
         mi_rows,
         mi_cols,
-        sb_h4,
         residual_tool_policy,
         block_qindex,
         tile_offset,
@@ -1373,17 +1177,15 @@ const fn compound_reads_second_drl(compound: super::super::compound::CompoundBlo
     !compound.use_optflow && compound.y_mode.has_second_drl()
 }
 
-fn select_near_near_candidates(
-    compound: super::super::compound::CompoundBlockSyntax,
+pub(super) fn select_near_near_candidates(
+    independent_indices: Option<[usize; 2]>,
     paired_idx: usize,
-    independent_indices: [usize; 2],
     paired: impl FnOnce(usize) -> [Mv; 2],
     independent: impl FnOnce([usize; 2]) -> [Mv; 2],
 ) -> [Mv; 2] {
-    if compound_reads_second_drl(compound) {
-        independent(independent_indices)
-    } else {
-        paired(paired_idx)
+    match independent_indices {
+        Some(indices) => independent(indices),
+        None => paired(paired_idx),
     }
 }
 
@@ -1868,20 +1670,6 @@ fn compound_reference_order_hint<T: ReconSample>(
         })
 }
 
-fn single_ref_block_context(block_ctx: &MvBlockContext, ref_frame0: i8) -> MvBlockContext {
-    let mut single = *block_ctx;
-    single.ref_frame0 = ref_frame0;
-    single.ref_frame1 = None;
-    single
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CompoundJointMvProjection {
-    base_list: usize,
-    first_dist: i32,
-    second_dist: i32,
-}
-
 fn compound_joint_mv_projection<T: ReconSample>(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<T>,
@@ -1914,7 +1702,7 @@ fn compound_joint_mv_projection<T: ReconSample>(
     })
 }
 
-fn project_joint_mvd(diff: Mv, num: i32, den: i32) -> Mv {
+pub(super) fn project_joint_mvd(diff: Mv, num: i32, den: i32) -> Mv {
     let num = num.clamp(-31, 31);
     let den = den.clamp(1, 31);
     let frac = i64::from(num) * i64::from(MV_PROJECTION_DIV_MULT[den as usize]);
@@ -1930,7 +1718,11 @@ fn project_joint_mvd_component(component: i32, frac: i64) -> i32 {
     rounded.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
 }
 
-fn scale_joint_projected_mvd(mut projected: Mv, jmvd_scale_mode: u8, use_amvd: bool) -> Mv {
+pub(super) fn scale_joint_projected_mvd(
+    mut projected: Mv,
+    jmvd_scale_mode: u8,
+    use_amvd: bool,
+) -> Mv {
     if use_amvd {
         match jmvd_scale_mode {
             1 => {
@@ -1955,7 +1747,7 @@ fn scale_joint_projected_mvd(mut projected: Mv, jmvd_scale_mode: u8, use_amvd: b
     projected
 }
 
-fn add_mv_clamped(pred: Mv, diff: Mv) -> Mv {
+pub(super) fn add_mv_clamped(pred: Mv, diff: Mv) -> Mv {
     Mv {
         row: mv_clamp_to_integer(pred.row.saturating_add(diff.row)),
         col: mv_clamp_to_integer(pred.col.saturating_add(diff.col)),

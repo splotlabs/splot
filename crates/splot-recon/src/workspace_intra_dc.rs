@@ -131,10 +131,8 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
         y: usize,
         size: IntraRectBlockSize,
     ) -> Result<()> {
-        let rect = block_rect(x, y, size)?;
-        let bit_depth = self.info.bit_depth();
-        self.plane_mut(plane)?
-            .predict_intra_ibp_dc_rect(rect, size, bit_depth)
+        let (target, rect, bit_depth) = self.intra_rect_target(plane, x, y, size)?;
+        target.predict_intra_ibp_dc_rect(rect, size, bit_depth)
     }
 }
 

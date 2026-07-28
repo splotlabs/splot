@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_recon::math::{round2_signed, round2_signed_i32};
+use std::ops::Range;
 use std::sync::Arc;
 
 use super::{
@@ -11,7 +12,7 @@ use super::{
 use selection::projection_queue;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
-use trajectory::TrajectoryState;
+use trajectory::{TrajectoryBand, TrajectoryState};
 
 mod selection;
 mod trajectory;
@@ -541,6 +542,7 @@ impl TemporalMvContext {
         };
         crate::timing::report("inter_temporal_trajectory_reset", trajectory_reset_started);
         let projection_started = crate::timing::start();
+        let mut prepared = Vec::with_capacity(projections.len());
         for projection in projections {
             let slot = *ref_frame_idx.get(projection.ref_index)?;
             let source_order_hint = self
@@ -554,20 +556,17 @@ impl TemporalMvContext {
             else {
                 continue;
             };
-            project_temporal_motion_field(
+            prepared.extend(TemporalProjectionSource::new(
                 source_field,
                 source_order_hint,
                 current_order_hint,
-                config.step,
-                config.unit_size8,
                 projection.ref_index,
                 projection.side,
                 projection.target_ref,
                 &self.ref_order_hints,
-                trajectories.as_mut(),
-                &mut self.field,
-            );
+            ));
         }
+        run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field);
         crate::timing::report("inter_temporal_projection", projection_started);
         let gap_started = crate::timing::start();
         if let Some(trajectories) = trajectories.as_mut() {
@@ -689,18 +688,18 @@ impl TemporalMvContext {
         probe: RelativeProbe,
         cell: NeighbourCell,
     ) -> Option<[Mv; 2]> {
-        if cell.ref_frame0 != TIP_REF_FRAME || cell.ref_frame1.is_some() {
+        if cell.flags.ref_frame0 != TIP_REF_FRAME || cell.flags.ref_frame1.is_some() {
             return None;
         }
         let (row, col, _) = probe.stack_target(block);
         let (row, col) = (usize::try_from(row).ok()?, usize::try_from(col).ok()?);
-        let shift = 1 + usize::from(cell.tip_size_16x16());
-        let base_r = usize::try_from(cell.base_r).ok()?;
-        let base_c = usize::try_from(cell.base_c).ok()?;
+        let shift = 1 + usize::from(cell.flags.tip_size_16x16());
+        let base_r = usize::try_from(cell.motion.base_r).ok()?;
+        let base_c = usize::try_from(cell.motion.base_c).ok()?;
         let row = base_r + ((row.checked_sub(base_r)? >> shift) << shift);
         let col = base_c + ((col.checked_sub(base_c)? >> shift) << shift);
         let base_cell = grid.get(row as i32, col as i32)?;
-        self.tip_candidate(row >> 1, col >> 1, base_cell.sub_mv)
+        self.tip_candidate(row >> 1, col >> 1, base_cell.motion.sub_mv)
     }
 
     pub(super) fn tip_spatial_single_candidates(
@@ -1080,7 +1079,95 @@ fn fill_temporal_sampling_gap(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn project_temporal_motion_field(
+/// Height of the TMVP unit row bands that [`project_temporal_motion_field`]
+/// keeps its writes inside.
+///
+/// A band is one AV2 § 7.9.8 TMVP unit tall, so bands stay aligned to the unit
+/// grid that check-block-position measures against. A unit size that does not
+/// cover the sampling step cannot bound a band, and yields the whole field.
+fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usize {
+    let step = config.step.clamp(1, 2);
+    let unit = config.unit_size8.max(1);
+    if unit.is_multiple_of(step) {
+        unit
+    } else {
+        height8
+    }
+    .max(1)
+}
+
+/// Runs every queued projection over each TMVP unit row band.
+///
+/// Bands partition the writes, and each band replays the queue in its original
+/// order, so the result matches the whole-field scan whatever order the bands
+/// run in. Splitting only pays for itself when there are workers to spread the
+/// bands over, so an uninstalled or single-worker pool keeps the whole field as
+/// one band and walks it in place.
+fn run_band_projections(
+    prepared: &[TemporalProjectionSource<'_>],
+    config: TemporalProjectionConfig,
+    trajectories: Option<&mut TrajectoryState>,
+    field: &mut ProjectedTemporalMotionField,
+) {
+    let unit_rows = projection_band_rows(field.height8, config);
+    let fan_out = field.height8 > unit_rows && splot_parallel::on_multiworker_pool();
+    let band_rows = if fan_out {
+        unit_rows
+    } else {
+        field.height8.max(1)
+    };
+    let run = |band: &mut ProjectedFieldBand<'_>, mut rows: Option<&mut TrajectoryBand<'_>>| {
+        let rows8 = band.row_base..band.row_base + band_rows;
+        for prepared in prepared {
+            project_temporal_motion_field(
+                prepared,
+                rows8.clone(),
+                config.step,
+                config.unit_size8,
+                rows.as_deref_mut(),
+                band,
+            );
+        }
+    };
+    let mut trajectory_bands = trajectories.and_then(|state| state.bands(band_rows));
+    let mut field_bands = field.bands(band_rows);
+    if !fan_out {
+        for (index, band) in field_bands.iter_mut().enumerate() {
+            run(
+                band,
+                trajectory_bands
+                    .as_mut()
+                    .and_then(|bands| bands.get_mut(index)),
+            );
+        }
+        return;
+    }
+    let mut trajectory_slots = trajectory_bands
+        .as_deref_mut()
+        .map_or_else(Vec::new, |bands| bands.iter_mut().map(Some).collect());
+    let scheduled = splot_parallel::ready_task_scope(|scope| {
+        for (index, band) in field_bands.iter_mut().enumerate() {
+            let rows = trajectory_slots.get_mut(index).and_then(Option::take);
+            let run = &run;
+            scope.spawn(move |_| run(band, rows));
+        }
+    });
+    if scheduled.is_err() {
+        for (index, band) in field_bands.iter_mut().enumerate() {
+            run(
+                band,
+                trajectory_bands
+                    .as_mut()
+                    .and_then(|bands| bands.get_mut(index)),
+            );
+        }
+    }
+}
+
+/// Whole-field projection of one source, for direct unit tests.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn project_whole_temporal_motion_field(
     source: &TemporalMotionField,
     source_order_hint: u32,
     current_order_hint: u32,
@@ -1090,38 +1177,147 @@ fn project_temporal_motion_field(
     side: usize,
     target_ref: Option<usize>,
     ref_order_hints: &[Option<u32>],
-    mut trajectories: Option<&mut TrajectoryState>,
+    trajectories: Option<&mut TrajectoryState>,
     output: &mut ProjectedTemporalMotionField,
 ) {
-    let projection_step = projection_step.clamp(1, 2);
-    let target_order_hint =
-        target_ref.and_then(|target| ref_order_hints.get(target).copied().flatten());
-    if source.width8 == 0 {
-        return;
+    let config = TemporalProjectionConfig {
+        frame_size: (0, 0),
+        step: projection_step,
+        unit_size8: tmvp_unit_size8,
+        enable_tip: false,
+        enable_trajectory: trajectories.is_some(),
+        reduced: false,
+    };
+    let prepared = TemporalProjectionSource::new(
+        source,
+        source_order_hint,
+        current_order_hint,
+        source_ref,
+        side,
+        target_ref,
+        ref_order_hints,
+    );
+    run_band_projections(prepared.as_slice(), config, trajectories, output);
+}
+
+/// One unit-aligned row band of a projected motion field.
+struct ProjectedFieldBand<'a> {
+    cells: &'a mut [ProjectedTemporalMotionCell],
+    width8: usize,
+    height8: usize,
+    row_base: usize,
+}
+
+impl ProjectedTemporalMotionField {
+    fn bands(&mut self, band_rows: usize) -> Vec<ProjectedFieldBand<'_>> {
+        let (width8, height8) = (self.width8, self.height8);
+        self.cells
+            .chunks_mut(band_rows.saturating_mul(width8).max(1))
+            .enumerate()
+            .map(|(index, cells)| ProjectedFieldBand {
+                cells,
+                width8,
+                height8,
+                row_base: index * band_rows,
+            })
+            .collect()
     }
-    let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
-    let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
-    let source_to_current = super::super::get_relative_dist(source_hint, current_hint);
-    let target_cache = source
-        .ref_order_hints
-        .iter()
-        .map(|&hint| {
-            let hint = hint?;
-            let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
-            Some((
-                hint,
-                mapped_reference(source_order_hint, hint, ref_order_hints),
-                super::super::get_relative_dist(source_hint, target_hint),
-            ))
+}
+
+/// One queued AV2 § 7.9.3 motion-field projection with its per-source preamble
+/// resolved once, so the scan can be replayed band by band.
+struct TemporalProjectionSource<'a> {
+    source: &'a TemporalMotionField,
+    source_ref: usize,
+    side: usize,
+    target_ref: Option<usize>,
+    target_order_hint: Option<u32>,
+    source_to_current: i32,
+    target_cache: Vec<Option<(u32, Option<usize>, i32)>>,
+}
+
+impl<'a> TemporalProjectionSource<'a> {
+    fn new(
+        source: &'a TemporalMotionField,
+        source_order_hint: u32,
+        current_order_hint: u32,
+        source_ref: usize,
+        side: usize,
+        target_ref: Option<usize>,
+        ref_order_hints: &[Option<u32>],
+    ) -> Option<Self> {
+        if source.width8 == 0 {
+            return None;
+        }
+        let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
+        let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
+        Some(Self {
+            source,
+            source_ref,
+            side,
+            target_ref,
+            target_order_hint: target_ref
+                .and_then(|target| ref_order_hints.get(target).copied().flatten()),
+            source_to_current: super::super::get_relative_dist(source_hint, current_hint),
+            target_cache: source
+                .ref_order_hints
+                .iter()
+                .map(|&hint| {
+                    let hint = hint?;
+                    let target_hint = i32::try_from(hint).unwrap_or(i32::MAX);
+                    Some((
+                        hint,
+                        mapped_reference(source_order_hint, hint, ref_order_hints),
+                        super::super::get_relative_dist(source_hint, target_hint),
+                    ))
+                })
+                .collect(),
         })
-        .collect::<Vec<_>>();
-    let mut last_target = None;
-    for (y8, row) in source
+    }
+}
+
+/// Projects `rows` of one source motion field into the current frame's field.
+///
+/// Every write this makes — projected cell, trajectory field, trajectory
+/// position — lands in the TMVP unit row the scanned cell belongs to: AV2
+/// § 7.9.8 admits a sample only when the source row sits inside the projected
+/// position's unit, and its vertical bound carries no offset. A caller may
+/// therefore replay disjoint unit-aligned row bands in any order and observe
+/// the whole-field result.
+fn project_temporal_motion_field(
+    prepared: &TemporalProjectionSource<'_>,
+    rows: Range<usize>,
+    projection_step: usize,
+    tmvp_unit_size8: usize,
+    mut trajectories: Option<&mut TrajectoryBand<'_>>,
+    output: &mut ProjectedFieldBand<'_>,
+) {
+    let TemporalProjectionSource {
+        source,
+        source_ref,
+        side,
+        target_ref,
+        target_order_hint,
+        source_to_current,
+        target_cache,
+    } = prepared;
+    let (source_ref, side, target_ref) = (*source_ref, *side, *target_ref);
+    let (target_order_hint, source_to_current) = (*target_order_hint, *source_to_current);
+    let projection_step = projection_step.clamp(1, 2);
+    let rows = rows.start..rows.end.min(source.height8);
+    let Some(band) = source
         .cells
+        .get(rows.start * source.width8..rows.end * source.width8)
+    else {
+        return;
+    };
+    let mut last_target = None;
+    for (offset, row) in band
         .chunks_exact(source.width8)
         .enumerate()
         .step_by(projection_step)
     {
+        let y8 = rows.start + offset;
         for (x8, cell) in row.iter().copied().enumerate().step_by(projection_step) {
             let list = side;
             let ref_index = usize::from(cell.ref_indices[list]);
@@ -1177,7 +1373,7 @@ fn project_temporal_motion_field(
                 projected_to_current,
                 projection_step,
                 tmvp_unit_size8,
-                output,
+                (output.width8, output.height8),
             ) else {
                 continue;
             };
@@ -1197,7 +1393,10 @@ fn project_temporal_motion_field(
                     side == 1,
                 );
             }
-            let Some(output_cell) = output.cells.get_mut(pos_y8 * output.width8 + pos_x8) else {
+            let Some(output_cell) = pos_y8
+                .checked_sub(output.row_base)
+                .and_then(|row| output.cells.get_mut(row * output.width8 + pos_x8))
+            else {
                 continue;
             };
             let replace = !output_cell.valid
@@ -1240,10 +1439,10 @@ fn sampled_temporal_position(
     projected_mv: Mv,
     projection_step: usize,
     tmvp_unit_size8: usize,
-    field: &ProjectedTemporalMotionField,
+    (width8, height8): (usize, usize),
 ) -> Option<(usize, usize)> {
-    let projected_y8 = project_no_constraint(y8, projected_mv.row, field.height8)?;
-    let projected_x8 = project_no_constraint(x8, projected_mv.col, field.width8)?;
+    let projected_y8 = project_no_constraint(y8, projected_mv.row, height8)?;
+    let projected_x8 = project_no_constraint(x8, projected_mv.col, width8)?;
     debug_assert!(projection_step.is_power_of_two());
     let step_mask = projection_step - 1;
     let projected_y8 = projected_y8 & !step_mask;
@@ -1709,7 +1908,19 @@ mod tests {
         };
         let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
 
-        project_temporal_motion_field(&source, 4, 2, 1, 8, 0, 1, None, &[], None, &mut output);
+        project_whole_temporal_motion_field(
+            &source,
+            4,
+            2,
+            1,
+            8,
+            0,
+            1,
+            None,
+            &[],
+            None,
+            &mut output,
+        );
 
         assert_eq!(
             output.cell(8, 25),
@@ -1735,7 +1946,7 @@ mod tests {
         };
         let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
 
-        project_temporal_motion_field(
+        project_whole_temporal_motion_field(
             &source,
             4,
             2,
@@ -1791,7 +2002,7 @@ mod tests {
     #[test]
     fn side_rejected_projection_still_extends_existing_trajectory() {
         let mut trajectories = TrajectoryState::new((112, 252), 6, 1, 8).unwrap();
-        trajectories.observe_projection(
+        trajectories.whole_band().unwrap().observe_projection(
             0,
             Some(1),
             Some(1),
@@ -1818,7 +2029,7 @@ mod tests {
         });
         let mut output = ProjectedTemporalMotionField::new(112, 252).unwrap();
 
-        project_temporal_motion_field(
+        project_whole_temporal_motion_field(
             &source,
             4,
             5,

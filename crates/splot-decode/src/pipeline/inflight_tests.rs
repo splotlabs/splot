@@ -62,6 +62,34 @@ fn failed_slot_reports_a_typed_error_to_every_reader() {
 }
 
 #[test]
+fn a_failed_writer_closes_the_published_prefix_instead_of_lending_it() {
+    let (slot, writer) =
+        RefFrameSlot::<u8>::pending(decoded_frame(8, 8).info()).expect("pending slot");
+    let progress = slot.progress().expect("a pending slot publishes stripes");
+    assert!(progress.begin(&[(0, 4), (4, 8)]));
+    progress.publish(0);
+    assert_eq!(slot.published_luma_rows(), 4);
+    assert!(
+        slot.hold_samples().is_some(),
+        "a live filter phase lends the prefix it published"
+    );
+
+    drop(writer);
+
+    assert!(slot.is_settled());
+    assert_eq!(
+        slot.published_luma_rows(),
+        0,
+        "a failed phase publishes no readable row"
+    );
+    assert!(
+        slot.hold_samples().is_none(),
+        "a reader of a failed frame must get nothing to read, not its unfiltered workspace"
+    );
+    assert!(slot.ready().is_err(), "and the slot reports the failure");
+}
+
+#[test]
 fn dropping_the_writer_settles_the_slot_as_failed() {
     let (slot, writer) =
         RefFrameSlot::<u8>::pending(decoded_frame(4, 4).info()).expect("pending slot");

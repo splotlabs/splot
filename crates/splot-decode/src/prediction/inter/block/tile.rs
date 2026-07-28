@@ -5,437 +5,54 @@
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
-use std::collections::VecDeque;
 use std::ops::Range;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 use splot_recon::{PlaneId, ReconError};
 
 use super::*;
 
-const READY_JOB_CAPACITY_PER_WORKER: usize = 2;
+mod mvres;
+mod ready_rows;
 
-enum ParserStep<Row> {
-    More(Row),
-    Last(Row),
-}
+use ready_rows::{
+    OrderedDone, ParserStep, ReadyRowPipelineError, run_ready_row_pipeline_serial,
+    run_ready_row_prepass_with_commit,
+};
 
-#[derive(Debug)]
-enum ReadyRowPipelineError<E> {
-    Codec(E),
-    Capacity,
-    Parallel,
-}
-
-trait OrderedDone {
-    fn ordinal(&self) -> usize;
-}
-
-impl OrderedDone for usize {
-    fn ordinal(&self) -> usize {
-        *self
-    }
-}
-
-struct ReadyRowCoordinator<Parser, Ready, Done, Commit, E> {
-    parser: Option<Parser>,
-    ready: VecDeque<Ready>,
-    ready_limit: usize,
-    deferred: VecDeque<Ready>,
-    settled: bool,
-    done: Vec<Option<Done>>,
-    done_limit: usize,
-    committed: usize,
-    next_commit: usize,
-    commit: Option<Commit>,
-    commit_error: Option<E>,
-    commit_active: bool,
-    capacity_error: bool,
-    parser_active: bool,
-    parser_done: bool,
-    active_tasks: usize,
-    active_limit: usize,
-    max_pending: usize,
-    max_deferred: usize,
-    max_active: usize,
-    parse_timer: Option<std::time::Instant>,
-    drain_timer: Option<std::time::Instant>,
-    flip_timer: Option<std::time::Instant>,
-}
-
-fn lock_ready_rows<Parser, Ready, Done, Commit, E>(
-    coordinator: &Mutex<ReadyRowCoordinator<Parser, Ready, Done, Commit, E>>,
-) -> MutexGuard<'_, ReadyRowCoordinator<Parser, Ready, Done, Commit, E>> {
-    coordinator
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Moves every admitted deferred row onto the ready queue, scanning them in
-/// parse order and leaving the rest queued in that same order.
-///
-/// Reconstruction is order-free — each row precomputes into its own surface —
-/// so a row whose references are short holds back only its own reconstruction,
-/// not the rows behind it. The ordered commit frontier still publishes rows in
-/// parse order, and a row's own commit runs after its own admission, so the
-/// watermark it was admitted against has only grown by then.
-///
-/// Returns whether any row was released.
-fn release_ready_rows<Parser, Ready, Done, Commit, E>(
-    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
-    gate: &impl Fn(&Ready) -> bool,
-) -> bool {
-    let mut released = false;
-    let mut scanned = state.deferred.len();
-    while scanned > 0 && state.ready.len() < state.ready_limit {
-        scanned -= 1;
-        let Some(row) = state.deferred.pop_front() else {
-            break;
-        };
-        if !state.settled && !gate(&row) {
-            state.deferred.push_back(row);
-            continue;
-        }
-        state.ready.push_back(row);
-        state.max_pending = state.max_pending.max(state.ready.len());
-        released = true;
-        if state.flip_timer.is_some() {
-            crate::timing::report("walk_refs_flip", state.flip_timer.take());
-        }
-    }
-    released
-}
-
-fn take_ordered_commit<Parser, Ready, Done, Commit, E>(
-    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
-) -> Option<(Done, Commit)> {
-    if state.commit_active || state.capacity_error || state.commit_error.is_some() {
-        return None;
-    }
-    let index = state.next_commit;
-    let done = state.done.get_mut(index).and_then(Option::take)?;
-    let Some(commit) = state.commit.take() else {
-        state.capacity_error = true;
-        if let Some(slot) = state.done.get_mut(index) {
-            *slot = Some(done);
-        }
-        return None;
-    };
-    state.commit_active = true;
-    Some((done, commit))
-}
-
-fn schedule_ready_rows<'scope, Parser, Work, Gate, Ready, Done, Commit, E>(
-    scope: &splot_parallel::TaskScope<'_, 'scope>,
-    coordinator: &'scope Mutex<ReadyRowCoordinator<Parser, Ready, Done, Commit, E>>,
-    work: &'scope Work,
-    gate: &'scope Gate,
-) where
-    Parser: FnMut() -> ParserStep<Ready> + Send + 'scope,
-    Work: Fn(Ready) -> Done + Sync + 'scope,
-    Gate: Fn(&Ready) -> bool + Sync + 'scope,
-    Ready: Send + 'scope,
-    Done: OrderedDone + Send + 'scope,
-    Commit: FnMut(Done) -> core::result::Result<(), E> + Send + 'scope,
-    E: Send + 'scope,
-{
-    let (spawn_parser, ordered_commit) = {
-        let mut state = lock_ready_rows(coordinator);
-        release_ready_rows(&mut state, gate);
-        if state.capacity_error || state.commit_error.is_some() {
-            (false, None)
-        } else {
-            let spawn_parser = !state.parser_done
-                && !state.parser_active
-                && state.parser.is_some()
-                && state.ready.len() < state.ready_limit;
-            if spawn_parser {
-                state.parser_active = true;
-            }
-            let ordered_commit = take_ordered_commit(&mut state);
-            (spawn_parser, ordered_commit)
-        }
-    };
-    if let Some((done, mut commit)) = ordered_commit {
-        scope.spawn(move |scope| {
-            let result = commit(done);
-            {
-                let mut state = lock_ready_rows(coordinator);
-                state.commit = Some(commit);
-                state.commit_active = false;
-                match result {
-                    Ok(()) => {
-                        state.committed = state.committed.saturating_add(1);
-                        state.next_commit = state.next_commit.saturating_add(1);
-                    }
-                    Err(error) => state.commit_error = Some(error),
-                }
-            }
-            schedule_ready_rows(scope, coordinator, work, gate);
-        });
-    }
-    if spawn_parser {
-        scope.spawn(move |scope| {
-            let mut parser = lock_ready_rows(coordinator).parser.take();
-            let Some(parser_state) = parser.as_mut() else {
-                let mut state = lock_ready_rows(coordinator);
-                state.parser_active = false;
-                state.capacity_error = true;
-                return;
-            };
-            let (row, last) = match parser_state() {
-                ParserStep::More(row) => (row, false),
-                ParserStep::Last(row) => (row, true),
-            };
-            let overflow = {
-                let mut state = lock_ready_rows(coordinator);
-                state.parser = parser;
-                state.parser_active = false;
-                if last {
-                    crate::timing::report("walk_parse", state.parse_timer.take());
-                    state.drain_timer = crate::timing::start();
-                }
-                state.parser_done |= last;
-                admit_parsed_row(&mut state, row)
-            };
-            drop(overflow);
-            schedule_ready_rows(scope, coordinator, work, gate);
-        });
-    }
-    loop {
-        let ready = {
-            let mut state = lock_ready_rows(coordinator);
-            take_ready_row(&mut state)
-        };
-        let Some(ready) = ready else {
-            break;
-        };
-        scope.spawn(move |scope| {
-            let done = work(ready);
-            let mut overflow = None;
-            {
-                let mut state = lock_ready_rows(coordinator);
-                state.active_tasks = state.active_tasks.saturating_sub(1);
-                let ordinal = done.ordinal();
-                let slot_available = state.done.get(ordinal).is_some_and(Option::is_none);
-                if state.capacity_error || ordinal >= state.done_limit || !slot_available {
-                    state.capacity_error = true;
-                    overflow = Some(done);
-                } else if let Some(slot) = state.done.get_mut(ordinal) {
-                    *slot = Some(done);
-                } else {
-                    state.capacity_error = true;
-                    overflow = Some(done);
-                }
-            }
-            drop(overflow);
-            schedule_ready_rows(scope, coordinator, work, gate);
-        });
-    }
-}
-
-/// Queues one parsed row behind the rows still waiting for their references.
-fn admit_parsed_row<Parser, Ready, Done, Commit, E>(
-    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
-    row: Ready,
-) -> Option<Ready> {
-    if state.capacity_error || state.deferred.len() >= state.done_limit {
-        state.capacity_error = true;
-        return Some(row);
-    }
-    state.deferred.push_back(row);
-    state.max_deferred = state.max_deferred.max(state.deferred.len());
-    None
-}
-
-/// Claims one released row for a precompute task.
-fn take_ready_row<Parser, Ready, Done, Commit, E>(
-    state: &mut ReadyRowCoordinator<Parser, Ready, Done, Commit, E>,
-) -> Option<Ready> {
-    if state.capacity_error
-        || state.commit_error.is_some()
-        || state.active_tasks >= state.active_limit
-    {
-        return None;
-    }
-    let ready = state.ready.pop_front()?;
-    state.active_tasks += 1;
-    state.max_active = state.max_active.max(state.active_tasks);
-    Some(ready)
-}
-
-struct ReadyPipelineStats {
-    committed: usize,
-    ready_limit: usize,
-    max_pending: usize,
-    max_deferred: usize,
-    max_active: usize,
-    /// Whether the drain had to fall back to settling whole reference frames.
-    settled: bool,
-}
-
-/// Runs one tile's parse-ahead prepass, holding each parsed row back until
-/// `gate` reports the reference rows that row reads have been published.
-///
-/// Parsing never waits on the gate: rows parsed while their references are
-/// short queue up, and every row the gate admits is released in parse order
-/// while the rest stay queued in that same order.
-///
-/// When parsing runs out with rows still held, the driver donates its wait to
-/// the pool — the references' own filter phases run there — and re-tests
-/// between steps. `settled` bounds that loop: every reference settles in the
-/// end and a settled reference admits every row, so reaching `settled` with a
-/// row still held means the gate could not classify what holds it, and `settle`
-/// then blocks the driver once and admits every remaining row.
-fn run_ready_row_prepass_with_commit<Parser, Work, Gate, Settled, Settle, Ready, Done, Commit, E>(
-    parser: Parser,
-    work: Work,
-    commit: Commit,
-    done_limit: usize,
-    gate: Gate,
-    settled: Settled,
-    settle: Settle,
-) -> core::result::Result<ReadyPipelineStats, ReadyRowPipelineError<E>>
-where
-    Parser: FnMut() -> ParserStep<Ready> + Send,
-    Work: Fn(Ready) -> Done + Send + Sync,
-    Gate: Fn(&Ready) -> bool + Send + Sync,
-    Settled: Fn() -> bool,
-    Settle: FnOnce() -> core::result::Result<(), E>,
-    Ready: Send,
-    Done: OrderedDone + Send,
-    Commit: FnMut(Done) -> core::result::Result<(), E> + Send,
-    E: Send,
-{
-    let active_limit = splot_parallel::current_pool_width()
-        .saturating_sub(1)
-        .max(1);
-    let ready_limit = active_limit
-        .saturating_mul(READY_JOB_CAPACITY_PER_WORKER)
-        .min(done_limit)
-        .max(1);
-    let mut done = Vec::new();
-    done.try_reserve_exact(done_limit)
-        .map_err(|_| ReadyRowPipelineError::Capacity)?;
-    done.resize_with(done_limit, || None);
-    let coordinator = Mutex::new(ReadyRowCoordinator {
-        parser: Some(parser),
-        ready: VecDeque::with_capacity(ready_limit),
-        ready_limit,
-        deferred: VecDeque::new(),
-        settled: false,
-        done,
-        done_limit,
-        committed: 0,
-        next_commit: 0,
-        commit: Some(commit),
-        commit_error: None,
-        commit_active: false,
-        capacity_error: false,
-        parser_active: false,
-        parser_done: false,
-        active_tasks: 0,
-        active_limit,
-        max_pending: 0,
-        max_deferred: 0,
-        max_active: 0,
-        parse_timer: crate::timing::start(),
-        drain_timer: None,
-        flip_timer: crate::timing::start(),
-    });
-    let run_scope = || {
-        splot_parallel::ready_task_scope(|scope| {
-            schedule_ready_rows(scope, &coordinator, &work, &gate);
-        })
-        .map_err(|_| ReadyRowPipelineError::Parallel)
-    };
-    run_scope()?;
-    let drain_timer = crate::timing::start();
-    while ready_rows_await_references(&coordinator) {
-        let released = {
-            let mut state = lock_ready_rows(&coordinator);
-            release_ready_rows(&mut state, &gate)
-        };
-        if released {
-            run_scope()?;
-        } else if settled() {
-            break;
-        } else {
-            splot_parallel::assist_pool_or_park();
-        }
-    }
-    crate::timing::report("walk_refs_drain", drain_timer);
-    if ready_rows_await_references(&coordinator) {
-        settle().map_err(ReadyRowPipelineError::Codec)?;
-        {
-            let mut state = lock_ready_rows(&coordinator);
-            state.settled = true;
-            crate::timing::report("walk_refs_flip", state.flip_timer.take());
-        }
-        run_scope()?;
-    }
-    let state = coordinator
-        .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    crate::timing::report("walk_commit_drain", state.drain_timer);
-    if let Some(error) = state.commit_error {
-        return Err(ReadyRowPipelineError::Codec(error));
-    }
-    if state.capacity_error
-        || !state.parser_done
-        || state.parser_active
-        || state.commit_active
-        || state.active_tasks != 0
-        || !state.ready.is_empty()
-        || !state.deferred.is_empty()
-        || state.done.iter().any(Option::is_some)
-    {
-        return Err(ReadyRowPipelineError::Capacity);
-    }
-    Ok(ReadyPipelineStats {
-        committed: state.committed,
-        ready_limit: state.ready_limit,
-        max_pending: state.max_pending,
-        max_deferred: state.max_deferred,
-        max_active: state.max_active,
-        settled: state.settled,
-    })
-}
-
-/// Whether the prepass ran out of parse work with rows still waiting for the
-/// reference rows they read.
-fn ready_rows_await_references<Parser, Ready, Done, Commit, E>(
-    coordinator: &Mutex<ReadyRowCoordinator<Parser, Ready, Done, Commit, E>>,
-) -> bool {
-    let state = lock_ready_rows(coordinator);
-    !state.deferred.is_empty() && !state.capacity_error && state.commit_error.is_none()
-}
-
-fn run_ready_row_pipeline_serial<Parser, Recon, Row, E>(
-    mut parser: Parser,
-    mut recon: Recon,
-) -> core::result::Result<(), E>
-where
-    Parser: FnMut() -> ParserStep<Row>,
-    Recon: FnMut(Row) -> core::result::Result<(), E>,
-{
-    loop {
-        let (row, last) = match parser() {
-            ParserStep::More(row) => (row, false),
-            ParserStep::Last(row) => (row, true),
-        };
-        recon(row)?;
-        if last {
-            return Ok(());
-        }
-    }
-}
+use super::super::MotionFieldHandle;
+use super::temporal::MotionFieldUnits;
 
 pub(super) struct TileDecodeOutput {
     pub(super) cdef_state: CdefState,
     pub(super) gdf_state: GdfState,
     pub(super) ccso_state: CcsoState,
     pub(super) motion_field: TemporalMotionField,
+}
+
+/// Folds one tile's walk-parsed filter grids into the frame-level state.
+fn merge_tile_filter_state(
+    cdef_state: &mut CdefState,
+    gdf_state: &mut GdfState,
+    ccso_state: &mut CcsoState,
+    tile: &TileParserOutput,
+    mi_rows: Range<usize>,
+    mi_cols: Range<usize>,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    cdef_state.merge_tile(
+        &tile.cdef_state,
+        mi_rows.clone(),
+        mi_cols.clone(),
+        tile_offset,
+    )?;
+    gdf_state.merge_tile(
+        &tile.gdf_state,
+        mi_rows.clone(),
+        mi_cols.clone(),
+        tile_offset,
+    )?;
+    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols, tile_offset)
 }
 
 fn append_lr_records(
@@ -465,6 +82,69 @@ pub(super) struct TileFilterRecords {
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
 }
 
+/// The frame-level facts every tile phase reads, all owned so a resolve pass
+/// that runs after the driver moved on can rebuild its tile context.
+#[derive(Clone, Copy)]
+pub(super) struct TileWalkParams {
+    pub(super) limits: crate::DecodeLimits,
+    pub(super) mi_rows: usize,
+    pub(super) mi_cols: usize,
+    pub(super) sb_h4: usize,
+    pub(super) max_drl_bits_minus_1: u32,
+    pub(super) frame_interpolation_filter: FrameInterpolationFilter,
+    pub(super) residual_tool_policy: TransformToolResidualPolicy,
+    pub(super) num_total_refs: usize,
+    pub(super) reference_select: bool,
+    pub(super) num_same_ref_compound: u8,
+    pub(super) luma_use_tcq: bool,
+    pub(super) residual_use_ddt: bool,
+    pub(super) bit_depth: BitDepth,
+    pub(super) enable_adaptive_mvd: bool,
+    pub(super) allow_bawp: bool,
+    pub(super) allow_warpmv_mode: bool,
+    pub(super) frame_is_switch: bool,
+    pub(super) current_order_hint: u32,
+    /// AV2 § 7.12.2 TIP reference pair, derived from the reference order hints
+    /// alone so the entropy pass never reads the projected temporal field.
+    pub(super) tip_ref_pair: Option<(i8, i8)>,
+}
+
+impl TileWalkParams {
+    fn context<'a, T: ReconSample>(
+        &self,
+        sequence: &'a SequenceHeader,
+        core: &'a FrameHeaderCore,
+        reference: &'a InterReferenceState<T>,
+        ref_frame_idx: &'a [u32],
+    ) -> TileDecodeContext<'a, T> {
+        TileDecodeContext {
+            sequence,
+            core,
+            reference,
+            ref_frame_idx,
+            limits: self.limits,
+            mi_rows: self.mi_rows,
+            mi_cols: self.mi_cols,
+            sb_h4: self.sb_h4,
+            max_drl_bits_minus_1: self.max_drl_bits_minus_1,
+            frame_interpolation_filter: self.frame_interpolation_filter,
+            residual_tool_policy: self.residual_tool_policy,
+            num_total_refs: self.num_total_refs,
+            reference_select: self.reference_select,
+            num_same_ref_compound: self.num_same_ref_compound,
+            luma_use_tcq: self.luma_use_tcq,
+            residual_use_ddt: self.residual_use_ddt,
+            bit_depth: self.bit_depth,
+            enable_adaptive_mvd: self.enable_adaptive_mvd,
+            allow_bawp: self.allow_bawp,
+            allow_warpmv_mode: self.allow_warpmv_mode,
+            frame_is_switch: self.frame_is_switch,
+            current_order_hint: self.current_order_hint,
+            tip_ref_pair: self.tip_ref_pair,
+        }
+    }
+}
+
 struct TileDecodeContext<'a, T: ReconSample> {
     sequence: &'a SequenceHeader,
     core: &'a FrameHeaderCore,
@@ -478,7 +158,6 @@ struct TileDecodeContext<'a, T: ReconSample> {
     num_total_refs: usize,
     reference_select: bool,
     num_same_ref_compound: u8,
-    temporal_context: &'a TemporalMvContext,
     reference: &'a InterReferenceState<T>,
     luma_use_tcq: bool,
     residual_use_ddt: bool,
@@ -489,6 +168,7 @@ struct TileDecodeContext<'a, T: ReconSample> {
     allow_warpmv_mode: bool,
     frame_is_switch: bool,
     current_order_hint: u32,
+    tip_ref_pair: Option<(i8, i8)>,
 }
 
 struct TileParser<'tile, 'payload> {
@@ -502,8 +182,6 @@ struct TileParser<'tile, 'payload> {
     mv_grid: NeighbourMvGrid,
     y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
-    ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
-    warp_param_bank: super::super::find_mv_stack::WarpParamBank,
     cdef_state: CdefState,
     gdf_state: GdfState,
     ccso_state: CcsoState,
@@ -608,13 +286,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 SPEC_MODE_INFO
             )
         })?;
-        let ref_mv_bank = context
-            .sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_refmvbank)
-            .then(super::super::find_mv_stack::RefMvBank::new);
-        let warp_param_bank = super::super::find_mv_stack::WarpParamBank::new();
         let walk =
             GeneralIntraMultiblockCursor::new(tile, context.sequence, context.core, context.limits)
                 .map_err(|error| {
@@ -634,8 +305,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             mv_grid,
             y_smooth,
             chroma_smooth,
-            ref_mv_bank,
-            warp_param_bank,
             cdef_state,
             gdf_state,
             ccso_state,
@@ -653,6 +322,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         granularity: ParserGranularity,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
+        let _row_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Row);
         let tile_offset = self.tile.tile_byte_span().start;
         let tile_cols = self.tile.mi_col_range();
         let row_superblocks = (tile_cols.end as usize)
@@ -661,8 +331,11 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         let ReconRowBuffers {
             superblocks,
             entries,
+            motion_queue,
+            pending_inter,
             residual_blocks,
             temporal,
+            flag_log,
             filter_records,
         } = buffers.unwrap_or_default();
         self.filter_records = filter_records;
@@ -670,9 +343,14 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             ordinal: self.parser_ordinal,
             superblocks,
             entries,
+            motion_queue,
+            pending_inter,
             residual_blocks,
             temporal,
+            flag_log,
             filter_records: TileFilterRecords::default(),
+            motion_folded: false,
+            motion_derived: false,
             terminal: None,
         };
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
@@ -704,11 +382,9 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         &mut self.intrabc_state,
                         &mut self.segment_id_state,
                         &mut self.mv_grid,
-                        context.temporal_context,
+                        context.tip_ref_pair,
                         &mut self.y_smooth,
                         &mut self.chroma_smooth,
-                        &mut self.ref_mv_bank,
-                        &mut self.warp_param_bank,
                         context.sb_h4,
                         context.mi_rows,
                         context.mi_cols,
@@ -740,21 +416,25 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         tile_offset,
                     )
                 };
-            let mut on_published = |publication: DecodedLeafPublication, command: ReconCommand| {
+            let mut on_published = |publication: DecodedLeafPublication, leaf: ParsedLeaf| {
                 let origin = publication.superblock_origin();
-                let dependency = command.dependency();
                 push_recon_entry(
                     &mut recon_row.superblocks,
                     &mut recon_row.entries,
                     origin,
-                    dependency,
+                    leaf.dependency,
                     ReconRowEntry {
                         publication,
-                        command: Some(command),
+                        command: leaf.command,
+                        motion: None,
                         temporal: 0..0,
                         error: None,
                     },
                 );
+                recon_row.motion_queue.push(leaf.motion);
+                if let Some(pending) = leaf.pending {
+                    recon_row.pending_inter.push(pending);
+                }
             };
             match granularity {
                 ParserGranularity::Row => {
@@ -793,6 +473,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             return ParserStep::Last(recon_row);
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
+        self.mv_grid.take_flag_log(&mut recon_row.flag_log);
         self.entry_capacity = self.entry_capacity.max(recon_row.entries.capacity());
         self.superblock_capacity = self
             .superblock_capacity
@@ -841,29 +522,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         }
     }
 
-    fn next_row<T: ReconSample>(
-        &mut self,
-        context: &TileDecodeContext<'_, T>,
-    ) -> ParserStep<ReconRow> {
-        self.next_unit(context, ParserGranularity::Row, None)
-    }
-
-    fn next_row_reusing<T: ReconSample>(
-        &mut self,
-        context: &TileDecodeContext<'_, T>,
-        buffers: ReconRowBuffers,
-    ) -> ParserStep<ReconRow> {
-        self.next_unit(context, ParserGranularity::Row, Some(buffers))
-    }
-
-    fn next_superblock_reusing<T: ReconSample>(
-        &mut self,
-        context: &TileDecodeContext<'_, T>,
-        buffers: ReconRowBuffers,
-    ) -> ParserStep<ReconRow> {
-        self.next_unit(context, ParserGranularity::Superblock, Some(buffers))
-    }
-
     fn into_output(self) -> Result<TileParserOutput> {
         let tile_offset = self.tile.tile_byte_span().start;
         let Some((active_source_blocks, unit_filters)) = self.tile_walk_output else {
@@ -890,9 +548,118 @@ enum ParserGranularity {
     Superblock,
 }
 
+/// The § 7.12 banks one tile's resolve pass owns, alongside whichever
+/// neighbour grid the pass publishes its motion plane into.
+struct TileResolveState {
+    ref_mv_bank: Option<super::super::find_mv_stack::RefMvBank>,
+    warp_param_bank: super::super::find_mv_stack::WarpParamBank,
+}
+
+impl TileResolveState {
+    fn new(sequence: &SequenceHeader) -> Self {
+        Self {
+            ref_mv_bank: sequence
+                .inter
+                .as_ref()
+                .is_some_and(|inter| inter.enable_refmvbank)
+                .then(super::super::find_mv_stack::RefMvBank::new),
+            warp_param_bank: super::super::find_mv_stack::WarpParamBank::new(),
+        }
+    }
+
+    /// Replays one parsed unit's § 7.12 work, in the leaf order the fused walk
+    /// used, and completes the inter leaves' reconstruction commands.
+    ///
+    /// It runs even when parsing stopped early, because the leaves parsed
+    /// before the failure are exactly the ones the fused walk would have
+    /// resolved; a resolve failure is therefore the earlier one and the caller
+    /// lets it win over any later parse or exit-symbol failure.
+    fn resolve_unit<T: ReconSample>(
+        &mut self,
+        grid: &mut NeighbourMvGrid,
+        context: &TileDecodeContext<'_, T>,
+        temporal_context: &TemporalMvContext,
+        row: &mut ReconRow,
+        tile_offset: ByteOffset,
+    ) -> Result<()> {
+        resolve_parsed_leaves(
+            &mut row.motion_queue,
+            &mut row.pending_inter,
+            &mut row.entries,
+            &mut MvResolutionState {
+                grid,
+                ref_mv_bank: &mut self.ref_mv_bank,
+                warp_param_bank: &mut self.warp_param_bank,
+                core: context.core,
+                temporal: frame_uses_temporal_mvs(context.core).then_some(temporal_context),
+                order_hints: temporal_context.order_hint_mv_context(),
+                drl_reorder: sequence_drl_reorder(context.sequence),
+                max_drl_bits_minus_1: context.max_drl_bits_minus_1,
+                frame_precision: 0,
+                tile_offset,
+            },
+            context.sb_h4,
+        )
+    }
+}
+
+/// Pairs one resolved unit with the shadow surface its reconstruction writes
+/// into and the reference rows that reconstruction reads.
+fn admit_ready_row<'surface, T: ReconSample>(
+    step: ParserStep<ReconRow>,
+    surfaces: &mut impl Iterator<Item = splot_recon::CurrentFrameRect<'surface, T>>,
+    row_gate: &row_gate::RowReferenceGate<'_, T>,
+) -> ParserStep<ReadyReconRow<'surface, T>> {
+    let (row, last) = match step {
+        ParserStep::More(row) => (row, false),
+        ParserStep::Last(row) => (row, true),
+    };
+    let surface = if row.superblocks.is_empty() {
+        None
+    } else {
+        surfaces.next()
+    };
+    let bounds = row_gate.bounds_for_row(&row);
+    let ready = ReadyReconRow {
+        row,
+        surface,
+        bounds,
+    };
+    if last {
+        ParserStep::Last(ready)
+    } else {
+        ParserStep::More(ready)
+    }
+}
+
+/// Runs one parse unit's resolve pass over the step the parse pass produced,
+/// letting a resolve failure end the unit stream ahead of any later parse or
+/// exit-symbol failure the step already carries.
+fn resolve_parser_step(
+    step: ParserStep<ReconRow>,
+    resolve: impl FnOnce(&mut ReconRow) -> Result<()>,
+) -> ParserStep<ReconRow> {
+    let (mut row, last) = match step {
+        ParserStep::More(row) => (row, false),
+        ParserStep::Last(row) => (row, true),
+    };
+    if let Err(error) = resolve(&mut row) {
+        row.terminal = Some(error);
+        return ParserStep::Last(row);
+    }
+    if last {
+        ParserStep::Last(row)
+    } else {
+        ParserStep::More(row)
+    }
+}
+
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
     pub(super) command: Option<ReconCommand>,
+    /// The refinement grid the motion pass derived, which is the only grid the
+    /// entry's prediction may sample through.
+    pub(super) motion: Option<super::super::mc::CompoundMotionGrid>,
     pub(super) temporal: Range<usize>,
     pub(super) error: Option<crate::DecodeError>,
 }
@@ -928,9 +695,23 @@ pub(super) struct ReconRow {
     pub(super) ordinal: usize,
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
+    /// One § 7.12 work item per parsed leaf, drained by the resolve pass
+    /// before the row leaves the parser.
+    pub(super) motion_queue: Vec<LeafMotion>,
+    /// The inter leaves' § 7.12 records, in the queue's own order.
+    pub(super) pending_inter: Vec<PendingInterBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
+    /// The unit's flag-plane publications, replayed by a resolve pass that runs
+    /// on a grid of its own. Empty unless the parser was logging.
+    pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
+    /// Whether the prepass already folded this unit's records into the frame's
+    /// motion field, which it does for a unit it reconstructed in full.
+    pub(super) motion_folded: bool,
+    /// Whether the motion pass already derived every entry's grid and records,
+    /// so no later pass may derive either again.
+    pub(super) motion_derived: bool,
     pub(super) terminal: Option<crate::DecodeError>,
 }
 
@@ -938,8 +719,11 @@ pub(super) struct ReconRow {
 pub(super) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
+    pub(super) motion_queue: Vec<LeafMotion>,
+    pub(super) pending_inter: Vec<PendingInterBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
+    pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
 }
 
@@ -991,6 +775,19 @@ impl ReconRowBufferPool {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(buffers);
     }
+}
+
+/// Takes one recycled set of per-unit buffers from the process-wide retention.
+///
+/// The parse-ahead path holds every unit of a frame at once, so it cannot draw
+/// from a per-tile pool; it borrows from the same retention the fused walk's
+/// pools fill and returns each set as its unit commits.
+fn take_retained_recon_row_buffers() -> ReconRowBuffers {
+    RETAINED_RECON_ROW_BUFFERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop()
+        .unwrap_or_default()
 }
 
 impl Drop for ReconRowBufferPool {
@@ -1083,6 +880,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
     mut ready: ReadyReconRow<'surface, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
+    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -1106,6 +904,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
         &mut surface,
         scratch,
         block_decoded,
+        motion,
         quantizer,
         temporal_context,
         reference,
@@ -1129,6 +928,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     surface: &mut super::super::mc::WorkspaceSink<'_, '_, T>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     block_decoded: &TileBlockDecodedState,
+    motion: &MotionFieldUnits,
     quantizer: &FrameQuantizerSnapshot,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -1145,15 +945,17 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
 ) -> ReconRow {
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
-    let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-        capacity.saturating_add(
-            entry
-                .command
-                .as_ref()
-                .map_or(0, ReconCommand::temporal_record_capacity),
-        )
-    });
-    let _ = row.temporal.try_reserve(temporal_capacity);
+    if !row.motion_derived {
+        let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
+            capacity.saturating_add(
+                entry
+                    .command
+                    .as_ref()
+                    .map_or(0, ReconCommand::temporal_record_capacity),
+            )
+        });
+        let _ = row.temporal.try_reserve(temporal_capacity);
+    }
     'superblocks: for superblock in &mut row.superblocks {
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
             break;
@@ -1185,27 +987,52 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 }
             };
             let start = row.temporal.len();
-            let result = scratch.reconstruct_logged(
-                &command,
-                surface,
-                block_decoded,
-                &mut row.temporal,
-                &row.residual_blocks,
-                temporal_context,
-                reference,
-                ref_frame_idx,
-                sequence,
-                core,
-                mi_rows,
-                mi_cols,
-                current_order_hint,
-                luma_use_tcq,
-                residual_use_ddt,
-                bit_depth,
-            );
+            let result = if row.motion_derived {
+                scratch.reconstruct_from_motion(
+                    &command,
+                    surface,
+                    block_decoded,
+                    entry.motion.take(),
+                    &row.residual_blocks,
+                    &deferred_recon::ReconShared {
+                        reference,
+                        ref_frame_idx,
+                        temporal_context,
+                        sequence,
+                        core,
+                        luma_use_tcq,
+                        residual_use_ddt,
+                        bit_depth,
+                        mi_rows,
+                        mi_cols,
+                        current_order_hint,
+                    },
+                )
+            } else {
+                scratch.reconstruct_logged(
+                    &command,
+                    surface,
+                    block_decoded,
+                    &mut row.temporal,
+                    &row.residual_blocks,
+                    temporal_context,
+                    reference,
+                    ref_frame_idx,
+                    sequence,
+                    core,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    bit_depth,
+                )
+            };
             match result {
                 Ok(()) => {
-                    entry.temporal = start..row.temporal.len();
+                    if !row.motion_derived {
+                        entry.temporal = start..row.temporal.len();
+                    }
                 }
                 Err(error) => {
                     row.temporal.truncate(start);
@@ -1215,7 +1042,532 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             }
         }
     }
+    if row.motion_derived {
+        return row;
+    }
+    row.motion_folded = row
+        .entries
+        .iter()
+        .all(|entry| !matches!(entry.command, Some(ReconCommand::Inter(_))));
+    if row.motion_folded {
+        motion.fold(&row.temporal);
+        motion.unit_landed(true);
+    }
     row
+}
+
+/// The prepass state one tile carries across calls: the block-decoded snapshot
+/// that precompute reads, and the ordered commit frontier.
+///
+/// The out-of-order surface the precompute writes into is partitioned by the
+/// caller instead, because the motion pass and the reconstruction pass share
+/// one partition: rebuilding it costs a pass over every plane row.
+struct PrepassCursor {
+    prepass_block_decoded: TileBlockDecodedState,
+    recon_ordinal: usize,
+    current_block_decoded_superblock: Option<[usize; 2]>,
+}
+
+impl PrepassCursor {
+    /// Opens the cursor for one tile, before any unit is committed.
+    fn new(block_decoded: &TileBlockDecodedState) -> Self {
+        Self {
+            prepass_block_decoded: block_decoded.clone(),
+            recon_ordinal: 0,
+            current_block_decoded_superblock: None,
+        }
+    }
+}
+
+/// Everything one superblock prepass commits into.
+struct PrepassSinks<'a, T: ReconSample> {
+    ordered: &'a mut deferred_recon::InterReconScratch<T>,
+    workspace: &'a mut CurrentFrameWorkspace<T>,
+    block_decoded: &'a mut TileBlockDecodedState,
+    motion: &'a MotionFieldUnits,
+    frame_filter_records: &'a mut crate::filters::wienerns_lr::FrameFilterRecords,
+    decoded_any: &'a mut bool,
+}
+
+/// Drives one tile's superblock units through precompute-into-shadow-surface,
+/// row-gated admission and ordered commit.
+///
+/// `next_unit` supplies the units already resolved, so the same driver serves
+/// the fused walk, which resolves each unit as it parses it, and the deferred
+/// resolve pass, which resolves units the driver parsed earlier.
+#[allow(clippy::too_many_arguments)]
+fn run_superblock_prepass<T: ReconSample, P>(
+    mut next_unit: P,
+    shadow_surfaces: Vec<splot_recon::CurrentFrameRect<'_, T>>,
+    done_limit: usize,
+    tile_offset: ByteOffset,
+    context: &TileDecodeContext<'_, T>,
+    temporal_context: &TemporalMvContext,
+    quantizer: &FrameQuantizerSnapshot,
+    row_gate: &row_gate::RowReferenceGate<'_, T>,
+    row_buffers: &ReconRowBufferPool,
+    workers: &InterReconScratchPool<T>,
+    cursor: &mut PrepassCursor,
+    sinks: &mut PrepassSinks<'_, T>,
+) -> Result<()>
+where
+    P: FnMut() -> ParserStep<ReconRow> + Send,
+{
+    let PrepassCursor {
+        prepass_block_decoded,
+        recon_ordinal,
+        current_block_decoded_superblock,
+    } = cursor;
+    let mut surfaces = shadow_surfaces.into_iter();
+    let prepass_block_decoded = &*prepass_block_decoded;
+    let sinks_motion = sinks.motion;
+    let parse_ready = || admit_ready_row(next_unit(), &mut surfaces, row_gate);
+    let timer = crate::timing::start();
+    let tally = crate::timing::WorkerTally::new();
+    let first_commit_ns = std::sync::atomic::AtomicU64::new(0);
+    let first_commit_ns = &first_commit_ns;
+    let prepared = run_ready_row_prepass_with_commit(
+        parse_ready,
+        |ready| {
+            tally.note_worker();
+            workers.with_scratch(|scratch| {
+                precompute_recon_row(
+                    ready,
+                    scratch,
+                    prepass_block_decoded,
+                    sinks_motion,
+                    quantizer,
+                    temporal_context,
+                    context.reference,
+                    context.ref_frame_idx,
+                    context.sequence,
+                    context.core,
+                    context.sb_h4,
+                    context.mi_rows,
+                    context.mi_cols,
+                    context.current_order_hint,
+                    context.luma_use_tcq,
+                    context.residual_use_ddt,
+                    context.bit_depth,
+                )
+            })
+        },
+        |ready| {
+            let _commit_scope = crate::timing::PhaseScope::new(crate::timing::Phase::Commit);
+            if first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) == 0
+                && let Some(started) = timer
+            {
+                first_commit_ns.store(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+            }
+            if let Some(surface) = ready.surface.as_ref() {
+                let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitPublish);
+                surface.publish_into(sinks.workspace)?;
+            }
+            let buffers = pixel_commit::replay_recon_row(
+                ready.row,
+                recon_ordinal,
+                sinks.decoded_any,
+                quantizer,
+                sinks.ordered,
+                sinks.workspace,
+                sinks.block_decoded,
+                current_block_decoded_superblock,
+                sinks.motion,
+                sinks.frame_filter_records,
+                temporal_context,
+                context.reference,
+                context.ref_frame_idx,
+                context.sequence,
+                context.core,
+                context.mi_rows,
+                context.mi_cols,
+                context.current_order_hint,
+                context.luma_use_tcq,
+                context.residual_use_ddt,
+                context.bit_depth,
+                tile_offset,
+            )?;
+            row_buffers.recycle(buffers);
+            Ok(())
+        },
+        done_limit,
+        |ready: &ReadyReconRow<'_, T>| row_gate.admits(&ready.bounds),
+        || row_gate.is_ready(),
+        || row_gate.wait("arm=rows"),
+    )
+    .map_err(|error| match error {
+        ReadyRowPipelineError::Parallel => inter_cap!(
+            "inter_row_prepass_scope",
+            tile_offset,
+            "inter.row.task_scope",
+            SPEC_MODE_INFO
+        ),
+        ReadyRowPipelineError::Capacity => inter_cap!(
+            "inter_row_prepass_capacity",
+            tile_offset,
+            "inter.row.task_capacity",
+            SPEC_MODE_INFO
+        ),
+        ReadyRowPipelineError::Codec(error) => error,
+    })?;
+    if timer.is_some() {
+        crate::timing::report_detail(
+            "inter_row_prepass",
+            timer,
+            &format!(
+                "units={} committed={} c_first_ms={:.3} threads={} workers_used={} max_pending={} max_deferred={} max_active={} settled_arm={} {}",
+                prepared.committed,
+                prepared.committed,
+                first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1.0e6,
+                splot_parallel::current_pool_width(),
+                tally.workers_used(),
+                prepared.max_pending,
+                prepared.max_deferred,
+                prepared.max_active,
+                u8::from(prepared.settled),
+                row_gate.fallback_summary(),
+            ),
+        );
+    }
+    let active_limit = splot_parallel::current_pool_width()
+        .saturating_sub(1)
+        .max(1);
+    if prepared.max_pending > prepared.ready_limit || prepared.max_active > active_limit {
+        return Err(inter_cap!(
+            "inter_row_prepass_bounds",
+            tile_offset,
+            "inter.row.task_capacity",
+            SPEC_MODE_INFO
+        ));
+    }
+    Ok(())
+}
+
+/// One tile's units after the entropy pass, owned so the § 7.12 resolve pass
+/// and the reconstruction pass can run once the driver has moved on.
+///
+/// The parse pass reads no reference sample and no projected motion field, so
+/// everything here is settled by the bitstream alone; what is still owed is the
+/// resolve pass (which needs the frame's temporal prelude) and reconstruction
+/// (which needs reference pixels).
+pub(super) struct ParsedTile {
+    tile_offset: ByteOffset,
+    mi_rows: Range<usize>,
+    mi_cols: Range<usize>,
+    rows: Vec<ReconRow>,
+    block_decoded: TileBlockDecodedState,
+    /// `None` when the unit stream ended early, exactly the case in which the
+    /// fused walk never reached its own `into_output`.
+    output: Option<TileParserOutput>,
+}
+
+impl ParsedTile {
+    /// How many unit buffers the tile is holding, which bounds the split
+    /// path's per-frame memory.
+    pub(super) fn unit_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Folds the tile's walk-parsed filter grids and loop-restoration records
+    /// into the frame-level state, which the entropy pass alone settles.
+    ///
+    /// The fused walk does this once the tile's reconstruction is done; a split
+    /// walk does it at the end of the parse pass instead, so the driver already
+    /// holds the frame's filter grids while the reconstruction is still owed.
+    /// The two write disjoint parts of the frame's records.
+    pub(super) fn merge_filter_state(
+        &mut self,
+        frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+        cdef_state: &mut CdefState,
+        gdf_state: &mut GdfState,
+        ccso_state: &mut CcsoState,
+    ) -> Result<()> {
+        let tile_offset = self.tile_offset;
+        let output = self.output.take().ok_or_else(|| {
+            inter_cap!(
+                "inter_parsed_tile_output",
+                tile_offset,
+                "inter.row.parser_output",
+                SPEC_MODE_INFO
+            )
+        })?;
+        merge_tile_filter_state(
+            cdef_state,
+            gdf_state,
+            ccso_state,
+            &output,
+            self.mi_rows.clone(),
+            self.mi_cols.clone(),
+            tile_offset,
+        )?;
+        append_lr_records(
+            &mut frame_filter_records.lr_source_blocks,
+            &mut frame_filter_records.lr_unit_filters,
+            output.active_source_blocks,
+            output.unit_filters,
+        )
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_lr_filter_index_split",
+                tile_offset,
+                "inter.tile.lr_unit_filter_index",
+                SPEC_MODE_INFO
+            )
+        })
+    }
+}
+
+/// How many parse units one tile yields, plus the terminating empty unit.
+fn tile_unit_capacity(
+    mi_rows: &Range<usize>,
+    mi_cols: &Range<usize>,
+    params: &TileWalkParams,
+    granularity: ParserGranularity,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    let sb_rows = mi_rows
+        .end
+        .min(params.mi_rows)
+        .saturating_sub(mi_rows.start)
+        .div_ceil(params.sb_h4);
+    let sb_cols = mi_cols
+        .end
+        .min(params.mi_cols)
+        .saturating_sub(mi_cols.start)
+        .div_ceil(params.sb_h4);
+    let units = match granularity {
+        ParserGranularity::Row => sb_rows,
+        ParserGranularity::Superblock => sb_rows.saturating_mul(sb_cols),
+    };
+    units.checked_add(1).ok_or_else(|| {
+        inter_cap!(
+            "inter_parsed_row_capacity",
+            tile_offset,
+            "inter.tile.task_capacity",
+            SPEC_MODE_INFO
+        )
+    })
+}
+
+/// Runs one tile's entropy pass to the end, keeping every unit.
+///
+/// Each unit carries the flag-plane publications it made, so a resolve pass on
+/// another grid replays exactly what the fused walk published before resolving
+/// the same unit.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn parse_tile_units<T: ReconSample>(
+    tile: &mut DecodeTileWorkUnit<'_>,
+    params: &TileWalkParams,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    cdef_state: &CdefState,
+    gdf_state: &GdfState,
+    ccso_state: &CcsoState,
+    superblock_units: bool,
+) -> Result<ParsedTile> {
+    let context = &params.context(sequence, core, reference, ref_frame_idx);
+    let granularity = if superblock_units {
+        ParserGranularity::Superblock
+    } else {
+        ParserGranularity::Row
+    };
+    let tile_offset = tile.tile_byte_span().start;
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    let block_decoded = tile_block_decoded(tile, context)?;
+    let capacity = tile_unit_capacity(&mi_rows, &mi_cols, params, granularity, tile_offset)?;
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(capacity).map_err(|_| {
+        inter_cap!(
+            "inter_parsed_row_allocation",
+            tile_offset,
+            "inter.tile.task_capacity",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let mut parser = TileParser::new(
+        tile,
+        context,
+        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+    )?;
+    parser.mv_grid.log_flags();
+    let started = crate::timing::start();
+    loop {
+        let step = parser.next_unit(
+            context,
+            granularity,
+            Some(take_retained_recon_row_buffers()),
+        );
+        let (row, last) = match step {
+            ParserStep::More(row) => (row, false),
+            ParserStep::Last(row) => (row, true),
+        };
+        rows.push(row);
+        if last {
+            break;
+        }
+    }
+    crate::timing::report("pass1_parse", started);
+    Ok(ParsedTile {
+        tile_offset,
+        mi_rows,
+        mi_cols,
+        rows,
+        block_decoded,
+        output: parser.into_output().ok(),
+    })
+}
+
+/// Reconstructs one parsed tile: its § 7.12 resolve pass, then the same
+/// row-gated prepass and ordered commit the fused walk runs.
+///
+/// This is the tail of a walk whose entropy pass ran elsewhere, so it takes the
+/// frame-level state by reference exactly as [`decode_tiles`] does.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
+    scratch: &mut TileDecodeScratch<T>,
+    frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+    mut parsed: ParsedTile,
+    params: &TileWalkParams,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    temporal_context: &TemporalMvContext,
+    reference: &InterReferenceState<T>,
+    ref_frame_idx: &[u32],
+    workspace: &mut CurrentFrameWorkspace<T>,
+    motion_field: TemporalMotionField,
+    motion_handle: MotionFieldHandle,
+) -> Result<TemporalMotionField> {
+    scratch.workers.ensure_workers(
+        splot_parallel::current_pool_width()
+            .saturating_sub(1)
+            .max(1),
+    );
+    let TileDecodeScratch { ordered, workers } = scratch;
+    let phase_started = crate::timing::start();
+    let context = params.context(sequence, core, reference, ref_frame_idx);
+    let tile_offset = parsed.tile_offset;
+    let row_gate = row_gate::RowReferenceGate::new(
+        reference,
+        core,
+        ref_frame_idx,
+        workspace.info(),
+        temporal_context,
+    );
+    let quantizer = FrameQuantizerSnapshot::capture();
+    let rects = superblock_luma_rects(
+        &parsed.mi_rows,
+        &parsed.mi_cols,
+        workspace,
+        params.sb_h4,
+        tile_offset,
+    )?;
+    let done_limit = parsed.rows.len().checked_add(1).ok_or_else(|| {
+        inter_cap!(
+            "inter_parsed_done_limit_overflow",
+            tile_offset,
+            "inter.superblock.task_capacity",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let motion = MotionFieldUnits::publishing(
+        motion_field,
+        parsed.rows.len(),
+        motion_handle,
+        phase_started,
+    );
+    let mut cursor = PrepassCursor::new(&parsed.block_decoded);
+    let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
+    let surfaces = mvres::resolve_and_derive_motion(
+        &mut parsed,
+        shadow.rect_surfaces(&rects)?,
+        &context,
+        temporal_context,
+        &quantizer,
+        &row_gate,
+        workers,
+        &motion,
+    )?;
+    let mut block_decoded = parsed.block_decoded.clone();
+    let row_buffers = ReconRowBufferPool::new(0);
+    let mut decoded_any = false;
+    let mut units = core::mem::take(&mut parsed.rows).into_iter();
+    let mut fallback_ordinal = 0usize;
+    let next_unit = || {
+        let Some(row) = units.next() else {
+            fallback_ordinal = fallback_ordinal.saturating_add(1);
+            return ParserStep::Last(terminal_recon_row(
+                fallback_ordinal,
+                inter_cap!(
+                    "inter_parsed_unit_stream",
+                    tile_offset,
+                    "inter.row.parser_state",
+                    SPEC_MODE_INFO
+                ),
+            ));
+        };
+        fallback_ordinal = row.ordinal.saturating_add(1);
+        if units.len() == 0 {
+            ParserStep::Last(row)
+        } else {
+            ParserStep::More(row)
+        }
+    };
+    run_superblock_prepass(
+        next_unit,
+        surfaces,
+        done_limit,
+        tile_offset,
+        &context,
+        temporal_context,
+        &quantizer,
+        &row_gate,
+        &row_buffers,
+        workers,
+        &mut cursor,
+        &mut PrepassSinks {
+            ordered,
+            workspace,
+            block_decoded: &mut block_decoded,
+            motion: &motion,
+            frame_filter_records,
+            decoded_any: &mut decoded_any,
+        },
+    )?;
+    if !decoded_any {
+        return Err(inter_missing!(
+            "inter_parsed_no_decoded_block",
+            tile_offset,
+            "inter.block",
+            SPEC_MODE_INFO
+        ));
+    }
+    Ok(motion.into_field())
+}
+
+/// One unit carrying nothing but the diagnostic that ends its tile's stream.
+fn terminal_recon_row(ordinal: usize, terminal: crate::DecodeError) -> ReconRow {
+    ReconRow {
+        ordinal,
+        superblocks: Vec::new(),
+        entries: Vec::new(),
+        motion_queue: Vec::new(),
+        pending_inter: Vec::new(),
+        residual_blocks: Vec::new(),
+        temporal: Vec::new(),
+        flag_log: Vec::new(),
+        filter_records: TileFilterRecords::default(),
+        motion_folded: false,
+        motion_derived: false,
+        terminal: Some(terminal),
+    }
 }
 
 struct PreparedTile {
@@ -1261,26 +1613,34 @@ fn tile_luma_rect<T: ReconSample>(
     tile: &DecodeTileWorkUnit<'_>,
     workspace: &CurrentFrameWorkspace<T>,
 ) -> Result<splot_recon::PlaneRect> {
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    luma_rect(&mi_rows, &mi_cols, workspace)
+}
+
+fn luma_rect<T: ReconSample>(
+    mi_rows: &Range<usize>,
+    mi_cols: &Range<usize>,
+    workspace: &CurrentFrameWorkspace<T>,
+) -> Result<splot_recon::PlaneRect> {
     let storage = workspace.plane(PlaneId::Y)?.storage_size();
-    let mi_rows = tile.mi_row_range();
-    let mi_cols = tile.mi_col_range();
-    let x = (mi_cols.start as usize)
+    let x = (mi_cols.start)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma x",
         })?;
-    let y = (mi_rows.start as usize)
+    let y = (mi_rows.start)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma y",
         })?;
-    let right = (mi_cols.end as usize)
+    let right = (mi_cols.end)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma right edge",
         })?
         .min(storage.width());
-    let bottom = (mi_rows.end as usize)
+    let bottom = (mi_rows.end)
         .checked_mul(4)
         .ok_or(ReconError::ArithmeticOverflow {
             context: "tile rectangle luma bottom edge",
@@ -1299,8 +1659,25 @@ fn tile_superblock_luma_rects<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     sb_h4: usize,
 ) -> Result<Vec<splot_recon::PlaneRect>> {
-    let tile_offset = tile.tile_byte_span().start;
-    let bounds = tile_luma_rect(tile, workspace)?;
+    let mi_rows = tile.mi_row_range().start as usize..tile.mi_row_range().end as usize;
+    let mi_cols = tile.mi_col_range().start as usize..tile.mi_col_range().end as usize;
+    superblock_luma_rects(
+        &mi_rows,
+        &mi_cols,
+        workspace,
+        sb_h4,
+        tile.tile_byte_span().start,
+    )
+}
+
+fn superblock_luma_rects<T: ReconSample>(
+    mi_rows: &Range<usize>,
+    mi_cols: &Range<usize>,
+    workspace: &CurrentFrameWorkspace<T>,
+    sb_h4: usize,
+    tile_offset: ByteOffset,
+) -> Result<Vec<splot_recon::PlaneRect>> {
+    let bounds = luma_rect(mi_rows, mi_cols, workspace)?;
     let side = sb_h4.checked_mul(4).ok_or_else(|| {
         inter_cap!(
             "inter_superblock_surface_size",
@@ -1348,6 +1725,8 @@ fn prepare_tile<T: ReconSample>(
     tile: &mut DecodeTileWorkUnit<'_>,
     mut surface: splot_recon::CurrentFrameRect<'_, T>,
     context: &TileDecodeContext<'_, T>,
+    temporal_context: &TemporalMvContext,
+    motion: &MotionFieldUnits,
     cdef_state: &CdefState,
     gdf_state: &GdfState,
     ccso_state: &CcsoState,
@@ -1389,10 +1768,20 @@ fn prepare_tile<T: ReconSample>(
         gdf_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
         ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
     )?;
+    let mut resolve_state = TileResolveState::new(context.sequence);
     let mut sink = super::super::mc::WorkspaceSink::Rect(&mut surface);
     loop {
         let _quantizer_scopes = quantizer.install_frame();
-        let step = parser.next_row(context);
+        let step = parser.next_unit(context, ParserGranularity::Row, None);
+        let step = resolve_parser_step(step, |row| {
+            resolve_state.resolve_unit(
+                &mut parser.mv_grid,
+                context,
+                temporal_context,
+                row,
+                tile_offset,
+            )
+        });
         let (row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
@@ -1403,8 +1792,9 @@ fn prepare_tile<T: ReconSample>(
                 &mut sink,
                 scratch,
                 &block_decoded,
+                motion,
                 &quantizer,
-                context.temporal_context,
+                temporal_context,
                 context.reference,
                 context.ref_frame_idx,
                 context.sequence,
@@ -1439,34 +1829,17 @@ pub(super) fn decode_tiles<T: ReconSample>(
     scratch: &mut TileDecodeScratch<T>,
     frame_filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     work_units: &mut [DecodeTileWorkUnit<'_>],
+    params: &TileWalkParams,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
-    limits: crate::DecodeLimits,
-    mi_rows: usize,
-    mi_cols: usize,
-    sb_h4: usize,
-    max_drl_bits_minus_1: u32,
-    frame_interpolation_filter: FrameInterpolationFilter,
-    residual_tool_policy: TransformToolResidualPolicy,
-    num_total_refs: usize,
-    reference_select: bool,
-    num_same_ref_compound: u8,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
-    workspace: &mut CurrentFrameWorkspace<T>,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
     ref_frame_idx: &[u32],
-    bit_depth: BitDepth,
-    enable_adaptive_mvd: bool,
-    allow_bawp: bool,
-    allow_warpmv_mode: bool,
-    frame_is_switch: bool,
-    current_order_hint: u32,
+    workspace: &mut CurrentFrameWorkspace<T>,
     mut cdef_state: CdefState,
     mut gdf_state: GdfState,
     mut ccso_state: CcsoState,
-    mut motion_field: TemporalMotionField,
+    motion_field: TemporalMotionField,
 ) -> Result<TileDecodeOutput> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -1474,38 +1847,30 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .max(1),
     );
     let TileDecodeScratch { ordered, workers } = scratch;
-    let context = TileDecodeContext {
-        sequence,
-        core,
-        limits,
+    let context = params.context(sequence, core, reference, ref_frame_idx);
+    let &TileWalkParams {
         mi_rows,
         mi_cols,
         sb_h4,
-        max_drl_bits_minus_1,
-        frame_interpolation_filter,
-        residual_tool_policy,
-        num_total_refs,
-        reference_select,
-        num_same_ref_compound,
-        temporal_context,
-        reference,
         luma_use_tcq,
         residual_use_ddt,
-        ref_frame_idx,
         bit_depth,
-        enable_adaptive_mvd,
-        allow_bawp,
-        allow_warpmv_mode,
-        frame_is_switch,
         current_order_hint,
-    };
+        ..
+    } = params;
     frame_filter_records.clear();
+    let motion = MotionFieldUnits::new(motion_field);
     let mut decoded_any = false;
     let chunk_offset = work_units
         .first()
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
-    let row_gate =
-        row_gate::RowReferenceGate::new(reference, core, ref_frame_idx, workspace.info());
+    let row_gate = row_gate::RowReferenceGate::new(
+        reference,
+        core,
+        ref_frame_idx,
+        workspace.info(),
+        temporal_context,
+    );
     let parallel_tiles = work_units.len() > 1
         && splot_parallel::current_pool_width() > 1
         && !super::intrabc::global_intrabc_enabled(core.intrabc);
@@ -1551,6 +1916,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             {
                 let tally = &tally;
                 let context = &context;
+                let motion = &motion;
                 let cdef_state = &cdef_state;
                 let gdf_state = &gdf_state;
                 let ccso_state = &ccso_state;
@@ -1559,7 +1925,15 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 scope.spawn(move |_| {
                     tally.note_worker();
                     *result = Some(prepare_tile(
-                        tile, surface, context, cdef_state, gdf_state, ccso_state, quantizer,
+                        tile,
+                        surface,
+                        context,
+                        temporal_context,
+                        motion,
+                        cdef_state,
+                        gdf_state,
+                        ccso_state,
+                        quantizer,
                         workers,
                     ));
                 });
@@ -1609,27 +1983,12 @@ pub(super) fn decode_tiles<T: ReconSample>(
         }
         prepared.sort_by_key(|tile| tile.tile_num);
         for mut tile in prepared {
-            let TileParserOutput {
-                cdef_state: tile_cdef_state,
-                gdf_state: tile_gdf_state,
-                ccso_state: tile_ccso_state,
-                active_source_blocks: tile_source_blocks,
-                unit_filters: tile_unit_filters,
-            } = tile.output;
-            cdef_state.merge_tile(
-                &tile_cdef_state,
-                tile.mi_rows.clone(),
-                tile.mi_cols.clone(),
-                tile.tile_offset,
-            )?;
-            gdf_state.merge_tile(
-                &tile_gdf_state,
-                tile.mi_rows.clone(),
-                tile.mi_cols.clone(),
-                tile.tile_offset,
-            )?;
-            ccso_state.merge_tile(
-                &tile_ccso_state,
+            let output = tile.output;
+            merge_tile_filter_state(
+                &mut cdef_state,
+                &mut gdf_state,
+                &mut ccso_state,
+                &output,
                 tile.mi_rows.clone(),
                 tile.mi_cols.clone(),
                 tile.tile_offset,
@@ -1637,8 +1996,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
             append_lr_records(
                 &mut frame_filter_records.lr_source_blocks,
                 &mut frame_filter_records.lr_unit_filters,
-                tile_source_blocks,
-                tile_unit_filters,
+                output.active_source_blocks,
+                output.unit_filters,
             )
             .ok_or_else(|| {
                 inter_cap!(
@@ -1661,7 +2020,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     workspace,
                     &mut tile.block_decoded,
                     &mut current_block_decoded_superblock,
-                    &mut motion_field,
+                    &motion,
                     frame_filter_records,
                     temporal_context,
                     reference,
@@ -1690,7 +2049,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             cdef_state,
             gdf_state,
             ccso_state,
-            motion_field,
+            motion_field: motion.into_field(),
         });
     }
     if !parallel_prepass {
@@ -1716,6 +2075,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
             ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
         )?;
+        let mut resolve_state = TileResolveState::new(sequence);
         if parallel_prepass {
             let Some(rects) = superblock_rects else {
                 return Err(inter_cap!(
@@ -1725,6 +2085,30 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     SPEC_MODE_INFO
                 ));
             };
+            let row_buffers = ReconRowBufferPool::new(
+                splot_parallel::current_pool_width()
+                    .saturating_mul(3)
+                    .max(1),
+            );
+            let next_unit = || {
+                let _quantizer_scopes = quantizer.install_frame();
+                let step = parser.next_unit(
+                    &context,
+                    ParserGranularity::Superblock,
+                    Some(row_buffers.take()),
+                );
+                resolve_parser_step(step, |row| {
+                    resolve_state.resolve_unit(
+                        &mut parser.mv_grid,
+                        &context,
+                        temporal_context,
+                        row,
+                        tile_offset,
+                    )
+                })
+            };
+            let mut cursor = PrepassCursor::new(&block_decoded);
+            let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
             let done_limit = rects.len().checked_add(1).ok_or_else(|| {
                 inter_cap!(
                     "inter_superblock_done_limit_overflow",
@@ -1733,150 +2117,42 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     SPEC_MODE_INFO
                 )
             })?;
-            let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
-            let mut surfaces = shadow.rect_surfaces(&rects)?.into_iter();
-            let prepass_block_decoded = block_decoded.clone();
-            let row_buffers = ReconRowBufferPool::new(
-                splot_parallel::current_pool_width()
-                    .saturating_mul(3)
-                    .max(1),
-            );
-            let parse_ready = || {
-                let _quantizer_scopes = quantizer.install_frame();
-                let step = parser.next_superblock_reusing(&context, row_buffers.take());
-                let (row, last) = match step {
-                    ParserStep::More(row) => (row, false),
-                    ParserStep::Last(row) => (row, true),
-                };
-                let surface = if row.superblocks.is_empty() {
-                    None
-                } else {
-                    surfaces.next()
-                };
-                let bounds = row_gate.bounds_for_row(&row);
-                let ready = ReadyReconRow {
-                    row,
-                    surface,
-                    bounds,
-                };
-                if last {
-                    ParserStep::Last(ready)
-                } else {
-                    ParserStep::More(ready)
-                }
-            };
-            let timer = crate::timing::start();
-            let tally = crate::timing::WorkerTally::new();
-            let prepared = run_ready_row_prepass_with_commit(
-                parse_ready,
-                |ready| {
-                    tally.note_worker();
-                    workers.with_scratch(|scratch| {
-                        precompute_recon_row(
-                            ready,
-                            scratch,
-                            &prepass_block_decoded,
-                            &quantizer,
-                            temporal_context,
-                            reference,
-                            ref_frame_idx,
-                            sequence,
-                            core,
-                            sb_h4,
-                            mi_rows,
-                            mi_cols,
-                            current_order_hint,
-                            luma_use_tcq,
-                            residual_use_ddt,
-                            bit_depth,
-                        )
-                    })
-                },
-                |ready| {
-                    if let Some(surface) = ready.surface.as_ref() {
-                        surface.publish_into(workspace)?;
-                    }
-                    let buffers = pixel_commit::replay_recon_row(
-                        ready.row,
-                        &mut recon_ordinal,
-                        &mut decoded_any,
-                        &quantizer,
-                        ordered,
-                        workspace,
-                        &mut block_decoded,
-                        &mut current_block_decoded_superblock,
-                        &mut motion_field,
-                        frame_filter_records,
-                        temporal_context,
-                        reference,
-                        ref_frame_idx,
-                        sequence,
-                        core,
-                        mi_rows,
-                        mi_cols,
-                        current_order_hint,
-                        luma_use_tcq,
-                        residual_use_ddt,
-                        bit_depth,
-                        tile_offset,
-                    )?;
-                    row_buffers.recycle(buffers);
-                    Ok(())
-                },
+            run_superblock_prepass(
+                next_unit,
+                shadow.rect_surfaces(&rects)?,
                 done_limit,
-                |ready: &ReadyReconRow<'_, T>| row_gate.admits(&ready.bounds),
-                || row_gate.is_ready(),
-                || row_gate.wait("arm=rows"),
-            )
-            .map_err(|error| match error {
-                ReadyRowPipelineError::Parallel => inter_cap!(
-                    "inter_row_prepass_scope",
-                    tile_offset,
-                    "inter.row.task_scope",
-                    SPEC_MODE_INFO
-                ),
-                ReadyRowPipelineError::Capacity => inter_cap!(
-                    "inter_row_prepass_capacity",
-                    tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                ),
-                ReadyRowPipelineError::Codec(error) => error,
-            })?;
-            if timer.is_some() {
-                crate::timing::report_detail(
-                    "inter_row_prepass",
-                    timer,
-                    &format!(
-                        "units={} committed={} threads={} workers_used={} max_pending={} max_deferred={} max_active={} settled_arm={} {}",
-                        prepared.committed,
-                        prepared.committed,
-                        splot_parallel::current_pool_width(),
-                        tally.workers_used(),
-                        prepared.max_pending,
-                        prepared.max_deferred,
-                        prepared.max_active,
-                        u8::from(prepared.settled),
-                        row_gate.fallback_summary(),
-                    ),
-                );
-            }
-            let active_limit = splot_parallel::current_pool_width()
-                .saturating_sub(1)
-                .max(1);
-            if prepared.max_pending > prepared.ready_limit || prepared.max_active > active_limit {
-                return Err(inter_cap!(
-                    "inter_row_prepass_bounds",
-                    tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                ));
-            }
+                tile_offset,
+                &context,
+                temporal_context,
+                &quantizer,
+                &row_gate,
+                &row_buffers,
+                workers,
+                &mut cursor,
+                &mut PrepassSinks {
+                    ordered,
+                    workspace,
+                    block_decoded: &mut block_decoded,
+                    motion: &motion,
+                    frame_filter_records,
+                    decoded_any: &mut decoded_any,
+                },
+            )?;
         } else {
             let row_buffers = ReconRowBufferPool::new(1);
             let parse_row = || {
                 let _quantizer_scopes = quantizer.install_frame();
-                parser.next_row_reusing(&context, row_buffers.take())
+                let step =
+                    parser.next_unit(&context, ParserGranularity::Row, Some(row_buffers.take()));
+                resolve_parser_step(step, |row| {
+                    resolve_state.resolve_unit(
+                        &mut parser.mv_grid,
+                        &context,
+                        temporal_context,
+                        row,
+                        tile_offset,
+                    )
+                })
             };
             let replay_row = |row: ReconRow| -> Result<()> {
                 let buffers = pixel_commit::replay_recon_row(
@@ -1888,7 +2164,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     workspace,
                     &mut block_decoded,
                     &mut current_block_decoded_superblock,
-                    &mut motion_field,
+                    &motion,
                     frame_filter_records,
                     temporal_context,
                     reference,
@@ -1908,31 +2184,21 @@ pub(super) fn decode_tiles<T: ReconSample>(
             };
             run_ready_row_pipeline_serial(parse_row, replay_row)?;
         }
-        let TileParserOutput {
-            cdef_state: tile_cdef_state,
-            gdf_state: tile_gdf_state,
-            ccso_state: tile_ccso_state,
-            active_source_blocks: tile_source_blocks,
-            unit_filters: tile_unit_filters,
-        } = parser.into_output()?;
-        cdef_state.merge_tile(
-            &tile_cdef_state,
-            tile_mi_rows.clone(),
-            tile_mi_cols.clone(),
+        let output = parser.into_output()?;
+        merge_tile_filter_state(
+            &mut cdef_state,
+            &mut gdf_state,
+            &mut ccso_state,
+            &output,
+            tile_mi_rows,
+            tile_mi_cols,
             tile_offset,
         )?;
-        gdf_state.merge_tile(
-            &tile_gdf_state,
-            tile_mi_rows.clone(),
-            tile_mi_cols.clone(),
-            tile_offset,
-        )?;
-        ccso_state.merge_tile(&tile_ccso_state, tile_mi_rows, tile_mi_cols, tile_offset)?;
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,
             &mut frame_filter_records.lr_unit_filters,
-            tile_source_blocks,
-            tile_unit_filters,
+            output.active_source_blocks,
+            output.unit_filters,
         )
         .ok_or_else(|| {
             inter_cap!(
@@ -1956,7 +2222,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         cdef_state,
         gdf_state,
         ccso_state,
-        motion_field,
+        motion_field: motion.into_field(),
     })
 }
 

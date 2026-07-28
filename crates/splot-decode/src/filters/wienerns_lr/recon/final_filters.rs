@@ -3,7 +3,7 @@
 
 //! Final loop-filter application for the reconstruction sink.
 
-use super::{MI_SIZE, WienerNsLrReconSink};
+use super::{MI_SIZE, StripeChain, WienerNsLrReconSink};
 use crate::Result;
 use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -681,8 +681,10 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })
     }
+}
 
-    pub(crate) fn apply_lr_stripe<'a>(
+impl StripeChain<'_> {
+    pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
         &self,
         core: &FrameHeaderCore,
         offset: ByteOffset,
@@ -868,7 +870,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn compute_pc_wiener_block(
+    fn compute_pc_wiener_block<T: ReconSample>(
         &self,
         offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
@@ -949,7 +951,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             let timer = crate::timing::start();
             pc_wiener_filter_block_padded(output, &params, &padded_source)
                 .map_err(|_| luma_lr_filter_error(offset))?;
-            crate::timing::report("pc_wiener_filter", timer);
+            crate::timing::accumulate(crate::timing::Phase::PcWienerFilter, timer);
             self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
             Ok(block)
         })
@@ -963,7 +965,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn compute_chroma_lr_block(
+    fn compute_chroma_lr_block<T: ReconSample>(
         &self,
         offset: ByteOffset,
         plane_id: PlaneId,
@@ -1083,7 +1085,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn compute_luma_lr_block(
+    fn compute_luma_lr_block<T: ReconSample>(
         &self,
         offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
@@ -1186,14 +1188,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 }
             })
             .map_err(|_| luma_lr_filter_error(offset))?;
-            crate::timing::report("wiener_ns_luma", timer);
+            crate::timing::accumulate(crate::timing::Phase::WienerNsLuma, timer);
             Ok(())
         })?;
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
         Ok(block)
     }
 
-    fn preserve_lossless_lr_samples(
+    fn preserve_lossless_lr_samples<T: ReconSample>(
         &self,
         plane_id: PlaneId,
         block: &WienerNsLrSourceBlock,
@@ -1201,7 +1203,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         output: &mut [T],
         offset: ByteOffset,
     ) -> Result<()> {
-        let Some(lossless_grid) = self.lossless_grid.as_ref() else {
+        let Some(lossless_grid) = self.lossless_grid else {
             return Ok(());
         };
         let (sub_x, sub_y) = self.plane_subsampling(plane_id);
@@ -1238,18 +1240,15 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
     fn plane_subsampling(&self, plane_id: PlaneId) -> (usize, usize) {
         match plane_id {
             PlaneId::Y => (0, 0),
-            PlaneId::U | PlaneId::V => {
-                let format = self.workspace.info().pixel_format();
-                (
-                    usize::from(format.subsampling_x()),
-                    usize::from(format.subsampling_y()),
-                )
-            }
+            PlaneId::U | PlaneId::V => (
+                usize::from(self.pixel_format.subsampling_x()),
+                usize::from(self.pixel_format.subsampling_y()),
+            ),
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn luma_lr_cell_subclasses<'a>(
+    fn luma_lr_cell_subclasses<'a, T: ReconSample>(
         &self,
         offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
@@ -1272,7 +1271,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         }
         let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         let cell_rows = block.height.div_ceil(MI_SIZE).max(1);
-        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
+        let Some(tx_skip_grid) = self.tx_skip_grid else {
             return Err(luma_lr_filter_error(offset));
         };
         let tile_start_y = mi_to_luma_start_recon(block.tile_mi_row_start, "luma LR tile start y")
@@ -1374,7 +1373,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             group_start = group_end;
         }
 
-        crate::timing::report("pc_wiener_classify", timer);
+        crate::timing::accumulate(crate::timing::Phase::PcWienerClassify, timer);
         Ok(cell_subclasses)
     }
 }

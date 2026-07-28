@@ -510,6 +510,47 @@ const CDEF_ROW_STARTS: [CdefRowStarts; 8] = {
     starts
 };
 
+/// [`CDEF_ROW_STARTS`] for the interleaved chroma-pair layout: rows are
+/// `CDEF_PAIR_STRIDE` lanes apart, the block starts at lane 4, and a column
+/// displacement moves two lanes because the two planes alternate.
+const CDEF_PAIR_ROW_STARTS: [CdefRowStarts; 8] = {
+    let mut starts = [[([[0; 2]; 2], [[[0; 2]; 2]; 2]); 8]; 8];
+    let mut dir = 0;
+    while dir < 8 {
+        let mut row = 0;
+        while row < 8 {
+            let center = (row + 2) * CDEF_PAIR_STRIDE + 4;
+            let mut tap = 0;
+            while tap < 2 {
+                let mut sign = 0;
+                while sign < 2 {
+                    let signed = if sign == 0 { -1 } else { 1 };
+                    starts[dir][row].0[tap][sign] =
+                        (center as isize + cdef_pair_offset(dir, tap, signed)) as usize;
+                    let mut secondary = 0;
+                    while secondary < 2 {
+                        let rotation = if secondary == 0 { 6 } else { 2 };
+                        starts[dir][row].1[tap][sign][secondary] = (center as isize
+                            + cdef_pair_offset(dir + rotation, tap, signed))
+                            as usize;
+                        secondary += 1;
+                    }
+                    sign += 1;
+                }
+                tap += 1;
+            }
+            row += 1;
+        }
+        dir += 1;
+    }
+    starts
+};
+
+const fn cdef_pair_offset(direction: usize, tap: usize, sign: i32) -> isize {
+    let [dy, dx] = CDEF_DIRECTIONS[direction & 7][tap];
+    (sign * dy) as isize * CDEF_PAIR_STRIDE as isize + (sign * dx) as isize * 2
+}
+
 #[allow(clippy::inline_always, reason = "measured CDEF hot path")]
 #[inline(always)]
 fn cdef_padded_row<const W: usize>(
@@ -755,6 +796,8 @@ fn cdef_filter_block_interior_rows_paired<
     const W: usize,
     const V: usize,
     const HAS_UNAVAILABLE: bool,
+    const PAD_STRIDE: usize,
+    const PAD_CENTER: usize,
 >(
     pad: &[u16; CDEF_PADDED_AREA],
     h: usize,
@@ -768,12 +811,12 @@ fn cdef_filter_block_interior_rows_paired<
     let sec_taps = CDEF_SEC_TAPS[tap_row];
     let pri_adj = constrain_damping_adj(filter.pri_str, filter.damping);
     let sec_adj = constrain_damping_adj(filter.sec_str, filter.damping);
-    let center_start = 2 * CDEF_PADDED_SIDE + 2;
+    let center_start = 2 * PAD_STRIDE + PAD_CENTER;
     for row in (0..h).step_by(2) {
         let next_row = (row + 1).min(h - 1);
         let center_rows = [
-            cdef_padded_row::<W>(pad, center_start + row * CDEF_PADDED_SIDE)?,
-            cdef_padded_row::<W>(pad, center_start + next_row * CDEF_PADDED_SIDE)?,
+            cdef_padded_row::<W>(pad, center_start + row * PAD_STRIDE)?,
+            cdef_padded_row::<W>(pad, center_start + next_row * PAD_STRIDE)?,
         ];
         let center = cdef_pair::<W, V>(center_rows[0], center_rows[1]);
         let filtered = if filter.pri_str != 0 && filter.sec_str != 0 {
@@ -898,7 +941,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
 ) -> bool {
     let row_starts = &CDEF_ROW_STARTS[filter.dir & 7];
     match w.min(8) {
-        8 => cdef_filter_block_interior_rows_paired::<8, 16, HAS_UNAVAILABLE>(
+        8 => cdef_filter_block_interior_rows_paired::<8, 16, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
             pad,
             h.min(8),
             filter,
@@ -906,7 +949,7 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
             out,
             out_stride,
         ),
-        4 => cdef_filter_block_interior_rows_paired::<4, 8, HAS_UNAVAILABLE>(
+        4 => cdef_filter_block_interior_rows_paired::<4, 8, HAS_UNAVAILABLE, CDEF_PADDED_SIDE, 2>(
             pad,
             h.min(8),
             filter,
@@ -916,6 +959,47 @@ fn cdef_filter_block_padded_to_valid_stride<const HAS_UNAVAILABLE: bool>(
         ),
         _ => None,
     }
+    .is_some()
+}
+
+/// Lanes per padded row of the interleaved chroma-pair scratch consumed by
+/// [`cdef_filter_block_chroma_pair`]: four block columns plus the tap reach of
+/// two on each side, two planes deep.
+pub const CDEF_PAIR_STRIDE: usize = 16;
+
+/// Sample count of one interleaved chroma-pair filter result: four rows of four
+/// U and four V samples, U and V alternating.
+pub const CDEF_PAIR_OUTPUT: usize = 32;
+
+/// AV2 § 7.18.3 CDEF over one 4x4 chroma block of both chroma planes at once.
+///
+/// The two chroma planes of a block share every § 7.18.1 filter parameter, and
+/// the § 7.18.3 kernel is per sample, so filtering them as one 16-lane vector is
+/// the same arithmetic as two 8-lane vectors. `pad` holds the two planes'
+/// neighbourhoods interleaved at `CDEF_PAIR_STRIDE` lanes per row, sample
+/// `(col, row)` of plane `p` at `row * CDEF_PAIR_STRIDE + col * 2 + p`, so a
+/// lane pair carries one position of both planes and every tap displacement is
+/// the § 7.18.3 one with its column term doubled. `out` receives the filtered
+/// `4 x 4` block in the same interleaved order.
+///
+/// Returns `false` when `h` exceeds the four rows the scratch covers.
+pub fn cdef_filter_block_chroma_pair(
+    pad: &[u16; CDEF_PADDED_AREA],
+    h: usize,
+    filter: &CdefBlockFilter,
+    out: &mut [u16; CDEF_PAIR_OUTPUT],
+) -> bool {
+    if h > 4 {
+        return false;
+    }
+    cdef_filter_block_interior_rows_paired::<8, 16, false, CDEF_PAIR_STRIDE, 4>(
+        pad,
+        h,
+        filter,
+        &CDEF_PAIR_ROW_STARTS[filter.dir & 7],
+        out,
+        8,
+    )
     .is_some()
 }
 
@@ -1342,6 +1426,65 @@ mod tests {
                             per_sample_reference(&pad, row, col, &filter),
                             "dir={dir} pri={pri_str} sec={sec_str} row={row} col={col}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn chroma_pair_matches_two_single_plane_blocks() {
+        let mut state = 0x1234_5678u32;
+        let mut next = || {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            ((state >> 13) & 0x3ff) as u16
+        };
+        for dir in 0..8 {
+            for (pri_str, sec_str) in [(0, 0), (12, 0), (0, 8), (12, 8), (16, 4)] {
+                let mut pair = [0u16; CDEF_PADDED_AREA];
+                let mut planes = [[0u16; CDEF_PADDED_AREA]; 2];
+                for row in 0..8 {
+                    for col in 0..8 {
+                        for (plane, single) in planes.iter_mut().enumerate() {
+                            let sample = next();
+                            pair[row * CDEF_PAIR_STRIDE + col * 2 + plane] = sample;
+                            single[row * CDEF_PADDED_SIDE + col] = sample;
+                        }
+                    }
+                }
+                let filter = CdefBlockFilter {
+                    pri_str,
+                    sec_str,
+                    damping: 5,
+                    dir,
+                    coeff_shift: 2,
+                };
+                let mut paired = [0u16; CDEF_PAIR_OUTPUT];
+                assert!(cdef_filter_block_chroma_pair(
+                    &pair,
+                    4,
+                    &filter,
+                    &mut paired
+                ));
+                for (plane, single) in planes.iter().enumerate() {
+                    let mut expected = [0u16; 64];
+                    assert!(cdef_filter_block_interior_to_valid_stride(
+                        single,
+                        4,
+                        4,
+                        &filter,
+                        &mut expected,
+                        4,
+                    ));
+                    for row in 0..4 {
+                        for col in 0..4 {
+                            assert_eq!(
+                                paired[row * 8 + col * 2 + plane],
+                                expected[row * 4 + col],
+                                "dir={dir} pri={pri_str} sec={sec_str} plane={plane} \
+                                 row={row} col={col}"
+                            );
+                        }
                     }
                 }
             }

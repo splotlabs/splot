@@ -10,11 +10,12 @@ use splot_recon::{
     BitDepth, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneRect, PlaneSize, SubpelPredictParams,
 };
 
+use splot_recon::{IDENTITY_WARP_PARAMS, WARPED_BLOCK_SIZE};
+
 use super::super::super::mc::mc_planes;
 use super::super::super::mv_scaling::derive_plane_scaling;
 use super::super::super::reference::subpel_last_reference_row;
 use super::super::super::{BawpSyntax, InterBlock, Mv, PlacedInterBlock, ReconInterpolationFilter};
-use super::super::deferred_recon::{InterReconCommand, PendingKind};
 use super::*;
 
 const FRAME_WIDTH: usize = 1920;
@@ -63,8 +64,21 @@ fn placed(luma_y: usize, luma_h: usize, mv_row: i32) -> PlacedInterBlock {
     }
 }
 
-fn command(placed: PlacedInterBlock, kind: PendingKind) -> InterReconCommand {
-    InterReconCommand::new(placed, kind, 0, splot_core::span::ByteOffset::new(0))
+/// The bound one list of one block imposes, with the block's own geometry.
+fn published_rows(
+    frame: DecodedFrameInfo,
+    block: &PlacedInterBlock,
+    mv: Mv,
+    reach: ListReach,
+) -> Option<u32> {
+    block_published_rows(
+        frame,
+        frame,
+        block.motion_compensation_rect(),
+        block.predict_chroma,
+        mv,
+        reach,
+    )
 }
 
 /// The last luma row the prediction of one plane will actually read, derived
@@ -125,8 +139,8 @@ fn a_single_reference_bound_is_the_prediction_bound_over_every_plane() {
     ] {
         let block = placed(luma_y, luma_h, mv_row);
         assert_eq!(
-            block_published_rows(frame, frame, &block, block.block.mv, false),
-            prediction_luma_rows(frame, frame, &block, block.block.mv),
+            published_rows(frame, &block, block.block.mv, ListReach::default()),
+            Some(prediction_luma_rows(frame, frame, &block, block.block.mv)),
             "block at {luma_y}+{luma_h} mv {mv_row}"
         );
     }
@@ -138,8 +152,8 @@ fn the_chroma_plane_sets_the_bound_of_an_unshifted_block() {
     let block = placed(64, 64, 0);
 
     assert_eq!(
-        block_published_rows(frame, frame, &block, block.block.mv, false),
-        136,
+        published_rows(frame, &block, block.block.mv, ListReach::default()),
+        Some(136),
         "luma reads rows 64..=127 plus the four-tap reach (132 rows), chroma \
          reads rows 32..=63 plus the same reach (68 chroma rows, 136 luma)"
     );
@@ -151,8 +165,8 @@ fn a_downward_motion_vector_moves_the_bound_down_the_reference() {
     let block = placed(64, 64, 80);
 
     assert_eq!(
-        block_published_rows(frame, frame, &block, block.block.mv, false),
-        146,
+        published_rows(frame, &block, block.block.mv, ListReach::default()),
+        Some(146),
         "ten luma samples down is five chroma rows down: 73 chroma rows, 146 luma"
     );
 }
@@ -163,33 +177,127 @@ fn the_bound_never_passes_the_last_reference_row() {
     let block = placed(FRAME_HEIGHT - 64, 64, 8 * 4096);
 
     assert_eq!(
-        block_published_rows(frame, frame, &block, block.block.mv, false),
-        FRAME_HEIGHT as u32
+        published_rows(frame, &block, block.block.mv, ListReach::default()),
+        Some(FRAME_HEIGHT as u32)
+    );
+}
+
+/// The luma row `splot-recon`'s § 7.13.3.19 block warp reads last, over every
+/// 8x8 luma section of one block, derived section by section the way
+/// `warp_prediction.rs` derives it: project the section centre through the
+/// model, then read seven rows below the projected row.
+fn warp_read_luma_rows(block: &PlacedInterBlock, warp_params: [i32; 6]) -> u32 {
+    let mut last = 0i64;
+    for section_y in (0..block.luma_h).step_by(WARPED_BLOCK_SIZE) {
+        for section_x in (0..block.luma_w).step_by(WARPED_BLOCK_SIZE) {
+            let source_x = (block.luma_x + section_x + 4) as i64;
+            let source_y = (block.luma_y + section_y + 4) as i64;
+            let destination = i64::from(warp_params[4]) * source_x
+                + i64::from(warp_params[5]) * source_y
+                + i64::from(warp_params[1]);
+            last = last.max((destination >> 16) + 7);
+        }
+    }
+    (last.max(0) as u32).saturating_add(1)
+}
+
+#[test]
+fn a_warped_list_bound_dominates_every_section_the_kernel_reads() {
+    let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
+    for (luma_y, luma_h, shift_rows, shear) in [
+        (64usize, 64usize, 0i32, 0i32),
+        (64, 64, 12, 0),
+        (256, 32, -7, 0),
+        (128, 128, 3, 640),
+        (512, 64, 40, -768),
+    ] {
+        let block = placed(luma_y, luma_h, 0);
+        let mut warp_params = IDENTITY_WARP_PARAMS;
+        warp_params[1] = shift_rows << 16;
+        warp_params[4] = shear;
+        let reach = ListReach {
+            warp: Some(warp_params),
+            ..ListReach::default()
+        };
+
+        let bound = published_rows(frame, &block, Mv::ZERO, reach).expect("unscaled warp bound");
+        let read = warp_read_luma_rows(&block, warp_params);
+        assert!(
+            bound >= read,
+            "block at {luma_y}+{luma_h} shift {shift_rows} shear {shear}: \
+             bound {bound} must dominate the {read} rows the kernel reads"
+        );
+    }
+}
+
+#[test]
+fn a_scaled_warped_list_stays_unboundable() {
+    let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
+    let reference = info(FRAME_WIDTH / 2, FRAME_HEIGHT / 2);
+    let block = placed(64, 64, 0);
+
+    assert_eq!(
+        block_published_rows(
+            frame,
+            reference,
+            block.motion_compensation_rect(),
+            block.predict_chroma,
+            Mv::ZERO,
+            ListReach {
+                warp: Some(IDENTITY_WARP_PARAMS),
+                ..ListReach::default()
+            },
+        ),
+        None
     );
 }
 
 #[test]
-fn unboundable_readers_are_classified_by_their_reason() {
-    let mut warped = placed(64, 64, 0);
-    warped.block.warp_params[0] = Some([0; 6]);
-    let mut bawp = placed(64, 64, 0);
-    bawp.block.bawp.enabled = true;
+fn a_bawp_list_bound_covers_the_template_below_its_reference_position() {
+    let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
+    let block = placed(64, 64, 0);
+    let translation = placed(64, 64, 8 * 40);
 
     assert_eq!(
-        settle_reason(&command(placed(64, 64, 0), PendingKind::Single)),
-        None
+        bawp_reference_luma_rows(64, 64, 0),
+        80,
+        "the template caps at sixteen rows below the block's reference position"
     );
     assert_eq!(
-        settle_reason(&command(warped, PendingKind::Single)),
-        Some(SettleReason::Warp)
+        bawp_reference_luma_rows(64, 8, 0),
+        72,
+        "a block shorter than the cap only reaches its own height"
     );
     assert_eq!(
-        settle_reason(&command(bawp, PendingKind::Single)),
-        Some(SettleReason::Bawp)
+        bawp_reference_luma_rows(64, 64, 8 * 40),
+        120,
+        "a forty-sample motion vector moves the template forty rows down"
     );
-    assert_eq!(
-        settle_reason(&command(placed(64, 64, 0), PendingKind::Tip)),
-        Some(SettleReason::Tip)
+
+    let subpel = published_rows(frame, &block, Mv::ZERO, ListReach::default());
+    let with_template = published_rows(
+        frame,
+        &block,
+        Mv::ZERO,
+        ListReach {
+            bawp: bawp_reference_luma_rows(64, 64, 0),
+            ..ListReach::default()
+        },
+    );
+    assert_eq!(subpel, with_template, "the subpel read already covers it");
+
+    let moved = published_rows(
+        frame,
+        &translation,
+        translation.block.mv,
+        ListReach {
+            bawp: bawp_reference_luma_rows(64, 64, 8 * 40),
+            ..ListReach::default()
+        },
+    );
+    assert!(
+        moved.is_some_and(|rows| rows >= 120),
+        "the template must not be dropped when the subpel read is shorter"
     );
 }
 

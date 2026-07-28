@@ -28,7 +28,7 @@ use crate::filters::deblock::DeblockQuantDeltas;
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::filters::wienerns_lr::recon::WienerNsLrReconSink;
 use crate::pipeline::frame_progress::FrameProgress;
-use crate::prediction::inter::TemporalMotionField;
+use crate::prediction::inter::{InterFilterInputs, TemporalMotionField};
 
 /// One frame's walk output: the sample-side stage plus the frame-level state the
 /// driver consumes as soon as the walk is done.
@@ -65,6 +65,82 @@ impl<T: ReconSample> WalkStage<T> {
     /// Records that a frame left the walk without owing a filter phase.
     pub(crate) fn complete(frame: DecodedFrame<T>) -> Self {
         Self::Complete(Box::new(frame))
+    }
+}
+
+/// The frame-level facts that turn a filtered-frame sink into a walked frame,
+/// captured once so the inter and intra walks share one tail.
+pub(crate) struct FilterSinkSetup {
+    pub(crate) luma_width: usize,
+    pub(crate) luma_height: usize,
+    pub(crate) bit_depth: splot_recon::BitDepth,
+    pub(crate) gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
+    pub(crate) cfl_ds_filter_index: u8,
+    pub(crate) disable_loopfilters_across_tiles: bool,
+    pub(crate) deblock_quant_deltas: DeblockQuantDeltas,
+    pub(crate) offset: ByteOffset,
+}
+
+impl FilterSinkSetup {
+    /// Wraps one reconstructed frame and its filter inputs into the walked
+    /// frame the § 7.2 filter chain consumes.
+    pub(crate) fn walked_frame<T: ReconSample>(
+        self,
+        workspace: splot_recon::CurrentFrameWorkspace<T>,
+        filter_inputs: InterFilterInputs,
+        core: Arc<FrameHeaderCore>,
+    ) -> WalkedFrame<T> {
+        let mut sink = crate::filters::wienerns_lr::recon_final_filter_sink(
+            workspace,
+            self.luma_width,
+            self.luma_height,
+            self.bit_depth,
+        );
+        sink.set_gdf_reference_context(self.gdf_reference);
+        sink.set_filter_records(filter_inputs.records);
+        sink.set_cdef_grid(Some(filter_inputs.cdef_grid));
+        sink.set_ccso_grid(filter_inputs.ccso_grid);
+        sink.set_gdf_grid(filter_inputs.gdf_grid);
+        sink.set_cfl_ds_filter_index(self.cfl_ds_filter_index);
+        WalkedFrame::new(
+            sink,
+            core,
+            self.disable_loopfilters_across_tiles,
+            self.deblock_quant_deltas,
+            self.offset,
+        )
+    }
+
+    /// Turns one frame's walk output into the driver's [`FrameWalk`].
+    ///
+    /// `carries_motion_field` is false for intra frames, whose reference update
+    /// records an empty field whatever the walk derived.
+    pub(crate) fn frame_walk<T: ReconSample>(
+        self,
+        workspace: splot_recon::CurrentFrameWorkspace<T>,
+        mut filter_inputs: InterFilterInputs,
+        core: Arc<FrameHeaderCore>,
+        frame_cdfs: Arc<FrameCdfSubset>,
+        carries_motion_field: bool,
+    ) -> FrameWalk<T> {
+        let ccso_grid = filter_inputs.ccso_grid.clone();
+        let derived = filter_inputs.take_motion_field();
+        let motion_field = if carries_motion_field {
+            derived
+        } else {
+            TemporalMotionField::empty()
+        };
+        FrameWalk {
+            stage: WalkStage::pending(self.walked_frame(
+                workspace,
+                filter_inputs,
+                Arc::clone(&core),
+            )),
+            core,
+            frame_cdfs,
+            ccso_grid,
+            motion_field,
+        }
     }
 }
 

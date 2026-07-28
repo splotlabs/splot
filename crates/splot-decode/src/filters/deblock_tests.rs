@@ -17,13 +17,14 @@ const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
 fn with_plane_ctx<T: ReconSample, R>(
     ws: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
-    f: impl FnOnce(&mut PlaneCtx<'_, '_, T>) -> R,
+    f: impl FnOnce(&mut PlaneCtx<'_, T>) -> R,
 ) -> R {
     let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
     let mut frame = ws.as_frame_mut();
     let view = frame.plane_mut(plane).unwrap();
     let stride = view.stride_samples();
-    let mut ctx = PlaneCtx::new(view.samples_mut(), stride, width, height).unwrap();
+    let mut band = PlaneBand::plane(view.samples_mut(), stride, width, height);
+    let mut ctx = PlaneCtx::new(&mut band).unwrap();
     f(&mut ctx)
 }
 
@@ -711,6 +712,7 @@ fn chroma_plane_pass_uses_yuv422_subsampling() {
         DeblockQuantDeltas::ZERO,
         BitDepth::Eight,
         PixelFormat::Yuv422,
+        &(0..1),
     )
     .unwrap();
     assert_eq!(pass.plane_sub_x, 1);
@@ -993,8 +995,6 @@ fn skip_suppresses_internal_tx_edge_filtering() {
             ctx,
             &edge_test_grid(true),
             EdgeContext {
-                plane: 0,
-                pass: 0,
                 row: 0,
                 col: 5,
                 plane_sub_x: 0,
@@ -1026,8 +1026,6 @@ fn skip_suppresses_internal_tx_edge_filtering() {
             ctx,
             &edge_test_grid(false),
             EdgeContext {
-                plane: 0,
-                pass: 0,
                 row: 0,
                 col: 5,
                 plane_sub_x: 0,
@@ -1058,8 +1056,6 @@ fn tile_boundary_filtering_obeys_sequence_flag() {
                 ctx,
                 &edge_test_grid(false),
                 EdgeContext {
-                    plane: 0,
-                    pass: 0,
                     row: 0,
                     col: 5,
                     plane_sub_x: 0,
@@ -1099,8 +1095,6 @@ fn allow_df_sub_pu_gates_prediction_boundary_filtering() {
                 ctx,
                 &grid,
                 EdgeContext {
-                    plane: 0,
-                    pass: 0,
                     row: 0,
                     col: 5,
                     plane_sub_x: 0,

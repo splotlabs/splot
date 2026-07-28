@@ -45,6 +45,7 @@ use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget}
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
+mod frame_pipeline;
 pub(crate) mod frame_progress;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
@@ -179,6 +180,7 @@ fn reclaim_unowned_frames(
     frames: &mut [Option<PipelineFrame>],
     reference: &reference_buffer::RuntimeReferenceBuffer,
     scheduler: &OutputScheduler,
+    emission: &output_schedule::EmissionQueue,
     ring: &inflight::InflightRing,
     retained_frame_bytes: &mut u64,
 ) -> Result<()> {
@@ -188,6 +190,7 @@ fn reclaim_unowned_frames(
         };
         if reference.retains(frame_index)
             || scheduler.retains(frame_index)
+            || emission.holds(frame_index)
             || ring.holds(frame_index)
             || !frame.frame.is_settled()
         {
@@ -554,7 +557,7 @@ fn decode_key_frame_with_effects(
         display_grain,
         output_effects,
         frame_cdfs,
-        motion_field: Arc::new(motion_field),
+        motion_field: inter::MotionFieldHandle::settled(motion_field),
         ccso_params,
         ccso_grid,
         frame_rate_numerator: frame_rate.numerator,
@@ -642,6 +645,7 @@ fn drive_frames(
     spawner: &inflight::FinishSpawner<'_, '_>,
 ) -> Result<Vec<PipelineFrame>> {
     let inflight_timer = crate::timing::start();
+    let phases_before = crate::timing::phase_totals();
     let mut decode_scratch_eight = inter::InterDecodeScratch::default();
     let mut decode_scratch_ten = inter::InterDecodeScratch::default();
     let mut ring = inflight::InflightRing::new(frame_delay);
@@ -666,10 +670,26 @@ fn drive_frames(
             &format!("max_in_flight={}", ring.max_in_flight()),
         );
     }
+    crate::timing::report_phases(&phases_before);
     match ring.take_failure() {
         Some(failure) => Err(failure),
         None => decoded,
     }
+}
+
+/// Whether one frame's walk runs split, with its reconstruction deferred past
+/// the next frame's entropy pass.
+///
+/// Only the pipelined driver defers: a serial driver has no scope to hand the
+/// filter phase to and no next frame to overlap with, so it keeps the fused
+/// walk.
+fn split_walk(
+    spawner: &inflight::FinishSpawner<'_, '_>,
+    obu_type: ObuType,
+    core: &FrameHeaderCore,
+) -> bool {
+    matches!(spawner, inflight::FinishSpawner::Deferred(_))
+        && inter::splittable_inter_frame(obu_type, core)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -721,6 +741,7 @@ fn decode_frames_in_order(
     let mut reference = reference_buffer::RuntimeReferenceBuffer::new(num_ref_frames)?;
     let mut frames = Vec::new();
     let mut scheduler = OutputScheduler::new(num_ref_frames);
+    let mut emission_queue = output_schedule::EmissionQueue::default();
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
     in_band_long_term_prelude.begin_frame(true);
     let key_core = match key_envelope.header.obu_type {
@@ -863,7 +884,7 @@ fn decode_frames_in_order(
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs: walk.frame_cdfs,
-                    motion_field: Arc::new(walk.motion_field),
+                    motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
                     ccso_params,
                     ccso_grid: walk.ccso_grid,
                     frame_rate_numerator: rate.numerator,
@@ -906,7 +927,7 @@ fn decode_frames_in_order(
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
                     frame_cdfs: walk.frame_cdfs,
-                    motion_field: Arc::new(walk.motion_field),
+                    motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
                     ccso_params,
                     ccso_grid: walk.ccso_grid,
                     frame_rate_numerator: rate.numerator,
@@ -942,7 +963,7 @@ fn decode_frames_in_order(
         Arc::clone(&key_frame.frame_cdfs),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
-        Arc::clone(&key_frame.motion_field),
+        key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
     let key_saved_grain = key_frame.display_grain.clone();
@@ -961,6 +982,7 @@ fn decode_frames_in_order(
         options,
         &frames,
         &scheduler,
+        &mut emission_queue,
         &evicted,
         output_frame_bytes,
         retain_decoded_frames,
@@ -989,6 +1011,7 @@ fn decode_frames_in_order(
             options,
             &frames,
             &scheduler,
+            &mut emission_queue,
             &emitted,
             output_frame_bytes,
             retain_decoded_frames,
@@ -1000,11 +1023,19 @@ fn decode_frames_in_order(
             &mut frames,
             &reference,
             &scheduler,
+            &emission_queue,
             ring,
             &mut retained_frame_bytes,
         )?;
     }
     if output_frame_limit_reached(options, scheduler.emitted.len()) {
+        emission_queue.flush(
+            options,
+            &frames,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
         return if retain_decoded_frames {
             select_output_frames(frames, scheduler.emitted)
         } else {
@@ -1013,9 +1044,17 @@ fn decode_frames_in_order(
     }
 
     let mut decoding_initial_tu = true;
+    let mut pending: Option<frame_pipeline::PendingWalk> = None;
+    let mut shared_sequence = None;
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
+                frame_pipeline::flush_pending(
+                    &mut pending,
+                    spawner,
+                    decode_scratch_eight,
+                    decode_scratch_ten,
+                )?;
                 let (sef_prefix_obus, sef_envelope) = match stream {
                     RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
                         obus,
@@ -1043,6 +1082,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &flushed,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1155,6 +1195,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &emitted,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1165,6 +1206,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
@@ -1207,6 +1249,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &flushed,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1261,6 +1304,7 @@ fn decode_frames_in_order(
                             options,
                             &frames,
                             &scheduler,
+                            &mut emission_queue,
                             &emitted,
                             output_frame_bytes,
                             retain_decoded_frames,
@@ -1317,34 +1361,84 @@ fn decode_frames_in_order(
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        let walk = frame_engine::walk_frame(
-                            decode_scratch_eight,
-                            plan,
-                            next_candidate,
-                            bytes,
-                            inter_envelope,
-                            inter_core,
-                            &sequence,
-                            options,
-                            &frame_engine::FrameSetup::Inter(&inter_state),
-                            BitDepth::Eight,
-                        )?;
-                        let inter_core = Arc::clone(&walk.core);
-                        let slot = inflight::settle_walk_stage(
-                            walk.stage,
-                            inflight::PipelineFrameSlot::Eight,
-                            spawner,
-                            ring,
-                            frame_index,
-                            decode_scratch_eight,
-                        )?;
-                        (
-                            slot,
-                            inter_core,
-                            walk.frame_cdfs,
-                            walk.ccso_grid,
-                            walk.motion_field,
-                        )
+                        if split_walk(spawner, next_candidate.obu_type(), &inter_core) {
+                            let records = decode_scratch_eight.take_frame_filter_records();
+                            let quantizer =
+                                crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
+                            let shared =
+                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
+                            let deferred = frame_pipeline::parse_beside_pending(
+                                move || {
+                                    let _scopes = quantizer.install_frame();
+                                    inter::parse_inter_frame(
+                                        records,
+                                        plan,
+                                        next_candidate,
+                                        bytes,
+                                        inter_envelope,
+                                        inter_core,
+                                        shared,
+                                        options,
+                                        inter_state,
+                                        BitDepth::Eight,
+                                    )
+                                },
+                                pending.take(),
+                                spawner,
+                                decode_scratch_eight,
+                                decode_scratch_ten,
+                            )??;
+                            let (slot, finish) = inflight::reserve_pending_slot(
+                                deferred.info,
+                                inflight::PipelineFrameSlot::Eight,
+                                ring,
+                                frame_index,
+                            )?;
+                            let products = (
+                                slot,
+                                Arc::clone(&deferred.core),
+                                Arc::clone(&deferred.frame_cdfs),
+                                deferred.ccso_grid.clone(),
+                                deferred.motion.clone(),
+                            );
+                            pending = Some(frame_pipeline::PendingWalk::Eight(deferred, finish));
+                            products
+                        } else {
+                            frame_pipeline::flush_pending(
+                                &mut pending,
+                                spawner,
+                                decode_scratch_eight,
+                                decode_scratch_ten,
+                            )?;
+                            let walk = frame_engine::walk_frame(
+                                decode_scratch_eight,
+                                plan,
+                                next_candidate,
+                                bytes,
+                                inter_envelope,
+                                inter_core,
+                                &sequence,
+                                options,
+                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                BitDepth::Eight,
+                            )?;
+                            let inter_core = Arc::clone(&walk.core);
+                            let slot = inflight::settle_walk_stage(
+                                walk.stage,
+                                inflight::PipelineFrameSlot::Eight,
+                                spawner,
+                                ring,
+                                frame_index,
+                                decode_scratch_eight,
+                            )?;
+                            (
+                                slot,
+                                inter_core,
+                                walk.frame_cdfs,
+                                walk.ccso_grid,
+                                inter::MotionFieldHandle::settled(walk.motion_field),
+                            )
+                        }
                     }
                     BitDepthIdc::Ten => {
                         let (store, meta) = reference.build_store_ten(&frames)?;
@@ -1386,34 +1480,84 @@ fn decode_frames_in_order(
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
-                        let walk = frame_engine::walk_frame(
-                            decode_scratch_ten,
-                            plan,
-                            next_candidate,
-                            bytes,
-                            inter_envelope,
-                            inter_core,
-                            &sequence,
-                            options,
-                            &frame_engine::FrameSetup::Inter(&inter_state),
-                            BitDepth::Ten,
-                        )?;
-                        let inter_core = Arc::clone(&walk.core);
-                        let slot = inflight::settle_walk_stage(
-                            walk.stage,
-                            inflight::PipelineFrameSlot::Ten,
-                            spawner,
-                            ring,
-                            frame_index,
-                            decode_scratch_ten,
-                        )?;
-                        (
-                            slot,
-                            inter_core,
-                            walk.frame_cdfs,
-                            walk.ccso_grid,
-                            walk.motion_field,
-                        )
+                        if split_walk(spawner, next_candidate.obu_type(), &inter_core) {
+                            let records = decode_scratch_ten.take_frame_filter_records();
+                            let quantizer =
+                                crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
+                            let shared =
+                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
+                            let deferred = frame_pipeline::parse_beside_pending(
+                                move || {
+                                    let _scopes = quantizer.install_frame();
+                                    inter::parse_inter_frame(
+                                        records,
+                                        plan,
+                                        next_candidate,
+                                        bytes,
+                                        inter_envelope,
+                                        inter_core,
+                                        shared,
+                                        options,
+                                        inter_state,
+                                        BitDepth::Ten,
+                                    )
+                                },
+                                pending.take(),
+                                spawner,
+                                decode_scratch_eight,
+                                decode_scratch_ten,
+                            )??;
+                            let (slot, finish) = inflight::reserve_pending_slot(
+                                deferred.info,
+                                inflight::PipelineFrameSlot::Ten,
+                                ring,
+                                frame_index,
+                            )?;
+                            let products = (
+                                slot,
+                                Arc::clone(&deferred.core),
+                                Arc::clone(&deferred.frame_cdfs),
+                                deferred.ccso_grid.clone(),
+                                deferred.motion.clone(),
+                            );
+                            pending = Some(frame_pipeline::PendingWalk::Ten(deferred, finish));
+                            products
+                        } else {
+                            frame_pipeline::flush_pending(
+                                &mut pending,
+                                spawner,
+                                decode_scratch_eight,
+                                decode_scratch_ten,
+                            )?;
+                            let walk = frame_engine::walk_frame(
+                                decode_scratch_ten,
+                                plan,
+                                next_candidate,
+                                bytes,
+                                inter_envelope,
+                                inter_core,
+                                &sequence,
+                                options,
+                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                BitDepth::Ten,
+                            )?;
+                            let inter_core = Arc::clone(&walk.core);
+                            let slot = inflight::settle_walk_stage(
+                                walk.stage,
+                                inflight::PipelineFrameSlot::Ten,
+                                spawner,
+                                ring,
+                                frame_index,
+                                decode_scratch_ten,
+                            )?;
+                            (
+                                slot,
+                                inter_core,
+                                walk.frame_cdfs,
+                                walk.ccso_grid,
+                                inter::MotionFieldHandle::settled(walk.motion_field),
+                            )
+                        }
                     }
                 };
                 crate::timing::report("inter_frame_decode", inter_frame_timer);
@@ -1428,7 +1572,7 @@ fn decode_frames_in_order(
                     frame_cdfs,
                     inter_core.ccso_params.clone(),
                     ccso_grid.clone(),
-                    Arc::new(motion_field),
+                    motion_field,
                     inter_envelope.header.embedded_layer_id,
                 )?;
                 let inter_frame = PipelineFrame {
@@ -1436,7 +1580,7 @@ fn decode_frames_in_order(
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
                     frame_cdfs: Arc::clone(&inter_update.frame_cdfs),
-                    motion_field: Arc::clone(&inter_update.motion_field),
+                    motion_field: inter_update.motion_field.clone(),
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid,
                     frame_rate_numerator: inter_frame_rate.numerator,
@@ -1466,6 +1610,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &evicted,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1495,6 +1640,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &emitted,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1506,6 +1652,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
@@ -1515,6 +1662,12 @@ fn decode_frames_in_order(
                 }
             }
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
+                frame_pipeline::flush_pending(
+                    &mut pending,
+                    spawner,
+                    decode_scratch_eight,
+                    decode_scratch_ten,
+                )?;
                 let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
                 {
@@ -1594,6 +1747,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &flushed,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1659,6 +1813,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &flushed,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1670,6 +1825,7 @@ fn decode_frames_in_order(
                             &mut frames,
                             &reference,
                             &scheduler,
+                            &emission_queue,
                             ring,
                             &mut retained_frame_bytes,
                         )?;
@@ -1680,6 +1836,7 @@ fn decode_frames_in_order(
                 }
 
                 sequence = key_sequence;
+                shared_sequence = None;
                 output_effect_state.observe_suffix(frame_suffix_obus(stream, next_candidate)?)?;
                 let key_output_effects = output_effect_state.finish_frame();
                 ensure_retained_frame_byte_limits_for_core(
@@ -1721,7 +1878,7 @@ fn decode_frames_in_order(
                     Arc::clone(&key_frame.frame_cdfs),
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
-                    Arc::clone(&key_frame.motion_field),
+                    key_frame.motion_field.clone(),
                     key_envelope.header.embedded_layer_id,
                 )?;
                 let key_saved_grain = key_frame.display_grain.clone();
@@ -1741,6 +1898,7 @@ fn decode_frames_in_order(
                     options,
                     &frames,
                     &scheduler,
+                    &mut emission_queue,
                     &evicted,
                     output_frame_bytes,
                     retain_decoded_frames,
@@ -1771,6 +1929,7 @@ fn decode_frames_in_order(
                         options,
                         &frames,
                         &scheduler,
+                        &mut emission_queue,
                         &emitted,
                         output_frame_bytes,
                         retain_decoded_frames,
@@ -1782,6 +1941,7 @@ fn decode_frames_in_order(
                         &mut frames,
                         &reference,
                         &scheduler,
+                        &emission_queue,
                         ring,
                         &mut retained_frame_bytes,
                     )?;
@@ -1800,13 +1960,27 @@ fn decode_frames_in_order(
         }
     }
 
+    frame_pipeline::flush_pending(
+        &mut pending,
+        spawner,
+        decode_scratch_eight,
+        decode_scratch_ten,
+    )?;
     if !output_frame_limit_reached(options, scheduler.emitted.len()) {
         let flushed = scheduler.flush_all();
         output_frame_bytes = charge_emitted_outputs(
             options,
             &frames,
             &scheduler,
+            &mut emission_queue,
             &flushed,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
+        output_frame_bytes = emission_queue.flush(
+            options,
+            &frames,
             output_frame_bytes,
             retain_decoded_frames,
             &mut emit,
@@ -1817,11 +1991,20 @@ fn decode_frames_in_order(
                 &mut frames,
                 &reference,
                 &scheduler,
+                &emission_queue,
                 ring,
                 &mut retained_frame_bytes,
             )?;
         }
         let _ = output_frame_bytes;
+    } else {
+        emission_queue.flush(
+            options,
+            &frames,
+            output_frame_bytes,
+            retain_decoded_frames,
+            &mut emit,
+        )?;
     }
     if !retain_decoded_frames {
         return Ok(Vec::new());
@@ -1875,17 +2058,17 @@ enum TileFactsKind {
     Inter,
 }
 #[allow(clippy::too_many_arguments)]
-fn derive_tile_plan_with<'a>(
-    plan: &'a DecodeStreamPlan,
-    candidate: &'a DecodePlannedObu,
-    bytes: &'a [u8],
-    envelope: ObuEnvelope<'a>,
-    sequence: &'a SequenceHeader,
-    core: &'a FrameHeaderCore,
+fn derive_tile_plan_with<'payload>(
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    bytes: &'payload [u8],
+    envelope: ObuEnvelope<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
     options: &DecodeOptions,
     kind: TileFactsKind,
     initial_cdfs: Option<&Arc<FrameCdfSubset>>,
-) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
+) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
             "missing_tq_entropy_config",
@@ -1903,7 +2086,7 @@ fn derive_tile_plan_with<'a>(
     let candidates = frame_tile_group_candidates(plan, candidate);
     let recorded_header = record_frame_header(envelope, core)?;
     let group_count = candidates.len();
-    let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> = None;
+    let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
     for (group_index, group_candidate) in candidates.into_iter().enumerate() {
         let group_envelope = if group_index == 0 {
             envelope
@@ -2084,15 +2267,15 @@ fn continuation_structure_start_bits(
     Ok(reader.consumed_bits())
 }
 
-pub(crate) fn derive_tile_plan<'a>(
-    plan: &'a DecodeStreamPlan,
-    candidate: &'a DecodePlannedObu,
-    bytes: &'a [u8],
-    envelope: ObuEnvelope<'a>,
-    sequence: &'a SequenceHeader,
-    core: &'a FrameHeaderCore,
+pub(crate) fn derive_tile_plan<'payload>(
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    bytes: &'payload [u8],
+    envelope: ObuEnvelope<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
     options: &DecodeOptions,
-) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
+) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
     derive_tile_plan_with(
         plan,
         candidate,
@@ -2106,16 +2289,16 @@ pub(crate) fn derive_tile_plan<'a>(
     )
 }
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn derive_inter_tile_plan<'a>(
-    plan: &'a DecodeStreamPlan,
-    candidate: &'a DecodePlannedObu,
-    bytes: &'a [u8],
-    envelope: ObuEnvelope<'a>,
-    sequence: &'a SequenceHeader,
-    core: &'a FrameHeaderCore,
+pub(crate) fn derive_inter_tile_plan<'payload>(
+    plan: &DecodeStreamPlan,
+    candidate: &DecodePlannedObu,
+    bytes: &'payload [u8],
+    envelope: ObuEnvelope<'payload>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
     options: &DecodeOptions,
     initial_cdfs: &Arc<FrameCdfSubset>,
-) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'a>> {
+) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
     derive_tile_plan_with(
         plan,
         candidate,

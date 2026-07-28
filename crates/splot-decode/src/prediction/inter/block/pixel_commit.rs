@@ -17,10 +17,12 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
-use super::super::find_mv_stack::{TemporalMotionField, TemporalMvContext};
+use super::super::find_mv_stack::TemporalMvContext;
+use super::super::mc::WorkspaceSink;
 use super::super::{InterReferenceState, SPEC_MODE_INFO, unsupported_at};
 use super::ReconCommand;
 use super::deferred_recon;
+use super::temporal::MotionFieldUnits;
 use super::tile::{ReconRow, ReconRowBuffers, TileFilterRecords};
 use crate::Result;
 use crate::bitstream::tile_payload::{FrameQuantizerSnapshot, TileBlockDecodedState};
@@ -52,7 +54,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     block_decoded: &mut TileBlockDecodedState,
     current_superblock: &mut Option<[usize; 2]>,
-    motion_field: &mut TemporalMotionField,
+    motion: &MotionFieldUnits,
     filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
     temporal_context: &TemporalMvContext,
     reference: &InterReferenceState<T>,
@@ -78,12 +80,17 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     *expected_ordinal = expected_ordinal.saturating_add(1);
     let terminal = row.terminal.take();
     let row_has_entries = !row.superblocks.is_empty();
+    let motion_owed = !row.motion_folded;
+    let motion_derived = row.motion_derived;
     let _quantizer_scopes = quantizer.install_frame();
     let ReconRow {
         mut superblocks,
         mut entries,
+        mut motion_queue,
+        mut pending_inter,
         mut residual_blocks,
         mut temporal,
+        mut flag_log,
         filter_records: mut row_filter_records,
         ..
     } = row;
@@ -111,6 +118,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             if let Some(command) = entry.command.take() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
+                        let _scope =
+                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitIntra);
                         command.reconstruct(
                             scratch.general_intra_mut(),
                             workspace,
@@ -118,28 +127,58 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         )?;
                     }
                     ReconCommand::Intrabc(command) => {
+                        let _scope =
+                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitIntrabc);
                         scratch.reconstruct_intrabc(command, &residual_blocks, workspace)?;
                     }
-                    ReconCommand::Inter(command) => scratch.reconstruct(
-                        &command,
-                        workspace,
-                        block_decoded,
-                        motion_field,
-                        &residual_blocks,
-                        temporal_context,
-                        reference,
-                        ref_frame_idx,
-                        sequence,
-                        core,
-                        mi_rows,
-                        mi_cols,
-                        current_order_hint,
-                        luma_use_tcq,
-                        residual_use_ddt,
-                        bit_depth,
-                    )?,
+                    ReconCommand::Inter(command) => {
+                        let _scope =
+                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitInter);
+                        if motion_derived {
+                            scratch.reconstruct_from_motion(
+                                &command,
+                                &mut WorkspaceSink::Frame(workspace),
+                                block_decoded,
+                                entry.motion.take(),
+                                &residual_blocks,
+                                &deferred_recon::ReconShared {
+                                    reference,
+                                    ref_frame_idx,
+                                    temporal_context,
+                                    sequence,
+                                    core,
+                                    luma_use_tcq,
+                                    residual_use_ddt,
+                                    bit_depth,
+                                    mi_rows,
+                                    mi_cols,
+                                    current_order_hint,
+                                },
+                            )?;
+                        } else {
+                            scratch.reconstruct(
+                                &command,
+                                workspace,
+                                block_decoded,
+                                motion,
+                                &residual_blocks,
+                                temporal_context,
+                                reference,
+                                ref_frame_idx,
+                                sequence,
+                                core,
+                                mi_rows,
+                                mi_cols,
+                                current_order_hint,
+                                luma_use_tcq,
+                                residual_use_ddt,
+                                bit_depth,
+                            )?;
+                        }
+                    }
                 }
             } else {
+                let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitReplay);
                 let records = temporal.get(entry.temporal.clone()).ok_or_else(|| {
                     inter_cap!(
                         "inter_row_replay_temporal_range",
@@ -148,7 +187,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         SPEC_MODE_INFO
                     )
                 })?;
-                super::temporal::commit_temporal_motion_blocks(motion_field, records);
+                if motion_owed {
+                    motion.fold(records);
+                }
             }
             entry
                 .publication
@@ -163,6 +204,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 })?;
         }
     }
+    if motion_owed {
+        motion.unit_landed(false);
+    }
     append_row_filter_records(filter_records, &mut row_filter_records);
     *decoded_any |= row_has_entries;
     if let Some(error) = terminal {
@@ -170,13 +214,19 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     }
     superblocks.clear();
     entries.clear();
+    motion_queue.clear();
+    pending_inter.clear();
     residual_blocks.clear();
     temporal.clear();
+    flag_log.clear();
     Ok(ReconRowBuffers {
         superblocks,
         entries,
+        motion_queue,
+        pending_inter,
         residual_blocks,
         temporal,
+        flag_log,
         filter_records: row_filter_records,
     })
 }

@@ -32,8 +32,8 @@
 //! are dequantization, the secondary transform, and residual addition.
 
 use crate::inverse_transform::{
-    InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
-    inverse_walsh_hadamard,
+    ColumnPass, InverseTransform1dType, inverse_identity_transform, inverse_transform_1d,
+    inverse_transform_1d_columns, inverse_walsh_hadamard,
 };
 use crate::{BitDepth, ReconError, Result};
 
@@ -166,27 +166,6 @@ pub(super) fn inverse_transform_2d_with_scratch(
         log2_size: log2_w,
         bit_depth: params.bit_depth,
     };
-    for (dequant_row, intermediate_row) in dequant
-        .chunks_exact(w)
-        .zip(intermediate.chunks_exact_mut(w))
-        .take(h)
-    {
-        if dequant_row.iter().all(|&coeff| coeff == 0) {
-            intermediate_row.fill(0);
-            continue;
-        }
-        if odd_ratio {
-            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
-                *slot = round2_2896(coeff);
-            }
-        } else {
-            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
-                *slot = coeff;
-            }
-        }
-        run_1d(&buf_in[..w], intermediate_row, row_pass)?;
-    }
-
     let col_pass = Pass {
         lossless: params.lossless,
         dim: params.col_type,
@@ -195,6 +174,41 @@ pub(super) fn inverse_transform_2d_with_scratch(
         log2_size: log2_h,
         bit_depth: params.bit_depth,
     };
+    let masked = !params.lossless && matches!(params.col_type, InverseTransform2dDim::Kernel(_));
+    let mut nonzero_rows = 0u32;
+    for (row, (dequant_row, intermediate_row)) in dequant
+        .chunks_exact(w)
+        .zip(intermediate.chunks_exact_mut(w))
+        .take(h)
+        .enumerate()
+    {
+        if dequant_row.iter().all(|&coeff| coeff == 0) {
+            if !masked {
+                intermediate_row.fill(0);
+            }
+            continue;
+        }
+        if odd_ratio {
+            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
+                *slot = round2_2896(coeff);
+            }
+            run_1d(&buf_in[..w], intermediate_row, row_pass)?;
+        } else {
+            run_1d(dequant_row, intermediate_row, row_pass)?;
+        }
+        nonzero_rows |= 1u32 << row;
+    }
+
+    if column_pass_lane_groups(intermediate, residual, w, nonzero_rows, col_pass) {
+        return Ok(());
+    }
+    if masked {
+        for (row, intermediate_row) in intermediate.chunks_exact_mut(w).take(h).enumerate() {
+            if nonzero_rows & (1u32 << row) == 0 {
+                intermediate_row.fill(0);
+            }
+        }
+    }
     for j in 0..w {
         for i in 0..h {
             buf_in[i] = intermediate[i * w + j];
@@ -205,6 +219,65 @@ pub(super) fn inverse_transform_2d_with_scratch(
         }
     }
     Ok(())
+}
+
+/// Runs the whole § 7.15.4.1 column pass without the per-column gather and
+/// scatter, returning `false` when the pass has no such form.
+///
+/// The identity column transform is per-sample, so it runs over the whole block
+/// in one call; a kernel column transform runs in adjacent-column lane groups,
+/// which read and write contiguous samples of each row instead of striding one
+/// column at a time. Lossless blocks keep the per-column Walsh-Hadamard path.
+fn column_pass_lane_groups(
+    intermediate: &[i32],
+    residual: &mut [i32],
+    w: usize,
+    nonzero_rows: u32,
+    pass: Pass,
+) -> bool {
+    if pass.lossless {
+        return false;
+    }
+    let tx_type = match pass.dim {
+        InverseTransform2dDim::Identity => {
+            return inverse_identity_transform(
+                intermediate,
+                identity_scale(pass.log2_size),
+                pass.shift,
+                true,
+                pass.bit_depth,
+                residual,
+            )
+            .is_ok();
+        }
+        InverseTransform2dDim::Kernel(tx_type) => tx_type,
+    };
+    let column = ColumnPass {
+        stride: w,
+        len: 1usize << pass.log2_size.min(5),
+        nonzero_rows,
+        shift: pass.shift,
+        bit_depth: pass.bit_depth,
+    };
+    let mut base = 0usize;
+    macro_rules! column_lane_group {
+        ($lanes:literal) => {
+            while base + $lanes <= w {
+                if !inverse_transform_1d_columns::<$lanes>(
+                    &intermediate[base..],
+                    &mut residual[base..],
+                    tx_type,
+                    column,
+                ) {
+                    return false;
+                }
+                base += $lanes;
+            }
+        };
+    }
+    column_lane_group!(8);
+    column_lane_group!(4);
+    base == w
 }
 
 /// Resolved parameters for one § 7.15.4.1 1D pass.
@@ -602,6 +675,115 @@ mod tests {
                 }
             }
             assert_eq!(got, expected, "shape {w}x{h}");
+        }
+    }
+
+    /// The column-pass lane groups must reproduce the per-column gather,
+    /// [`run_1d`], scatter reference exactly, for every adjusted shape, both
+    /// column-transform families, every kernel type, both bit depths, and a
+    /// coefficient field spanning the § 7.14.4 dequant range at the widest bit
+    /// depth, so the § 7.15.2.1 input clamp is live at 8 bits.
+    #[test]
+    fn column_lane_groups_match_the_per_column_reference() {
+        use InverseTransform1dType::{Adst, Dct, Ddtx, Fddt, Fdst};
+        let mut state = 0x1234_5678_9abc_def1u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for log2_w in 2..=5u32 {
+            for log2_h in 2..=5u32 {
+                for col_type in [
+                    InverseTransform2dDim::Identity,
+                    InverseTransform2dDim::Kernel(Dct),
+                    InverseTransform2dDim::Kernel(Adst),
+                    InverseTransform2dDim::Kernel(Fdst),
+                    InverseTransform2dDim::Kernel(Ddtx),
+                    InverseTransform2dDim::Kernel(Fddt),
+                ] {
+                    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+                        for col_shift in [0u8, 1, 4, 12] {
+                            let (w, h) = (1usize << log2_w, 1usize << log2_h);
+                            let mut dequant = vec![0i32; w * h];
+                            let range = 1i32 << 17;
+                            for (index, slot) in dequant.iter_mut().enumerate() {
+                                *slot = match index % 11 {
+                                    0 => 0,
+                                    1 => range - 1,
+                                    2 => -range,
+                                    _ => (next() as i32 % range) >> (next() % 6) as i32,
+                                };
+                            }
+                            let mut p =
+                                params(log2_w, log2_h, false, adst(), col_type, 5, col_shift);
+                            p.bit_depth = bit_depth;
+
+                            let mut got = vec![0i32; w * h];
+                            inverse_transform_2d(&p, &dequant, &mut got).unwrap();
+
+                            let mut scratch = [0i32; MAX_DIM * MAX_DIM];
+                            let mut expected = vec![0i32; w * h];
+                            reference_transform_2d(&p, &dequant, &mut expected, &mut scratch);
+
+                            assert_eq!(
+                                got, expected,
+                                "{w}x{h} {col_type:?} {bit_depth:?} shift {col_shift}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The pre-lane-group § 7.15.4.1 orchestration: a per-column gather, one
+    /// [`run_1d`] call, then a scatter.
+    fn reference_transform_2d(
+        params: &InverseTransform2d,
+        dequant: &[i32],
+        residual: &mut [i32],
+        intermediate: &mut [i32; MAX_DIM * MAX_DIM],
+    ) {
+        let (w, h) = (1usize << params.log2_width, 1usize << params.log2_height);
+        let odd_ratio = params.log2_width.abs_diff(params.log2_height) % 2 == 1;
+        let row_pass = Pass {
+            lossless: params.lossless,
+            dim: params.row_type,
+            shift: params.row_shift,
+            col_tx: false,
+            log2_size: params.log2_width,
+            bit_depth: params.bit_depth,
+        };
+        let mut buf_in = [0i32; MAX_DIM];
+        let mut buf_out = [0i32; MAX_DIM];
+        for (dequant_row, intermediate_row) in dequant
+            .chunks_exact(w)
+            .zip(intermediate.chunks_exact_mut(w))
+            .take(h)
+        {
+            for (slot, &coeff) in buf_in.iter_mut().zip(dequant_row.iter()) {
+                *slot = if odd_ratio { round2_2896(coeff) } else { coeff };
+            }
+            run_1d(&buf_in[..w], intermediate_row, row_pass).unwrap();
+        }
+        let col_pass = Pass {
+            lossless: params.lossless,
+            dim: params.col_type,
+            shift: params.col_shift,
+            col_tx: true,
+            log2_size: params.log2_height,
+            bit_depth: params.bit_depth,
+        };
+        for j in 0..w {
+            for i in 0..h {
+                buf_in[i] = intermediate[i * w + j];
+            }
+            run_1d(&buf_in[..h], &mut buf_out[..h], col_pass).unwrap();
+            for i in 0..h {
+                residual[i * w + j] = buf_out[i];
+            }
         }
     }
 

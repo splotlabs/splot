@@ -192,24 +192,26 @@ pub(super) fn local_warp_estimation(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn extend_warp_estimation(
+pub(super) fn extend_warp_estimation(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
-    mode_ctx: &ModeContext,
+    extend_delta: Option<(i32, i32)>,
     stack: &super::super::find_mv_stack::MvStack,
     ref_mv_idx: usize,
     mv: Mv,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<[i32; 6]> {
+    let (mi_row, mi_col, n4w, n4h) = (
+        block_ctx.mi_row,
+        block_ctx.mi_col,
+        block_ctx.bw4,
+        block_ctx.bh4,
+    );
     let Some((delta_row, delta_col)) = extend_warp_base_position(
         mv_grid,
         block_ctx,
         stack.candidate_offsets(ref_mv_idx),
-        mode_ctx.extend_delta,
+        extend_delta,
     ) else {
         return Err(inter_cap!(
             "inter_warp_extend_base_missing",
@@ -306,15 +308,62 @@ pub(super) fn extend_warp_base_position(
     fallback
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ParsedWarpNewmv {
-    pub(crate) mv: Mv,
-    pub(crate) warp_params: [i32; 6],
-    pub(crate) ref_mv_idx: usize,
-    pub(crate) ref_warp_idx: usize,
-    pub(crate) precision_idx: u8,
-    pub(crate) warpmv_with_mvd: bool,
-    pub(crate) block_precision: BlockPrecisionRecord,
+/// § 5.20.7.13 warp syntax for one leaf: the model source plus the indices,
+/// precision and MVD the § 7.13.3 derivations consume.
+pub(super) struct ParsedWarpSyntax {
+    pub(super) source: WarpModelSource,
+    pub(super) ref_mv_idx: usize,
+    pub(super) ref_warp_idx: usize,
+    pub(super) mvd: Option<Mv>,
+    pub(super) precision: BlockPrecisionRecord,
+}
+
+/// § 5.20.7.13 DRL index, per-block precision and MVD read by both WARP_NEWMV
+/// forms once the warp reference index (if any) is known.
+struct WarpNewmvTail {
+    ref_mv_idx: usize,
+    precision: BlockPrecisionRecord,
+    mvd: Mv,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn read_warp_newmv_tail(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    neighbour_ctx: &BlockNeighbourContext,
+    mv_config: MvReadConfig,
+    new_mv_context: usize,
+    max_drl_bits_minus_1: u32,
+    tile_offset: ByteOffset,
+) -> Result<WarpNewmvTail> {
+    let ref_mv_idx = read_drl_idx(
+        cdfs,
+        symbols,
+        new_mv_context,
+        max_drl_bits_minus_1,
+        tile_offset,
+    )?;
+    let precision = read_block_mv_precision_syntax(
+        cdfs,
+        symbols,
+        sequence,
+        core,
+        neighbour_ctx,
+        mv_config.precision(),
+        true,
+        false,
+        tile_offset,
+    )?;
+    let block_config = MvReadConfig::inter(precision.mv_precision);
+    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
+    let mvd = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
+    Ok(WarpNewmvTail {
+        ref_mv_idx,
+        precision,
+        mvd,
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -395,75 +444,32 @@ pub(crate) fn read_warp_extend_syntax(
     core: &FrameHeaderCore,
     neighbour_ctx: &BlockNeighbourContext,
     mv_config: MvReadConfig,
-    mv_grid: &NeighbourMvGrid,
-    block_ctx: &MvBlockContext,
-    mode_ctx: &ModeContext,
     motion_mode: MotionMode,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
-    stack: &super::super::find_mv_stack::MvStack,
     new_mv_context: usize,
     max_drl_bits_minus_1: u32,
     tile_offset: ByteOffset,
-) -> Result<ParsedWarpNewmv> {
-    let ref_mv_idx = read_drl_idx(
-        cdfs,
-        symbols,
-        new_mv_context,
-        max_drl_bits_minus_1,
-        tile_offset,
-    )?;
-    let block_precision = read_block_mv_precision_syntax(
+) -> Result<ParsedWarpSyntax> {
+    let tail = read_warp_newmv_tail(
         cdfs,
         symbols,
         sequence,
         core,
         neighbour_ctx,
-        mv_config.precision(),
-        true,
-        false,
+        mv_config,
+        new_mv_context,
+        max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let block_config = MvReadConfig::inter(block_precision.mv_precision);
-    let pred_mv = lowered_pred_mv(block_precision, stack.candidate(ref_mv_idx));
-    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
-    let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
-    let mv = Mv {
-        row: mv_clamp_to_integer(pred_mv.row + diff.row),
-        col: mv_clamp_to_integer(pred_mv.col + diff.col),
-    };
-    let warp_params = if motion_mode == MotionMode::LocalWarp {
-        let samples = super::super::find_mv_stack::find_warp_samples(
-            mv_grid,
-            block_ctx,
-            block_ctx.ref_frame0,
-        );
-        local_warp_estimation(&samples, mv, mi_row, mi_col, n4w, n4h, tile_offset)?
-    } else {
-        extend_warp_estimation(
-            mv_grid,
-            block_ctx,
-            mode_ctx,
-            stack,
-            ref_mv_idx,
-            mv,
-            mi_row,
-            mi_col,
-            n4w,
-            n4h,
-            tile_offset,
-        )?
-    };
-    Ok(ParsedWarpNewmv {
-        mv,
-        warp_params,
-        ref_mv_idx,
+    Ok(ParsedWarpSyntax {
+        source: if motion_mode == MotionMode::LocalWarp {
+            WarpModelSource::LocalSamples
+        } else {
+            WarpModelSource::Extended
+        },
+        ref_mv_idx: tail.ref_mv_idx,
         ref_warp_idx: 0,
-        precision_idx: 0,
-        warpmv_with_mvd: false,
-        block_precision,
+        mvd: Some(tail.mvd),
+        precision: tail.precision,
     })
 }
 
@@ -476,121 +482,63 @@ pub(crate) fn read_warp_newmv_delta_syntax(
     neighbour_ctx: &BlockNeighbourContext,
     mv_config: MvReadConfig,
     b_size: usize,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
-    stack: &super::super::find_mv_stack::MvStack,
     new_mv_context: usize,
     max_drl_bits_minus_1: u32,
     tile_offset: ByteOffset,
-) -> Result<ParsedWarpNewmv> {
+) -> Result<ParsedWarpSyntax> {
     let ref_warp_idx = read_warp_ref_idx(cdfs, symbols, MAX_WARP_REF_CANDIDATES, tile_offset)?;
-    let ref_mv_idx = read_drl_idx(
-        cdfs,
-        symbols,
-        new_mv_context,
-        max_drl_bits_minus_1,
-        tile_offset,
-    )?;
-    let block_precision = read_block_mv_precision_syntax(
+    let tail = read_warp_newmv_tail(
         cdfs,
         symbols,
         sequence,
         core,
         neighbour_ctx,
-        mv_config.precision(),
-        true,
-        false,
+        mv_config,
+        new_mv_context,
+        max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let block_config = MvReadConfig::inter(block_precision.mv_precision);
-    let pred_mv = lowered_pred_mv(block_precision, stack.candidate(ref_mv_idx));
-    let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, block_config)?;
-    let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, block_config, false, 1)?;
-    let mv = Mv {
-        row: mv_clamp_to_integer(pred_mv.row + diff.row),
-        col: mv_clamp_to_integer(pred_mv.col + diff.col),
-    };
-    let (warp_params, precision_idx) = read_warp_delta_syntax(
-        cdfs,
-        symbols,
-        sequence,
-        b_size,
+    let delta = read_warp_delta_syntax(cdfs, symbols, sequence, b_size, ref_warp_idx, tile_offset)?;
+    Ok(ParsedWarpSyntax {
+        source: WarpModelSource::Delta(delta),
+        ref_mv_idx: tail.ref_mv_idx,
         ref_warp_idx,
-        mv,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        stack,
-        tile_offset,
-    )?;
-    Ok(ParsedWarpNewmv {
-        mv,
-        warp_params,
-        ref_mv_idx,
-        ref_warp_idx,
-        precision_idx,
-        warpmv_with_mvd: false,
-        block_precision,
+        mvd: Some(tail.mvd),
+        precision: tail.precision,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_warpmv_delta_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     mv_config: MvReadConfig,
-    block_ctx: &MvBlockContext,
-    stack: &super::super::find_mv_stack::MvStack,
     tile_offset: ByteOffset,
-) -> Result<ParsedWarpNewmv> {
+) -> Result<ParsedWarpSyntax> {
     let ref_warp_idx = read_warp_ref_idx(cdfs, symbols, MAX_WARP_REF_CANDIDATES, tile_offset)?;
     let warpmv_with_mvd = if ref_warp_idx < 2 {
         read_warpmv_with_mvd_flag(cdfs, symbols, tile_offset)?
     } else {
         false
     };
-    let base_precision = if warpmv_with_mvd {
-        mv_config.precision()
-    } else {
-        MV_PRECISION_EIGHTH_PEL
-    };
-    let base_mv = warp_predicted_mv(
-        stack.warp_candidate(ref_warp_idx),
-        block_ctx,
-        base_precision,
-    );
-    let mv = if warpmv_with_mvd {
+    let mvd = if warpmv_with_mvd {
         let magnitude = read_newmv_block_mvd_magnitude(cdfs, symbols, tile_offset, mv_config)?;
-        let diff = apply_inter_mvd_signs(magnitude, symbols, tile_offset, mv_config, false, 1)?;
-        Mv {
-            row: mv_clamp_to_integer(base_mv.row + diff.row),
-            col: mv_clamp_to_integer(base_mv.col + diff.col),
-        }
+        Some(apply_inter_mvd_signs(
+            magnitude,
+            symbols,
+            tile_offset,
+            mv_config,
+            false,
+            1,
+        )?)
     } else {
-        base_mv
+        None
     };
-    let mut warp_params = stack.warp_candidate(ref_warp_idx);
-    reduce_warp_model(&mut warp_params);
-    set_warp_translation(
-        &mut warp_params,
-        mv,
-        block_ctx.mi_row,
-        block_ctx.mi_col,
-        block_ctx.bw4,
-        block_ctx.bh4,
-        tile_offset,
-    )?;
-    Ok(ParsedWarpNewmv {
-        mv,
-        warp_params,
+    Ok(ParsedWarpSyntax {
+        source: WarpModelSource::Candidate,
         ref_mv_idx: 0,
         ref_warp_idx,
-        precision_idx: 0,
-        warpmv_with_mvd,
-        block_precision: BlockPrecisionRecord::most_probable(mv_config.precision()),
+        mvd,
+        precision: BlockPrecisionRecord::most_probable(mv_config.precision()),
     })
 }
 
@@ -867,62 +815,87 @@ pub(crate) fn read_wedge_mode_syntax(
     u8::try_from(index).map_err(|_| warp_model_error(tile_offset))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn read_warp_delta_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     sequence: &SequenceHeader,
     b_size: usize,
     ref_warp_idx: usize,
-    mv: Mv,
-    mi_row: usize,
-    mi_col: usize,
-    n4w: usize,
-    n4h: usize,
-    stack: &super::super::find_mv_stack::MvStack,
     tile_offset: ByteOffset,
-) -> Result<([i32; 6], u8)> {
-    let mut params = stack.warp_candidate(ref_warp_idx);
-    let use_six_param = sequence
+) -> Result<WarpDeltaSyntax> {
+    let six_param = sequence
         .inter
         .as_ref()
         .is_some_and(|inter| inter.enable_six_param_warp_delta)
         && ref_warp_idx == 1;
-    let mut precision_idx = 0u8;
+    if !six_param && ref_warp_idx != 0 {
+        return Ok(WarpDeltaSyntax {
+            deltas: None,
+            six_param,
+        });
+    }
+    let precision_idx = cdfs
+        .read_block_symbol_trace(
+            TileCdfSelector::WarpPrecision { block_size: b_size },
+            symbols,
+        )
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    if precision_idx > 1 {
+        return Err(inter_cap!(
+            "inter_warp_precision_symbol",
+            tile_offset,
+            "inter.warp_delta_precision symbol out of range",
+            SPEC_MODE_INFO
+        ));
+    }
+    let high = precision_idx != 0;
+    let mut deltas = [0i32; 4];
+    deltas[0] = read_warp_delta_param(cdfs, symbols, 2, high, tile_offset)?;
+    deltas[1] = read_warp_delta_param(cdfs, symbols, 3, high, tile_offset)?;
+    if six_param {
+        deltas[2] = read_warp_delta_param(cdfs, symbols, 4, high, tile_offset)?;
+        deltas[3] = read_warp_delta_param(cdfs, symbols, 5, high, tile_offset)?;
+    }
+    Ok(WarpDeltaSyntax {
+        deltas: Some(deltas),
+        six_param,
+    })
+}
 
-    if use_six_param || ref_warp_idx == 0 {
-        precision_idx = cdfs
-            .read_block_symbol_trace(
-                TileCdfSelector::WarpPrecision { block_size: b_size },
-                symbols,
-            )
-            .map_err(|_| symbol_read_error(tile_offset))?
-            .get();
-        if precision_idx > 1 {
-            return Err(inter_cap!(
-                "inter_warp_precision_symbol",
-                tile_offset,
-                "inter.warp_delta_precision symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
-        let high_precision = precision_idx != 0;
+/// AV2 § 7.13.3.25: the parsed warp deltas applied to the § 7.12 warp
+/// candidate, reduced and re-centred on the block's motion vector.
+pub(super) fn apply_warp_delta(
+    mut params: [i32; 6],
+    delta: WarpDeltaSyntax,
+    mv: Mv,
+    block_ctx: &MvBlockContext,
+    tile_offset: ByteOffset,
+) -> Result<[i32; 6]> {
+    if let Some(deltas) = delta.deltas {
         params[0] = 0;
         params[1] = 0;
-        params[2] += read_warp_delta_param(cdfs, symbols, 2, high_precision, tile_offset)?;
-        params[3] += read_warp_delta_param(cdfs, symbols, 3, high_precision, tile_offset)?;
-        if use_six_param {
-            params[4] += read_warp_delta_param(cdfs, symbols, 4, high_precision, tile_offset)?;
-            params[5] += read_warp_delta_param(cdfs, symbols, 5, high_precision, tile_offset)?;
+        params[2] += deltas[0];
+        params[3] += deltas[1];
+        if delta.six_param {
+            params[4] += deltas[2];
+            params[5] += deltas[3];
         } else {
             params[4] = -params[3];
             params[5] = params[2];
         }
     }
-
     reduce_warp_model(&mut params);
-    set_warp_translation(&mut params, mv, mi_row, mi_col, n4w, n4h, tile_offset)?;
-    Ok((params, precision_idx))
+    set_warp_translation(
+        &mut params,
+        mv,
+        block_ctx.mi_row,
+        block_ctx.mi_col,
+        block_ctx.bw4,
+        block_ctx.bh4,
+        tile_offset,
+    )?;
+    Ok(params)
 }
 
 fn read_warp_delta_param(
@@ -989,7 +962,7 @@ fn read_warp_delta_param(
         .ok_or_else(|| warp_model_error(tile_offset))
 }
 
-fn set_warp_translation(
+pub(super) fn set_warp_translation(
     params: &mut [i32; 6],
     mv: Mv,
     mi_row: usize,

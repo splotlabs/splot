@@ -11,18 +11,16 @@ use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PlaneId, ReconSample};
 
 use super::super::compound::CompoundBlockSyntax;
-use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField, TemporalMvContext};
-use super::super::mc::WorkspaceSink;
+use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMvContext};
+use super::super::mc::{self, WorkspaceSink};
 use super::super::{
     InterReferenceState, InterResidualBlock, InterResidualReconScratch, PlacedInterBlock,
 };
 use super::compound_path::append_compound_temporal_motion;
-use super::temporal::{commit_temporal_motion_blocks, temporal_motion_block};
+use super::temporal::{MotionFieldUnits, temporal_motion_block};
 use super::tip::{self, TipReconstructScratch};
 use crate::Result;
-use crate::bitstream::tile_payload::{
-    FrameQmSegmentScope, TileBlockDecodedState, current_frame_qm_segment_id,
-};
+use crate::bitstream::tile_payload::{FrameQmSegmentScope, TileBlockDecodedState};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PendingKind {
@@ -58,32 +56,41 @@ pub(super) struct InterReconScratch<T: ReconSample> {
     mc: super::super::mc::McScratch,
 }
 
-struct ReconShared<'a, T: ReconSample> {
-    reference: &'a InterReferenceState<T>,
-    ref_frame_idx: &'a [u32],
-    temporal_context: &'a TemporalMvContext,
-    sequence: &'a SequenceHeader,
-    core: &'a FrameHeaderCore,
-    luma_use_tcq: bool,
-    residual_use_ddt: bool,
-    bit_depth: BitDepth,
+/// The frame-level facts every inter reconstruction reads, gathered once so the
+/// motion and prediction halves take one argument instead of eight.
+pub(super) struct ReconShared<'a, T: ReconSample> {
+    pub(super) reference: &'a InterReferenceState<T>,
+    pub(super) ref_frame_idx: &'a [u32],
+    pub(super) temporal_context: &'a TemporalMvContext,
+    pub(super) sequence: &'a SequenceHeader,
+    pub(super) core: &'a FrameHeaderCore,
+    pub(super) luma_use_tcq: bool,
+    pub(super) residual_use_ddt: bool,
+    pub(super) bit_depth: BitDepth,
+    pub(super) mi_rows: usize,
+    pub(super) mi_cols: usize,
+    pub(super) current_order_hint: u32,
 }
 
-const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
+pub(super) const fn reads_current_frame(bawp: bool, interintra: bool) -> bool {
     bawp || interintra
 }
 
 impl InterReconCommand {
-    pub(super) fn new(
+    /// `segment_id` is the § 7.14 quantizer-matrix segment in force while the
+    /// leaf was parsed, captured there because the resolve pass runs after the
+    /// leaf's segment scope has been dropped.
+    pub(super) const fn new(
         placed: PlacedInterBlock,
         kind: PendingKind,
+        segment_id: usize,
         qindex: u32,
         tile_offset: ByteOffset,
     ) -> Self {
         Self {
             placed,
             kind,
-            segment_id: current_frame_qm_segment_id(),
+            segment_id,
             qindex,
             tile_offset,
         }
@@ -247,30 +254,107 @@ impl InterReconCommand {
         }
     }
 
+    /// Derives the block's motion: the refinement grid its prediction samples
+    /// through, and its § 7.22 temporal records.
+    ///
+    /// This reads reference samples and writes none, so it is the half a motion
+    /// resolution pass runs ahead of reconstruction; the grid it returns is
+    /// what [`Self::reconstruct_from_motion`] predicts from, and no other call
+    /// can derive one.
     #[allow(clippy::too_many_arguments)]
-    fn reconstruct_ordered<T: ReconSample>(
+    fn derive_motion<T: ReconSample>(
+        &self,
+        sink: &WorkspaceSink<'_, '_, T>,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        shared: &ReconShared<'_, T>,
+        tip_scratch: &mut TipReconstructScratch<T>,
+    ) -> Result<Option<mc::CompoundMotionGrid>> {
+        match self.kind {
+            PendingKind::Tip => tip::motion(
+                tip_scratch,
+                temporal_records,
+                sink,
+                &self.placed,
+                shared.temporal_context,
+                shared.sequence,
+                shared.core,
+                shared.ref_frame_idx,
+                shared.reference,
+                self.tile_offset,
+            ),
+            PendingKind::Single => {
+                temporal_records.push(self.single_temporal_record(
+                    shared.reference,
+                    shared.ref_frame_idx,
+                    shared.mi_rows,
+                    shared.mi_cols,
+                    shared.current_order_hint,
+                ));
+                Ok(None)
+            }
+            PendingKind::Compound {
+                syntax,
+                warp_params,
+                mi_row,
+                mi_col,
+                use_refinemv,
+                refinemv_switchable,
+            } => {
+                let held = super::super::hold_inter_block_references(
+                    shared.ref_frame_idx,
+                    shared.reference,
+                    &self.placed,
+                    self.tile_offset,
+                )?;
+                let grid = mc::inter_block_motion_grid(
+                    sink,
+                    held.block_params(&self.placed, self.placed.motion_compensation_rect())?
+                        .with_refinemv(use_refinemv)
+                        .with_switchable_refinemv(refinemv_switchable),
+                    None,
+                    self.tile_offset,
+                )?;
+                drop(held);
+                append_compound_temporal_motion(
+                    temporal_records,
+                    shared.reference,
+                    shared.ref_frame_idx,
+                    &self.placed,
+                    syntax,
+                    warp_params,
+                    grid.as_ref(),
+                    mi_row,
+                    mi_col,
+                    shared.mi_rows,
+                    shared.mi_cols,
+                    shared.current_order_hint,
+                )?;
+                Ok(grid)
+            }
+        }
+    }
+
+    /// Reconstructs the block's samples from the grid the motion half derived.
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_from_motion<T: ReconSample>(
         &self,
         sink: &mut WorkspaceSink<'_, '_, T>,
         block_decoded: &TileBlockDecodedState,
-        temporal_records: &mut Vec<TemporalMotionBlock>,
+        motion: Option<mc::CompoundMotionGrid>,
         residual_blocks: &[InterResidualBlock],
         shared: &ReconShared<'_, T>,
         tip_scratch: &mut TipReconstructScratch<T>,
         interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
         residual_scratch: &mut InterResidualReconScratch<T>,
-        mi_rows: usize,
-        mi_cols: usize,
-        current_order_hint: u32,
     ) -> Result<()> {
         let _segment_scope = FrameQmSegmentScope::install(self.segment_id);
         if matches!(self.kind, PendingKind::Tip) {
-            let allow_unit_parallelism = matches!(sink, WorkspaceSink::Frame(_));
-            tip::reconstruct(
+            return tip::predict(
                 tip_scratch,
                 residual_scratch,
-                temporal_records,
                 sink,
-                allow_unit_parallelism,
+                matches!(sink, WorkspaceSink::Frame(_)),
+                motion,
                 &self.placed,
                 residual_blocks,
                 shared.temporal_context,
@@ -283,18 +367,17 @@ impl InterReconCommand {
                 shared.residual_use_ddt,
                 shared.bit_depth,
                 self.tile_offset,
-            )?;
-            return Ok(());
+            );
         }
-
         let (use_refinemv, refinemv_switchable) = self.refinemv();
-        let grid = match sink {
+        match sink {
             WorkspaceSink::Frame(workspace) => super::prediction::reconstruct_placed_inter_block(
                 interintra_scratch,
                 residual_scratch,
                 workspace,
                 &self.placed,
                 residual_blocks,
+                motion,
                 use_refinemv,
                 refinemv_switchable,
                 block_decoded,
@@ -306,13 +389,14 @@ impl InterReconCommand {
                 shared.bit_depth,
                 super::sequence_enables_ibp(shared.sequence),
                 self.tile_offset,
-            )?,
+            ),
             sink @ (WorkspaceSink::Row(_) | WorkspaceSink::Rect(_)) => {
                 super::prediction::reconstruct_pure_inter_block(
                     sink,
                     residual_scratch,
                     &self.placed,
                     residual_blocks,
+                    motion,
                     use_refinemv,
                     refinemv_switchable,
                     shared.ref_frame_idx,
@@ -322,42 +406,34 @@ impl InterReconCommand {
                     shared.residual_use_ddt,
                     shared.bit_depth,
                     self.tile_offset,
-                )?
+                )
             }
-        };
-        match self.kind {
-            PendingKind::Single => {
-                temporal_records.push(self.single_temporal_record(
-                    shared.reference,
-                    shared.ref_frame_idx,
-                    mi_rows,
-                    mi_cols,
-                    current_order_hint,
-                ));
-                Ok(())
-            }
-            PendingKind::Compound {
-                syntax,
-                warp_params,
-                mi_row,
-                mi_col,
-                ..
-            } => append_compound_temporal_motion(
-                temporal_records,
-                shared.reference,
-                shared.ref_frame_idx,
-                &self.placed,
-                syntax,
-                warp_params,
-                grid.as_ref(),
-                mi_row,
-                mi_col,
-                mi_rows,
-                mi_cols,
-                current_order_hint,
-            ),
-            PendingKind::Tip => Ok(()),
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn reconstruct_ordered<T: ReconSample>(
+        &self,
+        sink: &mut WorkspaceSink<'_, '_, T>,
+        block_decoded: &TileBlockDecodedState,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        residual_blocks: &[InterResidualBlock],
+        shared: &ReconShared<'_, T>,
+        tip_scratch: &mut TipReconstructScratch<T>,
+        interintra_scratch: &mut super::interintra::InterIntraScratch<T>,
+        residual_scratch: &mut InterResidualReconScratch<T>,
+    ) -> Result<()> {
+        let motion = self.derive_motion(sink, temporal_records, shared, tip_scratch)?;
+        self.reconstruct_from_motion(
+            sink,
+            block_decoded,
+            motion,
+            residual_blocks,
+            shared,
+            tip_scratch,
+            interintra_scratch,
+            residual_scratch,
+        )
     }
 }
 
@@ -376,6 +452,49 @@ impl<T: ReconSample> InterReconScratch<T> {
     ) -> Result<()> {
         let Self { residual, mc, .. } = self;
         mc.with_installed(|| command.reconstruct(residual, residual_blocks, workspace))
+    }
+
+    /// Derives one command's motion into `temporal_records`, writing no sample.
+    pub(super) fn motion(
+        &mut self,
+        command: &InterReconCommand,
+        sink: &WorkspaceSink<'_, '_, T>,
+        temporal_records: &mut Vec<TemporalMotionBlock>,
+        shared: &ReconShared<'_, T>,
+    ) -> Result<Option<mc::CompoundMotionGrid>> {
+        let Self { tip, mc, .. } = self;
+        mc.with_installed(|| command.derive_motion(sink, temporal_records, shared, tip))
+    }
+
+    /// Reconstructs one command from the grid its motion half derived.
+    pub(super) fn reconstruct_from_motion(
+        &mut self,
+        command: &InterReconCommand,
+        sink: &mut WorkspaceSink<'_, '_, T>,
+        block_decoded: &TileBlockDecodedState,
+        motion: Option<mc::CompoundMotionGrid>,
+        residual_blocks: &[InterResidualBlock],
+        shared: &ReconShared<'_, T>,
+    ) -> Result<()> {
+        let Self {
+            tip,
+            interintra,
+            residual,
+            mc,
+            ..
+        } = self;
+        mc.with_installed(|| {
+            command.reconstruct_from_motion(
+                sink,
+                block_decoded,
+                motion,
+                residual_blocks,
+                shared,
+                tip,
+                interintra,
+                residual,
+            )
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -420,13 +539,13 @@ impl<T: ReconSample> InterReconScratch<T> {
                     luma_use_tcq,
                     residual_use_ddt,
                     bit_depth,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
                 },
                 tip,
                 interintra,
                 residual,
-                mi_rows,
-                mi_cols,
-                current_order_hint,
             )
         })
     }
@@ -437,7 +556,7 @@ impl<T: ReconSample> InterReconScratch<T> {
         command: &InterReconCommand,
         workspace: &mut CurrentFrameWorkspace<T>,
         block_decoded: &TileBlockDecodedState,
-        motion_field: &mut TemporalMotionField,
+        motion: &MotionFieldUnits,
         residual_blocks: &[InterResidualBlock],
         temporal_context: &TemporalMvContext,
         reference: &InterReferenceState<T>,
@@ -472,7 +591,7 @@ impl<T: ReconSample> InterReconScratch<T> {
             bit_depth,
         );
         if result.is_ok() {
-            commit_temporal_motion_blocks(motion_field, &temporal);
+            motion.fold(&temporal);
         }
         temporal.clear();
         self.temporal = temporal;
@@ -592,6 +711,7 @@ mod tests {
                 },
             },
             PendingKind::Single,
+            0,
             0,
             ByteOffset::new(0),
         )

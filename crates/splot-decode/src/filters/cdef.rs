@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::simd::{Simd, simd_swizzle};
+
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
-    BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR,
-    CdefBlockFilter, CdefSampleTaps, CdefTap, CurrentFrameWorkspace, PlaneId, PlaneRect,
-    ReconSample, cdef_direction, cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
+    BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
+    CDEF_PAIR_STRIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefSampleTaps, CdefTap,
+    PlaneId, PlaneRect, ReconSample, cdef_direction, cdef_direction_padded,
+    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 
-use super::source::{FramePlane, StripePlane};
+use super::source::{DeblockedPlanes, FramePlane, StripePlane};
 
 const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
 const CDEF_UNIT_MI: usize = 16;
 const STEP4: usize = 2;
+const CHROMA_PAIR_SIDE: usize = 4;
+const CHROMA_PAIR_SPAN: usize = CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH;
 
 const UNAVAILABLE_TAP: CdefTap = CdefTap {
     value: 0,
@@ -206,12 +211,13 @@ impl CdefBlockLookup<'_> {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cdef_stripe<'a, T: ReconSample>(
-    workspace: &'a CurrentFrameWorkspace<T>,
+    deblocked: DeblockedPlanes<'a, T>,
     strengths: Option<&[CdefFrameParams]>,
     grid: Option<&CdefUnitGrid>,
     skip_grid: Option<&CdefSkipGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     mi_size: (usize, usize),
+    subsampling: (usize, usize),
     bit_depth: BitDepth,
     luma_start: usize,
     luma_end: usize,
@@ -222,18 +228,16 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     }
     let coeff_shift = u32::from(bit_depth.bits()) - 8;
     let max_sample = i32::from(bit_depth.max_sample());
-    let pixel_format = workspace.info().pixel_format();
-    let sub_x = usize::from(pixel_format.subsampling_x());
-    let sub_y = usize::from(pixel_format.subsampling_y());
-    let has_chroma = !pixel_format.is_monochrome();
-    let deblocked_y = FramePlane::new(workspace, PlaneId::Y).ok_or(CdefError::Workspace)?;
+    let (sub_x, sub_y) = subsampling;
+    let has_chroma = deblocked.u.is_some();
+    let deblocked_y = deblocked.y;
     let filtered_y =
         StripePlane::copy_from(deblocked_y, luma_start, luma_end).ok_or(CdefError::Geometry)?;
     let chroma_start = luma_start >> sub_y;
     let chroma_end = luma_end.div_ceil(1usize << sub_y);
     let (deblocked_u, deblocked_v, filtered_u, filtered_v) = if has_chroma {
-        let u = FramePlane::new(workspace, PlaneId::U).ok_or(CdefError::Workspace)?;
-        let v = FramePlane::new(workspace, PlaneId::V).ok_or(CdefError::Workspace)?;
+        let u = deblocked.u.ok_or(CdefError::Workspace)?;
+        let v = deblocked.v.ok_or(CdefError::Workspace)?;
         let filtered_u =
             StripePlane::copy_from(u, chroma_start, chroma_end).ok_or(CdefError::Geometry)?;
         let filtered_v =
@@ -415,25 +419,113 @@ fn compute_cdef_block<S: ReconSample>(
             compute_cdef_filter_plane::<S>(luma_snap, &y_filter, pad, filtered_y)?;
         }
     }
-    match (u_snap, filtered_u) {
-        (Some(snap), Some(filtered)) if !(uv_zero || ctx.chroma_lossless) => {
-            compute_cdef_filter_plane::<S>(snap, &uv_filter, pad, filtered)?;
-        }
-        (Some(_), None) if !(uv_zero || ctx.chroma_lossless) => {
-            return Err(CdefError::Workspace);
-        }
-        _ => {}
+    if uv_zero || ctx.chroma_lossless {
+        return Ok(());
     }
-    match (v_snap, filtered_v) {
-        (Some(snap), Some(filtered)) if !(uv_zero || ctx.chroma_lossless) => {
-            compute_cdef_filter_plane::<S>(snap, &uv_filter, pad, filtered)?;
+    match (u_snap, v_snap, filtered_u, filtered_v) {
+        (None, None, _, _) => Ok(()),
+        (Some(u_snap), Some(v_snap), Some(filtered_u), Some(filtered_v)) => {
+            if compute_cdef_chroma_pair::<S>(
+                u_snap, v_snap, &uv_filter, pad, filtered_u, filtered_v,
+            )? {
+                return Ok(());
+            }
+            compute_cdef_filter_plane::<S>(u_snap, &uv_filter, pad, filtered_u)?;
+            compute_cdef_filter_plane::<S>(v_snap, &uv_filter, pad, filtered_v)
         }
-        (Some(_), None) if !(uv_zero || ctx.chroma_lossless) => {
-            return Err(CdefError::Workspace);
-        }
-        _ => {}
+        _ => Err(CdefError::Workspace),
     }
-    Ok(())
+}
+
+/// AV2 § 7.18.3 CDEF over one interior 4x4 chroma block of both planes at once.
+///
+/// The two chroma planes share the block's geometry and every filter parameter,
+/// so one interleaved 16-lane pass replaces two 8-lane passes plus a second
+/// geometry derivation and a second tap gather. Returns `false` when the block
+/// is not the interior `4x4` case the interleaved scratch covers, which leaves
+/// the caller on the per-plane path.
+fn compute_cdef_chroma_pair<S: ReconSample>(
+    u_snap: FramePlane<'_, S>,
+    v_snap: FramePlane<'_, S>,
+    ctx: &CdefFilterCtx,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+    filtered_u: &mut StripePlane,
+    filtered_v: &mut StripePlane,
+) -> Result<bool, CdefError> {
+    let x0 = (ctx.c * MI_SIZE) >> ctx.frame_sub_x;
+    let y0 = (ctx.r * MI_SIZE) >> ctx.frame_sub_y;
+    let (w, h) = ((8 >> ctx.frame_sub_x), (8 >> ctx.frame_sub_y));
+    if ctx.sub == 0 || (w, h) != (CHROMA_PAIR_SIDE, CHROMA_PAIR_SIDE) {
+        return Ok(false);
+    }
+    let inside_x = ((ctx.mi_cols * MI_SIZE) >> ctx.frame_sub_x).min(u_snap.width());
+    let inside_y = ((ctx.mi_rows * MI_SIZE) >> ctx.frame_sub_y).min(u_snap.frame_height());
+    if !(x0 >= CDEF_TAP_REACH
+        && y0 >= CDEF_TAP_REACH
+        && x0 + w - 1 + CDEF_TAP_REACH < inside_x
+        && y0 + h - 1 + CDEF_TAP_REACH < inside_y
+        && y0 >= u_snap.origin_y() + CDEF_TAP_REACH
+        && y0 + h + CDEF_TAP_REACH <= u_snap.end_y())
+    {
+        return Ok(false);
+    }
+    let (Some(u_samples), Some(v_samples)) = (
+        S::u16_slice(u_snap.samples()),
+        S::u16_slice(v_snap.samples()),
+    ) else {
+        return Ok(false);
+    };
+    let span = w + 2 * CDEF_TAP_REACH;
+    let left = x0 - CDEF_TAP_REACH;
+    if left + span > u_snap.width() || u_snap.stride() != v_snap.stride() {
+        return Ok(false);
+    }
+    let mut base = (y0 - u_snap.origin_y() - CDEF_TAP_REACH) * u_snap.stride() + left;
+    for row in 0..h + 2 * CDEF_TAP_REACH {
+        let u_row = u_samples
+            .get(base..base + span)
+            .ok_or(CdefError::Workspace)?;
+        let v_row = v_samples
+            .get(base..base + span)
+            .ok_or(CdefError::Workspace)?;
+        let (low, high) =
+            Simd::<u16, CHROMA_PAIR_SPAN>::from_slice(u_row).interleave(Simd::from_slice(v_row));
+        let lanes = pad
+            .get_mut(row * CDEF_PAIR_STRIDE..row * CDEF_PAIR_STRIDE + 2 * span)
+            .ok_or(CdefError::Workspace)?;
+        lanes[..CHROMA_PAIR_SPAN].copy_from_slice(low.as_array()); // splot-copy-ok: interleave the chroma pair's taps
+        lanes[CHROMA_PAIR_SPAN..].copy_from_slice(high.as_array()); // splot-copy-ok: interleave the chroma pair's taps
+        base += u_snap.stride();
+    }
+    let filter = CdefBlockFilter {
+        pri_str: ctx.pri_str,
+        sec_str: ctx.sec_str,
+        damping: ctx.damping,
+        dir: ctx.dir,
+        coeff_shift: ctx.coeff_shift,
+    };
+    let mut output = [0u16; CDEF_PAIR_OUTPUT];
+    if !cdef_filter_block_chroma_pair(pad, h, &filter, &mut output) {
+        return Err(CdefError::Workspace);
+    }
+    for (row, lanes) in output.chunks_exact(2 * CHROMA_PAIR_SIDE).enumerate() {
+        let planes = simd_swizzle!(
+            Simd::<u16, CHROMA_PAIR_SPAN>::from_slice(lanes),
+            [0, 2, 4, 6, 1, 3, 5, 7]
+        );
+        let (u_lanes, v_lanes) = planes.as_array().split_at(CHROMA_PAIR_SIDE);
+        filtered_u
+            .row_mut(y0 + row)
+            .and_then(|row| row.get_mut(x0..x0 + w))
+            .ok_or(CdefError::Workspace)?
+            .copy_from_slice(u_lanes); // splot-copy-ok: publish the pair's U samples
+        filtered_v
+            .row_mut(y0 + row)
+            .and_then(|row| row.get_mut(x0..x0 + w))
+            .ok_or(CdefError::Workspace)?
+            .copy_from_slice(v_lanes); // splot-copy-ok: publish the pair's V samples
+    }
+    Ok(true)
 }
 
 struct CdefFilterCtx {
@@ -520,18 +612,65 @@ fn gather_interior_pad<S: ReconSample>(
     w: usize,
     h: usize,
 ) -> Result<(), CdefError> {
+    let inside = y0 >= snap.origin_y() + CDEF_TAP_REACH && y0 + h + CDEF_TAP_REACH <= snap.end_y();
+    let window_y = inside.then(|| y0 - snap.origin_y());
+    match (S::u16_slice(snap.samples()), window_y, w) {
+        (Some(samples), Some(y0), 8) => {
+            gather_interior_rows::<12>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
+        }
+        (Some(samples), Some(y0), 4) => {
+            gather_interior_rows::<8>(samples, snap.width(), snap.stride(), pad, x0, y0, h)
+        }
+        _ => {
+            for r in 0..h + 2 * CDEF_TAP_REACH {
+                let src = snap
+                    .row(y0 - CDEF_TAP_REACH + r)
+                    .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
+                    .ok_or(CdefError::Workspace)?;
+                let dst_start = r * CDEF_PADDED_SIDE;
+                let dst = pad
+                    .get_mut(dst_start..dst_start + src.len())
+                    .ok_or(CdefError::Workspace)?;
+                for (dst, src) in dst.iter_mut().zip(src) {
+                    *dst = src.to_u16();
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// [`gather_interior_pad`] for `u16` plane storage, copying `SPAN` samples per
+/// row off one hoisted row base.
+#[allow(clippy::too_many_arguments)]
+fn gather_interior_rows<const SPAN: usize>(
+    samples: &[u16],
+    width: usize,
+    stride: usize,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+    x0: usize,
+    y0: usize,
+    h: usize,
+) -> Result<(), CdefError> {
+    let left = x0.checked_sub(CDEF_TAP_REACH).ok_or(CdefError::Workspace)?;
+    if left + SPAN > width {
+        return Err(CdefError::Workspace);
+    }
+    let mut base = y0
+        .checked_sub(CDEF_TAP_REACH)
+        .and_then(|top| top.checked_mul(stride))
+        .and_then(|row| row.checked_add(left))
+        .ok_or(CdefError::Workspace)?;
     for r in 0..h + 2 * CDEF_TAP_REACH {
-        let src = snap
-            .row(y0 - CDEF_TAP_REACH + r)
-            .and_then(|row| row.get(x0 - CDEF_TAP_REACH..x0 + w + CDEF_TAP_REACH))
+        let src = samples
+            .get(base..base.checked_add(SPAN).ok_or(CdefError::Workspace)?)
             .ok_or(CdefError::Workspace)?;
         let dst_start = r * CDEF_PADDED_SIDE;
         let dst = pad
-            .get_mut(dst_start..dst_start + src.len())
+            .get_mut(dst_start..dst_start + SPAN)
             .ok_or(CdefError::Workspace)?;
-        for (dst, src) in dst.iter_mut().zip(src) {
-            *dst = src.to_u16();
-        }
+        dst.copy_from_slice(src); // splot-copy-ok: gather CDEF taps into the padded scratch
+        base += stride;
     }
     Ok(())
 }
