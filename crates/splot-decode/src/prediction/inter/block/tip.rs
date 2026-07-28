@@ -502,6 +502,14 @@ pub(crate) fn tip_allowed_for_block_indices(
         && n4h >= 2
 }
 
+/// Reconstructs one § 7.13.5 TIP block into `sink`.
+///
+/// A block whose units carry the § 7.13.3.1 optical-flow shape is predicted by
+/// the fixed-unit batch kernel, which spawns no pool work and writes one
+/// rectangle per plane, so every sink takes it. `allow_unit_parallelism` gates
+/// only the per-unit fan-out that remains: a task predicting into an
+/// out-of-order surface holds a reference borrow across its prediction, and
+/// spawned work that waits on that borrow would never run.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reconstruct<T: ReconSample>(
     scratch: &mut TipReconstructScratch<T>,
@@ -704,8 +712,11 @@ pub(super) fn reconstruct<T: ReconSample>(
         }
     }
     crate::timing::accumulate(crate::timing::Phase::TipUnits, units_timer);
-    let parallel_output =
-        allow_unit_parallelism && two_references && splot_parallel::on_worker_pool();
+    let batched_output = use_optflow && scratch.units.len() > 1;
+    let parallel_output = !batched_output
+        && allow_unit_parallelism
+        && two_references
+        && splot_parallel::on_worker_pool();
     let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
     let batch_chroma_y = placed.luma_y.max(placed.chroma_luma_y);
     let batch_chroma_end_x = placed
@@ -729,16 +740,11 @@ pub(super) fn reconstruct<T: ReconSample>(
         chroma_luma_w: batch_chroma_end_x.saturating_sub(batch_chroma_x),
         chroma_luma_h: batch_chroma_end_y.saturating_sub(batch_chroma_y),
     };
-    let batched_output = parallel_output
-        && use_optflow
-        && unit_size == 8
-        && scratch.units.len() > 1
-        && splot_parallel::current_pool_width() == 1;
     let output_stride = mc::mc_planes(sink.info().pixel_format())
         .into_iter()
         .map(|(_, sub_x, sub_y)| (unit_size >> sub_x) * (unit_size >> sub_y))
         .sum::<usize>();
-    if parallel_output {
+    if parallel_output || batched_output {
         let arena_len = scratch.units.len().checked_mul(output_stride).ok_or(
             ReconError::ArithmeticOverflow {
                 context: "TIP compound output arena length",
@@ -765,10 +771,7 @@ pub(super) fn reconstruct<T: ReconSample>(
     } else {
         None
     };
-    if parallel_output
-        && !batched_output
-        && let Some(plan) = plan.as_ref()
-    {
+    if parallel_output && let Some(plan) = plan.as_ref() {
         let held = plan.hold(reference, tile_offset)?;
         compute_parallel_outputs(
             sink,
