@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use std::simd::{Simd, simd_swizzle};
+
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_recon::{
-    BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR,
-    CdefBlockFilter, CdefSampleTaps, CdefTap, PlaneId, PlaneRect, ReconSample, cdef_direction,
-    cdef_direction_padded, cdef_filter_block_boundary_to_valid_stride,
+    BitDepth, CDEF_DIRECTIONS, CDEF_PADDED_AREA, CDEF_PADDED_SIDE, CDEF_PAIR_OUTPUT,
+    CDEF_PAIR_STRIDE, CDEF_UNAVAILABLE, CDEF_UV_DIR, CdefBlockFilter, CdefSampleTaps, CdefTap,
+    PlaneId, PlaneRect, ReconSample, cdef_direction, cdef_direction_padded,
+    cdef_filter_block_boundary_to_valid_stride, cdef_filter_block_chroma_pair,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
 
@@ -15,6 +18,8 @@ const MI_SIZE: usize = 4;
 const MI_SIZE_LOG2: u32 = 2;
 const CDEF_UNIT_MI: usize = 16;
 const STEP4: usize = 2;
+const CHROMA_PAIR_SIDE: usize = 4;
+const CHROMA_PAIR_SPAN: usize = CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH;
 
 const UNAVAILABLE_TAP: CdefTap = CdefTap {
     value: 0,
@@ -414,25 +419,113 @@ fn compute_cdef_block<S: ReconSample>(
             compute_cdef_filter_plane::<S>(luma_snap, &y_filter, pad, filtered_y)?;
         }
     }
-    match (u_snap, filtered_u) {
-        (Some(snap), Some(filtered)) if !(uv_zero || ctx.chroma_lossless) => {
-            compute_cdef_filter_plane::<S>(snap, &uv_filter, pad, filtered)?;
-        }
-        (Some(_), None) if !(uv_zero || ctx.chroma_lossless) => {
-            return Err(CdefError::Workspace);
-        }
-        _ => {}
+    if uv_zero || ctx.chroma_lossless {
+        return Ok(());
     }
-    match (v_snap, filtered_v) {
-        (Some(snap), Some(filtered)) if !(uv_zero || ctx.chroma_lossless) => {
-            compute_cdef_filter_plane::<S>(snap, &uv_filter, pad, filtered)?;
+    match (u_snap, v_snap, filtered_u, filtered_v) {
+        (None, None, _, _) => Ok(()),
+        (Some(u_snap), Some(v_snap), Some(filtered_u), Some(filtered_v)) => {
+            if compute_cdef_chroma_pair::<S>(
+                u_snap, v_snap, &uv_filter, pad, filtered_u, filtered_v,
+            )? {
+                return Ok(());
+            }
+            compute_cdef_filter_plane::<S>(u_snap, &uv_filter, pad, filtered_u)?;
+            compute_cdef_filter_plane::<S>(v_snap, &uv_filter, pad, filtered_v)
         }
-        (Some(_), None) if !(uv_zero || ctx.chroma_lossless) => {
-            return Err(CdefError::Workspace);
-        }
-        _ => {}
+        _ => Err(CdefError::Workspace),
     }
-    Ok(())
+}
+
+/// AV2 § 7.18.3 CDEF over one interior 4x4 chroma block of both planes at once.
+///
+/// The two chroma planes share the block's geometry and every filter parameter,
+/// so one interleaved 16-lane pass replaces two 8-lane passes plus a second
+/// geometry derivation and a second tap gather. Returns `false` when the block
+/// is not the interior `4x4` case the interleaved scratch covers, which leaves
+/// the caller on the per-plane path.
+fn compute_cdef_chroma_pair<S: ReconSample>(
+    u_snap: FramePlane<'_, S>,
+    v_snap: FramePlane<'_, S>,
+    ctx: &CdefFilterCtx,
+    pad: &mut [u16; CDEF_PADDED_AREA],
+    filtered_u: &mut StripePlane,
+    filtered_v: &mut StripePlane,
+) -> Result<bool, CdefError> {
+    let x0 = (ctx.c * MI_SIZE) >> ctx.frame_sub_x;
+    let y0 = (ctx.r * MI_SIZE) >> ctx.frame_sub_y;
+    let (w, h) = ((8 >> ctx.frame_sub_x), (8 >> ctx.frame_sub_y));
+    if ctx.sub == 0 || (w, h) != (CHROMA_PAIR_SIDE, CHROMA_PAIR_SIDE) {
+        return Ok(false);
+    }
+    let inside_x = ((ctx.mi_cols * MI_SIZE) >> ctx.frame_sub_x).min(u_snap.width());
+    let inside_y = ((ctx.mi_rows * MI_SIZE) >> ctx.frame_sub_y).min(u_snap.frame_height());
+    if !(x0 >= CDEF_TAP_REACH
+        && y0 >= CDEF_TAP_REACH
+        && x0 + w - 1 + CDEF_TAP_REACH < inside_x
+        && y0 + h - 1 + CDEF_TAP_REACH < inside_y
+        && y0 >= u_snap.origin_y() + CDEF_TAP_REACH
+        && y0 + h + CDEF_TAP_REACH <= u_snap.end_y())
+    {
+        return Ok(false);
+    }
+    let (Some(u_samples), Some(v_samples)) = (
+        S::u16_slice(u_snap.samples()),
+        S::u16_slice(v_snap.samples()),
+    ) else {
+        return Ok(false);
+    };
+    let span = w + 2 * CDEF_TAP_REACH;
+    let left = x0 - CDEF_TAP_REACH;
+    if left + span > u_snap.width() || u_snap.stride() != v_snap.stride() {
+        return Ok(false);
+    }
+    let mut base = (y0 - u_snap.origin_y() - CDEF_TAP_REACH) * u_snap.stride() + left;
+    for row in 0..h + 2 * CDEF_TAP_REACH {
+        let u_row = u_samples
+            .get(base..base + span)
+            .ok_or(CdefError::Workspace)?;
+        let v_row = v_samples
+            .get(base..base + span)
+            .ok_or(CdefError::Workspace)?;
+        let (low, high) =
+            Simd::<u16, CHROMA_PAIR_SPAN>::from_slice(u_row).interleave(Simd::from_slice(v_row));
+        let lanes = pad
+            .get_mut(row * CDEF_PAIR_STRIDE..row * CDEF_PAIR_STRIDE + 2 * span)
+            .ok_or(CdefError::Workspace)?;
+        lanes[..CHROMA_PAIR_SPAN].copy_from_slice(low.as_array()); // splot-copy-ok: interleave the chroma pair's taps
+        lanes[CHROMA_PAIR_SPAN..].copy_from_slice(high.as_array()); // splot-copy-ok: interleave the chroma pair's taps
+        base += u_snap.stride();
+    }
+    let filter = CdefBlockFilter {
+        pri_str: ctx.pri_str,
+        sec_str: ctx.sec_str,
+        damping: ctx.damping,
+        dir: ctx.dir,
+        coeff_shift: ctx.coeff_shift,
+    };
+    let mut output = [0u16; CDEF_PAIR_OUTPUT];
+    if !cdef_filter_block_chroma_pair(pad, h, &filter, &mut output) {
+        return Err(CdefError::Workspace);
+    }
+    for (row, lanes) in output.chunks_exact(2 * CHROMA_PAIR_SIDE).enumerate() {
+        let planes = simd_swizzle!(
+            Simd::<u16, CHROMA_PAIR_SPAN>::from_slice(lanes),
+            [0, 2, 4, 6, 1, 3, 5, 7]
+        );
+        let (u_lanes, v_lanes) = planes.as_array().split_at(CHROMA_PAIR_SIDE);
+        filtered_u
+            .row_mut(y0 + row)
+            .and_then(|row| row.get_mut(x0..x0 + w))
+            .ok_or(CdefError::Workspace)?
+            .copy_from_slice(u_lanes); // splot-copy-ok: publish the pair's U samples
+        filtered_v
+            .row_mut(y0 + row)
+            .and_then(|row| row.get_mut(x0..x0 + w))
+            .ok_or(CdefError::Workspace)?
+            .copy_from_slice(v_lanes); // splot-copy-ok: publish the pair's V samples
+    }
+    Ok(true)
 }
 
 struct CdefFilterCtx {
