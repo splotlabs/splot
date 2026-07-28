@@ -85,10 +85,19 @@ fn decode_intra_fixture_with_core_on_threads(
     let WalkStage::Pending(walked) = walk.stage else {
         panic!("an intra frame always owes its filter phase");
     };
-    let finished = context
-        .pool()
-        .install(|| finish_walked_frame(*walked, None, drop))?;
+    let finished = context.pool().install(|| {
+        finish_walked_frame(*walked, None, |frame| {
+            assert_eq!(frame.handle_count(), 1);
+            frame
+        })
+    })?;
     Ok((finished.frame, walk.frame_cdfs, walk.ccso_grid))
+}
+
+#[test]
+fn finish_publishes_its_sole_frame_handle() {
+    let (frame, _, _) = decode_intra_fixture_with_core(|_| {}).expect("intra frame");
+    assert_eq!(frame.handle_count(), 1);
 }
 
 #[test]

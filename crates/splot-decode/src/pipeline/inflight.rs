@@ -501,7 +501,7 @@ pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
         WalkStage::Pending(walked) => walked,
     };
     let FinishSpawner::Deferred(scope) = spawner else {
-        let finished = finish_walked_frame(*walked, None, drop)?;
+        let finished = finish_walked_frame(*walked, None, core::convert::identity)?;
         scratch.recycle_frame_filter_records(finished.filter_records);
         return Ok(erase(RefFrameSlot::completed(finished.frame)));
     };
@@ -577,7 +577,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .records = Some(finished.filter_records);
-                    drop(finished.frame);
                 }
                 Err(error) => {
                     outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
@@ -602,7 +601,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         let finished = finish_walked_frame(walked, progress.as_deref(), |frame| {
             writer.complete(frame);
         })?;
-        drop(finished.frame);
         Ok(finished.filter_records)
     }
 }

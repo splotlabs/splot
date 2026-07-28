@@ -179,30 +179,31 @@ impl<T: ReconSample> WalkedFrame<T> {
 }
 
 /// One frame after its filter stages, with the filter records to recycle.
-pub(crate) struct FinishedFrame<T: ReconSample> {
-    /// The filtered, frozen frame.
-    pub(crate) frame: SharedFrame<T>,
+pub(crate) struct FinishedFrame<R> {
+    /// The value returned after publishing the filtered, frozen frame.
+    pub(crate) frame: R,
     /// The filter-record buffers to hand back to the decode scratch.
     pub(crate) filter_records: FrameFilterRecords,
 }
 
 /// Runs the shared § 7.2 in-loop filter chain over a walked frame and freezes it.
 ///
-/// `publish` receives the frozen frame's first shared handle while the freeze
-/// still holds the frame's publication lock, so a pipelined frame's slot settles
-/// before its published row prefix stops being readable. A `publish` that is
-/// never reached — a filter stage failed — is dropped instead, which is how a
-/// pending slot learns its filter phase failed.
+/// `publish` receives the frozen frame's sole handle while the freeze still
+/// holds the frame's publication lock, so a pipelined frame's slot settles
+/// before its published row prefix stops being readable without leaving a
+/// second owner in the finish task. A `publish` that is never reached — a filter
+/// stage failed — is dropped instead, which is how a pending slot learns its
+/// filter phase failed.
 ///
 /// # Errors
 ///
 /// Returns the filter chain's own diagnostic when a filter stage or the freeze
 /// fails.
-pub(crate) fn finish_walked_frame<T: ReconSample>(
+pub(crate) fn finish_walked_frame<T: ReconSample, R>(
     walked: WalkedFrame<T>,
     progress: Option<&FrameProgress<T>>,
-    publish: impl FnOnce(SharedFrame<T>),
-) -> Result<FinishedFrame<T>> {
+    publish: impl FnOnce(SharedFrame<T>) -> R,
+) -> Result<FinishedFrame<R>> {
     let WalkedFrame {
         sink,
         core,
@@ -216,11 +217,7 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
         deblock_quant_deltas,
         progress,
         offset,
-        |frame| {
-            let frame = SharedFrame::new(frame);
-            publish(frame.share());
-            frame
-        },
+        |frame| publish(SharedFrame::new(frame)),
     )?;
     Ok(FinishedFrame {
         frame,
@@ -237,7 +234,9 @@ pub(crate) fn finish_walked_frame<T: ReconSample>(
 pub(crate) fn finish_walk_inline<T: ReconSample>(stage: WalkStage<T>) -> Result<SharedFrame<T>> {
     Ok(match stage {
         WalkStage::Complete(frame) => SharedFrame::new(*frame),
-        WalkStage::Pending(walked) => finish_walked_frame(*walked, None, drop)?.frame,
+        WalkStage::Pending(walked) => {
+            finish_walked_frame(*walked, None, core::convert::identity)?.frame
+        }
     })
 }
 
