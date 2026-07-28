@@ -102,6 +102,8 @@ pub(super) struct MotionFieldUnits {
     field: Mutex<Option<TemporalMotionField>>,
     owed: AtomicUsize,
     handle: Option<MotionFieldHandle>,
+    started: Option<std::time::Instant>,
+    prepass_units: AtomicUsize,
 }
 
 impl MotionFieldUnits {
@@ -111,19 +113,27 @@ impl MotionFieldUnits {
             field: Mutex::new(Some(field)),
             owed: AtomicUsize::new(0),
             handle: None,
+            started: None,
+            prepass_units: AtomicUsize::new(0),
         }
     }
 
     /// Collects `units` units and publishes the field once the last one lands.
+    ///
+    /// `started` anchors the publication-lag trace to the reconstruction phase
+    /// the units belong to.
     pub(super) fn publishing(
         field: TemporalMotionField,
         units: usize,
         handle: MotionFieldHandle,
+        started: Option<std::time::Instant>,
     ) -> Self {
         Self {
             field: Mutex::new(Some(field)),
             owed: AtomicUsize::new(units),
             handle: Some(handle),
+            started,
+            prepass_units: AtomicUsize::new(0),
         }
     }
 
@@ -137,16 +147,28 @@ impl MotionFieldUnits {
         }
     }
 
-    /// Reports that every record of one unit has been folded in.
-    pub(super) fn unit_landed(&self) {
+    /// Reports that every record of one unit has been folded in, `prepass` when
+    /// the unit derived them all before its pixels reached the ordered commit.
+    pub(super) fn unit_landed(&self, prepass: bool) {
         let Some(handle) = self.handle.as_ref() else {
             return;
         };
+        if prepass {
+            self.prepass_units.fetch_add(1, Ordering::Relaxed);
+        }
         if self.owed.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
         }
         if let Some(field) = self.locked().take() {
             handle.publish(field);
+            crate::timing::report_detail(
+                "motion_publish",
+                self.started,
+                &format!(
+                    "prepass_units={}",
+                    self.prepass_units.load(Ordering::Relaxed)
+                ),
+            );
         }
     }
 

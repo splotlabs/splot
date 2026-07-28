@@ -18,6 +18,7 @@ use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
 use super::super::find_mv_stack::TemporalMvContext;
+use super::super::mc::WorkspaceSink;
 use super::super::{InterReferenceState, SPEC_MODE_INFO, unsupported_at};
 use super::ReconCommand;
 use super::deferred_recon;
@@ -80,6 +81,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     let terminal = row.terminal.take();
     let row_has_entries = !row.superblocks.is_empty();
     let motion_owed = !row.motion_folded;
+    let motion_derived = row.motion_derived;
     let _quantizer_scopes = quantizer.install_frame();
     let ReconRow {
         mut superblocks,
@@ -132,24 +134,47 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     ReconCommand::Inter(command) => {
                         let _scope =
                             crate::timing::PhaseScope::new(crate::timing::Phase::CommitInter);
-                        scratch.reconstruct(
-                            &command,
-                            workspace,
-                            block_decoded,
-                            motion,
-                            &residual_blocks,
-                            temporal_context,
-                            reference,
-                            ref_frame_idx,
-                            sequence,
-                            core,
-                            mi_rows,
-                            mi_cols,
-                            current_order_hint,
-                            luma_use_tcq,
-                            residual_use_ddt,
-                            bit_depth,
-                        )?;
+                        if motion_derived {
+                            scratch.reconstruct_from_motion(
+                                &command,
+                                &mut WorkspaceSink::Frame(workspace),
+                                block_decoded,
+                                entry.motion.take(),
+                                &residual_blocks,
+                                &deferred_recon::ReconShared {
+                                    reference,
+                                    ref_frame_idx,
+                                    temporal_context,
+                                    sequence,
+                                    core,
+                                    luma_use_tcq,
+                                    residual_use_ddt,
+                                    bit_depth,
+                                    mi_rows,
+                                    mi_cols,
+                                    current_order_hint,
+                                },
+                            )?;
+                        } else {
+                            scratch.reconstruct(
+                                &command,
+                                workspace,
+                                block_decoded,
+                                motion,
+                                &residual_blocks,
+                                temporal_context,
+                                reference,
+                                ref_frame_idx,
+                                sequence,
+                                core,
+                                mi_rows,
+                                mi_cols,
+                                current_order_hint,
+                                luma_use_tcq,
+                                residual_use_ddt,
+                                bit_depth,
+                            )?;
+                        }
                     }
                 }
             } else {
@@ -180,7 +205,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         }
     }
     if motion_owed {
-        motion.unit_landed();
+        motion.unit_landed(false);
     }
     append_row_filter_records(filter_records, &mut row_filter_records);
     *decoded_any |= row_has_entries;

@@ -647,24 +647,32 @@ fn dispatcher_returns_tip_output_optflow_mvs_for_storage() {
     let reference0 = flat_frame(8, 8, 40, 90, 120);
     let reference1 = flat_frame(8, 8, 80, 110, 140);
     let mut workspace = workspace(8, 8);
-    let mvs = motion_compensate_inter_block_with_optflow_mvs_into(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            rect(0, 0, 8, 8),
-            Mv::ZERO,
-            Mv::ZERO,
-            InterpolationFilter::EightTap,
-            CompoundBlend::default(),
-        )
-        .with_optflow_distances(Some([1, -1])),
-        8,
+    let compound = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&reference0),
+        ReferenceSamples::settled(&reference1),
+        rect(0, 0, 8, 8),
+        Mv::ZERO,
+        Mv::ZERO,
+        InterpolationFilter::EightTap,
+        CompoundBlend::default(),
+    )
+    .with_optflow_distances(Some([1, -1]))
+    .into_compound()
+    .expect("compound block");
+    let grid = compound_block_motion_grid(
+        &super::WorkspaceSink::Frame(&mut workspace),
+        compound,
+        Some(8),
         ByteOffset::new(0),
     )
-    .expect("TIP output optical-flow dispatcher");
+    .expect("TIP output optical-flow dispatcher")
+    .expect("TIP output optical-flow motion grid");
 
-    assert_eq!(mvs, Some([Mv::ZERO; 2]));
+    assert_eq!(
+        grid.stored_mvs_at_luma_offset(0, 0)
+            .expect("TIP output stored motion vectors"),
+        [Mv::ZERO; 2]
+    );
 }
 
 #[test]
@@ -684,10 +692,9 @@ fn deferred_compound_prediction_matches_direct_publication() {
     let offset = ByteOffset::new(0);
 
     let mut direct = workspace(8, 8);
-    let direct_mvs = motion_compensate_inter_block_with_optflow_mvs_into(
+    motion_compensate_inter_block_into(
         &mut super::WorkspaceSink::Frame(&mut direct),
         block,
-        8,
         offset,
     )
     .expect("direct TIP optical-flow prediction");
@@ -763,8 +770,7 @@ fn deferred_compound_prediction_matches_direct_publication() {
         .expect("publish borrowed TIP prediction");
     assert_eq!(&arena_chunk[96..], &[u8::MAX; 7]);
 
-    assert_eq!(deferred_mvs, direct_mvs);
-    assert_eq!(borrowed_mvs, direct_mvs);
+    assert_eq!(deferred_mvs, borrowed_mvs);
     let direct = direct.freeze().expect("freeze direct workspace");
     let deferred = deferred.freeze().expect("freeze deferred workspace");
     let borrowed = borrowed.freeze().expect("freeze borrowed workspace");
@@ -789,25 +795,28 @@ fn tip_optflow_skips_low_sad_predictors() {
     let reference0 = frame(8, 8, pred0, chroma.clone(), chroma.clone());
     let reference1 = frame(8, 8, pred1, chroma.clone(), chroma);
     let mut workspace = workspace(8, 8);
-    let mvs = motion_compensate_inter_block_with_optflow_mvs_into(
-        &mut super::WorkspaceSink::Frame(&mut workspace),
-        InterBlockParams::compound_average(
-            ReferenceSamples::settled(&reference0),
-            ReferenceSamples::settled(&reference1),
-            rect(0, 0, 8, 8),
-            Mv::ZERO,
-            Mv::ZERO,
-            InterpolationFilter::Bilinear,
-            CompoundBlend::default(),
-        )
-        .with_optflow_distances(Some([1, -1]))
-        .with_optflow_sad_threshold(Some(15)),
-        8,
+    let compound = InterBlockParams::compound_average(
+        ReferenceSamples::settled(&reference0),
+        ReferenceSamples::settled(&reference1),
+        rect(0, 0, 8, 8),
+        Mv::ZERO,
+        Mv::ZERO,
+        InterpolationFilter::Bilinear,
+        CompoundBlend::default(),
+    )
+    .with_optflow_distances(Some([1, -1]))
+    .with_optflow_sad_threshold(Some(15))
+    .into_compound()
+    .expect("compound block");
+    let grid = compound_block_motion_grid(
+        &super::WorkspaceSink::Frame(&mut workspace),
+        compound,
+        Some(8),
         ByteOffset::new(0),
     )
     .expect("TIP optical-flow SAD gate");
 
-    assert_eq!(mvs, None);
+    assert!(grid.is_none());
 }
 
 #[test]

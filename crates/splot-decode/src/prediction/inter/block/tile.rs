@@ -12,6 +12,7 @@ use splot_recon::{PlaneId, ReconError};
 
 use super::*;
 
+mod mvres;
 mod ready_rows;
 
 use ready_rows::{
@@ -349,6 +350,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             flag_log,
             filter_records: TileFilterRecords::default(),
             motion_folded: false,
+            motion_derived: false,
             terminal: None,
         };
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
@@ -424,6 +426,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     ReconRowEntry {
                         publication,
                         command: leaf.command,
+                        motion: None,
                         temporal: 0..0,
                         error: None,
                     },
@@ -654,6 +657,9 @@ fn resolve_parser_step(
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
     pub(super) command: Option<ReconCommand>,
+    /// The refinement grid the motion pass derived, which is the only grid the
+    /// entry's prediction may sample through.
+    pub(super) motion: Option<super::super::mc::CompoundMotionGrid>,
     pub(super) temporal: Range<usize>,
     pub(super) error: Option<crate::DecodeError>,
 }
@@ -703,6 +709,9 @@ pub(super) struct ReconRow {
     /// Whether the prepass already folded this unit's records into the frame's
     /// motion field, which it does for a unit it reconstructed in full.
     pub(super) motion_folded: bool,
+    /// Whether the motion pass already derived every entry's grid and records,
+    /// so no later pass may derive either again.
+    pub(super) motion_derived: bool,
     pub(super) terminal: Option<crate::DecodeError>,
 }
 
@@ -936,15 +945,17 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
 ) -> ReconRow {
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
-    let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
-        capacity.saturating_add(
-            entry
-                .command
-                .as_ref()
-                .map_or(0, ReconCommand::temporal_record_capacity),
-        )
-    });
-    let _ = row.temporal.try_reserve(temporal_capacity);
+    if !row.motion_derived {
+        let temporal_capacity = row.entries.iter().fold(0usize, |capacity, entry| {
+            capacity.saturating_add(
+                entry
+                    .command
+                    .as_ref()
+                    .map_or(0, ReconCommand::temporal_record_capacity),
+            )
+        });
+        let _ = row.temporal.try_reserve(temporal_capacity);
+    }
     'superblocks: for superblock in &mut row.superblocks {
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
             break;
@@ -976,27 +987,52 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 }
             };
             let start = row.temporal.len();
-            let result = scratch.reconstruct_logged(
-                &command,
-                surface,
-                block_decoded,
-                &mut row.temporal,
-                &row.residual_blocks,
-                temporal_context,
-                reference,
-                ref_frame_idx,
-                sequence,
-                core,
-                mi_rows,
-                mi_cols,
-                current_order_hint,
-                luma_use_tcq,
-                residual_use_ddt,
-                bit_depth,
-            );
+            let result = if row.motion_derived {
+                scratch.reconstruct_from_motion(
+                    &command,
+                    surface,
+                    block_decoded,
+                    entry.motion.take(),
+                    &row.residual_blocks,
+                    &deferred_recon::ReconShared {
+                        reference,
+                        ref_frame_idx,
+                        temporal_context,
+                        sequence,
+                        core,
+                        luma_use_tcq,
+                        residual_use_ddt,
+                        bit_depth,
+                        mi_rows,
+                        mi_cols,
+                        current_order_hint,
+                    },
+                )
+            } else {
+                scratch.reconstruct_logged(
+                    &command,
+                    surface,
+                    block_decoded,
+                    &mut row.temporal,
+                    &row.residual_blocks,
+                    temporal_context,
+                    reference,
+                    ref_frame_idx,
+                    sequence,
+                    core,
+                    mi_rows,
+                    mi_cols,
+                    current_order_hint,
+                    luma_use_tcq,
+                    residual_use_ddt,
+                    bit_depth,
+                )
+            };
             match result {
                 Ok(()) => {
-                    entry.temporal = start..row.temporal.len();
+                    if !row.motion_derived {
+                        entry.temporal = start..row.temporal.len();
+                    }
                 }
                 Err(error) => {
                     row.temporal.truncate(start);
@@ -1006,43 +1042,40 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
             }
         }
     }
+    if row.motion_derived {
+        return row;
+    }
     row.motion_folded = row
         .entries
         .iter()
         .all(|entry| !matches!(entry.command, Some(ReconCommand::Inter(_))));
     if row.motion_folded {
         motion.fold(&row.temporal);
-        motion.unit_landed();
+        motion.unit_landed(true);
     }
     row
 }
 
-/// The prepass state one tile carries across calls: the out-of-order surface
-/// its precompute writes into, the block-decoded snapshot that precompute
-/// reads, and the ordered commit frontier.
+/// The prepass state one tile carries across calls: the block-decoded snapshot
+/// that precompute reads, and the ordered commit frontier.
 ///
-/// A fused walk runs one call per tile and could keep these on its stack; a
-/// batched driver resumes the same tile once its next unit's references have
-/// been published, and must find the frontier exactly where it left it.
-struct PrepassCursor<T: ReconSample> {
-    shadow: CurrentFrameWorkspace<T>,
+/// The out-of-order surface the precompute writes into is partitioned by the
+/// caller instead, because the motion pass and the reconstruction pass share
+/// one partition: rebuilding it costs a pass over every plane row.
+struct PrepassCursor {
     prepass_block_decoded: TileBlockDecodedState,
     recon_ordinal: usize,
     current_block_decoded_superblock: Option<[usize; 2]>,
 }
 
-impl<T: ReconSample> PrepassCursor<T> {
+impl PrepassCursor {
     /// Opens the cursor for one tile, before any unit is committed.
-    fn new(
-        workspace: &CurrentFrameWorkspace<T>,
-        block_decoded: &TileBlockDecodedState,
-    ) -> Result<Self> {
-        Ok(Self {
-            shadow: CurrentFrameWorkspace::new(workspace.info(), T::default())?,
+    fn new(block_decoded: &TileBlockDecodedState) -> Self {
+        Self {
             prepass_block_decoded: block_decoded.clone(),
             recon_ordinal: 0,
             current_block_decoded_superblock: None,
-        })
+        }
     }
 }
 
@@ -1065,7 +1098,7 @@ struct PrepassSinks<'a, T: ReconSample> {
 #[allow(clippy::too_many_arguments)]
 fn run_superblock_prepass<T: ReconSample, P>(
     mut next_unit: P,
-    rects: &[splot_recon::PlaneRect],
+    shadow_surfaces: Vec<splot_recon::CurrentFrameRect<'_, T>>,
     done_limit: usize,
     tile_offset: ByteOffset,
     context: &TileDecodeContext<'_, T>,
@@ -1074,19 +1107,18 @@ fn run_superblock_prepass<T: ReconSample, P>(
     row_gate: &row_gate::RowReferenceGate<'_, T>,
     row_buffers: &ReconRowBufferPool,
     workers: &InterReconScratchPool<T>,
-    cursor: &mut PrepassCursor<T>,
+    cursor: &mut PrepassCursor,
     sinks: &mut PrepassSinks<'_, T>,
 ) -> Result<()>
 where
     P: FnMut() -> ParserStep<ReconRow> + Send,
 {
     let PrepassCursor {
-        shadow,
         prepass_block_decoded,
         recon_ordinal,
         current_block_decoded_superblock,
     } = cursor;
-    let mut surfaces = shadow.rect_surfaces(rects)?.into_iter();
+    let mut surfaces = shadow_surfaces.into_iter();
     let prepass_block_decoded = &*prepass_block_decoded;
     let sinks_motion = sinks.motion;
     let parse_ready = || admit_ready_row(next_unit(), &mut surfaces, row_gate);
@@ -1393,49 +1425,6 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     })
 }
 
-/// Runs one parsed tile's AV2 § 7.12 resolve pass on a grid of its own.
-///
-/// The pass replays each unit's flag plane before resolving it, so the § 7.12
-/// probes see the same published-but-unresolved frontier the fused walk saw,
-/// and shares nothing with the parser's grid. A unit that fails ends the unit
-/// stream exactly where the fused walk's would have: the units behind it were
-/// never resolved there, so they are dropped here.
-fn resolve_parsed_tile<T: ReconSample>(
-    parsed: &mut ParsedTile,
-    context: &TileDecodeContext<'_, T>,
-    temporal_context: &TemporalMvContext,
-) -> Result<()> {
-    let started = crate::timing::start();
-    let tile_offset = parsed.tile_offset;
-    let mut grid = NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_parsed_mv_grid",
-                tile_offset,
-                "inter.mv_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
-    let mut resolve_state = TileResolveState::new(context.sequence);
-    let mut resolved = 0usize;
-    for row in &mut parsed.rows {
-        grid.replay_flag_log(&row.flag_log);
-        resolved += 1;
-        let outcome =
-            resolve_state.resolve_unit(&mut grid, context, temporal_context, row, tile_offset);
-        if let Err(error) = outcome {
-            row.terminal = Some(error);
-            break;
-        }
-        if row.terminal.is_some() {
-            break;
-        }
-    }
-    parsed.rows.truncate(resolved);
-    crate::timing::report("pass2_resolve", started);
-    Ok(())
-}
-
 /// Reconstructs one parsed tile: its § 7.12 resolve pass, then the same
 /// row-gated prepass and ordered commit the fused walk runs.
 ///
@@ -1462,6 +1451,7 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
             .max(1),
     );
     let TileDecodeScratch { ordered, workers } = scratch;
+    let phase_started = crate::timing::start();
     let context = params.context(sequence, core, reference, ref_frame_idx);
     let tile_offset = parsed.tile_offset;
     let row_gate = row_gate::RowReferenceGate::new(
@@ -1472,7 +1462,6 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
         temporal_context,
     );
     let quantizer = FrameQuantizerSnapshot::capture();
-    resolve_parsed_tile(&mut parsed, &context, temporal_context)?;
     let rects = superblock_luma_rects(
         &parsed.mi_rows,
         &parsed.mi_cols,
@@ -1488,8 +1477,24 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
-    let motion = MotionFieldUnits::publishing(motion_field, parsed.rows.len(), motion_handle);
-    let mut cursor = PrepassCursor::new(workspace, &parsed.block_decoded)?;
+    let motion = MotionFieldUnits::publishing(
+        motion_field,
+        parsed.rows.len(),
+        motion_handle,
+        phase_started,
+    );
+    let mut cursor = PrepassCursor::new(&parsed.block_decoded);
+    let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
+    let surfaces = mvres::resolve_and_derive_motion(
+        &mut parsed,
+        shadow.rect_surfaces(&rects)?,
+        &context,
+        temporal_context,
+        &quantizer,
+        &row_gate,
+        workers,
+        &motion,
+    )?;
     let mut block_decoded = parsed.block_decoded.clone();
     let row_buffers = ReconRowBufferPool::new(0);
     let mut decoded_any = false;
@@ -1517,7 +1522,7 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
     };
     run_superblock_prepass(
         next_unit,
-        &rects,
+        surfaces,
         done_limit,
         tile_offset,
         &context,
@@ -1560,6 +1565,7 @@ fn terminal_recon_row(ordinal: usize, terminal: crate::DecodeError) -> ReconRow 
         flag_log: Vec::new(),
         filter_records: TileFilterRecords::default(),
         motion_folded: false,
+        motion_derived: false,
         terminal: Some(terminal),
     }
 }
@@ -2101,7 +2107,8 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     )
                 })
             };
-            let mut cursor = PrepassCursor::new(workspace, &block_decoded)?;
+            let mut cursor = PrepassCursor::new(&block_decoded);
+            let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
             let done_limit = rects.len().checked_add(1).ok_or_else(|| {
                 inter_cap!(
                     "inter_superblock_done_limit_overflow",
@@ -2112,7 +2119,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             })?;
             run_superblock_prepass(
                 next_unit,
-                &rects,
+                shadow.rect_surfaces(&rects)?,
                 done_limit,
                 tile_offset,
                 &context,

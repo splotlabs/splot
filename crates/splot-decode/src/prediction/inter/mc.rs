@@ -412,13 +412,6 @@ impl CompoundBlockMetadata {
             .transpose()
     }
 
-    pub(super) fn stored_mvs_at_index(&self, index: usize) -> splot_recon::Result<Option<[Mv; 2]>> {
-        self.motion
-            .as_ref()
-            .map(|motion| motion.stored_mvs_at_index(index))
-            .transpose()
-    }
-
     pub(super) fn publish<T: ReconSample>(
         &self,
         samples: &[T],
@@ -505,19 +498,6 @@ pub(crate) fn motion_compensate_inter_block_into<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<()> {
     motion_compensate_inter_block(sink, block, None, offset).map(drop)
-}
-
-pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
-    block: InterBlockParams<'_, T>,
-    optflow_unit_size: usize,
-    offset: ByteOffset,
-) -> Result<Option<[Mv; 2]>> {
-    let Some(grid) = motion_compensate_inter_block(sink, block, Some(optflow_unit_size), offset)?
-    else {
-        return Ok(None);
-    };
-    Ok(Some(grid.stored_mvs_at_luma_offset(0, 0)?))
 }
 
 pub(crate) fn inter_block_motion_grid<T: ReconSample>(

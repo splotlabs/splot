@@ -335,7 +335,10 @@ impl CompoundMotionGrid {
         Ok(stored_mvs(cell))
     }
 
-    pub(super) fn stored_mvs_at_index(&self, index: usize) -> splot_recon::Result<[Mv; 2]> {
+    pub(in crate::prediction::inter) fn stored_mvs_at_index(
+        &self,
+        index: usize,
+    ) -> splot_recon::Result<[Mv; 2]> {
         self.cell_at_index(index).map(stored_mvs)
     }
 
