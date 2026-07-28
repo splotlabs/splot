@@ -10,6 +10,16 @@ use splot_recon::{
     wedge_mask_plane_sample,
 };
 
+fn motion_grid_prediction<T: ReconSample>(
+    sink: &mut WorkspaceSink<'_, '_, T>,
+    block: InterBlockParams<'_, T>,
+    optflow_unit_size: Option<usize>,
+    offset: ByteOffset,
+) -> Result<Option<CompoundMotionGrid>> {
+    let motion = inter_block_motion_grid(sink, block, optflow_unit_size, offset)?;
+    predict_inter_block_from_grid(sink, block, motion, offset)
+}
+
 fn compound_recycler_box<T: 'static>() -> Option<*const ()> {
     MC_SAMPLES_RECYCLER.with(|cell| {
         cell.borrow()
@@ -605,7 +615,7 @@ fn optflow_derivation_is_independent_of_the_final_interpolation_filter() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let derive = |interp| {
         let mut workspace = workspace(width, height);
-        motion_compensate_inter_block_with_motion_grid_into(
+        motion_grid_prediction(
             &mut super::WorkspaceSink::Frame(&mut workspace),
             InterBlockParams::compound_average(
                 ReferenceSamples::settled(&reference0),
@@ -683,10 +693,18 @@ fn deferred_compound_prediction_matches_direct_publication() {
     .expect("direct TIP optical-flow prediction");
 
     let mut deferred = workspace(8, 8);
+    let compound = block.into_compound().expect("compound block");
+    let motion = compound_block_motion_grid(
+        &super::WorkspaceSink::Frame(&mut deferred),
+        compound,
+        Some(8),
+        offset,
+    )
+    .expect("deferred TIP motion grid");
     let output = predict_compound_average_block(
         &super::WorkspaceSink::Frame(&mut deferred),
-        block.into_compound().expect("compound block"),
-        Some(8),
+        compound,
+        motion,
         offset,
     )
     .expect("deferred TIP optical-flow prediction");
@@ -699,10 +717,10 @@ fn deferred_compound_prediction_matches_direct_publication() {
         .expect("publish deferred TIP prediction");
 
     let mut short = [0u8; 95];
-    let err = predict_compound_average_block_into(
+    let err = predict_compound_from_grid(
         &super::WorkspaceSink::Frame(&mut deferred),
-        block.into_compound().expect("compound block"),
-        Some(8),
+        compound,
+        None,
         offset,
         &mut short,
     )
@@ -719,10 +737,17 @@ fn deferred_compound_prediction_matches_direct_publication() {
 
     let mut borrowed = workspace(8, 8);
     let mut arena_chunk = vec![u8::MAX; 103];
-    let metadata = predict_compound_average_block_into(
+    let motion = compound_block_motion_grid(
         &super::WorkspaceSink::Frame(&mut borrowed),
-        block.into_compound().expect("compound block"),
+        compound,
         Some(8),
+        offset,
+    )
+    .expect("borrowed TIP motion grid");
+    let metadata = predict_compound_from_grid(
+        &super::WorkspaceSink::Frame(&mut borrowed),
+        compound,
+        motion,
         offset,
         &mut arena_chunk,
     )
@@ -790,7 +815,7 @@ fn optflow_sad_gate_preserves_refinemv_motion_grid() {
     let reference0 = flat_frame(8, 8, 55, 128, 128);
     let reference1 = flat_frame(8, 8, 55, 128, 128);
     let mut workspace = workspace(8, 8);
-    let grid = motion_compensate_inter_block_with_motion_grid_into(
+    let grid = motion_grid_prediction(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
@@ -834,7 +859,7 @@ fn dispatcher_returns_default_refinemv_motion_grid() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_compensate_inter_block_with_motion_grid_into(
+    let grid = motion_grid_prediction(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
@@ -867,7 +892,7 @@ fn dispatcher_switchable_refinemv_excludes_low_sad_center() {
     let reference1 = flat_frame(width, height, 80, 128, 128);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_compensate_inter_block_with_motion_grid_into(
+    let grid = motion_grid_prediction(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),
@@ -909,7 +934,7 @@ fn dispatcher_skips_refinemv_search_without_disabling_refinemv() {
     let reference1 = frame(width, height, reference1_y, chroma.clone(), chroma);
     let mut workspace = workspace(width, height);
 
-    let grid = motion_compensate_inter_block_with_motion_grid_into(
+    let grid = motion_grid_prediction(
         &mut super::WorkspaceSink::Frame(&mut workspace),
         InterBlockParams::compound_average(
             ReferenceSamples::settled(&reference0),

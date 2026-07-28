@@ -129,12 +129,11 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         .block_params(placed, rect)?
         .with_refinemv(use_refinemv)
         .with_switchable_refinemv(refinemv_switchable);
-    let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
-        &mut mc::WorkspaceSink::Frame(workspace),
-        block_params,
-        None,
-        tile_offset,
-    )?;
+    let motion_grid = {
+        let mut sink = mc::WorkspaceSink::Frame(workspace);
+        let motion = mc::inter_block_motion_grid(&sink, block_params, None, tile_offset)?;
+        mc::predict_inter_block_from_grid(&mut sink, block_params, motion, tile_offset)?
+    };
     drop(held);
     if placed.block.bawp.enabled {
         let slot = usize::try_from(placed.block.ref_frame0)
@@ -242,12 +241,8 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
         .block_params(placed, placed.motion_compensation_rect())?
         .with_refinemv(use_refinemv)
         .with_switchable_refinemv(refinemv_switchable);
-    let motion_grid = mc::motion_compensate_inter_block_with_motion_grid_into(
-        sink,
-        block_params,
-        None,
-        tile_offset,
-    )?;
+    let motion = mc::inter_block_motion_grid(sink, block_params, None, tile_offset)?;
+    let motion_grid = mc::predict_inter_block_from_grid(sink, block_params, motion, tile_offset)?;
     drop(held);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(

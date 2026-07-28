@@ -321,13 +321,14 @@ fn compute_parallel_outputs<T: ReconSample>(
                 .block_params(unit)
                 .into_compound()
                 .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-            let metadata = mc::predict_compound_average_block_into(
+            let motion = mc::compound_block_motion_grid(
                 sink,
                 compound,
                 prediction.optflow_distances.is_some().then_some(8),
                 tile_offset,
-                samples,
             )?;
+            let metadata =
+                mc::predict_compound_from_grid(sink, compound, motion, tile_offset, samples)?;
             if prediction.optflow_distances.is_some() {
                 unit.mvs = tip_temporal_mvs(true, unit.mvs, metadata.stored_mvs_at_origin()?);
             }
@@ -354,13 +355,19 @@ fn compute_batched_output<T: ReconSample>(
         .block_params(first)
         .into_compound()
         .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-    mc::predict_tip_compound_batch_into(
+    let motion = mc::tip_batch_motion_grid(
+        sink,
+        compound,
+        columns,
+        units.iter().map(|unit| (unit.rect, unit.mvs)),
+        tile_offset,
+    )?;
+    mc::predict_tip_batch_from_grid(
         sink,
         compound,
         batch_rect,
         batch_has_chroma,
-        columns,
-        units.iter().map(|unit| (unit.rect, unit.mvs)),
+        motion,
         tile_offset,
         output_samples,
     )

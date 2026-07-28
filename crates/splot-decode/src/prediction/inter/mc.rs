@@ -520,19 +520,22 @@ pub(crate) fn motion_compensate_inter_block_with_optflow_mvs_into<T: ReconSample
     Ok(Some(grid.stored_mvs_at_luma_offset(0, 0)?))
 }
 
-pub(crate) fn motion_compensate_inter_block_with_motion_grid_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+pub(crate) fn inter_block_motion_grid<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
     block: InterBlockParams<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
-    motion_compensate_inter_block(sink, block, optflow_unit_size, offset)
+    match block.into_compound() {
+        Some(compound) => compound_block_motion_grid(sink, compound, optflow_unit_size, offset),
+        None => Ok(None),
+    }
 }
 
-fn motion_compensate_inter_block<T: ReconSample>(
+pub(crate) fn predict_inter_block_from_grid<T: ReconSample>(
     sink: &mut WorkspaceSink<'_, '_, T>,
     block: InterBlockParams<'_, T>,
-    optflow_unit_size: Option<usize>,
+    motion: Option<CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
     match block.prediction {
@@ -546,7 +549,7 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 block.has_chroma,
                 offset,
             )?;
-            Ok(None)
+            Ok(motion)
         }
         InterPrediction::SingleWarp {
             reference,
@@ -561,39 +564,25 @@ fn motion_compensate_inter_block<T: ReconSample>(
                 warp_params,
                 offset,
             )?;
-            Ok(None)
+            Ok(motion)
         }
-        InterPrediction::CompoundAverage {
-            reference0,
-            reference1,
-            mv0,
-            mv1,
-            blend,
-            optflow_distances,
-            warp_params,
-        } => motion_compensate_compound_average_block_into(
-            sink,
-            CompoundMcBlock {
-                reference0,
-                reference1,
-                rect: block.rect,
-                mv0,
-                mv1,
-                interp: block.interp,
-                blend,
-                optflow_distances,
-                warp_params,
-                has_chroma: block.has_chroma,
-                sub8x8_chroma: block.sub8x8_chroma,
-                use_refinemv: block.use_refinemv,
-                search_refinemv: block.search_refinemv,
-                refinemv_switchable: block.refinemv_switchable,
-                optflow_sad_threshold: block.optflow_sad_threshold,
-            },
-            optflow_unit_size,
-            offset,
-        ),
+        InterPrediction::CompoundAverage { .. } => match block.into_compound() {
+            Some(compound) => {
+                predict_compound_average_block(sink, compound, motion, offset)?.publish(sink)
+            }
+            None => Ok(motion),
+        },
     }
+}
+
+fn motion_compensate_inter_block<T: ReconSample>(
+    sink: &mut WorkspaceSink<'_, '_, T>,
+    block: InterBlockParams<'_, T>,
+    optflow_unit_size: Option<usize>,
+    offset: ByteOffset,
+) -> Result<Option<CompoundMotionGrid>> {
+    let motion = inter_block_motion_grid(sink, block, optflow_unit_size, offset)?;
+    predict_inter_block_from_grid(sink, block, motion, offset)
 }
 
 fn motion_compensate_single_block_into<T: ReconSample>(
@@ -626,19 +615,23 @@ fn motion_compensate_planes<T: ReconSample>(
     Ok(())
 }
 
-fn motion_compensate_compound_average_block_into<T: ReconSample>(
-    sink: &mut WorkspaceSink<'_, '_, T>,
+pub(super) fn compound_block_motion_grid<T: ReconSample>(
+    sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     optflow_unit_size: Option<usize>,
     offset: ByteOffset,
 ) -> Result<Option<CompoundMotionGrid>> {
-    predict_compound_average_block(sink, block, optflow_unit_size, offset)?.publish(sink)
+    let refinemv = block
+        .use_refinemv
+        .then(|| refinemv::compound_default_refinemv_motion_grid(sink, block, offset))
+        .transpose()?;
+    optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)
 }
 
 pub(crate) fn predict_compound_average_block<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
-    optflow_unit_size: Option<usize>,
+    motion: Option<CompoundMotionGrid>,
     offset: ByteOffset,
 ) -> Result<CompoundBlockOutput<T>> {
     let sample_count =
@@ -646,56 +639,40 @@ pub(crate) fn predict_compound_average_block<T: ReconSample>(
     let mut samples = RecycledMcSamples::take();
     samples.clear();
     samples.resize(sample_count, T::default());
-    let metadata =
-        predict_compound_average_block_into(sink, block, optflow_unit_size, offset, &mut samples)?;
+    let metadata = predict_compound_from_grid(sink, block, motion, offset, &mut samples)?;
     Ok(CompoundBlockOutput { metadata, samples })
 }
 
-pub(super) fn predict_compound_average_block_into<T: ReconSample>(
+pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
-    optflow_unit_size: Option<usize>,
+    columns: usize,
+    units: impl ExactSizeIterator<Item = (McBlockRect, [Mv; 2])>,
     offset: ByteOffset,
-    samples: &mut [T],
-) -> Result<CompoundBlockMetadata> {
-    let samples = compound_output_samples(sink, block, samples)?;
-    let refinemv = block
-        .use_refinemv
-        .then(|| refinemv::compound_default_refinemv_motion_grid(sink, block, offset))
-        .transpose()?;
-    let motion = optflow::compound_motion_grid(sink, block, optflow_unit_size, refinemv, offset)?;
-    predict_compound_average_block_with_motion_into(sink, block, motion, offset, samples)
+) -> Result<CompoundMotionGrid> {
+    let motion_timer = crate::timing::start();
+    let motion = optflow::tip_motion_grid(sink, block, 8, columns, units, offset)?;
+    crate::timing::accumulate(crate::timing::Phase::TipMotionGrid, motion_timer);
+    Ok(motion)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn predict_tip_compound_batch_into<T: ReconSample>(
+pub(super) fn predict_tip_batch_from_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     mut block: CompoundMcBlock<'_, T>,
     batch_rect: McBlockRect,
     batch_has_chroma: bool,
-    columns: usize,
-    units: impl ExactSizeIterator<Item = (McBlockRect, [Mv; 2])>,
+    motion: CompoundMotionGrid,
     offset: ByteOffset,
     samples: &mut [T],
 ) -> Result<CompoundBlockMetadata> {
-    let motion_timer = crate::timing::start();
-    let motion = optflow::tip_motion_grid(sink, block, 8, columns, units, offset)?;
-    crate::timing::accumulate(crate::timing::Phase::TipMotionGrid, motion_timer);
     block.rect = batch_rect;
     block.has_chroma = batch_has_chroma;
     block.sub8x8_chroma = false;
     block.optflow_distances = None;
     block.use_refinemv = false;
     block.search_refinemv = false;
-    let samples = compound_output_samples(sink, block, samples)?;
     let predict_timer = crate::timing::start();
-    let metadata = predict_compound_average_block_with_motion_into(
-        sink,
-        block,
-        Some(motion),
-        offset,
-        samples,
-    )?;
+    let metadata = predict_compound_from_grid(sink, block, Some(motion), offset, samples)?;
     crate::timing::accumulate(crate::timing::Phase::TipBatchPredict, predict_timer);
     Ok(metadata)
 }
@@ -717,13 +694,14 @@ fn compound_output_samples<'a, T: ReconSample>(
     )
 }
 
-fn predict_compound_average_block_with_motion_into<T: ReconSample>(
+pub(super) fn predict_compound_from_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     motion: Option<CompoundMotionGrid>,
     offset: ByteOffset,
-    mut samples: &mut [T],
+    samples: &mut [T],
 ) -> Result<CompoundBlockMetadata> {
+    let mut samples = compound_output_samples(sink, block, samples)?;
     let luma_diff_weighted_mask =
         compound_luma_diff_weighted_mask(sink, block, motion.as_ref(), offset)?;
     for (plane, sub_x, sub_y) in mc_planes(sink.info().pixel_format()) {
