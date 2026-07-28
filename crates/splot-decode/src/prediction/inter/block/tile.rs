@@ -922,6 +922,14 @@ fn precompute_recon_row<'surface, T: ReconSample>(
     ready
 }
 
+/// Precomputes the row's leading run of independent entries into `surface`,
+/// stopping at the first entry that must replay in walk order.
+///
+/// Stopping — rather than skipping past — is what keeps the prepass
+/// walk-order-exact: the whole surface publishes before any replay, so an
+/// entry precomputed past a skipped one would land writes that overlap it
+/// (mixed-region chroma residual) before it instead of after, reading
+/// prepublish samples as its residual base.
 #[allow(clippy::too_many_arguments)]
 fn precompute_recon_row_on_surface<T: ReconSample>(
     mut row: ReconRow,
@@ -977,7 +985,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 )
             });
             if !safe {
-                continue;
+                break 'superblocks;
             }
             let command = match entry.command.take() {
                 Some(ReconCommand::Inter(command)) => command,

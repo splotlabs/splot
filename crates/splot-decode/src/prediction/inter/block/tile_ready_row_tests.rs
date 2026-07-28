@@ -425,3 +425,49 @@ fn reconstruction_error_precedes_terminal_parser_error() {
 
     assert_eq!(result, Err("reconstruction error"));
 }
+
+const ORDERHINT_WRAP_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf"
+);
+
+#[test]
+fn orderhint_wrap_fixture_decodes_identically_across_thread_counts() {
+    let decode_hashes = |threads: usize| -> Vec<String> {
+        let options = crate::DecodeOptions::default();
+        let context =
+            crate::DecodeContext::new(crate::DecodeRuntimeConfig::new(ThreadCount::from(threads)))
+                .expect("context");
+        let plan = context
+            .plan_bytes(ORDERHINT_WRAP_FIXTURE, options)
+            .expect("plan");
+        let frames = context
+            .pool()
+            .install(|| {
+                crate::pipeline::decode_frames_from_plan(ORDERHINT_WRAP_FIXTURE, &options, &plan)
+            })
+            .expect("decode");
+        frames
+            .iter()
+            .map(|output| match output.ready_frame().expect("ready") {
+                crate::pipeline::PipelineDecodedFrame::Eight(frame) => {
+                    splot_recon::DecodedFrameHashInput::new(&frame)
+                        .compute_hash()
+                        .to_hex()
+                }
+                crate::pipeline::PipelineDecodedFrame::Ten(frame) => {
+                    splot_recon::DecodedFrameHashInput::new(&frame)
+                        .compute_hash()
+                        .to_hex()
+                }
+            })
+            .collect()
+    };
+    let single = decode_hashes(1);
+    assert_eq!(single.len(), 121, "fixture decodes 121 output frames");
+    assert_eq!(
+        single,
+        decode_hashes(8),
+        "entries skipped by the superblock prepass must keep later \
+         overlapping writes in walk order"
+    );
+}
