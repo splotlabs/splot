@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "f15c5cb9df46fd50ba8a36390935d9137362bdce",
+  "audited_commit": "8f5bfefa6888d3caf3982f966d89dffa293bc9b9",
   "outcome": "success",
   "files": [
     {
@@ -206,7 +206,7 @@
     },
     {
       "path": "crates/splot-cli/tests/decoder_oracle.rs",
-      "sha256": "9becd6fb66cc835c7334d82902fe43ef8e7f60f0c0a294df1238b8dacc9086ff",
+      "sha256": "a1a2c78662c1a15772a3a074ec42301aa5b608e46ea459f2dd11734f8dc773d9",
       "scope_kind": "workspace:splot-cli",
       "feature_ids": [
         "CONF-AVM-DECODE-ORACLE"

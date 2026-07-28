@@ -5,8 +5,10 @@
 //!
 //! Decodes each committed fixture in-process through `splot_decode` and asserts
 //! `tests/conformance/decoder-oracle.toml`: `must_pass` output SHA-256 equals the
-//! recorded AVM oracle hash; `xfail_splot` fails closed with the recorded
-//! `decode/unsupported-feature` reason/matrix row. CI gate, no AVM, no network.
+//! recorded AVM oracle hash at every pool width in [`THREAD_LEGS`], so serial and
+//! parallel decode arms are both differentially gated; `xfail_splot` fails closed
+//! with the recorded `decode/unsupported-feature` reason/matrix row. CI gate, no
+//! AVM, no network.
 //! Set `SPLOT_DECODER_ORACLE_STRICT_XPASS=1` to fail on an unexpected pass.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -23,6 +25,10 @@ use splot_decode::{
 use splot_parallel::ThreadCount;
 
 const UNSUPPORTED_RULE: &str = "decode/unsupported-feature";
+
+/// Serial arm plus a pool wide enough to select every parallel decode arm
+/// (the widest gate today is `current_pool_width() >= 4`).
+const THREAD_LEGS: [usize; 2] = [1, 8];
 
 #[derive(Deserialize)]
 struct Manifest {
@@ -57,8 +63,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
-fn decode_raw(bytes: &[u8]) -> splot_decode::Result<Vec<u8>> {
-    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize)))
+fn decode_raw(bytes: &[u8], threads: usize) -> splot_decode::Result<Vec<u8>> {
+    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(threads)))
         .expect("decode context");
     let mut out = Vec::new();
     ctx.decode_raw_bytes(bytes, DecodeOptions::default(), &mut out)?;
@@ -87,16 +93,22 @@ fn decoder_oracle_corpus_matches_manifest() {
         match fx.status.as_str() {
             "must_pass" => {
                 saw_pass = true;
-                let raw = decode_raw(&bytes)
-                    .unwrap_or_else(|e| panic!("must_pass {} failed to decode: {e}", fx.id));
-                assert_eq!(
-                    sha256_hex(&raw),
-                    fx.avm_raw_sha256,
-                    "{} != AVM oracle",
-                    fx.id
-                );
+                for threads in THREAD_LEGS {
+                    let raw = decode_raw(&bytes, threads).unwrap_or_else(|e| {
+                        panic!(
+                            "must_pass {} failed to decode at {threads} threads: {e}",
+                            fx.id
+                        )
+                    });
+                    assert_eq!(
+                        sha256_hex(&raw),
+                        fx.avm_raw_sha256,
+                        "{} != AVM oracle at {threads} threads",
+                        fx.id
+                    );
+                }
             }
-            "xfail_splot" => match decode_raw(&bytes) {
+            "xfail_splot" => match decode_raw(&bytes, 1) {
                 Ok(raw) => {
                     assert_eq!(
                         sha256_hex(&raw),
