@@ -419,7 +419,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
             samples_q3,
         )
     {
-        crate::timing::report("cfl_luma_ac", timer);
+        crate::timing::accumulate(crate::timing::Phase::CflLumaAc, timer);
         return Ok(());
     }
     samples_q3.clear();
@@ -444,7 +444,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
             );
         }
     }
-    crate::timing::report("cfl_luma_ac", timer);
+    crate::timing::accumulate(crate::timing::Phase::CflLumaAc, timer);
     Ok(())
 }
 

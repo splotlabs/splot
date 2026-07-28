@@ -324,7 +324,6 @@ fn ccso_apply<L: ReconSample>(
     let plane_id = plane_id(plane);
     let first_unit_y = destination.origin_y() / config.blk_h * config.blk_h;
     let max_luma_x = curr_luma.width() - 1;
-    let mut unit_count = 0usize;
     for y in (first_unit_y..destination_end_y).step_by(config.blk_h) {
         for x in (0..destination.width()).step_by(config.blk_w) {
             let unit_row = (y << config.sub_y) >> config.ccso_luma_log2;
@@ -332,7 +331,6 @@ fn ccso_apply<L: ReconSample>(
             if grid.block_value(plane, unit_row, unit_col) == 0 {
                 continue;
             }
-            unit_count += 1;
             let y_start = destination.origin_y().max(y);
             let y_end = destination_end_y.min(y.saturating_add(config.blk_h));
             let x_end = destination.width().min(x.saturating_add(config.blk_w));
@@ -402,13 +400,7 @@ fn ccso_apply<L: ReconSample>(
             }
         }
     }
-    if timer.is_some() {
-        crate::timing::report_detail(
-            "ccso_units",
-            timer,
-            &format!("plane={} units={unit_count}", plane_id.index()),
-        );
-    }
+    crate::timing::accumulate(crate::timing::Phase::CcsoUnits, timer);
     Ok(())
 }
 

@@ -116,9 +116,8 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             if let Some(command) = entry.command.take() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
-                        let _scope = crate::timing::WalkPhaseScope::new(
-                            crate::timing::WalkPhase::CommitIntra,
-                        );
+                        let _scope =
+                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitIntra);
                         command.reconstruct(
                             scratch.general_intra_mut(),
                             workspace,
@@ -126,15 +125,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                         )?;
                     }
                     ReconCommand::Intrabc(command) => {
-                        let _scope = crate::timing::WalkPhaseScope::new(
-                            crate::timing::WalkPhase::CommitIntrabc,
-                        );
+                        let _scope =
+                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitIntrabc);
                         scratch.reconstruct_intrabc(command, &residual_blocks, workspace)?;
                     }
                     ReconCommand::Inter(command) => {
-                        let _scope = crate::timing::WalkPhaseScope::new(
-                            crate::timing::WalkPhase::CommitInter,
-                        );
+                        let _scope =
+                            crate::timing::PhaseScope::new(crate::timing::Phase::CommitInter);
                         scratch.reconstruct(
                             &command,
                             workspace,
@@ -156,8 +153,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     }
                 }
             } else {
-                let _scope =
-                    crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::CommitReplay);
+                let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitReplay);
                 let records = temporal.get(entry.temporal.clone()).ok_or_else(|| {
                     inter_cap!(
                         "inter_row_replay_temporal_range",

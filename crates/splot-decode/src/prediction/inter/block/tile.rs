@@ -321,7 +321,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         granularity: ParserGranularity,
         buffers: Option<ReconRowBuffers>,
     ) -> ParserStep<ReconRow> {
-        let _row_phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Row);
+        let _row_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Row);
         let tile_offset = self.tile.tile_byte_span().start;
         let tile_cols = self.tile.mi_col_range();
         let row_superblocks = (tile_cols.end as usize)
@@ -1121,8 +1121,7 @@ where
             })
         },
         |ready| {
-            let _commit_scope =
-                crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Commit);
+            let _commit_scope = crate::timing::PhaseScope::new(crate::timing::Phase::Commit);
             if first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) == 0
                 && let Some(started) = timer
             {
@@ -1132,8 +1131,7 @@ where
                 );
             }
             if let Some(surface) = ready.surface.as_ref() {
-                let _scope =
-                    crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::CommitPublish);
+                let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitPublish);
                 surface.publish_into(sinks.workspace)?;
             }
             let buffers = pixel_commit::replay_recon_row(

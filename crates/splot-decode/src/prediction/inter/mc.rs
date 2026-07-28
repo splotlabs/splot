@@ -680,7 +680,7 @@ pub(super) fn predict_tip_compound_batch_into<T: ReconSample>(
 ) -> Result<CompoundBlockMetadata> {
     let motion_timer = crate::timing::start();
     let motion = optflow::tip_motion_grid(sink, block, 8, columns, units, offset)?;
-    crate::timing::report("inter_tip_motion_grid", motion_timer);
+    crate::timing::accumulate(crate::timing::Phase::TipMotionGrid, motion_timer);
     block.rect = batch_rect;
     block.has_chroma = batch_has_chroma;
     block.sub8x8_chroma = false;
@@ -696,7 +696,7 @@ pub(super) fn predict_tip_compound_batch_into<T: ReconSample>(
         offset,
         samples,
     )?;
-    crate::timing::report("inter_tip_batch_predict", predict_timer);
+    crate::timing::accumulate(crate::timing::Phase::TipBatchPredict, predict_timer);
     Ok(metadata)
 }
 

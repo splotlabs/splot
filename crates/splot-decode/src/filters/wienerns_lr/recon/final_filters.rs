@@ -951,7 +951,7 @@ impl StripeChain<'_> {
             let timer = crate::timing::start();
             pc_wiener_filter_block_padded(output, &params, &padded_source)
                 .map_err(|_| luma_lr_filter_error(offset))?;
-            crate::timing::report("pc_wiener_filter", timer);
+            crate::timing::accumulate(crate::timing::Phase::PcWienerFilter, timer);
             self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
             Ok(block)
         })
@@ -1188,7 +1188,7 @@ impl StripeChain<'_> {
                 }
             })
             .map_err(|_| luma_lr_filter_error(offset))?;
-            crate::timing::report("wiener_ns_luma", timer);
+            crate::timing::accumulate(crate::timing::Phase::WienerNsLuma, timer);
             Ok(())
         })?;
         self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, offset)?;
@@ -1373,7 +1373,7 @@ impl StripeChain<'_> {
             group_start = group_end;
         }
 
-        crate::timing::report("pc_wiener_classify", timer);
+        crate::timing::accumulate(crate::timing::Phase::PcWienerClassify, timer);
         Ok(cell_subclasses)
     }
 }

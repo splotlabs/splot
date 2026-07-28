@@ -142,7 +142,7 @@ pub(super) fn resolve_parsed_leaves(
     state: &mut MvResolutionState<'_>,
     sb_h4: usize,
 ) -> Result<()> {
-    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ResolveRow);
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ResolveRow);
     if queue.len() != entries.len() {
         return Err(inter_cap!(
             "inter_resolve_queue_length",

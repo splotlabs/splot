@@ -6,10 +6,11 @@
 //! When `SPLOT_DECODE_TIMING` is set, decode entry points emit compact
 //! `splot.decode_timing <phase>_ms=<value>` lines on stderr, and parallel
 //! decode stages append work-unit and worker-utilization attribution so the
-//! thread-scaling behavior of each stage is visible. Disabled by default;
-//! normal CLI output is unchanged.
+//! thread-scaling behavior of each stage is visible. Phases that fire per
+//! block, per prediction unit, or per filter stripe accumulate into atomic
+//! totals and emit one summed line each at the end of the stream instead of
+//! printing as they run. Disabled by default; normal CLI output is unchanged.
 
-use std::fmt::Write as _;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
@@ -41,13 +42,19 @@ pub(crate) fn report_detail(phase: &str, started: Option<Instant>, detail: &str)
     }
 }
 
-/// Phases of the block walk.
+/// Phases whose intervals are summed in memory instead of printed as they run.
+///
+/// A phase that fires per block, per prediction unit, or per filter stripe
+/// cannot print: the stderr lock serializes the workers, and the print lands
+/// inside the interval of every phase bracketing it, so the enclosing counters
+/// read high in proportion to how many prints they contain. These sum across
+/// workers and report once.
 ///
 /// `Row` nests both `Block` (the parse pass) and `ResolveRow` (the § 7.12 pass
 /// that follows it), so the pure symbol-decode share is `Block` less the phases
 /// nested inside it, and the resolve pass's share is `ResolveRow`.
 #[derive(Clone, Copy)]
-pub(crate) enum WalkPhase {
+pub(crate) enum Phase {
     /// One parser step: partition walk, leaf decode, recon-entry building.
     Row,
     /// One leaf's mode-info and residual parse.
@@ -80,9 +87,47 @@ pub(crate) enum WalkPhase {
     CommitInter,
     /// Motion-record replay and block-decoded maintenance on the commit.
     CommitReplay,
+    /// AV2 § 7.13.2.15 chroma-from-luma AC sample gathering for one block.
+    CflLumaAc,
+    /// TIP prediction-unit planning for one block.
+    TipUnits,
+    /// TIP prediction for one block's units.
+    TipPrediction,
+    /// TIP sample publication and temporal records for one block.
+    TipPublish,
+    /// TIP batched optical-flow motion grid for one unit row.
+    TipMotionGrid,
+    /// TIP batched compound prediction for one unit row.
+    TipBatchPredict,
+    /// AV2 § 7.18 CDEF over one filter stripe.
+    FilterCdefStripe,
+    /// AV2 § 7.19 CCSO over one filter stripe.
+    FilterCcsoStripe,
+    /// CCSO offsets over one plane's units within a stripe.
+    CcsoUnits,
+    /// AV2 § 7.17 loop restoration over one filter stripe.
+    FilterLrStripe,
+    /// AV2 § 7.21 guided detail filter over one filter stripe.
+    FilterGdfStripe,
+    /// AV2 § 7.14 deblocking advanced far enough for one stripe's window.
+    FilterDeblock,
+    /// One deblock plane pass over its mode-info row range.
+    DeblockPlanePass,
+    /// One stripe's deblocked source window copied out of the workspace.
+    FilterStripeWindow,
+    /// One drain of the finished stripes into the frame being published.
+    FilterStripePublish,
+    /// The filtered frame's freeze, once the last stripe has landed.
+    FilterFreeze,
+    /// Wiener NS luma restoration of one block.
+    WienerNsLuma,
+    /// PC-Wiener classification of one restoration block's cells.
+    PcWienerClassify,
+    /// PC-Wiener filtering of one restoration block.
+    PcWienerFilter,
 }
 
-const WALK_PHASE_NAMES: [&str; 16] = [
+const PHASE_NAMES: [&str; 35] = [
     "row",
     "block",
     "resolve_row",
@@ -99,55 +144,99 @@ const WALK_PHASE_NAMES: [&str; 16] = [
     "commit_intrabc",
     "commit_inter",
     "commit_replay",
+    "cfl_luma_ac",
+    "inter_tip_units",
+    "inter_tip_prediction",
+    "inter_tip_publish",
+    "inter_tip_motion_grid",
+    "inter_tip_batch_predict",
+    "filter_cdef_stripe",
+    "filter_ccso_stripe",
+    "ccso_units",
+    "filter_lr_stripe",
+    "filter_gdf_stripe",
+    "filter_deblock",
+    "deblock_plane_pass",
+    "filter_stripe_window",
+    "filter_stripe_publish",
+    "filter_freeze",
+    "wiener_ns_luma",
+    "pc_wiener_classify",
+    "pc_wiener_filter",
 ];
 
-static WALK_PHASE_NS: [AtomicU64; WALK_PHASE_NAMES.len()] =
-    [const { AtomicU64::new(0) }; WALK_PHASE_NAMES.len()];
-static WALK_BLOCKS: AtomicU64 = AtomicU64::new(0);
+/// One phase's running total, aligned so that no two phases share a cache line.
+///
+/// Every worker adds into the same counter, so the line it lives on moves
+/// between cores for the whole decode. Padding keeps that traffic to the one
+/// phase that earned it instead of the eight that happened to sit beside it.
+#[repr(align(128))]
+struct PhaseCounter {
+    nanos: AtomicU64,
+    hits: AtomicU64,
+}
 
-/// Accumulates one [`WalkPhase`] interval for as long as the value is held.
-pub(crate) struct WalkPhaseScope {
-    index: usize,
+impl PhaseCounter {
+    const fn new() -> Self {
+        Self {
+            nanos: AtomicU64::new(0),
+            hits: AtomicU64::new(0),
+        }
+    }
+}
+
+static PHASE_COUNTERS: [PhaseCounter; PHASE_NAMES.len()] =
+    [const { PhaseCounter::new() }; PHASE_NAMES.len()];
+
+/// Adds one interval to a [`Phase`] total, in place of printing it.
+///
+/// This is the drop-in replacement for [`report`] on a hot path: same call
+/// shape, one relaxed add per counter instead of a locked write to stderr.
+pub(crate) fn accumulate(phase: Phase, started: Option<Instant>) {
+    if let Some(started) = started
+        && let Some(counter) = PHASE_COUNTERS.get(phase as usize)
+    {
+        let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        counter.nanos.fetch_add(nanos, Ordering::Relaxed);
+        counter.hits.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// Accumulates one [`Phase`] interval for as long as the value is held.
+pub(crate) struct PhaseScope {
+    phase: Phase,
     started: Option<Instant>,
 }
 
-impl WalkPhaseScope {
-    pub(crate) fn new(phase: WalkPhase) -> Self {
+impl PhaseScope {
+    pub(crate) fn new(phase: Phase) -> Self {
         Self {
-            index: phase as usize,
+            phase,
             started: start(),
         }
     }
 }
 
-impl Drop for WalkPhaseScope {
+impl Drop for PhaseScope {
     fn drop(&mut self) {
-        if let Some(started) = self.started
-            && let Some(slot) = WALK_PHASE_NS.get(self.index)
-        {
-            let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            slot.fetch_add(nanos, Ordering::Relaxed);
-        }
+        accumulate(self.phase, self.started);
     }
 }
 
-pub(crate) fn note_walk_block() {
-    if enabled() {
-        WALK_BLOCKS.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// Emits and clears the accumulated walk phase totals for the whole stream.
-pub(crate) fn report_walk_phases() {
+/// Emits and clears the accumulated phase totals for the whole stream.
+///
+/// Each total is the sum over every worker that ran the phase, so a phase
+/// reads above the wall time it occupied whenever it ran in parallel; `n` is
+/// how many intervals the total covers.
+pub(crate) fn report_phases() {
     if !enabled() {
         return;
     }
-    let mut detail = format!("blocks={}", WALK_BLOCKS.swap(0, Ordering::Relaxed));
-    for (name, slot) in WALK_PHASE_NAMES.iter().zip(&WALK_PHASE_NS) {
-        let ms = slot.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
-        let _ = write!(detail, " {name}_ms={ms:.3}");
+    for (name, counter) in PHASE_NAMES.iter().zip(&PHASE_COUNTERS) {
+        let ms = counter.nanos.swap(0, Ordering::Relaxed) as f64 / 1.0e6;
+        let n = counter.hits.swap(0, Ordering::Relaxed);
+        eprintln!("splot.decode_timing {name}_ms={ms:.3} n={n}");
     }
-    eprintln!("splot.decode_timing walk_phases {detail}");
 }
 
 pub(crate) struct WorkerTally {

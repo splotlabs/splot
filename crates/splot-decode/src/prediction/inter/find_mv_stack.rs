@@ -313,7 +313,7 @@ pub(crate) fn find_mode_ctx_with_tip(
     block: &MvBlockContext,
     tip_ref_pair: Option<(i8, i8)>,
 ) -> ModeContext {
-    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeCtx);
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeCtx);
     let mut new_mv_count = 0usize;
     let mut warp_mv_count = 0usize;
     let mut found = [false; 4];
@@ -585,7 +585,7 @@ pub(crate) fn block_neighbour_ctx(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,
 ) -> BlockNeighbourContext {
-    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeCtx);
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeCtx);
     let lists = collect_neighbour_context_cells(grid, block);
     let (buf, num_buf) = (lists.buf, lists.buf_len);
 
@@ -822,7 +822,7 @@ pub(crate) fn find_warp_samples(
     block: &MvBlockContext,
     target_ref: i8,
 ) -> FixedStack<[i32; 4], LEAST_SQUARES_SAMPLES_MAX> {
-    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::MvStack);
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvStack);
     let mut samples = FixedStack::new();
     let mi_row = block.mi_row as i32;
     let mi_col = block.mi_col as i32;
@@ -992,7 +992,7 @@ impl RefMvBank {
         mi_col: usize,
         sb_size4: usize,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::MvBank);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
         if self.current_sb == Some(sb) {
             return;
@@ -1049,7 +1049,7 @@ impl RefMvBank {
         n4h: usize,
         sb_size4: usize,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::MvBank);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         if self.sb_hits >= MAX_RMB_SB_HITS {
             return;
         }
@@ -1070,7 +1070,7 @@ impl RefMvBank {
         n4h: usize,
         sb_size4: usize,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::MvBank);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         if self.sb_hits >= MAX_RMB_SB_HITS {
             return;
         }
@@ -1322,7 +1322,7 @@ pub(crate) fn find_mv_stack_with_temporal(
     order_hints: Option<OrderHintMvContext<'_>>,
     use_temporal_first: bool,
 ) -> MvStack {
-    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::MvStack);
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvStack);
     let mut entries = FixedStack::new();
     let mut prune_count = 0usize;
     let mut derived = DerivedMvState::new(temporal, order_hints);
@@ -1424,7 +1424,7 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     drl_reorder: DrlReorder,
     temporal: Option<&TemporalMvContext>,
 ) -> CompoundMvStack {
-    let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::MvStack);
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvStack);
     let mut state = CompoundScanState::new();
     let probes = mv_stack_spatial_probes(block);
     for probe in probes.iter().take(6).copied().flatten() {

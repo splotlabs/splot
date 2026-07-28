@@ -366,7 +366,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
                 )
             })?;
-            crate::timing::report("filter_cdef_stripe", cdef_timer);
+            crate::timing::accumulate(crate::timing::Phase::FilterCdefStripe, cdef_timer);
             if let Some((grid, config)) = chain.ccso_grid.zip(ccso_config.as_ref()) {
                 let ccso_timer = crate::timing::start();
                 crate::filters::ccso::ccso_stripe(&mut cdef, grid, config, chain.lossless_grid)
@@ -376,7 +376,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                             "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
                         )
                     })?;
-                crate::timing::report("filter_ccso_stripe", ccso_timer);
+                crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
             }
             let lr_timer = crate::timing::start();
             let mut frame = chain.apply_lr_stripe(
@@ -386,7 +386,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 [y_runs, u_runs, v_runs],
                 &lr_unit_filters,
             )?;
-            crate::timing::report("filter_lr_stripe", lr_timer);
+            crate::timing::accumulate(crate::timing::Phase::FilterLrStripe, lr_timer);
             let (separate_cdef_luma, output_luma) =
                 if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
                     (Some(&frame.cdef_y), post_lr_y)
@@ -406,7 +406,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 chain.gdf_reference,
                 offset,
             )?;
-            crate::timing::report("filter_gdf_stripe", gdf_timer);
+            crate::timing::accumulate(crate::timing::Phase::FilterGdfStripe, gdf_timer);
             Ok(frame.into_filtered())
         };
         let run_stripe_and_publish = |stripe: usize,
@@ -501,7 +501,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 sections
                     .advance(&mut workspace, mi_rows, bit_depth)
                     .map_err(|_| deblock_filter_error(offset))?;
-                crate::timing::report("filter_deblock", deblock_timer);
+                crate::timing::accumulate(crate::timing::Phase::FilterDeblock, deblock_timer);
             }
             let deblocked = crate::filters::source::DeblockedPlanes::frame(&workspace)
                 .ok_or_else(|| deblock_filter_error(offset))?;
@@ -516,7 +516,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         crate::timing::report("filter_stripes", filter_timer);
         filter_records.lr_source_blocks = lr_source_blocks;
         filter_records.lr_unit_filters = lr_unit_filters;
+        let freeze_timer = crate::timing::start();
         let frame = sink.freeze(publish)?;
+        crate::timing::accumulate(crate::timing::Phase::FilterFreeze, freeze_timer);
         workspace.recycle_planes();
         Ok((frame, filter_records))
     }
@@ -549,6 +551,7 @@ fn drain_filtered_stripes<T: ReconSample>(
     offset: ByteOffset,
     mode: DrainMode,
 ) -> Result<()> {
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripePublish);
     loop {
         let copy = |output: &mut CurrentFrameWorkspace<T>| {
             let batch = core::mem::take(
@@ -616,11 +619,12 @@ fn deblock_stripe_window<T: ReconSample>(
                 bit_depth,
             )
             .map_err(|_| deblock_filter_error(offset))?;
-        crate::timing::report("filter_deblock", deblock_timer);
+        crate::timing::accumulate(crate::timing::Phase::FilterDeblock, deblock_timer);
         if sections.final_luma_rows(subsampling_y) < needed.min(sections.luma_rows()) {
             return Err(deblock_filter_error(offset));
         }
     }
+    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripeWindow);
     crate::filters::source::DeblockedWindow::extract(
         workspace,
         range.0,

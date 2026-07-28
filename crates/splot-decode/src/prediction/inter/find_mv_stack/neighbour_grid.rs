@@ -317,7 +317,7 @@ impl NeighbourMvGrid {
         n4h: usize,
         syntax: NeighbourFlagSyntax,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeRecord);
         if self.logging {
             self.flag_log.push(NeighbourFlagRecord {
                 r: r as u32,
@@ -358,7 +358,7 @@ impl NeighbourMvGrid {
         n4h: usize,
         values: NeighbourMotionValues,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeRecord);
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
         };
@@ -395,7 +395,7 @@ impl NeighbourMvGrid {
         use_amvd: bool,
         precision: BlockPrecisionRecord,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeRecord);
         self.record_block_with_warp(
             r,
             c,
@@ -434,7 +434,7 @@ impl NeighbourMvGrid {
         warp_params: [i32; 6],
         precision: BlockPrecisionRecord,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeRecord);
         self.record_block_with_warp(
             r,
             c,
@@ -526,7 +526,7 @@ impl NeighbourMvGrid {
         tip_size_16x16: bool,
         precision: BlockPrecisionRecord,
     ) {
-        let _phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::ModeRecord);
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ModeRecord);
         self.record_block_with_warp(
             r,
             c,

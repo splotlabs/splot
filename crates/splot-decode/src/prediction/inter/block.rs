@@ -851,8 +851,7 @@ fn decode_block<T: ReconSample>(
     current_order_hint: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
-    let _block_phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::Block);
-    crate::timing::note_walk_block();
+    let _block_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Block);
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
         inter_diag!(
             "inter_block_geometry",
@@ -1142,7 +1141,7 @@ fn decode_block<T: ReconSample>(
             usize::from(segment_id),
             delta_q_state.qindex_u32(),
         );
-        let _intra_phase = crate::timing::WalkPhaseScope::new(crate::timing::WalkPhase::IntraLeaf);
+        let _intra_phase = crate::timing::PhaseScope::new(crate::timing::Phase::IntraLeaf);
         let (leaf, command) = crate::pipeline::general_intra::decode_one_general_intra_block(
             work_unit,
             symbols,

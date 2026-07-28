@@ -703,17 +703,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             });
         }
     }
-    if units_timer.is_some() {
-        crate::timing::report_detail(
-            "inter_tip_units",
-            units_timer,
-            &format!(
-                "units={} columns={} width={block_w} height={block_h} unit_size={unit_size}",
-                scratch.units.len(),
-                block_w.div_ceil(unit_size)
-            ),
-        );
-    }
+    crate::timing::accumulate(crate::timing::Phase::TipUnits, units_timer);
     let parallel_output =
         allow_unit_parallelism && two_references && splot_parallel::on_worker_pool();
     let batch_chroma_x = placed.luma_x.max(placed.chroma_luma_x);
@@ -789,7 +779,7 @@ pub(super) fn reconstruct<T: ReconSample>(
             tile_offset,
         )?;
     }
-    crate::timing::report("inter_tip_prediction", prediction_timer);
+    crate::timing::accumulate(crate::timing::Phase::TipPrediction, prediction_timer);
     let publish_timer = crate::timing::start();
     temporal_records.try_reserve(unit_count).map_err(|_| {
         inter_cap!(
@@ -877,7 +867,7 @@ pub(super) fn reconstruct<T: ReconSample>(
         }
     }
     scratch.units.clear();
-    crate::timing::report("inter_tip_publish", publish_timer);
+    crate::timing::accumulate(crate::timing::Phase::TipPublish, publish_timer);
     if let Some(residual) = placed.block.residual.as_ref() {
         super::super::add_inter_residual_to_workspace(
             residual_scratch,

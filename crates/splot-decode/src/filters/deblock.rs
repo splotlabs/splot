@@ -476,13 +476,7 @@ impl<'a> FrameDeblock<'a> {
                 pass_tile_starts(self.tile_info, plane_pass.pass),
                 self.disable_loopfilters_across_tiles,
             )?;
-            if pass_timer.is_some() {
-                crate::timing::report_detail(
-                    "deblock_plane_pass",
-                    pass_timer,
-                    &format!("plane={} pass={}", plane_pass.plane, plane_pass.pass),
-                );
-            }
+            crate::timing::accumulate(crate::timing::Phase::DeblockPlanePass, pass_timer);
         }
         Ok(())
     }
