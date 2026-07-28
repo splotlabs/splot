@@ -243,8 +243,9 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 .map_err(|_| geometry_error())?;
             }
             InterIntraMode::Smooth => {
-                let x4 = x / MI_SIZE;
-                let y4 = y / MI_SIZE;
+                let sb_mask = block_decoded.sb_size4().saturating_sub(1);
+                let x4 = ((luma_x / MI_SIZE) & sb_mask) >> sub_x;
+                let y4 = ((luma_y / MI_SIZE) & sb_mask) >> sub_y;
                 let w4 = (w / MI_SIZE).max(1);
                 let h4 = (h / MI_SIZE).max(1);
                 predict_intra_smooth_over_available_edges_into(

@@ -279,6 +279,49 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
 }
 
 #[test]
+fn interintra_smooth_reads_above_right_in_later_superblock() -> TestResult {
+    let mut low = CurrentFrameWorkspace::<u8>::new(monochrome_info(128, 128)?, 128)?;
+    let mut high = CurrentFrameWorkspace::<u8>::new(monochrome_info(128, 128)?, 128)?;
+    low.set_reconstructed_sample(PlaneId::Y, 72, 63, 0)?;
+    high.set_reconstructed_sample(PlaneId::Y, 72, 63, 255)?;
+    let mut block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 32, 32)?;
+    block_decoded.clear_superblock(16, 16);
+    let placed = placed_luma_block(64, 64, 8, 8, InterIntraMode::Smooth);
+
+    let low = interintra_smooth_predictions(&low, &placed, &block_decoded)?;
+    let high = interintra_smooth_predictions(&high, &placed, &block_decoded)?;
+
+    assert_ne!(low[0], high[0]);
+    Ok(())
+}
+
+#[test]
+fn interintra_smooth_chroma_reads_below_left_from_chroma_ref_origin() -> TestResult {
+    let mut low =
+        CurrentFrameWorkspace::<u8>::new(frame_info(144, 144, PixelFormat::Yuv420)?, 128)?;
+    let mut high =
+        CurrentFrameWorkspace::<u8>::new(frame_info(144, 144, PixelFormat::Yuv420)?, 128)?;
+    for plane in [PlaneId::U, PlaneId::V] {
+        low.set_reconstructed_sample(plane, 31, 36, 0)?;
+        high.set_reconstructed_sample(plane, 31, 36, 255)?;
+    }
+    let mut block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 36, 36)?;
+    block_decoded.clear_superblock(16, 16);
+    let mut placed = placed_luma_block(72, 72, 8, 8, InterIntraMode::Smooth);
+    placed.chroma_luma_x = 64;
+    placed.chroma_luma_y = 64;
+    placed.interintra_chroma = true;
+
+    let low = interintra_smooth_predictions(&low, &placed, &block_decoded)?;
+    let high = interintra_smooth_predictions(&high, &placed, &block_decoded)?;
+
+    assert_eq!(low[0], high[0]);
+    assert_ne!(low[1], high[1]);
+    assert_ne!(low[2], high[2]);
+    Ok(())
+}
+
+#[test]
 fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
     for (format, chroma_samples, chroma_subsampling) in [
         (PixelFormat::Yuv422, 32, (1, 0)),
@@ -418,6 +461,28 @@ fn frame_info(
         PlaneSize::new(width, height)?,
         PlaneRect::new(0, 0, width, height)?,
     )
+}
+
+fn interintra_smooth_predictions(
+    workspace: &CurrentFrameWorkspace<u8>,
+    placed: &PlacedInterBlock,
+    block_decoded: &TileBlockDecodedState,
+) -> TestResult<Vec<(PlaneId, Vec<u8>)>> {
+    let mut scratch = InterIntraScratch::default();
+    predict_interintra_planes(
+        &mut scratch,
+        workspace,
+        placed,
+        block_decoded,
+        InterIntraMode::Smooth,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(0),
+    )?;
+    Ok(scratch
+        .planes()
+        .map(|(plane, samples)| (plane.plane, samples.to_vec()))
+        .collect())
 }
 
 fn placed_luma_block(
