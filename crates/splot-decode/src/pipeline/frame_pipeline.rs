@@ -87,7 +87,7 @@ impl PendingWalk {
 const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
 type TemporalScratchSlot = Arc<CompletionCell<Mutex<Option<inter::TemporalMvScratch>>>>;
 
-/// The two-frame admission bound for scheduled reconstruction.
+/// The three-frame admission bound for scheduled reconstruction.
 #[derive(Default)]
 pub(super) struct ReconAdmissionLane {
     recon: VecDeque<Arc<CompletionCell<()>>>,
@@ -99,10 +99,10 @@ impl ReconAdmissionLane {
     fn reserve(
         lane: &mut VecDeque<Arc<CompletionCell<()>>>,
     ) -> (Option<Arc<CompletionCell<()>>>, Arc<CompletionCell<()>>) {
-        let gate = (lane.len() >= 2).then(|| Arc::clone(&lane[0]));
+        let gate = (lane.len() >= 3).then(|| Arc::clone(&lane[0]));
         let done = Arc::new(CompletionCell::new());
         lane.push_back(Arc::clone(&done));
-        while lane.len() > 2 {
+        while lane.len() > 3 {
             lane.pop_front();
         }
         (gate, done)
