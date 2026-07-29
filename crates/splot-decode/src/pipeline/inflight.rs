@@ -28,7 +28,7 @@ use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use splot_parallel::{CompletionCell, TaskScope};
+use splot_parallel::{CompletionCell, Condition, TaskScope};
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
 use super::frame_engine::finish::{WalkStage, WalkedFrame, finish_walked_frame};
@@ -123,6 +123,20 @@ impl<T: ReconSample> RefFrameSlot<T> {
     pub(crate) fn published_luma_rows(&self) -> usize {
         self.progress()
             .map_or(0, FrameProgress::published_luma_rows)
+    }
+
+    /// Returns the scheduler condition for this slot settling.
+    pub(crate) fn settled_condition(&self) -> Condition<'_> {
+        Condition::Completion(self.cell.as_ref())
+    }
+
+    /// Returns the scheduler condition for a readable luma-row prefix, or for
+    /// the whole slot settling when this slot has no progressive publisher.
+    pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
+        self.progress().map_or_else(
+            || self.settled_condition(),
+            |progress| progress.row_condition(rows),
+        )
     }
 
     /// Borrows this slot's samples for one reader's block.
@@ -486,10 +500,14 @@ impl InflightRing {
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
 /// never reaches drops the writer instead, settling the slot as failed.
-pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
+pub(super) fn settle_walk_stage<'scope, T: ReconSample + Send + 'static>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
-    spawner: &FinishSpawner<'_, '_>,
+    spawner: &FinishSpawner<'_, 'scope>,
+    admission: Option<(
+        &'scope splot_parallel::AdmissionScheduler<'static>,
+        &mut super::frame_pipeline::ReconAdmissionLane,
+    )>,
     ring: &mut InflightRing,
     frame_index: usize,
     scratch: &mut InterDecodeScratch<T>,
@@ -501,12 +519,23 @@ pub(crate) fn settle_walk_stage<T: ReconSample + Send + 'static>(
         WalkStage::Pending(walked) => walked,
     };
     let FinishSpawner::Deferred(scope) = spawner else {
-        let finished = finish_walked_frame(*walked, None, core::convert::identity)?;
+        let finished = finish_walked_frame(*walked, None, None, core::convert::identity)?;
         scratch.recycle_frame_filter_records(finished.filter_records);
         return Ok(erase(RefFrameSlot::completed(finished.frame)));
     };
     let (slot, pending) = reserve_pending_slot(walked.info(), erase, ring, frame_index)?;
-    pending.spawn_finish(*walked, scope);
+    if let Some((scheduler, lane)) = admission {
+        super::frame_pipeline::schedule_finish(
+            pending,
+            *walked,
+            frame_index,
+            spawner,
+            scheduler,
+            lane,
+        )?;
+    } else {
+        pending.spawn_finish(*walked, scope);
+    }
     Ok(slot)
 }
 
@@ -555,6 +584,43 @@ pub(crate) fn reserve_pending_slot<T: ReconSample>(
 }
 
 impl<T: ReconSample + Send + 'static> PendingFinish<T> {
+    /// Runs the owed filter phase in the calling scheduler job.
+    pub(crate) fn run_finish(
+        self,
+        walked: WalkedFrame<T>,
+        admit: Option<&dyn splot_parallel::Admit<'static>>,
+    ) {
+        let Self {
+            writer,
+            progress,
+            outcome,
+        } = self;
+        let started = crate::timing::start();
+        match finish_walked_frame(walked, progress.as_deref(), admit, |frame| {
+            writer.complete(frame);
+        }) {
+            Ok(finished) => {
+                outcome
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .records = Some(finished.filter_records);
+            }
+            Err(error) => {
+                outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
+            }
+        }
+        crate::timing::report("finish_task", started);
+    }
+
+    /// Settles the reserved slot as failed and records the reconstruction
+    /// diagnostic for the in-flight ring.
+    pub(crate) fn fail(self, error: DecodeError) {
+        self.outcome
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .error = Some(error);
+    }
+
     /// Hands one walked frame's § 7.2 filter phase to a worker task.
     ///
     /// The task carries the single-use writer into the freeze, so the slot
@@ -562,28 +628,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// phase never reaches drops the writer instead, settling the slot as
     /// failed.
     pub(crate) fn spawn_finish(self, walked: WalkedFrame<T>, scope: &TaskScope<'_, '_>) {
-        let Self {
-            writer,
-            progress,
-            outcome,
-        } = self;
-        scope.spawn(move |_| {
-            let started = crate::timing::start();
-            match finish_walked_frame(walked, progress.as_deref(), |frame| {
-                writer.complete(frame);
-            }) {
-                Ok(finished) => {
-                    outcome
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .records = Some(finished.filter_records);
-                }
-                Err(error) => {
-                    outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
-                }
-            }
-            crate::timing::report("finish_task", started);
-        });
+        scope.spawn(move |_| self.run_finish(walked, None));
     }
 
     /// Runs one walked frame's § 7.2 filter phase on the calling thread, for a
@@ -598,7 +643,7 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
             progress,
             outcome: _,
         } = self;
-        let finished = finish_walked_frame(walked, progress.as_deref(), |frame| {
+        let finished = finish_walked_frame(walked, progress.as_deref(), None, |frame| {
             writer.complete(frame);
         })?;
         Ok(finished.filter_records)

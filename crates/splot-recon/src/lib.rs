@@ -198,8 +198,8 @@ pub use workspace::{
     CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFramePlaneRowBand,
     CurrentFrameRect, CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameRowBand,
     CurrentFrameRowBands, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
-    IntraPredictionScratch, IntraPredictionScratchBuffer, WorkspaceRectRows,
-    wedge_mask_plane_sample,
+    IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameRect, OwnedFrameRectRows,
+    WorkspaceRectRows, wedge_mask_plane_sample,
 };
 pub use y4m::{
     Y4mChromaTag, Y4mError, Y4mFrameFormat, Y4mFrameHeader, Y4mFrameRate, Y4mResult,

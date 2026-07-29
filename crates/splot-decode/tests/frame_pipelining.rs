@@ -116,6 +116,19 @@ fn pipelined_y4m_output_matches_serial_decode() {
 }
 
 #[test]
+fn key_filter_publication_repeatedly_admits_sef_reconstruction() {
+    let expected = serial()
+        .decode_raw_output_bytes(SEF_FAMILIES, DecodeOptions::default())
+        .unwrap();
+    for _ in 0..32 {
+        let actual = context(8, FrameDelay::Auto)
+            .decode_raw_output_bytes(SEF_FAMILIES, DecodeOptions::default())
+            .unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
 fn an_early_output_limit_break_matches_serial_decode() {
     let options =
         DecodeOptions::default().with_output_frame_limit(Some(NonZeroU64::new(2).unwrap()));

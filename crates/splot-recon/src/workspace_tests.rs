@@ -448,6 +448,36 @@ fn rectangular_surface_publishes_only_its_owned_region() {
 }
 
 #[test]
+fn owned_rectangular_surface_round_trips_without_borrowing_the_frame() {
+    let info = yuv420_info(8, 8);
+    let mut owned = OwnedFrameRect::<u8>::new(info, rect(4, 0, 4, 8), 0).unwrap();
+    let mut output = CurrentFrameWorkspace::<u8>::new(info, 3).unwrap();
+    {
+        let mut surface = CurrentFrameSurface::OwnedRect(&mut owned);
+        surface
+            .write_rect(PlaneId::Y, rect(4, 0, 4, 8), &[8; 32], 4)
+            .unwrap();
+        surface
+            .write_rect(PlaneId::U, rect(2, 0, 2, 4), &[7; 8], 2)
+            .unwrap();
+        surface
+            .add_constant_residual_rect_block(PlaneId::Y, 4, 0, rect_block(2, 3), 1)
+            .unwrap();
+    }
+
+    owned.publish_into(&mut output).unwrap();
+
+    for row in output.rect_rows(PlaneId::Y, rect(0, 0, 8, 8)).unwrap() {
+        assert_eq!(&row[..4], &[3; 4]);
+        assert_eq!(&row[4..], &[9; 4]);
+    }
+    for row in output.rect_rows(PlaneId::U, rect(0, 0, 4, 4)).unwrap() {
+        assert_eq!(&row[..2], &[3; 2]);
+        assert_eq!(&row[2..], &[7; 2]);
+    }
+}
+
+#[test]
 fn rectangular_surface_rejects_cross_tile_access_before_writing() {
     let mut workspace =
         CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 8, 4), 3).unwrap();

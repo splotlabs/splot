@@ -86,7 +86,7 @@ fn decode_intra_fixture_with_core_on_threads(
         panic!("an intra frame always owes its filter phase");
     };
     let finished = context.pool().install(|| {
-        finish_walked_frame(*walked, None, |frame| {
+        finish_walked_frame(*walked, None, None, |frame| {
             assert_eq!(frame.handle_count(), 1);
             frame
         })

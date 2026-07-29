@@ -202,6 +202,7 @@ pub(crate) struct FinishedFrame<R> {
 pub(crate) fn finish_walked_frame<T: ReconSample, R>(
     walked: WalkedFrame<T>,
     progress: Option<&FrameProgress<T>>,
+    admit: Option<&dyn splot_parallel::Admit<'static>>,
     publish: impl FnOnce(SharedFrame<T>) -> R,
 ) -> Result<FinishedFrame<R>> {
     let WalkedFrame {
@@ -216,6 +217,7 @@ pub(crate) fn finish_walked_frame<T: ReconSample, R>(
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
         progress,
+        admit,
         offset,
         |frame| publish(SharedFrame::new(frame)),
     )?;
@@ -235,7 +237,7 @@ pub(crate) fn finish_walk_inline<T: ReconSample>(stage: WalkStage<T>) -> Result<
     Ok(match stage {
         WalkStage::Complete(frame) => SharedFrame::new(*frame),
         WalkStage::Pending(walked) => {
-            finish_walked_frame(*walked, None, core::convert::identity)?.frame
+            finish_walked_frame(*walked, None, None, core::convert::identity)?.frame
         }
     })
 }

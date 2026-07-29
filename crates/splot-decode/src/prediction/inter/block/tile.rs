@@ -12,8 +12,11 @@ use splot_recon::{PlaneId, ReconError};
 
 use super::*;
 
+mod admission;
 mod mvres;
 mod ready_rows;
+
+pub(super) use admission::{ScheduledTileRecon, prepare_scheduled_tile};
 
 use ready_rows::{
     OrderedDone, ParserStep, ReadyRowPipelineError, run_ready_row_pipeline_serial,
@@ -607,7 +610,7 @@ impl TileResolveState {
 /// into and the reference rows that reconstruction reads.
 fn admit_ready_row<'surface, T: ReconSample>(
     step: ParserStep<ReconRow>,
-    surfaces: &mut impl Iterator<Item = splot_recon::CurrentFrameRect<'surface, T>>,
+    surfaces: &mut impl Iterator<Item = ReadyReconSurface<'surface, T>>,
     row_gate: &row_gate::RowReferenceGate<'_, T>,
 ) -> ParserStep<ReadyReconRow<'surface, T>> {
     let (row, last) = match step {
@@ -814,9 +817,30 @@ impl OrderedDone for ReconRow {
     }
 }
 
+enum ReadyReconSurface<'a, T: ReconSample> {
+    Borrowed(splot_recon::CurrentFrameRect<'a, T>),
+    Owned(splot_recon::OwnedFrameRect<T>),
+}
+
+impl<'storage, T: ReconSample> ReadyReconSurface<'storage, T> {
+    fn publish_into(&self, workspace: &mut CurrentFrameWorkspace<T>) -> splot_recon::Result<()> {
+        match self {
+            Self::Borrowed(surface) => surface.publish_into(workspace),
+            Self::Owned(surface) => surface.publish_into(workspace),
+        }
+    }
+
+    fn sink<'surface>(&'surface mut self) -> mc::WorkspaceSink<'surface, 'storage, T> {
+        match self {
+            Self::Borrowed(surface) => mc::WorkspaceSink::Rect(surface),
+            Self::Owned(surface) => mc::WorkspaceSink::OwnedRect(surface),
+        }
+    }
+}
+
 struct ReadyReconRow<'a, T: ReconSample> {
     row: ReconRow,
-    surface: Option<splot_recon::CurrentFrameRect<'a, T>>,
+    surface: Option<ReadyReconSurface<'a, T>>,
     bounds: row_gate::RowReferenceBounds,
 }
 
@@ -898,7 +922,7 @@ fn precompute_recon_row<'surface, T: ReconSample>(
     let Some(surface) = ready.surface.as_mut() else {
         return ready;
     };
-    let mut surface = super::super::mc::WorkspaceSink::Rect(surface);
+    let mut surface = surface.sink();
     ready.row = precompute_recon_row_on_surface(
         ready.row,
         &mut surface,
@@ -1106,7 +1130,7 @@ struct PrepassSinks<'a, T: ReconSample> {
 #[allow(clippy::too_many_arguments)]
 fn run_superblock_prepass<T: ReconSample, P>(
     mut next_unit: P,
-    shadow_surfaces: Vec<splot_recon::CurrentFrameRect<'_, T>>,
+    shadow_surfaces: Vec<ReadyReconSurface<'_, T>>,
     done_limit: usize,
     tile_offset: ByteOffset,
     context: &TileDecodeContext<'_, T>,
@@ -1495,7 +1519,11 @@ pub(super) fn reconstruct_parsed_tile<T: ReconSample>(
     let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
     let surfaces = mvres::resolve_and_derive_motion(
         &mut parsed,
-        shadow.rect_surfaces(&rects)?,
+        shadow
+            .rect_surfaces(&rects)?
+            .into_iter()
+            .map(ReadyReconSurface::Borrowed)
+            .collect(),
         &context,
         temporal_context,
         &quantizer,
@@ -2127,7 +2155,11 @@ pub(super) fn decode_tiles<T: ReconSample>(
             })?;
             run_superblock_prepass(
                 next_unit,
-                shadow.rect_surfaces(&rects)?,
+                shadow
+                    .rect_surfaces(&rects)?
+                    .into_iter()
+                    .map(ReadyReconSurface::Borrowed)
+                    .collect(),
                 done_limit,
                 tile_offset,
                 &context,

@@ -164,6 +164,13 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
+    pub(crate) fn with_temporal_scratch(scratch: super::find_mv_stack::TemporalMvScratch) -> Self {
+        Self {
+            temporal_context: Some(TemporalMvContext::from_scratch(scratch)),
+            ..Self::default()
+        }
+    }
+
     /// Lends the recycled filter-record buffers to one frame's walk.
     pub(crate) fn take_frame_filter_records(
         &mut self,
@@ -588,14 +595,16 @@ fn frame_temporal_context<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<&'a mut TemporalMvContext> {
     let temporal_timer = crate::timing::start();
-    let ref_motion_fields = reference.resolve_motion_fields().ok_or_else(|| {
-        inter_missing!(
-            "inter_reference_motion_field_unpublished",
-            offset,
-            "inter.reference_motion_field",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let ref_motion_fields = reference
+        .resolve_motion_fields(ref_frame_idx)
+        .ok_or_else(|| {
+            inter_missing!(
+                "inter_reference_motion_field_unpublished",
+                offset,
+                "inter.reference_motion_field",
+                SPEC_MODE_INFO
+            )
+        })?;
     temporal_context
         .refresh_from_references(
             dimensions,
@@ -1885,7 +1894,9 @@ mod compound_path;
 mod deferred_recon;
 mod filter_records;
 mod frame_parse;
-pub(crate) use frame_parse::{InterFrameParse, parse_inter_frame_blocks};
+pub(crate) use frame_parse::{
+    InterFrameParse, ScheduledInterReconstruction, parse_inter_frame_blocks,
+};
 mod interintra;
 mod intrabc;
 pub(crate) use intrabc::global_intrabc_enabled;
