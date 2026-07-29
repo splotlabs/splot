@@ -40,7 +40,9 @@ mod workspace_intra_dc;
 mod workspace_intra_directional_angle;
 #[path = "workspace_rows.rs"]
 mod workspace_rows;
-pub use owned_rect::{OwnedFrameRect, OwnedFrameRectRows};
+pub use owned_rect::{
+    OwnedFrameBands, OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand,
+};
 pub use workspace_edges::CurrentFrameIntraEdges;
 pub use workspace_interintra::{InterIntraMode, wedge_mask_plane_sample};
 pub use workspace_rows::{CurrentFrameRectRows, CurrentFrameRectRowsMut, WorkspaceRectRows};

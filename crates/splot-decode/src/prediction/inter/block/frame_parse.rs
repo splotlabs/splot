@@ -8,18 +8,17 @@
 //! settles by the bitstream alone. [`parse_inter_frame_blocks`] runs it to the
 //! end and keeps every unit, along with the frame's CDF subset and filter
 //! grids, which are entropy-pass products too. What is still owed is the § 7.9
-//! temporal prelude, the § 7.12 resolve pass and reconstruction, which
-//! [`InterFrameParse::reconstruct`] runs once the driver reaches them.
+//! temporal prelude, the § 7.12 resolve pass and reconstruction.
+//! [`InterFrameParse::prepare_scheduled`] converts that work into the row graph
+//! once the frame becomes admissible.
 
 use super::super::MotionFieldHandle;
+use super::super::find_mv_stack::TemporalMotionFieldMetadata;
 use super::*;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Arc;
 
-struct ScheduledFrameOutput {
-    cdef: crate::filters::cdef::CdefUnitGrid,
-    ccso: Option<crate::filters::ccso::CcsoUnitGrid>,
-    gdf: Option<crate::filters::gdf::GdfBlockGrid>,
-}
+#[cfg(test)]
+mod scheduled_frame;
 
 /// One inter frame after its entropy pass, owned so its reconstruction can run
 /// after the driver has moved on to the next frame's parse.
@@ -41,13 +40,43 @@ pub(crate) struct InterFrameParse {
 /// One parsed frame whose reconstruction units are ready for admission.
 pub(crate) struct ScheduledInterReconstruction<T: ReconSample> {
     tile: tile::ScheduledTileRecon<T>,
-    output: Mutex<Option<ScheduledFrameOutput>>,
+}
+
+/// Filter work made ready by one canonical reconstruction commit.
+pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
+    pub(crate) filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
+    pub(crate) output: Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>,
 }
 
 impl<T: ReconSample> ScheduledInterReconstruction<T> {
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
         self.tile.len()
+    }
+
+    /// Number of independently scheduled final-filter stripes.
+    pub(crate) const fn filter_count(&self) -> usize {
+        self.tile.filter_count()
+    }
+
+    pub(crate) const fn owns_canonical_bands(&self) -> bool {
+        self.tile.owns_canonical_bands()
+    }
+
+    pub(crate) fn resolve_len(&self) -> usize {
+        self.tile.resolve_len()
+    }
+
+    pub(crate) fn resolve_conditions(&self, index: usize) -> Vec<splot_parallel::Condition<'_>> {
+        self.tile.resolve_conditions(index)
+    }
+
+    pub(crate) fn resolve(&self, index: usize) -> Result<Vec<usize>> {
+        self.tile.resolve(index)
+    }
+
+    pub(crate) fn fail_temporal(&self) {
+        self.tile.fail_temporal();
     }
 
     /// Cross-frame conditions for one reconstruction unit.
@@ -62,36 +91,12 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
 
     /// Commits one precomputed unit and returns the completed frame products
     /// after the final ordered commit.
-    pub(crate) fn commit(
-        &self,
-        index: usize,
-    ) -> Result<Option<(CurrentFrameWorkspace<T>, InterFilterInputs)>> {
-        let Some(output) = self.tile.commit(index)? else {
-            return Ok(None);
-        };
-        let grids = self
-            .output
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_admission_frame_output",
-                    ByteOffset::new(0),
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
-        Ok(Some((
-            output.workspace,
-            InterFilterInputs {
-                records: output.records,
-                cdef_grid: grids.cdef,
-                ccso_grid: grids.ccso,
-                gdf_grid: grids.gdf,
-                motion_field: TemporalMotionField::empty(),
-            },
-        )))
+    pub(crate) fn commit(&self, index: usize) -> Result<ScheduledFrameProgress<T>> {
+        let progress = self.tile.commit(index)?;
+        Ok(ScheduledFrameProgress {
+            filters: progress.filters,
+            output: progress.output.map(|output| output.filter),
+        })
     }
 }
 
@@ -167,6 +172,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &mut ccso_state,
     )?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, setup_offset)?;
+    let ccso_grid = ccso_state.into_grid(first_tile_offset)?;
     Ok(InterFrameParse {
         parsed,
         records,
@@ -175,7 +181,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         motion_field,
         frame_cdfs,
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,
-        ccso_grid: ccso_state.into_grid(first_tile_offset)?,
+        ccso_grid,
         gdf_grid: gdf_state.into_grid(first_tile_offset)?,
     })
 }
@@ -187,67 +193,9 @@ impl InterFrameParse {
         self.parsed.unit_count()
     }
 
-    /// Runs the § 7.9 temporal prelude, the § 7.12 resolve pass and the frame's
-    /// reconstruction, and returns what the § 7.2 filter chain reads.
-    ///
-    /// The prelude reads the reference frames' published motion fields, so the
-    /// caller must have reconstructed every earlier frame in decode order. This
-    /// frame's own field publishes through `motion_handle` as soon as its last
-    /// parse unit's records land, which is before the ordered pixel commit ends.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn reconstruct<T: ReconSample>(
-        self,
-        scratch: &mut InterDecodeScratch<T>,
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        ref_frame_idx: &[u32],
-        reference: &InterReferenceState<T>,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        motion_handle: MotionFieldHandle,
-    ) -> Result<InterFilterInputs> {
-        let Self {
-            parsed,
-            mut records,
-            params,
-            prelude,
-            motion_field,
-            frame_cdfs: _,
-            cdef_grid,
-            ccso_grid,
-            gdf_grid,
-        } = self;
-        let InterDecodeScratch {
-            tile: tile_scratch,
-            temporal_context: temporal_slot,
-            ..
-        } = scratch;
-        let temporal_context = prelude.run(
-            temporal_slot.get_or_insert_with(TemporalMvContext::empty),
-            core,
-            ref_frame_idx,
-            reference,
-        )?;
-        let motion_field = tile::reconstruct_parsed_tile(
-            tile_scratch,
-            &mut records,
-            parsed,
-            &params,
-            sequence,
-            core,
-            temporal_context,
-            reference,
-            ref_frame_idx,
-            workspace,
-            motion_field,
-            motion_handle,
-        )?;
-        Ok(InterFilterInputs {
-            records,
-            cdef_grid,
-            ccso_grid,
-            gdf_grid,
-            motion_field,
-        })
+    /// Returns the semantic motion metadata derived by this entropy pass.
+    pub(crate) fn motion_field_metadata(&self) -> TemporalMotionFieldMetadata {
+        self.motion_field.metadata()
     }
 
     /// Runs the temporal prelude and resolve/motion half-pass, then returns
@@ -256,6 +204,8 @@ impl InterFrameParse {
     pub(crate) fn prepare_scheduled<T: ReconSample>(
         self,
         scratch: InterDecodeScratch<T>,
+        filter_sink_setup: crate::pipeline::frame_engine::finish::FilterSinkSetup,
+        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: Arc<SequenceHeader>,
         core: Arc<FrameHeaderCore>,
         ref_frame_idx: Arc<[u32]>,
@@ -267,8 +217,8 @@ impl InterFrameParse {
         super::super::find_mv_stack::TemporalMvScratch,
     )> {
         let Self {
-            parsed,
-            records,
+            mut parsed,
+            mut records,
             params,
             prelude,
             motion_field,
@@ -279,20 +229,38 @@ impl InterFrameParse {
         } = self;
         let InterDecodeScratch {
             tile,
-            mut temporal_context,
+            temporal_context,
             frame_filter_records: _,
         } = scratch;
-        let temporal = prelude.run(
-            temporal_context.get_or_insert_with(TemporalMvContext::empty),
-            &core,
-            &ref_frame_idx,
-            &reference,
-        )?;
+        let mut temporal = temporal_context.unwrap_or_else(TemporalMvContext::empty);
+        let temporal_plan =
+            prelude.begin_scheduled(&mut temporal, &core, &ref_frame_idx, &reference)?;
         let temporal_scratch = temporal.take_scratch();
-        let temporal = Arc::new(core::mem::replace(temporal, TemporalMvContext::empty()));
+        let temporal = Arc::new(temporal);
+        parsed.detach_filter_records(&mut records);
+        let has_active_deblock = core
+            .deblocking_filter_params
+            .as_ref()
+            .is_some_and(|filter| {
+                std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_none()
+                    && filter.apply_deblocking_filter != [false; 4]
+            });
+        let (mut filter_setup, workspace, deblock_quant_deltas) = filter_sink_setup
+            .owned_filter_setup(
+                workspace,
+                InterFilterInputs {
+                    records,
+                    cdef_grid,
+                    ccso_grid,
+                    gdf_grid,
+                    motion_field: TemporalMotionField::empty(),
+                },
+                Arc::clone(&core),
+                progress,
+            )?;
+        let deblock_records = has_active_deblock.then(|| filter_setup.detach_deblock_records());
         let tile = tile::prepare_scheduled_tile(
             tile,
-            records,
             parsed,
             params,
             sequence,
@@ -301,19 +269,13 @@ impl InterFrameParse {
             reference,
             ref_frame_idx,
             workspace,
+            filter_setup,
+            deblock_records,
+            deblock_quant_deltas,
             motion_field,
             motion_handle,
+            temporal_plan,
         )?;
-        Ok((
-            ScheduledInterReconstruction {
-                tile,
-                output: Mutex::new(Some(ScheduledFrameOutput {
-                    cdef: cdef_grid,
-                    ccso: ccso_grid,
-                    gdf: gdf_grid,
-                })),
-            },
-            temporal_scratch,
-        ))
+        Ok((ScheduledInterReconstruction { tile }, temporal_scratch))
     }
 }

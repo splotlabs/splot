@@ -14,7 +14,7 @@ use std::sync::{Mutex, MutexGuard};
 
 const READY_JOB_CAPACITY_PER_WORKER: usize = 2;
 
-pub(super) enum ParserStep<Row> {
+pub(in crate::prediction::inter::block) enum ParserStep<Row> {
     More(Row),
     Last(Row),
 }

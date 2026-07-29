@@ -3,6 +3,10 @@
 Feature IDs: `INFRA-DECODE-PARALLEL-STAGES`,
 `INFRA-DECODE-FRAME-PIPELINING`
 
+The live implementation checklist is
+[`DECODE-SCALING-OPEN-TASKS.md`](DECODE-SCALING-OPEN-TASKS.md). Add discoveries
+there immediately; keep measurements and completed or rejected evidence here.
+
 ## Goal
 
 On `/Users/bartosztomczyk/Documents/SplotLabs/test.ivf`, decode 30 frames at
@@ -70,7 +74,8 @@ Only one implementation candidate is active at a time. For each candidate:
    PR, merge it, refresh `origin/main`, and only then start the next candidate.
 
 Every newly discovered bottleneck or rejected experiment must be recorded in
-the task table before work moves on.
+the open-task checklist before work moves on. Completed and rejected evidence
+is retained in the task table below.
 
 ## Task ledger
 
@@ -86,7 +91,8 @@ the task table before work moves on.
 | SCALE-008 | Rejected standalone | Shorten or remove the serial pixel commit/intra reconstruction spine. | The approximately 313 ms to 25 ms `commit_inter` drop is a hard path switch: the 1/2T fused path replays 7,676 inter commands, while the 4/10T prepass leaves only 2,100. A byte-identical by-value tile-superblock-row owner correctly removed the scheduled shadow surfaces, publish copies, completion fanout, and commit mutex, but it also serialized the old motion derivation and replay within each frame. In 11 alternating paired samples, 1T was neutral (0.979014 s baseline, 0.979486 s candidate), while 8T regressed from 0.265387 s to 0.480559 s (paired median +80.98%) and 10T from 0.267624 s to 0.487116 s (+82.35%). Canonical row ownership must return only as part of a motion-band producer/consumer and filter/reference-row publication design that replaces the lost useful intra-frame fanout; do not repeat it standalone. |
 | SCALE-009 | Investigated; deprioritized standalone | Remove process-global recycler contention from hot paths. | Individual recycler locks are too small for standalone PRs. Coefficient recycling has an optimistic 4.5% wall ceiling; filter source and residual pools are below 1%, while the inter scratch pool has no contended stack. Make worker-local scratch and frame-context-owned row/coefficient/filter arenas an acceptance requirement of SCALE-003/004; fold motion-field partitioning into SCALE-005. |
 | SCALE-010 | Open | Reduce scalar CPU work after the scaling barriers move. | The 0.079 s target is below the ideal 10-way scaling of the current 1T result. Reprofile the new architecture and require a combined scalar reduction of roughly 23% or more without SIMD or assembly. |
-| SCALE-011 | Open | Build one cohesive dav2d-style row DAG across entropy, motion, canonical reconstruction, filters, and reference publication. | Reintroduce pending entropy products from SCALE-003, motion-band producer/consumer progress from SCALE-005, canonical reconstruction-row ownership from SCALE-008, and filter/reference-row publication from SCALE-006 as one dependency graph with frame-context-owned scratch. The isolated stages moved eligibility but failed materially because the adjacent whole-frame gates remained: SCALE-003 left reconstruction/filter ownership whole-frame, SCALE-005 left reconstruction/filter/reference-row publication whole-frame, SCALE-006 left entropy/motion/canonical reconstruction/reference publication whole-frame, and SCALE-008 removed useful fanout while motion/filter/reference progress stayed whole-frame. The integrated candidate must advance one canonical row owner through all stages, publish exact row frontiers to later frames, keep workers nonblocking, preserve exact output and 1T, and clear the 10% architectural acceptance bar before any delivery work. |
+| SCALE-011 | Completed locally; delivery pending | Build one cohesive dav2d-style row DAG across entropy, motion, canonical reconstruction, filters, and reference publication. | The integrated F1+B3+D/E candidate publishes source motion bands, projects and resolves dependent bands, reconstructs bounded ReferenceOnly work directly into canonical row-band ownership, advances deblock/filter/reference watermarks, and admits dependent rows across frame contexts. The exact 30-frame raw output is 186,624,000 bytes with SHA-256 `48f0dc140be565069838bcf7141aba3c80cefaa14400284840b2e1475a3be945` at 1T and 10T. The final post-CI alternating matrix measured 0.996527 s versus exact base 0.996898 s at 1T (+0.04%), 0.241250 s versus 0.272401 s at 8T (+12.91%), and 0.242316 s versus 0.275443 s at 10T (+13.67%). Serial settled motion fields retain monolithic storage instead of paying for unused band copies. Parse-time unresolved-leaf containment, `rust-simplify`, the 239-fixture decoder oracle, 245-vector conformance corpus, duplication gate, and `cargo xtask ci` pass. Dav2d remains faster at 10T (0.152885 s), so the final 50%-faster target remains open. A GeneralIntra band-target extension was byte-exact but regressed parallel performance and was fully reverted. |
+| SCALE-012 | Open correctness task | Make deferred finish reporting happen-before in-flight harvest. | `PendingFinish::run_finish` in `crates/splot-decode/src/pipeline/inflight.rs` currently lets `FrameSlotWriter::complete` (or its failure Drop) settle the slot before writing `FinishOutcome.records` or `FinishOutcome.error`; `InflightRing::harvest_oldest` waits only for that slot and can therefore wake, observe an empty outcome, and lose recyclable records or the real filter diagnostic. Add a separate one-shot finish-report completion owned by `PendingFinish` and `InflightEntry`; publish it only after the outcome write, and make harvest wait for the report before consuming the outcome and slot. Cover success, failure, and exactly-once settlement in `crates/splot-decode/src/pipeline/inflight_tests.rs`. Keep this separate from SCALE-011 filter-seam work. |
 
 ## Rejected experiments
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
+use splot_parallel::CompletionCell;
 use splot_recon::math::{round2_signed, round2_signed_i32};
 use std::ops::Range;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use super::{
 use selection::projection_queue;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
-use trajectory::{TrajectoryBand, TrajectoryState};
+use trajectory::{OwnedTrajectoryBand, TrajectoryBand, TrajectoryState};
 
 mod selection;
 mod trajectory;
@@ -72,6 +73,7 @@ fn temporal_grid_index(width8: usize, height8: usize, y8: usize, x8: usize) -> O
 pub(crate) struct TemporalMotionField {
     width8: usize,
     height8: usize,
+    band_rows8: usize,
     cells: Vec<TemporalMotionCell>,
     pending_ref_hints: Option<Vec<[u32; 2]>>,
     is_inter: bool,
@@ -79,11 +81,120 @@ pub(crate) struct TemporalMotionField {
     ref_order_hints: Vec<Option<u32>>,
 }
 
+/// Fixed geometry of one frame's motion-field publication.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MotionFieldLayout {
+    width8: usize,
+    height8: usize,
+    band_rows8: usize,
+}
+
+impl MotionFieldLayout {
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize, sb_h4: usize) -> Option<Self> {
+        let width8 = mi_cols.div_ceil(2);
+        let height8 = mi_rows.div_ceil(2);
+        let band_rows8 = sb_h4.checked_div(2)?;
+        (width8 > 0 && height8 > 0 && matches!(band_rows8, 8 | 16 | 32)).then_some(Self {
+            width8,
+            height8,
+            band_rows8,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn empty() -> Self {
+        Self {
+            width8: 0,
+            height8: 0,
+            band_rows8: 8,
+        }
+    }
+
+    pub(crate) const fn width8(self) -> usize {
+        self.width8
+    }
+
+    pub(crate) const fn height8(self) -> usize {
+        self.height8
+    }
+
+    pub(crate) const fn band_rows8(self) -> usize {
+        self.band_rows8
+    }
+
+    pub(crate) fn band_count(self) -> usize {
+        self.height8.div_ceil(self.band_rows8)
+    }
+
+    pub(crate) fn rows8(self, index: usize) -> Range<usize> {
+        let start = index.saturating_mul(self.band_rows8).min(self.height8);
+        start..start.saturating_add(self.band_rows8).min(self.height8)
+    }
+}
+
+/// Semantic metadata required to select and project a reference field.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TemporalMotionFieldMetadata {
+    is_inter: bool,
+    frame_size: Option<(usize, usize)>,
+    ref_order_hints: Arc<[Option<u32>]>,
+}
+
+/// One immutable full-width source superblock row of temporal motion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TemporalMotionBand {
+    layout: MotionFieldLayout,
+    metadata: TemporalMotionFieldMetadata,
+    row_base8: usize,
+    cells: Vec<TemporalMotionCell>,
+}
+
+impl TemporalMotionBand {
+    pub(crate) fn row_end8(&self) -> usize {
+        self.row_base8
+            .saturating_add(self.cells.len().div_ceil(self.layout.width8.max(1)))
+            .min(self.layout.height8)
+    }
+
+    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
+        let row = y8.checked_sub(self.row_base8)?;
+        let start = row.checked_mul(self.layout.width8)?;
+        self.cells
+            .get(start..start.checked_add(self.layout.width8)?)
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
+        let row_base8 = self.row_base8;
+        let row_end8 = self.row_end8();
+        let width8 = self.layout.width8;
+        let ref_order_hints = &self.metadata.ref_order_hints;
+        visit_temporal_block_cells(block, width8, row_end8, |y8, x8, cell, hints| {
+            let Some(row) = y8.checked_sub(row_base8) else {
+                return;
+            };
+            let Some(index) = row
+                .checked_mul(width8)
+                .and_then(|base| base.checked_add(x8))
+            else {
+                return;
+            };
+            if y8 >= row_base8
+                && let Some(target) = self.cells.get_mut(index)
+            {
+                *target = resolve_temporal_refs(cell, hints, ref_order_hints);
+            }
+        });
+    }
+}
+
 impl TemporalMotionField {
     pub(crate) fn empty() -> Self {
         Self {
             width8: 0,
             height8: 0,
+            band_rows8: 8,
             cells: Vec::new(),
             pending_ref_hints: Some(Vec::new()),
             is_inter: false,
@@ -98,6 +209,7 @@ impl TemporalMotionField {
         Some(Self {
             width8,
             height8,
+            band_rows8: 8,
             cells,
             pending_ref_hints: Some(pending_ref_hints),
             is_inter: false,
@@ -132,92 +244,83 @@ impl TemporalMotionField {
         }
     }
 
-    pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
-        let Some(row_end) = block.mi_row.checked_add(block.n4h) else {
-            return;
-        };
-        let Some(col_end) = block.mi_col.checked_add(block.n4w) else {
-            return;
-        };
-        let row_end = row_end.min(block.mi_rows);
-        let col_end = col_end.min(block.mi_cols);
-        if row_end <= block.mi_row || col_end <= block.mi_col {
-            return;
+    pub(crate) fn set_band_rows8(&mut self, band_rows8: usize) -> Option<()> {
+        if !matches!(band_rows8, 8 | 16 | 32) {
+            return None;
         }
-        let row8_start = block.mi_row >> 1;
-        let col8_start = block.mi_col >> 1;
-        let row8_end = row_end.div_ceil(2).min(self.height8);
-        let col8_end = col_end.div_ceil(2).min(self.width8);
+        self.band_rows8 = band_rows8;
+        Some(())
+    }
 
-        for y8 in row8_start..row8_end {
-            for x8 in col8_start..col8_end {
-                let mut hints = [None; 2];
-                let mut mvs = [CompressedTemporalMv::ZERO; 2];
-                for list in 0..2 {
-                    let Some(order_hint) = block.ref_order_hints[list] else {
-                        continue;
-                    };
-                    let mv = if let Some(params) = block.warp_params[list] {
-                        warp_sub_mv_at(params, block.mi_row, block.mi_col, y8 * 2, x8 * 2)
-                    } else {
-                        block.mvs[list]
-                    };
-                    if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
-                        continue;
-                    }
-                    hints[list] = Some(order_hint);
-                    mvs[list] = compress_tmvp_mv(mv);
-                }
-                if hints[0].is_some() && hints[1].is_none() {
-                    hints[1] = hints[0];
-                    mvs[1] = mvs[0];
-                } else if hints[1].is_some() && hints[0].is_none() {
-                    hints[0] = hints[1];
-                    mvs[0] = mvs[1];
-                } else if let [Some(ref0), Some(ref1)] = hints {
-                    let ref0 = i32::try_from(ref0).unwrap_or(i32::MAX);
-                    let ref1 = i32::try_from(ref1).unwrap_or(i32::MAX);
-                    let current = i32::try_from(block.current_order_hint).unwrap_or(i32::MAX);
-                    let ref0_to_current = super::super::get_relative_dist(ref0, current);
-                    let ref1_to_current = super::super::get_relative_dist(ref1, current);
-                    let same_side = (ref0_to_current < 0 && ref1_to_current < 0)
-                        || (ref0_to_current > 0 && ref1_to_current > 0);
-                    let should_swap = if same_side {
-                        super::super::get_relative_dist(ref0, ref1) < 0
-                    } else {
-                        ref0_to_current > 0 && ref1_to_current < 0
-                    };
-                    if should_swap {
-                        hints.swap(0, 1);
-                        mvs.swap(0, 1);
-                    }
-                }
-                let mut cell = TemporalMotionCell {
-                    mvs,
-                    ..TemporalMotionCell::default()
-                };
-                for (list, hint) in hints.iter().copied().enumerate() {
-                    let Some(ref_index) = hint
-                        .and_then(|hint| {
-                            self.ref_order_hints
-                                .iter()
-                                .position(|&candidate| candidate == Some(hint))
-                        })
-                        .and_then(|index| u8::try_from(index).ok())
-                    else {
-                        continue;
-                    };
-                    cell.ref_indices[list] = ref_index;
-                }
-                let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
-                    continue;
-                };
-                if let Some(pending) = self.pending_ref_hints.as_mut() {
-                    pending[index] = hints.map(|hint| hint.unwrap_or(u32::MAX));
-                }
-                self.cells[index] = cell;
-            }
+    pub(crate) const fn layout(&self) -> MotionFieldLayout {
+        MotionFieldLayout {
+            width8: self.width8,
+            height8: self.height8,
+            band_rows8: self.band_rows8,
         }
+    }
+
+    pub(crate) fn metadata(&self) -> TemporalMotionFieldMetadata {
+        TemporalMotionFieldMetadata {
+            is_inter: self.is_inter,
+            frame_size: self.frame_size,
+            ref_order_hints: Arc::from(self.ref_order_hints.as_slice()),
+        }
+    }
+
+    pub(crate) fn into_bands(self) -> Vec<TemporalMotionBand> {
+        let layout = self.layout();
+        let metadata = self.metadata();
+        let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
+        self.cells
+            .chunks(stride)
+            .enumerate()
+            .map(|(index, cells)| TemporalMotionBand {
+                layout,
+                metadata: metadata.clone(),
+                row_base8: index.saturating_mul(layout.band_rows8),
+                cells: cells.to_vec(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn from_bands(
+        layout: MotionFieldLayout,
+        metadata: &TemporalMotionFieldMetadata,
+        bands: &[Arc<TemporalMotionBand>],
+    ) -> Option<Self> {
+        let cells = bands
+            .iter()
+            .flat_map(|band| band.cells.iter().copied())
+            .collect::<Vec<_>>();
+        (cells.len() == layout.width8.checked_mul(layout.height8)?).then(|| Self {
+            width8: layout.width8,
+            height8: layout.height8,
+            band_rows8: layout.band_rows8,
+            cells,
+            pending_ref_hints: None,
+            is_inter: metadata.is_inter,
+            frame_size: metadata.frame_size,
+            ref_order_hints: metadata.ref_order_hints.to_vec(),
+        })
+    }
+
+    #[allow(clippy::inline_always)]
+    #[inline(always)]
+    pub(crate) fn record_block(&mut self, block: TemporalMotionBlock) {
+        let width8 = self.width8;
+        let height8 = self.height8;
+        let ref_order_hints = &self.ref_order_hints;
+        visit_temporal_block_cells(block, width8, height8, |y8, x8, cell, hints| {
+            let cell = resolve_temporal_refs(cell, hints, ref_order_hints);
+            let Some(index) = temporal_grid_index(self.width8, self.height8, y8, x8) else {
+                return;
+            };
+            if let Some(pending) = self.pending_ref_hints.as_mut() {
+                pending[index] = hints.map(|hint| hint.unwrap_or(u32::MAX));
+            }
+            self.cells[index] = cell;
+        });
     }
 
     #[cfg(test)]
@@ -232,6 +335,106 @@ impl TemporalMotionField {
         self.cells
             .get_mut(temporal_grid_index(self.width8, self.height8, y8, x8)?)
     }
+}
+
+#[allow(clippy::inline_always)]
+#[inline(always)]
+fn visit_temporal_block_cells(
+    block: TemporalMotionBlock,
+    width8: usize,
+    height8: usize,
+    mut visit: impl FnMut(usize, usize, TemporalMotionCell, [Option<u32>; 2]),
+) {
+    let Some(row_end) = block.mi_row.checked_add(block.n4h) else {
+        return;
+    };
+    let Some(col_end) = block.mi_col.checked_add(block.n4w) else {
+        return;
+    };
+    let row_end = row_end.min(block.mi_rows);
+    let col_end = col_end.min(block.mi_cols);
+    if row_end <= block.mi_row || col_end <= block.mi_col {
+        return;
+    }
+    let row8_start = block.mi_row >> 1;
+    let col8_start = block.mi_col >> 1;
+    let row8_end = row_end.div_ceil(2).min(height8);
+    let col8_end = col_end.div_ceil(2).min(width8);
+    for y8 in row8_start..row8_end {
+        for x8 in col8_start..col8_end {
+            let mut hints = [None; 2];
+            let mut mvs = [CompressedTemporalMv::ZERO; 2];
+            for list in 0..2 {
+                let Some(order_hint) = block.ref_order_hints[list] else {
+                    continue;
+                };
+                let mv = if let Some(params) = block.warp_params[list] {
+                    warp_sub_mv_at(params, block.mi_row, block.mi_col, y8 * 2, x8 * 2)
+                } else {
+                    block.mvs[list]
+                };
+                if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
+                    continue;
+                }
+                hints[list] = Some(order_hint);
+                mvs[list] = compress_tmvp_mv(mv);
+            }
+            if hints[0].is_some() && hints[1].is_none() {
+                hints[1] = hints[0];
+                mvs[1] = mvs[0];
+            } else if hints[1].is_some() && hints[0].is_none() {
+                hints[0] = hints[1];
+                mvs[0] = mvs[1];
+            } else if let [Some(ref0), Some(ref1)] = hints {
+                let ref0 = i32::try_from(ref0).unwrap_or(i32::MAX);
+                let ref1 = i32::try_from(ref1).unwrap_or(i32::MAX);
+                let current = i32::try_from(block.current_order_hint).unwrap_or(i32::MAX);
+                let ref0_to_current = super::super::get_relative_dist(ref0, current);
+                let ref1_to_current = super::super::get_relative_dist(ref1, current);
+                let same_side = (ref0_to_current < 0 && ref1_to_current < 0)
+                    || (ref0_to_current > 0 && ref1_to_current > 0);
+                let should_swap = if same_side {
+                    super::super::get_relative_dist(ref0, ref1) < 0
+                } else {
+                    ref0_to_current > 0 && ref1_to_current < 0
+                };
+                if should_swap {
+                    hints.swap(0, 1);
+                    mvs.swap(0, 1);
+                }
+            }
+            visit(
+                y8,
+                x8,
+                TemporalMotionCell {
+                    mvs,
+                    ..TemporalMotionCell::default()
+                },
+                hints,
+            );
+        }
+    }
+}
+
+fn resolve_temporal_refs(
+    mut cell: TemporalMotionCell,
+    hints: [Option<u32>; 2],
+    ref_order_hints: &[Option<u32>],
+) -> TemporalMotionCell {
+    for (list, hint) in hints.into_iter().enumerate() {
+        let Some(ref_index) = hint
+            .and_then(|hint| {
+                ref_order_hints
+                    .iter()
+                    .position(|&candidate| candidate == Some(hint))
+            })
+            .and_then(|index| u8::try_from(index).ok())
+        else {
+            continue;
+        };
+        cell.ref_indices[list] = ref_index;
+    }
+    cell
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -312,7 +515,7 @@ pub(crate) struct TipReferencePair {
     pub(crate) ref_offset: i32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct TemporalMvContext {
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
@@ -322,6 +525,192 @@ pub(crate) struct TemporalMvContext {
     trajectories: Option<TrajectoryState>,
     trajectory_scratch: Option<TrajectoryState>,
     tip: Option<TipReferencePair>,
+    banded: Option<Arc<BandedTemporalContext>>,
+}
+
+#[derive(Debug)]
+struct BandedTemporalContext {
+    layout: MotionFieldLayout,
+    bands: Vec<CompletionCell<Option<Arc<TemporalBandResult>>>>,
+}
+
+#[derive(Debug)]
+struct TemporalBandResult {
+    row_base8: usize,
+    field: Vec<ProjectedTemporalMotionCell>,
+    trajectories: Option<Vec<Vec<Mv>>>,
+}
+
+pub(crate) struct TemporalBandPlan {
+    projections: Vec<ScheduledTemporalProjection>,
+    config: TemporalProjectionConfig,
+    layout: MotionFieldLayout,
+    tip: Option<TipReferencePair>,
+    tip_mode: bool,
+    fill_tip_holes: bool,
+}
+
+struct ScheduledTemporalProjection {
+    slot: usize,
+    source: TemporalProjectionSource,
+    source_layout: MotionFieldLayout,
+}
+
+impl BandedTemporalContext {
+    fn cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
+        if y8 >= self.layout.height8() || x8 >= self.layout.width8() {
+            return None;
+        }
+        let band = self
+            .bands
+            .get(y8 / self.layout.band_rows8())?
+            .get()?
+            .as_ref()?;
+        let row = y8.checked_sub(band.row_base8)?;
+        band.field
+            .get(row.checked_mul(self.layout.width8())?.checked_add(x8)?)
+            .copied()
+    }
+
+    fn trajectory_cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
+        if y8 >= self.layout.height8() || x8 >= self.layout.width8() {
+            return None;
+        }
+        let band = self
+            .bands
+            .get(y8 / self.layout.band_rows8())?
+            .get()?
+            .as_ref()?;
+        let row = y8.checked_sub(band.row_base8)?;
+        band.trajectories
+            .as_ref()?
+            .get(reference)?
+            .get(row.checked_mul(self.layout.width8())?.checked_add(x8)?)
+            .copied()
+            .filter(|mv| *mv != trajectory::INVALID_TRAJECTORY_MV)
+    }
+
+    fn fail(&self) {
+        for band in &self.bands {
+            let _ = band.set(None);
+        }
+    }
+}
+
+impl TemporalBandPlan {
+    pub(crate) fn len(&self) -> usize {
+        self.layout.band_count()
+    }
+
+    pub(crate) fn rows8(&self, index: usize) -> Range<usize> {
+        self.layout.rows8(index)
+    }
+
+    pub(crate) fn requirements(&self, index: usize) -> Vec<(usize, usize)> {
+        let mut requirements = Vec::new();
+        for projection in &self.projections {
+            if index >= projection.source_layout.band_count() {
+                continue;
+            }
+            let requirement = (projection.slot, index);
+            if !requirements.contains(&requirement) {
+                requirements.push(requirement);
+            }
+        }
+        requirements
+    }
+
+    pub(crate) fn project(
+        &self,
+        context: &TemporalMvContext,
+        index: usize,
+        mut source_band: impl FnMut(usize, usize) -> Option<Arc<TemporalMotionBand>>,
+    ) -> Option<()> {
+        let rows = self.rows8(index);
+        if rows.is_empty() {
+            return None;
+        }
+        let row_count = rows.len();
+        let width8 = self.layout.width8();
+        let cells = width8.checked_mul(row_count)?;
+        let mut field_cells = vec![ProjectedTemporalMotionCell::default(); cells];
+        let mut output = ProjectedFieldBand {
+            cells: &mut field_cells,
+            width8,
+            height8: self.layout.height8(),
+            row_base: rows.start,
+        };
+        let mut trajectories = if self.config.enable_trajectory {
+            Some(OwnedTrajectoryBand::new(
+                width8,
+                self.layout.height8(),
+                rows.start,
+                row_count,
+                context.ref_order_hints.len(),
+                self.config.step,
+                self.config.unit_size8,
+            )?)
+        } else {
+            None
+        };
+        for projection in &self.projections {
+            if index >= projection.source_layout.band_count() {
+                continue;
+            }
+            let source = source_band(projection.slot, index)?;
+            if source.layout != projection.source_layout
+                || source.row_base8 != projection.source_layout.rows8(index).start
+            {
+                return None;
+            }
+            let mut trajectory = trajectories.as_mut().map(OwnedTrajectoryBand::as_band);
+            project_temporal_motion_field(
+                &projection.source,
+                source.as_ref(),
+                rows.clone(),
+                self.config.step,
+                self.config.unit_size8,
+                trajectory.as_mut(),
+                &mut output,
+            );
+        }
+        let mut field = ProjectedTemporalMotionField {
+            width8,
+            height8: row_count,
+            cells: field_cells,
+        };
+        if self.tip_mode {
+            if let Some(references) = self.tip {
+                let mut projection = ProjectedTemporalMotionField::default();
+                let mut average = ProjectedTemporalMotionField::default();
+                prepare_tip_field(
+                    &mut field,
+                    &mut projection,
+                    &mut average,
+                    references,
+                    self.config.step,
+                    self.config.unit_size8,
+                    self.fill_tip_holes,
+                )?;
+            }
+        } else {
+            fill_temporal_sampling_gaps(&mut field, self.config.step, self.config.unit_size8);
+        }
+        let result = TemporalBandResult {
+            row_base8: rows.start,
+            field: field.cells,
+            trajectories: trajectories.map(OwnedTrajectoryBand::finish),
+        };
+        let banded = context.banded.as_ref()?;
+        let _ = banded.bands.get(index)?.set(Some(Arc::new(result)));
+        Some(())
+    }
+
+    pub(crate) fn fail(context: &TemporalMvContext) {
+        if let Some(banded) = &context.banded {
+            banded.fail();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -412,6 +801,7 @@ impl TemporalMvContext {
             trajectories: None,
             trajectory_scratch: None,
             tip: None,
+            banded: None,
         }
     }
 
@@ -435,6 +825,7 @@ impl TemporalMvContext {
             trajectories: None,
             trajectory_scratch: None,
             tip: Some(references),
+            banded: None,
         })
     }
 
@@ -526,13 +917,22 @@ impl TemporalMvContext {
             }));
         crate::timing::report("inter_temporal_reset", reset_started);
         let queue_started = crate::timing::start();
+        let ref_motion_metadata = ref_motion_fields
+            .iter()
+            .map(|field| field.as_ref().map(|field| field.metadata()))
+            .collect::<Vec<_>>();
+        let ref_motion_layouts = ref_motion_fields
+            .iter()
+            .map(|field| field.as_ref().map(|field| field.layout()))
+            .collect::<Vec<_>>();
         let projections = projection_queue(
             mi_dimensions,
             current_order_hint,
             config,
             ref_frame_idx,
             &self.ref_order_hints,
-            ref_motion_fields,
+            &ref_motion_metadata,
+            &ref_motion_layouts,
         );
         crate::timing::report("inter_temporal_queue", queue_started);
         let trajectory_reset_started = crate::timing::start();
@@ -577,15 +977,22 @@ impl TemporalMvContext {
             else {
                 continue;
             };
-            prepared.extend(TemporalProjectionSource::new(
-                source_field,
+            let Some(source) = TemporalProjectionSource::new(
+                &source_field.metadata(),
+                source_field.layout(),
                 source_order_hint,
                 current_order_hint,
                 projection.ref_index,
                 projection.side,
                 projection.target_ref,
                 &self.ref_order_hints,
-            ));
+            ) else {
+                continue;
+            };
+            prepared.push(PreparedTemporalProjection {
+                source,
+                field: source_field,
+            });
         }
         run_band_projections(&prepared, config, trajectories.as_mut(), &mut self.field);
         crate::timing::report("inter_temporal_projection", projection_started);
@@ -597,7 +1004,115 @@ impl TemporalMvContext {
         self.current_order_hint = current_order_hint;
         self.trajectories = trajectories;
         self.tip = None;
+        self.banded = None;
         Some(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_banded_refresh(
+        &mut self,
+        target_layout: MotionFieldLayout,
+        current_order_hint: u32,
+        config: TemporalProjectionConfig,
+        ref_frame_idx: &[u32],
+        ref_valid: &[bool],
+        ref_order_hint: &[u32],
+        ref_motion_metadata: &[Option<TemporalMotionFieldMetadata>],
+        ref_motion_layouts: &[Option<MotionFieldLayout>],
+        tip: Option<TipReferencePair>,
+        tip_mode: bool,
+        fill_tip_holes: bool,
+    ) -> Option<TemporalBandPlan> {
+        let mi_dimensions = (
+            target_layout.height8().checked_mul(2)?,
+            target_layout.width8().checked_mul(2)?,
+        );
+        self.field.width8 = target_layout.width8();
+        self.field.height8 = target_layout.height8();
+        self.field.cells.clear();
+        self.ref_order_hints.clear();
+        self.ref_order_hints
+            .extend(ref_frame_idx.iter().map(|&slot| {
+                ref_valid
+                    .get(slot as usize)
+                    .copied()
+                    .filter(|valid| *valid)
+                    .and_then(|_| ref_order_hint.get(slot as usize).copied())
+                    .filter(|&hint| hint != u32::MAX)
+            }));
+        let projections = projection_queue(
+            mi_dimensions,
+            current_order_hint,
+            config,
+            ref_frame_idx,
+            &self.ref_order_hints,
+            ref_motion_metadata,
+            ref_motion_layouts,
+        );
+        let mut prepared = Vec::with_capacity(projections.len());
+        for projection in projections {
+            let slot = usize::try_from(*ref_frame_idx.get(projection.ref_index)?).ok()?;
+            let source_order_hint = self
+                .ref_order_hints
+                .get(projection.ref_index)
+                .copied()
+                .flatten()?;
+            let metadata = ref_motion_metadata.get(slot)?.as_ref()?;
+            let source_layout = ref_motion_layouts.get(slot)?.as_ref().copied()?;
+            if source_layout.band_rows8() != target_layout.band_rows8() {
+                return None;
+            }
+            let source = TemporalProjectionSource::new(
+                metadata,
+                source_layout,
+                source_order_hint,
+                current_order_hint,
+                projection.ref_index,
+                projection.side,
+                projection.target_ref,
+                &self.ref_order_hints,
+            )?;
+            prepared.push(ScheduledTemporalProjection {
+                slot,
+                source,
+                source_layout,
+            });
+        }
+        self.current_order_hint = current_order_hint;
+        self.trajectories = None;
+        self.tip = tip;
+        self.banded = Some(Arc::new(BandedTemporalContext {
+            layout: target_layout,
+            bands: (0..target_layout.band_count())
+                .map(|_| CompletionCell::new())
+                .collect(),
+        }));
+        Some(TemporalBandPlan {
+            projections: prepared,
+            config,
+            layout: target_layout,
+            tip,
+            tip_mode,
+            fill_tip_holes,
+        })
+    }
+
+    fn projected_cell(&self, y8: usize, x8: usize) -> Option<ProjectedTemporalMotionCell> {
+        if let Some(banded) = &self.banded {
+            return banded.cell(y8, x8);
+        }
+        self.field.cell(y8, x8)
+    }
+
+    fn trajectory_cell(&self, reference: usize, y8: usize, x8: usize) -> Option<Mv> {
+        if let Some(banded) = &self.banded {
+            return banded.trajectory_cell(reference, y8, x8);
+        }
+        self.trajectories
+            .as_ref()?
+            .fields()
+            .get(reference)?
+            .cell(y8, x8)
     }
 
     pub(crate) fn prepare_tip(
@@ -615,45 +1130,19 @@ impl TemporalMvContext {
         } else {
             superblock_size8.max(1)
         };
-        if self
-            .projection_scratch
-            .reset(self.field.height8 * 2, self.field.width8 * 2)
-            .is_none()
+        if prepare_tip_field(
+            &mut self.field,
+            &mut self.projection_scratch,
+            &mut self.average_scratch,
+            references,
+            projection_step,
+            tmvp_unit_size8,
+            fill_holes,
+        )
+        .is_none()
         {
             return false;
         }
-        let field = &mut self.projection_scratch;
-        debug_assert_eq!(field.width8, self.field.width8);
-        debug_assert_eq!(field.height8, self.field.height8);
-        for y8 in (0..field.height8).step_by(projection_step) {
-            let row_start = y8 * field.width8;
-            for x8 in (0..field.width8).step_by(projection_step) {
-                let index = row_start + x8;
-                let source = self.field.cells[index];
-                let projected = if source.valid {
-                    project_mv(source.mv, references.ref_offset, source.ref_offset)
-                } else {
-                    None
-                };
-                field.cells[index] = ProjectedTemporalMotionCell {
-                    valid: projected.is_some(),
-                    mv: projected.unwrap_or(Mv::ZERO),
-                    ref_offset: references.ref_offset,
-                };
-            }
-        }
-        if fill_holes {
-            fill_tip_holes(field, projection_step, tmvp_unit_size8);
-            average_tip_motion(
-                field,
-                &mut self.average_scratch,
-                projection_step,
-                tmvp_unit_size8,
-            );
-            std::mem::swap(field, &mut self.average_scratch);
-        }
-        fill_temporal_sampling_gaps(field, projection_step, tmvp_unit_size8);
-        std::mem::swap(&mut self.field, field);
         self.tip = Some(references);
         true
     }
@@ -685,7 +1174,7 @@ impl TemporalMvContext {
         let references = self.tip?;
         let y8 = y8.min(self.field.height8.saturating_sub(1));
         let x8 = x8.min(self.field.width8.saturating_sub(1));
-        let cell = self.field.cell(y8, x8).unwrap_or_default();
+        let cell = self.projected_cell(y8, x8).unwrap_or_default();
         let projected = if cell.valid {
             [
                 project_mv(cell.mv, references.past_offset, references.ref_offset)
@@ -759,12 +1248,7 @@ impl TemporalMvContext {
 
     pub(super) fn motion_field_mv(&self, ref_frame: i8, y8: usize, x8: usize) -> Option<Mv> {
         let ref_index = usize::try_from(ref_frame).ok()?;
-        if let Some(mv) = self
-            .trajectories
-            .as_ref()
-            .and_then(|state| state.fields().get(ref_index))
-            .and_then(|field| field.cell(y8, x8))
-        {
+        if let Some(mv) = self.trajectory_cell(ref_index, y8, x8) {
             return Some(mv);
         }
         let dst_hint = usize::try_from(ref_frame)
@@ -772,7 +1256,7 @@ impl TemporalMvContext {
             .and_then(|idx| self.ref_order_hints.get(idx))
             .copied()
             .flatten()?;
-        let cell = self.field.cell(y8, x8)?;
+        let cell = self.projected_cell(y8, x8)?;
         if !cell.valid {
             return None;
         }
@@ -793,12 +1277,10 @@ impl TemporalMvContext {
     ) -> Option<Mv> {
         let dst = usize::try_from(dst_ref).ok()?;
         let candidate = usize::try_from(candidate_ref).ok()?;
-        if let Some(fields) = self.trajectories.as_ref().map(TrajectoryState::fields)
-            && let (Some(dst_mv), Some(candidate_trajectory)) = (
-                fields.get(dst)?.cell(y8, x8),
-                fields.get(candidate)?.cell(y8, x8),
-            )
-        {
+        if let (Some(dst_mv), Some(candidate_trajectory)) = (
+            self.trajectory_cell(dst, y8, x8),
+            self.trajectory_cell(candidate, y8, x8),
+        ) {
             return Some(derive_mv_from_trajectories(
                 candidate_mv,
                 dst_mv,
@@ -818,15 +1300,14 @@ impl TemporalMvContext {
         y8: usize,
         x8: usize,
     ) -> Option<[Mv; 2]> {
-        let fields = self.trajectories.as_ref()?.fields();
         let candidate = usize::try_from(candidate_ref).ok()?;
-        let candidate_trajectory = fields.get(candidate)?.cell(y8, x8)?;
+        let candidate_trajectory = self.trajectory_cell(candidate, y8, x8)?;
         let mut derived = [Mv::ZERO; 2];
         for (index, dst_ref) in dst_refs.into_iter().enumerate() {
             let dst = usize::try_from(dst_ref).ok()?;
             derived[index] = derive_mv_from_trajectories(
                 candidate_mv,
-                fields.get(dst)?.cell(y8, x8)?,
+                self.trajectory_cell(dst, y8, x8)?,
                 candidate_trajectory,
             );
         }
@@ -915,6 +1396,46 @@ fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> 
         }
     }
     sorted
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_tip_field(
+    source: &mut ProjectedTemporalMotionField,
+    projection: &mut ProjectedTemporalMotionField,
+    average: &mut ProjectedTemporalMotionField,
+    references: TipReferencePair,
+    projection_step: usize,
+    tmvp_unit_size8: usize,
+    fill_holes: bool,
+) -> Option<()> {
+    projection.reset(source.height8 * 2, source.width8 * 2)?;
+    debug_assert_eq!(projection.width8, source.width8);
+    debug_assert_eq!(projection.height8, source.height8);
+    for y8 in (0..projection.height8).step_by(projection_step) {
+        let row_start = y8 * projection.width8;
+        for x8 in (0..projection.width8).step_by(projection_step) {
+            let index = row_start + x8;
+            let source = source.cells[index];
+            let projected = if source.valid {
+                project_mv(source.mv, references.ref_offset, source.ref_offset)
+            } else {
+                None
+            };
+            projection.cells[index] = ProjectedTemporalMotionCell {
+                valid: projected.is_some(),
+                mv: projected.unwrap_or(Mv::ZERO),
+                ref_offset: references.ref_offset,
+            };
+        }
+    }
+    if fill_holes {
+        fill_tip_holes(projection, projection_step, tmvp_unit_size8);
+        average_tip_motion(projection, average, projection_step, tmvp_unit_size8);
+        std::mem::swap(projection, average);
+    }
+    fill_temporal_sampling_gaps(projection, projection_step, tmvp_unit_size8);
+    std::mem::swap(source, projection);
+    Some(())
 }
 
 fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superblock_size8: usize) {
@@ -1125,7 +1646,7 @@ fn projection_band_rows(height8: usize, config: TemporalProjectionConfig) -> usi
 /// bands over, so an uninstalled or single-worker pool keeps the whole field as
 /// one band and walks it in place.
 fn run_band_projections(
-    prepared: &[TemporalProjectionSource<'_>],
+    prepared: &[PreparedTemporalProjection<'_>],
     config: TemporalProjectionConfig,
     trajectories: Option<&mut TrajectoryState>,
     field: &mut ProjectedTemporalMotionField,
@@ -1141,7 +1662,8 @@ fn run_band_projections(
         let rows8 = band.row_base..band.row_base + band_rows;
         for prepared in prepared {
             project_temporal_motion_field(
-                prepared,
+                &prepared.source,
+                prepared.field,
                 rows8.clone(),
                 config.step,
                 config.unit_size8,
@@ -1210,7 +1732,8 @@ fn project_whole_temporal_motion_field(
         reduced: false,
     };
     let prepared = TemporalProjectionSource::new(
-        source,
+        &source.metadata(),
+        source.layout(),
         source_order_hint,
         current_order_hint,
         source_ref,
@@ -1218,6 +1741,10 @@ fn project_whole_temporal_motion_field(
         target_ref,
         ref_order_hints,
     );
+    let prepared = prepared.map(|source_info| PreparedTemporalProjection {
+        source: source_info,
+        field: source,
+    });
     run_band_projections(prepared.as_slice(), config, trajectories, output);
 }
 
@@ -1247,8 +1774,14 @@ impl ProjectedTemporalMotionField {
 
 /// One queued AV2 § 7.9.3 motion-field projection with its per-source preamble
 /// resolved once, so the scan can be replayed band by band.
-struct TemporalProjectionSource<'a> {
-    source: &'a TemporalMotionField,
+struct PreparedTemporalProjection<'a> {
+    source: TemporalProjectionSource,
+    field: &'a TemporalMotionField,
+}
+
+struct TemporalProjectionSource {
+    source_width8: usize,
+    source_height8: usize,
     source_ref: usize,
     side: usize,
     target_ref: Option<usize>,
@@ -1257,9 +1790,11 @@ struct TemporalProjectionSource<'a> {
     target_cache: Vec<Option<(u32, Option<usize>, i32)>>,
 }
 
-impl<'a> TemporalProjectionSource<'a> {
+impl TemporalProjectionSource {
+    #[allow(clippy::too_many_arguments)]
     fn new(
-        source: &'a TemporalMotionField,
+        source: &TemporalMotionFieldMetadata,
+        layout: MotionFieldLayout,
         source_order_hint: u32,
         current_order_hint: u32,
         source_ref: usize,
@@ -1267,13 +1802,14 @@ impl<'a> TemporalProjectionSource<'a> {
         target_ref: Option<usize>,
         ref_order_hints: &[Option<u32>],
     ) -> Option<Self> {
-        if source.width8 == 0 {
+        if layout.width8() == 0 {
             return None;
         }
         let source_hint = i32::try_from(source_order_hint).unwrap_or(i32::MAX);
         let current_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
         Some(Self {
-            source,
+            source_width8: layout.width8(),
+            source_height8: layout.height8(),
             source_ref,
             side,
             target_ref,
@@ -1306,7 +1842,8 @@ impl<'a> TemporalProjectionSource<'a> {
 /// therefore replay disjoint unit-aligned row bands in any order and observe
 /// the whole-field result.
 fn project_temporal_motion_field(
-    prepared: &TemporalProjectionSource<'_>,
+    prepared: &TemporalProjectionSource,
+    source: &impl TemporalMotionRows,
     rows: Range<usize>,
     projection_step: usize,
     tmvp_unit_size8: usize,
@@ -1314,7 +1851,8 @@ fn project_temporal_motion_field(
     output: &mut ProjectedFieldBand<'_>,
 ) {
     let TemporalProjectionSource {
-        source,
+        source_width8,
+        source_height8,
         source_ref,
         side,
         target_ref,
@@ -1325,20 +1863,13 @@ fn project_temporal_motion_field(
     let (source_ref, side, target_ref) = (*source_ref, *side, *target_ref);
     let (target_order_hint, source_to_current) = (*target_order_hint, *source_to_current);
     let projection_step = projection_step.clamp(1, 2);
-    let rows = rows.start..rows.end.min(source.height8);
-    let Some(band) = source
-        .cells
-        .get(rows.start * source.width8..rows.end * source.width8)
-    else {
-        return;
-    };
+    debug_assert_eq!((*source_width8, *source_height8), source.dimensions8());
+    let rows = rows.start..rows.end.min(*source_height8);
     let mut last_target = None;
-    for (offset, row) in band
-        .chunks_exact(source.width8)
-        .enumerate()
-        .step_by(projection_step)
-    {
-        let y8 = rows.start + offset;
+    for y8 in rows.step_by(projection_step) {
+        let Some(row) = source.row(y8) else {
+            continue;
+        };
         for (x8, cell) in row.iter().copied().enumerate().step_by(projection_step) {
             let list = side;
             let ref_index = usize::from(cell.ref_indices[list]);
@@ -1431,6 +1962,32 @@ fn project_temporal_motion_field(
                 };
             }
         }
+    }
+}
+
+trait TemporalMotionRows {
+    fn dimensions8(&self) -> (usize, usize);
+    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]>;
+}
+
+impl TemporalMotionRows for TemporalMotionField {
+    fn dimensions8(&self) -> (usize, usize) {
+        (self.width8, self.height8)
+    }
+
+    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
+        let start = y8.checked_mul(self.width8)?;
+        self.cells.get(start..start.checked_add(self.width8)?)
+    }
+}
+
+impl TemporalMotionRows for TemporalMotionBand {
+    fn dimensions8(&self) -> (usize, usize) {
+        (self.layout.width8(), self.layout.height8())
+    }
+
+    fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
+        TemporalMotionBand::row(self, y8)
     }
 }
 
@@ -1626,586 +2183,4 @@ fn uncompress_tmvp_component(value: i32) -> i32 {
 }
 
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::unwrap_used)]
-
-    use super::*;
-
-    fn tip_context(
-        current_order_hint: u32,
-        ref_order_hints: Vec<Option<u32>>,
-        mi_rows: usize,
-        mi_cols: usize,
-    ) -> TemporalMvContext {
-        TemporalMvContext {
-            current_order_hint,
-            ref_order_hints,
-            field: ProjectedTemporalMotionField::new(mi_rows, mi_cols).unwrap(),
-            projection_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
-            average_scratch: ProjectedTemporalMotionField::new(0, 0).unwrap(),
-            trajectories: None,
-            trajectory_scratch: None,
-            tip: None,
-        }
-    }
-
-    #[test]
-    fn spatial_derivation_uses_reference_trajectories() {
-        let mut candidate = TrajectoryMotionField::new(2, 2).unwrap();
-        candidate.set(
-            0,
-            0,
-            Mv {
-                row: -10,
-                col: -192,
-            },
-        );
-        let mut dst = TrajectoryMotionField::new(2, 2).unwrap();
-        dst.set(0, 0, Mv { row: 12, col: 240 });
-        let mut context = tip_context(4, vec![Some(0), Some(9)], 2, 2);
-        context.trajectories = Some(TrajectoryState::from_fields(vec![candidate, dst]));
-
-        assert_eq!(
-            context.derive_spatial_mv(1, 0, Mv { row: -12, col: -67 }, 0, 0),
-            Some(Mv { row: 10, col: 365 })
-        );
-    }
-
-    #[test]
-    fn compound_spatial_derivation_uses_both_reference_trajectories() {
-        let mut candidate = TrajectoryMotionField::new(2, 2).unwrap();
-        candidate.set(
-            0,
-            0,
-            Mv {
-                row: -10,
-                col: -192,
-            },
-        );
-        let mut dst0 = TrajectoryMotionField::new(2, 2).unwrap();
-        dst0.set(0, 0, Mv { row: 12, col: 240 });
-        let mut dst1 = TrajectoryMotionField::new(2, 2).unwrap();
-        dst1.set(0, 0, Mv { row: -8, col: 100 });
-        let mut context = tip_context(4, vec![Some(0), Some(9), Some(6)], 2, 2);
-        context.trajectories = Some(TrajectoryState::from_fields(vec![candidate, dst0, dst1]));
-
-        assert_eq!(
-            context.derive_compound_spatial_mvs([1, 2], 0, Mv { row: -12, col: -67 }, 0, 0,),
-            Some([Mv { row: 10, col: 365 }, Mv { row: -10, col: 225 }])
-        );
-    }
-
-    #[test]
-    fn spatial_derivation_projects_references_on_the_same_side() {
-        let context = tip_context(10, vec![Some(8), Some(6)], 2, 2);
-
-        assert_eq!(
-            context.derive_spatial_mv(0, 1, Mv { row: 8, col: 12 }, 0, 0),
-            Some(Mv { row: 4, col: 6 })
-        );
-    }
-
-    #[test]
-    fn trajectory_derivation_clamps_to_the_motion_vector_domain() {
-        assert_eq!(
-            derive_mv_from_trajectories(
-                Mv {
-                    row: MV_LIMIT,
-                    col: -MV_LIMIT,
-                },
-                Mv {
-                    row: MV_LIMIT,
-                    col: -MV_LIMIT,
-                },
-                Mv {
-                    row: -MV_LIMIT,
-                    col: MV_LIMIT,
-                },
-            ),
-            Mv {
-                row: MV_LIMIT,
-                col: -MV_LIMIT,
-            }
-        );
-    }
-
-    #[test]
-    fn tip_reference_pair_uses_the_nearest_past_and_future_references() {
-        let context = tip_context(10, vec![Some(6), Some(9), Some(12), Some(15)], 4, 4);
-
-        assert_eq!(
-            context.tip_reference_pair(),
-            Some(TipReferencePair {
-                past_ref: 1,
-                future_ref: 2,
-                past_offset: 1,
-                future_offset: -2,
-                ref_offset: 3,
-            })
-        );
-    }
-
-    #[test]
-    fn tip_reference_pair_matches_sort_ref_order_for_equal_future_hints() {
-        let context = tip_context(
-            8,
-            vec![
-                Some(10),
-                Some(7),
-                Some(6),
-                Some(10),
-                Some(5),
-                Some(4),
-                Some(3),
-            ],
-            4,
-            4,
-        );
-
-        assert_eq!(
-            context.tip_reference_pair(),
-            Some(TipReferencePair {
-                past_ref: 1,
-                future_ref: 3,
-                past_offset: 1,
-                future_offset: -2,
-                ref_offset: 3,
-            })
-        );
-    }
-
-    #[test]
-    fn tip_reference_pair_uses_the_two_nearest_past_references() {
-        let context = tip_context(10, vec![Some(2), Some(6), Some(9)], 4, 4);
-
-        assert_eq!(
-            context.tip_reference_pair(),
-            Some(TipReferencePair {
-                past_ref: 2,
-                future_ref: 1,
-                past_offset: 1,
-                future_offset: 4,
-                ref_offset: 3,
-            })
-        );
-    }
-
-    #[test]
-    fn reference_order_hints_exclude_invalid_slots() {
-        assert_eq!(
-            reference_order_hints(&[0, 1, 2], &[true, false, true], &[8, 9, 12]),
-            vec![Some(8), None, Some(12)]
-        );
-    }
-
-    #[test]
-    fn single_reference_motion_is_stored_in_both_slots() {
-        for source_list in 0..2 {
-            let mut field = TemporalMotionField::new(2, 2).unwrap();
-            field.set_reference_metadata(true, (8, 8), &[Some(7)]);
-            let mut ref_order_hints = [None; 2];
-            let mut mvs = [Mv::ZERO; 2];
-            ref_order_hints[source_list] = Some(7);
-            mvs[source_list] = Mv { row: 8, col: -12 };
-
-            field.record_block(TemporalMotionBlock {
-                mi_row: 0,
-                mi_col: 0,
-                n4w: 2,
-                n4h: 2,
-                mi_rows: 2,
-                mi_cols: 2,
-                current_order_hint: 8,
-                ref_order_hints,
-                mvs,
-                warp_params: [None; 2],
-            });
-
-            let cell = field.cell(0, 0).unwrap();
-            assert_eq!(cell.ref_indices, [0; 2]);
-            assert_eq!(
-                cell.mvs.map(uncompress_tmvp_mv),
-                [Mv { row: 8, col: -12 }; 2]
-            );
-        }
-    }
-
-    #[test]
-    fn compound_references_are_stored_in_temporal_slot_order() {
-        let cases = [
-            ([Some(1), Some(3)], [Some(3), Some(1)]),
-            ([Some(5), Some(6)], [Some(6), Some(5)]),
-            ([Some(6), Some(3)], [Some(3), Some(6)]),
-            ([Some(3), Some(6)], [Some(3), Some(6)]),
-        ];
-        for (input, expected) in cases {
-            let mut field = TemporalMotionField::new(2, 2).unwrap();
-            field.set_reference_metadata(true, (8, 8), &[Some(1), Some(3), Some(5), Some(6)]);
-            field.record_block(TemporalMotionBlock {
-                mi_row: 0,
-                mi_col: 0,
-                n4w: 2,
-                n4h: 2,
-                mi_rows: 2,
-                mi_cols: 2,
-                current_order_hint: 4,
-                ref_order_hints: input,
-                mvs: [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
-                warp_params: [None; 2],
-            });
-
-            let cell = field.cell(0, 0).unwrap();
-            assert_eq!(
-                cell.ref_indices
-                    .map(|index| field.ref_order_hints[usize::from(index)]),
-                expected
-            );
-            let swapped = input != expected;
-            assert_eq!(
-                uncompress_tmvp_mv(cell.mvs[0]).row,
-                if swapped { 24 } else { 8 }
-            );
-            assert_eq!(
-                uncompress_tmvp_mv(cell.mvs[1]).row,
-                if swapped { 8 } else { 24 }
-            );
-        }
-    }
-
-    #[test]
-    fn step_two_projection_samples_and_stores_on_the_even_grid() {
-        let mut source = TemporalMotionField::new(8, 8).unwrap();
-        source.set_reference_metadata(true, (32, 32), &[Some(0)]);
-        for x8 in 0..source.width8 {
-            source.cells[x8] = TemporalMotionCell {
-                ref_indices: [0, INVALID_TEMPORAL_REF],
-                mvs: [
-                    compress_tmvp_mv(Mv { row: 0, col: -64 }),
-                    CompressedTemporalMv::ZERO,
-                ],
-            };
-        }
-        let mut other = TemporalMotionField::new(8, 8).unwrap();
-        other.set_reference_metadata(true, (32, 32), &[]);
-
-        let mut context = TemporalMvContext::from_references(
-            (8, 8),
-            2,
-            TemporalProjectionConfig {
-                frame_size: (32, 32),
-                step: 2,
-                unit_size8: 8,
-                enable_tip: false,
-                enable_trajectory: false,
-                reduced: false,
-            },
-            &[0, 1],
-            &[true, true],
-            &[1, 3],
-            &[Some(Arc::new(source)), Some(Arc::new(other))],
-        )
-        .unwrap();
-
-        assert!(context.field.cell(0, 0).unwrap().valid);
-        assert!(context.field.cell(0, 2).unwrap().valid);
-        assert!(!context.field.cell(0, 1).unwrap().valid);
-        assert!(!context.field.cell(0, 3).unwrap().valid);
-
-        context.fill_sampling_gaps(2, 16);
-        assert_eq!(context.field.cell(0, 1), context.field.cell(0, 0));
-        assert_eq!(context.field.cell(0, 3), context.field.cell(0, 2));
-    }
-
-    #[test]
-    fn backward_projection_preserves_source_to_current_direction() {
-        let mut source = TemporalMotionField::new(18, 56).unwrap();
-        source.set_reference_metadata(true, (56 * 8, 18 * 8), &[Some(9)]);
-        *source.cell_mut(8, 26).unwrap() = TemporalMotionCell {
-            ref_indices: [INVALID_TEMPORAL_REF, 0],
-            mvs: [
-                CompressedTemporalMv::ZERO,
-                compress_tmvp_mv(Mv { row: 10, col: 232 }),
-            ],
-        };
-        let mut output = ProjectedTemporalMotionField::new(18, 56).unwrap();
-
-        project_whole_temporal_motion_field(
-            &source,
-            4,
-            2,
-            1,
-            8,
-            0,
-            1,
-            None,
-            &[],
-            None,
-            &mut output,
-        );
-
-        assert_eq!(
-            output.cell(8, 25),
-            Some(ProjectedTemporalMotionCell {
-                valid: true,
-                mv: Mv {
-                    row: -10,
-                    col: -232,
-                },
-                ref_offset: 5,
-            })
-        );
-        assert!(!output.cell(8, 27).unwrap().valid);
-    }
-
-    #[test]
-    fn projection_records_zero_offset_reference() {
-        let mut source = TemporalMotionField::new(4, 4).unwrap();
-        source.set_reference_metadata(true, (16, 16), &[Some(4)]);
-        *source.cell_mut(0, 0).unwrap() = TemporalMotionCell {
-            ref_indices: [0, INVALID_TEMPORAL_REF],
-            mvs: [CompressedTemporalMv::ZERO; 2],
-        };
-        let mut output = ProjectedTemporalMotionField::new(4, 4).unwrap();
-
-        project_whole_temporal_motion_field(
-            &source,
-            4,
-            2,
-            1,
-            8,
-            0,
-            0,
-            None,
-            &[Some(4)],
-            None,
-            &mut output,
-        );
-
-        assert_eq!(
-            output.cell(0, 0),
-            Some(ProjectedTemporalMotionCell {
-                valid: true,
-                mv: Mv::ZERO,
-                ref_offset: 0,
-            })
-        );
-    }
-
-    #[test]
-    fn zero_offset_projection_uses_the_zero_divisor_multiplier() {
-        assert_eq!(project_mv(Mv { row: 24, col: -40 }, 3, 0), Some(Mv::ZERO));
-    }
-
-    #[test]
-    fn bounded_tmvp_projection_matches_wide_projection() {
-        let components = [-REFMVS_LIMIT, -1024, -1, 0, 1, 1024, REFMVS_LIMIT];
-        for &component in &components {
-            let mv = Mv {
-                row: component,
-                col: -component,
-            };
-            for numerator in -MAX_FRAME_DISTANCE..=MAX_FRAME_DISTANCE {
-                for denominator in 0..=MAX_FRAME_DISTANCE {
-                    assert_eq!(
-                        project_tmvp_mv(mv, numerator, denominator),
-                        project_mv(mv, numerator, denominator),
-                    );
-                }
-            }
-        }
-        let wide = Mv {
-            row: REFMVS_LIMIT + 1,
-            col: -(REFMVS_LIMIT + 1),
-        };
-        assert_eq!(project_tmvp_mv(wide, 31, 1), project_mv(wide, 31, 1));
-    }
-
-    #[test]
-    fn side_rejected_projection_still_extends_existing_trajectory() {
-        let mut trajectories = TrajectoryState::new((112, 252), 6, 1, 8).unwrap();
-        trajectories.whole_band().unwrap().observe_projection(
-            0,
-            Some(1),
-            Some(1),
-            54,
-            125,
-            Mv { row: 64, col: -256 },
-            1,
-            2,
-            false,
-        );
-        let mut source = TemporalMotionField::new(112, 252).unwrap();
-        source.set_reference_metadata(true, (1008, 448), &[Some(0)]);
-        source.record_block(TemporalMotionBlock {
-            mi_row: 110,
-            mi_col: 242,
-            n4w: 2,
-            n4h: 2,
-            mi_rows: 112,
-            mi_cols: 252,
-            current_order_hint: 4,
-            ref_order_hints: [Some(0), None],
-            mvs: [Mv { row: 36, col: -160 }, Mv::ZERO],
-            warp_params: [None; 2],
-        });
-        let mut output = ProjectedTemporalMotionField::new(112, 252).unwrap();
-
-        project_whole_temporal_motion_field(
-            &source,
-            4,
-            5,
-            1,
-            8,
-            1,
-            1,
-            None,
-            &[Some(6), Some(4), None, None, None, Some(0)],
-            Some(&mut trajectories),
-            &mut output,
-        );
-
-        let fields = trajectories.into_fields();
-        assert_eq!(fields[5].cell(54, 123), Some(Mv { row: 68, col: -288 }));
-        assert!(output.cells.iter().all(|cell| !cell.valid));
-    }
-
-    #[test]
-    fn sampling_gap_does_not_average_across_tmvp_units() {
-        let mut context = tip_context(2, vec![Some(0)], 2, 36);
-        context.field.set(0, 14, Mv { row: 8, col: 16 }, 2, true);
-        context.field.set(0, 16, Mv { row: 24, col: 80 }, 4, true);
-
-        context.fill_sampling_gaps(2, 16);
-
-        assert_eq!(context.field.cell(0, 15), context.field.cell(0, 14));
-        assert_eq!(context.field.cell(0, 17), context.field.cell(0, 16));
-    }
-
-    #[test]
-    fn temporal_projection_stays_within_the_vertical_tmvp_unit() {
-        assert!(!tmvp_position_is_near(52, 107, 47, 107, 2, 16));
-        assert!(tmvp_position_is_near(47, 107, 47, 107, 2, 16));
-    }
-
-    #[test]
-    fn step_one_projection_uses_64_pixel_tmvp_unit_bounds() {
-        assert!(!tmvp_position_is_near(52, 107, 47, 107, 1, 8));
-        assert!(tmvp_position_is_near(47, 107, 47, 107, 1, 8));
-        assert!(tmvp_position_is_near(47, 100, 47, 107, 1, 8));
-        assert!(!tmvp_position_is_near(47, 99, 47, 107, 1, 8));
-        assert!(tmvp_position_is_near(47, 115, 47, 107, 1, 8));
-        assert!(!tmvp_position_is_near(47, 116, 47, 107, 1, 8));
-    }
-
-    #[test]
-    fn tip_projection_fills_unsampled_units_and_adds_the_block_mv() {
-        let mut context = tip_context(10, vec![Some(8), Some(12)], 4, 4);
-        context.field.set(0, 0, Mv { row: 8, col: -16 }, 4, true);
-
-        assert!(context.prepare_tip(2, 2, false));
-        assert_eq!(context.tip_references(), context.tip_reference_pair());
-        let expected = [Mv { row: 5, col: -6 }, Mv { row: -3, col: 10 }];
-        for y8 in 0..2 {
-            for x8 in 0..2 {
-                assert_eq!(
-                    context.tip_candidate(y8, x8, Mv { row: 1, col: 2 }),
-                    Some(expected)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
-        let mut context = tip_context(10, vec![Some(8), Some(12)], 2, 32);
-        context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);
-
-        assert!(context.prepare_tip(1, 16, true));
-        assert_eq!(context.tip_candidate(0, 8, Mv::ZERO), Some([Mv::ZERO; 2]));
-    }
-
-    #[test]
-    fn tip_candidate_clamps_motion_field_coordinates_to_the_frame() {
-        let references = TipReferencePair {
-            past_ref: 0,
-            future_ref: 1,
-            past_offset: -1,
-            future_offset: 1,
-            ref_offset: 1,
-        };
-        let context =
-            TemporalMvContext::with_tip_sample(4, 4, references, 1, 1, Mv { row: 16, col: 32 })
-                .unwrap();
-
-        assert_eq!(
-            context.tip_candidate(usize::MAX, usize::MAX, Mv::ZERO),
-            context.tip_candidate(1, 1, Mv::ZERO)
-        );
-    }
-
-    #[test]
-    fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
-        let mut context = tip_context(10, vec![Some(6), Some(15)], 2, 32);
-        context.field.set(0, 14, Mv { row: 18, col: -36 }, 9, true);
-
-        assert!(context.prepare_tip(2, 16, true));
-        let cell = context.field.cell(0, 11).unwrap();
-        assert_eq!(
-            cell,
-            ProjectedTemporalMotionCell {
-                valid: true,
-                mv: Mv { row: 18, col: -36 },
-                ref_offset: 9,
-            }
-        );
-    }
-
-    #[test]
-    fn refresh_reuses_projected_and_trajectory_storage() {
-        let config = TemporalProjectionConfig {
-            frame_size: (64, 64),
-            step: 1,
-            unit_size8: 8,
-            enable_tip: false,
-            enable_trajectory: true,
-            reduced: false,
-        };
-        let ref_frame_idx = [0];
-        let ref_valid = [false];
-        let ref_order_hint = [u32::MAX];
-        let ref_motion_fields = [None];
-        let mut context = TemporalMvContext::from_references(
-            (16, 16),
-            0,
-            config,
-            &ref_frame_idx,
-            &ref_valid,
-            &ref_order_hint,
-            &ref_motion_fields,
-        )
-        .unwrap();
-        let field_ptr = context.field.cells.as_ptr();
-        let trajectories = context.trajectories.as_ref().unwrap();
-        let trajectory_ptr = trajectories.fields[0].cells.as_ptr();
-        let positions_ptr = trajectories.positions[0].as_ptr();
-        let offsets_ptr = trajectories.projection_offsets.as_ptr();
-
-        context
-            .refresh_from_references(
-                (16, 16),
-                1,
-                config,
-                &ref_frame_idx,
-                &ref_valid,
-                &ref_order_hint,
-                &ref_motion_fields,
-            )
-            .unwrap();
-
-        let trajectories = context.trajectories.as_ref().unwrap();
-        assert_eq!(context.field.cells.as_ptr(), field_ptr);
-        assert_eq!(trajectories.fields[0].cells.as_ptr(), trajectory_ptr);
-        assert_eq!(trajectories.positions[0].as_ptr(), positions_ptr);
-        assert_eq!(trajectories.projection_offsets.as_ptr(), offsets_ptr);
-    }
-}
+mod tests;

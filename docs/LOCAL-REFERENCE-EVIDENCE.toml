@@ -10693,3 +10693,107 @@ right = "splot-single-picture-bridge-raw-sha256"
 kind = "digest-equality"
 left = "avm-current-single-picture-bridge-crash-signature-sha256"
 right = "avm-pinned-single-picture-bridge-crash-signature-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-2frame-multirow-inter-64x256-10bit-q100"
+feature_id = "INFRA-DECODE-FRAME-PIPELINING"
+decoder_support_rows = ["first-inter-frame-frontier", "inter-multi-sb-spatial"]
+kind = "reference-output-agreement"
+summary = "AVMdec and Splot emit byte-identical raw I420 output for a deterministic two-frame 10-bit 64x256 single-tile stream. The inter frame spans four 64-pixel superblock rows and multiple final-filter stripes, making it the committed exactness oracle for multi-row scheduled reconstruction."
+recorded_at = "2026-07-29"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-multirow-inter-64x256-10bit-q100.ivf"
+sha256 = "328c4496b76d2ee860c89431a5b0497b593ca51775281b818694962e6ee80aba"
+size_bytes = 4264
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated from two deterministic ffmpeg testsrc2 yuv420p10le frames at 64x256, then encoded with local AVMenc using --codec=av2 --ivf --width=64 --height=256 --input-bit-depth=10 --bit-depth=10 --cpu-used=9 --threads=1 --limit=2 --lag-in-frames=0 --kf-min-dist=999 --kf-max-dist=999 --end-usage=q --qp=100 --enable-cdef=1 --enable-restoration=0. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Local AVM checkout used by the decoder oracle manifest."
+command_summary = "avmdec --rawvideo --i420 -o output.raw {fixture:input}"
+output_digest_id = "avm-multirow-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "548bad8e5f7f2f42c28fc20377b43f81a04bf93e08acdeead26d725d60562c9d"
+output_scope = "Complete 98,304-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree."
+command_summary = "splot decode --quiet --output-format raw --threads=1 -o output.raw {fixture:input}"
+output_digest_id = "splot-multirow-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "548bad8e5f7f2f42c28fc20377b43f81a04bf93e08acdeead26d725d60562c9d"
+output_scope = "Complete 98,304-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-multirow-10bit-raw-sha256"
+right = "splot-multirow-10bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-2frame-multirow-deblock-inter-64x256-10bit-q158"
+feature_id = "INFRA-DECODE-FRAME-PIPELINING"
+decoder_support_rows = ["first-inter-frame-frontier", "deblock-adaptive-strength"]
+kind = "reference-output-agreement"
+summary = "AVMdec and Splot emit byte-identical raw I420 output for a deterministic two-frame 10-bit 64x256 single-tile inter stream with IntraBC disabled and all four section 7.17 deblocking passes active. Its four superblock rows prove the scheduled canonical owner advances a deblock prefix before terminal commit without changing output."
+recorded_at = "2026-07-29"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-multirow-deblock-inter-64x256-10bit-q158.ivf"
+sha256 = "7d4cafed4ec120174def2cf972438b95a25cb06af831b2244ae0478756f57914"
+size_bytes = 3368
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated from the project-owned deterministic edge-grid generator at 64x256, 10-bit, weight 0.3, then encoded with local AVMenc using --i420 -w 64 -h 256 --limit=2 --cpu-used=4 --passes=1 --end-usage=q --qp=110 --min-qp=110 --max-qp=110 --sb-size=64 --tile-columns=0 --tile-rows=0 --kf-min-dist=16 --kf-max-dist=16 --enable-intrabc=0 --enable-deblocking=1 --enable-cdef=0 --enable-restoration=0 --enable-ccso=0 --enable-gdf=0 and the other unsupported prediction/transform tools disabled. AVMenc reported base Q 158. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3935f4bf31ee774177d9300341bbbaf5b6116500"
+version_summary = "Local AVM checkout used to generate and decode the fixture."
+command_summary = "avmdec --rawvideo --i420 -o output.raw {fixture:input}"
+output_digest_id = "avm-multirow-deblock-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "13707270f1982ae8e089f67fca40fcafe4b8e37985da6ac78c5853962ad9ac4f"
+output_scope = "Complete 98,304-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree."
+command_summary = "splot decode --quiet --output-format raw --threads=8 -o output.raw {fixture:input}"
+output_digest_id = "splot-multirow-deblock-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "13707270f1982ae8e089f67fca40fcafe4b8e37985da6ac78c5853962ad9ac4f"
+output_scope = "Complete 98,304-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-multirow-deblock-10bit-raw-sha256"
+right = "splot-multirow-deblock-10bit-raw-sha256"

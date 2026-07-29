@@ -12,18 +12,18 @@
 //! needs so the driver can run it after it has moved on.
 
 use std::sync::Arc;
-use std::sync::{Mutex, PoisonError};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
-use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, PixelFormat, ReconSample};
+use splot_recon::{
+    BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
+    ReconSample,
+};
 
 use super::*;
 use crate::bitstream::tile_payload::{DecodeTilePayloadPlan, FrameQuantizerSnapshot};
 use crate::filters::wienerns_lr::FrameFilterRecords;
-use crate::pipeline::frame_engine::finish::WalkedFrame;
-use crate::pipeline::unsupported;
 
 /// One inter frame's header-derived walk state, shared by the fused walk and
 /// the split parse pass so both enter their tile phase identically.
@@ -34,6 +34,61 @@ pub(super) struct InterWalkPrologue<'payload, T: ReconSample> {
     pub(super) facts: InterBlockFacts,
     pub(super) ref_frame_idx: Vec<u32>,
     pub(super) quantizer_deltas: splot_recon::QuantizerDeltas,
+}
+
+/// Derives the pending slot's header-known geometry without parsing tile syntax.
+pub(crate) fn inter_frame_info(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    bit_depth: BitDepth,
+    offset: splot_core::span::ByteOffset,
+) -> Result<DecodedFrameInfo> {
+    let frame_size = core.frame_size.ok_or_else(|| {
+        inter_missing!(
+            "inter_pending_missing_frame_size",
+            offset,
+            "inter.frame_size",
+            SPEC_HEADER
+        )
+    })?;
+    let pixel_format =
+        PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
+    let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
+    Ok(DecodedFrameInfo::new(
+        OutputIndex::new(0),
+        bit_depth,
+        pixel_format,
+        PlaneSize::new(frame_size.width as usize, frame_size.height as usize)?,
+        visible,
+    )?)
+}
+
+/// Derives the fixed motion-band completion layout before entropy admission.
+pub(crate) fn motion_field_layout(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    info: DecodedFrameInfo,
+    offset: splot_core::span::ByteOffset,
+) -> Result<MotionFieldLayout> {
+    let sb_h4 = block::superblock_h4(sequence, core).ok_or_else(|| {
+        inter_cap!(
+            "inter_temporal_motion_layout_superblock",
+            offset,
+            "inter.temporal_motion_field",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let luma = info.coded_luma_size();
+    MotionFieldLayout::new(luma.height().div_ceil(4), luma.width().div_ceil(4), sb_h4).ok_or_else(
+        || {
+            inter_cap!(
+                "inter_frame_temporal_motion_layout",
+                offset,
+                "inter.temporal_motion_field",
+                SPEC_MODE_INFO
+            )
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -52,7 +107,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, offset)?;
     let frame_size = core.frame_size.ok_or_else(|| {
         inter_missing!(
-            "inter_missing_frame_size",
+            "inter_walk_missing_frame_size",
             offset,
             "inter.frame_size",
             SPEC_HEADER
@@ -242,8 +297,6 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     /// The walk-parsed CCSO unit grid, retained for the reference update.
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
-    /// The geometry the finished frame will report, known from the workspace.
-    pub(crate) info: DecodedFrameInfo,
     /// The § 7.9 motion field the reconstruction publishes.
     pub(crate) motion: MotionFieldHandle,
     parse: InterFrameParse,
@@ -258,14 +311,37 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
 /// One deferred frame whose reconstruction units are scheduler-owned.
 pub(crate) struct ScheduledInterWalk<T: ReconSample> {
     reconstruction: block::ScheduledInterReconstruction<T>,
-    setup: Mutex<Option<FilterSinkSetup>>,
-    core: Arc<FrameHeaderCore>,
 }
 
 impl<T: ReconSample> ScheduledInterWalk<T> {
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
         self.reconstruction.len()
+    }
+
+    /// Number of final-filter jobs joined before terminal freeze.
+    pub(crate) const fn filter_count(&self) -> usize {
+        self.reconstruction.filter_count()
+    }
+
+    pub(crate) const fn owns_canonical_bands(&self) -> bool {
+        self.reconstruction.owns_canonical_bands()
+    }
+
+    pub(crate) fn resolve_len(&self) -> usize {
+        self.reconstruction.resolve_len()
+    }
+
+    pub(crate) fn resolve_conditions(&self, index: usize) -> Vec<splot_parallel::Condition<'_>> {
+        self.reconstruction.resolve_conditions(index)
+    }
+
+    pub(crate) fn resolve(&self, index: usize) -> Result<Vec<usize>> {
+        self.reconstruction.resolve(index)
+    }
+
+    pub(crate) fn fail_temporal(&self) {
+        self.reconstruction.fail_temporal();
     }
 
     /// Cross-frame conditions for one reconstruction unit.
@@ -280,27 +356,8 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
 
     /// Commits one precomputed unit and returns the walked frame after the
     /// final ordered commit.
-    pub(crate) fn commit(&self, index: usize) -> Result<Option<WalkedFrame<T>>> {
-        let Some((workspace, filter_inputs)) = self.reconstruction.commit(index)? else {
-            return Ok(None);
-        };
-        let setup = self
-            .setup
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take()
-            .ok_or_else(|| {
-                unsupported(
-                    "inter_admission_filter_setup",
-                    None,
-                    "scheduled reconstruction completed more than once",
-                )
-            })?;
-        Ok(Some(setup.walked_frame(
-            workspace,
-            filter_inputs,
-            Arc::clone(&self.core),
-        )))
+    pub(crate) fn commit(&self, index: usize) -> Result<block::ScheduledFrameProgress<T>> {
+        self.reconstruction.commit(index)
     }
 }
 
@@ -327,6 +384,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     options: &DecodeOptions,
     reference: InterReferenceState<T>,
     bit_depth: BitDepth,
+    motion: MotionFieldHandle,
 ) -> Result<DeferredInterWalk<T>> {
     let InterWalkPrologue {
         mut tile_plan,
@@ -368,12 +426,12 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
             &format!("units={}", parse.unit_count()),
         );
     }
+    motion.publish_metadata(parse.motion_field_metadata());
     Ok(DeferredInterWalk {
         core: Arc::new(core),
         frame_cdfs: Arc::clone(&parse.frame_cdfs),
         ccso_grid: parse.ccso_grid.clone(),
-        info: workspace.info(),
-        motion: MotionFieldHandle::pending(),
+        motion,
         parse,
         workspace,
         setup,
@@ -406,49 +464,12 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             .collect()
     }
 
-    /// Runs the frame's § 7.9 prelude, § 7.12 resolve pass and reconstruction,
-    /// publishes its motion field as soon as the walk's last unit lands, and
-    /// yields the walked frame the § 7.2 filter chain consumes.
-    ///
-    /// The frame's quantizer scopes are reinstalled here, since the driver's
-    /// thread-local state has already moved on to the next frame.
-    ///
-    /// # Errors
-    ///
-    /// Returns the reconstruction's own diagnostic.
-    pub(crate) fn reconstruct(self, scratch: &mut InterDecodeScratch<T>) -> Result<WalkedFrame<T>> {
-        let Self {
-            core,
-            frame_cdfs: _,
-            ccso_grid: _,
-            info: _,
-            motion,
-            parse,
-            mut workspace,
-            setup,
-            sequence,
-            reference,
-            ref_frame_idx,
-            quantizer,
-        } = self;
-        let _quantizer_scopes = quantizer.install_frame();
-        let filter_inputs = parse.reconstruct(
-            scratch,
-            &sequence,
-            &core,
-            &ref_frame_idx,
-            &reference,
-            &mut workspace,
-            motion,
-        )?;
-        Ok(setup.walked_frame(workspace, filter_inputs, core))
-    }
-
     /// Runs the temporal prelude and resolve/motion half-pass, returning the
     /// per-unit reconstruction state consumed by the admission scheduler.
     pub(crate) fn prepare_scheduled(
         self,
         temporal_scratch: super::find_mv_stack::TemporalMvScratch,
+        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
     ) -> Result<(
         ScheduledInterWalk<T>,
         super::find_mv_stack::TemporalMvScratch,
@@ -457,7 +478,6 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             core,
             frame_cdfs: _,
             ccso_grid: _,
-            info: _,
             motion,
             parse,
             workspace,
@@ -471,6 +491,8 @@ impl<T: ReconSample> DeferredInterWalk<T> {
         let core_for_reconstruction = Arc::clone(&core);
         let (reconstruction, temporal_scratch) = parse.prepare_scheduled(
             InterDecodeScratch::with_temporal_scratch(temporal_scratch),
+            setup,
+            progress,
             sequence,
             core_for_reconstruction,
             Arc::from(ref_frame_idx),
@@ -478,13 +500,6 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             workspace,
             motion,
         )?;
-        Ok((
-            ScheduledInterWalk {
-                reconstruction,
-                setup: Mutex::new(Some(setup)),
-                core,
-            },
-            temporal_scratch,
-        ))
+        Ok((ScheduledInterWalk { reconstruction }, temporal_scratch))
     }
 }

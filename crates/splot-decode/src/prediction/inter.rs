@@ -393,6 +393,97 @@ fn resolve_initial_frame_cdfs(
     }
 }
 
+/// Exact pending entropy products one frame's tile parse may consume.
+pub(crate) struct EntropyDependencies {
+    cdfs: Vec<FrameCdfHandle>,
+    ccso_grids: Vec<CcsoGridHandle>,
+}
+
+impl EntropyDependencies {
+    /// Admission conditions for every selected CDF and CCSO source.
+    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'_>> {
+        self.cdfs
+            .iter()
+            .map(FrameCdfHandle::condition)
+            .chain(self.ccso_grids.iter().map(CcsoGridHandle::condition))
+            .collect()
+    }
+}
+
+/// Resolves entropy-product identities before the current frame refreshes slots.
+pub(crate) fn entropy_dependencies(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+) -> EntropyDependencies {
+    let mut cdfs = Vec::new();
+    if let Some(inter_ctrl) = core.inter.as_ref() {
+        let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
+        let current_order_hint =
+            i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
+        let (enable_avg_cdf, avg_cdf_type) = sequence
+            .transform_quant_entropy
+            .as_ref()
+            .map_or((false, 1u8), |tq| (tq.enable_avg_cdf, tq.avg_cdf_type));
+        if let ResolvedCdfLoad::LoadSlot { primary, blend } = resolve_cdf_load(
+            inter_ctrl.signal_primary_ref_frame,
+            inter_ctrl.primary_ref_frame,
+            inter_ctrl.disable_cross_frame_cdf_init,
+            &inter_ctrl.ref_frame_idx,
+            &reference.ref_is_inter,
+            &reference.ref_base_q_idx,
+            &reference.ref_order_hint,
+            &reference.ref_frame_width,
+            &reference.ref_frame_height,
+            current_base_q_idx,
+            current_order_hint,
+            cdf_blending_enabled(enable_avg_cdf, inter_ctrl.tip_frame_mode),
+            avg_cdf_type,
+        ) {
+            for slot in [Some(primary), blend].into_iter().flatten() {
+                if let Some(handle) = reference
+                    .ref_frame_cdfs
+                    .get(slot as usize)
+                    .and_then(Option::as_ref)
+                {
+                    cdfs.push(handle.clone());
+                }
+            }
+        }
+    }
+
+    let mut ccso_grids = Vec::new();
+    if sequence
+        .filter
+        .as_ref()
+        .is_some_and(|filter| filter.enable_ccso)
+        && core
+            .ccso_params
+            .as_ref()
+            .and_then(|ccso| ccso.ccso_frame_flag)
+            == Some(true)
+        && let (Some(inter), Some(ccso)) = (core.inter.as_ref(), core.ccso_params.as_ref())
+    {
+        for plane in &ccso.planes {
+            if !plane.sb_reuse_ccso {
+                continue;
+            }
+            let ref_index = plane.ccso_ref_idx.unwrap_or(0) as usize;
+            let Some(slot) = inter.ref_frame_idx.get(ref_index) else {
+                continue;
+            };
+            if let Some(handle) = reference
+                .ref_ccso_unit_grids
+                .get(*slot as usize)
+                .and_then(Option::as_ref)
+            {
+                ccso_grids.push(handle.clone());
+            }
+        }
+    }
+    EntropyDependencies { cdfs, ccso_grids }
+}
+
 const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFrameMode>) -> bool {
     enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
 }
@@ -890,9 +981,9 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) saved_global_motion_params: Vec<splot_core::headers::frame::SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
-    pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
+    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_params: Vec<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
-    pub(crate) ref_ccso_unit_grids: Vec<Option<Arc<crate::filters::ccso::CcsoUnitGrid>>>,
+    pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
     pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 
@@ -1120,7 +1211,9 @@ impl<T: ReconSample> InterReferenceState<T> {
     fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<Arc<FrameCdfSubset>> {
         self.ref_frame_cdfs
             .get(slot as usize)
-            .and_then(Clone::clone)
+            .and_then(Option::as_ref)
+            .and_then(FrameCdfHandle::product)
+            .cloned()
             .ok_or_else(|| {
                 inter_missing!(
                     "inter_missing_reference_cdf_context",
@@ -1681,6 +1774,7 @@ mod bridge;
 mod compound;
 mod cross_frame;
 mod find_mv_stack;
+mod frame_products;
 mod frame_walk;
 pub(crate) mod mc;
 mod motion_field;
@@ -1694,9 +1788,11 @@ pub(crate) use block::{
     parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
-pub(crate) use find_mv_stack::{TemporalMotionField, TemporalMvScratch};
+pub(crate) use find_mv_stack::{MotionFieldLayout, TemporalMotionField, TemporalMvScratch};
+pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle};
 pub(crate) use frame_walk::{
-    DeferredInterWalk, ScheduledInterWalk, parse_inter_frame, splittable_inter_frame,
+    DeferredInterWalk, ScheduledInterWalk, inter_frame_info, motion_field_layout,
+    parse_inter_frame, splittable_inter_frame,
 };
 pub(crate) use motion_field::MotionFieldHandle;
 

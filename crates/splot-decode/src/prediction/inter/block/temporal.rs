@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use splot_recon::ReconSample;
 
-use super::super::find_mv_stack::{TemporalMotionBlock, TemporalMotionField};
+use super::super::find_mv_stack::{TemporalMotionBand, TemporalMotionBlock, TemporalMotionField};
 use super::super::{InterReferenceState, MotionFieldHandle, Mv};
 
 pub(super) fn block_ref_within_temporal_distance<T: ReconSample>(
@@ -101,9 +101,17 @@ pub(super) fn commit_temporal_motion_blocks(
 pub(super) struct MotionFieldUnits {
     field: Mutex<Option<TemporalMotionField>>,
     owed: AtomicUsize,
+    units: usize,
+    bands: Vec<MotionBandUnits>,
+    units_per_row: usize,
     handle: Option<MotionFieldHandle>,
     started: Option<std::time::Instant>,
     prepass_units: AtomicUsize,
+}
+
+struct MotionBandUnits {
+    field: Mutex<Option<TemporalMotionBand>>,
+    owed: AtomicUsize,
 }
 
 impl MotionFieldUnits {
@@ -112,6 +120,9 @@ impl MotionFieldUnits {
         Self {
             field: Mutex::new(Some(field)),
             owed: AtomicUsize::new(0),
+            units: 0,
+            bands: Vec::new(),
+            units_per_row: 0,
             handle: None,
             started: None,
             prepass_units: AtomicUsize::new(0),
@@ -125,16 +136,35 @@ impl MotionFieldUnits {
     pub(super) fn publishing(
         field: TemporalMotionField,
         units: usize,
+        units_per_row: usize,
         handle: MotionFieldHandle,
         started: Option<std::time::Instant>,
     ) -> Self {
-        Self {
-            field: Mutex::new(Some(field)),
+        let bands = field
+            .into_bands()
+            .into_iter()
+            .enumerate()
+            .map(|(index, field)| {
+                let start = index.saturating_mul(units_per_row).min(units);
+                let end = start.saturating_add(units_per_row).min(units);
+                MotionBandUnits {
+                    field: Mutex::new(Some(field)),
+                    owed: AtomicUsize::new(end.saturating_sub(start)),
+                }
+            })
+            .collect::<Vec<_>>();
+        let this = Self {
+            field: Mutex::new(None),
             owed: AtomicUsize::new(units),
+            units,
+            bands,
+            units_per_row,
             handle: Some(handle),
             started,
             prepass_units: AtomicUsize::new(0),
-        }
+        };
+        this.publish_empty_bands();
+        this
     }
 
     /// Folds one run of records into the field, in the caller's own order.
@@ -144,6 +174,29 @@ impl MotionFieldUnits {
         }
         if let Some(field) = self.locked().as_mut() {
             commit_temporal_motion_blocks(field, records);
+        }
+    }
+
+    /// Folds one source unit into its exclusive full-width row-band owner.
+    pub(super) fn fold_unit(&self, ordinal: usize, records: &[TemporalMotionBlock]) {
+        if self.bands.is_empty() {
+            self.fold(records);
+            return;
+        }
+        if records.is_empty() || self.units_per_row == 0 {
+            return;
+        }
+        let Some(band) = self.bands.get(ordinal / self.units_per_row) else {
+            return;
+        };
+        let mut field = band
+            .field
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(field) = field.as_mut() {
+            for &record in records {
+                field.record_block(record);
+            }
         }
     }
 
@@ -172,6 +225,54 @@ impl MotionFieldUnits {
         }
     }
 
+    /// Settles one unit and publishes its source superblock-row band when the
+    /// last horizontal unit in that row lands.
+    pub(super) fn unit_landed_for(&self, ordinal: usize, prepass: bool) {
+        if self.bands.is_empty() {
+            self.unit_landed(prepass);
+            return;
+        }
+        if ordinal >= self.units {
+            return;
+        }
+        let Some(handle) = self.handle.as_ref() else {
+            return;
+        };
+        if prepass {
+            self.prepass_units.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.units_per_row == 0 {
+            handle.fail();
+            return;
+        }
+        let band_index = ordinal / self.units_per_row;
+        let Some(band) = self.bands.get(band_index) else {
+            handle.fail();
+            return;
+        };
+        if band.owed.fetch_sub(1, Ordering::AcqRel) == 1
+            && let Some(field) = band
+                .field
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            handle.publish_band(band_index, field);
+        }
+        if self.owed.fetch_sub(1, Ordering::AcqRel) != 1 {
+            return;
+        }
+        handle.publish_whole_from_bands();
+        crate::timing::report_detail(
+            "motion_publish",
+            self.started,
+            &format!(
+                "prepass_units={}",
+                self.prepass_units.load(Ordering::Relaxed)
+            ),
+        );
+    }
+
     /// Takes the field, or an empty one once it has been published.
     pub(super) fn into_field(self) -> TemporalMotionField {
         self.field
@@ -184,6 +285,26 @@ impl MotionFieldUnits {
         self.field
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn publish_empty_bands(&self) {
+        let Some(handle) = self.handle.as_ref() else {
+            return;
+        };
+        for (index, band) in self.bands.iter().enumerate() {
+            if band.owed.load(Ordering::Acquire) == 0
+                && let Some(field) = band
+                    .field
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+            {
+                handle.publish_band(index, field);
+            }
+        }
+        if self.owed.load(Ordering::Acquire) == 0 {
+            handle.publish_whole_from_bands();
+        }
     }
 }
 

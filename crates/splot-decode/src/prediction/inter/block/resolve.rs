@@ -83,6 +83,41 @@ pub(super) struct PendingInterBlock {
     frame_precision: u8,
 }
 
+impl PendingInterBlock {
+    pub(super) fn prepass_write_is_contained(
+        &self,
+        superblock_origin: [usize; 2],
+        sb_h4: usize,
+        info: splot_recon::DecodedFrameInfo,
+        residual_blocks: &[InterResidualBlock],
+    ) -> bool {
+        deferred_recon::prepass_write_is_contained(
+            [
+                self.geometry.luma_x,
+                self.geometry.luma_y,
+                self.geometry.luma_w,
+                self.geometry.luma_h,
+            ],
+            [
+                self.geometry.chroma_luma_x,
+                self.geometry.chroma_luma_y,
+                self.geometry.chroma_luma_w,
+                self.geometry.chroma_luma_h,
+            ],
+            self.geometry.predict_chroma,
+            deferred_recon::reads_current_frame(
+                self.syntax.bawp.enabled,
+                self.syntax.interintra.is_some(),
+            ),
+            self.syntax.residual.as_ref(),
+            superblock_origin,
+            sb_h4,
+            info,
+            residual_blocks,
+        )
+    }
+}
+
 /// Which § 7.13 reconstruction the resolved leaf becomes.
 pub(super) enum PendingInterKind {
     Single,

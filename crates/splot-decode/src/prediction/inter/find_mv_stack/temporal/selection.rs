@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::{
-    MAX_FRAME_DISTANCE, TemporalMotionField, TemporalProjectionConfig, sorted_reference_hints,
+    MAX_FRAME_DISTANCE, MotionFieldLayout, TemporalMotionFieldMetadata, TemporalProjectionConfig,
+    sorted_reference_hints,
 };
-use std::sync::Arc;
 
 const TIP_MFMV_STACK_SIZE: usize = 3;
 const MFMV_STACK_SIZE: usize = 4;
@@ -26,17 +26,17 @@ fn relative_distance(a: u32, b: u32) -> i32 {
 fn reference_motion_field<'a>(
     ref_index: usize,
     ref_frame_idx: &[u32],
-    ref_motion_fields: &'a [Option<Arc<TemporalMotionField>>],
-) -> Option<&'a TemporalMotionField> {
+    ref_motion_fields: &'a [Option<TemporalMotionFieldMetadata>],
+) -> Option<&'a TemporalMotionFieldMetadata> {
     let slot = *ref_frame_idx.get(ref_index)?;
-    ref_motion_fields.get(slot as usize)?.as_deref()
+    ref_motion_fields.get(slot as usize)?.as_ref()
 }
 
 fn topo_sort_reference(
     ref_index: usize,
     ref_frame_idx: &[u32],
     ref_order_hints: &[Option<u32>],
-    ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
+    ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
     overlays: &[bool],
     visited: &mut [bool],
     stack: &mut Vec<usize>,
@@ -73,7 +73,11 @@ fn topo_sort_reference(
     stack.push(ref_index);
 }
 
-fn has_reference_on_side(source: &TemporalMotionField, source_hint: u32, future: bool) -> bool {
+fn has_reference_on_side(
+    source: &TemporalMotionFieldMetadata,
+    source_hint: u32,
+    future: bool,
+) -> bool {
     source.ref_order_hints.iter().flatten().any(|&hint| {
         let distance = relative_distance(hint, source_hint);
         if future { distance > 0 } else { distance < 0 }
@@ -81,7 +85,7 @@ fn has_reference_on_side(source: &TemporalMotionField, source_hint: u32, future:
 }
 
 fn closest_interpolation_distance(
-    source: &TemporalMotionField,
+    source: &TemporalMotionFieldMetadata,
     source_hint: u32,
     current_hint: u32,
     forward: bool,
@@ -110,7 +114,8 @@ pub(super) fn projection_queue(
     config: TemporalProjectionConfig,
     ref_frame_idx: &[u32],
     ref_order_hints: &[Option<u32>],
-    ref_motion_fields: &[Option<Arc<TemporalMotionField>>],
+    ref_motion_fields: &[Option<TemporalMotionFieldMetadata>],
+    ref_motion_layouts: &[Option<MotionFieldLayout>],
 ) -> Vec<TemporalProjection> {
     let sorted = sorted_reference_hints(ref_order_hints)
         .into_iter()
@@ -165,11 +170,16 @@ pub(super) fn projection_queue(
             return;
         };
         let expected = (mi_dimensions.1.div_ceil(2), mi_dimensions.0.div_ceil(2));
+        let source_layout = ref_frame_idx
+            .get(projection.ref_index)
+            .and_then(|slot| usize::try_from(*slot).ok())
+            .and_then(|slot| ref_motion_layouts.get(slot))
+            .and_then(Option::as_ref);
         if queue.len() >= max_check
             || checked[projection.ref_index][projection.side]
             || !source.is_inter
             || source.frame_size != Some(config.frame_size)
-            || (source.width8, source.height8) != expected
+            || source_layout.is_none_or(|layout| (layout.width8(), layout.height8()) != expected)
             || relative_distance(source_hint, current_hint).abs() > MAX_FRAME_DISTANCE
         {
             return;
@@ -309,24 +319,37 @@ pub(super) fn projection_queue(
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use super::super::TemporalMotionField;
     use super::*;
 
-    fn reference_field(mi_rows: usize, mi_cols: usize, hints: &[u32]) -> Arc<TemporalMotionField> {
+    fn reference_field(
+        mi_rows: usize,
+        mi_cols: usize,
+        hints: &[u32],
+    ) -> (TemporalMotionFieldMetadata, MotionFieldLayout) {
         let mut field = TemporalMotionField::new(mi_rows, mi_cols).unwrap();
         field.set_reference_metadata(
             true,
             (mi_cols * 4, mi_rows * 4),
             &hints.iter().copied().map(Some).collect::<Vec<_>>(),
         );
-        Arc::new(field)
+        (field.metadata(), field.layout())
     }
 
     #[test]
     fn tip_pair_leads_the_priority_queue() {
-        let fields = [
+        let products = [
             Some(reference_field(4, 4, &[3])),
             Some(reference_field(4, 4, &[1])),
         ];
+        let fields = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.0.clone()))
+            .collect::<Vec<_>>();
+        let layouts = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.1))
+            .collect::<Vec<_>>();
         let config = TemporalProjectionConfig {
             frame_size: (16, 16),
             step: 1,
@@ -337,7 +360,15 @@ mod tests {
         };
 
         assert_eq!(
-            projection_queue((4, 4), 2, config, &[0, 1], &[Some(1), Some(3)], &fields,),
+            projection_queue(
+                (4, 4),
+                2,
+                config,
+                &[0, 1],
+                &[Some(1), Some(3)],
+                &fields,
+                &layouts,
+            ),
             vec![
                 TemporalProjection {
                     ref_index: 0,
@@ -360,7 +391,15 @@ mod tests {
 
     #[test]
     fn tip_projection_pair_matches_sort_ref_order_for_equal_future_hints() {
-        let fields = std::array::from_fn::<_, 7, _>(|_| Some(reference_field(4, 4, &[])));
+        let products = std::array::from_fn::<_, 7, _>(|_| Some(reference_field(4, 4, &[])));
+        let fields = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.0.clone()))
+            .collect::<Vec<_>>();
+        let layouts = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.1))
+            .collect::<Vec<_>>();
         let ref_order_hints = [
             Some(10),
             Some(7),
@@ -384,6 +423,7 @@ mod tests {
             &[0, 1, 2, 3, 4, 5, 6],
             &ref_order_hints,
             &fields,
+            &layouts,
         );
 
         assert_eq!(
@@ -398,10 +438,18 @@ mod tests {
 
     #[test]
     fn reduced_mode_keeps_only_the_highest_priority_projection() {
-        let fields = [
+        let products = [
             Some(reference_field(4, 4, &[3])),
             Some(reference_field(4, 4, &[1])),
         ];
+        let fields = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.0.clone()))
+            .collect::<Vec<_>>();
+        let layouts = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.1))
+            .collect::<Vec<_>>();
 
         assert_eq!(
             projection_queue(
@@ -418,6 +466,7 @@ mod tests {
                 &[0, 1],
                 &[Some(1), Some(3)],
                 &fields,
+                &layouts,
             ),
             vec![TemporalProjection {
                 ref_index: 0,
@@ -429,10 +478,18 @@ mod tests {
 
     #[test]
     fn current_reference_does_not_enable_a_tip_pair() {
-        let fields = [
+        let products = [
             Some(reference_field(4, 4, &[2])),
             Some(reference_field(4, 4, &[1])),
         ];
+        let fields = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.0.clone()))
+            .collect::<Vec<_>>();
+        let layouts = products
+            .iter()
+            .map(|product| product.as_ref().map(|product| product.1))
+            .collect::<Vec<_>>();
 
         let queue = projection_queue(
             (4, 4),
@@ -448,6 +505,7 @@ mod tests {
             &[0, 1],
             &[Some(1), Some(2)],
             &fields,
+            &layouts,
         );
 
         assert!(

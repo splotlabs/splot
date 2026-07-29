@@ -12,7 +12,7 @@ type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
 const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
-const INVALID_TRAJECTORY_MV: Mv = Mv {
+pub(super) const INVALID_TRAJECTORY_MV: Mv = Mv {
     row: i32::MIN,
     col: 0,
 };
@@ -314,6 +314,75 @@ pub(super) struct TrajectoryBand<'a> {
     unit_shift: u32,
     width8: usize,
     height8: usize,
+}
+
+pub(super) struct OwnedTrajectoryBand {
+    fields: Vec<Vec<Mv>>,
+    positions: Vec<Vec<TrajectoryPositions>>,
+    projection_offsets: Vec<i32>,
+    row_base: usize,
+    step: usize,
+    unit_size8: usize,
+    width8: usize,
+    height8: usize,
+    row_count: usize,
+}
+
+impl OwnedTrajectoryBand {
+    pub(super) fn new(
+        width8: usize,
+        height8: usize,
+        row_base: usize,
+        row_count: usize,
+        reference_count: usize,
+        step: usize,
+        unit_size8: usize,
+    ) -> Option<Self> {
+        let cell_count = width8.checked_mul(row_count)?;
+        Some(Self {
+            fields: vec![vec![INVALID_TRAJECTORY_MV; cell_count]; reference_count],
+            positions: vec![vec![TrajectoryPositions::EMPTY; cell_count]; reference_count],
+            projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
+            row_base,
+            step: step.clamp(1, 2),
+            unit_size8: unit_size8.max(1),
+            width8,
+            height8,
+            row_count,
+        })
+    }
+
+    pub(super) fn as_band(&mut self) -> TrajectoryBand<'_> {
+        let unit_mask = self.unit_size8 - 1;
+        TrajectoryBand {
+            fields: self.fields.iter_mut().map(Vec::as_mut_slice).collect(),
+            positions: self.positions.iter_mut().map(Vec::as_mut_slice).collect(),
+            projection_offsets: &mut self.projection_offsets,
+            row_base: self.row_base,
+            step: self.step,
+            step_mask: self.step - 1,
+            unit_size8: self.unit_size8,
+            unit_mask,
+            unit_shift: self.unit_size8.trailing_zeros(),
+            width8: self.width8,
+            height8: self.height8,
+        }
+    }
+
+    pub(super) fn finish(mut self) -> Vec<Vec<Mv>> {
+        if self.step == 2 {
+            for field in &mut self.fields {
+                fill_band_field_gaps(
+                    field,
+                    self.width8,
+                    self.row_base,
+                    self.row_count,
+                    self.unit_size8,
+                );
+            }
+        }
+        self.fields
+    }
 }
 
 impl TrajectoryBand<'_> {
@@ -619,6 +688,67 @@ impl TrajectoryBand<'_> {
             .filter(|&target_position| Self::position_allowed(target_position, bounds))
         {
             self.set_position(end, target_position, phase, position);
+        }
+    }
+}
+
+fn fill_band_field_gaps(
+    cells: &mut [Mv],
+    width8: usize,
+    row_base: usize,
+    row_count: usize,
+    unit_size8: usize,
+) {
+    let get = |cells: &[Mv], y8: usize, x8: usize| {
+        let row = y8.checked_sub(row_base)?;
+        cells
+            .get(row.checked_mul(width8)?.checked_add(x8)?)
+            .copied()
+            .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
+    };
+    for y8 in (row_base..row_base.saturating_add(row_count)).step_by(2) {
+        for x8 in (0..width8).step_by(2) {
+            let Some(anchor) = get(cells, y8, x8) else {
+                continue;
+            };
+            for (dy, dx) in [(0usize, 1usize), (1, 0), (1, 1)] {
+                if y8 + dy >= row_base + row_count || x8 + dx >= width8 {
+                    continue;
+                }
+                let mut sum = anchor;
+                let mut count = 1;
+                for (source_y, source_x, enabled) in [
+                    (y8, x8 + 2, dx > 0),
+                    (y8 + 2, x8, dy > 0),
+                    (y8 + 2, x8 + 2, dy > 0 && dx > 0),
+                ] {
+                    if !enabled
+                        || source_y >= row_base + row_count
+                        || source_x >= width8
+                        || source_y / unit_size8 != y8 / unit_size8
+                        || source_x / unit_size8 != x8 / unit_size8
+                    {
+                        continue;
+                    }
+                    if let Some(mv) = get(cells, source_y, source_x) {
+                        sum = add_mv(sum, mv);
+                        count += 1;
+                    }
+                }
+                let Some(index) = (y8 + dy)
+                    .checked_sub(row_base)
+                    .and_then(|row| row.checked_mul(width8))
+                    .and_then(|base| base.checked_add(x8 + dx))
+                else {
+                    continue;
+                };
+                if let Some(cell) = cells.get_mut(index) {
+                    *cell = Mv {
+                        row: average(sum.row, count),
+                        col: average(sum.col, count),
+                    };
+                }
+            }
         }
     }
 }
