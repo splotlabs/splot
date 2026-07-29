@@ -23,7 +23,7 @@ use super::*;
 /// One parsed unit between its resolve and its motion derivation.
 struct MotionUnit<'a, 'surface, T: ReconSample> {
     row: &'a mut ReconRow,
-    surface: Option<&'a mut splot_recon::CurrentFrameRect<'surface, T>>,
+    surface: Option<&'a mut ReadyReconSurface<'surface, T>>,
     bounds: row_gate::RowReferenceBounds,
     attempted: bool,
 }
@@ -44,14 +44,14 @@ struct MotionUnit<'a, 'surface, T: ReconSample> {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_and_derive_motion<'surface, T: ReconSample>(
     parsed: &mut ParsedTile,
-    mut surfaces: Vec<splot_recon::CurrentFrameRect<'surface, T>>,
+    mut surfaces: Vec<ReadyReconSurface<'surface, T>>,
     context: &TileDecodeContext<'_, T>,
     temporal_context: &TemporalMvContext,
     quantizer: &FrameQuantizerSnapshot,
     row_gate: &row_gate::RowReferenceGate<'_, T>,
     workers: &InterReconScratchPool<T>,
     motion: &MotionFieldUnits,
-) -> Result<Vec<splot_recon::CurrentFrameRect<'surface, T>>> {
+) -> Result<Vec<ReadyReconSurface<'surface, T>>> {
     let started = crate::timing::start();
     let tile_offset = parsed.tile_offset;
     let mut grid = NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
@@ -176,7 +176,7 @@ fn spawn_motion_batch<'scope, T: ReconSample>(
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     batch: Vec<(
         &'scope mut ReconRow,
-        Option<&'scope mut splot_recon::CurrentFrameRect<'_, T>>,
+        Option<&'scope mut ReadyReconSurface<'_, T>>,
     )>,
     quantizer: &'scope FrameQuantizerSnapshot,
     workers: &'scope InterReconScratchPool<T>,
@@ -247,15 +247,15 @@ fn drain_deferred_motion<T: ReconSample>(
 ///
 /// A unit whose derivation fails is left exactly as the parse pass produced it
 /// — no grid, no record, unlanded — so the reconstruction pass derives its own.
-fn derive_unit_motion<T: ReconSample>(
+pub(super) fn derive_unit_motion<T: ReconSample>(
     row: &mut ReconRow,
-    surface: Option<&mut splot_recon::CurrentFrameRect<'_, T>>,
+    surface: Option<&mut ReadyReconSurface<'_, T>>,
     scratch: &mut deferred_recon::InterReconScratch<T>,
     motion: &MotionFieldUnits,
     shared: &deferred_recon::ReconShared<'_, T>,
 ) {
     if let Some(surface) = surface {
-        let sink = mc::WorkspaceSink::Rect(surface);
+        let sink = surface.sink();
         if !derive_row_motion(row, scratch, &sink, shared) {
             return;
         }

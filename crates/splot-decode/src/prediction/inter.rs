@@ -932,17 +932,28 @@ impl<T: ReconSample> InterReferenceState<T> {
         })
     }
 
-    /// Shares every reference slot's published § 7.9 motion field.
+    /// Shares the selected reference slots' published § 7.9 motion fields.
     ///
-    /// A slot that names a field whose frame has not reconstructed yet yields
-    /// `None` for the whole list: the § 7.9 projection would otherwise read
-    /// that reference as motionless and silently decode a different frame.
-    pub(crate) fn resolve_motion_fields(&self) -> Option<Vec<Option<Arc<TemporalMotionField>>>> {
+    /// A selected slot whose frame has not reconstructed yet yields `None` for
+    /// the whole list: the § 7.9 projection would otherwise read that reference
+    /// as motionless and silently decode a different frame. Unselected slots
+    /// are not projection inputs and need not stall the frame.
+    pub(crate) fn resolve_motion_fields(
+        &self,
+        ref_frame_idx: &[u32],
+    ) -> Option<Vec<Option<Arc<TemporalMotionField>>>> {
         self.ref_motion_fields
             .iter()
-            .map(|slot| match slot {
-                None => Some(None),
-                Some(handle) => handle.field().map(|field| Some(Arc::clone(field))),
+            .enumerate()
+            .map(|(index, slot)| match slot {
+                Some(handle)
+                    if ref_frame_idx
+                        .iter()
+                        .any(|&selected| selected as usize == index) =>
+                {
+                    handle.field().map(|field| Some(Arc::clone(field)))
+                }
+                None | Some(_) => Some(None),
             })
             .collect()
     }
@@ -1041,10 +1052,18 @@ pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterat
         .chain(core.bridge_frame_ref_idx)
 }
 
-impl<T: ReconSample> PixelReferenceGate<'_, T> {
+impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     /// Whether every named reference frame has settled.
     pub(crate) fn is_ready(&self) -> bool {
         self.slots.iter().all(|slot| slot.is_settled())
+    }
+
+    /// Returns the admission conditions for every named reference settling.
+    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'a>> {
+        self.slots
+            .iter()
+            .map(|slot| slot.settled_condition())
+            .collect()
     }
 
     /// Blocks the calling driver thread until every named reference frame has
@@ -1675,8 +1694,10 @@ pub(crate) use block::{
     parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
-pub(crate) use find_mv_stack::TemporalMotionField;
-pub(crate) use frame_walk::{DeferredInterWalk, parse_inter_frame, splittable_inter_frame};
+pub(crate) use find_mv_stack::{TemporalMotionField, TemporalMvScratch};
+pub(crate) use frame_walk::{
+    DeferredInterWalk, ScheduledInterWalk, parse_inter_frame, splittable_inter_frame,
+};
 pub(crate) use motion_field::MotionFieldHandle;
 
 #[cfg(test)]

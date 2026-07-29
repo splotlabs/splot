@@ -12,6 +12,7 @@
 //! needs so the driver can run it after it has moved on.
 
 use std::sync::Arc;
+use std::sync::{Mutex, PoisonError};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::headers::frame::FrameHeaderCore;
@@ -22,6 +23,7 @@ use super::*;
 use crate::bitstream::tile_payload::{DecodeTilePayloadPlan, FrameQuantizerSnapshot};
 use crate::filters::wienerns_lr::FrameFilterRecords;
 use crate::pipeline::frame_engine::finish::WalkedFrame;
+use crate::pipeline::unsupported;
 
 /// One inter frame's header-derived walk state, shared by the fused walk and
 /// the split parse pass so both enter their tile phase identically.
@@ -253,6 +255,55 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
     quantizer: FrameQuantizerSnapshot,
 }
 
+/// One deferred frame whose reconstruction units are scheduler-owned.
+pub(crate) struct ScheduledInterWalk<T: ReconSample> {
+    reconstruction: block::ScheduledInterReconstruction<T>,
+    setup: Mutex<Option<FilterSinkSetup>>,
+    core: Arc<FrameHeaderCore>,
+}
+
+impl<T: ReconSample> ScheduledInterWalk<T> {
+    /// Number of independently admitted reconstruction units.
+    pub(crate) const fn len(&self) -> usize {
+        self.reconstruction.len()
+    }
+
+    /// Cross-frame conditions for one reconstruction unit.
+    pub(crate) fn conditions(&self, index: usize) -> Vec<splot_parallel::Condition<'_>> {
+        self.reconstruction.conditions(index)
+    }
+
+    /// Precomputes one admitted reconstruction unit.
+    pub(crate) fn precompute(&self, index: usize) -> Result<()> {
+        self.reconstruction.precompute(index)
+    }
+
+    /// Commits one precomputed unit and returns the walked frame after the
+    /// final ordered commit.
+    pub(crate) fn commit(&self, index: usize) -> Result<Option<WalkedFrame<T>>> {
+        let Some((workspace, filter_inputs)) = self.reconstruction.commit(index)? else {
+            return Ok(None);
+        };
+        let setup = self
+            .setup
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| {
+                unsupported(
+                    "inter_admission_filter_setup",
+                    None,
+                    "scheduled reconstruction completed more than once",
+                )
+            })?;
+        Ok(Some(setup.walked_frame(
+            workspace,
+            filter_inputs,
+            Arc::clone(&self.core),
+        )))
+    }
+}
+
 /// Runs one inter frame's entropy pass and leaves its reconstruction owed.
 ///
 /// The pass reads no reference sample and no projected motion field, so it
@@ -334,6 +385,27 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
 }
 
 impl<T: ReconSample> DeferredInterWalk<T> {
+    /// Shares the reference motion handles that gate this frame's temporal
+    /// prelude.
+    pub(crate) fn motion_dependencies(&self) -> Vec<MotionFieldHandle> {
+        let mut seen = vec![false; self.reference.ref_motion_fields.len()];
+        self.ref_frame_idx
+            .iter()
+            .filter_map(|&slot| {
+                let index = slot as usize;
+                if *seen.get(index)? {
+                    return None;
+                }
+                seen[index] = true;
+                self.reference
+                    .ref_motion_fields
+                    .get(index)
+                    .and_then(Option::as_ref)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Runs the frame's § 7.9 prelude, § 7.12 resolve pass and reconstruction,
     /// publishes its motion field as soon as the walk's last unit lands, and
     /// yields the walked frame the § 7.2 filter chain consumes.
@@ -370,5 +442,49 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             motion,
         )?;
         Ok(setup.walked_frame(workspace, filter_inputs, core))
+    }
+
+    /// Runs the temporal prelude and resolve/motion half-pass, returning the
+    /// per-unit reconstruction state consumed by the admission scheduler.
+    pub(crate) fn prepare_scheduled(
+        self,
+        temporal_scratch: super::find_mv_stack::TemporalMvScratch,
+    ) -> Result<(
+        ScheduledInterWalk<T>,
+        super::find_mv_stack::TemporalMvScratch,
+    )> {
+        let Self {
+            core,
+            frame_cdfs: _,
+            ccso_grid: _,
+            info: _,
+            motion,
+            parse,
+            workspace,
+            setup,
+            sequence,
+            reference,
+            ref_frame_idx,
+            quantizer,
+        } = self;
+        let _quantizer_scopes = quantizer.install_frame();
+        let core_for_reconstruction = Arc::clone(&core);
+        let (reconstruction, temporal_scratch) = parse.prepare_scheduled(
+            InterDecodeScratch::with_temporal_scratch(temporal_scratch),
+            sequence,
+            core_for_reconstruction,
+            Arc::from(ref_frame_idx),
+            Arc::new(reference),
+            workspace,
+            motion,
+        )?;
+        Ok((
+            ScheduledInterWalk {
+                reconstruction,
+                setup: Mutex::new(Some(setup)),
+                core,
+            },
+            temporal_scratch,
+        ))
     }
 }

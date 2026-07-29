@@ -32,17 +32,21 @@ enum FilteredFrameSink<'a, T: ReconSample> {
     /// The filter chain owns the output until the freeze.
     Local(Box<Mutex<CurrentFrameWorkspace<T>>>),
     /// The frame's slot shares the output, stripe by stripe.
-    Published(&'a crate::pipeline::frame_progress::FrameProgress<T>),
+    Published {
+        progress: &'a crate::pipeline::frame_progress::FrameProgress<T>,
+        admit: Option<&'a dyn splot_parallel::Admit<'static>>,
+    },
 }
 
 impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
     fn open(
         progress: Option<&'a crate::pipeline::frame_progress::FrameProgress<T>>,
+        admit: Option<&'a dyn splot_parallel::Admit<'static>>,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
     ) -> Result<Self> {
         match progress {
-            Some(progress) if progress.begin(ranges) => Ok(Self::Published(progress)),
+            Some(progress) if progress.begin(ranges) => Ok(Self::Published { progress, admit }),
             _ => Ok(Self::Local(Box::new(Mutex::new(
                 CurrentFrameWorkspace::new(info, T::default())?,
             )))),
@@ -59,7 +63,7 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             ),
-            Self::Published(progress) => progress.with_workspace_mut(publish),
+            Self::Published { progress, .. } => progress.with_workspace_mut(publish),
         }
     }
 
@@ -75,13 +79,16 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             )),
-            Self::Published(progress) => progress.try_with_workspace_mut(publish),
+            Self::Published { progress, .. } => progress.try_with_workspace_mut(publish),
         }
     }
 
     fn publish(&self, stripe: usize) {
-        if let Self::Published(progress) = self {
+        if let Self::Published { progress, admit } = self {
             progress.publish(stripe);
+            if let Some(admit) = admit {
+                admit.admit_ready();
+            }
         }
     }
 
@@ -98,7 +105,7 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .freeze()?,
             )),
-            Self::Published(progress) => progress.freeze_workspace(publish),
+            Self::Published { progress, .. } => progress.freeze_workspace(publish),
         }
     }
 }
@@ -238,12 +245,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         self.gdf_reference = context;
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_filtered_frame<R>(
         mut self,
         core: &splot_core::headers::frame::FrameHeaderCore,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
+        admit: Option<&dyn splot_parallel::Admit<'static>>,
         offset: ByteOffset,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
@@ -306,7 +315,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
                 )
             })?;
-        let sink = FilteredFrameSink::open(progress, info, &ranges)?;
+        let sink = FilteredFrameSink::open(progress, admit, info, &ranges)?;
 
         let Self {
             mut workspace,

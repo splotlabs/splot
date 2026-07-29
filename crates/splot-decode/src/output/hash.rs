@@ -41,13 +41,7 @@ pub(crate) fn decode_hash_report_from_plan(
         ));
     }
     let report_frames = if splot_parallel::on_multiworker_pool() {
-        decode_hash_frames_pipelined(
-            bytes,
-            parsed,
-            options,
-            plan,
-            hasher_frame_delay(frame_delay, resolved_threads),
-        )?
+        decode_hash_frames_pipelined(bytes, parsed, options, plan, frame_delay)?
     } else {
         let mut frames = Vec::new();
         crate::pipeline::emit_frames_from_prepared(
@@ -71,19 +65,7 @@ pub(crate) fn decode_hash_report_from_plan(
     ))
 }
 
-/// The pipelining depth the decode driver keeps once the hasher takes a worker.
-///
-/// The hasher task parks on the queue for the whole decode, so the driver plus
-/// the `depth - 1` filter phases it keeps in flight must fit the remaining
-/// workers, or the driver could park on a filter phase no worker is left to run.
-/// Only a depth that would overrun those workers is clamped; a depth the pool
-/// can still afford is kept, so `--threads 4 --frame-delay 2` stays pipelined.
-fn hasher_frame_delay(frame_delay: NonZeroUsize, resolved_threads: NonZeroUsize) -> NonZeroUsize {
-    NonZeroUsize::new(resolved_threads.get() - 1)
-        .map_or(NonZeroUsize::MIN, |available| frame_delay.min(available))
-}
-
-/// Hashes decoded frames on a dedicated worker task while the driver decodes.
+/// Hashes decoded frames on short worker tasks while the driver decodes.
 fn decode_hash_frames_pipelined(
     bytes: &[u8],
     parsed: &FlatParsedBitstream<'_>,
@@ -92,22 +74,9 @@ fn decode_hash_frames_pipelined(
     frame_delay: NonZeroUsize,
 ) -> Result<Vec<DecodeHashFrame>> {
     let completed = Mutex::new(Vec::new());
-    let capacity = splot_parallel::QueueCapacity::new(NonZeroUsize::MIN.saturating_add(1));
-    let (sender, receiver) = splot_parallel::bounded_queue::<(u64, PipelineDecodedFrame)>(capacity);
     splot_parallel::ready_task_scope(|scope| {
-        let completed = &completed;
-        scope.spawn(move |_| {
-            while let Ok((emitted, frame)) = receiver.recv() {
-                let hashed = hash_pipeline_frame(&frame, emitted);
-                completed
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(hashed);
-            }
-        });
-
         let mut emitted = 0u64;
-        let decoded = crate::pipeline::emit_frames_from_prepared(
+        crate::pipeline::emit_frames_from_prepared(
             bytes,
             parsed,
             options,
@@ -117,24 +86,24 @@ fn decode_hash_frames_pipelined(
                 let ready = output.ready_frame()?;
                 let index = emitted;
                 emitted += 1;
-                if let Err(disconnected) = sender.send((index, ready)) {
-                    let (index, frame) = disconnected.0;
-                    let hashed = hash_pipeline_frame(&frame, index);
+                let completed = &completed;
+                scope.spawn(move |_| {
+                    let hashed = hash_pipeline_frame(&ready, index);
                     completed
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(hashed);
-                }
+                });
                 Ok(())
             },
-        );
-        drop(sender);
-        decoded
+        )
     })??;
 
-    Ok(completed
+    let mut completed = completed
         .into_inner()
-        .unwrap_or_else(std::sync::PoisonError::into_inner))
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    completed.sort_unstable_by_key(|frame| frame.output_index);
+    Ok(completed)
 }
 
 fn discard_hash() -> bool {

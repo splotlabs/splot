@@ -255,7 +255,7 @@ struct ProjectedTemporalMotionCell {
     ref_offset: i32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ProjectedTemporalMotionField {
     width8: usize,
     height8: usize,
@@ -324,6 +324,12 @@ pub(crate) struct TemporalMvContext {
     tip: Option<TipReferencePair>,
 }
 
+#[derive(Default)]
+pub(crate) struct TemporalMvScratch {
+    projection: ProjectedTemporalMotionField,
+    average: ProjectedTemporalMotionField,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct OrderHintMvContext<'a> {
     current_order_hint: u32,
@@ -369,6 +375,21 @@ pub(crate) struct TemporalProjectionConfig {
 }
 
 impl TemporalMvContext {
+    pub(crate) fn from_scratch(scratch: TemporalMvScratch) -> Self {
+        Self {
+            projection_scratch: scratch.projection,
+            average_scratch: scratch.average,
+            ..Self::empty()
+        }
+    }
+
+    pub(crate) fn take_scratch(&mut self) -> TemporalMvScratch {
+        TemporalMvScratch {
+            projection: core::mem::take(&mut self.projection_scratch),
+            average: core::mem::take(&mut self.average_scratch),
+        }
+    }
+
     pub(crate) fn empty() -> Self {
         Self {
             current_order_hint: 0,

@@ -170,12 +170,12 @@ pub(crate) fn emit_frames_from_prepared(
 /// Retires the settled frames nothing owns any more, subtracting their bytes
 /// from the live-frame accounting.
 ///
-/// A frame the in-flight ring still holds is skipped: the ring keeps a second
-/// slot handle, so its planes stay alive whatever else releases them, and
-/// subtracting the bytes would let the live-frame peak run above
+/// A frame with any remaining owner or shared sample handle is skipped: its
+/// planes stay alive whatever the driver releases, and subtracting the bytes
+/// would let the live-frame peak run above
 /// [`crate::DecodeLimitName::MaxReferenceStoreBytes`]. The driver rescans every
 /// frame on each call, so the skipped frame is reclaimed on the first pass after
-/// its finish is harvested.
+/// its last owner releases it.
 fn reclaim_unowned_frames(
     frames: &mut [Option<PipelineFrame>],
     reference: &reference_buffer::RuntimeReferenceBuffer,
@@ -193,6 +193,7 @@ fn reclaim_unowned_frames(
             || emission.holds(frame_index)
             || ring.holds(frame_index)
             || !frame.frame.is_settled()
+            || frame.frame.handle_count() > 1
         {
             continue;
         }
@@ -464,14 +465,15 @@ pub(crate) fn decode_key_frame(
         display_grain,
         None,
         FrameOutputEffects::empty(),
+        None,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_key_frame_with_effects(
+fn decode_key_frame_with_effects<'scope>(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
     scratch_ten: &mut inter::InterDecodeScratch<u16>,
-    spawner: &inflight::FinishSpawner<'_, '_>,
+    spawner: &inflight::FinishSpawner<'_, 'scope>,
     ring: &mut inflight::InflightRing,
     frame_index: usize,
     bytes: &[u8],
@@ -485,6 +487,10 @@ fn decode_key_frame_with_effects(
     display_grain: Option<ActiveFilmGrain>,
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
+    admission: Option<(
+        &'scope splot_parallel::AdmissionScheduler<'static>,
+        &mut frame_pipeline::ReconAdmissionLane,
+    )>,
 ) -> Result<PipelineFrame> {
     ring.reserve(scratch_eight, scratch_ten);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
@@ -508,6 +514,7 @@ fn decode_key_frame_with_effects(
                     walk.stage,
                     inflight::PipelineFrameSlot::Eight,
                     spawner,
+                    admission,
                     ring,
                     frame_index,
                     scratch_eight,
@@ -538,6 +545,7 @@ fn decode_key_frame_with_effects(
                     walk.stage,
                     inflight::PipelineFrameSlot::Ten,
                     spawner,
+                    admission,
                     ring,
                     frame_index,
                     scratch_ten,
@@ -609,9 +617,11 @@ fn decode_frames_from_plan_impl(
             retain_decoded_frames,
             emit,
             &inflight::FinishSpawner::Inline,
+            None,
         );
     }
-    splot_parallel::ready_task_scope(|scope| {
+    let admission = splot_parallel::AdmissionScheduler::new();
+    let decoded = splot_parallel::ready_task_scope(|scope| {
         drive_frames(
             parsed,
             bytes,
@@ -622,8 +632,16 @@ fn decode_frames_from_plan_impl(
             retain_decoded_frames,
             emit,
             &inflight::FinishSpawner::Deferred(scope),
+            Some(&admission),
         )
-    })?
+    })?;
+    match decoded {
+        Err(error) => Err(error),
+        Ok(frames) => {
+            admission.finish()?;
+            Ok(frames)
+        }
+    }
 }
 
 /// Owns the decode scratch and the in-flight ring for one decode, and resolves
@@ -633,7 +651,7 @@ fn decode_frames_from_plan_impl(
 /// would have run that frame's filters before reaching the later error, so the
 /// lowest-indexed collected failure is the one the caller sees.
 #[allow(clippy::too_many_arguments)]
-fn drive_frames(
+fn drive_frames<'scope>(
     parsed: &FlatParsedBitstream<'_>,
     bytes: &[u8],
     options: &DecodeOptions,
@@ -642,7 +660,8 @@ fn drive_frames(
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    spawner: &inflight::FinishSpawner<'_, '_>,
+    spawner: &inflight::FinishSpawner<'_, 'scope>,
+    admission: Option<&'scope splot_parallel::AdmissionScheduler<'static>>,
 ) -> Result<Vec<PipelineFrame>> {
     let inflight_timer = crate::timing::start();
     let phases_before = crate::timing::phase_totals();
@@ -658,6 +677,7 @@ fn drive_frames(
         retain_decoded_frames,
         emit,
         spawner,
+        admission,
         &mut ring,
         &mut decode_scratch_eight,
         &mut decode_scratch_ten,
@@ -693,7 +713,7 @@ fn split_walk(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_in_order(
+fn decode_frames_in_order<'scope>(
     parsed: &FlatParsedBitstream<'_>,
     bytes: &[u8],
     options: &DecodeOptions,
@@ -701,7 +721,8 @@ fn decode_frames_in_order(
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
-    spawner: &inflight::FinishSpawner<'_, '_>,
+    spawner: &inflight::FinishSpawner<'_, 'scope>,
+    admission: Option<&'scope splot_parallel::AdmissionScheduler<'static>>,
     ring: &mut inflight::InflightRing,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
@@ -727,6 +748,7 @@ fn decode_frames_in_order(
     let leading_prefix = leading_prefix_obus(leading_obus)?;
     film_grain_slots.update_from_obus(leading_prefix)?;
     let mut output_effect_state = OutputEffectState::new();
+    let mut recon_lane = frame_pipeline::ReconAdmissionLane::default();
     output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
@@ -874,6 +896,7 @@ fn decode_frames_in_order(
                     walk.stage,
                     inflight::PipelineFrameSlot::Eight,
                     spawner,
+                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
                     ring,
                     0,
                     decode_scratch_eight,
@@ -917,6 +940,7 @@ fn decode_frames_in_order(
                     walk.stage,
                     inflight::PipelineFrameSlot::Ten,
                     spawner,
+                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
                     ring,
                     0,
                     decode_scratch_ten,
@@ -953,6 +977,7 @@ fn decode_frames_in_order(
             key_display_grain,
             key_user_qm,
             key_output_effects,
+            admission.map(|scheduler| (scheduler, &mut recon_lane)),
         )?
     };
     retained_frame_bytes =
@@ -1052,6 +1077,7 @@ fn decode_frames_in_order(
                 frame_pipeline::flush_pending(
                     &mut pending,
                     spawner,
+                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
                     decode_scratch_eight,
                     decode_scratch_ten,
                 )?;
@@ -1385,6 +1411,7 @@ fn decode_frames_in_order(
                                 },
                                 pending.take(),
                                 spawner,
+                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
                                 decode_scratch_eight,
                                 decode_scratch_ten,
                             )??;
@@ -1401,12 +1428,17 @@ fn decode_frames_in_order(
                                 deferred.ccso_grid.clone(),
                                 deferred.motion.clone(),
                             );
-                            pending = Some(frame_pipeline::PendingWalk::Eight(deferred, finish));
+                            pending = Some(frame_pipeline::PendingWalk::Eight {
+                                frame_index,
+                                deferred,
+                                finish,
+                            });
                             products
                         } else {
                             frame_pipeline::flush_pending(
                                 &mut pending,
                                 spawner,
+                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
                                 decode_scratch_eight,
                                 decode_scratch_ten,
                             )?;
@@ -1427,6 +1459,7 @@ fn decode_frames_in_order(
                                 walk.stage,
                                 inflight::PipelineFrameSlot::Eight,
                                 spawner,
+                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
                                 ring,
                                 frame_index,
                                 decode_scratch_eight,
@@ -1504,6 +1537,7 @@ fn decode_frames_in_order(
                                 },
                                 pending.take(),
                                 spawner,
+                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
                                 decode_scratch_eight,
                                 decode_scratch_ten,
                             )??;
@@ -1520,12 +1554,17 @@ fn decode_frames_in_order(
                                 deferred.ccso_grid.clone(),
                                 deferred.motion.clone(),
                             );
-                            pending = Some(frame_pipeline::PendingWalk::Ten(deferred, finish));
+                            pending = Some(frame_pipeline::PendingWalk::Ten {
+                                frame_index,
+                                deferred,
+                                finish,
+                            });
                             products
                         } else {
                             frame_pipeline::flush_pending(
                                 &mut pending,
                                 spawner,
+                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
                                 decode_scratch_eight,
                                 decode_scratch_ten,
                             )?;
@@ -1546,6 +1585,7 @@ fn decode_frames_in_order(
                                 walk.stage,
                                 inflight::PipelineFrameSlot::Ten,
                                 spawner,
+                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
                                 ring,
                                 frame_index,
                                 decode_scratch_ten,
@@ -1665,6 +1705,7 @@ fn decode_frames_in_order(
                 frame_pipeline::flush_pending(
                     &mut pending,
                     spawner,
+                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
                     decode_scratch_eight,
                     decode_scratch_ten,
                 )?;
@@ -1865,6 +1906,7 @@ fn decode_frames_in_order(
                     key_display_grain,
                     key_user_qm,
                     key_output_effects,
+                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
                 )?;
                 crate::timing::report("key_frame_decode", key_frame_timer);
                 let next_retained_frame_bytes = ensure_retained_frame_byte_limits(
@@ -1963,6 +2005,7 @@ fn decode_frames_in_order(
     frame_pipeline::flush_pending(
         &mut pending,
         spawner,
+        admission.map(|scheduler| (scheduler, &mut recon_lane)),
         decode_scratch_eight,
         decode_scratch_ten,
     )?;

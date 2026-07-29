@@ -23,7 +23,7 @@
 use core::num::NonZeroUsize;
 use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, TryLockError};
 
-use splot_parallel::WatermarkCell;
+use splot_parallel::{Condition, WatermarkCell};
 use splot_recon::{CurrentFrameWorkspace, DecodedFrameInfo, ReconSample};
 
 use crate::error::{DecodeError, Result};
@@ -144,6 +144,12 @@ impl<T: ReconSample> FrameProgress<T> {
             return 0;
         }
         published.min(self.luma_height)
+    }
+
+    /// Returns the scheduler condition that admits a reader once `rows` final
+    /// luma rows have been published.
+    pub(crate) fn row_condition(&self, rows: usize) -> Condition<'_> {
+        Condition::Watermark(&self.published_luma_rows, rows)
     }
 
     /// Borrows the published prefix of the frame's filtered samples.

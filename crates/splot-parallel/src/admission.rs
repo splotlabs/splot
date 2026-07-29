@@ -119,7 +119,7 @@ impl Condition<'_> {
 pub type Job<'job> = Box<dyn for<'a> FnOnce(&'a dyn Admit<'job>) + Send + 'job>;
 
 /// What a running job may do with the scheduler that spawned it.
-pub trait Admit<'job> {
+pub trait Admit<'job>: Sync {
     /// Spawns every job that is admissible now, returning how many were
     /// spawned. A publisher calls this after publishing so its dependents start
     /// before its own body ends.

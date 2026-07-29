@@ -742,26 +742,6 @@ fn hash_report_numbers_frames_in_emission_order() {
     }
 }
 
-#[test]
-fn the_hasher_worker_clamps_rather_than_decrements_the_pipelining_depth() {
-    let nz = |value: usize| NonZeroUsize::new(value).unwrap();
-
-    for (frame_delay, threads, expected) in [
-        (2usize, 4usize, 2usize),
-        (4, 4, 3),
-        (10, 10, 9),
-        (2, 2, 1),
-        (1, 8, 1),
-        (3, 1, 1),
-    ] {
-        assert_eq!(
-            hasher_frame_delay(nz(frame_delay), nz(threads)),
-            nz(expected),
-            "frame delay {frame_delay} at {threads} thread(s)",
-        );
-    }
-}
-
 /// Pins every pipelining depth to the depth-one decode of the same stream.
 ///
 /// Pools of four workers and up are compared against their own serial depth

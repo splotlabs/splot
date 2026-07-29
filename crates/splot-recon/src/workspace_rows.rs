@@ -20,9 +20,79 @@
 //!
 //! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`, `RECON-RESIDUAL-ADDITION`.
 
+use core::slice;
+
+use super::owned_rect::OwnedFrameRectRows;
 use super::{CurrentFrameWorkspace, block_rect};
 use crate::reconstruct::add_block_residual_into_rows;
-use crate::{BitDepth, IntraRectBlockSize, PlaneId, PlaneRect, ReconError, ReconSample, Result};
+use crate::{
+    BitDepth, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, ReconError, ReconSample, Result,
+};
+
+/// Iterator over checked workspace rectangle rows.
+#[derive(Debug)]
+pub enum WorkspaceRectRows<'a, T: ReconSample> {
+    /// Rows backed by conventional stride-based plane storage.
+    Strided(PlaneRefRows<'a, T>),
+    /// Rows backed by individually partitioned rectangle slices.
+    Sliced(CurrentFrameRectRows<'a, T>),
+    /// Rows backed by tightly packed caller-owned rectangle storage.
+    Owned(OwnedFrameRectRows<'a, T>),
+}
+
+macro_rules! delegate_rect_rows {
+    ($rows:expr, $method:ident) => {
+        match $rows {
+            WorkspaceRectRows::Strided(rows) => rows.$method(),
+            WorkspaceRectRows::Sliced(rows) => rows.$method(),
+            WorkspaceRectRows::Owned(rows) => rows.$method(),
+        }
+    };
+}
+
+impl<T: ReconSample> WorkspaceRectRows<'_, T> {
+    fn remaining(&self) -> usize {
+        delegate_rect_rows!(self, len)
+    }
+}
+
+impl<'a, T: ReconSample> Iterator for WorkspaceRectRows<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        delegate_rect_rows!(self, next)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.remaining();
+        (remaining, Some(remaining))
+    }
+}
+
+impl<T: ReconSample> ExactSizeIterator for WorkspaceRectRows<'_, T> {}
+
+/// Iterator over rows borrowed from one rectangular surface.
+#[derive(Debug)]
+pub struct CurrentFrameRectRows<'a, T: ReconSample> {
+    pub(super) rows: slice::Iter<'a, &'a mut [T]>,
+    pub(super) x: usize,
+    pub(super) width: usize,
+}
+
+impl<'a, T: ReconSample> Iterator for CurrentFrameRectRows<'a, T> {
+    type Item = &'a [T];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let row = self.rows.next()?;
+        Some(&row[self.x..self.x + self.width])
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.rows.size_hint()
+    }
+}
+
+impl<T: ReconSample> ExactSizeIterator for CurrentFrameRectRows<'_, T> {}
 
 /// Exclusive mutable rows of one wholly in-frame current-frame rectangle.
 ///

@@ -133,6 +133,15 @@ pub(super) struct RowReferenceBounds {
     settle: bool,
 }
 
+impl RowReferenceBounds {
+    pub(super) fn merge(&mut self, other: Self) {
+        for (need, other) in self.needs.iter_mut().zip(other.needs) {
+            *need = (*need).max(other);
+        }
+        self.settle |= other.settle;
+    }
+}
+
 /// One frame's reference lists, resolved to the slots its rows read.
 pub(super) struct RowReferenceGate<'a, T: ReconSample> {
     lists: [Option<&'a RefFrameSlot<T>>; MAX_LISTS],
@@ -175,6 +184,25 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             return self.settle.is_ready();
         }
         lists_published(&self.lists, bounds)
+    }
+
+    /// Returns the scheduler conditions that replace waiting for `bounds`.
+    pub(super) fn conditions(
+        &self,
+        bounds: &RowReferenceBounds,
+    ) -> Vec<splot_parallel::Condition<'a>> {
+        if bounds.settle {
+            return self.settle.conditions();
+        }
+        self.lists
+            .iter()
+            .zip(bounds.needs)
+            .filter_map(|(slot, need)| {
+                (need != 0)
+                    .then(|| slot.map(|slot| slot.row_condition(need as usize)))
+                    .flatten()
+            })
+            .collect()
     }
 
     /// Whether every named reference frame has settled, which admits every row.
