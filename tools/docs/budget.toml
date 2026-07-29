@@ -26,6 +26,7 @@ allowed_manual_docs = [
   "docs/TESTING.md",
   "docs/CONFORMANCE.md",
   "docs/DIAGNOSTICS.md",
+  "docs/DECODE-SCALING-MISSION.md",
   "docs/DECISIONS/**",
 ]
 
