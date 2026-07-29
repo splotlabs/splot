@@ -130,27 +130,18 @@ impl<T: Copy> MiGrid<T> {
         let Some(c) = c.checked_sub(self.origin_col) else {
             return;
         };
-        for y in 0..n4h {
-            let Some(row) = r.checked_add(y) else {
-                break;
-            };
-            if row >= self.rows {
-                break;
-            }
-            for x in 0..n4w {
-                let Some(col) = c.checked_add(x) else {
-                    break;
-                };
-                if col >= self.cols {
-                    break;
-                }
-                if let Some(index) = row
-                    .checked_mul(self.cols)
-                    .and_then(|start| start.checked_add(col))
-                {
-                    self.cells[index] = value;
-                }
-            }
+        if r >= self.rows || c >= self.cols {
+            return;
+        }
+        let row_end = r.saturating_add(n4h).min(self.rows);
+        let col_end = c.saturating_add(n4w).min(self.cols);
+        for row in self
+            .cells
+            .chunks_exact_mut(self.cols)
+            .skip(r)
+            .take(row_end - r)
+        {
+            row[c..col_end].fill(value);
         }
     }
 
