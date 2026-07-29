@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
+use splot_recon::{CurrentFrameWorkspace, OwnedFrameBands, PlaneId, PlaneRect, ReconSample};
 use std::any::Any;
 use std::sync::{Mutex, MutexGuard};
 
@@ -263,6 +263,34 @@ impl<T: ReconSample> DeblockedWindow<T> {
         Some(Self { planes })
     }
 
+    /// Copies a deblocked stripe window directly from segmented canonical row
+    /// bands without assembling a raw frame.
+    pub(crate) fn extract_bands(
+        frame: &OwnedFrameBands<T>,
+        luma_start: usize,
+        luma_end: usize,
+        margin: usize,
+    ) -> Option<Self> {
+        let info = frame.info();
+        let format = info.pixel_format();
+        let luma = info.coded_luma_size();
+        let chroma = format.chroma_size(luma).ok()?;
+        let subsampling_y = usize::from(format.subsampling_y());
+        let has_chroma = !format.is_monochrome();
+        let mut planes = [None, None, None];
+        for (index, plane) in [PlaneId::Y, PlaneId::U, PlaneId::V].into_iter().enumerate() {
+            if index > 0 && !has_chroma {
+                break;
+            }
+            let size = if index == 0 { luma } else { chroma? };
+            let shift = if index == 0 { 0 } else { subsampling_y };
+            let start = (luma_start >> shift).saturating_sub(margin);
+            let end = (luma_end.div_ceil(1 << shift) + margin).min(size.height());
+            planes[index] = Some(WindowPlane::copy_bands(frame, plane, start, end)?);
+        }
+        Some(Self { planes })
+    }
+
     /// Borrows the window as the deblocked planes a stripe reads.
     pub(crate) fn planes(&self) -> Option<DeblockedPlanes<'_, T>> {
         Some(DeblockedPlanes {
@@ -288,6 +316,50 @@ impl<T: ReconSample> WindowPlane<T> {
             samples,
             width: source.width(),
             height: source.frame_height(),
+            origin_y: start,
+            rows,
+        })
+    }
+
+    fn copy_bands(
+        frame: &OwnedFrameBands<T>,
+        plane: PlaneId,
+        start: usize,
+        end: usize,
+    ) -> Option<Self> {
+        let bands = frame.plane_bands(plane).ok()?;
+        let first = bands.first()?;
+        let storage = first.storage_size();
+        if start > end || end > storage.height() {
+            return None;
+        }
+        let rows = end - start;
+        let width = storage.width();
+        let mut samples = take_window_buffer::<T>(rows.checked_mul(width)?)?;
+        let mut band_index = 0;
+        for y in start..end {
+            while bands
+                .get(band_index)
+                .is_some_and(|band| band.rect().y() + band.rect().height() <= y)
+            {
+                band_index += 1;
+            }
+            let band = bands.get(band_index)?;
+            let rect = band.rect();
+            let local_y = y.checked_sub(rect.y())?;
+            if local_y >= rect.height() || rect.width() != width {
+                return None;
+            }
+            let row_start = local_y.checked_mul(width)?;
+            samples.extend_from_slice(
+                band.samples()
+                    .get(row_start..row_start.checked_add(width)?)?,
+            );
+        }
+        Some(Self {
+            samples,
+            width,
+            height: storage.height(),
             origin_y: start,
             rows,
         })

@@ -3,7 +3,7 @@
 
 # Ratchet down when durable docs shrink. Deleted process/assistant markdown must
 # stay deleted; git history is the archive.
-max_manual_markdown_files = 12
+max_manual_markdown_files = 13
 max_manual_markdown_lines = 1800
 
 exclude = [
@@ -27,6 +27,7 @@ allowed_manual_docs = [
   "docs/CONFORMANCE.md",
   "docs/DIAGNOSTICS.md",
   "docs/DECODE-SCALING-MISSION.md",
+  "docs/DECODE-SCALING-OPEN-TASKS.md",
   "docs/DECISIONS/**",
 ]
 

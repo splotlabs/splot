@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
-use splot_core::headers::frame::{FrameHeaderCore, FrameSize, FrameType, TxMode};
-use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::frame::{FrameHeaderCore, FrameType, TxMode};
+use splot_core::headers::sequence::{BitDepthIdc, SequenceHeader};
 use splot_core::headers::tile_group::{
     FrameHeaderCopyOutcome, RecordedFrameHeaderBits, parse_frame_header_copy,
 };
@@ -38,10 +38,10 @@ use crate::bitstream::tile_payload::{
     FrameCandidateTileBoundaryInput, FrameCandidateTileFacts, FrameCdfSubset,
     GeneralIntraBlockModeError, GeneralIntraResidualError, TileGroupPositionFacts,
 };
-use crate::error::{DecodeError, DecodeUnsupportedFeature, Result};
+use crate::error::{DecodeError, Result};
 use crate::prediction::inter;
 use crate::reference::buffer as reference_buffer;
-use crate::support::pipeline_limits::{checked_add, decoded_frame_storage_budget};
+use crate::support::pipeline_limits::checked_add;
 use crate::{DecodeLimitName, DecodeOptions, DecodePlannedObu, DecodeStreamPlan};
 
 mod frame_lifecycle;
@@ -50,6 +50,7 @@ pub(crate) mod frame_progress;
 pub(crate) mod inflight;
 pub(crate) mod output_effects;
 mod output_schedule;
+mod runtime_support;
 mod stream_schedule;
 
 #[cfg(test)]
@@ -63,12 +64,15 @@ pub(crate) use frame_lifecycle::{
 };
 use output_effects::{FrameOutputEffects, OutputEffectState};
 use output_schedule::*;
+use runtime_support::decode_tile_boundary_error;
+pub(crate) use runtime_support::{
+    ensure_runtime_limits, unsupported, unsupported_at, unsupported_feature_at,
+    unsupported_with_spec,
+};
 pub(crate) use stream_schedule::following_inter_envelope;
 #[cfg(test)]
 pub(crate) use stream_schedule::require_minimal_obu_order;
 use stream_schedule::*;
-
-const SPEC_SECTION: &str = "7.1";
 
 pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
@@ -470,7 +474,7 @@ pub(crate) fn decode_key_frame(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_key_frame_with_effects<'scope>(
+fn decode_key_frame_with_effects<'job, 'scope>(
     scratch_eight: &mut inter::InterDecodeScratch<u8>,
     scratch_ten: &mut inter::InterDecodeScratch<u16>,
     spawner: &inflight::FinishSpawner<'_, 'scope>,
@@ -488,10 +492,13 @@ fn decode_key_frame_with_effects<'scope>(
     user_qm: Option<crate::bitstream::tile_payload::FrameUserQmLevels>,
     output_effects: FrameOutputEffects,
     admission: Option<(
-        &'scope splot_parallel::AdmissionScheduler<'static>,
+        &'scope splot_parallel::AdmissionScheduler<'job>,
         &mut frame_pipeline::ReconAdmissionLane,
     )>,
-) -> Result<PipelineFrame> {
+) -> Result<PipelineFrame>
+where
+    'job: 'scope,
+{
     ring.reserve(scratch_eight, scratch_ten);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
     let (frame, frame_cdfs, ccso_params, ccso_grid, motion_field) =
@@ -564,10 +571,10 @@ fn decode_key_frame_with_effects<'scope>(
         frame,
         display_grain,
         output_effects,
-        frame_cdfs,
+        frame_cdfs: inter::FrameCdfHandle::settled(frame_cdfs),
         motion_field: inter::MotionFieldHandle::settled(motion_field),
         ccso_params,
-        ccso_grid,
+        ccso_grid: inter::CcsoGridHandle::settled(ccso_grid.map(Arc::new)),
         frame_rate_numerator: frame_rate.numerator,
         frame_rate_denominator: frame_rate.denominator,
     })
@@ -596,11 +603,11 @@ pub(crate) fn decode_frames_from_prepared_with_ivf_preflight(
 /// Runs the frame loop, pipelined when the resolved frame-delay depth is above
 /// one and the caller is inside a multi-worker pool, and serially otherwise.
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_from_plan_impl(
-    parsed: &FlatParsedBitstream<'_>,
-    bytes: &[u8],
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
+fn decode_frames_from_plan_impl<'job>(
+    parsed: &'job FlatParsedBitstream<'job>,
+    bytes: &'job [u8],
+    options: &'job DecodeOptions,
+    plan: &'job DecodeStreamPlan,
     frame_delay: NonZeroUsize,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
     retain_decoded_frames: bool,
@@ -620,7 +627,8 @@ fn decode_frames_from_plan_impl(
             None,
         );
     }
-    let admission = splot_parallel::AdmissionScheduler::new();
+    let admission: splot_parallel::AdmissionScheduler<'job> =
+        splot_parallel::AdmissionScheduler::new();
     let decoded = splot_parallel::ready_task_scope(|scope| {
         drive_frames(
             parsed,
@@ -651,18 +659,21 @@ fn decode_frames_from_plan_impl(
 /// would have run that frame's filters before reaching the later error, so the
 /// lowest-indexed collected failure is the one the caller sees.
 #[allow(clippy::too_many_arguments)]
-fn drive_frames<'scope>(
-    parsed: &FlatParsedBitstream<'_>,
-    bytes: &[u8],
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
+fn drive_frames<'job, 'scope>(
+    parsed: &'job FlatParsedBitstream<'job>,
+    bytes: &'job [u8],
+    options: &'job DecodeOptions,
+    plan: &'job DecodeStreamPlan,
     frame_delay: NonZeroUsize,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     emit: impl FnMut(&PipelineFrame) -> Result<()>,
     spawner: &inflight::FinishSpawner<'_, 'scope>,
-    admission: Option<&'scope splot_parallel::AdmissionScheduler<'static>>,
-) -> Result<Vec<PipelineFrame>> {
+    admission: Option<&'scope splot_parallel::AdmissionScheduler<'job>>,
+) -> Result<Vec<PipelineFrame>>
+where
+    'job: 'scope,
+{
     let inflight_timer = crate::timing::start();
     let phases_before = crate::timing::phase_totals();
     let mut decode_scratch_eight = inter::InterDecodeScratch::default();
@@ -713,20 +724,23 @@ fn split_walk(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn decode_frames_in_order<'scope>(
-    parsed: &FlatParsedBitstream<'_>,
-    bytes: &[u8],
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
+fn decode_frames_in_order<'job, 'scope>(
+    parsed: &'job FlatParsedBitstream<'job>,
+    bytes: &'job [u8],
+    options: &'job DecodeOptions,
+    plan: &'job DecodeStreamPlan,
     preflight: impl FnOnce(Option<IvfHeader>) -> Result<()>,
     retain_decoded_frames: bool,
     mut emit: impl FnMut(&PipelineFrame) -> Result<()>,
     spawner: &inflight::FinishSpawner<'_, 'scope>,
-    admission: Option<&'scope splot_parallel::AdmissionScheduler<'static>>,
+    admission: Option<&'scope splot_parallel::AdmissionScheduler<'job>>,
     ring: &mut inflight::InflightRing,
     decode_scratch_eight: &mut inter::InterDecodeScratch<u8>,
     decode_scratch_ten: &mut inter::InterDecodeScratch<u16>,
-) -> Result<Vec<PipelineFrame>> {
+) -> Result<Vec<PipelineFrame>>
+where
+    'job: 'scope,
+{
     let stream = require_runtime_stream(parsed)?;
     if matches!(stream, RuntimeStream::Ivf { ivf, .. } if ivf.frames.is_empty())
         && plan.obu_count() == 0
@@ -748,7 +762,7 @@ fn decode_frames_in_order<'scope>(
     let leading_prefix = leading_prefix_obus(leading_obus)?;
     film_grain_slots.update_from_obus(leading_prefix)?;
     let mut output_effect_state = OutputEffectState::new();
-    let mut recon_lane = frame_pipeline::ReconAdmissionLane::default();
+    let mut recon_lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity().min(3));
     output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
@@ -906,10 +920,10 @@ fn decode_frames_in_order<'scope>(
                     frame,
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs: walk.frame_cdfs,
+                    frame_cdfs: inter::FrameCdfHandle::settled(walk.frame_cdfs),
                     motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
                     ccso_params,
-                    ccso_grid: walk.ccso_grid,
+                    ccso_grid: inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
                 }
@@ -950,10 +964,10 @@ fn decode_frames_in_order<'scope>(
                     frame,
                     display_grain: key_display_grain,
                     output_effects: key_output_effects,
-                    frame_cdfs: walk.frame_cdfs,
+                    frame_cdfs: inter::FrameCdfHandle::settled(walk.frame_cdfs),
                     motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
                     ccso_params,
-                    ccso_grid: walk.ccso_grid,
+                    ccso_grid: inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
                 }
@@ -985,7 +999,7 @@ fn decode_frames_in_order<'scope>(
     let key_update = frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        Arc::clone(&key_frame.frame_cdfs),
+        key_frame.frame_cdfs.clone(),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
         key_frame.motion_field.clone(),
@@ -1069,17 +1083,16 @@ fn decode_frames_in_order<'scope>(
     }
 
     let mut decoding_initial_tu = true;
-    let mut pending: Option<frame_pipeline::PendingWalk> = None;
+    let mut pending_entropy = frame_pipeline::PendingEntropyQueue::default();
     let mut shared_sequence = None;
     for next_candidate in candidates {
         match next_candidate.obu_type() {
             ObuType::LeadingSef | ObuType::RegularSef => {
-                frame_pipeline::flush_pending(
-                    &mut pending,
+                frame_pipeline::drain_entropy_before_barrier(
+                    &mut pending_entropy,
                     spawner,
-                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
-                    decode_scratch_eight,
-                    decode_scratch_ten,
+                    admission,
+                    &mut recon_lane,
                 )?;
                 let (sef_prefix_obus, sef_envelope) = match stream {
                     RuntimeStream::AnnexB { obus } => following_annexb_inter_envelope(
@@ -1381,19 +1394,64 @@ fn decode_frames_in_order<'scope>(
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        ring.reserve(decode_scratch_eight, decode_scratch_ten);
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
                         if split_walk(spawner, next_candidate.obu_type(), &inter_core) {
+                            let admission = admission.ok_or_else(|| {
+                                unsupported(
+                                    "scheduled_entropy_without_admission",
+                                    Some(inter_envelope.offset),
+                                    "scheduled entropy requires the frame admission scheduler",
+                                )
+                            })?;
+                            frame_pipeline::prepare_entropy_submission(
+                                &mut pending_entropy,
+                                ring.capacity().min(3),
+                                spawner,
+                                admission,
+                                &mut recon_lane,
+                            )?;
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let records = decode_scratch_eight.take_frame_filter_records();
                             let quantizer =
                                 crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let deferred = frame_pipeline::parse_beside_pending(
+                            let info = inter::inter_frame_info(
+                                &inter_core,
+                                &sequence,
+                                BitDepth::Eight,
+                                inter_envelope.offset,
+                            )?;
+                            let (slot, finish) = inflight::reserve_pending_slot(
+                                info,
+                                inflight::PipelineFrameSlot::Eight,
+                                ring,
+                                frame_index,
+                            )?;
+                            let dependencies =
+                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
+                            let frame_cdfs = inter::FrameCdfHandle::pending();
+                            let ccso_grid = inter::CcsoGridHandle::pending();
+                            let motion = inter::MotionFieldHandle::pending_with_layout(
+                                inter::motion_field_layout(
+                                    &inter_core,
+                                    &sequence,
+                                    info,
+                                    inter_envelope.offset,
+                                )?,
+                            );
+                            let products = (
+                                slot,
+                                Arc::new(inter_core.clone()),
+                                frame_cdfs.clone(),
+                                ccso_grid.clone(),
+                                motion.clone(),
+                            );
+                            let result = frame_pipeline::schedule_entropy(
                                 move || {
                                     let _scopes = quantizer.install_frame();
                                     inter::parse_inter_frame(
@@ -1407,41 +1465,31 @@ fn decode_frames_in_order<'scope>(
                                         options,
                                         inter_state,
                                         BitDepth::Eight,
+                                        motion,
                                     )
                                 },
-                                pending.take(),
+                                frame_index,
+                                frame_cdfs,
+                                ccso_grid,
+                                products.4.clone(),
+                                &dependencies,
+                                admission,
                                 spawner,
-                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
-                                decode_scratch_eight,
-                                decode_scratch_ten,
-                            )??;
-                            let (slot, finish) = inflight::reserve_pending_slot(
-                                deferred.info,
-                                inflight::PipelineFrameSlot::Eight,
-                                ring,
-                                frame_index,
                             )?;
-                            let products = (
-                                slot,
-                                Arc::clone(&deferred.core),
-                                Arc::clone(&deferred.frame_cdfs),
-                                deferred.ccso_grid.clone(),
-                                deferred.motion.clone(),
-                            );
-                            pending = Some(frame_pipeline::PendingWalk::Eight {
+                            pending_entropy.push(frame_pipeline::PendingEntropy::Eight {
                                 frame_index,
-                                deferred,
+                                result,
                                 finish,
                             });
                             products
                         } else {
-                            frame_pipeline::flush_pending(
-                                &mut pending,
+                            frame_pipeline::drain_entropy_before_barrier(
+                                &mut pending_entropy,
                                 spawner,
-                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
-                                decode_scratch_eight,
-                                decode_scratch_ten,
+                                admission,
+                                &mut recon_lane,
                             )?;
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_eight,
                                 plan,
@@ -1467,8 +1515,8 @@ fn decode_frames_in_order<'scope>(
                             (
                                 slot,
                                 inter_core,
-                                walk.frame_cdfs,
-                                walk.ccso_grid,
+                                inter::FrameCdfHandle::settled(walk.frame_cdfs),
+                                inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
                                 inter::MotionFieldHandle::settled(walk.motion_field),
                             )
                         }
@@ -1507,19 +1555,64 @@ fn decode_frames_in_order<'scope>(
                             &sequence,
                             inter_envelope.offset,
                         )?;
-                        ring.reserve(decode_scratch_eight, decode_scratch_ten);
                         let _user_qm_scope =
                             crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
                         let _qm_scope = crate::bitstream::tile_payload::FrameQmScope::install(
                             frame_engine::intra::build_frame_qm_levels(&inter_core),
                         );
                         if split_walk(spawner, next_candidate.obu_type(), &inter_core) {
+                            let admission = admission.ok_or_else(|| {
+                                unsupported(
+                                    "scheduled_entropy_without_admission",
+                                    Some(inter_envelope.offset),
+                                    "scheduled entropy requires the frame admission scheduler",
+                                )
+                            })?;
+                            frame_pipeline::prepare_entropy_submission(
+                                &mut pending_entropy,
+                                ring.capacity().min(3),
+                                spawner,
+                                admission,
+                                &mut recon_lane,
+                            )?;
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let records = decode_scratch_ten.take_frame_filter_records();
                             let quantizer =
                                 crate::bitstream::tile_payload::FrameQuantizerSnapshot::capture();
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
-                            let deferred = frame_pipeline::parse_beside_pending(
+                            let info = inter::inter_frame_info(
+                                &inter_core,
+                                &sequence,
+                                BitDepth::Ten,
+                                inter_envelope.offset,
+                            )?;
+                            let (slot, finish) = inflight::reserve_pending_slot(
+                                info,
+                                inflight::PipelineFrameSlot::Ten,
+                                ring,
+                                frame_index,
+                            )?;
+                            let dependencies =
+                                inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
+                            let frame_cdfs = inter::FrameCdfHandle::pending();
+                            let ccso_grid = inter::CcsoGridHandle::pending();
+                            let motion = inter::MotionFieldHandle::pending_with_layout(
+                                inter::motion_field_layout(
+                                    &inter_core,
+                                    &sequence,
+                                    info,
+                                    inter_envelope.offset,
+                                )?,
+                            );
+                            let products = (
+                                slot,
+                                Arc::new(inter_core.clone()),
+                                frame_cdfs.clone(),
+                                ccso_grid.clone(),
+                                motion.clone(),
+                            );
+                            let result = frame_pipeline::schedule_entropy(
                                 move || {
                                     let _scopes = quantizer.install_frame();
                                     inter::parse_inter_frame(
@@ -1533,41 +1626,31 @@ fn decode_frames_in_order<'scope>(
                                         options,
                                         inter_state,
                                         BitDepth::Ten,
+                                        motion,
                                     )
                                 },
-                                pending.take(),
+                                frame_index,
+                                frame_cdfs,
+                                ccso_grid,
+                                products.4.clone(),
+                                &dependencies,
+                                admission,
                                 spawner,
-                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
-                                decode_scratch_eight,
-                                decode_scratch_ten,
-                            )??;
-                            let (slot, finish) = inflight::reserve_pending_slot(
-                                deferred.info,
-                                inflight::PipelineFrameSlot::Ten,
-                                ring,
-                                frame_index,
                             )?;
-                            let products = (
-                                slot,
-                                Arc::clone(&deferred.core),
-                                Arc::clone(&deferred.frame_cdfs),
-                                deferred.ccso_grid.clone(),
-                                deferred.motion.clone(),
-                            );
-                            pending = Some(frame_pipeline::PendingWalk::Ten {
+                            pending_entropy.push(frame_pipeline::PendingEntropy::Ten {
                                 frame_index,
-                                deferred,
+                                result,
                                 finish,
                             });
                             products
                         } else {
-                            frame_pipeline::flush_pending(
-                                &mut pending,
+                            frame_pipeline::drain_entropy_before_barrier(
+                                &mut pending_entropy,
                                 spawner,
-                                admission.map(|scheduler| (scheduler, &mut recon_lane)),
-                                decode_scratch_eight,
-                                decode_scratch_ten,
+                                admission,
+                                &mut recon_lane,
                             )?;
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_ten,
                                 plan,
@@ -1593,8 +1676,8 @@ fn decode_frames_in_order<'scope>(
                             (
                                 slot,
                                 inter_core,
-                                walk.frame_cdfs,
-                                walk.ccso_grid,
+                                inter::FrameCdfHandle::settled(walk.frame_cdfs),
+                                inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
                                 inter::MotionFieldHandle::settled(walk.motion_field),
                             )
                         }
@@ -1611,7 +1694,7 @@ fn decode_frames_in_order<'scope>(
                     inter_envelope.offset,
                     frame_cdfs,
                     inter_core.ccso_params.clone(),
-                    ccso_grid.clone(),
+                    ccso_grid,
                     motion_field,
                     inter_envelope.header.embedded_layer_id,
                 )?;
@@ -1619,10 +1702,10 @@ fn decode_frames_in_order<'scope>(
                     frame: inter_slot,
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
-                    frame_cdfs: Arc::clone(&inter_update.frame_cdfs),
+                    frame_cdfs: inter_update.frame_cdfs.clone(),
                     motion_field: inter_update.motion_field.clone(),
                     ccso_params: inter_core.ccso_params.clone(),
-                    ccso_grid,
+                    ccso_grid: inter_update.ccso_grid.clone(),
                     frame_rate_numerator: inter_frame_rate.numerator,
                     frame_rate_denominator: inter_frame_rate.denominator,
                 };
@@ -1702,12 +1785,11 @@ fn decode_frames_in_order<'scope>(
                 }
             }
             ObuType::ClosedLoopKey | ObuType::OpenLoopKey => {
-                frame_pipeline::flush_pending(
-                    &mut pending,
+                frame_pipeline::drain_entropy_before_barrier(
+                    &mut pending_entropy,
                     spawner,
-                    admission.map(|scheduler| (scheduler, &mut recon_lane)),
-                    decode_scratch_eight,
-                    decode_scratch_ten,
+                    admission,
+                    &mut recon_lane,
                 )?;
                 let starts_new_sequence = next_candidate.obu_type() == ObuType::ClosedLoopKey;
                 let (key_sequence_envelope, key_prefix_obus, key_envelope) = if starts_new_sequence
@@ -1917,7 +1999,7 @@ fn decode_frames_in_order<'scope>(
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
-                    Arc::clone(&key_frame.frame_cdfs),
+                    key_frame.frame_cdfs.clone(),
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
                     key_frame.motion_field.clone(),
@@ -2002,12 +2084,11 @@ fn decode_frames_in_order<'scope>(
         }
     }
 
-    frame_pipeline::flush_pending(
-        &mut pending,
+    frame_pipeline::drain_entropy_before_barrier(
+        &mut pending_entropy,
         spawner,
-        admission.map(|scheduler| (scheduler, &mut recon_lane)),
-        decode_scratch_eight,
-        decode_scratch_ten,
+        admission,
+        &mut recon_lane,
     )?;
     if !output_frame_limit_reached(options, scheduler.emitted.len()) {
         let flushed = scheduler.flush_all();
@@ -2353,143 +2434,6 @@ pub(crate) fn derive_inter_tile_plan<'payload>(
         TileFactsKind::Inter,
         Some(initial_cdfs),
     )
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn decode_tile_boundary_error(error: FrameCandidateTileBoundaryError) -> DecodeError {
-    match error {
-        FrameCandidateTileBoundaryError::Limit(source) => DecodeError::Limit { source },
-        FrameCandidateTileBoundaryError::Malformed(malformed) => unsupported(
-            malformed_tile_boundary_reason(malformed),
-            None,
-            "decode runtime could not derive a source-backed tile payload boundary",
-        ),
-        FrameCandidateTileBoundaryError::MissingFact { .. } => unsupported(
-            "missing_tile_fact",
-            None,
-            "decode runtime requires complete parser-derived tile facts",
-        ),
-        FrameCandidateTileBoundaryError::Unsupported { .. }
-        | FrameCandidateTileBoundaryError::Boundary(_) => unsupported(
-            "unsupported_tile_boundary",
-            None,
-            "decode runtime requires source-backed tile work units",
-        ),
-    }
-}
-
-fn malformed_tile_boundary_reason(
-    malformed: crate::bitstream::tile_payload::FrameCandidateTileMalformed,
-) -> &'static str {
-    match malformed {
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::CandidateNotInPlan => {
-            "candidate_not_in_plan"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::PlanSourceKindMismatch { .. } => {
-            "plan_source_kind_mismatch"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::CandidateEnvelopeMismatch { field } => {
-            match field {
-                "payload_source" => "payload_source_mismatch",
-                "offset" => "candidate_offset_mismatch",
-                "size" => "candidate_size_mismatch",
-                "header" => "candidate_header_mismatch",
-                "payload_len" => "candidate_payload_len_mismatch",
-                "payload" => "candidate_payload_mismatch",
-                "input_len_bytes" => "input_len_mismatch",
-                "ivf_frame" => "ivf_frame_mismatch",
-                _ => "candidate_envelope_mismatch",
-            }
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::ObuSizeSmallerThanHeader { .. } => {
-            "obu_size_smaller_than_header"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::SourceRangeOutOfBounds { .. } => {
-            "source_range_out_of_bounds"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupStructureIncomplete => {
-            "tile_group_structure_incomplete"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupStructureInvalid => {
-            "tile_group_structure_invalid"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupPayloadRangeInvalid => {
-            "tile_group_payload_range_invalid"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupRangeInvalid { .. } => {
-            "tile_group_range_invalid"
-        }
-        crate::bitstream::tile_payload::FrameCandidateTileMalformed::TileGroupPositionMismatch { .. } => {
-            "tile_group_position_mismatch"
-        }
-    }
-}
-pub(crate) fn ensure_runtime_limits(
-    limits: crate::DecodeLimits,
-    width: u32,
-    height: u32,
-    tile_payload_bytes: u64,
-    bit_depth: BitDepth,
-    chroma_format: ChromaFormatIdc,
-) -> Result<()> {
-    limits.ensure(DecodeLimitName::MaxFrameWidth, u64::from(width))?;
-    limits.ensure(DecodeLimitName::MaxFrameHeight, u64::from(height))?;
-    let budget = decoded_frame_storage_budget(
-        FrameSize::new(width, height),
-        chroma_format,
-        bytes_per_sample(bit_depth),
-    )?;
-    limits.ensure(DecodeLimitName::MaxLumaSamplesPerFrame, budget.luma_samples)?;
-    limits.ensure(DecodeLimitName::MaxDecodedFrameBytes, budget.decoded_bytes)?;
-    limits.ensure(DecodeLimitName::MaxTileCount, 1)?;
-    limits.ensure(DecodeLimitName::MaxTilePayloadBytes, tile_payload_bytes)?;
-    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, budget.luma_samples)?;
-    limits.ensure_allocation_len(
-        DecodeLimitName::MaxDecodedFrameBytes,
-        budget.chroma_samples_per_plane,
-    )?;
-    Ok(())
-}
-
-pub(crate) fn unsupported_with_spec(
-    reason: &'static str,
-    byte_offset: Option<ByteOffset>,
-    message: &'static str,
-    spec_section: &'static str,
-) -> DecodeError {
-    DecodeError::UnsupportedFeature {
-        unsupported: Box::new(DecodeUnsupportedFeature::new(
-            reason,
-            spec_section,
-            message,
-            byte_offset,
-        )),
-    }
-}
-
-pub(crate) fn unsupported(
-    reason: &'static str,
-    byte_offset: Option<ByteOffset>,
-    message: &'static str,
-) -> DecodeError {
-    unsupported_with_spec(reason, byte_offset, message, SPEC_SECTION)
-}
-
-pub(crate) fn unsupported_at(
-    reason: &'static str,
-    byte_offset: ByteOffset,
-    message: &'static str,
-) -> DecodeError {
-    unsupported(reason, Some(byte_offset), message)
-}
-
-pub(crate) fn unsupported_feature_at(
-    reason: &'static str,
-    byte_offset: ByteOffset,
-    message: &'static str,
-    spec_section: &'static str,
-) -> DecodeError {
-    unsupported_with_spec(reason, Some(byte_offset), message, spec_section)
 }
 
 #[cfg(test)]

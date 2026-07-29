@@ -413,6 +413,11 @@ impl InflightRing {
         self.max_in_flight
     }
 
+    /// Resolved frame-admission depth used to bound pending frame slots.
+    pub(crate) const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     /// Whether the ring still holds this frame's second slot handle, which keeps
     /// the frame's sample storage alive however few other owners remain.
     pub(crate) fn holds(&self, frame_index: usize) -> bool {
@@ -500,18 +505,21 @@ impl InflightRing {
 /// A deferred phase hands its single-use writer to the freeze, so the slot
 /// settles before the frame's published row prefix closes; a freeze the phase
 /// never reaches drops the writer instead, settling the slot as failed.
-pub(super) fn settle_walk_stage<'scope, T: ReconSample + Send + 'static>(
+pub(super) fn settle_walk_stage<'job, 'scope, T: ReconSample + Send + 'static>(
     stage: WalkStage<T>,
     erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
     spawner: &FinishSpawner<'_, 'scope>,
     admission: Option<(
-        &'scope splot_parallel::AdmissionScheduler<'static>,
+        &'scope splot_parallel::AdmissionScheduler<'job>,
         &mut super::frame_pipeline::ReconAdmissionLane,
     )>,
     ring: &mut InflightRing,
     frame_index: usize,
     scratch: &mut InterDecodeScratch<T>,
-) -> Result<PipelineFrameSlot> {
+) -> Result<PipelineFrameSlot>
+where
+    'job: 'scope,
+{
     let walked = match stage {
         WalkStage::Complete(frame) => {
             return Ok(erase(RefFrameSlot::completed(SharedFrame::new(*frame))));
@@ -584,11 +592,16 @@ pub(crate) fn reserve_pending_slot<T: ReconSample>(
 }
 
 impl<T: ReconSample + Send + 'static> PendingFinish<T> {
+    /// Shares the progressive output owner with scheduled filter-stripe tasks.
+    pub(crate) fn progress_handle(&self) -> Option<Arc<FrameProgress<T>>> {
+        self.progress.clone()
+    }
+
     /// Runs the owed filter phase in the calling scheduler job.
     pub(crate) fn run_finish(
         self,
         walked: WalkedFrame<T>,
-        admit: Option<&dyn splot_parallel::Admit<'static>>,
+        admit: Option<&dyn splot_parallel::Admit<'_>>,
     ) {
         let Self {
             writer,
@@ -604,6 +617,31 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .records = Some(finished.filter_records);
+            }
+            Err(error) => {
+                outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
+            }
+        }
+        crate::timing::report("finish_task", started);
+    }
+
+    /// Freezes one scheduler-owned setup after every stripe job has settled.
+    pub(crate) fn run_owned_finish(
+        self,
+        filter: crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>,
+    ) {
+        let Self {
+            writer,
+            progress: _,
+            outcome,
+        } = self;
+        let started = crate::timing::start();
+        match filter.finish(|frame| writer.complete(SharedFrame::new(frame))) {
+            Ok(((), records)) => {
+                outcome
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .records = Some(records);
             }
             Err(error) => {
                 outcome.lock().unwrap_or_else(PoisonError::into_inner).error = Some(error);
@@ -629,24 +667,6 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
     /// failed.
     pub(crate) fn spawn_finish(self, walked: WalkedFrame<T>, scope: &TaskScope<'_, '_>) {
         scope.spawn(move |_| self.run_finish(walked, None));
-    }
-
-    /// Runs one walked frame's § 7.2 filter phase on the calling thread, for a
-    /// driver that has no scope to spawn into.
-    ///
-    /// # Errors
-    ///
-    /// Returns the filter chain's own diagnostic.
-    pub(crate) fn finish_inline(self, walked: WalkedFrame<T>) -> Result<FrameFilterRecords> {
-        let Self {
-            writer,
-            progress,
-            outcome: _,
-        } = self;
-        let finished = finish_walked_frame(walked, progress.as_deref(), None, |frame| {
-            writer.complete(frame);
-        })?;
-        Ok(finished.filter_records)
     }
 }
 

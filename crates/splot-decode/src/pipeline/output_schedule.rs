@@ -570,10 +570,12 @@ mod tests {
             ))),
             display_grain: None,
             output_effects,
-            frame_cdfs: Arc::new(FrameCdfSubset::from_defaults()),
+            frame_cdfs: crate::prediction::inter::FrameCdfHandle::settled(Arc::new(
+                FrameCdfSubset::from_defaults(),
+            )),
             motion_field: MotionFieldHandle::pending(),
             ccso_params: None,
-            ccso_grid: None,
+            ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
             frame_rate_numerator: 1,
             frame_rate_denominator: 1,
         }

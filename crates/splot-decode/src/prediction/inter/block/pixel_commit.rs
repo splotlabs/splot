@@ -43,6 +43,18 @@ fn append_row_filter_records(
         .append(&mut row_filter_records.tx_skip_records);
 }
 
+/// Moves one parsed row's filter geometry into the frame owner before that row
+/// enters the scheduled reconstruction graph.
+///
+/// The canonical replay then carries an empty row record owner, which makes
+/// the complete frame geometry immutable while row tasks still own commands.
+pub(super) fn detach_row_filter_records(
+    row: &mut ReconRow,
+    filter_records: &mut crate::filters::wienerns_lr::FrameFilterRecords,
+) {
+    append_row_filter_records(filter_records, &mut row.filter_records);
+}
+
 /// Commits one parsed row into the frame, in tile order.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn replay_recon_row<T: ReconSample>(
@@ -77,6 +89,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             SPEC_MODE_INFO
         ));
     }
+    let ordinal = row.ordinal;
     *expected_ordinal = expected_ordinal.saturating_add(1);
     let terminal = row.terminal.take();
     let row_has_entries = !row.superblocks.is_empty();
@@ -161,6 +174,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 workspace,
                                 block_decoded,
                                 motion,
+                                ordinal,
                                 &residual_blocks,
                                 temporal_context,
                                 reference,
@@ -188,7 +202,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                     )
                 })?;
                 if motion_owed {
-                    motion.fold(records);
+                    motion.fold_unit(ordinal, records);
                 }
             }
             entry
@@ -205,7 +219,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         }
     }
     if motion_owed {
-        motion.unit_landed(false);
+        motion.unit_landed_for(ordinal, false);
     }
     append_row_filter_records(filter_records, &mut row_filter_records);
     *decoded_any |= row_has_entries;

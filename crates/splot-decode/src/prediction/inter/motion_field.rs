@@ -7,7 +7,17 @@ use std::sync::Arc;
 
 use splot_parallel::{CompletionCell, Condition};
 
-use super::TemporalMotionField;
+use super::find_mv_stack::{
+    MotionFieldLayout, TemporalMotionBand, TemporalMotionField, TemporalMotionFieldMetadata,
+};
+
+#[derive(Debug)]
+struct MotionFieldPublication {
+    layout: MotionFieldLayout,
+    metadata: CompletionCell<Option<Arc<TemporalMotionFieldMetadata>>>,
+    field: CompletionCell<Option<Arc<TemporalMotionField>>>,
+    bands: Vec<CompletionCell<Option<Arc<TemporalMotionBand>>>>,
+}
 
 /// One frame's § 7.9 temporal motion field, named before it is derived.
 ///
@@ -18,17 +28,54 @@ use super::TemporalMotionField;
 /// temporal prelude reads it through [`Self::field`], which fails closed rather
 /// than reporting an absent field as no motion.
 #[derive(Clone, Debug)]
-pub(crate) struct MotionFieldHandle(Arc<CompletionCell<Option<Arc<TemporalMotionField>>>>);
+pub(crate) struct MotionFieldHandle(Arc<MotionFieldPublication>);
 
 impl MotionFieldHandle {
     /// Names a field that is already derived.
     pub(crate) fn settled(field: TemporalMotionField) -> Self {
-        Self(Arc::new(CompletionCell::completed(Some(Arc::new(field)))))
+        let layout = field.layout();
+        let metadata = Arc::new(field.metadata());
+        let bands = if splot_parallel::on_multiworker_pool() {
+            field
+                .clone()
+                .into_bands()
+                .into_iter()
+                .map(|band| CompletionCell::completed(Some(Arc::new(band))))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        Self(Arc::new(MotionFieldPublication {
+            layout,
+            metadata: CompletionCell::completed(Some(metadata)),
+            field: CompletionCell::completed(Some(Arc::new(field))),
+            bands,
+        }))
     }
 
     /// Names a field whose frame has not reconstructed yet.
+    #[cfg(test)]
     pub(crate) fn pending() -> Self {
-        Self(Arc::new(CompletionCell::new()))
+        Self::pending_with_layout(MotionFieldLayout::empty())
+    }
+
+    /// Names a pending field with enough geometry to create every row-band
+    /// completion before its entropy pass starts.
+    pub(crate) fn pending_with_layout(layout: MotionFieldLayout) -> Self {
+        let bands = (0..layout.band_count())
+            .map(|_| CompletionCell::new())
+            .collect();
+        Self(Arc::new(MotionFieldPublication {
+            layout,
+            metadata: CompletionCell::new(),
+            field: CompletionCell::new(),
+            bands,
+        }))
+    }
+
+    /// Publishes the parse-derived semantic metadata independently of pixels.
+    pub(crate) fn publish_metadata(&self, metadata: TemporalMotionFieldMetadata) {
+        let _ = self.0.metadata.set(Some(Arc::new(metadata)));
     }
 
     /// Publishes the derived field, which every consumer then reads.
@@ -36,23 +83,79 @@ impl MotionFieldHandle {
     /// A second publication is ignored: the first is the frame's field, and a
     /// handle is filled by exactly one reconstruction.
     pub(crate) fn publish(&self, field: TemporalMotionField) {
-        let _ = self.0.set(Some(Arc::new(field)));
+        self.publish_metadata(field.metadata());
+        for (cell, band) in self.0.bands.iter().zip(field.clone().into_bands()) {
+            let _ = cell.set(Some(Arc::new(band)));
+        }
+        let _ = self.0.field.set(Some(Arc::new(field)));
+    }
+
+    /// Publishes one completed full-width source superblock row.
+    pub(crate) fn publish_band(&self, index: usize, band: TemporalMotionBand) {
+        if let Some(cell) = self.0.bands.get(index) {
+            let _ = cell.set(Some(Arc::new(band)));
+        }
+    }
+
+    /// Rebuilds the terminal compatibility field after every band has landed.
+    pub(crate) fn publish_whole_from_bands(&self) {
+        let Some(metadata) = self
+            .0
+            .metadata
+            .get()
+            .and_then(Option::as_ref)
+            .map(Arc::as_ref)
+        else {
+            let _ = self.0.field.set(None);
+            return;
+        };
+        let bands = self
+            .0
+            .bands
+            .iter()
+            .map(|band| band.get().and_then(Option::as_ref).cloned())
+            .collect::<Option<Vec<_>>>();
+        let field = bands.and_then(|bands| {
+            TemporalMotionField::from_bands(self.0.layout, metadata, &bands).map(Arc::new)
+        });
+        let _ = self.0.field.set(field);
     }
 
     /// Publishes terminal failure so dependent scheduler jobs are released and
     /// fail closed instead of remaining stranded.
     pub(crate) fn fail(&self) {
-        let _ = self.0.set(None);
+        let _ = self.0.metadata.set(None);
+        for band in &self.0.bands {
+            let _ = band.set(None);
+        }
+        let _ = self.0.field.set(None);
     }
 
     /// Borrows the published field, or `None` while it is still owed.
     pub(crate) fn field(&self) -> Option<&Arc<TemporalMotionField>> {
-        self.0.get().and_then(Option::as_ref)
+        self.0.field.get().and_then(Option::as_ref)
     }
 
-    /// Returns the scheduler condition that admits a consumer once this field
-    /// has been published.
-    pub(crate) fn condition(&self) -> Condition<'_> {
-        Condition::Completion(self.0.as_ref())
+    pub(crate) fn layout(&self) -> MotionFieldLayout {
+        self.0.layout
+    }
+
+    pub(crate) fn metadata(&self) -> Option<&Arc<TemporalMotionFieldMetadata>> {
+        self.0.metadata.get().and_then(Option::as_ref)
+    }
+
+    pub(crate) fn band(&self, index: usize) -> Option<&Arc<TemporalMotionBand>> {
+        self.0.bands.get(index)?.get().and_then(Option::as_ref)
+    }
+
+    pub(crate) fn metadata_condition(&self) -> Condition<'_> {
+        Condition::Completion(&self.0.metadata)
+    }
+
+    pub(crate) fn band_condition(&self, index: usize) -> Option<Condition<'_>> {
+        self.0
+            .bands
+            .get(index)
+            .map(|band| Condition::Completion(band))
     }
 }

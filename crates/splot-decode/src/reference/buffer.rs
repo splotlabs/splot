@@ -17,13 +17,11 @@ use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
 
 use std::sync::Arc;
 
-use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::{DecodeReferenceStateError, Result};
-use crate::filters::ccso::CcsoUnitGrid;
 use crate::pipeline::ActiveFilmGrain;
 use crate::pipeline::PipelineFrame;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::MotionFieldHandle;
+use crate::prediction::inter::{CcsoGridHandle, FrameCdfHandle, MotionFieldHandle};
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -46,9 +44,9 @@ struct Slot {
     lr_frame_filter_class_counts: [u8; 3],
     lr_frame_filter_taps: SlotFrameFilterTaps,
     frame_index: Option<usize>,
-    frame_cdfs: Option<Arc<FrameCdfSubset>>,
+    frame_cdfs: Option<FrameCdfHandle>,
     ccso_params: Option<Arc<CcsoParams>>,
-    ccso_grid: Option<Arc<CcsoUnitGrid>>,
+    ccso_grid: Option<CcsoGridHandle>,
     motion_field: Option<MotionFieldHandle>,
     long_term_id: Option<u32>,
     display_grain: Option<ActiveFilmGrain>,
@@ -108,9 +106,9 @@ impl Slot {
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
             lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
             frame_index: Some(frame_index),
-            frame_cdfs: Some(Arc::clone(&update.frame_cdfs)),
+            frame_cdfs: Some(update.frame_cdfs.clone()),
             ccso_params: update.ccso_params.clone(),
-            ccso_grid: update.ccso_grid.clone(),
+            ccso_grid: Some(update.ccso_grid.clone()),
             motion_field: Some(update.motion_field.clone()),
             long_term_id: update.long_term_id,
             display_grain: None,
@@ -140,9 +138,9 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
     pub(crate) lr_frame_filter_taps: SlotFrameFilterTaps,
-    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
+    pub(crate) frame_cdfs: FrameCdfHandle,
     pub(crate) ccso_params: Option<Arc<CcsoParams>>,
-    pub(crate) ccso_grid: Option<Arc<CcsoUnitGrid>>,
+    pub(crate) ccso_grid: CcsoGridHandle,
     pub(crate) motion_field: MotionFieldHandle,
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
@@ -469,9 +467,9 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) saved_global_motion_params: Vec<SavedGlobalMotionParams>,
     pub(crate) lr_frame_filter_class_counts: Vec<[u8; 3]>,
     pub(crate) lr_frame_filter_taps: Vec<SlotFrameFilterTaps>,
-    pub(crate) ref_frame_cdfs: Vec<Option<Arc<FrameCdfSubset>>>,
+    pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_params: Vec<Option<Arc<CcsoParams>>>,
-    pub(crate) ref_ccso_unit_grids: Vec<Option<Arc<CcsoUnitGrid>>>,
+    pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
     pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 

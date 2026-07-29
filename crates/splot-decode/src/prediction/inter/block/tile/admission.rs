@@ -13,32 +13,64 @@ use splot_parallel::Condition;
 
 use super::*;
 use crate::prediction::inter::block::row_gate::RowReferenceGate;
+use crate::prediction::inter::find_mv_stack::TemporalBandPlan;
 
 struct ScheduledCommit<T: ReconSample> {
     next: usize,
     ordered: deferred_recon::InterReconScratch<T>,
     workspace: CurrentFrameWorkspace<T>,
+    bands: Option<splot_recon::OwnedFrameBands<T>>,
+    deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
+    contains_intrabc: bool,
+    filter: Option<Arc<crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>>>,
+    next_filter_stripe: usize,
     block_decoded: TileBlockDecodedState,
     current_block_decoded_superblock: Option<[usize; 2]>,
-    records: crate::filters::wienerns_lr::FrameFilterRecords,
     decoded_any: bool,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum PreparedBatch<T: ReconSample> {
+    Legacy(Vec<ReadyReconRow<'static, T>>),
+    Banded {
+        rows: Vec<ReconRow>,
+        band: splot_recon::OwnedFrameRowBand<T>,
+    },
+}
+
+struct ScheduledResolve<T: ReconSample> {
+    next: usize,
+    submitted_batches: usize,
+    unresolved: Vec<Option<(ReconRow, Option<ReadyReconSurface<'static, T>>)>>,
+    grid: NeighbourMvGrid,
+    state: TileResolveState,
+}
+
+/// Filter jobs made ready by one ordered canonical commit.
+pub(in crate::prediction::inter::block) struct ScheduledTileProgress<T: ReconSample> {
+    pub(in crate::prediction::inter::block) filters:
+        Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
+    pub(in crate::prediction::inter::block) output: Option<ScheduledTileOutput<T>>,
 }
 
 /// Completed scheduled tile reconstruction.
 pub(in crate::prediction::inter::block) struct ScheduledTileOutput<T: ReconSample> {
-    pub(in crate::prediction::inter::block) workspace: CurrentFrameWorkspace<T>,
-    pub(in crate::prediction::inter::block) records:
-        crate::filters::wienerns_lr::FrameFilterRecords,
+    pub(in crate::prediction::inter::block) filter:
+        crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>,
 }
 
 /// Owned state shared by one admission job per parsed reconstruction unit.
 pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample> {
     rows: Mutex<Vec<Option<ReadyReconRow<'static, T>>>>,
-    prepared: Mutex<Vec<Option<ReadyReconRow<'static, T>>>>,
+    prepared: Mutex<Vec<Option<PreparedBatch<T>>>>,
     unit_count: usize,
+    units_per_row: usize,
     batch_size: usize,
     batch_count: usize,
+    owned_bands: bool,
+    filter_count: usize,
     commit: Mutex<Option<ScheduledCommit<T>>>,
+    resolve: Mutex<ScheduledResolve<T>>,
     workers: InterReconScratchPool<T>,
     prepass_block_decoded: TileBlockDecodedState,
     row_buffers: ReconRowBufferPool,
@@ -47,6 +79,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     params: TileWalkParams,
     quantizer: FrameQuantizerSnapshot,
     temporal: Arc<TemporalMvContext>,
+    temporal_plan: TemporalBandPlan,
     reference: Arc<InterReferenceState<T>>,
     ref_frame_idx: Arc<[u32]>,
     sequence: Arc<SequenceHeader>,
@@ -61,9 +94,132 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.batch_count
     }
 
+    /// Number of final-filter stripes this frame owes.
+    pub(in crate::prediction::inter::block) const fn filter_count(&self) -> usize {
+        self.filter_count
+    }
+
+    pub(in crate::prediction::inter::block) const fn owns_canonical_bands(&self) -> bool {
+        self.owned_bands
+    }
+
+    pub(in crate::prediction::inter::block) fn resolve_len(&self) -> usize {
+        self.temporal_plan.len()
+    }
+
+    pub(in crate::prediction::inter::block) fn resolve_conditions(
+        &self,
+        index: usize,
+    ) -> Vec<Condition<'_>> {
+        self.temporal_plan
+            .requirements(index)
+            .into_iter()
+            .filter_map(|(slot, band)| {
+                self.reference
+                    .ref_motion_fields
+                    .get(slot)
+                    .and_then(Option::as_ref)
+                    .and_then(|field| field.band_condition(band))
+            })
+            .collect()
+    }
+
+    pub(in crate::prediction::inter::block) fn resolve(&self, index: usize) -> Result<Vec<usize>> {
+        self.temporal_plan
+            .project(&self.temporal, index, |slot, band| {
+                self.reference
+                    .ref_motion_fields
+                    .get(slot)?
+                    .as_ref()?
+                    .band(band)
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                inter_missing!(
+                    "inter_reference_motion_band_unpublished",
+                    self.tile_offset,
+                    "inter.reference_motion_field",
+                    SPEC_MODE_INFO
+                )
+            })?;
+        let projected_rows = self.temporal_plan.rows8(index);
+        let final_band = index.saturating_add(1) == self.temporal_plan.len();
+        let context = self.params.context(
+            &self.sequence,
+            &self.core,
+            &self.reference,
+            &self.ref_frame_idx,
+        );
+        let row_gate = RowReferenceGate::new(
+            &self.reference,
+            &self.core,
+            &self.ref_frame_idx,
+            self.info,
+            &self.temporal,
+        );
+        let mut resolve = self.resolve.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let next = resolve.next;
+            let Some((row, _)) = resolve.unresolved.get(next).and_then(Option::as_ref) else {
+                break;
+            };
+            let row_end8 = row
+                .superblocks
+                .iter()
+                .filter_map(|superblock| superblock.origin[0].checked_add(self.params.sb_h4))
+                .map(|end4| end4.div_ceil(2))
+                .max()
+                .unwrap_or(projected_rows.end);
+            if !final_band && row_end8 > projected_rows.end {
+                break;
+            }
+            let Some((mut row, surface)) = resolve.unresolved.get_mut(next).and_then(Option::take)
+            else {
+                break;
+            };
+            resolve.grid.replay_flag_log(&row.flag_log);
+            if let Some(error) = row.terminal.take() {
+                return Err(error);
+            }
+            {
+                let ScheduledResolve { grid, state, .. } = &mut *resolve;
+                state.resolve_unit(grid, &context, &self.temporal, &mut row, self.tile_offset)
+            }?;
+            if let Some(error) = row.terminal.take() {
+                return Err(error);
+            }
+            let bounds = row_gate.bounds_for_row(&row);
+            let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(slot) = rows.get_mut(next) {
+                *slot = Some(ReadyReconRow {
+                    row,
+                    surface,
+                    bounds,
+                });
+            }
+            resolve.next = resolve.next.saturating_add(1);
+        }
+        let ready_batches = if resolve.next == self.unit_count {
+            self.batch_count
+        } else {
+            resolve.next / self.batch_size
+        };
+        let ready = (resolve.submitted_batches..ready_batches).collect::<Vec<_>>();
+        resolve.submitted_batches = ready_batches;
+        Ok(ready)
+    }
+
+    pub(in crate::prediction::inter::block) fn fail_temporal(&self) {
+        TemporalBandPlan::fail(&self.temporal);
+    }
+
     fn batch_range(&self, index: usize) -> core::ops::Range<usize> {
         let start = index.saturating_mul(self.batch_size).min(self.unit_count);
-        let end = start.saturating_add(self.batch_size).min(self.unit_count);
+        let end = if index.saturating_add(1) == self.batch_count {
+            self.unit_count
+        } else {
+            start.saturating_add(self.batch_size).min(self.unit_count)
+        };
         start..end
     }
 
@@ -120,81 +276,143 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     )
                 })?
         };
-        let ready = self.workers.with_scratch(|scratch| {
-            let _quantizer_scopes = self.quantizer.install_frame();
-            let mut ready = ready;
-            let shared = deferred_recon::ReconShared {
-                reference: &self.reference,
-                ref_frame_idx: &self.ref_frame_idx,
-                temporal_context: &self.temporal,
-                sequence: &self.sequence,
-                core: &self.core,
-                luma_use_tcq: self.params.luma_use_tcq,
-                residual_use_ddt: self.params.residual_use_ddt,
-                bit_depth: self.params.bit_depth,
-                mi_rows: self.params.mi_rows,
-                mi_cols: self.params.mi_cols,
-                current_order_hint: self.params.current_order_hint,
-            };
-            for ready in &mut ready {
-                if ready.row.terminal.is_none() && !ready.row.motion_derived {
-                    mvres::derive_unit_motion(
-                        &mut ready.row,
-                        ready.surface.as_mut(),
-                        scratch,
-                        &self.motion,
-                        &shared,
-                    );
+        let batch = self
+            .workers
+            .with_scratch(|scratch| -> Result<PreparedBatch<T>> {
+                let _quantizer_scopes = self.quantizer.install_frame();
+                let mut ready = ready;
+                let shared = deferred_recon::ReconShared {
+                    reference: &self.reference,
+                    ref_frame_idx: &self.ref_frame_idx,
+                    temporal_context: &self.temporal,
+                    sequence: &self.sequence,
+                    core: &self.core,
+                    luma_use_tcq: self.params.luma_use_tcq,
+                    residual_use_ddt: self.params.residual_use_ddt,
+                    bit_depth: self.params.bit_depth,
+                    mi_rows: self.params.mi_rows,
+                    mi_cols: self.params.mi_cols,
+                    current_order_hint: self.params.current_order_hint,
+                };
+                if self.owned_bands {
+                    let start = index
+                        .checked_mul(self.params.sb_h4)
+                        .and_then(|rows4| rows4.checked_mul(4))
+                        .ok_or_else(|| {
+                            inter_cap!(
+                                "inter_admission_band_start",
+                                self.tile_offset,
+                                "inter.row.task_capacity",
+                                SPEC_MODE_INFO
+                            )
+                        })?;
+                    let end = start
+                        .saturating_add(self.params.sb_h4.saturating_mul(4))
+                        .min(self.info.coded_luma_size().height());
+                    let mut band =
+                        splot_recon::OwnedFrameRowBand::new(self.info, start..end, T::default())?;
+                    let mut surface = band.surface_mut();
+                    let mut rows = Vec::with_capacity(ready.len());
+                    for mut ready in ready {
+                        if ready.row.terminal.is_none() && !ready.row.motion_derived {
+                            mvres::derive_unit_motion_on_surface(
+                                &mut ready.row,
+                                &surface,
+                                scratch,
+                                &self.motion,
+                                &shared,
+                            );
+                        }
+                        let row = precompute_recon_row_on_surface(
+                            ready.row,
+                            &mut surface,
+                            scratch,
+                            &self.prepass_block_decoded,
+                            &self.motion,
+                            &self.quantizer,
+                            &self.temporal,
+                            &self.reference,
+                            &self.ref_frame_idx,
+                            &self.sequence,
+                            &self.core,
+                            self.params.sb_h4,
+                            self.params.mi_rows,
+                            self.params.mi_cols,
+                            self.params.current_order_hint,
+                            self.params.luma_use_tcq,
+                            self.params.residual_use_ddt,
+                            self.params.bit_depth,
+                        );
+                        if row.entries.iter().any(|entry| entry.command.is_some()) {
+                            return Err(inter_cap!(
+                                "inter_admission_band_command_remaining",
+                                self.tile_offset,
+                                "inter.row.task_capacity",
+                                SPEC_MODE_INFO
+                            ));
+                        }
+                        rows.push(row);
+                    }
+                    return Ok(PreparedBatch::Banded { rows, band });
                 }
-            }
-            ready
-                .into_iter()
-                .map(|ready| {
-                    precompute_recon_row(
-                        ready,
-                        scratch,
-                        &self.prepass_block_decoded,
-                        &self.motion,
-                        &self.quantizer,
-                        &self.temporal,
-                        &self.reference,
-                        &self.ref_frame_idx,
-                        &self.sequence,
-                        &self.core,
-                        self.params.sb_h4,
-                        self.params.mi_rows,
-                        self.params.mi_cols,
-                        self.params.current_order_hint,
-                        self.params.luma_use_tcq,
-                        self.params.residual_use_ddt,
-                        self.params.bit_depth,
-                    )
-                })
-                .collect::<Vec<_>>()
-        });
+                for ready in &mut ready {
+                    if ready.row.terminal.is_none() && !ready.row.motion_derived {
+                        mvres::derive_unit_motion(
+                            &mut ready.row,
+                            ready.surface.as_mut(),
+                            scratch,
+                            &self.motion,
+                            &shared,
+                        );
+                    }
+                }
+                Ok(PreparedBatch::Legacy(
+                    ready
+                        .into_iter()
+                        .map(|ready| {
+                            precompute_recon_row(
+                                ready,
+                                scratch,
+                                &self.prepass_block_decoded,
+                                &self.motion,
+                                &self.quantizer,
+                                &self.temporal,
+                                &self.reference,
+                                &self.ref_frame_idx,
+                                &self.sequence,
+                                &self.core,
+                                self.params.sb_h4,
+                                self.params.mi_rows,
+                                self.params.mi_cols,
+                                self.params.current_order_hint,
+                                self.params.luma_use_tcq,
+                                self.params.residual_use_ddt,
+                                self.params.bit_depth,
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                ))
+            })?;
         let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
-        for ready in ready {
-            let ordinal = ready.row.ordinal;
-            let Some(slot) = prepared.get_mut(ordinal) else {
-                self.finished.store(true, Ordering::Release);
-                return Err(inter_cap!(
-                    "inter_admission_unit_ordinal",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                ));
-            };
-            if slot.is_some() {
-                self.finished.store(true, Ordering::Release);
-                return Err(inter_cap!(
-                    "inter_admission_unit_duplicate",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                ));
-            }
-            *slot = Some(ready);
+        let Some(slot) = prepared.get_mut(index) else {
+            self.finished.store(true, Ordering::Release);
+            return Err(inter_cap!(
+                "inter_admission_unit_ordinal",
+                self.tile_offset,
+                "inter.row.task_capacity",
+                SPEC_MODE_INFO
+            ));
+        };
+        if slot.is_some() {
+            self.finished.store(true, Ordering::Release);
+            return Err(inter_cap!(
+                "inter_admission_unit_duplicate",
+                self.tile_offset,
+                "inter.row.task_capacity",
+                SPEC_MODE_INFO
+            ));
         }
+        *slot = Some(batch);
         Ok(())
     }
 
@@ -204,13 +422,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     pub(in crate::prediction::inter::block) fn commit(
         &self,
         index: usize,
-    ) -> Result<Option<ScheduledTileOutput<T>>> {
+    ) -> Result<ScheduledTileProgress<T>> {
         if self.finished.load(Ordering::Acquire) {
-            return Ok(None);
+            return Ok(ScheduledTileProgress {
+                filters: Vec::new(),
+                output: None,
+            });
         }
-        let ready = {
+        let batch = {
             let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
-            let Some(prepared) = prepared.get_mut(self.batch_range(index)) else {
+            let Some(prepared) = prepared.get_mut(index) else {
                 return Err(inter_cap!(
                     "inter_admission_prepared_range_missing",
                     self.tile_offset,
@@ -218,23 +439,36 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     SPEC_MODE_INFO
                 ));
             };
-            prepared
-                .iter_mut()
-                .map(Option::take)
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| {
-                    inter_cap!(
-                        "inter_admission_prepared_rows_missing",
-                        self.tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
-                    )
-                })?
+            prepared.take().ok_or_else(|| {
+                inter_cap!(
+                    "inter_admission_prepared_rows_missing",
+                    self.tile_offset,
+                    "inter.row.task_capacity",
+                    SPEC_MODE_INFO
+                )
+            })?
+        };
+        let (ready, completed_band) = match batch {
+            PreparedBatch::Legacy(ready) => (ready, None),
+            PreparedBatch::Banded { rows, band } => (
+                rows.into_iter()
+                    .map(|row| ReadyReconRow {
+                        row,
+                        surface: None,
+                        bounds: row_gate::RowReferenceBounds::default(),
+                    })
+                    .collect(),
+                Some(band),
+            ),
         };
         let mut holder = self.commit.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(commit) = holder.as_mut() else {
-            return Ok(None);
+            return Ok(ScheduledTileProgress {
+                filters: Vec::new(),
+                output: None,
+            });
         };
+        let mut filters = Vec::new();
         for ready in ready {
             if commit.next != ready.row.ordinal {
                 self.finished.store(true, Ordering::Release);
@@ -258,7 +492,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 &mut commit.block_decoded,
                 &mut commit.current_block_decoded_superblock,
                 &self.motion,
-                &mut commit.records,
+                &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
                 &self.temporal,
                 &self.reference,
                 &self.ref_frame_idx,
@@ -273,9 +507,103 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 self.tile_offset,
             )?;
             self.row_buffers.recycle(buffers);
+            if completed_band.is_none()
+                && let Some(deblock) = commit.deblock.as_mut()
+            {
+                let terminal = commit.next == self.unit_count;
+                let Some(safe_mi_end) = safe_deblock_mi_end(
+                    commit.next,
+                    self.units_per_row,
+                    self.params.sb_h4,
+                    self.params.mi_rows,
+                    terminal,
+                    commit.contains_intrabc,
+                ) else {
+                    continue;
+                };
+                deblock
+                    .advance(
+                        &mut commit.workspace,
+                        safe_mi_end.get(),
+                        self.params.bit_depth,
+                    )
+                    .map_err(|_| {
+                        crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
+                    })?;
+                let filter = commit.filter.as_ref().ok_or_else(|| {
+                    inter_cap!(
+                        "inter_admission_legacy_filter_owner",
+                        self.tile_offset,
+                        "inter.row.task_capacity",
+                        SPEC_MODE_INFO
+                    )
+                })?;
+                while commit.next_filter_stripe < filter.stripe_ranges().len() {
+                    let stripe = commit.next_filter_stripe;
+                    let Some(window) =
+                        filter.extract_ready_window(stripe, deblock, &commit.workspace)?
+                    else {
+                        break;
+                    };
+                    filters.push(filter.owned_job(stripe, window));
+                    commit.next_filter_stripe += 1;
+                }
+            }
+        }
+        if let Some(band) = completed_band {
+            let bands = commit.bands.as_mut().ok_or_else(|| {
+                inter_cap!(
+                    "inter_admission_band_owner",
+                    self.tile_offset,
+                    "inter.row.task_capacity",
+                    SPEC_MODE_INFO
+                )
+            })?;
+            bands.push(band)?;
+            if let Some(deblock) = commit.deblock.as_mut() {
+                let terminal = commit.next == self.unit_count;
+                let safe_mi_end = safe_deblock_mi_end(
+                    commit.next,
+                    self.units_per_row,
+                    self.params.sb_h4,
+                    self.params.mi_rows,
+                    terminal,
+                    false,
+                );
+                if let Some(safe_mi_end) = safe_mi_end {
+                    deblock
+                        .advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
+                        .map_err(|_| {
+                            crate::filters::wienerns_lr::recon::deblock_filter_error(
+                                self.tile_offset,
+                            )
+                        })?;
+                    let filter = commit.filter.as_ref().ok_or_else(|| {
+                        inter_cap!(
+                            "inter_admission_band_filter_owner",
+                            self.tile_offset,
+                            "inter.row.task_capacity",
+                            SPEC_MODE_INFO
+                        )
+                    })?;
+                    while commit.next_filter_stripe < filter.stripe_ranges().len() {
+                        let stripe = commit.next_filter_stripe;
+                        let Some(window) =
+                            filter.extract_ready_band_window(stripe, deblock, bands)?
+                        else {
+                            break;
+                        };
+                        filters.push(filter.owned_job(stripe, window));
+                        commit.next_filter_stripe += 1;
+                    }
+                }
+            }
         }
         if commit.next != self.unit_count {
-            return Ok(None);
+            return Ok(ScheduledTileProgress {
+                filters,
+                output: None,
+            });
         }
         if !commit.decoded_any {
             self.finished.store(true, Ordering::Release);
@@ -287,7 +615,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             ));
         }
         self.finished.store(true, Ordering::Release);
-        let commit = holder.take().ok_or_else(|| {
+        let mut commit = holder.take().ok_or_else(|| {
             inter_cap!(
                 "inter_admission_commit_state",
                 self.tile_offset,
@@ -295,74 +623,158 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 SPEC_MODE_INFO
             )
         })?;
-        Ok(Some(ScheduledTileOutput {
-            workspace: commit.workspace,
-            records: commit.records,
-        }))
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn resolve_for_admission<'surface, T: ReconSample>(
-    parsed: &mut ParsedTile,
-    surfaces: Vec<ReadyReconSurface<'surface, T>>,
-    context: &TileDecodeContext<'_, T>,
-    temporal: &TemporalMvContext,
-    row_gate: &RowReferenceGate<'_, T>,
-) -> Result<Vec<Option<ReadyReconRow<'surface, T>>>> {
-    let started = crate::timing::start();
-    let mut grid = NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
-        .ok_or_else(|| {
+        if let Some(deblock) = commit.deblock.take() {
+            let records = deblock.finish().ok_or_else(|| {
+                crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
+            })?;
+            commit
+                .filter
+                .as_ref()
+                .ok_or_else(|| {
+                    inter_cap!(
+                        "inter_admission_deblock_filter_owner",
+                        self.tile_offset,
+                        "inter.row.task_capacity",
+                        SPEC_MODE_INFO
+                    )
+                })?
+                .restore_deblock_records(records)?;
+        }
+        let filter = commit.filter.as_ref().ok_or_else(|| {
             inter_cap!(
-                "inter_admission_mv_grid",
-                parsed.tile_offset,
-                "inter.mv_grid",
+                "inter_admission_terminal_filter_owner",
+                self.tile_offset,
+                "inter.row.task_capacity",
                 SPEC_MODE_INFO
             )
         })?;
-    let mut state = TileResolveState::new(context.sequence);
-    let mut surfaces = surfaces.into_iter();
-    let mut resolved = Vec::new();
-    for mut row in core::mem::take(&mut parsed.rows) {
-        grid.replay_flag_log(&row.flag_log);
-        if let Err(error) =
-            state.resolve_unit(&mut grid, context, temporal, &mut row, parsed.tile_offset)
-        {
-            row.terminal = Some(error);
+        while commit.next_filter_stripe < filter.stripe_ranges().len() {
+            let stripe = commit.next_filter_stripe;
+            let window = if let Some(bands) = commit.bands.as_ref() {
+                filter.extract_terminal_band_window(stripe, bands)?
+            } else {
+                filter.extract_terminal_window(stripe, &commit.workspace)?
+            };
+            filters.push(filter.owned_job(stripe, window));
+            commit.next_filter_stripe += 1;
         }
-        let stop = row.terminal.is_some();
-        let surface = if row.superblocks.is_empty() {
-            None
-        } else {
-            surfaces.next()
-        };
-        let bounds = row_gate.bounds_for_row(&row);
-        resolved.push(Some(ReadyReconRow {
-            row,
-            surface,
-            bounds,
-        }));
-        if stop {
-            break;
+        commit.workspace.recycle_planes();
+        let filter = commit.filter.take().ok_or_else(|| {
+            inter_cap!(
+                "inter_admission_finish_filter_owner",
+                self.tile_offset,
+                "inter.row.task_capacity",
+                SPEC_MODE_INFO
+            )
+        })?;
+        Ok(ScheduledTileProgress {
+            filters,
+            output: Some(ScheduledTileOutput {
+                filter: filter.owned_finish(),
+            }),
+        })
+    }
+}
+
+/// Returns the § 7.17 deblock frontier after `completed_rows` canonical rows.
+///
+/// Ordinary current-frame prediction can only read four luma rows upward, so
+/// one complete superblock-row lead protects every mutated sample. IntraBC has
+/// a wider, non-row-shaped source lifetime and therefore stays whole-frame.
+fn safe_deblock_mi_end(
+    completed_units: usize,
+    units_per_row: usize,
+    sb_h4: usize,
+    mi_rows: usize,
+    terminal: bool,
+    contains_intrabc: bool,
+) -> Option<core::num::NonZeroUsize> {
+    if terminal {
+        return core::num::NonZeroUsize::new(mi_rows);
+    }
+    if contains_intrabc {
+        return None;
+    }
+    let completed_rows = completed_units
+        .checked_div(units_per_row)
+        .unwrap_or_default();
+    core::num::NonZeroUsize::new(
+        completed_rows
+            .saturating_sub(1)
+            .saturating_mul(sb_h4)
+            .min(mi_rows),
+    )
+}
+
+fn supports_owned_bands(
+    parsed: &ParsedTile,
+    params: &TileWalkParams,
+    info: splot_recon::DecodedFrameInfo,
+) -> core::result::Result<(), &'static str> {
+    if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
+        return Err("filters_disabled");
+    }
+    if parsed.mi_rows.start != 0
+        || parsed.mi_rows.end.min(params.mi_rows) != params.mi_rows
+        || parsed.mi_cols.start != 0
+        || parsed.mi_cols.end.min(params.mi_cols) != params.mi_cols
+    {
+        return Err("partial_tile");
+    }
+    for row in &parsed.rows {
+        if row.terminal.is_some() {
+            return Err("terminal");
+        }
+        for superblock in &row.superblocks {
+            if superblock.dependency == ReconDependency::GlobalIntrabcFence {
+                return Err("intrabc");
+            }
+            if superblock.dependency == ReconDependency::CurrentFrame {
+                return Err("current_frame");
+            }
+            let entries = row
+                .entries
+                .get(superblock.entries.clone())
+                .ok_or("entry_range")?;
+            for entry in entries {
+                match entry.command.as_ref() {
+                    Some(ReconCommand::Inter(command))
+                        if !command.reads_current_frame()
+                            && command.prepass_write_is_contained(
+                                superblock.origin,
+                                params.sb_h4,
+                                info,
+                                &row.residual_blocks,
+                            ) => {}
+                    Some(ReconCommand::Inter(command)) if command.reads_current_frame() => {
+                        return Err("current_frame_inter");
+                    }
+                    Some(ReconCommand::Inter(_)) => return Err("unbounded_inter"),
+                    Some(ReconCommand::GeneralIntra(_)) => return Err("general_intra"),
+                    Some(ReconCommand::Intrabc(_)) => return Err("intrabc"),
+                    None if entry
+                        .pending_inter
+                        .and_then(|index| row.pending_inter.get(index))
+                        .is_some_and(|pending| {
+                            pending.prepass_write_is_contained(
+                                superblock.origin,
+                                params.sb_h4,
+                                info,
+                                &row.residual_blocks,
+                            )
+                        }) => {}
+                    None => return Err("unbounded_pending_inter"),
+                }
+            }
         }
     }
-    crate::timing::report_detail(
-        "pass2_resolve",
-        started,
-        &format!(
-            "units={} threads={} workers_used=0",
-            resolved.len(),
-            splot_parallel::current_pool_width(),
-        ),
-    );
-    Ok(resolved)
+    Ok(())
 }
 
 /// Resolves a parsed tile and turns each unit into owned admission state.
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
     mut scratch: TileDecodeScratch<T>,
-    records: crate::filters::wienerns_lr::FrameFilterRecords,
     mut parsed: ParsedTile,
     params: TileWalkParams,
     sequence: Arc<SequenceHeader>,
@@ -371,8 +783,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     reference: Arc<InterReferenceState<T>>,
     ref_frame_idx: Arc<[u32]>,
     workspace: CurrentFrameWorkspace<T>,
+    filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+    deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,
+    deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
     motion_field: TemporalMotionField,
     motion_handle: MotionFieldHandle,
+    temporal_plan: TemporalBandPlan,
 ) -> Result<ScheduledTileRecon<T>> {
     scratch.workers.ensure_workers(
         splot_parallel::current_pool_width()
@@ -380,38 +796,82 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             .max(1),
     );
     let info = workspace.info();
-    let context = params.context(&sequence, &core, &reference, &ref_frame_idx);
     let tile_offset = parsed.tile_offset;
-    let row_gate = RowReferenceGate::new(
-        &reference,
-        &core,
-        &ref_frame_idx,
-        workspace.info(),
-        &temporal,
-    );
     let quantizer = FrameQuantizerSnapshot::capture();
-    let rects = superblock_luma_rects(
-        &parsed.mi_rows,
-        &parsed.mi_cols,
-        &workspace,
-        params.sb_h4,
-        tile_offset,
-    )?;
+    let units_per_row = parsed
+        .mi_cols
+        .end
+        .min(params.mi_cols)
+        .saturating_sub(parsed.mi_cols.start)
+        .div_ceil(params.sb_h4);
+    let candidate_batch_count = parsed
+        .rows
+        .iter()
+        .filter(|row| !row.superblocks.is_empty())
+        .count()
+        .div_ceil(units_per_row.max(1));
+    let band_eligibility = if candidate_batch_count != temporal_plan.len() {
+        Err("band_count")
+    } else {
+        supports_owned_bands(&parsed, &params, info)
+    };
+    let owned_bands = band_eligibility.is_ok();
+    let storage_started = crate::timing::start();
+    if storage_started.is_some() {
+        crate::timing::report_detail(
+            "inter_admission_storage",
+            storage_started,
+            if owned_bands {
+                "mode=owned_bands"
+            } else {
+                match band_eligibility {
+                    Ok(()) => "mode=legacy_rects reason=unknown",
+                    Err(reason) => reason,
+                }
+            },
+        );
+    }
     let motion = MotionFieldUnits::publishing(
         motion_field,
-        parsed.rows.len(),
+        parsed
+            .rows
+            .iter()
+            .filter(|row| !row.superblocks.is_empty())
+            .count(),
+        units_per_row,
         motion_handle,
         crate::timing::start(),
     );
-    let surfaces = rects
+    let surfaces = if owned_bands {
+        Vec::new()
+    } else {
+        superblock_luma_rects(
+            &parsed.mi_rows,
+            &parsed.mi_cols,
+            &workspace,
+            params.sb_h4,
+            tile_offset,
+        )?
         .into_iter()
         .map(|rect| {
             splot_recon::OwnedFrameRect::new(workspace.info(), rect, T::default())
                 .map(ReadyReconSurface::Owned)
         })
-        .collect::<splot_recon::Result<Vec<_>>>()?;
-    let rows = resolve_for_admission(&mut parsed, surfaces, &context, &temporal, &row_gate)?;
-    if rows.is_empty() {
+        .collect::<splot_recon::Result<Vec<_>>>()?
+    };
+    let mut surfaces = surfaces.into_iter();
+    let unresolved = core::mem::take(&mut parsed.rows)
+        .into_iter()
+        .map(|row| {
+            let surface = if owned_bands || row.superblocks.is_empty() {
+                None
+            } else {
+                surfaces.next()
+            };
+            Some((row, surface))
+        })
+        .collect::<Vec<_>>();
+    if unresolved.is_empty() {
         return Err(inter_missing!(
             "inter_admission_no_resolved_rows",
             tile_offset,
@@ -421,11 +881,19 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     }
     let prepass_block_decoded = parsed.block_decoded.clone();
     let block_decoded = parsed.block_decoded.clone();
-    let unit_count = rows.len();
-    let batch_size = 4;
-    let batch_count = unit_count.div_ceil(batch_size);
+    let contains_intrabc = unresolved
+        .iter()
+        .flatten()
+        .any(|(row, _)| row.contains_intrabc());
+    let unit_count = unresolved.len();
+    let batch_size = if owned_bands { units_per_row.max(1) } else { 4 };
+    let batch_count = if owned_bands {
+        temporal_plan.len()
+    } else {
+        unit_count.div_ceil(batch_size)
+    };
     let mut prepared = Vec::new();
-    prepared.try_reserve_exact(unit_count).map_err(|_| {
+    prepared.try_reserve_exact(batch_count).map_err(|_| {
         inter_cap!(
             "inter_admission_prepared_allocation",
             tile_offset,
@@ -433,23 +901,64 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             SPEC_MODE_INFO
         )
     })?;
-    prepared.resize_with(unit_count, || None);
+    prepared.resize_with(batch_count, || None);
+    let deblock = deblock_records
+        .zip(core.deblocking_filter_params)
+        .map(|(deblock_records, filter)| {
+            crate::filters::deblock::FrameDeblock::prepare_owned(
+                deblock_records,
+                params.mi_rows,
+                params.mi_cols,
+                filter,
+                Arc::clone(&core),
+                sequence
+                    .filter
+                    .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
+                deblock_quant_deltas,
+            )
+            .map_err(|_| crate::filters::wienerns_lr::recon::deblock_filter_error(tile_offset))
+        })
+        .transpose()?
+        .flatten();
     let TileDecodeScratch { ordered, workers } = scratch;
+    let filter_count = filter_setup.stripe_ranges().len();
     Ok(ScheduledTileRecon {
-        rows: Mutex::new(rows),
+        rows: Mutex::new((0..unit_count).map(|_| None).collect()),
         prepared: Mutex::new(prepared),
         unit_count,
+        units_per_row,
         batch_size,
         batch_count,
+        owned_bands,
+        filter_count,
         commit: Mutex::new(Some(ScheduledCommit {
             next: 0,
             ordered,
             workspace,
+            bands: owned_bands.then(|| splot_recon::OwnedFrameBands::new(info)),
+            deblock,
+            contains_intrabc,
+            filter: Some(Arc::new(filter_setup)),
+            next_filter_stripe: 0,
             block_decoded,
             current_block_decoded_superblock: None,
-            records,
             decoded_any: false,
         })),
+        resolve: Mutex::new(ScheduledResolve {
+            next: 0,
+            submitted_batches: 0,
+            unresolved,
+            grid: NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
+                .ok_or_else(|| {
+                    inter_cap!(
+                        "inter_admission_mv_grid",
+                        tile_offset,
+                        "inter.mv_grid",
+                        SPEC_MODE_INFO
+                    )
+                })?,
+            state: TileResolveState::new(&sequence),
+        }),
         workers,
         prepass_block_decoded,
         row_buffers: ReconRowBufferPool::new(0),
@@ -458,6 +967,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         params,
         quantizer,
         temporal,
+        temporal_plan,
         reference,
         ref_frame_idx,
         sequence,
@@ -465,4 +975,51 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         tile_offset,
         finished: AtomicBool::new(false),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_deblock_mi_end;
+
+    fn frontier(
+        completed_units: usize,
+        units_per_row: usize,
+        sb_h4: usize,
+        mi_rows: usize,
+        terminal: bool,
+        contains_intrabc: bool,
+    ) -> Option<usize> {
+        safe_deblock_mi_end(
+            completed_units,
+            units_per_row,
+            sb_h4,
+            mi_rows,
+            terminal,
+            contains_intrabc,
+        )
+        .map(core::num::NonZeroUsize::get)
+    }
+
+    #[test]
+    fn raw_safe_deblock_frontier_stays_one_row_behind() {
+        assert_eq!(frontier(1, 1, 16, 64, false, false), None);
+        assert_eq!(frontier(2, 1, 16, 64, false, false), Some(16));
+        assert_eq!(frontier(3, 1, 16, 64, false, false), Some(32));
+        assert_eq!(frontier(4, 1, 16, 64, true, false), Some(64));
+    }
+
+    #[test]
+    fn wide_frame_frontier_counts_only_complete_superblock_rows() {
+        for completed_units in 0..6 {
+            assert_eq!(frontier(completed_units, 3, 16, 64, false, false), None);
+        }
+        assert_eq!(frontier(6, 3, 16, 64, false, false), Some(16));
+        assert_eq!(frontier(9, 3, 16, 64, false, false), Some(32));
+    }
+
+    #[test]
+    fn intrabc_deblock_frontier_waits_for_terminal_commit() {
+        assert_eq!(frontier(3, 1, 16, 64, false, true), None);
+        assert_eq!(frontier(4, 1, 16, 64, true, true), Some(64));
+    }
 }

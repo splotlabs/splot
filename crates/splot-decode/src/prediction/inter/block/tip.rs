@@ -1223,6 +1223,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         )?;
     let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
         .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field"))?;
+    motion_field
+        .set_band_rows8(sb_h4 / 2)
+        .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field_band"))?;
     motion_field.set_reference_metadata(true, (width, height), temporal.reference_order_hints());
     let placed = PlacedInterBlock {
         luma_x: 0,

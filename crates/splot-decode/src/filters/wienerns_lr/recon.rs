@@ -12,7 +12,7 @@
 
 use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::{BitDepth, CurrentFrameWorkspace, DecodedFrame, PlaneId, ReconSample};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::Result;
 
@@ -28,26 +28,73 @@ const MI_SIZE: usize = 4;
 /// other path keeps its filtered workspace local to the filter chain.
 ///
 /// [`FrameProgress`]: crate::pipeline::frame_progress::FrameProgress
-enum FilteredFrameSink<'a, T: ReconSample> {
+enum FilteredFrameSink<'a, 'job, T: ReconSample> {
     /// The filter chain owns the output until the freeze.
     Local(Box<Mutex<CurrentFrameWorkspace<T>>>),
     /// The frame's slot shares the output, stripe by stripe.
     Published {
         progress: &'a crate::pipeline::frame_progress::FrameProgress<T>,
-        admit: Option<&'a dyn splot_parallel::Admit<'static>>,
+        admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+    },
+    /// Scheduled row tasks own the publication handle for their full lifetime.
+    OwnedPublished {
+        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
     },
 }
 
-impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
-    fn open(
+enum FilteredFrameSinkSource<'a, 'job, T: ReconSample> {
+    Borrowed {
         progress: Option<&'a crate::pipeline::frame_progress::FrameProgress<T>>,
-        admit: Option<&'a dyn splot_parallel::Admit<'static>>,
+        admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+    },
+    Owned {
+        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
+    },
+}
+
+impl<'a, 'job, T: ReconSample> FilteredFrameSinkSource<'a, 'job, T> {
+    fn open(
+        self,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
+        offset: ByteOffset,
+    ) -> Result<FilteredFrameSink<'a, 'job, T>> {
+        match self {
+            Self::Borrowed { progress, admit } => {
+                FilteredFrameSink::open(progress, admit, info, ranges, offset)
+            }
+            Self::Owned { progress } => {
+                if !progress.begin(ranges) {
+                    return Err(wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+                    ));
+                }
+                Ok(FilteredFrameSink::OwnedPublished { progress })
+            }
+        }
+    }
+}
+
+impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
+    fn open(
+        progress: Option<&'a crate::pipeline::frame_progress::FrameProgress<T>>,
+        admit: Option<&'a dyn splot_parallel::Admit<'job>>,
+        info: splot_recon::DecodedFrameInfo,
+        ranges: &[(usize, usize)],
+        offset: ByteOffset,
     ) -> Result<Self> {
         match progress {
-            Some(progress) if progress.begin(ranges) => Ok(Self::Published { progress, admit }),
-            _ => Ok(Self::Local(Box::new(Mutex::new(
+            Some(progress) => {
+                if !progress.begin(ranges) {
+                    return Err(wienerns_lr_selectable_transform_record_error_reason(
+                        offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+                    ));
+                }
+                Ok(Self::Published { progress, admit })
+            }
+            None => Ok(Self::Local(Box::new(Mutex::new(
                 CurrentFrameWorkspace::new(info, T::default())?,
             )))),
         }
@@ -64,6 +111,7 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             ),
             Self::Published { progress, .. } => progress.with_workspace_mut(publish),
+            Self::OwnedPublished { progress } => progress.with_workspace_mut(publish),
         }
     }
 
@@ -80,6 +128,7 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             )),
             Self::Published { progress, .. } => progress.try_with_workspace_mut(publish),
+            Self::OwnedPublished { progress } => progress.try_with_workspace_mut(publish),
         }
     }
 
@@ -89,6 +138,8 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
             if let Some(admit) = admit {
                 admit.admit_ready();
             }
+        } else if let Self::OwnedPublished { progress } = self {
+            progress.publish(stripe);
         }
     }
 
@@ -106,6 +157,7 @@ impl<'a, T: ReconSample> FilteredFrameSink<'a, T> {
                     .freeze()?,
             )),
             Self::Published { progress, .. } => progress.freeze_workspace(publish),
+            Self::OwnedPublished { progress } => progress.freeze_workspace(publish),
         }
     }
 }
@@ -123,6 +175,72 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
     tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
     gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
     lossless_grid: Option<crate::filters::lossless::LosslessBlockGrid>,
+}
+
+/// One frame's owned final-filter state after reconstruction and deblock have
+/// separated their sample ownership.
+///
+/// Every immutable grid and filter record lives here, so an owned deblocked
+/// window can run on any worker without borrowing the reconstructed workspace.
+/// The output sink and pending stripe list stay frame-owned until the single
+/// terminal freeze consumes this value.
+pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
+    core: Arc<splot_core::headers::frame::FrameHeaderCore>,
+    disable_loopfilters_across_tiles: bool,
+    offset: ByteOffset,
+    mi_rows: usize,
+    mi_cols: usize,
+    subsampling: (usize, usize),
+    bit_depth: BitDepth,
+    cfl_ds_filter_index: u8,
+    luma_width: usize,
+    luma_height: usize,
+    pixel_format: splot_recon::PixelFormat,
+    cdef_grid: Option<crate::filters::cdef::CdefUnitGrid>,
+    cdef_skip_grid: Option<crate::filters::cdef::CdefSkipGrid>,
+    cdef_strengths: Option<Vec<crate::filters::cdef::CdefFrameParams>>,
+    ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    ccso_config: Option<crate::filters::ccso::CcsoFrameConfig>,
+    gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
+    tx_skip_grid: Option<super::WienerNsLrTxSkipGrid>,
+    gdf_reference: Option<crate::filters::gdf::GdfReferenceContext>,
+    lossless_grid: Option<crate::filters::lossless::LosslessBlockGrid>,
+    plane_sizes: [Option<splot_recon::PlaneSize>; 3],
+    max_sample_fits: bool,
+    lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    lr_plane_ends: [usize; 2],
+    lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    ranges: Vec<(usize, usize)>,
+    filter_records: super::FrameFilterRecords,
+    sink: FilteredFrameSink<'progress, 'job, T>,
+    filtered: Mutex<Vec<(usize, final_filters::FilteredStripe)>>,
+    stripe_state: Mutex<Vec<StripeLifecycle>>,
+    deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
+}
+
+/// One completed stripe whose index and samples move together into publication.
+pub(crate) struct OwnedFilteredStripe {
+    stripe: usize,
+    frame: final_filters::FilteredStripe,
+}
+
+/// One scheduled stripe with sole ownership of its deblocked input window.
+pub(crate) struct OwnedFilterJob<T: ReconSample> {
+    setup: Arc<OwnedFilterSetup<'static, 'static, T>>,
+    stripe: usize,
+    window: crate::filters::source::DeblockedWindow<T>,
+}
+
+/// The sole setup owner after every scheduled stripe has settled.
+pub(crate) struct OwnedFilterFinish<T: ReconSample> {
+    setup: Arc<OwnedFilterSetup<'static, 'static, T>>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum StripeLifecycle {
+    Pending,
+    Claimed,
+    Submitted,
 }
 
 #[allow(clippy::if_same_then_else)]
@@ -247,18 +365,101 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_filtered_frame<R>(
-        mut self,
-        core: &splot_core::headers::frame::FrameHeaderCore,
+        self,
+        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
-        admit: Option<&dyn splot_parallel::Admit<'static>>,
+        admit: Option<&dyn splot_parallel::Admit<'_>>,
         offset: ByteOffset,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
-        if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
-            return Ok((publish(self.workspace.freeze()?), self.filter_records));
-        }
+        self.into_filtered_frame_inner(
+            core,
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            progress,
+            admit,
+            offset,
+            false,
+            publish,
+        )
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn into_filtered_frame_from_deblocked<R>(
+        self,
+        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
+        disable_loopfilters_across_tiles: bool,
+        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+        progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
+        admit: Option<&dyn splot_parallel::Admit<'_>>,
+        offset: ByteOffset,
+        publish: impl FnOnce(DecodedFrame<T>) -> R,
+    ) -> Result<(R, super::FrameFilterRecords)> {
+        self.into_filtered_frame_inner(
+            core,
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            progress,
+            admit,
+            offset,
+            true,
+            publish,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn into_owned_filter_setup<'progress, 'job>(
+        self,
+        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
+        disable_loopfilters_across_tiles: bool,
+        progress: Option<&'progress crate::pipeline::frame_progress::FrameProgress<T>>,
+        admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
+        offset: ByteOffset,
+    ) -> Result<(
+        OwnedFilterSetup<'progress, 'job, T>,
+        CurrentFrameWorkspace<T>,
+    )> {
+        self.into_owned_filter_setup_inner(
+            core,
+            disable_loopfilters_across_tiles,
+            FilteredFrameSinkSource::Borrowed { progress, admit },
+            offset,
+        )
+    }
+
+    /// Builds a filter setup whose progressive output handle is owned by
+    /// scheduled row tasks.
+    pub(crate) fn into_owned_filter_setup_published(
+        self,
+        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
+        disable_loopfilters_across_tiles: bool,
+        progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
+        offset: ByteOffset,
+    ) -> Result<(
+        OwnedFilterSetup<'static, 'static, T>,
+        CurrentFrameWorkspace<T>,
+    )> {
+        self.into_owned_filter_setup_inner(
+            core,
+            disable_loopfilters_across_tiles,
+            FilteredFrameSinkSource::Owned { progress },
+            offset,
+        )
+    }
+
+    fn into_owned_filter_setup_inner<'progress, 'job>(
+        mut self,
+        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
+        disable_loopfilters_across_tiles: bool,
+        sink_source: FilteredFrameSinkSource<'progress, 'job, T>,
+        offset: ByteOffset,
+    ) -> Result<(
+        OwnedFilterSetup<'progress, 'job, T>,
+        CurrentFrameWorkspace<T>,
+    )> {
         let mi_rows = self.luma_height.div_ceil(MI_SIZE);
         let mi_cols = self.luma_width.div_ceil(MI_SIZE);
         if core
@@ -284,20 +485,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 })?,
             );
         }
-        if self.needs_tx_skip_grid(core) {
+        if self.needs_tx_skip_grid(&core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols, offset)?;
         }
-        let cdef_skip_grid = self.cdef_skip_grid(core, mi_rows, mi_cols, offset)?;
-        let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(core);
+        let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols, offset)?;
+        let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(&core);
         let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
-        let (lr_source_blocks, plane_ends) =
+        let (lr_source_blocks, lr_plane_ends) =
             final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
-        let [y_end, u_end] = plane_ends;
-        let y_runs = &lr_source_blocks[..y_end];
-        let u_runs = &lr_source_blocks[y_end..u_end];
-        let v_runs = &lr_source_blocks[u_end..];
-        let ranges = crate::filters::gdf::stripe_ranges(core, self.luma_height, offset)?;
+        let ranges = crate::filters::gdf::stripe_ranges(&core, self.luma_height, offset)?;
         let info = self.workspace.info();
         let pixel_format = info.pixel_format();
         let subsampling = (
@@ -307,7 +504,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         let ccso_config = self
             .ccso_grid
             .as_ref()
-            .map(|grid| crate::filters::ccso::prepare_ccso(core, grid, self.bit_depth, subsampling))
+            .map(|grid| {
+                crate::filters::ccso::prepare_ccso(&core, grid, self.bit_depth, subsampling)
+            })
             .transpose()
             .map_err(|_| {
                 wienerns_lr_selectable_transform_record_error_reason(
@@ -315,15 +514,22 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
                 )
             })?;
-        let sink = FilteredFrameSink::open(progress, admit, info, &ranges)?;
+        let sink = sink_source.open(info, &ranges, offset)?;
+        let stripe_count = ranges.len();
+        let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
+            self.workspace
+                .plane(plane)
+                .ok()
+                .map(splot_recon::CurrentFramePlane::storage_size)
+        });
 
         let Self {
-            mut workspace,
+            workspace,
             bit_depth,
             cfl_ds_filter_index,
             luma_width,
             luma_height,
-            mut filter_records,
+            filter_records,
             cdef_grid,
             ccso_grid,
             gdf_grid,
@@ -331,132 +537,92 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             gdf_reference,
             lossless_grid,
         } = self;
-        let chain = StripeChain {
-            bit_depth,
-            cfl_ds_filter_index,
-            luma_width,
-            luma_height,
-            pixel_format,
-            cdef_grid: cdef_grid.as_ref(),
-            ccso_grid: ccso_grid.as_ref(),
-            gdf_grid: gdf_grid.as_ref(),
-            tx_skip_grid: tx_skip_grid.as_ref(),
-            gdf_reference,
-            lossless_grid: lossless_grid.as_ref(),
-            plane_sizes: [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
-                workspace
-                    .plane(plane)
-                    .ok()
-                    .map(splot_recon::CurrentFramePlane::storage_size)
-            }),
-            max_sample_fits: T::try_from_u16(bit_depth.max_sample()).is_ok(),
-        };
-        let filtered = Mutex::new(Vec::new());
-        let filter_timer = crate::timing::start();
-        let run_stripe = |deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
-                          &(start, end): &(usize, usize)|
-         -> Result<final_filters::FilteredStripe> {
-            let cdef_timer = crate::timing::start();
-            let mut cdef = crate::filters::cdef::cdef_stripe(
-                deblocked,
-                cdef_strengths.as_deref(),
-                chain.cdef_grid,
-                cdef_skip_grid.as_ref(),
-                chain.lossless_grid,
-                (mi_rows, mi_cols),
-                subsampling,
-                bit_depth,
-                start,
-                end,
-            )
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
-                )
-            })?;
-            crate::timing::accumulate(crate::timing::Phase::FilterCdefStripe, cdef_timer);
-            if let Some((grid, config)) = chain.ccso_grid.zip(ccso_config.as_ref()) {
-                let ccso_timer = crate::timing::start();
-                crate::filters::ccso::ccso_stripe(&mut cdef, grid, config, chain.lossless_grid)
-                    .map_err(|_| {
-                        wienerns_lr_selectable_transform_record_error_reason(
-                            offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
-                        )
-                    })?;
-                crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
-            }
-            let lr_timer = crate::timing::start();
-            let mut frame = chain.apply_lr_stripe(
+        Ok((
+            OwnedFilterSetup {
                 core,
-                offset,
-                cdef,
-                [y_runs, u_runs, v_runs],
-                &lr_unit_filters,
-            )?;
-            crate::timing::accumulate(crate::timing::Phase::FilterLrStripe, lr_timer);
-            let (separate_cdef_luma, output_luma) =
-                if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
-                    (Some(&frame.cdef_y), post_lr_y)
-                } else {
-                    (None, &mut frame.cdef_y)
-                };
-            let gdf_timer = crate::timing::start();
-            crate::filters::gdf::apply_stripe(
-                core,
-                frame.deblocked_y,
-                separate_cdef_luma,
-                output_luma,
-                chain.gdf_grid,
-                chain.lossless_grid,
-                bit_depth,
                 disable_loopfilters_across_tiles,
-                chain.gdf_reference,
                 offset,
-            )?;
-            crate::timing::accumulate(crate::timing::Phase::FilterGdfStripe, gdf_timer);
-            Ok(frame.into_filtered())
-        };
-        let run_stripe_and_publish = |stripe: usize,
-                                      range: &(usize, usize),
-                                      deblocked: crate::filters::source::DeblockedPlanes<'_, T>|
-         -> Result<()> {
-            let frame = run_stripe(deblocked, range)?;
-            chain.validate_filter_stripe(PlaneId::Y, &frame.y, offset)?;
-            if let Some(plane) = frame.u.as_ref() {
-                chain.validate_filter_stripe(PlaneId::U, plane, offset)?;
-            }
-            if let Some(plane) = frame.v.as_ref() {
-                chain.validate_filter_stripe(PlaneId::V, plane, offset)?;
-            }
-            filtered
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push((stripe, frame));
-            drain_filtered_stripes(&sink, &filtered, offset, DrainMode::WhenFree)
-        };
-        let mut sections = match core
-            .deblocking_filter_params
-            .filter(|_| std::env::var_os("SPLOT_PROBE_SKIP_DEBLOCK").is_none())
-        {
-            Some(filter) => crate::filters::deblock::FrameDeblock::prepare(
-                &filter_records.deblock_blocks,
-                [
-                    &filter_records.chroma_deblock_blocks[0],
-                    &filter_records.chroma_deblock_blocks[1],
-                ],
                 mi_rows,
                 mi_cols,
-                filter,
-                core.tile_info.as_ref(),
-                disable_loopfilters_across_tiles,
-                deblock_quant_deltas,
-            )
-            .map_err(|_| deblock_filter_error(offset))?,
-            None => None,
+                subsampling,
+                bit_depth,
+                cfl_ds_filter_index,
+                luma_width,
+                luma_height,
+                pixel_format,
+                cdef_grid,
+                cdef_skip_grid,
+                cdef_strengths,
+                ccso_grid,
+                ccso_config,
+                gdf_grid,
+                tx_skip_grid,
+                gdf_reference,
+                lossless_grid,
+                plane_sizes,
+                max_sample_fits: T::try_from_u16(bit_depth.max_sample()).is_ok(),
+                lr_source_blocks,
+                lr_plane_ends,
+                lr_unit_filters,
+                ranges,
+                filter_records,
+                sink,
+                filtered: Mutex::new(Vec::new()),
+                stripe_state: Mutex::new(vec![StripeLifecycle::Pending; stripe_count]),
+                deblock_records: Mutex::new(None),
+            },
+            workspace,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn into_filtered_frame_inner<R>(
+        self,
+        core: Arc<splot_core::headers::frame::FrameHeaderCore>,
+        disable_loopfilters_across_tiles: bool,
+        deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
+        progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
+        admit: Option<&dyn splot_parallel::Admit<'_>>,
+        offset: ByteOffset,
+        deblocked: bool,
+        publish: impl FnOnce(DecodedFrame<T>) -> R,
+    ) -> Result<(R, super::FrameFilterRecords)> {
+        if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
+            return Ok((publish(self.workspace.freeze()?), self.filter_records));
+        }
+        let (setup, mut workspace) = self.into_owned_filter_setup(
+            core,
+            disable_loopfilters_across_tiles,
+            progress,
+            admit,
+            offset,
+        )?;
+        let mi_rows = setup.mi_rows;
+        let mi_cols = setup.mi_cols;
+        let bit_depth = setup.bit_depth;
+        let filter_timer = crate::timing::start();
+        let mut sections = if deblocked {
+            None
+        } else {
+            match setup.core.deblocking_filter_params {
+                Some(filter) => crate::filters::deblock::FrameDeblock::prepare(
+                    &setup.filter_records.deblock_blocks,
+                    [
+                        &setup.filter_records.chroma_deblock_blocks[0],
+                        &setup.filter_records.chroma_deblock_blocks[1],
+                    ],
+                    mi_rows,
+                    mi_cols,
+                    filter,
+                    setup.core.tile_info.as_ref(),
+                    disable_loopfilters_across_tiles,
+                    deblock_quant_deltas,
+                )
+                .map_err(|_| deblock_filter_error(offset))?,
+                None => None,
+            }
         };
-        if ranges.len() > 1 && splot_parallel::on_multiworker_pool() {
+        if setup.stripe_ranges().len() > 1 && splot_parallel::on_multiworker_pool() {
             if let Some(sections) = sections.as_mut() {
                 let prime_timer = crate::timing::start();
                 sections
@@ -464,15 +630,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     .map_err(|_| deblock_filter_error(offset))?;
                 crate::timing::report("filter_deblock_prime", prime_timer);
             }
-            let mut slots: Vec<Option<Result<()>>> = (0..ranges.len()).map(|_| None).collect();
+            let mut slots: Vec<Option<Result<()>>> =
+                (0..setup.stripe_ranges().len()).map(|_| None).collect();
             let mut owed: Option<crate::error::DecodeError> = None;
             let scheduled = splot_parallel::ready_task_scope(|scope| {
-                for ((stripe, range), slot) in ranges.iter().enumerate().zip(&mut slots) {
+                for ((stripe, range), slot) in
+                    setup.stripe_ranges().iter().enumerate().zip(&mut slots)
+                {
                     let window = match deblock_stripe_window(
                         sections.as_mut(),
                         &mut workspace,
                         range,
-                        subsampling.1,
+                        setup.subsampling.1,
                         bit_depth,
                         offset,
                     ) {
@@ -482,12 +651,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                             return;
                         }
                     };
-                    let run_stripe_and_publish = &run_stripe_and_publish;
+                    let setup = &setup;
                     scope.spawn(move |_| {
-                        *slot = Some(match window.planes() {
-                            Some(deblocked) => run_stripe_and_publish(stripe, range, deblocked),
-                            None => Err(deblock_filter_error(offset)),
-                        });
+                        *slot = Some(
+                            setup
+                                .run_owned_window(stripe, window)
+                                .and_then(|filtered| setup.publish(filtered)),
+                        );
                     });
                 }
             });
@@ -514,22 +684,449 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             }
             let deblocked = crate::filters::source::DeblockedPlanes::frame(&workspace)
                 .ok_or_else(|| deblock_filter_error(offset))?;
-            for (stripe, range) in ranges.iter().enumerate() {
-                run_stripe_and_publish(stripe, range, deblocked)?;
+            for (stripe, range) in setup.stripe_ranges().iter().enumerate() {
+                let filtered = setup.run_borrowed_planes(stripe, range, deblocked)?;
+                setup.publish(filtered)?;
             }
         }
         if let Some(sections) = sections {
             sections.finish();
         }
-        drain_filtered_stripes(&sink, &filtered, offset, DrainMode::BeforeFreeze)?;
         crate::timing::report("filter_stripes", filter_timer);
-        filter_records.lr_source_blocks = lr_source_blocks;
-        filter_records.lr_unit_filters = lr_unit_filters;
         let freeze_timer = crate::timing::start();
-        let frame = sink.freeze(publish)?;
+        let frame = setup.finish(publish)?;
         crate::timing::accumulate(crate::timing::Phase::FilterFreeze, freeze_timer);
         workspace.recycle_planes();
-        Ok((frame, filter_records))
+        Ok(frame)
+    }
+}
+
+impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
+    /// Transfers deblock geometry to the incremental deblock owner after every
+    /// setup grid that reads it has been derived.
+    pub(crate) fn detach_deblock_records(
+        &mut self,
+    ) -> crate::filters::deblock::OwnedDeblockRecords {
+        crate::filters::deblock::OwnedDeblockRecords {
+            blocks: core::mem::take(&mut self.filter_records.deblock_blocks),
+            chroma: core::mem::take(&mut self.filter_records.chroma_deblock_blocks),
+        }
+    }
+
+    fn chain(&self) -> StripeChain<'_> {
+        StripeChain {
+            bit_depth: self.bit_depth,
+            cfl_ds_filter_index: self.cfl_ds_filter_index,
+            luma_width: self.luma_width,
+            luma_height: self.luma_height,
+            pixel_format: self.pixel_format,
+            cdef_grid: self.cdef_grid.as_ref(),
+            ccso_grid: self.ccso_grid.as_ref(),
+            gdf_grid: self.gdf_grid.as_ref(),
+            tx_skip_grid: self.tx_skip_grid.as_ref(),
+            gdf_reference: self.gdf_reference,
+            lossless_grid: self.lossless_grid.as_ref(),
+            plane_sizes: self.plane_sizes,
+            max_sample_fits: self.max_sample_fits,
+        }
+    }
+
+    /// Returns the ordered luma ranges this frame still owes.
+    pub(crate) fn stripe_ranges(&self) -> &[(usize, usize)] {
+        &self.ranges
+    }
+
+    /// Extracts one stripe window only after incremental deblock has made every
+    /// source row and halo final.
+    pub(crate) fn extract_ready_window(
+        &self,
+        stripe: usize,
+        deblock: &crate::filters::deblock::FrameDeblock<'_>,
+        workspace: &CurrentFrameWorkspace<T>,
+    ) -> Result<Option<crate::filters::source::DeblockedWindow<T>>> {
+        self.extract_ready_with(stripe, deblock, |start, end| {
+            deblock.extract_window(workspace, start, end, STRIPE_WINDOW_MARGIN)
+        })
+    }
+
+    /// Extracts one ready stripe directly from segmented canonical row bands.
+    pub(crate) fn extract_ready_band_window(
+        &self,
+        stripe: usize,
+        deblock: &crate::filters::deblock::FrameDeblock<'_>,
+        frame: &splot_recon::OwnedFrameBands<T>,
+    ) -> Result<Option<crate::filters::source::DeblockedWindow<T>>> {
+        self.extract_ready_with(stripe, deblock, |start, end| {
+            deblock.extract_band_window(frame, start, end, STRIPE_WINDOW_MARGIN)
+        })
+    }
+
+    fn extract_ready_with(
+        &self,
+        stripe: usize,
+        deblock: &crate::filters::deblock::FrameDeblock<'_>,
+        extract: impl FnOnce(
+            usize,
+            usize,
+        ) -> core::result::Result<
+            crate::filters::source::DeblockedWindow<T>,
+            crate::filters::deblock::DeblockError,
+        >,
+    ) -> Result<Option<crate::filters::source::DeblockedWindow<T>>> {
+        let Some((start, end)) = self.ready_stripe(stripe, deblock)? else {
+            return Ok(None);
+        };
+        extract(start, end)
+            .map(Some)
+            .map_err(|_| deblock_filter_error(self.offset))
+    }
+
+    fn ready_stripe(
+        &self,
+        stripe: usize,
+        deblock: &crate::filters::deblock::FrameDeblock<'_>,
+    ) -> Result<Option<(usize, usize)>> {
+        let (start, end) = self.stripe_bounds(stripe)?;
+        let needed = end
+            .checked_add(STRIPE_WINDOW_MARGIN << self.subsampling.1)
+            .ok_or_else(|| self.stripe_error())?
+            .min(self.luma_height);
+        Ok((deblock
+            .final_luma_rows(self.subsampling.1)
+            .min(self.luma_height)
+            >= needed)
+            .then_some((start, end)))
+    }
+
+    /// Extracts one terminal window when the frame has no active deblock plan.
+    pub(crate) fn extract_terminal_window(
+        &self,
+        stripe: usize,
+        workspace: &CurrentFrameWorkspace<T>,
+    ) -> Result<crate::filters::source::DeblockedWindow<T>> {
+        self.extract_terminal_with(stripe, |start, end| {
+            crate::filters::source::DeblockedWindow::extract(
+                workspace,
+                start,
+                end,
+                STRIPE_WINDOW_MARGIN,
+            )
+        })
+    }
+
+    /// Extracts one terminal stripe directly from segmented canonical bands
+    /// when no active deblock plan exists.
+    pub(crate) fn extract_terminal_band_window(
+        &self,
+        stripe: usize,
+        frame: &splot_recon::OwnedFrameBands<T>,
+    ) -> Result<crate::filters::source::DeblockedWindow<T>> {
+        self.extract_terminal_with(stripe, |start, end| {
+            crate::filters::source::DeblockedWindow::extract_bands(
+                frame,
+                start,
+                end,
+                STRIPE_WINDOW_MARGIN,
+            )
+        })
+    }
+
+    fn extract_terminal_with(
+        &self,
+        stripe: usize,
+        extract: impl FnOnce(usize, usize) -> Option<crate::filters::source::DeblockedWindow<T>>,
+    ) -> Result<crate::filters::source::DeblockedWindow<T>> {
+        let (start, end) = self.stripe_bounds(stripe)?;
+        extract(start, end).ok_or_else(|| deblock_filter_error(self.offset))
+    }
+
+    fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
+        self.ranges
+            .get(stripe)
+            .copied()
+            .ok_or_else(|| self.stripe_error())
+    }
+
+    /// Restores the moved deblock vectors exactly once before terminal freeze.
+    pub(crate) fn restore_deblock_records(
+        &self,
+        records: crate::filters::deblock::OwnedDeblockRecords,
+    ) -> Result<()> {
+        let mut slot = self
+            .deblock_records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if slot.is_some() {
+            return Err(self.stripe_error());
+        }
+        *slot = Some(records);
+        Ok(())
+    }
+
+    /// Runs one stripe from the owned deblocked rows it needs.
+    ///
+    /// The window is consumed by this call, so no task can retain a borrow of
+    /// reconstruction storage or accidentally run the same input owner twice.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the scheduled task transfers its sole window owner here"
+    )]
+    pub(crate) fn run_owned_window(
+        &self,
+        stripe: usize,
+        window: crate::filters::source::DeblockedWindow<T>,
+    ) -> Result<OwnedFilteredStripe> {
+        let range = self.claim(stripe)?;
+        let deblocked = window
+            .planes()
+            .ok_or_else(|| deblock_filter_error(self.offset))?;
+        Ok(OwnedFilteredStripe {
+            stripe,
+            frame: self.run_planes(range, deblocked)?,
+        })
+    }
+
+    fn run_borrowed_planes(
+        &self,
+        stripe: usize,
+        range: &(usize, usize),
+        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
+    ) -> Result<OwnedFilteredStripe> {
+        let claimed = self.claim(stripe)?;
+        if claimed != range {
+            return Err(self.stripe_error());
+        }
+        Ok(OwnedFilteredStripe {
+            stripe,
+            frame: self.run_planes(range, deblocked)?,
+        })
+    }
+
+    /// Moves one completed stripe into the frame output exactly once.
+    pub(crate) fn publish(&self, stripe: OwnedFilteredStripe) -> Result<()> {
+        let chain = self.chain();
+        chain.validate_filter_stripe(PlaneId::Y, &stripe.frame.y, self.offset)?;
+        if let Some(plane) = stripe.frame.u.as_ref() {
+            chain.validate_filter_stripe(PlaneId::U, plane, self.offset)?;
+        }
+        if let Some(plane) = stripe.frame.v.as_ref() {
+            chain.validate_filter_stripe(PlaneId::V, plane, self.offset)?;
+        }
+        {
+            let mut state = self
+                .stripe_state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(lifecycle) = state.get_mut(stripe.stripe) else {
+                return Err(self.stripe_error());
+            };
+            if *lifecycle != StripeLifecycle::Claimed {
+                return Err(self.stripe_error());
+            }
+            *lifecycle = StripeLifecycle::Submitted;
+        }
+        self.filtered
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((stripe.stripe, stripe.frame));
+        drain_filtered_stripes(&self.sink, &self.filtered, self.offset, DrainMode::WhenFree)
+    }
+
+    fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
+        let range = self.ranges.get(stripe).ok_or_else(|| self.stripe_error())?;
+        let mut state = self
+            .stripe_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lifecycle = state.get_mut(stripe).ok_or_else(|| self.stripe_error())?;
+        if *lifecycle != StripeLifecycle::Pending {
+            return Err(self.stripe_error());
+        }
+        *lifecycle = StripeLifecycle::Claimed;
+        Ok(range)
+    }
+
+    fn stripe_error(&self) -> crate::error::DecodeError {
+        wienerns_lr_selectable_transform_record_error_reason(
+            self.offset,
+            "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+        )
+    }
+
+    fn run_planes(
+        &self,
+        &(start, end): &(usize, usize),
+        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
+    ) -> Result<final_filters::FilteredStripe> {
+        let chain = self.chain();
+        let cdef_timer = crate::timing::start();
+        let mut cdef = crate::filters::cdef::cdef_stripe(
+            deblocked,
+            self.cdef_strengths.as_deref(),
+            chain.cdef_grid,
+            self.cdef_skip_grid.as_ref(),
+            chain.lossless_grid,
+            (self.mi_rows, self.mi_cols),
+            self.subsampling,
+            self.bit_depth,
+            start,
+            end,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                self.offset,
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
+            )
+        })?;
+        crate::timing::accumulate(crate::timing::Phase::FilterCdefStripe, cdef_timer);
+        if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
+            let ccso_timer = crate::timing::start();
+            crate::filters::ccso::ccso_stripe(&mut cdef, grid, config, chain.lossless_grid)
+                .map_err(|_| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        self.offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                    )
+                })?;
+            crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
+        }
+        let [y_end, u_end] = self.lr_plane_ends;
+        let y_runs = &self.lr_source_blocks[..y_end];
+        let u_runs = &self.lr_source_blocks[y_end..u_end];
+        let v_runs = &self.lr_source_blocks[u_end..];
+        let lr_timer = crate::timing::start();
+        let mut frame = chain.apply_lr_stripe(
+            &self.core,
+            self.offset,
+            cdef,
+            [y_runs, u_runs, v_runs],
+            &self.lr_unit_filters,
+        )?;
+        crate::timing::accumulate(crate::timing::Phase::FilterLrStripe, lr_timer);
+        let (separate_cdef_luma, output_luma) = if let Some(post_lr_y) = frame.post_lr_y.as_mut() {
+            (Some(&frame.cdef_y), post_lr_y)
+        } else {
+            (None, &mut frame.cdef_y)
+        };
+        let gdf_timer = crate::timing::start();
+        crate::filters::gdf::apply_stripe(
+            &self.core,
+            frame.deblocked_y,
+            separate_cdef_luma,
+            output_luma,
+            chain.gdf_grid,
+            chain.lossless_grid,
+            self.bit_depth,
+            self.disable_loopfilters_across_tiles,
+            chain.gdf_reference,
+            self.offset,
+        )?;
+        crate::timing::accumulate(crate::timing::Phase::FilterGdfStripe, gdf_timer);
+        Ok(frame.into_filtered())
+    }
+
+    /// Publishes every completed stripe, then consumes the sole output owner to
+    /// freeze exactly once.
+    pub(crate) fn finish<R>(
+        mut self,
+        publish: impl FnOnce(DecodedFrame<T>) -> R,
+    ) -> Result<(R, super::FrameFilterRecords)> {
+        let offset = self.offset;
+        let complete = self
+            .stripe_state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .all(|lifecycle| *lifecycle == StripeLifecycle::Submitted);
+        if !complete {
+            return Err(self.stripe_error());
+        }
+        drain_filtered_stripes(
+            &self.sink,
+            &self.filtered,
+            self.offset,
+            DrainMode::BeforeFreeze,
+        )?;
+        self.filter_records.lr_source_blocks = self.lr_source_blocks;
+        self.filter_records.lr_unit_filters = self.lr_unit_filters;
+        let has_restored_deblock = self
+            .deblock_records
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some();
+        if has_restored_deblock
+            && (!self.filter_records.deblock_blocks.is_empty()
+                || self
+                    .filter_records
+                    .chroma_deblock_blocks
+                    .iter()
+                    .any(|blocks| !blocks.is_empty()))
+        {
+            return Err(wienerns_lr_selectable_transform_record_error_reason(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+            ));
+        }
+        if let Some(records) = self
+            .deblock_records
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            self.filter_records.deblock_blocks = records.blocks;
+            self.filter_records.chroma_deblock_blocks = records.chroma;
+        }
+        let frame = self.sink.freeze(publish)?;
+        Ok((frame, self.filter_records))
+    }
+}
+
+impl<T: ReconSample> OwnedFilterJob<T> {
+    /// Stable stripe index used by the scheduler's completion table.
+    pub(crate) const fn stripe(&self) -> usize {
+        self.stripe
+    }
+
+    /// Claims and runs one stripe, then publishes it exactly once.
+    pub(crate) fn run(self) -> Result<()> {
+        let filtered = self.setup.run_owned_window(self.stripe, self.window)?;
+        self.setup.publish(filtered)
+    }
+}
+
+impl<T: ReconSample> OwnedFilterFinish<T> {
+    /// Freezes only when this is the last live setup owner.
+    pub(crate) fn finish<R>(
+        self,
+        publish: impl FnOnce(DecodedFrame<T>) -> R,
+    ) -> Result<(R, super::FrameFilterRecords)> {
+        let offset = self.setup.offset;
+        let setup = Arc::try_unwrap(self.setup).map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                offset,
+                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
+            )
+        })?;
+        setup.finish(publish)
+    }
+}
+
+impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
+    /// Transfers one ready stripe to a scheduler job.
+    pub(crate) fn owned_job(
+        self: &Arc<Self>,
+        stripe: usize,
+        window: crate::filters::source::DeblockedWindow<T>,
+    ) -> OwnedFilterJob<T> {
+        OwnedFilterJob {
+            setup: Arc::clone(self),
+            stripe,
+            window,
+        }
+    }
+
+    /// Transfers terminal ownership to the exactly-once freeze job.
+    pub(crate) fn owned_finish(self: Arc<Self>) -> OwnedFilterFinish<T> {
+        OwnedFilterFinish { setup: self }
     }
 }
 
@@ -555,7 +1152,7 @@ enum DrainMode {
 /// its stripes have all run, which is what makes every stripe's samples present
 /// before the freeze even when the output was busy each time.
 fn drain_filtered_stripes<T: ReconSample>(
-    sink: &FilteredFrameSink<'_, T>,
+    sink: &FilteredFrameSink<'_, '_, T>,
     filtered: &Mutex<Vec<(usize, final_filters::FilteredStripe)>>,
     offset: ByteOffset,
     mode: DrainMode,
@@ -643,7 +1240,7 @@ fn deblock_stripe_window<T: ReconSample>(
     .ok_or_else(|| deblock_filter_error(offset))
 }
 
-fn deblock_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
+pub(crate) fn deblock_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
     wienerns_lr_selectable_transform_record_error_reason(
         offset,
         "unsupported_wienerns_lr_selectable_transform_records_deblock_filter",

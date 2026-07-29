@@ -34,9 +34,10 @@ use super::read_mv::{
     read_newmv_block_mvd_magnitude_with_config as read_newmv_block_mvd_magnitude,
 };
 use super::{
-    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, InterResidual,
-    InterResidualBlock, Mv, PlacedInterBlock, SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV,
-    SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc, unsupported_at, unsupported_compound_at,
+    BawpSyntax, CcsoGridHandle, InterBlock, InterIntraPrediction, InterReferenceState,
+    InterResidual, InterResidualBlock, MotionFieldHandle, Mv, PlacedInterBlock,
+    SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
+    unsupported_at, unsupported_compound_at,
 };
 use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, BlockSize, CoeffContextReset,
@@ -205,6 +206,10 @@ enum ReconDependency {
 }
 
 impl ReconCommand {
+    const fn is_intrabc(&self) -> bool {
+        matches!(self, Self::Intrabc(_))
+    }
+
     fn dependency(&self) -> ReconDependency {
         match self {
             Self::Intrabc(command) if command.requires_global_fence() => {
@@ -357,6 +362,14 @@ fn derive_inter_block_setup<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
+    motion_field.set_band_rows8(sb_h4 / 2).ok_or_else(|| {
+        inter_cap!(
+            "inter_temporal_motion_field_band_rows",
+            offset,
+            "inter.temporal_motion_field",
+            SPEC_MODE_INFO
+        )
+    })?;
     motion_field.set_reference_metadata(
         !frame_is_intra,
         temporal_config.frame_size,
@@ -364,13 +377,24 @@ fn derive_inter_block_setup<T: ReconSample>(
     );
     let cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
     let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
+    let ref_ccso_unit_grids = reference
+        .ref_ccso_unit_grids
+        .iter()
+        .map(|handle| {
+            handle
+                .as_ref()
+                .and_then(CcsoGridHandle::product)
+                .and_then(Option::as_ref)
+                .cloned()
+        })
+        .collect::<Vec<_>>();
     let ccso_state = CcsoState::new(
         mi_rows,
         mi_cols,
         sequence,
         core,
         ref_frame_idx,
-        &reference.ref_ccso_unit_grids,
+        &ref_ccso_unit_grids,
         first_tile_offset,
     )?;
     let residual_tool_policy = if frame_is_intra {
@@ -529,10 +553,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         motion_field,
     )?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, offset)?;
+    let ccso_grid = walked.ccso_state.into_grid(first_tile_offset)?;
     let filter_inputs = InterFilterInputs {
         records,
         cdef_grid: walked.cdef_state.into_grid(first_tile_offset)?,
-        ccso_grid: walked.ccso_state.into_grid(first_tile_offset)?,
+        ccso_grid,
         gdf_grid: walked.gdf_state.into_grid(first_tile_offset)?,
         motion_field: walked.motion_field,
     };
@@ -571,6 +596,73 @@ impl TemporalPrelude {
             self.expected_tip_pair,
             self.offset,
         )
+    }
+
+    fn begin_scheduled<T: ReconSample>(
+        &self,
+        temporal_context: &mut TemporalMvContext,
+        core: &FrameHeaderCore,
+        ref_frame_idx: &[u32],
+        reference: &InterReferenceState<T>,
+    ) -> Result<super::find_mv_stack::TemporalBandPlan> {
+        let metadata = reference
+            .ref_motion_fields
+            .iter()
+            .map(|field| {
+                field
+                    .as_ref()
+                    .and_then(|field| field.metadata().map(|metadata| metadata.as_ref().clone()))
+            })
+            .collect::<Vec<_>>();
+        let layouts = reference
+            .ref_motion_fields
+            .iter()
+            .map(|field| field.as_ref().map(MotionFieldHandle::layout))
+            .collect::<Vec<_>>();
+        let target_layout = super::find_mv_stack::MotionFieldLayout::new(
+            self.dimensions.0,
+            self.dimensions.1,
+            self.sb_h4,
+        )
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_scheduled_temporal_motion_layout",
+                self.offset,
+                "inter.temporal_motion_context",
+                SPEC_MODE_INFO
+            )
+        })?;
+        let tip_mode = core
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.tip_frame_mode != Some(TipFrameMode::Disabled));
+        let fill_tip_holes = core
+            .inter
+            .as_ref()
+            .and_then(|inter| inter.allow_tip_hole_fill)
+            .unwrap_or(false);
+        temporal_context
+            .begin_banded_refresh(
+                target_layout,
+                self.current_order_hint,
+                self.config,
+                ref_frame_idx,
+                &reference.ref_valid,
+                &reference.ref_order_hint,
+                &metadata,
+                &layouts,
+                self.expected_tip_pair,
+                tip_mode,
+                fill_tip_holes,
+            )
+            .ok_or_else(|| {
+                inter_cap!(
+                    "inter_scheduled_temporal_motion_context",
+                    self.offset,
+                    "inter.temporal_motion_context",
+                    SPEC_MODE_INFO
+                )
+            })
     }
 }
 
@@ -617,7 +709,7 @@ fn frame_temporal_context<'a, T: ReconSample>(
         )
         .ok_or_else(|| {
             inter_cap!(
-                "inter_temporal_motion_context",
+                "inter_fused_temporal_motion_context",
                 offset,
                 "inter.temporal_motion_context",
                 SPEC_MODE_INFO
@@ -658,7 +750,7 @@ fn derived_tip_reference_pair(
     )
 }
 
-fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
+pub(super) fn superblock_h4(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Option<usize> {
     let partition = sequence.partition?;
     core.frame_is_intra?;
     match partition.seq_sb_size() {
@@ -1895,7 +1987,7 @@ mod deferred_recon;
 mod filter_records;
 mod frame_parse;
 pub(crate) use frame_parse::{
-    InterFrameParse, ScheduledInterReconstruction, parse_inter_frame_blocks,
+    InterFrameParse, ScheduledFrameProgress, ScheduledInterReconstruction, parse_inter_frame_blocks,
 };
 mod interintra;
 mod intrabc;

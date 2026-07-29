@@ -97,6 +97,430 @@ fn run_deblock(
 }
 
 #[test]
+fn one_row_pass_adapters_match_the_combined_deblock() {
+    let mi_rows = 8;
+    let mi_cols = 16;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let make_workspace = || {
+        let mut workspace = yuv420_workspace(64, 32, 0);
+        fill_rect(&mut workspace, PlaneId::Y, 0..32, 0..32, 100);
+        fill_rect(&mut workspace, PlaneId::Y, 32..64, 0..32, 108);
+        workspace
+    };
+    let mut combined = make_workspace();
+    let mut staged = make_workspace();
+    let params = filter([true; 4]);
+
+    deblock_general_intra_frame(
+        &mut combined,
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    deblock_one_row_columns(
+        &mut staged,
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    deblock_one_row_rows(
+        &mut staged,
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+        BitDepth::Eight,
+    )
+    .unwrap();
+
+    let combined =
+        splot_recon::DecodedFrameHashInput::new(&combined.freeze().unwrap()).compute_hash();
+    let staged = splot_recon::DecodedFrameHashInput::new(&staged.freeze().unwrap()).compute_hash();
+    assert_eq!(staged, combined);
+}
+
+fn patterned_yuv420_workspace(width: usize, height: usize) -> CurrentFrameWorkspace<u8> {
+    let mut workspace = yuv420_workspace(width, height, 0);
+    fill_pattern(&mut workspace);
+    workspace
+}
+
+fn patterned_yuv420_workspace_with_visible_height(
+    width: usize,
+    height: usize,
+    visible_height: usize,
+) -> CurrentFrameWorkspace<u8> {
+    let info = splot_recon::DecodedFrameInfo::new(
+        splot_recon::OutputIndex::new(0),
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+        splot_recon::PlaneSize::new(width, height).unwrap(),
+        splot_recon::PlaneRect::new(0, 0, width, visible_height).unwrap(),
+    )
+    .unwrap();
+    let mut workspace = CurrentFrameWorkspace::new(info, 0).unwrap();
+    fill_pattern(&mut workspace);
+    workspace
+}
+
+fn fill_pattern(workspace: &mut CurrentFrameWorkspace<u8>) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        let (plane_width, plane_height) = coded_plane_dimensions(workspace, plane).unwrap();
+        let shift = usize::from(plane != PlaneId::Y);
+        for y in 0..plane_height {
+            for x in 0..plane_width {
+                let band = ((x / (32 >> shift)) + (y / (32 >> shift))) & 1;
+                workspace
+                    .set_reconstructed_sample(plane, x, y, 100 + 8 * band as u8)
+                    .unwrap();
+            }
+        }
+    }
+}
+
+fn assert_workspace_samples_eq(
+    actual: &CurrentFrameWorkspace<u8>,
+    expected: &CurrentFrameWorkspace<u8>,
+) {
+    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
+        assert_eq!(
+            actual.plane(plane).unwrap().samples(),
+            expected.plane(plane).unwrap().samples(),
+            "{plane:?} samples differ"
+        );
+    }
+}
+
+fn two_by_two_tile_info() -> TileInfo {
+    use splot_core::bitio::BitReader;
+    use splot_core::headers::frame::{CoreSeqTileView, FrameSize, parse_tile_info};
+    use splot_core::headers::sequence::{LevelIdx, SuperblockSize, Tier};
+    use splot_core::span::ByteOffset;
+    use splot_core::tile::TileParams;
+
+    let view = CoreSeqTileView {
+        seq_tile_info_present_flag: true,
+        allow_tile_info_change: false,
+        seq_tile_params: Some(TileParams {
+            tile_cols: 2,
+            tile_rows: 2,
+            tile_cols_log2: 1,
+            tile_rows_log2: 1,
+            sb_cols: 2,
+            sb_rows: 2,
+            uniform_spacing: true,
+            covers_cols: true,
+            covers_rows: true,
+        }),
+        seq_sb_col_starts: Vec::new(),
+        seq_sb_row_starts: Vec::new(),
+        seq_sb_size: SuperblockSize::Block64x64,
+        use_256x256_superblock: false,
+        use_128x128_superblock: false,
+        enable_avg_cdf: true,
+        avg_cdf_type: 1,
+        seq_tier: Tier::Main,
+        seq_level_idx: LevelIdx::from_bits(0),
+    };
+    let data = [0_u8];
+    let mut reader = BitReader::new(&data, ByteOffset::new(0));
+    parse_tile_info(
+        &mut reader,
+        &view,
+        FrameSize::new(128, 128),
+        true,
+        false,
+        false,
+    )
+    .unwrap()
+}
+
+#[test]
+fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
+    let mi_rows = 32;
+    let mi_cols = 32;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let params = filter([true; 4]);
+    let mut expected = patterned_yuv420_workspace(128, 128);
+    let mut actual = patterned_yuv420_workspace(128, 128);
+
+    deblock_general_intra_frame(
+        &mut expected,
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    let mut plan = FrameDeblock::prepare(
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+    )
+    .unwrap()
+    .unwrap();
+    for mi_row_end in [16, 32] {
+        plan.advance_vertical(
+            &mut actual,
+            mi_row_end + PASS_0_LEAD_MI_ROWS,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        plan.advance_horizontal(&mut actual, mi_row_end, BitDepth::Eight)
+            .unwrap();
+    }
+
+    assert_eq!(plan.final_luma_rows(1), 128);
+    assert!(plan.finish().is_none());
+    assert_workspace_samples_eq(&actual, &expected);
+}
+
+#[test]
+fn owned_deblock_records_match_borrowed_plan_and_return_on_finish() {
+    let mi_rows = 32;
+    let mi_cols = 32;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let params = filter([true; 4]);
+    let mut borrowed = patterned_yuv420_workspace(128, 128);
+    let mut owned = patterned_yuv420_workspace(128, 128);
+    let mut borrowed_plan = FrameDeblock::prepare(
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+    )
+    .unwrap()
+    .unwrap();
+    let owned_blocks = blocks.clone();
+    let owned_pointer = owned_blocks.as_ptr();
+    let owned_capacity = owned_blocks.capacity();
+    let fixture = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/\
+         syn-2frame-multirow-inter-64x256-10bit-q100.ivf"
+    );
+    let (_, core) = crate::prediction::inter::test_support::fixture_sequence_and_key_core(fixture);
+    let mut owned_plan = FrameDeblock::prepare_owned(
+        OwnedDeblockRecords {
+            blocks: owned_blocks,
+            chroma: [Vec::new(), Vec::new()],
+        },
+        mi_rows,
+        mi_cols,
+        params,
+        Arc::new(core),
+        false,
+        DeblockQuantDeltas::ZERO,
+    )
+    .unwrap()
+    .unwrap();
+
+    for mi_row_end in [16, 32] {
+        borrowed_plan
+            .advance(&mut borrowed, mi_row_end, BitDepth::Eight)
+            .unwrap();
+        owned_plan
+            .advance(&mut owned, mi_row_end, BitDepth::Eight)
+            .unwrap();
+    }
+
+    assert_workspace_samples_eq(&owned, &borrowed);
+    assert!(borrowed_plan.finish().is_none());
+    let records = owned_plan.finish().unwrap();
+    assert_eq!(records.blocks.len(), blocks.len());
+    assert_eq!(records.blocks.as_ptr(), owned_pointer);
+    assert_eq!(records.blocks.capacity(), owned_capacity);
+    assert!(records.chroma.iter().all(Vec::is_empty));
+}
+
+#[test]
+fn incremental_deblock_enforces_frontiers_and_extracts_exact_owned_window() {
+    let mi_rows = 32;
+    let mi_cols = 32;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let params = filter([true; 4]);
+    let mut workspace = patterned_yuv420_workspace(128, 128);
+    let mut plan = FrameDeblock::prepare(
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert!(matches!(
+        plan.advance_horizontal(&mut workspace, 16, BitDepth::Eight),
+        Err(DeblockError::Workspace)
+    ));
+    assert_eq!(plan.final_luma_rows(1), 0);
+    plan.advance_vertical(&mut workspace, 20, BitDepth::Eight)
+        .unwrap();
+    plan.advance_horizontal(&mut workspace, 16, BitDepth::Eight)
+        .unwrap();
+    assert_eq!(plan.final_luma_rows(0), 56);
+    assert_eq!(plan.final_luma_rows(1), 48);
+
+    let window = plan.extract_window(&workspace, 0, 32, 8).unwrap();
+    let planes = window.planes().unwrap();
+    assert_eq!((planes.y.origin_y(), planes.y.end_y()), (0, 40));
+    assert_eq!(
+        (planes.u.unwrap().origin_y(), planes.u.unwrap().end_y()),
+        (0, 24)
+    );
+    assert!(matches!(
+        plan.extract_window(&workspace, 0, 33, 8),
+        Err(DeblockError::Workspace)
+    ));
+    assert!(plan.finish().is_none());
+}
+
+#[test]
+fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
+    let mi_rows = 18;
+    let mi_cols = 16;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let params = filter([true; 4]);
+    let mut expected = patterned_yuv420_workspace_with_visible_height(64, 72, 70);
+    let mut actual = patterned_yuv420_workspace_with_visible_height(64, 72, 70);
+
+    deblock_general_intra_frame(
+        &mut expected,
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+        BitDepth::Eight,
+    )
+    .unwrap();
+    let mut plan = FrameDeblock::prepare(
+        &blocks,
+        [&[], &[]],
+        mi_rows,
+        mi_cols,
+        params,
+        None,
+        false,
+        DeblockQuantDeltas::ZERO,
+    )
+    .unwrap()
+    .unwrap();
+    plan.advance_vertical(&mut actual, mi_rows, BitDepth::Eight)
+        .unwrap();
+    plan.advance_horizontal(&mut actual, mi_rows, BitDepth::Eight)
+        .unwrap();
+
+    assert_eq!(plan.final_luma_rows(1), 72);
+    let window = plan.extract_window(&actual, 0, 70, 16).unwrap();
+    assert_eq!(window.planes().unwrap().y.end_y(), 72);
+    assert!(matches!(
+        plan.extract_window(&actual, 0, 73, 16),
+        Err(DeblockError::Workspace)
+    ));
+    assert!(plan.finish().is_none());
+    assert_workspace_samples_eq(&actual, &expected);
+}
+
+#[test]
+fn incremental_deblock_matches_tile_boundary_rules() {
+    let mi_rows = 32;
+    let mi_cols = 32;
+    let blocks = deblock_blocks(mi_rows, mi_cols);
+    let params = filter([true; 4]);
+    let tile_info = two_by_two_tile_info();
+    assert_eq!(tile_info.mi_col_starts, [0, 16, 32]);
+    assert_eq!(tile_info.mi_row_starts, [0, 16, 32]);
+
+    for disable_loopfilters_across_tiles in [false, true] {
+        let make_workspace = || {
+            let mut workspace = yuv420_workspace(128, 128, 100);
+            fill_rect(&mut workspace, PlaneId::Y, 64..128, 0..128, 108);
+            workspace
+        };
+        let mut expected = make_workspace();
+        let mut actual = make_workspace();
+        deblock_general_intra_frame(
+            &mut expected,
+            &blocks,
+            [&[], &[]],
+            mi_rows,
+            mi_cols,
+            params,
+            Some(&tile_info),
+            disable_loopfilters_across_tiles,
+            DeblockQuantDeltas::ZERO,
+            BitDepth::Eight,
+        )
+        .unwrap();
+        let mut plan = FrameDeblock::prepare(
+            &blocks,
+            [&[], &[]],
+            mi_rows,
+            mi_cols,
+            params,
+            Some(&tile_info),
+            disable_loopfilters_across_tiles,
+            DeblockQuantDeltas::ZERO,
+        )
+        .unwrap()
+        .unwrap();
+        plan.advance_vertical(&mut actual, mi_rows, BitDepth::Eight)
+            .unwrap();
+        plan.advance_horizontal(&mut actual, mi_rows, BitDepth::Eight)
+            .unwrap();
+        assert!(plan.finish().is_none());
+        assert_workspace_samples_eq(&actual, &expected);
+
+        let p0 = actual.reconstructed_sample(PlaneId::Y, 63, 16).unwrap();
+        let q0 = actual.reconstructed_sample(PlaneId::Y, 64, 16).unwrap();
+        if disable_loopfilters_across_tiles {
+            assert_eq!((p0, q0), (100, 108));
+        } else {
+            assert_smoothed_step(p0, q0, "cross-tile edge must filter");
+        }
+    }
+}
+
+#[test]
 fn tip_filter_widths_follow_unit_and_chroma_superblock_edges() {
     assert_eq!(deblock_filter_max_width(8, false, false), (3, 3));
     assert_eq!(deblock_filter_max_width(16, false, true), (6, 6));
@@ -297,13 +721,16 @@ fn edge_test_grid_with_metadata(curr_skip: bool, prediction_boundary: bool) -> M
     let mut cells = vec![MiCell::default(); 4 * 16];
     cells[4].base = 0;
     cells[5].base = 1;
-    MiGrid {
+    let storage = Box::leak(Box::new(MiGridStorage {
         mi_cols: 16,
         fully_covered: false,
-        base_blocks: blocks,
-        overlay_blocks: &[],
         cells,
         candidates: vec![0; 4 * 16],
+    }));
+    MiGrid {
+        storage,
+        base_blocks: blocks,
+        overlay_blocks: &[],
     }
 }
 
@@ -377,7 +804,12 @@ fn candidate_mask_is_a_superset_for_mixed_transform_and_sub_pu_edges() {
         block(1, 1, 2, 3, Some(DeblockSubPuSize::square(8))),
         block(1, 3, 3, 3, None),
     ];
-    let grid = build_mi_grid(&blocks, 4, 6).unwrap();
+    let storage = build_mi_grid(&blocks, 4, 6).unwrap();
+    let grid = MiGrid {
+        storage: &storage,
+        base_blocks: &blocks,
+        overlay_blocks: &[],
+    };
 
     for (plane, sub_x, sub_y) in [(0, 0, 0), (1, 1, 1)] {
         for pass in 0..2 {
@@ -807,7 +1239,12 @@ fn mi_grid_covers_decoded_blocks() {
         skip: false,
         lossless: true,
     }];
-    let grid = build_mi_grid(&blocks, 16, 16).unwrap();
+    let storage = build_mi_grid(&blocks, 16, 16).unwrap();
+    let grid = MiGrid {
+        storage: &storage,
+        base_blocks: &blocks,
+        overlay_blocks: &[],
+    };
     assert!(grid.get_edge(0, 0).is_some(), "top-left MI is covered");
     assert!(
         grid.get_edge(0, 0).is_some_and(|info| info.block.lossless),
@@ -882,7 +1319,12 @@ fn inherited_chroma_residual_transform_retains_prediction_metadata() {
     };
     let grid = build_mi_grid(&luma, 8, 8).unwrap();
     let chroma = [metadata, transform];
-    let grid = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
+    let storage = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
+    let grid = MiGrid {
+        storage: &storage,
+        base_blocks: &luma,
+        overlay_blocks: &chroma,
+    };
 
     let inherited = grid.get_edge(1, 3).unwrap();
     let chroma_prediction = inherited.prediction(1);
@@ -934,7 +1376,12 @@ fn ordinary_chroma_overlay_replaces_full_block_metadata() {
     };
     let grid = build_mi_grid(&luma, 8, 8).unwrap();
     let chroma = [ordinary];
-    let grid = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
+    let storage = overlay_mi_grid(&grid, &chroma, 8, 8).unwrap();
+    let grid = MiGrid {
+        storage: &storage,
+        base_blocks: &luma,
+        overlay_blocks: &chroma,
+    };
 
     let info = grid.get_edge(1, 3).unwrap();
     let chroma_prediction = info.prediction(1);
@@ -978,7 +1425,12 @@ fn ordinary_chroma_transform_record_keeps_scaled_prediction_origin() {
     let luma = deblock_blocks(16, 16);
     let grid = build_mi_grid(&luma, 16, 16).unwrap();
     let chroma = [record];
-    let grid = overlay_mi_grid(&grid, &chroma, 16, 16).unwrap();
+    let storage = overlay_mi_grid(&grid, &chroma, 16, 16).unwrap();
+    let grid = MiGrid {
+        storage: &storage,
+        base_blocks: &luma,
+        overlay_blocks: &chroma,
+    };
     let info = grid.get_edge(6, 4).unwrap();
     let chroma_prediction = info.prediction(1);
     assert_eq!((chroma_prediction.base_r, chroma_prediction.base_c), (6, 4));

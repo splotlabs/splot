@@ -27,7 +27,6 @@ use splot_recon::DecodedFrame;
 use splot_recon::{PlaneRect, ReconError, SharedFrame};
 
 use super::inflight::{PipelineFrameSlot, RefFrameSlot};
-use crate::bitstream::tile_payload::FrameCdfSubset;
 use crate::error::{DecodeError, Result};
 use crate::filters::deblock;
 use crate::prediction::inter;
@@ -73,10 +72,10 @@ pub(crate) struct PipelineFrame {
     pub(crate) frame: PipelineFrameSlot,
     pub(crate) display_grain: Option<ActiveFilmGrain>,
     pub(crate) output_effects: super::output_effects::FrameOutputEffects,
-    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
+    pub(crate) frame_cdfs: inter::FrameCdfHandle,
     pub(crate) motion_field: inter::MotionFieldHandle,
     pub(crate) ccso_params: Option<splot_core::headers::frame::CcsoParams>,
-    pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    pub(crate) ccso_grid: inter::CcsoGridHandle,
     pub(crate) frame_rate_numerator: u32,
     pub(crate) frame_rate_denominator: u32,
 }
@@ -448,9 +447,9 @@ pub(crate) fn parse_frame_core_with_reference(
 pub(crate) fn frame_ref_update_from_core(
     core: &FrameHeaderCore,
     offset: ByteOffset,
-    frame_cdfs: Arc<FrameCdfSubset>,
+    frame_cdfs: inter::FrameCdfHandle,
     ccso_params: Option<splot_core::headers::frame::CcsoParams>,
-    ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    ccso_grid: inter::CcsoGridHandle,
     motion_field: inter::MotionFieldHandle,
     embedded_layer_id: splot_core::types::EmbeddedLayerId,
 ) -> Result<reference_buffer::FrameRefUpdate> {
@@ -533,7 +532,7 @@ pub(crate) fn frame_ref_update_from_core(
         saved_gm_params,
         frame_cdfs,
         ccso_params: ccso_params.map(Arc::new),
-        ccso_grid: ccso_grid.map(Arc::new),
+        ccso_grid,
         motion_field,
         long_term_id: core.long_term_id.and_then(|id| u32::try_from(id).ok()),
         embedded_layer_id,

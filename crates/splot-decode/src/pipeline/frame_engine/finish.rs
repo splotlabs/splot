@@ -82,14 +82,11 @@ pub(crate) struct FilterSinkSetup {
 }
 
 impl FilterSinkSetup {
-    /// Wraps one reconstructed frame and its filter inputs into the walked
-    /// frame the § 7.2 filter chain consumes.
-    pub(crate) fn walked_frame<T: ReconSample>(
+    fn into_sink<T: ReconSample>(
         self,
         workspace: splot_recon::CurrentFrameWorkspace<T>,
         filter_inputs: InterFilterInputs,
-        core: Arc<FrameHeaderCore>,
-    ) -> WalkedFrame<T> {
+    ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas, ByteOffset) {
         let mut sink = crate::filters::wienerns_lr::recon_final_filter_sink(
             workspace,
             self.luma_width,
@@ -102,13 +99,54 @@ impl FilterSinkSetup {
         sink.set_ccso_grid(filter_inputs.ccso_grid);
         sink.set_gdf_grid(filter_inputs.gdf_grid);
         sink.set_cfl_ds_filter_index(self.cfl_ds_filter_index);
-        WalkedFrame::new(
+        (
             sink,
-            core,
             self.disable_loopfilters_across_tiles,
             self.deblock_quant_deltas,
             self.offset,
         )
+    }
+
+    /// Wraps one reconstructed frame and its filter inputs into the walked
+    /// frame the § 7.2 filter chain consumes.
+    pub(crate) fn walked_frame<T: ReconSample>(
+        self,
+        workspace: splot_recon::CurrentFrameWorkspace<T>,
+        filter_inputs: InterFilterInputs,
+        core: Arc<FrameHeaderCore>,
+    ) -> WalkedFrame<T> {
+        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas, offset) =
+            self.into_sink(workspace, filter_inputs);
+        WalkedFrame::new(
+            sink,
+            core,
+            disable_loopfilters_across_tiles,
+            deblock_quant_deltas,
+            offset,
+        )
+    }
+
+    /// Builds the progressive filter owner before scheduled reconstruction.
+    pub(crate) fn owned_filter_setup<T: ReconSample>(
+        self,
+        workspace: splot_recon::CurrentFrameWorkspace<T>,
+        filter_inputs: InterFilterInputs,
+        core: Arc<FrameHeaderCore>,
+        progress: Arc<FrameProgress<T>>,
+    ) -> Result<(
+        crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
+        splot_recon::CurrentFrameWorkspace<T>,
+        DeblockQuantDeltas,
+    )> {
+        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas, offset) =
+            self.into_sink(workspace, filter_inputs);
+        let (setup, workspace) = sink.into_owned_filter_setup_published(
+            core,
+            disable_loopfilters_across_tiles,
+            progress,
+            offset,
+        )?;
+        Ok((setup, workspace, deblock_quant_deltas))
     }
 
     /// Turns one frame's walk output into the driver's [`FrameWalk`].
@@ -202,7 +240,7 @@ pub(crate) struct FinishedFrame<R> {
 pub(crate) fn finish_walked_frame<T: ReconSample, R>(
     walked: WalkedFrame<T>,
     progress: Option<&FrameProgress<T>>,
-    admit: Option<&dyn splot_parallel::Admit<'static>>,
+    admit: Option<&dyn splot_parallel::Admit<'_>>,
     publish: impl FnOnce(SharedFrame<T>) -> R,
 ) -> Result<FinishedFrame<R>> {
     let WalkedFrame {
@@ -213,7 +251,7 @@ pub(crate) fn finish_walked_frame<T: ReconSample, R>(
         offset,
     } = walked;
     let (frame, filter_records) = sink.into_filtered_frame(
-        &core,
+        core,
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
         progress,
