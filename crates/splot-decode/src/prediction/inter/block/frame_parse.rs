@@ -48,6 +48,15 @@ pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
     pub(crate) output: Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>,
 }
 
+impl<T: ReconSample> From<tile::ScheduledTileProgress<T>> for ScheduledFrameProgress<T> {
+    fn from(progress: tile::ScheduledTileProgress<T>) -> Self {
+        Self {
+            filters: progress.filters,
+            output: progress.output.map(|output| output.filter),
+        }
+    }
+}
+
 impl<T: ReconSample> ScheduledInterReconstruction<T> {
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
@@ -103,11 +112,7 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
     /// Advances the § 7.17 frontier over one sealed superblock row and returns
     /// the completed frame products after the final link.
     pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
-        let progress = self.tile.frontier(row)?;
-        Ok(ScheduledFrameProgress {
-            filters: progress.filters,
-            output: progress.output.map(|output| output.filter),
-        })
+        Ok(self.tile.frontier(row)?.into())
     }
 }
 
