@@ -1015,10 +1015,11 @@ mod tests {
 
     #[test]
     fn raw_safe_deblock_frontier_keeps_the_reconstruction_read_lead() {
-        assert_eq!(frontier(0, 1, 16, 64, false, false), None);
-        assert_eq!(frontier(1, 1, 16, 64, false, false), Some(10));
-        assert_eq!(frontier(2, 1, 16, 64, false, false), Some(26));
-        assert_eq!(frontier(3, 1, 16, 64, false, false), Some(42));
+        for (completed_units, expected) in
+            [None, Some(10), Some(26), Some(42)].into_iter().enumerate()
+        {
+            assert_eq!(frontier(completed_units, 1, 16, 64, false, false), expected);
+        }
         assert_eq!(frontier(4, 1, 16, 64, true, false), Some(64));
     }
 
