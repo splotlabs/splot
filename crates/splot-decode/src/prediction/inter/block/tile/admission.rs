@@ -676,11 +676,24 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 }
 
+/// Mode-info rows the § 7.17 frontier keeps below the reconstructed rows.
+///
+/// Ordinary current-frame prediction reads one row above a superblock row:
+/// luma forces reference line 0 across that boundary, chroma has no multiple
+/// reference line, and the cross-component references clamp to the
+/// superblock's own first row. Reconstructed mode-info rows `F` therefore
+/// leave luma row `4F - 1` and chroma row `2F - 1` readable, and no deblock
+/// pass may write them. The vertical pass filters four plane rows per
+/// mode-info row, which on a vertically subsampled plane spans two mode-info
+/// rows, so its frontier must satisfy `2 * end_0 + 1 <= 2F - 2`; it also runs
+/// four mode-info rows ahead of the horizontal one. The horizontal pass writes
+/// at most four chroma rows past its edge, which is the weaker bound.
+const RECON_READ_LEAD_MI_ROWS: usize = 6;
+
 /// Returns the § 7.17 deblock frontier after `completed_rows` canonical rows.
 ///
-/// Ordinary current-frame prediction can only read four luma rows upward, so
-/// one complete superblock-row lead protects every mutated sample. IntraBC has
-/// a wider, non-row-shaped source lifetime and therefore stays whole-frame.
+/// IntraBC has a wider, non-row-shaped source lifetime and therefore stays
+/// whole-frame.
 fn safe_deblock_mi_end(
     completed_units: usize,
     units_per_row: usize,
@@ -700,9 +713,9 @@ fn safe_deblock_mi_end(
         .unwrap_or_default();
     core::num::NonZeroUsize::new(
         completed_rows
-            .saturating_sub(1)
             .saturating_mul(sb_h4)
-            .min(mi_rows),
+            .min(mi_rows)
+            .saturating_sub(RECON_READ_LEAD_MI_ROWS),
     )
 }
 
@@ -1001,20 +1014,37 @@ mod tests {
     }
 
     #[test]
-    fn raw_safe_deblock_frontier_stays_one_row_behind() {
-        assert_eq!(frontier(1, 1, 16, 64, false, false), None);
-        assert_eq!(frontier(2, 1, 16, 64, false, false), Some(16));
-        assert_eq!(frontier(3, 1, 16, 64, false, false), Some(32));
+    fn raw_safe_deblock_frontier_keeps_the_reconstruction_read_lead() {
+        for (completed_units, expected) in
+            [None, Some(10), Some(26), Some(42)].into_iter().enumerate()
+        {
+            assert_eq!(frontier(completed_units, 1, 16, 64, false, false), expected);
+        }
         assert_eq!(frontier(4, 1, 16, 64, true, false), Some(64));
     }
 
     #[test]
     fn wide_frame_frontier_counts_only_complete_superblock_rows() {
-        for completed_units in 0..6 {
+        for completed_units in 0..3 {
             assert_eq!(frontier(completed_units, 3, 16, 64, false, false), None);
         }
-        assert_eq!(frontier(6, 3, 16, 64, false, false), Some(16));
-        assert_eq!(frontier(9, 3, 16, 64, false, false), Some(32));
+        for completed_units in 3..6 {
+            assert_eq!(frontier(completed_units, 3, 16, 64, false, false), Some(10));
+        }
+        assert_eq!(frontier(6, 3, 16, 64, false, false), Some(26));
+        assert_eq!(frontier(9, 3, 16, 64, false, false), Some(42));
+    }
+
+    #[test]
+    fn frontier_never_reaches_the_frame_bottom_before_terminal_commit() {
+        assert_eq!(frontier(12, 3, 16, 64, false, false), Some(58));
+        assert_eq!(frontier(15, 3, 16, 60, false, false), Some(54));
+    }
+
+    #[test]
+    fn short_superblock_rows_keep_a_zero_frontier() {
+        assert_eq!(frontier(1, 1, 4, 64, false, false), None);
+        assert_eq!(frontier(2, 1, 4, 64, false, false), Some(2));
     }
 
     #[test]

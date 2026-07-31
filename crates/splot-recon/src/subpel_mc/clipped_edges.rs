@@ -63,8 +63,11 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
         let mut sum = Simd::<i32, 8>::splat(0);
         let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
         for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum += Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast::<i32>()
-                * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast(),
+                tap,
+            );
         }
         let values = round2_simd(
             round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
@@ -77,8 +80,11 @@ pub(super) fn horizontal_only<T: ReconSample, O>(
         let mut sum = Simd::<i32, 4>::splat(0);
         let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
         for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum += Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast::<i32>()
-                * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast(),
+                tap,
+            );
         }
         let values = round2_simd(
             round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
@@ -160,7 +166,11 @@ pub(super) fn vertical_only<T: ReconSample, O>(
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
             let start =
                 ref_row.min(reference.height - 1) * reference.stride + (x0 + c as i32) as usize;
-            sum += Simd::<u16, 8>::from_slice(&source[start..]).cast::<i32>() * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                Simd::<u16, 8>::from_slice(&source[start..]).cast(),
+                tap,
+            );
         }
         let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
         finish.eight(values, &mut row_out[c..c + 8]);
@@ -174,7 +184,11 @@ pub(super) fn vertical_only<T: ReconSample, O>(
                 (y0 + row as i32 + t as i32 - 3).clamp(params.first_y, params.last_y) as usize;
             let start =
                 ref_row.min(reference.height - 1) * reference.stride + (x0 + c as i32) as usize;
-            sum += Simd::<u16, 4>::from_slice(&source[start..]).cast::<i32>() * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                Simd::<u16, 4>::from_slice(&source[start..]).cast(),
+                tap,
+            );
         }
         let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
         finish.four(values, &mut row_out[c..c + 4]);
@@ -223,7 +237,7 @@ pub(super) fn horizontal_intermediate<T: ReconSample>(
     params: &SubpelPredictParams,
     ref_row: usize,
     h_filter: usize,
-    row_out: &mut [i32],
+    row_out: &mut [i16],
 ) -> bool {
     if params.step_x != 1 << SCALE_SUBPEL_BITS {
         return false;
@@ -252,20 +266,26 @@ pub(super) fn horizontal_intermediate<T: ReconSample>(
         let mut sum = Simd::<i32, 8>::splat(0);
         let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
         for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum += Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast::<i32>()
-                * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                Simd::<u16, 8>::from_slice(&source[start + tap_offset..]).cast(),
+                tap,
+            );
         }
-        row_out[c..c + 8].copy_from_slice(&round2_simd(sum, INTER_ROUND0).to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
+        row_out[c..c + 8].copy_from_slice(&round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
     }
     let vector_end4 = interior.end - interior.end.saturating_sub(vector_end8) % 4;
     for c in (vector_end8..vector_end4).step_by(4) {
         let mut sum = Simd::<i32, 4>::splat(0);
         let start = (x0 + c as i32 + tap_start as i32 - 3) as usize;
         for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum += Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast::<i32>()
-                * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                Simd::<u16, 4>::from_slice(&source[start + tap_offset..]).cast(),
+                tap,
+            );
         }
-        row_out[c..c + 4].copy_from_slice(&round2_simd(sum, INTER_ROUND0).to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
+        row_out[c..c + 4].copy_from_slice(&round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array()); // splot-copy-ok: publish clipped-edge SIMD convolution lanes
     }
     for (offset, output) in row_out[vector_end4..interior.end].iter_mut().enumerate() {
         *output = horizontal_scalar(
@@ -297,7 +317,7 @@ fn horizontal_scalar<T: ReconSample>(
     col: usize,
     taps: &[i32],
     tap_start: usize,
-) -> i32 {
+) -> i16 {
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let mut sum = 0i32;
     for (tap_offset, &tap) in taps.iter().enumerate() {
@@ -306,5 +326,5 @@ fn horizontal_scalar<T: ReconSample>(
             (x0 + col as i32 + t as i32 - 3).clamp(params.first_x, params.last_x) as usize;
         sum += tap * reference.sample(ref_row, ref_col);
     }
-    round2_i32(sum, INTER_ROUND0)
+    round2_i32(sum, INTER_ROUND0) as i16
 }

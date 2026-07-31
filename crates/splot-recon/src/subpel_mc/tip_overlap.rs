@@ -228,12 +228,12 @@ pub(super) fn overlap_bilinear_u16x8(
                 top_left_samples * Simd::splat(16 - h_phase) + top_right * Simd::splat(h_phase);
             let bottom = bottom_left_samples * Simd::splat(16 - h_phase)
                 + bottom_right * Simd::splat(h_phase);
-            round2_simd(
-                top.cast::<i32>() * Simd::splat(16 - v_phase)
-                    + bottom.cast::<i32>() * Simd::splat(v_phase),
-                8,
-            )
-            .cast::<u16>()
+            let blended = tap_mac(
+                tap_mac(Simd::splat(0), top.cast(), 16 - v_phase),
+                bottom.cast(),
+                v_phase,
+            );
+            round2_simd(blended, 8).cast::<u16>()
         }
     }
 }

@@ -16,7 +16,7 @@ pub(super) trait CompoundAverageOutput: Sized {
         params: &SubpelPredictParams,
         pred0: &[i32],
         cwp_weight: i16,
-        scratch: Option<&mut [i32]>,
+        scratch: Option<&mut [i16]>,
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<()>;
@@ -28,7 +28,7 @@ pub(super) trait CompoundAverageOutput: Sized {
         _reference1: &ReferencePlaneView<'_, T>,
         _params1: &SubpelPredictParams,
         _cwp_weight: i16,
-        _scratch: &mut [i32],
+        _scratch: &mut [i16],
         _output: &mut [Self],
         _output_stride: usize,
     ) -> splot_recon::Result<bool> {
@@ -42,7 +42,7 @@ impl CompoundAverageOutput for u16 {
         params: &SubpelPredictParams,
         pred0: &[i32],
         cwp_weight: i16,
-        scratch: Option<&mut [i32]>,
+        scratch: Option<&mut [i16]>,
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<()> {
@@ -63,7 +63,7 @@ impl CompoundAverageOutput for u16 {
         reference1: &ReferencePlaneView<'_, T>,
         params1: &SubpelPredictParams,
         cwp_weight: i16,
-        scratch: &mut [i32],
+        scratch: &mut [i16],
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<bool> {
@@ -86,7 +86,7 @@ impl CompoundAverageOutput for u8 {
         params: &SubpelPredictParams,
         pred0: &[i32],
         cwp_weight: i16,
-        scratch: Option<&mut [i32]>,
+        scratch: Option<&mut [i16]>,
         output: &mut [Self],
         output_stride: usize,
     ) -> splot_recon::Result<()> {
@@ -958,7 +958,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
     );
     let output_stride = prediction.block_w;
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     super::predict_compound_average_into(
         &prediction,
         &params,
@@ -1009,7 +1009,7 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
     let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i32; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
     for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
         for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let width = subblock_w.min(prediction.block_w - col);

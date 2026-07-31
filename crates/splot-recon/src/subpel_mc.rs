@@ -29,8 +29,11 @@ macro_rules! finish_fused_compound_2d {
                 let (taps, tap_start) = vertical[reference];
                 for (offset, &tap) in taps.iter().enumerate() {
                     let start = (row + tap_start + offset) * $lanes;
-                    predictors[reference] +=
-                        Simd::from_slice(&$intermediate[reference][start..]) * Simd::splat(tap);
+                    predictors[reference] = tap_mac(
+                        predictors[reference],
+                        Simd::from_slice(&$intermediate[reference][start..]),
+                        tap,
+                    );
                 }
                 predictors[reference] =
                     round2_simd(predictors[reference], INTER_ROUND1_COMPOUND);
@@ -605,6 +608,11 @@ fn fixed_16x16_window_in_bounds<T: ReconSample>(
         && y0 + 15 < reference.height as i32
 }
 
+/// One AV2 § 7.13.3.18 `BILINEAR` tap pair, entirely in 16-bit lanes.
+///
+/// `(16 - phase) * left + phase * right` is at most `16 * 1023` at the § 6
+/// Table 6.3 maximum `BitDepth`, so the weighted sum and its `Round2(s, 4)`
+/// both stay exact in `u16`.
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
 #[inline(always)]
 fn bilinear_u16<const LANES: usize>(
@@ -612,13 +620,11 @@ fn bilinear_u16<const LANES: usize>(
     right: Simd<u16, LANES>,
     phase: i32,
 ) -> Simd<u16, LANES> {
-    let left = left.cast::<i32>();
-    let right = right.cast::<i32>();
-    round2_simd(
-        left * Simd::splat(16 - phase) + right * Simd::splat(phase),
-        SUBPEL_BITS,
-    )
-    .cast::<u16>()
+    let phase = phase as u16;
+    (left * Simd::splat(16 - phase)
+        + right * Simd::splat(phase)
+        + Simd::splat(1 << (SUBPEL_BITS - 1)))
+        >> SUBPEL_BITS as u16
 }
 
 fn subpel_bilinear_horizontal_into<T: ReconSample>(
@@ -1044,7 +1050,7 @@ pub fn subpel_predict_block_compound_intermediate<T: ReconSample>(
 pub fn subpel_predict_block_compound_intermediate_into<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
-    scratch: Option<&mut [i32]>,
+    scratch: Option<&mut [i16]>,
     output: &mut [i32],
     output_stride: usize,
 ) -> Result<()> {
@@ -1104,7 +1110,7 @@ pub fn subpel_predict_block_compound_average_strided_into<T: ReconSample>(
     params: &SubpelPredictParams,
     pred0: &[i32],
     cwp_weight: i16,
-    scratch: Option<&mut [i32]>,
+    scratch: Option<&mut [i16]>,
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<()> {
@@ -1159,7 +1165,7 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
     params: &SubpelPredictParams,
     pred0: &[i32],
     cwp_weight: i16,
-    scratch: Option<&mut [i32]>,
+    scratch: Option<&mut [i16]>,
     output: &mut [u8],
     output_stride: usize,
 ) -> Result<()> {
@@ -1430,7 +1436,7 @@ pub fn subpel_predict_block_compound_average_fast_strided_into<T: ReconSample>(
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
@@ -1460,7 +1466,7 @@ pub fn subpel_predict_block_compound_average_fast_validated_strided_into<T: Reco
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
@@ -1494,7 +1500,7 @@ fn subpel_predict_block_compound_average_fast_dispatch<const VALIDATE: bool, T: 
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
@@ -1686,11 +1692,14 @@ fn subpel_predict_block_compound_average_horizontal_validated<
             for reference in 0..2 {
                 let (taps, tap_start) = filters[reference];
                 for (tap_offset, &tap) in taps.iter().enumerate() {
-                    predictors[reference] += Simd::<u16, 8>::from_slice(
-                        &windows[reference][col + tap_start + tap_offset..],
-                    )
-                    .cast::<i32>()
-                        * Simd::splat(tap);
+                    predictors[reference] = tap_mac(
+                        predictors[reference],
+                        Simd::<u16, 8>::from_slice(
+                            &windows[reference][col + tap_start + tap_offset..],
+                        )
+                        .cast(),
+                        tap,
+                    );
                 }
                 predictors[reference] = round2_simd(predictors[reference], INTER_ROUND0);
             }
@@ -1708,11 +1717,14 @@ fn subpel_predict_block_compound_average_horizontal_validated<
             for reference in 0..2 {
                 let (taps, tap_start) = filters[reference];
                 for (tap_offset, &tap) in taps.iter().enumerate() {
-                    predictors[reference] += Simd::<u16, 4>::from_slice(
-                        &windows[reference][col + tap_start + tap_offset..],
-                    )
-                    .cast::<i32>()
-                        * Simd::splat(tap);
+                    predictors[reference] = tap_mac(
+                        predictors[reference],
+                        Simd::<u16, 4>::from_slice(
+                            &windows[reference][col + tap_start + tap_offset..],
+                        )
+                        .cast(),
+                        tap,
+                    );
                 }
                 predictors[reference] = round2_simd(predictors[reference], INTER_ROUND0);
             }
@@ -1759,7 +1771,7 @@ pub fn subpel_predict_block_compound_average_2d_strided_into<T: ReconSample>(
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
@@ -1802,7 +1814,7 @@ fn subpel_predict_block_compound_average_2d_validated<
     reference1: &ReferencePlaneView<'_, T>,
     params1: &SubpelPredictParams,
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) -> Result<bool> {
@@ -1870,7 +1882,7 @@ fn fused_compound_average_2d<const LANES: usize>(
     sources: [&[u16]; 2],
     windows: [usize; 2],
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) {
@@ -1894,10 +1906,13 @@ fn fused_compound_average_2d<const LANES: usize>(
             let (taps, tap_start) = horizontal[reference];
             let mut sum = Simd::<i32, LANES>::splat(0);
             for (offset, &tap) in taps.iter().enumerate() {
-                sum += Simd::<u16, LANES>::from_slice(&source[tap_start + offset..]).cast::<i32>()
-                    * Simd::splat(tap);
+                sum = tap_mac(
+                    sum,
+                    Simd::<u16, LANES>::from_slice(&source[tap_start + offset..]).cast(),
+                    tap,
+                );
             }
-            let lanes = round2_simd(sum, INTER_ROUND0).to_array();
+            let lanes = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
             intermediate[reference][row * LANES..(row + 1) * LANES].copy_from_slice(&lanes); // splot-copy-ok: store horizontal SIMD lanes in caller scratch
         }
     }
@@ -1909,6 +1924,22 @@ fn fused_compound_average_2d<const LANES: usize>(
         output,
         output_stride
     );
+}
+
+/// Accumulates one AV2 § 7.13.3.18 filter tap into a 32-bit convolution sum.
+///
+/// Both factors are 16-bit: § 6 Table 6.3 caps `BitDepth` at 10, so reference
+/// samples and `SUBPEL_INTERMEDIATE` values alike fit `i16`, and every
+/// `Subpel_Filters` tap lies in `-24..=128`. Sign-extending both sides lets the
+/// target fold the widening into the multiply-accumulate.
+#[allow(clippy::inline_always, reason = "measured subpel hot path")]
+#[inline(always)]
+fn tap_mac<const LANES: usize>(
+    accumulator: Simd<i32, LANES>,
+    samples: Simd<i16, LANES>,
+    tap: i32,
+) -> Simd<i32, LANES> {
+    accumulator + samples.cast::<i32>() * Simd::<i16, LANES>::splat(tap as i16).cast::<i32>()
 }
 
 #[allow(clippy::inline_always, reason = "measured subpel hot path")]
@@ -1934,11 +1965,22 @@ fn subpel_params_are_valid_fullpel(params: &SubpelPredictParams) -> bool {
 }
 
 std::thread_local! {
-    static SUBPEL_INTERMEDIATE: std::cell::Cell<Option<Vec<i32>>> =
+    /// Retained storage for the AV2 § 7.13.3.18 `intermediate[r][c]` horizontal
+    /// pass.
+    ///
+    /// `i16` holds every legal value exactly. § 7.13.3.16 fixes `InterRound0`
+    /// at 3 and notes the horizontal filter output always fits within 16 bits;
+    /// § 6 Table 6.3 admits only `BitDepth` 8 and 10, and across the
+    /// § 7.13.3.18 `Subpel_Filters` rows the positive taps sum to at most 184
+    /// and the negative taps to at most -56 (filter 2, phase 8), so at
+    /// `BitDepth == 10` the pass spans
+    /// `Round2(-56 * 1023, 3) ..= Round2(184 * 1023, 3)`, that is
+    /// `-7161..=23529`. The zero-phase shortcut writes `sample << 4 <= 16368`.
+    static SUBPEL_INTERMEDIATE: std::cell::Cell<Option<Vec<i16>>> =
         const { std::cell::Cell::new(None) };
 }
 
-fn with_subpel_intermediate<R>(len: usize, f: impl FnOnce(&mut [i32]) -> R) -> R {
+fn with_subpel_intermediate<R>(len: usize, f: impl FnOnce(&mut [i16]) -> R) -> R {
     SUBPEL_INTERMEDIATE.with(|slot| {
         let mut intermediate = slot.take().unwrap_or_default();
         if intermediate.len() < len {
@@ -2036,7 +2078,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
     params: &SubpelPredictParams,
     inter_round1: u32,
     intermediate_height: usize,
-    scratch: Option<&mut [i32]>,
+    scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
     mut finish: impl SubpelOutput<O>,
@@ -2153,7 +2195,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             .ok_or(ReconError::ArithmeticOverflow {
                 context: "subpel intermediate sample count",
             })?;
-    let mut run = |intermediate: &mut [i32]| {
+    let mut run = |intermediate: &mut [i16]| {
         for r in read_lo..read_hi {
             let ref_row = ((start_y >> SCALE_SUBPEL_BITS) + r as i32 - 3).clamp(first_y, last_y);
             let ref_row = (ref_row as usize).min(reference.height - 1);
@@ -2166,7 +2208,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
                 if phase == 0 {
                     for (out, sample) in row_out.iter_mut().zip(&window[3..3 + w]) {
-                        *out = i32::from(sample.to_u16()) << (FILTER_BITS - INTER_ROUND0);
+                        *out = (sample.to_u16() << (FILTER_BITS - INTER_ROUND0)) as i16;
                     }
                     continue;
                 }
@@ -2178,44 +2220,50 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                     for c in (0..vector_width16).step_by(16) {
                         let mut sum = Simd::<i32, 16>::splat(0);
                         for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum +=
+                            sum = tap_mac(
+                                sum,
                                 Simd::<u16, 16>::from_slice(&window[c + tap_start + tap_offset..])
-                                    .cast::<i32>()
-                                    * Simd::splat(tap);
+                                    .cast(),
+                                tap,
+                            );
                         }
-                        row_out[c..c + 16]
-                            .copy_from_slice(&round2_simd(sum, INTER_ROUND0).to_array()); // splot-copy-ok: publish sixteen SIMD convolution outputs
+                        let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+                        row_out[c..c + 16].copy_from_slice(&filtered); // splot-copy-ok: publish sixteen SIMD convolution outputs
                     }
                     let vector_width8 = w - w % 8;
                     for c in (vector_width16..vector_width8).step_by(8) {
                         let mut sum = Simd::<i32, 8>::splat(0);
                         for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum +=
+                            sum = tap_mac(
+                                sum,
                                 Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
-                                    .cast::<i32>()
-                                    * Simd::splat(tap);
+                                    .cast(),
+                                tap,
+                            );
                         }
-                        row_out[c..c + 8]
-                            .copy_from_slice(&round2_simd(sum, INTER_ROUND0).to_array()); // splot-copy-ok: publish eight SIMD convolution outputs
+                        let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+                        row_out[c..c + 8].copy_from_slice(&filtered); // splot-copy-ok: publish eight SIMD convolution outputs
                     }
                     let vector_width4 = w - w % 4;
                     for c in (vector_width8..vector_width4).step_by(4) {
                         let mut sum = Simd::<i32, 4>::splat(0);
                         for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum +=
+                            sum = tap_mac(
+                                sum,
                                 Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
-                                    .cast::<i32>()
-                                    * Simd::splat(tap);
+                                    .cast(),
+                                tap,
+                            );
                         }
-                        row_out[c..c + 4]
-                            .copy_from_slice(&round2_simd(sum, INTER_ROUND0).to_array()); // splot-copy-ok: publish four SIMD convolution lanes into row scratch
+                        let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+                        row_out[c..c + 4].copy_from_slice(&filtered); // splot-copy-ok: publish four SIMD convolution lanes into row scratch
                     }
                     for c in vector_width4..w {
                         let mut sum = 0i32;
                         for (tap_offset, &tap) in taps.iter().enumerate() {
                             sum += tap * i32::from(window[c + tap_start + tap_offset]);
                         }
-                        row_out[c] = round2_i32(sum, INTER_ROUND0);
+                        row_out[c] = round2_i32(sum, INTER_ROUND0) as i16;
                     }
                     continue;
                 }
@@ -2225,7 +2273,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                     for (&tap, &sample) in taps.iter().zip(samples) {
                         s += tap * i32::from(sample.to_u16());
                     }
-                    *out = round2_i32(s, INTER_ROUND0);
+                    *out = round2_i32(s, INTER_ROUND0) as i16;
                 }
                 continue;
             }
@@ -2243,8 +2291,9 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let phase = ((p >> 6) & SUBPEL_MASK) as usize;
                 if phase == 0 {
                     let ref_col = (p >> SCALE_SUBPEL_BITS).clamp(first_x, last_x);
-                    intermediate[r * w + c] =
-                        reference.sample(ref_row, ref_col as usize) << (FILTER_BITS - INTER_ROUND0);
+                    intermediate[r * w + c] = (reference.sample(ref_row, ref_col as usize)
+                        << (FILTER_BITS - INTER_ROUND0))
+                        as i16;
                     continue;
                 }
                 let taps = &h_filter_rows[phase];
@@ -2256,7 +2305,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                     let ref_col = ((p >> SCALE_SUBPEL_BITS) + t as i32 - 3).clamp(first_x, last_x);
                     s += tap * reference.sample(ref_row, ref_col as usize);
                 }
-                intermediate[r * w + c] = round2_i32(s, INTER_ROUND0);
+                intermediate[r * w + c] = round2_i32(s, INTER_ROUND0) as i16;
             }
         }
 
@@ -2271,7 +2320,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             if phase == 0 {
                 let center = &intermediate[(base + 3) * w..(base + 4) * w];
                 for (out, &value) in output.iter_mut().zip(center) {
-                    *out = finish.one(round2_i32(value << FILTER_BITS, inter_round1));
+                    *out = finish.one(round2_i32(i32::from(value) << FILTER_BITS, inter_round1));
                 }
                 continue;
             }
@@ -2283,7 +2332,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let mut sum = Simd::<i32, 16>::splat(0);
                 for (tap_offset, &tap) in taps.iter().enumerate() {
                     let t = tap_start + tap_offset;
-                    sum += Simd::from_slice(&rows[t * w + c..]) * Simd::splat(tap);
+                    sum = tap_mac(sum, Simd::from_slice(&rows[t * w + c..]), tap);
                 }
                 finish.sixteen(round2_simd(sum, inter_round1), &mut output[c..c + 16]);
             }
@@ -2292,7 +2341,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let mut sum = Simd::<i32, 8>::splat(0);
                 for (tap_offset, &tap) in taps.iter().enumerate() {
                     let t = tap_start + tap_offset;
-                    sum += Simd::from_slice(&rows[t * w + c..]) * Simd::splat(tap);
+                    sum = tap_mac(sum, Simd::from_slice(&rows[t * w + c..]), tap);
                 }
                 finish.eight(round2_simd(sum, inter_round1), &mut output[c..c + 8]);
             }
@@ -2301,7 +2350,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let mut sum = Simd::<i32, 4>::splat(0);
                 for (tap_offset, &tap) in taps.iter().enumerate() {
                     let t = tap_start + tap_offset;
-                    sum += Simd::from_slice(&rows[t * w + c..]) * Simd::splat(tap);
+                    sum = tap_mac(sum, Simd::from_slice(&rows[t * w + c..]), tap);
                 }
                 finish.four(round2_simd(sum, inter_round1), &mut output[c..c + 4]);
             }
@@ -2310,7 +2359,7 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 let mut sum = 0i32;
                 for (tap_offset, &tap) in taps.iter().enumerate() {
                     let t = tap_start + tap_offset;
-                    sum += tap * rows[t * w + c];
+                    sum += tap * i32::from(rows[t * w + c]);
                 }
                 *out = finish.one(round2_i32(sum, inter_round1));
             }
