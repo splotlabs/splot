@@ -280,7 +280,7 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
             .tile_info
             .as_ref()
             .is_some_and(|tiles| tiles.tile_cols == 1 && tiles.tile_rows == 1)
-        && splot_parallel::current_pool_width() >= 4
+        && splot_parallel::current_pool_width() >= 2
         && splot_parallel::on_multiworker_pool()
 }
 

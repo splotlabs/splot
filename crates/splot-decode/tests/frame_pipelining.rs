@@ -3,9 +3,10 @@
 
 //! Frame-pipelining equivalence tests.
 //!
-//! A pipelined decode moves only the § 7.2 filter phase onto the worker pool,
-//! so every decode depth must produce the serial decode's bytes, and a failing
-//! stream must produce the serial decode's diagnostic.
+//! A pipelined decode moves the § 7.2 filter phase, and on the scheduled split
+//! path reconstruction too, onto the worker pool, so every decode depth must
+//! produce the serial decode's bytes, and a failing stream must produce the
+//! serial decode's diagnostic.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -196,15 +197,39 @@ fn frame_delay_does_not_change_output_at_a_fixed_thread_count() {
     }
 }
 
+fn reference_store_capped(bytes: u64) -> DecodeOptions {
+    DecodeOptions::new(
+        DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(bytes)),
+    )
+}
+
+/// The scheduled split walk keeps reference frames live that the serial walk
+/// has already released: it records a frame's reference update from its parse
+/// products and reconstructs afterwards, so a frame the reference slots have
+/// dropped can still be a selected reference of a reconstruction the driver has
+/// not run. The resolved frame delay bounds how many such frames coexist and
+/// the worker count does not, so peak live storage stays inside the serial peak
+/// plus that many decoded frames at every width that takes the split.
 #[test]
-fn pipelined_hash_decode_keeps_reference_storage_at_the_serial_peak() {
-    let options = DecodeOptions::new(
-        DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_592)),
-    );
+fn pipelined_hash_decode_bounds_reference_storage_by_the_resolved_frame_delay() {
+    const SERIAL_PEAK: u64 = 110_592;
+    const DECODED_FRAME: u64 = 12_288;
 
-    let report = context(3, FrameDelay::from(2usize))
-        .decode_hash_report_bytes(ORDER_HINT_WRAP, options)
-        .unwrap();
+    let serial = serial()
+        .decode_hash_report_bytes(ORDER_HINT_WRAP, reference_store_capped(SERIAL_PEAK))
+        .unwrap_or_else(|error| panic!("serial decode exceeded {SERIAL_PEAK}: {error}"));
+    assert_eq!(serial.frames.len(), 121);
 
-    assert_eq!(report.frames.len(), 121);
+    for (threads, requested) in [(2usize, 2usize), (2, 3), (3, 2), (3, 3), (8, 2), (8, 3)] {
+        let decoder = context(threads, FrameDelay::from(requested));
+        let ceiling = SERIAL_PEAK + DECODED_FRAME * decoder.frame_delay().get() as u64;
+
+        let report = decoder
+            .decode_hash_report_bytes(ORDER_HINT_WRAP, reference_store_capped(ceiling))
+            .unwrap_or_else(|error| {
+                panic!("{threads} workers at frame delay {requested} exceeded {ceiling}: {error}")
+            });
+
+        assert_eq!(report.frames.len(), 121);
+    }
 }
