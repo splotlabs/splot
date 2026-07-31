@@ -13,11 +13,15 @@ On `/Users/bartosztomczyk/Documents/SplotLabs/test.ivf`, decode 30 frames at
 1, 2, 4, 8, and 10 threads faster than dav2d, with the 10-thread splot wall
 time at most 50% of dav2d's and no 1-thread regression.
 
-This is an architectural scaling mission. A candidate is not delivered merely
-because it is statistically positive. Prefer changes that remove a measured
-pipeline barrier, ownership bottleneck, or serial critical path. Small scalar
-wins belong in a separate ledger and are reconsidered only after the scaling
-architecture is fixed.
+Retention policy (maintainer, 2026-07-31): individual candidates are no longer
+gated at 10%. A candidate is retained when its direction is consistently
+positive across alternating pairs, 1 thread does not regress, 2/4 threads do
+not materially regress, output is byte-exact, and complexity is proportionate.
+Retained wins stack; each survivor is re-measured independently and in
+combination after rebases and dropped only on neutral or negative
+confirmation. Architectural barrier removals and scalar kernel wins are both
+in scope, including safe `std::simd` vectorization; `unsafe_code = forbid`
+stands, and third-party decoders remain engineering inspiration only.
 
 ## Benchmark contract
 
@@ -47,19 +51,21 @@ timing matrix.
 
 ## Confirmed baseline
 
-| Threads | splot wall | dav2d wall | splot average cores |
-|---:|---:|---:|---:|
-| 1 | 1.0177 s | 1.0561 s | 1.00 |
-| 2 | 0.7714 s | 0.5456 s | 1.35 |
-| 4 | 0.3560 s | 0.2858 s | 3.23 |
-| 8 | 0.2754 s | 0.1600 s | 4.54 |
-| 10 | 0.2807 s | 0.1581 s | 4.61 |
+Measured 2026-07-31 on exact `5d78ba974` (pre-SCALE-013 base):
 
-The current dav2d 10-thread result is 0.152885 seconds, so the target is at most
-0.076443 seconds. Perfect scaling of splot's current 0.996527-second 1-thread
-result would still be approximately 0.099653 seconds, so the final result
-requires both a scheduler/ownership redesign and about 23.3% less scalar CPU
-work.
+| Threads | splot wall | dav2d wall | splot cores busy | dav2d cores busy |
+|---:|---:|---:|---:|---:|
+| 1 | 1.04 s | 1.08 s | 1.00 | 1.00 |
+| 2 | 0.80 s | 0.56 s | 1.33 | 2.00 |
+| 4 | 0.33 s | 0.29 s | 3.50 | 3.90 |
+| 8 | 0.24 s | 0.16 s | — | — |
+| 10 | 0.24 s | 0.155 s | 5.6 | 8.6 |
+
+Splot's total CPU time is at or below dav2d's at every thread count (2T: 1.05 s
+versus 1.10 s), so the remaining gap is parallel occupancy plus per-kernel DSP,
+not excess scalar work. Steady state is worse than 30-frame walls suggest: the
+30/60/120-frame sweep gives splot 7.8/7.5/6.4 ms per frame versus dav2d
+5.0/4.3/3.6. After SCALE-013 the 10-thread wall is 0.2247 s.
 
 ## Delivery discipline
 
@@ -145,6 +151,7 @@ is retained in the task table below.
 | SCALE-011-K10.56 | Rejected; no PR | Compact internal trajectory MVs from two i32 components to two i16 components. | The private four-byte field was test-clean, byte-exact at 1T/10T, and compiled to direct halfword loads/stores without extra spills. Paired medians were only 0.791% faster at 8T and 0.925% faster at 10T with mixed direction, while 1T was neutral/slightly slower by 0.025%. This misses both the architecture gate and the small-win requirement for repeatable positive direction without 1T regression. All source/tests were reverted. |
 | SCALE-011-K10.57 | Rejected; no PR | Compact or split the retained projected temporal-motion cells used by TIP and motion-field consumers. | The 16-byte cell can be losslessly reduced only to 12 bytes because TIP projection reaches ±65535; replacing `valid` plus `i32 ref_offset` with one encoded `i8` saves 126.6 KiB per field and 379.7 KiB across the three retained scratch fields. Even assuming runtime scales with all removed bytes gives only ~1.55% at 1T and 3.3% at 4T, while a 12-byte stride worsens AArch64 indexing. Close without implementation. |
 | SCALE-011-K10.58 | Completed | Re-rank the remaining exact 10-thread profile after the K10.12–K10.57 closures. | Resumed with a fresh two-stage diagnostics-only instrumentation pass on exact main. First, a settle census over the scheduled row-reference gate measured zero settle-collapsed batches out of 954 in all three 10T runs, closing the settle-bounding hypothesis. Second, a frame-lifecycle timeline decomposed the steady state: pool utilization is 54% (1,255 worker-ms against a 231 ms wall), scheduler cost is 0.029 ms per commit link, and the 7.26 ms/frame steady pace is set by two nearly equal recurrences. The recon-lane recurrence L/3 = 7.11 ms: admission fires a median 0.04 ms after frame N−3's lane release, and depth is capped by `ReconAdmissionLane::new(ring.capacity().min(3))`, which `--frame-delay` never widens. The publication recurrence W = 7.48 ms: a frame's reference-row watermark first rises only after its commit spine advances 5.35 ms and the stripe-0 final-filter job runs, while consumers need those rows 5.62 ms after their own admission; this lands as the spine's 5.14 ms precompute wait (row-bounded batches wait 6.78 ms/batch on high-dependency frames versus 0.66 ms on low, r = 0.79). Entropy is exonerated in the tail — each frame's parse ends a mean 41.7 ms before its recon admission, so the 52 ms of parse-chain gaps measured in the first stage are driver back-pressure, not an upstream constraint. The ordered commit spine spans 14.36 ms of the 21.32 ms lane occupancy: 8.25 ms execution across 34 links, 5.14 ms precompute wait, 1.00 ms scheduler. Depth-alone experiments (A3, K10.16) were neutral because W remained binding. Successor: SCALE-013. |
+| SCALE-013 | Completed | Publish filter stripes one superblock row earlier by replacing the whole-superblock-row deblock back-off with the exact six-mode-info-row reconstruction read lead. | Committed in `d1eb9ad0e`. `safe_deblock_mi_end` previously returned `(completed_rows - 1) * sb_h4`, so the first final-filter stripe waited for two complete superblock rows (30 of 135 units) and the first reference-row publication landed a median 13.1 ms after admission. Ordinary current-frame prediction reads only one row above a superblock boundary (luma forces reference line 0, chroma has no MRL, cross-component references clamp to the superblock's first row); the binding writer is the vertical deblock pass spanning two mode-info rows on subsampled chroma, giving an exact six-row lead. A five-row lead diverges — derivation and falsification agree. First publication drops to 6.9 ms. Byte-exact 1T/10T (186,624,000 bytes, SHA-256 `48f0dc140be565069838bcf7141aba3c80cefaa14400284840b2e1475a3be945`); corpus oracle and full `cargo xtask ci` green. Eleven alternating pairs: 10T +5.64% (0.238086 s to 0.224667 s, 11/11 positive), 8T +5.52% (0.240687 s to 0.227410 s, 11/11), 4T +1.36%, 1T neutral, 2T −0.07% (noise). Lane-depth 4/5 on top was byte-exact, passed the reference-storage peak gate, but showed no consistent direction (+0.53% median, 4/7 positive) and was dropped; `ring.capacity().min(3)` stands. Performance caveat: stripe readiness now lands on exact equality at several superblock rows, so future changes to the stripe window margin, deblock pass reach, or pass-0 lane count can silently forfeit the win without breaking exactness. |
 | SCALE-012 | Open correctness task | Make deferred finish reporting happen-before in-flight harvest. | `PendingFinish::run_finish` in `crates/splot-decode/src/pipeline/inflight.rs` currently lets `FrameSlotWriter::complete` (or its failure Drop) settle the slot before writing `FinishOutcome.records` or `FinishOutcome.error`; `InflightRing::harvest_oldest` waits only for that slot and can therefore wake, observe an empty outcome, and lose recyclable records or the real filter diagnostic. Add a separate one-shot finish-report completion owned by `PendingFinish` and `InflightEntry`; publish it only after the outcome write, and make harvest wait for the report before consuming the outcome and slot. Cover success, failure, and exactly-once settlement in `crates/splot-decode/src/pipeline/inflight_tests.rs`. Keep this separate from SCALE-011 filter-seam work. |
 
 ## Rejected experiments
