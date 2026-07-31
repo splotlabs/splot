@@ -21,6 +21,7 @@
 //! observe a row the filter chain has not written.
 
 use core::num::NonZeroUsize;
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError, RwLock, RwLockReadGuard, TryLockError};
 
 use splot_parallel::{Condition, WatermarkCell};
@@ -39,10 +40,22 @@ struct ProgressLayout {
     prefix: usize,
 }
 
+/// One finished stripe's copy into the filtered workspace.
+pub(crate) type StripeCopy<T> =
+    Box<dyn FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<()> + Send + 'static>;
+
+/// Stripe copies that found the workspace busy, and the first one that failed.
+struct PendingStripes<T: ReconSample> {
+    queued: Vec<(usize, StripeCopy<T>)>,
+    failed: Option<DecodeError>,
+}
+
 /// One pending frame's filtered workspace and its published-row watermark.
 pub(crate) struct FrameProgress<T: ReconSample> {
     workspace: RwLock<Option<CurrentFrameWorkspace<T>>>,
     layout: OnceLock<Mutex<ProgressLayout>>,
+    pending: Mutex<PendingStripes<T>>,
+    has_pending: AtomicBool,
     published_luma_rows: WatermarkCell,
     luma_height: usize,
     subsampling_y: usize,
@@ -60,6 +73,11 @@ impl<T: ReconSample> FrameProgress<T> {
         Ok(Self {
             workspace: RwLock::new(Some(workspace)),
             layout: OnceLock::new(),
+            pending: Mutex::new(PendingStripes {
+                queued: Vec::new(),
+                failed: None,
+            }),
+            has_pending: AtomicBool::new(false),
             published_luma_rows: WatermarkCell::new(),
             luma_height: info.coded_luma_size().height(),
             subsampling_y: usize::from(info.pixel_format().subsampling_y()),
@@ -169,51 +187,122 @@ impl<T: ReconSample> FrameProgress<T> {
             return None;
         }
         Some(PublishedFrame {
-            workspace,
+            progress: self,
+            workspace: Some(workspace),
             luma_rows,
             chroma_rows: rows >> self.subsampling_y,
         })
     }
 
-    /// Runs `publish` against the filtered workspace under the exclusive lock.
+    /// Queues one finished stripe's copy and runs whatever the workspace will
+    /// take right now.
+    ///
+    /// A stripe never waits for the exclusive lock: the lock's other users are
+    /// the blocks of the next frame reading this one's published prefix, so a
+    /// waiting writer would both stall its own worker and, under a
+    /// writer-preferring lock, hold up every reader that arrives behind it.
+    /// [`Self::drain_pending`] is what keeps a queued stripe from waiting for
+    /// the next one — every reader runs it as it releases the prefix, which is
+    /// exactly when the lock a busy stripe lost becomes free again.
     ///
     /// # Errors
     ///
-    /// Returns `publish`'s own diagnostic, or an internal diagnostic when the
-    /// workspace has already been taken.
-    pub(crate) fn with_workspace_mut<R>(
-        &self,
-        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
-    ) -> Result<R> {
-        let mut workspace = self
+    /// Returns the first diagnostic a queued copy failed with, on whichever
+    /// thread reaches it first.
+    pub(crate) fn publish_stripe(&self, stripe: usize, copy: StripeCopy<T>) -> Result<()> {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.queued.push((stripe, copy));
+        self.has_pending.store(true, Ordering::Release);
+        drop(pending);
+        self.drain_pending();
+        self.take_failure()
+    }
+
+    /// Copies every queued stripe into the workspace when its exclusive lock is
+    /// free, then advances the watermark over what landed.
+    ///
+    /// Reading the prefix is what makes the lock busy, so a reader calls this as
+    /// it releases its borrow. Every attempt is a `try_write`: a reader may hold
+    /// a second pending frame's prefix while it runs, and queueing here would
+    /// let two readers holding each other's prefixes deadlock.
+    pub(crate) fn drain_pending(&self) {
+        if !self.has_pending.load(Ordering::Acquire) {
+            return;
+        }
+        let mut guard = match self.workspace.try_write() {
+            Ok(workspace) => workspace,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return,
+        };
+        let landed = self.copy_queued(guard.as_mut());
+        drop(guard);
+        for stripe in landed {
+            self.publish(stripe);
+        }
+    }
+
+    /// Copies every queued stripe, blocking for the workspace.
+    ///
+    /// The filter phase drains this way once its stripes have all run, which is
+    /// what makes every stripe's samples present before the freeze even when
+    /// the workspace was busy each time a stripe finished. Blocking is safe
+    /// only here: the phase is over, so no further stripe can queue behind this
+    /// writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first diagnostic a queued copy failed with.
+    pub(crate) fn drain_pending_blocking(&self) -> Result<()> {
+        let mut guard = self
             .workspace
             .write()
             .unwrap_or_else(PoisonError::into_inner);
-        let workspace = workspace.as_mut().ok_or_else(taken_workspace)?;
-        publish(workspace)
+        let landed = self.copy_queued(guard.as_mut());
+        drop(guard);
+        for stripe in landed {
+            self.publish(stripe);
+        }
+        self.take_failure()
     }
 
-    /// Runs `publish` against the filtered workspace when its exclusive lock is
-    /// free, and reports that it is taken otherwise.
+    /// Copies the queued batch into `workspace`, returning the stripes that
+    /// landed whole.
     ///
-    /// A stripe that finds the lock taken leaves its samples for whichever
-    /// stripe holds it next instead of queueing: the lock's other users are the
-    /// blocks of the next frame reading this one's published prefix, so a
-    /// waiting writer would both stall its own worker and, under a
-    /// writer-preferring lock, hold up every reader that arrives behind it.
-    pub(crate) fn try_with_workspace_mut<R>(
-        &self,
-        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
-    ) -> Option<Result<R>> {
-        let mut workspace = match self.workspace.try_write() {
-            Ok(workspace) => workspace,
-            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
-            Err(TryLockError::WouldBlock) => return None,
-        };
-        Some(match workspace.as_mut() {
-            Some(workspace) => publish(workspace),
-            None => Err(taken_workspace()),
-        })
+    /// The queue is emptied under the exclusive lock the copies need, so a
+    /// stripe is taken by exactly one drain and lands exactly once. A copy that
+    /// fails abandons the rest of the batch and records its diagnostic, so no
+    /// stripe behind a failure is ever reported as published.
+    fn copy_queued(&self, mut workspace: Option<&mut CurrentFrameWorkspace<T>>) -> Vec<usize> {
+        let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripePublish);
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        let batch = core::mem::take(&mut pending.queued);
+        self.has_pending.store(false, Ordering::Release);
+        drop(pending);
+        let mut landed = Vec::with_capacity(batch.len());
+        for (stripe, copy) in batch {
+            let outcome = match workspace {
+                Some(ref mut workspace) => copy(workspace),
+                None => Err(taken_workspace()),
+            };
+            match outcome {
+                Ok(()) => landed.push(stripe),
+                Err(error) => {
+                    self.record_failure(error);
+                    break;
+                }
+            }
+        }
+        landed
+    }
+
+    fn record_failure(&self, error: DecodeError) {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.failed.get_or_insert(error);
+    }
+
+    fn take_failure(&self) -> Result<()> {
+        let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.failed.take().map_or(Ok(()), Err)
     }
 
     /// Freezes the filtered workspace and publishes the frozen frame, both
@@ -242,10 +331,23 @@ impl<T: ReconSample> FrameProgress<T> {
 }
 
 /// A shared borrow of one frame's published filtered prefix.
+///
+/// Dropping the borrow is what frees the exclusive lock a finished stripe needs,
+/// so the drop runs [`FrameProgress::drain_pending`] once the borrow is gone: a
+/// stripe that lost the lock to this reader is published by the reader that took
+/// it rather than waiting for the next stripe to finish.
 pub(crate) struct PublishedFrame<'a, T: ReconSample> {
-    workspace: RwLockReadGuard<'a, Option<CurrentFrameWorkspace<T>>>,
+    progress: &'a FrameProgress<T>,
+    workspace: Option<RwLockReadGuard<'a, Option<CurrentFrameWorkspace<T>>>>,
     luma_rows: NonZeroUsize,
     chroma_rows: usize,
+}
+
+impl<T: ReconSample> Drop for PublishedFrame<'_, T> {
+    fn drop(&mut self) {
+        self.workspace = None;
+        self.progress.drain_pending();
+    }
 }
 
 impl<T: ReconSample> PublishedFrame<'_, T> {
@@ -256,7 +358,10 @@ impl<T: ReconSample> PublishedFrame<'_, T> {
     /// Returns an internal diagnostic when the workspace has been taken, which
     /// [`FrameProgress::read`] already rules out for a live borrow.
     pub(crate) fn workspace(&self) -> Result<&CurrentFrameWorkspace<T>> {
-        self.workspace.as_ref().ok_or_else(taken_workspace)
+        self.workspace
+            .as_ref()
+            .and_then(|workspace| workspace.as_ref())
+            .ok_or_else(taken_workspace)
     }
 
     /// The number of final luma rows, which is never zero.

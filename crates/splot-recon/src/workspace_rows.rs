@@ -18,16 +18,105 @@
 //! that would be clipped at the frame edge yields `Ok(None)` and never a partial
 //! write, leaving that block on the caller's buffered path.
 //!
-//! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`, `RECON-RESIDUAL-ADDITION`.
+//! [`CurrentFrameWorkspace::copy_rows_into`] is the same access one plane row
+//! range at a time, between two frames instead of within one: a stage that
+//! filters completed rows in place takes its own copy of them rather than
+//! sharing the frame the reconstruction spine is still writing.
+//!
+//! Feature tracking: `RECON-CURRENT-FRAME-WORKSPACE`, `RECON-RESIDUAL-ADDITION`,
+//! `INFRA-DECODE-PARALLEL-STAGES`.
 
+use core::ops::Range;
 use core::slice;
 
 use super::owned_rect::OwnedFrameRectRows;
-use super::{CurrentFrameWorkspace, block_rect};
+use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
 use crate::reconstruct::add_block_residual_into_rows;
 use crate::{
-    BitDepth, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, ReconError, ReconSample, Result,
+    BitDepth, DecodedFrameInfo, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, ReconError,
+    ReconSample, Result,
 };
+
+impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// Creates the target of [`Self::copy_rows_into`] over recycled plane
+    /// storage, without initializing its samples.
+    ///
+    /// The pooled buffers keep whatever the previous frame left in them, so
+    /// this is only for a stage that seals every row before it reads it.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if the sample type cannot represent the frame bit
+    /// depth, geometry arithmetic overflows, or plane allocation fails.
+    pub fn new_recycled(info: DecodedFrameInfo) -> Result<Self> {
+        Self::with_fill(info, None)
+    }
+
+    /// Copies the completed luma rows and their matching chroma rows into
+    /// another workspace of the same geometry.
+    ///
+    /// A scheduler that must keep reading reconstructed rows while another
+    /// stage filters them in place seals them here instead of sharing one
+    /// mutable frame.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] when the row range leaves the coded frame or the
+    /// two workspaces do not describe the same frame.
+    pub fn copy_rows_into(&self, target: &mut Self, luma_rows: Range<usize>) -> Result<()> {
+        let subsampling_y = u32::from(self.info.pixel_format().subsampling_y());
+        for (source, target) in [
+            Some((&self.y, &mut target.y)),
+            self.u.as_ref().zip(target.u.as_mut()),
+            self.v.as_ref().zip(target.v.as_mut()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let (start, end) = if source.plane == PlaneId::Y {
+                (luma_rows.start, luma_rows.end)
+            } else {
+                (
+                    luma_rows.start >> subsampling_y,
+                    luma_rows.end.div_ceil(1 << subsampling_y),
+                )
+            };
+            source.copy_rows_into(target, start, end)?;
+        }
+        Ok(())
+    }
+}
+
+impl<T: ReconSample> CurrentFramePlane<T> {
+    /// Copies rows `start..end` into the matching plane of another workspace.
+    ///
+    /// Both planes are tightly strided over the same storage size, so the row
+    /// range is one contiguous run in each.
+    fn copy_rows_into(&self, target: &mut Self, start: usize, end: usize) -> Result<()> {
+        if target.storage_size != self.storage_size || target.stride_samples != self.stride_samples
+        {
+            return Err(ReconError::PlaneSizeMismatch {
+                plane: self.plane,
+                expected: self.storage_size,
+                actual: target.storage_size,
+            });
+        }
+        if start > end || end > self.storage_size.height() {
+            return Err(ReconError::WorkspaceRectOutOfBounds {
+                plane: self.plane,
+                storage: self.storage_size,
+                rect: PlaneRect::new(
+                    0,
+                    start,
+                    self.storage_size.width(),
+                    end.saturating_sub(start).max(1),
+                )?,
+            });
+        }
+        let range = start * self.stride_samples..end * self.stride_samples;
+        let sealed = &self.samples[range.clone()];
+        target.samples[range].copy_from_slice(sealed); // splot-copy-ok: seal completed rows for the stage that filters them
+        Ok(())
+    }
+}
 
 /// Iterator over checked workspace rectangle rows.
 #[derive(Debug)]

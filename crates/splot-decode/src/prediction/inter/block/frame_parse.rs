@@ -48,6 +48,15 @@ pub(crate) struct ScheduledFrameProgress<T: ReconSample> {
     pub(crate) output: Option<crate::filters::wienerns_lr::recon::OwnedFilterFinish<T>>,
 }
 
+impl<T: ReconSample> From<tile::ScheduledTileProgress<T>> for ScheduledFrameProgress<T> {
+    fn from(progress: tile::ScheduledTileProgress<T>) -> Self {
+        Self {
+            filters: progress.filters,
+            output: progress.output.map(|output| output.filter),
+        }
+    }
+}
+
 impl<T: ReconSample> ScheduledInterReconstruction<T> {
     /// Number of independently admitted reconstruction units.
     pub(crate) const fn len(&self) -> usize {
@@ -89,14 +98,21 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
         self.tile.precompute(index)
     }
 
-    /// Commits one precomputed unit and returns the completed frame products
-    /// after the final ordered commit.
-    pub(crate) fn commit(&self, index: usize) -> Result<ScheduledFrameProgress<T>> {
-        let progress = self.tile.commit(index)?;
-        Ok(ScheduledFrameProgress {
-            filters: progress.filters,
-            output: progress.output.map(|output| output.filter),
-        })
+    /// Commits one precomputed unit and returns the frontier links its
+    /// canonical rows released.
+    pub(crate) fn commit(&self, index: usize) -> Result<tile::ScheduledCommitProgress> {
+        self.tile.commit(index)
+    }
+
+    /// Number of ordered links in this frame's § 7.17 frontier chain.
+    pub(crate) const fn frontier_len(&self) -> usize {
+        self.tile.frontier_len()
+    }
+
+    /// Advances the § 7.17 frontier over one sealed superblock row and returns
+    /// the completed frame products after the final link.
+    pub(crate) fn frontier(&self, row: usize) -> Result<ScheduledFrameProgress<T>> {
+        Ok(self.tile.frontier(row)?.into())
     }
 }
 

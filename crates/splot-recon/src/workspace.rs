@@ -1237,21 +1237,16 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     /// depth, the fill sample exceeds the active bit depth, geometry arithmetic
     /// overflows, or plane allocation fails.
     pub fn new(info: DecodedFrameInfo, fill: T) -> Result<Self> {
-        validate_sample_type::<T>(info.bit_depth())?;
         validate_sample_value(PlaneId::Y, 0, fill, info.bit_depth().max_sample())?;
+        Self::with_fill(info, Some(fill))
+    }
 
-        let y = CurrentFramePlane::new(
-            PlaneId::Y,
-            info.coded_luma_size(),
-            info.visible_luma_rect(),
-            fill,
-        )?;
-
-        let (u, v) = match chroma_plane_geometry(
-            info.pixel_format(),
-            info.coded_luma_size(),
-            info.visible_luma_rect(),
-        )? {
+    pub(crate) fn with_fill(info: DecodedFrameInfo, fill: Option<T>) -> Result<Self> {
+        validate_sample_type::<T>(info.bit_depth())?;
+        let luma_size = info.coded_luma_size();
+        let luma_rect = info.visible_luma_rect();
+        let y = CurrentFramePlane::new(PlaneId::Y, luma_size, luma_rect, fill)?;
+        let (u, v) = match chroma_plane_geometry(info.pixel_format(), luma_size, luma_rect)? {
             None => (None, None),
             Some((storage_size, visible_rect)) => (
                 Some(CurrentFramePlane::new(
@@ -1268,7 +1263,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
                 )?),
             ),
         };
-
         Ok(Self {
             info,
             y,
@@ -1735,15 +1729,27 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
 const MAX_RETAINED_RECON_PLANE_BUFFERS: usize = 6;
 const MAX_RETAINED_RECON_PLANE_SAMPLES: usize = 1 << 24;
 
-/// Takes a cleared plane sample buffer from the per-type retained pool, reusing
-/// a prior frame's recycled reconstruction-workspace allocation when available.
-fn take_recon_plane_buffer<T: ReconSample>() -> Vec<T> {
-    let mut buffer = T::recon_plane_pool()
+/// Takes a plane sample buffer from the per-type retained pool, reusing a prior
+/// frame's recycled reconstruction-workspace allocation when available.
+///
+/// The pool mixes luma and chroma buffers, so a plane takes one it already fits
+/// before any other: a chroma buffer taken for a luma plane would reallocate,
+/// and leave the next chroma plane the oversized one. `clear` drops the pooled
+/// samples so the caller's fill initializes the plane; a caller that overwrites
+/// every row it reads keeps a same-geometry buffer exactly as it is.
+fn take_recon_plane_buffer<T: ReconSample>(clear: bool, required_samples: usize) -> Vec<T> {
+    let mut pool = T::recon_plane_pool()
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .pop()
-        .unwrap_or_default();
-    buffer.clear();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let matched = pool
+        .iter()
+        .position(|buffer| buffer.len() == required_samples)
+        .or_else(|| pool.len().checked_sub(1));
+    let mut buffer = matched.map_or_else(Vec::new, |index| pool.swap_remove(index));
+    drop(pool);
+    if clear {
+        buffer.clear();
+    }
     buffer
 }
 
@@ -1779,7 +1785,7 @@ impl<T: ReconSample> CurrentFramePlane<T> {
         plane: PlaneId,
         storage_size: PlaneSize,
         visible_rect: PlaneRect,
-        fill: T,
+        fill: Option<T>,
     ) -> Result<Self> {
         visible_rect.ensure_within(storage_size).map_err(|_| {
             ReconError::WorkspaceRectOutOfBounds {
@@ -1801,14 +1807,14 @@ impl<T: ReconSample> CurrentFramePlane<T> {
             },
         )?;
 
-        let mut samples = take_recon_plane_buffer::<T>();
-        samples.try_reserve_exact(required_samples).map_err(|_| {
-            ReconError::WorkspaceAllocationFailed {
+        let mut samples = take_recon_plane_buffer::<T>(fill.is_some(), required_samples);
+        samples
+            .try_reserve_exact(required_samples.saturating_sub(samples.len()))
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
                 plane,
                 context: "sample buffer",
-            }
-        })?;
-        samples.resize(required_samples, fill);
+            })?;
+        samples.resize(required_samples, fill.unwrap_or_default());
 
         Ok(Self {
             plane,

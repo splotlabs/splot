@@ -100,46 +100,58 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
         }
     }
 
-    fn with_workspace_mut<R>(
+    /// Moves one finished stripe's samples into the output exactly once.
+    ///
+    /// A published output is shared with the blocks of the next frame reading
+    /// this frame's published prefix, so the copy is queued rather than waited
+    /// for: a stripe that took a turn behind those readers would stall its own
+    /// worker and, under a writer-preferring lock, hold up every reader arriving
+    /// behind it. Whichever thread next finds the output free copies the whole
+    /// queue, so nothing lands twice and the copies stay off every wait path.
+    /// A local output has no other user and is copied into straight away.
+    fn publish_stripe(
         &self,
-        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
-    ) -> Result<R> {
+        stripe: usize,
+        samples: final_filters::FilteredStripe,
+        offset: ByteOffset,
+    ) -> Result<()> {
+        let copy = move |output: &mut CurrentFrameWorkspace<T>| {
+            publish_filter_stripe_to(output, PlaneId::Y, &samples.y, offset)?;
+            if let Some(plane) = samples.u.as_ref() {
+                publish_filter_stripe_to(output, PlaneId::U, plane, offset)?;
+            }
+            if let Some(plane) = samples.v.as_ref() {
+                publish_filter_stripe_to(output, PlaneId::V, plane, offset)?;
+            }
+            Ok(())
+        };
         match self {
-            Self::Local(workspace) => publish(
+            Self::Local(workspace) => copy(
                 &mut workspace
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             ),
-            Self::Published { progress, .. } => progress.with_workspace_mut(publish),
-            Self::OwnedPublished { progress } => progress.with_workspace_mut(publish),
-        }
-    }
-
-    /// Runs `publish` against the output when it is free, and reports that it is
-    /// busy otherwise.
-    fn try_with_workspace_mut<R>(
-        &self,
-        publish: impl FnOnce(&mut CurrentFrameWorkspace<T>) -> Result<R>,
-    ) -> Option<Result<R>> {
-        match self {
-            Self::Local(workspace) => Some(publish(
-                &mut workspace
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            )),
-            Self::Published { progress, .. } => progress.try_with_workspace_mut(publish),
-            Self::OwnedPublished { progress } => progress.try_with_workspace_mut(publish),
-        }
-    }
-
-    fn publish(&self, stripe: usize) {
-        if let Self::Published { progress, admit } = self {
-            progress.publish(stripe);
-            if let Some(admit) = admit {
-                admit.admit_ready();
+            Self::Published { progress, admit } => {
+                let published = progress.publish_stripe(stripe, Box::new(copy));
+                if let Some(admit) = admit {
+                    admit.admit_ready();
+                }
+                published
             }
-        } else if let Self::OwnedPublished { progress } = self {
-            progress.publish(stripe);
+            Self::OwnedPublished { progress } => progress.publish_stripe(stripe, Box::new(copy)),
+        }
+    }
+
+    /// Copies every stripe still queued into the output, waiting for it.
+    ///
+    /// This is what makes every stripe's samples present before the freeze even
+    /// when the output was busy each time a stripe finished. Waiting is safe
+    /// only here: the filter phase is over, so no stripe can queue behind it.
+    fn drain_before_freeze(&self) -> Result<()> {
+        match self {
+            Self::Local(_) => Ok(()),
+            Self::Published { progress, .. } => progress.drain_pending_blocking(),
+            Self::OwnedPublished { progress } => progress.drain_pending_blocking(),
         }
     }
 
@@ -213,7 +225,6 @@ pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     ranges: Vec<(usize, usize)>,
     filter_records: super::FrameFilterRecords,
     sink: FilteredFrameSink<'progress, 'job, T>,
-    filtered: Mutex<Vec<(usize, final_filters::FilteredStripe)>>,
     stripe_state: Mutex<Vec<StripeLifecycle>>,
     deblock_records: Mutex<Option<crate::filters::deblock::OwnedDeblockRecords>>,
 }
@@ -567,7 +578,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 ranges,
                 filter_records,
                 sink,
-                filtered: Mutex::new(Vec::new()),
                 stripe_state: Mutex::new(vec![StripeLifecycle::Pending; stripe_count]),
                 deblock_records: Mutex::new(None),
             },
@@ -925,11 +935,8 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        self.filtered
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((stripe.stripe, stripe.frame));
-        drain_filtered_stripes(&self.sink, &self.filtered, self.offset, DrainMode::WhenFree)
+        self.sink
+            .publish_stripe(stripe.stripe, stripe.frame, self.offset)
     }
 
     fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
@@ -1041,12 +1048,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         if !complete {
             return Err(self.stripe_error());
         }
-        drain_filtered_stripes(
-            &self.sink,
-            &self.filtered,
-            self.offset,
-            DrainMode::BeforeFreeze,
-        )?;
+        self.sink.drain_before_freeze()?;
         self.filter_records.lr_source_blocks = self.lr_source_blocks;
         self.filter_records.lr_unit_filters = self.lr_unit_filters;
         let has_restored_deblock = self
@@ -1127,68 +1129,6 @@ impl<T: ReconSample> OwnedFilterSetup<'static, 'static, T> {
     /// Transfers terminal ownership to the exactly-once freeze job.
     pub(crate) fn owned_finish(self: Arc<Self>) -> OwnedFilterFinish<T> {
         OwnedFilterFinish { setup: self }
-    }
-}
-
-/// Whether a drain may leave the output to another stripe.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum DrainMode {
-    /// Copy what is waiting only if the output is free right now.
-    WhenFree,
-    /// Copy everything still waiting, blocking for the output if it is busy.
-    BeforeFreeze,
-}
-
-/// Copies every stripe waiting for the output workspace into it and publishes
-/// what landed.
-///
-/// A finished stripe leaves its planes in `filtered` and drains
-/// [`DrainMode::WhenFree`]: the workspace lock's other users are the blocks of
-/// the next frame reading this frame's published prefix, and a stripe that
-/// queued behind them would stall its own worker and, under a writer-preferring
-/// lock, hold up every reader arriving behind it. Whichever stripe does find the
-/// output free copies the whole backlog, so the copies stay on the filter phase
-/// and nothing lands twice. The phase drains [`DrainMode::BeforeFreeze`] once
-/// its stripes have all run, which is what makes every stripe's samples present
-/// before the freeze even when the output was busy each time.
-fn drain_filtered_stripes<T: ReconSample>(
-    sink: &FilteredFrameSink<'_, '_, T>,
-    filtered: &Mutex<Vec<(usize, final_filters::FilteredStripe)>>,
-    offset: ByteOffset,
-    mode: DrainMode,
-) -> Result<()> {
-    let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripePublish);
-    loop {
-        let copy = |output: &mut CurrentFrameWorkspace<T>| {
-            let batch = core::mem::take(
-                &mut *filtered
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-            );
-            for (_, stripe) in &batch {
-                publish_filter_stripe_to(output, PlaneId::Y, &stripe.y, offset)?;
-                if let Some(plane) = stripe.u.as_ref() {
-                    publish_filter_stripe_to(output, PlaneId::U, plane, offset)?;
-                }
-                if let Some(plane) = stripe.v.as_ref() {
-                    publish_filter_stripe_to(output, PlaneId::V, plane, offset)?;
-                }
-            }
-            Ok(batch)
-        };
-        let batch = match mode {
-            DrainMode::BeforeFreeze => sink.with_workspace_mut(copy)?,
-            DrainMode::WhenFree => match sink.try_with_workspace_mut(copy) {
-                Some(batch) => batch?,
-                None => return Ok(()),
-            },
-        };
-        for (stripe, _) in &batch {
-            sink.publish(*stripe);
-        }
-        if mode == DrainMode::WhenFree || batch.is_empty() {
-            return Ok(());
-        }
     }
 }
 

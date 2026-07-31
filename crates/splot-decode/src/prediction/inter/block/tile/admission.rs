@@ -17,16 +17,31 @@ use crate::prediction::inter::find_mv_stack::TemporalBandPlan;
 
 struct ScheduledCommit<T: ReconSample> {
     next: usize,
+    handed_rows: usize,
     ordered: deferred_recon::InterReconScratch<T>,
     workspace: CurrentFrameWorkspace<T>,
+    block_decoded: TileBlockDecodedState,
+    current_block_decoded_superblock: Option<[usize; 2]>,
+    decoded_any: bool,
+}
+
+/// The § 7.17 frontier's own storage, advanced by one ordered chain per frame.
+///
+/// The chain runs beside the commit spine, so it owns the pixels it filters:
+/// either the sealed copy the spine hands it one superblock row at a time, or
+/// the canonical row bands a banded frame reconstructs directly into. A frame
+/// with no incremental frontier — IntraBC, or no active deblock plan, where
+/// sealing would only add a copy — instead receives the spine's whole
+/// workspace once reconstruction is complete.
+struct ScheduledFrontier<T: ReconSample> {
+    sealed: Option<CurrentFrameWorkspace<T>>,
+    sealed_rows: usize,
+    terminal_workspace: Option<CurrentFrameWorkspace<T>>,
     bands: Option<splot_recon::OwnedFrameBands<T>>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
     contains_intrabc: bool,
     filter: Option<Arc<crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>>>,
     next_filter_stripe: usize,
-    block_decoded: TileBlockDecodedState,
-    current_block_decoded_superblock: Option<[usize; 2]>,
-    decoded_any: bool,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -46,11 +61,19 @@ struct ScheduledResolve<T: ReconSample> {
     state: TileResolveState,
 }
 
-/// Filter jobs made ready by one ordered canonical commit.
+/// Filter jobs made ready by one ordered frontier link.
 pub(in crate::prediction::inter::block) struct ScheduledTileProgress<T: ReconSample> {
     pub(in crate::prediction::inter::block) filters:
         Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
     pub(in crate::prediction::inter::block) output: Option<ScheduledTileOutput<T>>,
+}
+
+/// Canonical rows one ordered commit handed to the frontier chain.
+pub(crate) struct ScheduledCommitProgress {
+    /// Frontier links whose rows are now sealed, in chain order.
+    pub(crate) frontier_rows: core::ops::Range<usize>,
+    /// Whether this commit completed the frame's reconstruction.
+    pub(crate) recon_complete: bool,
 }
 
 /// Completed scheduled tile reconstruction.
@@ -68,7 +91,9 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     batches: Vec<core::ops::Range<usize>>,
     owned_bands: bool,
     filter_count: usize,
+    frontier_rows: usize,
     commit: Mutex<Option<ScheduledCommit<T>>>,
+    frontier: Mutex<ScheduledFrontier<T>>,
     resolve: Mutex<ScheduledResolve<T>>,
     workers: InterReconScratchPool<T>,
     prepass_block_decoded: TileBlockDecodedState,
@@ -407,17 +432,220 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         Ok(())
     }
 
+    /// Seals every canonical superblock row this commit completed into the
+    /// frame's filter copy.
+    ///
+    /// Frames that reconstruct into the shared workspace keep their raw pixels
+    /// there, while the § 7.17 frontier and the filter windows it releases read
+    /// the sealed copy, so deblock never writes rows a later current-frame
+    /// prediction can still read. The copy needs no fill: this seals whole
+    /// rows upward from row zero, and the frontier reads only below them.
+    fn seal_committed_rows(&self, commit: &ScheduledCommit<T>, rows: usize) -> Result<()> {
+        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        let ScheduledFrontier {
+            sealed,
+            sealed_rows,
+            ..
+        } = &mut *frontier;
+        let Some(sealed) = sealed.as_mut() else {
+            return Ok(());
+        };
+        let end = rows
+            .saturating_mul(self.params.sb_h4.saturating_mul(4).max(1))
+            .min(self.info.coded_luma_size().height());
+        if end > *sealed_rows {
+            commit.workspace.copy_rows_into(sealed, *sealed_rows..end)?;
+            *sealed_rows = end;
+        }
+        Ok(())
+    }
+
+    /// Number of ordered links in this frame's § 7.17 frontier chain.
+    pub(in crate::prediction::inter::block) const fn frontier_len(&self) -> usize {
+        self.frontier_rows
+    }
+
+    /// Advances the § 7.17 deblock frontier over the rows sealed by superblock
+    /// row `row` and takes the filter stripes that frontier releases.
+    ///
+    /// The one caller that runs the final link receives the completed tile.
+    pub(in crate::prediction::inter::block) fn frontier(
+        &self,
+        row: usize,
+    ) -> Result<ScheduledTileProgress<T>> {
+        let terminal = row.saturating_add(1) >= self.frontier_rows;
+        let committed_units = row
+            .saturating_add(1)
+            .saturating_mul(self.units_per_row)
+            .min(self.unit_count);
+        let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+        let ScheduledFrontier {
+            sealed,
+            sealed_rows,
+            terminal_workspace,
+            bands,
+            deblock,
+            contains_intrabc,
+            filter,
+            next_filter_stripe,
+        } = &mut *frontier;
+        let sealed_rows = sealed.as_ref().map(|_| *sealed_rows);
+        let filtered = sealed.as_mut().or(terminal_workspace.as_mut());
+        let mut filters = Vec::new();
+        if let Some(deblock) = deblock.as_mut()
+            && let Some(safe_mi_end) = safe_deblock_mi_end(
+                committed_units,
+                self.units_per_row,
+                self.params.sb_h4,
+                self.params.mi_rows,
+                terminal,
+                *contains_intrabc,
+            )
+        {
+            let filter = filter.as_ref().ok_or_else(|| {
+                inter_cap!(
+                    "inter_admission_frontier_filter_owner",
+                    self.tile_offset,
+                    "inter.row.task_capacity",
+                    SPEC_MODE_INFO
+                )
+            })?;
+            debug_assert!(
+                sealed_rows.is_none_or(|rows| {
+                    deblock
+                        .data_reach_luma_rows(safe_mi_end.get())
+                        .min(self.info.coded_luma_size().height())
+                        <= rows
+                }),
+                "the frontier read a row the spine had not sealed"
+            );
+            match (bands.as_mut(), filtered) {
+                (Some(bands), _) => {
+                    deblock.advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
+                }
+                (None, Some(filtered)) => {
+                    deblock.advance(filtered, safe_mi_end.get(), self.params.bit_depth)
+                }
+                (None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
+            }
+            .map_err(|_| {
+                crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
+            })?;
+            while *next_filter_stripe < filter.stripe_ranges().len() {
+                let stripe = *next_filter_stripe;
+                let window = match (
+                    bands.as_ref(),
+                    sealed.as_ref().or(terminal_workspace.as_ref()),
+                ) {
+                    (Some(bands), _) => filter.extract_ready_band_window(stripe, deblock, bands)?,
+                    (None, Some(filtered)) => {
+                        filter.extract_ready_window(stripe, deblock, filtered)?
+                    }
+                    (None, None) => None,
+                };
+                let Some(window) = window else {
+                    break;
+                };
+                filters.push(filter.owned_job(stripe, window));
+                *next_filter_stripe += 1;
+            }
+        }
+        if !terminal {
+            return Ok(ScheduledTileProgress {
+                filters,
+                output: None,
+            });
+        }
+        self.finish_frontier(&mut frontier, filters)
+    }
+
+    /// Completes the frame's filter stripes after the final frontier link.
+    fn finish_frontier(
+        &self,
+        frontier: &mut ScheduledFrontier<T>,
+        mut filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
+    ) -> Result<ScheduledTileProgress<T>> {
+        if let Some(deblock) = frontier.deblock.take() {
+            let records = deblock.finish().ok_or_else(|| {
+                crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
+            })?;
+            frontier
+                .filter
+                .as_ref()
+                .ok_or_else(|| {
+                    inter_cap!(
+                        "inter_admission_deblock_filter_owner",
+                        self.tile_offset,
+                        "inter.row.task_capacity",
+                        SPEC_MODE_INFO
+                    )
+                })?
+                .restore_deblock_records(records)?;
+        }
+        let filter = frontier.filter.as_ref().ok_or_else(|| {
+            inter_cap!(
+                "inter_admission_terminal_filter_owner",
+                self.tile_offset,
+                "inter.row.task_capacity",
+                SPEC_MODE_INFO
+            )
+        })?;
+        while frontier.next_filter_stripe < filter.stripe_ranges().len() {
+            let stripe = frontier.next_filter_stripe;
+            let window = match (
+                frontier.bands.as_ref(),
+                frontier
+                    .sealed
+                    .as_ref()
+                    .or(frontier.terminal_workspace.as_ref()),
+            ) {
+                (Some(bands), _) => filter.extract_terminal_band_window(stripe, bands)?,
+                (None, Some(filtered)) => filter.extract_terminal_window(stripe, filtered)?,
+                (None, None) => {
+                    return Err(inter_cap!(
+                        "inter_admission_terminal_filter_source",
+                        self.tile_offset,
+                        "inter.row.task_capacity",
+                        SPEC_MODE_INFO
+                    ));
+                }
+            };
+            filters.push(filter.owned_job(stripe, window));
+            frontier.next_filter_stripe += 1;
+        }
+        for workspace in [frontier.sealed.take(), frontier.terminal_workspace.take()]
+            .into_iter()
+            .flatten()
+        {
+            workspace.recycle_planes();
+        }
+        let filter = frontier.filter.take().ok_or_else(|| {
+            inter_cap!(
+                "inter_admission_finish_filter_owner",
+                self.tile_offset,
+                "inter.row.task_capacity",
+                SPEC_MODE_INFO
+            )
+        })?;
+        Ok(ScheduledTileProgress {
+            filters,
+            output: Some(ScheduledTileOutput {
+                filter: filter.owned_finish(),
+            }),
+        })
+    }
+
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
     pub(in crate::prediction::inter::block) fn commit(
         &self,
         index: usize,
-    ) -> Result<ScheduledTileProgress<T>> {
+    ) -> Result<ScheduledCommitProgress> {
         if self.finished.load(Ordering::Acquire) {
-            return Ok(ScheduledTileProgress {
-                filters: Vec::new(),
-                output: None,
+            return Ok(ScheduledCommitProgress {
+                frontier_rows: 0..0,
+                recon_complete: false,
             });
         }
         let batch = {
@@ -454,12 +682,11 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         };
         let mut holder = self.commit.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(commit) = holder.as_mut() else {
-            return Ok(ScheduledTileProgress {
-                filters: Vec::new(),
-                output: None,
+            return Ok(ScheduledCommitProgress {
+                frontier_rows: 0..0,
+                recon_complete: false,
             });
         };
-        let mut filters = Vec::new();
         for ready in ready {
             if commit.next != ready.row.ordinal {
                 self.finished.store(true, Ordering::Release);
@@ -498,102 +725,38 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 self.tile_offset,
             )?;
             self.row_buffers.recycle(buffers);
-            if completed_band.is_none()
-                && let Some(deblock) = commit.deblock.as_mut()
-            {
-                let terminal = commit.next == self.unit_count;
-                let Some(safe_mi_end) = safe_deblock_mi_end(
-                    commit.next,
-                    self.units_per_row,
-                    self.params.sb_h4,
-                    self.params.mi_rows,
-                    terminal,
-                    commit.contains_intrabc,
-                ) else {
-                    continue;
-                };
-                deblock
-                    .advance(
-                        &mut commit.workspace,
-                        safe_mi_end.get(),
-                        self.params.bit_depth,
-                    )
-                    .map_err(|_| {
-                        crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
-                    })?;
-                let filter = commit.filter.as_ref().ok_or_else(|| {
+        }
+        if let Some(band) = completed_band {
+            let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+            frontier
+                .bands
+                .as_mut()
+                .ok_or_else(|| {
                     inter_cap!(
-                        "inter_admission_legacy_filter_owner",
+                        "inter_admission_band_owner",
                         self.tile_offset,
                         "inter.row.task_capacity",
                         SPEC_MODE_INFO
                     )
-                })?;
-                while commit.next_filter_stripe < filter.stripe_ranges().len() {
-                    let stripe = commit.next_filter_stripe;
-                    let Some(window) =
-                        filter.extract_ready_window(stripe, deblock, &commit.workspace)?
-                    else {
-                        break;
-                    };
-                    filters.push(filter.owned_job(stripe, window));
-                    commit.next_filter_stripe += 1;
-                }
-            }
+                })?
+                .push(band)?;
         }
-        if let Some(band) = completed_band {
-            let bands = commit.bands.as_mut().ok_or_else(|| {
-                inter_cap!(
-                    "inter_admission_band_owner",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
-            bands.push(band)?;
-            if let Some(deblock) = commit.deblock.as_mut() {
-                let terminal = commit.next == self.unit_count;
-                let safe_mi_end = safe_deblock_mi_end(
-                    commit.next,
-                    self.units_per_row,
-                    self.params.sb_h4,
-                    self.params.mi_rows,
-                    terminal,
-                    false,
-                );
-                if let Some(safe_mi_end) = safe_mi_end {
-                    deblock
-                        .advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
-                        .map_err(|_| {
-                            crate::filters::wienerns_lr::recon::deblock_filter_error(
-                                self.tile_offset,
-                            )
-                        })?;
-                    let filter = commit.filter.as_ref().ok_or_else(|| {
-                        inter_cap!(
-                            "inter_admission_band_filter_owner",
-                            self.tile_offset,
-                            "inter.row.task_capacity",
-                            SPEC_MODE_INFO
-                        )
-                    })?;
-                    while commit.next_filter_stripe < filter.stripe_ranges().len() {
-                        let stripe = commit.next_filter_stripe;
-                        let Some(window) =
-                            filter.extract_ready_band_window(stripe, deblock, bands)?
-                        else {
-                            break;
-                        };
-                        filters.push(filter.owned_job(stripe, window));
-                        commit.next_filter_stripe += 1;
-                    }
-                }
-            }
+        let terminal = commit.next == self.unit_count;
+        let closed_rows = closed_frontier_rows(
+            commit.next,
+            self.unit_count,
+            self.units_per_row,
+            self.frontier_rows,
+        );
+        if closed_rows > commit.handed_rows {
+            self.seal_committed_rows(commit, closed_rows)?;
         }
-        if commit.next != self.unit_count {
-            return Ok(ScheduledTileProgress {
-                filters,
-                output: None,
+        let frontier_rows = commit.handed_rows..closed_rows;
+        commit.handed_rows = closed_rows;
+        if !terminal {
+            return Ok(ScheduledCommitProgress {
+                frontier_rows,
+                recon_complete: false,
             });
         }
         if !commit.decoded_any {
@@ -606,7 +769,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             ));
         }
         self.finished.store(true, Ordering::Release);
-        let mut commit = holder.take().ok_or_else(|| {
+        let commit = holder.take().ok_or_else(|| {
             inter_cap!(
                 "inter_admission_commit_state",
                 self.tile_offset,
@@ -614,56 +777,43 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 SPEC_MODE_INFO
             )
         })?;
-        if let Some(deblock) = commit.deblock.take() {
-            let records = deblock.finish().ok_or_else(|| {
-                crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
-            })?;
-            commit
-                .filter
-                .as_ref()
-                .ok_or_else(|| {
-                    inter_cap!(
-                        "inter_admission_deblock_filter_owner",
-                        self.tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
-                    )
-                })?
-                .restore_deblock_records(records)?;
-        }
-        let filter = commit.filter.as_ref().ok_or_else(|| {
-            inter_cap!(
-                "inter_admission_terminal_filter_owner",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
-        while commit.next_filter_stripe < filter.stripe_ranges().len() {
-            let stripe = commit.next_filter_stripe;
-            let window = if let Some(bands) = commit.bands.as_ref() {
-                filter.extract_terminal_band_window(stripe, bands)?
+        {
+            let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
+            if frontier.sealed.is_some() || frontier.bands.is_some() {
+                commit.workspace.recycle_planes();
             } else {
-                filter.extract_terminal_window(stripe, &commit.workspace)?
-            };
-            filters.push(filter.owned_job(stripe, window));
-            commit.next_filter_stripe += 1;
+                frontier.terminal_workspace = Some(commit.workspace);
+            }
         }
-        commit.workspace.recycle_planes();
-        let filter = commit.filter.take().ok_or_else(|| {
-            inter_cap!(
-                "inter_admission_finish_filter_owner",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
-        Ok(ScheduledTileProgress {
-            filters,
-            output: Some(ScheduledTileOutput {
-                filter: filter.owned_finish(),
-            }),
+        Ok(ScheduledCommitProgress {
+            frontier_rows,
+            recon_complete: true,
         })
+    }
+}
+
+/// Frontier links whose superblock rows are complete after `committed` units.
+///
+/// The terminal commit closes every remaining link, so a frame whose last
+/// parsed unit carries no superblock still hands its final row over exactly
+/// once.
+const fn closed_frontier_rows(
+    committed: usize,
+    unit_count: usize,
+    units_per_row: usize,
+    frontier_rows: usize,
+) -> usize {
+    if committed >= unit_count {
+        return frontier_rows;
+    }
+    let closed = match units_per_row {
+        0 => 0,
+        units_per_row => committed / units_per_row,
+    };
+    if closed < frontier_rows {
+        closed
+    } else {
+        frontier_rows
     }
 }
 
@@ -710,6 +860,15 @@ fn safe_deblock_mi_end(
     )
 }
 
+/// Whether one parsed tile owns every mode-info position in the frame, which
+/// is what makes superblock row `r` the frame's own row band `r`.
+fn covers_whole_frame(parsed: &ParsedTile, params: &TileWalkParams) -> bool {
+    parsed.mi_rows.start == 0
+        && parsed.mi_rows.end.min(params.mi_rows) == params.mi_rows
+        && parsed.mi_cols.start == 0
+        && parsed.mi_cols.end.min(params.mi_cols) == params.mi_cols
+}
+
 fn supports_owned_bands(
     parsed: &ParsedTile,
     params: &TileWalkParams,
@@ -718,11 +877,7 @@ fn supports_owned_bands(
     if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
         return Err("filters_disabled");
     }
-    if parsed.mi_rows.start != 0
-        || parsed.mi_rows.end.min(params.mi_rows) != params.mi_rows
-        || parsed.mi_cols.start != 0
-        || parsed.mi_cols.end.min(params.mi_cols) != params.mi_cols
-    {
+    if !covers_whole_frame(parsed, params) {
         return Err("partial_tile");
     }
     for row in &parsed.rows {
@@ -979,6 +1134,10 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })
         .transpose()?
         .flatten();
+    let seals_filter_copy = !owned_bands
+        && deblock.is_some()
+        && !contains_intrabc
+        && covers_whole_frame(&parsed, &params);
     let TileDecodeScratch { ordered, workers } = scratch;
     let filter_count = filter_setup.stripe_ranges().len();
     Ok(ScheduledTileRecon {
@@ -989,19 +1148,28 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         batches,
         owned_bands,
         filter_count,
+        frontier_rows: unit_count.div_ceil(units_per_row.max(1)).max(1),
         commit: Mutex::new(Some(ScheduledCommit {
             next: 0,
+            handed_rows: 0,
             ordered,
             workspace,
+            block_decoded,
+            current_block_decoded_superblock: None,
+            decoded_any: false,
+        })),
+        frontier: Mutex::new(ScheduledFrontier {
+            sealed: seals_filter_copy
+                .then(|| CurrentFrameWorkspace::new_recycled(info))
+                .transpose()?,
+            sealed_rows: 0,
+            terminal_workspace: None,
             bands: owned_bands.then(|| splot_recon::OwnedFrameBands::new(info)),
             deblock,
             contains_intrabc,
             filter: Some(Arc::new(filter_setup)),
             next_filter_stripe: 0,
-            block_decoded,
-            current_block_decoded_superblock: None,
-            decoded_any: false,
-        })),
+        }),
         resolve: Mutex::new(ScheduledResolve {
             next: 0,
             submitted_batches: 0,
@@ -1136,6 +1304,33 @@ mod tests {
                 assert_eq!(next, unit_count);
             }
         }
+    }
+
+    #[test]
+    fn every_frontier_link_is_handed_over_exactly_once_in_order() {
+        for (unit_count, units_per_row) in [(136usize, 15usize), (135, 15), (9, 3), (1, 1), (7, 4)]
+        {
+            let frontier_rows = unit_count.div_ceil(units_per_row).max(1);
+            let mut handed = 0;
+            for committed in 1..=unit_count {
+                let closed = super::closed_frontier_rows(
+                    committed,
+                    unit_count,
+                    units_per_row,
+                    frontier_rows,
+                );
+                assert!(closed >= handed, "frontier rows went backwards");
+                assert!(closed <= frontier_rows, "frontier rows overran the chain");
+                handed = closed;
+            }
+            assert_eq!(handed, frontier_rows, "the terminal commit owes every link");
+        }
+    }
+
+    #[test]
+    fn a_trailing_empty_unit_closes_the_last_frontier_link_once() {
+        assert_eq!(super::closed_frontier_rows(135, 136, 15, 10), 9);
+        assert_eq!(super::closed_frontier_rows(136, 136, 15, 10), 10);
     }
 
     #[test]

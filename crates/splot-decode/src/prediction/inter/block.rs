@@ -1989,6 +1989,7 @@ mod frame_parse;
 pub(crate) use frame_parse::{
     InterFrameParse, ScheduledFrameProgress, ScheduledInterReconstruction, parse_inter_frame_blocks,
 };
+pub(crate) use tile::ScheduledCommitProgress;
 mod interintra;
 mod intrabc;
 pub(crate) use intrabc::global_intrabc_enabled;

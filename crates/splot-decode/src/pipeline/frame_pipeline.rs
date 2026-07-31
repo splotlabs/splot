@@ -247,6 +247,7 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     filter_done: Arc<CompletionCell<()>>,
     prepared: Vec<Arc<CompletionCell<()>>>,
     committed: Vec<Arc<CompletionCell<()>>>,
+    frontier_done: Vec<Arc<CompletionCell<()>>>,
     filtered: Vec<Arc<CompletionCell<()>>>,
     filter_error: Mutex<Option<DecodeError>>,
     failed: AtomicBool,
@@ -259,12 +260,9 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
         if self.walk.owns_canonical_bands() && index > 0 {
             precompute_conditions.push(Condition::Completion(self.committed[index - 1].as_ref()));
         }
-        let index_key = u64::try_from(index).unwrap_or(u64::MAX / 2);
         let row = Arc::clone(self);
         admit.submit(
-            self.order_base
-                .saturating_add(1 << 20)
-                .saturating_add(index_key.saturating_mul(2).saturating_add(1)),
+            self.batch_key(index, 1),
             &precompute_conditions,
             if self.walk.owns_canonical_bands() {
                 Box::new(move |admit| row.run_batch(index, admit))
@@ -281,12 +279,55 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
         }
         let commit = Arc::clone(self);
         admit.submit(
-            self.order_base
-                .saturating_add(1 << 20)
-                .saturating_add(index_key.saturating_mul(2).saturating_add(2)),
+            self.batch_key(index, 2),
             &commit_conditions,
             Box::new(move |admit| commit.commit(index, admit)),
         );
+    }
+
+    /// Order key for one batch's `slot`-th link, in submission order.
+    fn batch_key(&self, index: usize, slot: u64) -> u64 {
+        let index_key = u64::try_from(index).unwrap_or(u64::MAX / 4);
+        self.order_base
+            .saturating_add(1 << 20)
+            .saturating_add(index_key.saturating_mul(4).saturating_add(slot))
+    }
+
+    /// Submits the § 7.17 frontier link for one sealed superblock row.
+    ///
+    /// The chain is ordered by the previous link alone: a link is submitted
+    /// exactly when the commit spine has sealed its rows, so its own source is
+    /// final before it exists.
+    fn submit_frontier(
+        self: &Arc<Self>,
+        batch: usize,
+        row: usize,
+        admit: &dyn splot_parallel::Admit<'_>,
+    ) {
+        let conditions = row
+            .checked_sub(1)
+            .and_then(|previous| self.frontier_done.get(previous))
+            .map(|previous| vec![Condition::Completion(previous.as_ref())])
+            .unwrap_or_default();
+        let frame = Arc::clone(self);
+        admit.submit(
+            self.batch_key(batch, 3),
+            &conditions,
+            Box::new(move |admit| frame.frontier(row, admit)),
+        );
+    }
+
+    fn frontier(self: &Arc<Self>, row: usize, admit: &dyn splot_parallel::Admit<'_>) {
+        if !self.failed.load(Ordering::Acquire) {
+            match self.walk.frontier(row) {
+                Ok(progress) => self.publish_filters(progress, admit),
+                Err(error) => self.fail(error, admit),
+            }
+        }
+        if let Some(done) = self.frontier_done.get(row) {
+            let _ = done.set(());
+        }
+        admit.admit_ready();
     }
 
     fn submit_resolve(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
@@ -357,83 +398,11 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
         }
         match self.walk.commit(index) {
             Ok(progress) => {
-                for filter in progress.filters {
-                    let stripe = filter.stripe();
-                    let Some(done) = self.filtered.get(stripe).cloned() else {
-                        self.fail(
-                            unsupported(
-                                "inter_admission_filter_index",
-                                None,
-                                "scheduled filter stripe index is out of range",
-                            ),
-                            admit,
-                        );
-                        break;
-                    };
-                    let frame = Arc::clone(self);
-                    admit.submit(
-                        self.order_base
-                            .saturating_add(u64::try_from(stripe).unwrap_or(u64::MAX / 2) * 2 + 2),
-                        &[],
-                        Box::new(move |admit| {
-                            if let Err(error) = filter.run() {
-                                let mut owed = frame
-                                    .filter_error
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner);
-                                if owed.is_none() {
-                                    *owed = Some(error);
-                                }
-                            }
-                            let _ = done.set(());
-                            admit.admit_ready();
-                        }),
-                    );
+                if progress.recon_complete {
+                    let _ = self.recon_done.set(());
                 }
-                let Some(filter) = progress.output else {
-                    if let Some(committed) = self.committed.get(index) {
-                        let _ = committed.set(());
-                    }
-                    admit.admit_ready();
-                    return;
-                };
-                let _ = self.recon_done.set(());
-                let finish = self
-                    .finish
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .take();
-                if let Some(finish) = finish {
-                    let mut conditions = self
-                        .filter_gate
-                        .as_deref()
-                        .map(|gate| vec![Condition::Completion(gate)])
-                        .unwrap_or_default();
-                    conditions.extend(
-                        self.filtered
-                            .iter()
-                            .map(|done| Condition::Completion(done.as_ref())),
-                    );
-                    let filter_done = Arc::clone(&self.filter_done);
-                    let frame = Arc::clone(self);
-                    admit.submit(
-                        self.order_base + u64::from(u32::MAX),
-                        &conditions,
-                        Box::new(move |admit| {
-                            let error = frame
-                                .filter_error
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .take();
-                            if let Some(error) = error {
-                                finish.fail(error);
-                            } else {
-                                finish.run_owned_finish(filter);
-                            }
-                            let _ = filter_done.set(());
-                            admit.admit_ready();
-                        }),
-                    );
+                for row in progress.frontier_rows {
+                    self.submit_frontier(index, row, admit);
                 }
             }
             Err(error) => self.fail(error, admit),
@@ -442,6 +411,88 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
             let _ = committed.set(());
         }
         admit.admit_ready();
+    }
+
+    /// Schedules the filter stripes one frontier link released, and the
+    /// frame's finish once the final link has released them all.
+    fn publish_filters(
+        self: &Arc<Self>,
+        progress: inter::ScheduledFrameProgress<T>,
+        admit: &dyn splot_parallel::Admit<'_>,
+    ) {
+        for filter in progress.filters {
+            let stripe = filter.stripe();
+            let Some(done) = self.filtered.get(stripe).cloned() else {
+                self.fail(
+                    unsupported(
+                        "inter_admission_filter_index",
+                        None,
+                        "scheduled filter stripe index is out of range",
+                    ),
+                    admit,
+                );
+                break;
+            };
+            let frame = Arc::clone(self);
+            admit.submit(
+                self.order_base
+                    .saturating_add(u64::try_from(stripe).unwrap_or(u64::MAX / 2) * 2 + 2),
+                &[],
+                Box::new(move |admit| {
+                    if let Err(error) = filter.run() {
+                        let mut owed = frame
+                            .filter_error
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner);
+                        if owed.is_none() {
+                            *owed = Some(error);
+                        }
+                    }
+                    let _ = done.set(());
+                    admit.admit_ready();
+                }),
+            );
+        }
+        let Some(filter) = progress.output else {
+            return;
+        };
+        let finish = self
+            .finish
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(finish) = finish {
+            let mut conditions = self
+                .filter_gate
+                .as_deref()
+                .map(|gate| vec![Condition::Completion(gate)])
+                .unwrap_or_default();
+            conditions.extend(
+                self.filtered
+                    .iter()
+                    .map(|done| Condition::Completion(done.as_ref())),
+            );
+            let filter_done = Arc::clone(&self.filter_done);
+            let frame = Arc::clone(self);
+            admit.submit(
+                self.order_base + u64::from(u32::MAX),
+                &conditions,
+                Box::new(move |admit| {
+                    let error = frame
+                        .filter_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take();
+                    if let Some(error) = error {
+                        finish.fail(error);
+                    } else {
+                        finish.run_owned_finish(filter);
+                    }
+                    let _ = filter_done.set(());
+                    admit.admit_ready();
+                }),
+            );
+        }
     }
 
     fn fail(&self, error: DecodeError, admit: &dyn splot_parallel::Admit<'_>) {
@@ -464,6 +515,7 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
             .prepared
             .iter()
             .chain(&self.committed)
+            .chain(&self.frontier_done)
             .chain(&self.filtered)
         {
             let _ = completion.set(());
@@ -562,6 +614,9 @@ where
                     .map(|_| Arc::new(CompletionCell::new()))
                     .collect(),
                 committed: (0..scheduled.len())
+                    .map(|_| Arc::new(CompletionCell::new()))
+                    .collect(),
+                frontier_done: (0..scheduled.frontier_len())
                     .map(|_| Arc::new(CompletionCell::new()))
                     .collect(),
                 filtered: (0..scheduled.filter_count())
