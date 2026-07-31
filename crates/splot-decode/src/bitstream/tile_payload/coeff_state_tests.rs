@@ -128,7 +128,7 @@ fn transform_block_recycler_is_thread_local() {
 
 #[test]
 fn quant_storage_recycles_from_worker_to_parser() {
-    let buffers = SharedQuantBuffers::new(Vec::new());
+    let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
     let quant = vec![7; 16];
     let pointer = quant.as_ptr();
     let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
@@ -154,7 +154,7 @@ fn transform_block_recycler_tolerates_reentrant_recycle() {
 
 #[test]
 fn transform_block_recycler_has_a_retention_limit() {
-    let buffers = SharedQuantBuffers::new(Vec::new());
+    let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
     for _ in 0..=MAX_RETAINED_SHARED_QUANT_BUFFERS {
         recycle_coeff_quant_into(&buffers, vec![0]);
     }
@@ -163,7 +163,7 @@ fn transform_block_recycler_has_a_retention_limit() {
         MAX_RETAINED_SHARED_QUANT_BUFFERS
     );
 
-    let oversized = SharedQuantBuffers::new(Vec::new());
+    let oversized = SharedQuantBuffers::new(QuantBufferPool::new());
     recycle_coeff_quant_into(&oversized, Vec::new());
     recycle_coeff_quant_into(
         &oversized,
@@ -174,11 +174,10 @@ fn transform_block_recycler_has_a_retention_limit() {
 
 #[test]
 fn quant_recycler_retains_and_selects_the_largest_useful_buffers() {
-    let buffers = SharedQuantBuffers::new(
-        (0..MAX_RETAINED_SHARED_QUANT_BUFFERS)
-            .map(|_| Vec::with_capacity(1))
-            .collect(),
-    );
+    let buffers = SharedQuantBuffers::new(QuantBufferPool::new());
+    for _ in 0..MAX_RETAINED_SHARED_QUANT_BUFFERS {
+        recycle_coeff_quant_into(&buffers, Vec::with_capacity(1));
+    }
     recycle_coeff_quant_into(&buffers, Vec::with_capacity(32));
     let retained = lock_transform_coeff_quant_buffers(&buffers);
     assert_eq!(retained.len(), MAX_RETAINED_SHARED_QUANT_BUFFERS);

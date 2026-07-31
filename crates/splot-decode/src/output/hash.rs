@@ -7,8 +7,10 @@
 
 use core::num::NonZeroUsize;
 
+use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
-use std::sync::{Mutex, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::Result;
@@ -65,6 +67,18 @@ pub(crate) fn decode_hash_report_from_plan(
     ))
 }
 
+/// How many emitted frames may have an unfinished hash task at once.
+///
+/// A hash task holds a second handle on its frame's sample storage, and the
+/// driver retires a decoded frame only once its storage has a single handle, so
+/// every unfinished hash task keeps one more decoded frame charged against
+/// [`crate::DecodeLimitName::MaxReferenceStoreBytes`]. Unbounded, that term is
+/// set by how far the pool trails the driver rather than by the decoder, which
+/// makes a documented memory limit fail or hold by scheduling luck. Four keeps
+/// the handoff off the driver's critical path at 2, 4, 8, and 10 workers while
+/// bounding the extra live frames by a constant.
+const MAX_OUTSTANDING_HASH_FRAMES: usize = 4;
+
 /// Hashes decoded frames on short worker tasks while the driver decodes.
 fn decode_hash_frames_pipelined(
     bytes: &[u8],
@@ -76,6 +90,7 @@ fn decode_hash_frames_pipelined(
     let completed = Mutex::new(Vec::new());
     splot_parallel::ready_task_scope(|scope| {
         let mut emitted = 0u64;
+        let mut outstanding: VecDeque<Arc<CompletionCell<()>>> = VecDeque::new();
         crate::pipeline::emit_frames_from_prepared(
             bytes,
             parsed,
@@ -83,16 +98,24 @@ fn decode_hash_frames_pipelined(
             plan,
             frame_delay,
             |output| {
+                while outstanding.len() >= MAX_OUTSTANDING_HASH_FRAMES
+                    && let Some(oldest) = outstanding.pop_front()
+                {
+                    let () = oldest.wait_with_pool_assist();
+                }
                 let ready = output.ready_frame()?;
                 let index = emitted;
                 emitted += 1;
                 let completed = &completed;
+                let hashed_done = Arc::new(CompletionCell::new());
+                outstanding.push_back(Arc::clone(&hashed_done));
                 scope.spawn(move |_| {
                     let hashed = hash_pipeline_frame(&ready, index);
                     completed
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(hashed);
+                    let _ = hashed_done.set(());
                 });
                 Ok(())
             },
