@@ -762,7 +762,7 @@ where
     let leading_prefix = leading_prefix_obus(leading_obus)?;
     film_grain_slots.update_from_obus(leading_prefix)?;
     let mut output_effect_state = OutputEffectState::new();
-    let mut recon_lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity().min(3));
+    let mut recon_lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity().min(4));
     output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
     ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
