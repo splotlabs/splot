@@ -44,13 +44,103 @@ thread_local! {
         }) };
 }
 
-type SharedQuantBuffers = Mutex<Vec<Vec<i32>>>;
+/// Capacity buckets the shared quant pool is split into.
+///
+/// A retained buffer sits in bucket `floor(log2(capacity))`, so every buffer in
+/// bucket `k` holds at least `1 << k` coefficients. Capacities never exceed
+/// [`MAX_RETAINED_COEFF_BUFFER_CAPACITY`], which bounds the bucket count.
+const QUANT_BUCKETS: usize = MAX_RETAINED_COEFF_BUFFER_CAPACITY.ilog2() as usize + 1;
 
-static TRANSFORM_COEFF_QUANT_BUFFERS: SharedQuantBuffers = Mutex::new(Vec::new());
+/// Free coefficient-quant storage, bucketed by capacity.
+///
+/// Buffers are handed between workers — the parse worker builds one and the
+/// commit worker drops it — so this pool is shared rather than thread-local.
+/// Bucketing keeps both ends off a scan of the whole pool: a request for `len`
+/// coefficients takes from the first bucket that guarantees `capacity >= len`,
+/// and a returned buffer lands in its own bucket, both in a bounded number of
+/// steps rather than one proportional to the retained count.
+struct QuantBufferPool {
+    buckets: [Vec<Vec<i32>>; QUANT_BUCKETS],
+    retained: usize,
+}
+
+impl QuantBufferPool {
+    const fn new() -> Self {
+        Self {
+            buckets: [const { Vec::new() }; QUANT_BUCKETS],
+            retained: 0,
+        }
+    }
+
+    /// The bucket a buffer of `capacity` coefficients is retained in.
+    fn bucket_of(capacity: usize) -> usize {
+        (capacity.max(1).ilog2() as usize).min(QUANT_BUCKETS - 1)
+    }
+
+    /// The first bucket whose buffers all hold at least `len` coefficients.
+    fn first_fitting_bucket(len: usize) -> usize {
+        (len.max(1).next_power_of_two().ilog2() as usize).min(QUANT_BUCKETS - 1)
+    }
+
+    /// Takes the smallest retained buffer that already holds `len`
+    /// coefficients, falling back to the largest retained one for
+    /// [`zero_buffer`] to grow — the order of preference a best-fit scan over
+    /// the whole pool produced.
+    fn take(&mut self, len: usize) -> Vec<i32> {
+        let fitting = Self::first_fitting_bucket(len);
+        let bucket = (fitting..QUANT_BUCKETS)
+            .chain((0..fitting).rev())
+            .find(|bucket| !self.buckets[*bucket].is_empty());
+        match bucket.and_then(|bucket| self.buckets[bucket].pop()) {
+            Some(buffer) => {
+                self.retained -= 1;
+                buffer
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// Retains `buffer`, keeping it in place of the smallest retained buffer
+    /// once the pool is full.
+    fn recycle(&mut self, buffer: Vec<i32>) {
+        let bucket = Self::bucket_of(buffer.capacity());
+        if self.buckets[bucket].try_reserve(1).is_err() {
+            return;
+        }
+        if self.retained < MAX_RETAINED_SHARED_QUANT_BUFFERS {
+            self.retained += 1;
+            self.buckets[bucket].push(buffer);
+            return;
+        }
+        if let Some(smallest) = (0..bucket).find(|bucket| !self.buckets[*bucket].is_empty()) {
+            self.buckets[smallest].pop();
+            self.buckets[bucket].push(buffer);
+        }
+    }
+
+    #[cfg(test)]
+    const fn len(&self) -> usize {
+        self.retained
+    }
+
+    #[cfg(test)]
+    const fn is_empty(&self) -> bool {
+        self.retained == 0
+    }
+
+    #[cfg(test)]
+    fn iter(&self) -> impl Iterator<Item = &Vec<i32>> {
+        self.buckets.iter().flatten()
+    }
+}
+
+type SharedQuantBuffers = Mutex<QuantBufferPool>;
+
+static TRANSFORM_COEFF_QUANT_BUFFERS: SharedQuantBuffers = Mutex::new(QuantBufferPool::new());
 
 fn lock_transform_coeff_quant_buffers(
     buffers: &SharedQuantBuffers,
-) -> MutexGuard<'_, Vec<Vec<i32>>> {
+) -> MutexGuard<'_, QuantBufferPool> {
     buffers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -77,23 +167,7 @@ fn take_zeroed_quant_buffer_from(
     buffers: &SharedQuantBuffers,
     len: usize,
 ) -> Result<Vec<i32>, TryReserveError> {
-    let mut buffers = lock_transform_coeff_quant_buffers(buffers);
-    let index = buffers
-        .iter()
-        .enumerate()
-        .filter(|(_, buffer)| buffer.capacity() >= len)
-        .min_by_key(|(_, buffer)| buffer.capacity())
-        .or_else(|| {
-            buffers
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, buffer)| buffer.capacity())
-        })
-        .map(|(index, _)| index);
-    let buffer = index
-        .map(|index| buffers.swap_remove(index))
-        .unwrap_or_default();
-    drop(buffers);
+    let buffer = lock_transform_coeff_quant_buffers(buffers).take(len);
     zero_buffer(buffer, len)
 }
 
@@ -118,17 +192,7 @@ fn recycle_coeff_quant_into(buffers: &SharedQuantBuffers, buffer: Vec<i32>) {
     }
     let mut buffer = buffer;
     buffer.clear();
-    let mut buffers = lock_transform_coeff_quant_buffers(buffers);
-    if buffers.len() < MAX_RETAINED_SHARED_QUANT_BUFFERS && buffers.try_reserve(1).is_ok() {
-        buffers.push(buffer);
-    } else if let Some((index, smallest)) = buffers
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, retained)| retained.capacity())
-        && buffer.capacity() > smallest.capacity()
-    {
-        buffers[index] = buffer;
-    }
+    lock_transform_coeff_quant_buffers(buffers).recycle(buffer);
 }
 
 pub(crate) fn recycle_coeff_quant(buffer: Vec<i32>) {
