@@ -1110,3 +1110,71 @@ fn middle_row_walk_matches_the_per_sample_reference() {
         }
     }
 }
+
+/// The vectorized `u16` one-sided IDIF line writer must reproduce the
+/// per-sample § 7.13.2.8 reference exactly. Zone-1 (step 1) writes along the
+/// row and zone-3 (step 3) writes down the column, so this covers both the
+/// contiguous and the strided store form, every chunk width, the `shift == 0`
+/// copy, and the `maxBase` clamp tail.
+#[test]
+fn one_sided_idif_u16_lines_match_the_per_sample_reference() {
+    for p_angle in [3u16, 45, 67, 81, 87, 183, 189, 203, 225, 267] {
+        let angle = IntraDirectionalAngle::try_from_p_angle(p_angle).unwrap();
+        let branch = angle.branch();
+        let derivative = one_sided_idif_derivative(angle);
+        for log2_width in 2..=6u8 {
+            for log2_height in 2..=6u8 {
+                let size = rect_size(log2_width, log2_height);
+                for mrl_index in 0..3usize {
+                    let edge_len = required_one_sided_idif_edge_len(size, mrl_index).unwrap();
+                    let edge: Vec<u16> = (0..edge_len)
+                        .map(|index| ((index * 37 + 11) % 1024) as u16)
+                        .collect();
+                    let edges = match angle.required_edge() {
+                        IntraDirectionalAngleEdge::Above => {
+                            IntraDirectionalAngleIdifEdges::above(&edge)
+                        }
+                        IntraDirectionalAngleEdge::Left => {
+                            IntraDirectionalAngleIdifEdges::left(&edge)
+                        }
+                    };
+                    let stride = size.width() + 3;
+                    let mut output = vec![0u16; stride * size.height()];
+                    predict_intra_directional_angle_rect_one_sided_idif_mrl_into(
+                        BitDepth::Ten,
+                        size,
+                        angle,
+                        edges,
+                        mrl_index,
+                        &mut output,
+                        stride,
+                    )
+                    .unwrap();
+
+                    let max_base = one_sided_max_base(size, mrl_index).unwrap();
+                    for row in 0..size.height() {
+                        for column in 0..size.width() {
+                            let reference = one_sided_idif_reference(
+                                branch, row, column, derivative, mrl_index,
+                            )
+                            .unwrap();
+                            let expected = if reference.base <= max_base {
+                                idif_tap(&edge, reference.base, reference.shift, BitDepth::Ten)
+                                    .unwrap()
+                            } else {
+                                logical_idif_edge_sample(&edge, max_base).unwrap()
+                            };
+                            assert_eq!(
+                                output[row * stride + column],
+                                expected,
+                                "p_angle {p_angle} size {}x{} mrl {mrl_index} at ({row}, {column})",
+                                size.width(),
+                                size.height()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

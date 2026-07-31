@@ -65,8 +65,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     prepared: Mutex<Vec<Option<PreparedBatch<T>>>>,
     unit_count: usize,
     units_per_row: usize,
-    batch_size: usize,
-    batch_count: usize,
+    batches: Vec<core::ops::Range<usize>>,
     owned_bands: bool,
     filter_count: usize,
     commit: Mutex<Option<ScheduledCommit<T>>>,
@@ -91,7 +90,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
 impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Number of independently admitted reconstruction units.
     pub(in crate::prediction::inter::block) const fn len(&self) -> usize {
-        self.batch_count
+        self.batches.len()
     }
 
     /// Number of final-filter stripes this frame owes.
@@ -199,11 +198,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             }
             resolve.next = resolve.next.saturating_add(1);
         }
-        let ready_batches = if resolve.next == self.unit_count {
-            self.batch_count
-        } else {
-            resolve.next / self.batch_size
-        };
+        let ready_batches = self
+            .batches
+            .partition_point(|batch| batch.end <= resolve.next);
         let ready = (resolve.submitted_batches..ready_batches).collect::<Vec<_>>();
         resolve.submitted_batches = ready_batches;
         Ok(ready)
@@ -214,13 +211,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     }
 
     fn batch_range(&self, index: usize) -> core::ops::Range<usize> {
-        let start = index.saturating_mul(self.batch_size).min(self.unit_count);
-        let end = if index.saturating_add(1) == self.batch_count {
-            self.unit_count
-        } else {
-            start.saturating_add(self.batch_size).min(self.unit_count)
-        };
-        start..end
+        self.batches.get(index).cloned().unwrap_or(0..0)
     }
 
     /// Conditions that replace the parsed unit's former cross-frame wait.
@@ -784,6 +775,61 @@ fn supports_owned_bands(
     Ok(())
 }
 
+/// Reconstruction units one legacy precompute batch prepares.
+const LEGACY_BATCH_UNITS: usize = 4;
+
+/// Splits the units into precompute batches that never cross a superblock row.
+///
+/// A batch's admission waits for the furthest reference row any of its units
+/// reads, and a unit in superblock row `r` reads about `sb_h4 * 4 * (r + 1)`
+/// reference rows. A batch that straddles the boundary therefore holds the
+/// whole superblock row it completes behind the *next* row's reference bound,
+/// which delays the § 7.17 frontier, the filter stripes that frontier releases,
+/// and the dependent frame those stripes admit. Aligning the split keeps the
+/// batch size and the commit order unchanged; only the grouping moves.
+fn superblock_row_batches(
+    unit_count: usize,
+    units_per_row: usize,
+    batch_units: usize,
+) -> Vec<core::ops::Range<usize>> {
+    let batch_units = batch_units.max(1);
+    let units_per_row = units_per_row.max(1);
+    let mut batches = Vec::new();
+    let mut start = 0;
+    while start < unit_count {
+        let row_end = (start / units_per_row)
+            .saturating_add(1)
+            .saturating_mul(units_per_row)
+            .min(unit_count);
+        let end = start.saturating_add(batch_units).min(row_end);
+        batches.push(start..end);
+        start = end;
+    }
+    batches
+}
+
+/// Splits the units into one batch per owned canonical row band.
+///
+/// The banded path's batch index is its superblock row, and the last batch
+/// absorbs any trailing rows the temporal plan does not name.
+fn band_batches(
+    unit_count: usize,
+    units_per_row: usize,
+    band_count: usize,
+) -> Vec<core::ops::Range<usize>> {
+    (0..band_count)
+        .map(|index| {
+            let start = index.saturating_mul(units_per_row).min(unit_count);
+            let end = if index.saturating_add(1) == band_count {
+                unit_count
+            } else {
+                start.saturating_add(units_per_row).min(unit_count)
+            };
+            start..end
+        })
+        .collect()
+}
+
 /// Resolves a parsed tile and turns each unit into owned admission state.
 #[allow(clippy::large_types_passed_by_value, clippy::too_many_arguments)]
 pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample>(
@@ -899,12 +945,12 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         .flatten()
         .any(|(row, _)| row.contains_intrabc());
     let unit_count = unresolved.len();
-    let batch_size = if owned_bands { units_per_row.max(1) } else { 4 };
-    let batch_count = if owned_bands {
-        temporal_plan.len()
+    let batches = if owned_bands {
+        band_batches(unit_count, units_per_row.max(1), temporal_plan.len())
     } else {
-        unit_count.div_ceil(batch_size)
+        superblock_row_batches(unit_count, units_per_row.max(1), LEGACY_BATCH_UNITS)
     };
+    let batch_count = batches.len();
     let mut prepared = Vec::new();
     prepared.try_reserve_exact(batch_count).map_err(|_| {
         inter_cap!(
@@ -940,8 +986,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         prepared: Mutex::new(prepared),
         unit_count,
         units_per_row,
-        batch_size,
-        batch_count,
+        batches,
         owned_bands,
         filter_count,
         commit: Mutex::new(Some(ScheduledCommit {
@@ -1051,5 +1096,51 @@ mod tests {
     fn intrabc_deblock_frontier_waits_for_terminal_commit() {
         assert_eq!(frontier(3, 1, 16, 64, false, true), None);
         assert_eq!(frontier(4, 1, 16, 64, true, true), Some(64));
+    }
+
+    #[test]
+    fn precompute_batches_never_cross_a_superblock_row() {
+        let batches = super::superblock_row_batches(35, 15, 4);
+        assert_eq!(
+            batches,
+            vec![
+                0..4,
+                4..8,
+                8..12,
+                12..15,
+                15..19,
+                19..23,
+                23..27,
+                27..30,
+                30..34,
+                34..35,
+            ]
+        );
+        for batch in &batches {
+            assert_eq!(batch.start / 15, (batch.end - 1) / 15);
+        }
+    }
+
+    #[test]
+    fn precompute_batches_cover_every_unit_once_and_in_order() {
+        for units_per_row in 1..8 {
+            for unit_count in 0..24 {
+                let batches = super::superblock_row_batches(unit_count, units_per_row, 4);
+                let mut next = 0;
+                for batch in &batches {
+                    assert_eq!(batch.start, next);
+                    assert!(batch.end > batch.start);
+                    assert!(batch.len() <= 4);
+                    next = batch.end;
+                }
+                assert_eq!(next, unit_count);
+            }
+        }
+    }
+
+    #[test]
+    fn band_batches_keep_one_batch_per_superblock_row() {
+        assert_eq!(super::band_batches(9, 3, 3), vec![0..3, 3..6, 6..9]);
+        assert_eq!(super::band_batches(11, 3, 3), vec![0..3, 3..6, 6..11]);
     }
 }
