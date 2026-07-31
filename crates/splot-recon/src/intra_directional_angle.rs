@@ -1599,8 +1599,9 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
                     T::u16_slice(edge),
                     T::u16_slice_mut(&mut output[row_start..row_start + size.width()]),
                 ) {
-                    write_one_sided_idif_above_row_u16(
-                        edge, reference, max_base, bit_depth, output_row,
+                    let count = output_row.len();
+                    write_one_sided_idif_line_u16::<true>(
+                        edge, reference, max_base, bit_depth, output_row, 1, count,
                     )?;
                     continue;
                 }
@@ -1620,6 +1621,20 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
             for (column, slot) in columns.iter_mut().take(size.width()).enumerate() {
                 *slot = one_sided_idif_reference(branch, 0, column, derivative, mrl_index)?;
             }
+            if let (Some(edge), Some(output)) = (T::u16_slice(edge), T::u16_slice_mut(output)) {
+                for (column, reference) in columns.iter().take(size.width()).enumerate() {
+                    write_one_sided_idif_line_u16::<false>(
+                        edge,
+                        *reference,
+                        max_base,
+                        bit_depth,
+                        &mut output[column..],
+                        stride_samples,
+                        size.height(),
+                    )?;
+                }
+                return Ok(());
+            }
             for row in 0..size.height() {
                 let row_start = row * stride_samples;
                 let row_offset = row as i32;
@@ -1638,25 +1653,37 @@ fn write_one_sided_idif_prediction<T: ReconSample>(
     Ok(())
 }
 
-fn write_one_sided_idif_above_row_u16(
+/// Writes one § 7.13.2.8 one-sided IDIF line of `count` samples, `step` samples
+/// apart in `output`.
+///
+/// Both one-sided zones project a line whose `shift` is loop-invariant and whose
+/// `base` advances by exactly one per sample: zone-1 (step 1) fixes `idx` by the
+/// row and walks `base = (idx >> 6) + j` along the row, and zone-3 (step 3)
+/// fixes `idx` by the column and walks `base = (idx >> 6) + i` down the column.
+/// Either way the line is a contiguous 4-tap `Dr_Interp_Filter[shift]` window
+/// over the prepared edge, so the taps broadcast and the edge loads shift by one
+/// lane. `CONTIGUOUS` selects the `step == 1` row form.
+fn write_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
     edge: &[u16],
     reference: OneSidedReference,
     max_base: i32,
     bit_depth: BitDepth,
     output: &mut [u16],
+    step: usize,
+    count: usize,
 ) -> Result<()> {
     let active = usize::try_from(max_base - reference.base + 1)
         .unwrap_or(0)
-        .min(output.len());
+        .min(count);
     let last = logical_idif_edge_sample(edge, max_base)?.to_u16();
     if active == 0 {
-        output.fill(last);
+        fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, 0, count, last);
         return Ok(());
     }
     if reference.shift == 0 {
         let start = logical_idif_edge_offset(reference.base, edge.len())?;
-        output[..active].copy_from_slice(&edge[start..start + active]); // splot-copy-ok: publish contiguous zero-phase IDIF row
-        output[active..].fill(last);
+        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, 0, &edge[start..start + active]);
+        fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, active, count, last);
         return Ok(());
     }
     let taps = DR_INTERP_FILTER.get(usize::from(reference.shift)).ok_or(
@@ -1671,27 +1698,66 @@ fn write_one_sided_idif_above_row_u16(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "middle directional angle IDIF tap index",
         })?;
-    let mut column = 0;
-    while active - column >= 8 {
-        let values = idif_above_row_chunk::<8>(edge, first + column, *taps, bit_depth).to_array();
-        output[column..column + 8].copy_from_slice(&values); // splot-copy-ok: publish SIMD IDIF row chunk
-        column += 8;
+    let mut at = 0;
+    while active - at >= 8 {
+        let values = idif_above_row_chunk::<8>(edge, first + at, *taps, bit_depth).to_array();
+        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, at, &values);
+        at += 8;
     }
-    while active - column >= 4 {
-        let values = idif_above_row_chunk::<4>(edge, first + column, *taps, bit_depth).to_array();
-        output[column..column + 4].copy_from_slice(&values); // splot-copy-ok: publish SIMD IDIF row chunk
-        column += 4;
+    while active - at >= 4 {
+        let values = idif_above_row_chunk::<4>(edge, first + at, *taps, bit_depth).to_array();
+        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, at, &values);
+        at += 4;
     }
-    for (offset, sample) in output[column..active].iter_mut().enumerate() {
-        *sample = idif_tap(
-            edge,
-            reference.base + (column + offset) as i32,
-            reference.shift,
-            bit_depth,
-        )?;
+    while at < active {
+        let value = idif_tap(edge, reference.base + at as i32, reference.shift, bit_depth)?;
+        store_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, at, &[value]);
+        at += 1;
     }
-    output[active..].fill(last);
+    fill_one_sided_idif_line_u16::<CONTIGUOUS>(output, step, active, count, last);
     Ok(())
+}
+
+/// Publishes `values` to line positions `at..at + values.len()`.
+#[inline]
+fn store_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
+    output: &mut [u16],
+    step: usize,
+    at: usize,
+    values: &[u16],
+) {
+    if CONTIGUOUS {
+        output[at..at + values.len()].copy_from_slice(values); // splot-copy-ok: publish contiguous IDIF row chunk
+        return;
+    }
+    for (slot, &value) in output[at * step..].iter_mut().step_by(step).zip(values) {
+        *slot = value;
+    }
+}
+
+/// Fills line positions `at..count` with the clamped `maxBase` edge sample.
+#[inline]
+fn fill_one_sided_idif_line_u16<const CONTIGUOUS: bool>(
+    output: &mut [u16],
+    step: usize,
+    at: usize,
+    count: usize,
+    value: u16,
+) {
+    if CONTIGUOUS {
+        output[at..count].fill(value);
+        return;
+    }
+    if at >= count {
+        return;
+    }
+    for slot in output[at * step..]
+        .iter_mut()
+        .step_by(step)
+        .take(count - at)
+    {
+        *slot = value;
+    }
 }
 
 #[inline]
