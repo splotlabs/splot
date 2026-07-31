@@ -203,17 +203,49 @@ fn reference_store_capped(bytes: u64) -> DecodeOptions {
     )
 }
 
-/// The scheduled split walk keeps reference frames live that the serial walk
-/// has already released: it records a frame's reference update from its parse
-/// products and reconstructs afterwards, so a frame the reference slots have
-/// dropped can still be a selected reference of a reconstruction the driver has
-/// not run. The resolved frame delay bounds how many such frames coexist and
-/// the worker count does not, so peak live storage stays inside the serial peak
-/// plus that many decoded frames at every width that takes the split.
+/// The driver charges one decoded frame per live entry of its frame vector and
+/// checks `max_reference_store_bytes` before it reserves the next frame's
+/// storage, so the peak is the live set plus the frame being admitted, and
+/// `reclaim_unowned_frames` retires an entry only when the reference slots, the
+/// output scheduler, the emission queue and the in-flight ring have all released
+/// it, it has settled, and its storage has a single handle.
+///
+/// Serial decode leaves only the first two terms: `FinishSpawner::Inline` puts
+/// nothing on the ring, every frame is settled when it is pushed so the emission
+/// queue drains at each scheduling point, and a one-worker pool hashes inline
+/// rather than sharing storage with a task. That peak is `SERIAL_PEAK`, nine
+/// decoded frames on this stream.
+///
+/// The split path adds exactly two terms.
+///
+/// * The in-flight ring. `InflightRing::reserve` harvests only while the ring is
+///   at capacity, and its capacity is the resolved frame delay, so the ring
+///   holds that many of the most recent frames at every reclaim. This is
+///   SCALE-022's finding: the scheduled walk records a frame's reference update
+///   from its parse products, so a frame the reference slots have dropped can
+///   still be a selected reference of a reconstruction the driver has not run.
+///   The two other depth knobs add nothing on top: the entropy-context limit
+///   (`ring.capacity().min(3)`) and the reconstruction lane depth
+///   (`ring.capacity().min(4)`) are both at most the frame delay, and every
+///   frame they hold reserved its slot through `reserve_pending_slot`, which
+///   pushed it on the ring. Unsettled frames are ring frames too, since a
+///   harvest waits for the slot to settle.
+///
+/// * The output handoff. A pipelined hash report shares an emitted frame's
+///   storage into a pool task, which keeps the driver's own entry alive through
+///   the single-handle rule. That term is capped at
+///   `MAX_OUTSTANDING_HASH_FRAMES` in `output/hash.rs`; before that cap it was
+///   set by how far the pool trailed the driver, which is why a faster parse
+///   (SCALE-036) pushed this bound over by frames the pipeline never retained.
+///
+/// Peak live storage therefore stays inside the serial peak plus one decoded
+/// frame per resolved frame delay plus the capped handoff, proportional to
+/// pipeline depth and not to worker count, at every width that takes the split.
 #[test]
 fn pipelined_hash_decode_bounds_reference_storage_by_the_resolved_frame_delay() {
     const SERIAL_PEAK: u64 = 110_592;
     const DECODED_FRAME: u64 = 12_288;
+    const OUTSTANDING_HASH_FRAMES: u64 = 4;
 
     let serial = serial()
         .decode_hash_report_bytes(ORDER_HINT_WRAP, reference_store_capped(SERIAL_PEAK))
@@ -222,7 +254,8 @@ fn pipelined_hash_decode_bounds_reference_storage_by_the_resolved_frame_delay() 
 
     for (threads, requested) in [(2usize, 2usize), (2, 3), (3, 2), (3, 3), (8, 2), (8, 3)] {
         let decoder = context(threads, FrameDelay::from(requested));
-        let ceiling = SERIAL_PEAK + DECODED_FRAME * decoder.frame_delay().get() as u64;
+        let depth = decoder.frame_delay().get() as u64 + OUTSTANDING_HASH_FRAMES;
+        let ceiling = SERIAL_PEAK + DECODED_FRAME * depth;
 
         let report = decoder
             .decode_hash_report_bytes(ORDER_HINT_WRAP, reference_store_capped(ceiling))
