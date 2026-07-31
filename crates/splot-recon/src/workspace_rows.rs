@@ -33,10 +33,24 @@ use super::owned_rect::OwnedFrameRectRows;
 use super::{CurrentFramePlane, CurrentFrameWorkspace, block_rect};
 use crate::reconstruct::add_block_residual_into_rows;
 use crate::{
-    BitDepth, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, ReconError, ReconSample, Result,
+    BitDepth, DecodedFrameInfo, IntraRectBlockSize, PlaneId, PlaneRect, PlaneRefRows, ReconError,
+    ReconSample, Result,
 };
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
+    /// Creates the target of [`Self::copy_rows_into`] over recycled plane
+    /// storage, without initializing its samples.
+    ///
+    /// The pooled buffers keep whatever the previous frame left in them, so
+    /// this is only for a stage that seals every row before it reads it.
+    ///
+    /// # Errors
+    /// Returns [`ReconError`] if the sample type cannot represent the frame bit
+    /// depth, geometry arithmetic overflows, or plane allocation fails.
+    pub fn new_recycled(info: DecodedFrameInfo) -> Result<Self> {
+        Self::with_fill(info, None)
+    }
+
     /// Copies the completed luma rows and their matching chroma rows into
     /// another workspace of the same geometry.
     ///

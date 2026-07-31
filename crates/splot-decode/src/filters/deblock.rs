@@ -938,6 +938,19 @@ impl<'a> FrameDeblock<'a> {
         frontier.saturating_sub(DEBLOCK_PASS_1_REACH << subsampling_y)
     }
 
+    /// The luma rows one [`Self::advance`] to `mi_row_end` can touch.
+    ///
+    /// The vertical pass runs [`PASS_0_LEAD_MI_ROWS`] mode-info rows ahead of
+    /// the horizontal one and every edge it filters stays inside its own
+    /// mode-info row, so that lead is the whole advance's reach. A caller that
+    /// filters a copy of the reconstructed rows must have sealed this many.
+    pub(crate) fn data_reach_luma_rows(&self, mi_row_end: usize) -> usize {
+        mi_row_end
+            .saturating_add(PASS_0_LEAD_MI_ROWS)
+            .min(self.mi_rows)
+            .saturating_mul(MI_SIZE)
+    }
+
     /// The frame's luma row count, which is the frontier a completed deblock
     /// reaches.
     pub(crate) const fn luma_rows(&self) -> usize {

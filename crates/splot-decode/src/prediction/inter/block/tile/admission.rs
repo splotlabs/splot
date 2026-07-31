@@ -438,7 +438,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
     /// Frames that reconstruct into the shared workspace keep their raw pixels
     /// there, while the § 7.17 frontier and the filter windows it releases read
     /// the sealed copy, so deblock never writes rows a later current-frame
-    /// prediction can still read.
+    /// prediction can still read. The copy needs no fill: this seals whole
+    /// rows upward from row zero, and the frontier reads only below them.
     fn seal_committed_rows(&self, commit: &ScheduledCommit<T>, rows: usize) -> Result<()> {
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
         let ScheduledFrontier {
@@ -480,14 +481,15 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
         let ScheduledFrontier {
             sealed,
+            sealed_rows,
             terminal_workspace,
             bands,
             deblock,
             contains_intrabc,
             filter,
             next_filter_stripe,
-            ..
         } = &mut *frontier;
+        let sealed_rows = sealed.as_ref().map(|_| *sealed_rows);
         let filtered = sealed.as_mut().or(terminal_workspace.as_mut());
         let mut filters = Vec::new();
         if let Some(deblock) = deblock.as_mut()
@@ -508,6 +510,15 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     SPEC_MODE_INFO
                 )
             })?;
+            debug_assert!(
+                sealed_rows.is_none_or(|rows| {
+                    deblock
+                        .data_reach_luma_rows(safe_mi_end.get())
+                        .min(self.info.coded_luma_size().height())
+                        <= rows
+                }),
+                "the frontier read a row the spine had not sealed"
+            );
             match (bands.as_mut(), filtered) {
                 (Some(bands), _) => {
                     deblock.advance_bands(bands, safe_mi_end.get(), self.params.bit_depth)
@@ -1149,7 +1160,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })),
         frontier: Mutex::new(ScheduledFrontier {
             sealed: seals_filter_copy
-                .then(|| CurrentFrameWorkspace::new(info, T::default()))
+                .then(|| CurrentFrameWorkspace::new_recycled(info))
                 .transpose()?,
             sealed_rows: 0,
             terminal_workspace: None,
