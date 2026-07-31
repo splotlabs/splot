@@ -310,6 +310,14 @@ pub(crate) struct FrameDeblock<'a> {
     quant_deltas: DeblockQuantDeltas,
     next_pass_0_mi_row: usize,
     next_pass_1_mi_row: usize,
+    /// Whether one advance may filter its planes beside each other.
+    ///
+    /// The scheduled frontier chain advances this plan while holding the
+    /// frame's filter storage, and a nested parallel section can execute
+    /// another queued job on the same worker — including the commit that wants
+    /// that storage. The chain therefore filters its three planes in sequence
+    /// and takes its parallelism from the frames and stripes beside it.
+    plane_parallel: bool,
 }
 
 /// One plane band's share of a deblock section: the rows it owns and the passes
@@ -448,6 +456,7 @@ impl<'a> FrameDeblock<'a> {
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
+            plane_parallel: true,
         }))
     }
 
@@ -490,6 +499,7 @@ impl<'a> FrameDeblock<'a> {
             quant_deltas,
             next_pass_0_mi_row: 0,
             next_pass_1_mi_row: 0,
+            plane_parallel: false,
         }))
     }
 
@@ -577,7 +587,7 @@ impl<'a> FrameDeblock<'a> {
             }
         }
         let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && splot_parallel::on_multiworker_pool() {
+        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_multiworker_pool() {
             jobs.into_par_iter().try_for_each(run)?;
         } else {
             jobs.into_iter().try_for_each(run)?;
@@ -800,7 +810,7 @@ impl<'a> FrameDeblock<'a> {
             });
         }
         let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && splot_parallel::on_multiworker_pool() {
+        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_multiworker_pool() {
             jobs.into_par_iter().try_for_each(run)?;
         } else {
             jobs.into_iter().try_for_each(run)?;
@@ -862,7 +872,7 @@ impl<'a> FrameDeblock<'a> {
             });
         }
         let run = |job: PlaneJob<'_, T>| self.run_plane_job(job);
-        if jobs.len() > 1 && splot_parallel::on_multiworker_pool() {
+        if jobs.len() > 1 && self.plane_parallel && splot_parallel::on_multiworker_pool() {
             jobs.into_par_iter().try_for_each(run)?;
         } else {
             jobs.into_iter().try_for_each(run)?;

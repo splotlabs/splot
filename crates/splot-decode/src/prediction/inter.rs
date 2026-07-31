@@ -1784,8 +1784,8 @@ pub(crate) mod reference;
 mod single_ref;
 
 pub(crate) use block::{
-    InterBlockFacts, InterDecodeScratch, InterFilterInputs, InterFrameParse, decode_inter_blocks,
-    parse_inter_frame_blocks,
+    InterBlockFacts, InterDecodeScratch, InterFilterInputs, InterFrameParse,
+    ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{MotionFieldLayout, TemporalMotionField, TemporalMvScratch};

@@ -354,10 +354,21 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
         self.reconstruction.precompute(index)
     }
 
-    /// Commits one precomputed unit and returns the walked frame after the
-    /// final ordered commit.
-    pub(crate) fn commit(&self, index: usize) -> Result<block::ScheduledFrameProgress<T>> {
+    /// Commits one precomputed unit and returns the frontier links its
+    /// canonical rows released.
+    pub(crate) fn commit(&self, index: usize) -> Result<block::ScheduledCommitProgress> {
         self.reconstruction.commit(index)
+    }
+
+    /// Number of ordered links in this frame's § 7.17 frontier chain.
+    pub(crate) const fn frontier_len(&self) -> usize {
+        self.reconstruction.frontier_len()
+    }
+
+    /// Advances the § 7.17 frontier over one sealed superblock row and returns
+    /// the walked frame after the final link.
+    pub(crate) fn frontier(&self, row: usize) -> Result<block::ScheduledFrameProgress<T>> {
+        self.reconstruction.frontier(row)
     }
 }
 

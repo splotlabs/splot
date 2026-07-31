@@ -16,6 +16,7 @@ mod admission;
 mod mvres;
 mod ready_rows;
 
+pub(crate) use admission::ScheduledCommitProgress;
 pub(super) use admission::{ScheduledTileRecon, prepare_scheduled_tile};
 use ready_rows::{
     OrderedDone, ParserStep, ReadyRowPipelineError, run_ready_row_pipeline_serial,
