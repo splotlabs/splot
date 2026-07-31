@@ -632,6 +632,67 @@ fn edge_positions_match_independent_reference() {
     }
 }
 
+/// The § 7.13.3.16 horizontal-pass value range is what makes the 16-bit
+/// `intermediate` storage exact, so the kernel has to stay reference-exact at
+/// both ends of it. Aligning 10-bit extremes with the sign pattern of the
+/// widest § 7.13.3.18 filter row (`EIGHTTAP_SHARP` phase 8, positive taps at
+/// `t` in 1/3/4/6) makes some window reach `Round2(184 * 1023, 3) == 23529`
+/// and another reach `Round2(-56 * 1023, 3) == -7161`; gating whole rows the
+/// same way carries those extremes into the vertical accumulator.
+#[test]
+fn extreme_ten_bit_contrast_matches_independent_reference() {
+    let ref_w = 24usize;
+    let ref_h = 24usize;
+    let widest = SUBPEL_FILTERS[EIGHTTAP_SHARP as usize][8];
+    let extreme = |index: usize| u16::from(widest[index % NUM_TAPS] > 0) * 1023;
+
+    for (label, samples) in [
+        (
+            "columns",
+            (0..(ref_w * ref_h))
+                .map(|index| extreme(index % ref_w))
+                .collect::<Vec<u16>>(),
+        ),
+        (
+            "rows and columns",
+            (0..(ref_w * ref_h))
+                .map(|index| extreme(index % ref_w).min(extreme(index / ref_w)))
+                .collect::<Vec<u16>>(),
+        ),
+    ] {
+        let samples = build_ref(samples, ref_w, ref_h);
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+        for phase_x in 0..16i32 {
+            for phase_y in 0..16i32 {
+                let params = SubpelPredictParams {
+                    start_x: (4 << SCALE_SUBPEL_BITS) + (phase_x << 6),
+                    start_y: (4 << SCALE_SUBPEL_BITS) + (phase_y << 6),
+                    bit_depth: BitDepth::Ten,
+                    ..full_pel_params(
+                        InterpolationFilter::EightTapSharp,
+                        16,
+                        16,
+                        4,
+                        4,
+                        ref_w as i32,
+                        ref_h as i32,
+                    )
+                };
+                assert_eq!(
+                    subpel_predict_block(&view, &params).unwrap(),
+                    reference_subpel(&samples, ref_w, ref_h, &params),
+                    "{label} px={phase_x} py={phase_y}"
+                );
+                assert_eq!(
+                    subpel_predict_block_compound_intermediate(&view, &params).unwrap(),
+                    reference_subpel_compound(&samples, ref_w, ref_h, &params),
+                    "{label} compound px={phase_x} py={phase_y}"
+                );
+            }
+        }
+    }
+}
+
 /// Scaled steps (`stepX`/`stepY != 1 << SCALE_SUBPEL_BITS`) make the vertical
 /// pass skip intermediate rows between output rows, so the restricted horizontal
 /// pass must still match the full-range reference for every phase — including the
@@ -1011,7 +1072,7 @@ fn compound_intermediate_into_matches_owned_copy_and_filtered() {
             .unwrap();
 
         for (scratch_len, label) in [(4096usize, "caller scratch"), (1, "undersized scratch")] {
-            let mut scratch = vec![0i32; scratch_len];
+            let mut scratch = vec![0i16; scratch_len];
             let mut scratched = vec![sentinel; stride * params.h + 2];
             subpel_predict_block_compound_intermediate_into(
                 &view,
@@ -1532,7 +1593,7 @@ fn fused_two_axis_compound_matches_materialized_predictors() {
                 blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
             let stride = width + 3;
             let mut output = vec![u16::MAX; stride * params0.h];
-            let mut scratch = [0i32; 2 * (8 + NUM_TAPS - 1) * 8];
+            let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
             assert!(
                 subpel_predict_block_compound_average_2d_strided_into(
                     &view0,
@@ -1608,7 +1669,7 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
                 blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
             let stride = width + 3;
             let mut output = vec![u16::MAX; stride * params0.h];
-            let mut scratch = [0i32; 2 * (8 + NUM_TAPS - 1) * 8];
+            let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
             assert!(
                 subpel_predict_block_compound_average_2d_strided_into(
                     &view0,

@@ -1290,7 +1290,7 @@ fn predict_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
     pred0_scratch: Option<&mut [i32]>,
-    intermediate_scratch: Option<&mut [i32]>,
+    intermediate_scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {
@@ -1330,7 +1330,7 @@ fn predict_compound_average_pred0_into<T: ReconSample, O: CompoundAverageOutput>
     params: &[SubpelPredictParams; 2],
     cwp_weight: i16,
     pred0: &mut [i32],
-    mut intermediate_scratch: Option<&mut [i32]>,
+    mut intermediate_scratch: Option<&mut [i16]>,
     output: &mut [O],
     output_stride: usize,
 ) -> Result<()> {

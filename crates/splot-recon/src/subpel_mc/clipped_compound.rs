@@ -8,7 +8,7 @@ pub(super) fn two_axis<T: ReconSample>(
     params: [&SubpelPredictParams; 2],
     sources: [&[u16]; 2],
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) {
@@ -41,7 +41,7 @@ fn two_axis_lanes<const LANES: usize, T: ReconSample>(
     params: [&SubpelPredictParams; 2],
     sources: [&[u16]; 2],
     cwp_weight: i16,
-    scratch: &mut [i32],
+    scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
 ) {
@@ -73,9 +73,12 @@ fn two_axis_lanes<const LANES: usize, T: ReconSample>(
             {
                 let start = row_start + first_x as usize;
                 for (offset, &tap) in taps.iter().enumerate() {
-                    sum += Simd::<u16, LANES>::from_slice(&sources[reference][start + offset..])
-                        .cast::<i32>()
-                        * Simd::splat(tap);
+                    sum = tap_mac(
+                        sum,
+                        Simd::<u16, LANES>::from_slice(&sources[reference][start + offset..])
+                            .cast(),
+                        tap,
+                    );
                 }
             } else {
                 let mut window = [0u16; 8 + NUM_TAPS - 1];
@@ -88,11 +91,14 @@ fn two_axis_lanes<const LANES: usize, T: ReconSample>(
                     *sample = sources[reference][row_start + source_column];
                 }
                 for (offset, &tap) in taps.iter().enumerate() {
-                    sum += Simd::<u16, LANES>::from_slice(&window[offset..]).cast::<i32>()
-                        * Simd::splat(tap);
+                    sum = tap_mac(
+                        sum,
+                        Simd::<u16, LANES>::from_slice(&window[offset..]).cast(),
+                        tap,
+                    );
                 }
             }
-            let lanes = round2_simd(sum, INTER_ROUND0).to_array();
+            let lanes = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
             intermediate[reference][row * LANES..(row + 1) * LANES].copy_from_slice(&lanes); // splot-copy-ok: store clipped horizontal SIMD lanes in caller scratch
         }
     }
@@ -181,16 +187,19 @@ fn predictors<const LANES: usize, T: ReconSample>(
         let (taps, tap_start) = filters[reference];
         let mut sum = Simd::splat(0);
         for (tap_offset, &tap) in taps.iter().enumerate() {
-            sum += gather::<LANES, T>(
-                references[reference],
-                params[reference],
-                sources[reference],
-                rows[reference],
-                col,
-                tap_start + tap_offset,
-            )
-            .cast::<i32>()
-                * Simd::splat(tap);
+            sum = tap_mac(
+                sum,
+                gather::<LANES, T>(
+                    references[reference],
+                    params[reference],
+                    sources[reference],
+                    rows[reference],
+                    col,
+                    tap_start + tap_offset,
+                )
+                .cast(),
+                tap,
+            );
         }
         round2_simd(sum, INTER_ROUND0)
     })

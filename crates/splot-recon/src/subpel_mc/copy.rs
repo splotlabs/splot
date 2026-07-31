@@ -352,9 +352,12 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
                 for c in (0..vector_width8).step_by(8) {
                     let mut sum = Simd::<i32, 8>::splat(0);
                     for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum += Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
-                            .cast::<i32>()
-                            * Simd::splat(tap);
+                        sum = tap_mac(
+                            sum,
+                            Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
+                                .cast(),
+                            tap,
+                        );
                     }
                     let values = round2_simd(
                         round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
@@ -366,9 +369,12 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
                 for c in (vector_width8..vector_width4).step_by(4) {
                     let mut sum = Simd::<i32, 4>::splat(0);
                     for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum += Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
-                            .cast::<i32>()
-                            * Simd::splat(tap);
+                        sum = tap_mac(
+                            sum,
+                            Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
+                                .cast(),
+                            tap,
+                        );
                     }
                     let values = round2_simd(
                         round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
@@ -454,8 +460,11 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                         as usize;
                     let ref_row = ref_row.min(reference.height - 1);
                     let start = ref_row * reference.stride + x + c;
-                    sum += Simd::<u16, 8>::from_slice(&source[start..]).cast::<i32>()
-                        * Simd::splat(tap);
+                    sum = tap_mac(
+                        sum,
+                        Simd::<u16, 8>::from_slice(&source[start..]).cast(),
+                        tap,
+                    );
                 }
                 let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
                 finish.eight(values, &mut output[r * output_stride + c..][..8]);
@@ -470,8 +479,11 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
                         as usize;
                     let ref_row = ref_row.min(reference.height - 1);
                     let start = ref_row * reference.stride + x + c;
-                    sum += Simd::<u16, 4>::from_slice(&source[start..]).cast::<i32>()
-                        * Simd::splat(tap);
+                    sum = tap_mac(
+                        sum,
+                        Simd::<u16, 4>::from_slice(&source[start..]).cast(),
+                        tap,
+                    );
                 }
                 let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
                 finish.four(values, &mut output[r * output_stride + c..][..4]);
