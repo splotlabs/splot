@@ -1575,14 +1575,13 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
     }
 
     if let Some(samples) = T::u16_slice(source.samples) {
-        let mut filtered = vec![T::default(); sample_count];
-        let Some(filtered_u16) = T::u16_slice_mut(&mut filtered) else {
+        let Some(destination) = T::u16_slice_mut(output) else {
             return Err(ReconError::PcWienerInvalidBounds {
                 field: "PC-Wiener sample storage",
             });
         };
         filter_pc_wiener_padded_u16(
-            filtered_u16,
+            destination,
             params,
             samples,
             stride,
@@ -1592,7 +1591,6 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
             filters,
             max_sample,
         );
-        write_pc_wiener_block(output, &filtered, params);
         return Ok(());
     }
 
@@ -1647,7 +1645,7 @@ pub fn pc_wiener_filter_block_padded<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn filter_pc_wiener_padded_u16(
-    filtered: &mut [u16],
+    destination: &mut [u16],
     params: &PcWienerFilter<'_>,
     samples: &[u16],
     stride: usize,
@@ -1663,7 +1661,7 @@ fn filter_pc_wiener_padded_u16(
         let row_subclasses =
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
         let row_base = row * stride;
-        let output = &mut filtered[row * params.width..(row + 1) * params.width];
+        let output = &mut destination[row * params.output_stride..][..params.width];
         let mut c0 = 0usize;
         while c0 < params.width {
             let subclass_col = c0 / params.subclass_block_size;
