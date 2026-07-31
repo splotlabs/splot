@@ -71,12 +71,14 @@ fn published_progress(published: usize) -> FrameProgress<u8> {
     let progress = FrameProgress::new(info(WIDTH, HEIGHT)).expect("frame progress");
     assert!(progress.begin(&[(0, published), (published, HEIGHT)]));
     progress
-        .with_workspace_mut(|workspace| {
-            fill_ramp(workspace, HEIGHT);
-            Ok(())
-        })
+        .publish_stripe(
+            0,
+            Box::new(|workspace| {
+                fill_ramp(workspace, HEIGHT);
+                Ok(())
+            }),
+        )
         .expect("stripe publication");
-    progress.publish(0);
     progress
 }
 
