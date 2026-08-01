@@ -14,8 +14,6 @@
 use core::mem;
 use core::ops::Range;
 
-use std::simd::{Simd, cmp::SimdPartialOrd};
-
 use splot_core::headers::sequence::SuperblockSize;
 
 use crate::intra_basic::predict_paeth_sample;
@@ -2442,14 +2440,17 @@ fn validate_write_source<T: ReconSample>(
         .ok_or(ReconError::ArithmeticOverflow {
             context: "current-frame workspace global target row offset",
         })?;
+    if row_stride_samples == rect.width()
+        && let Some(span) = rect.width().checked_mul(rect.height())
+        && let Some(source) = samples.get(..span)
+        && !samples_exceed(source, max_sample)
+    {
+        return Ok(());
+    }
     for row_index in 0..rect.height() {
         let source_start = row_index * row_stride_samples;
         let source_row = &samples[source_start..source_start + rect.width()];
-        let out_of_range = T::u16_slice(source_row).map_or_else(
-            || source_row.iter().any(|sample| sample.to_u16() > max_sample),
-            |samples| u16_samples_exceed(samples, max_sample),
-        );
-        if out_of_range {
+        if samples_exceed(source_row, max_sample) {
             let global_start = global_target_base + row_index * target_stride_samples;
             for (column, &sample) in source_row.iter().enumerate() {
                 validate_sample_value(plane, global_start + column, sample, max_sample)?;
@@ -2460,15 +2461,7 @@ fn validate_write_source<T: ReconSample>(
     Ok(())
 }
 
-pub(crate) fn u16_samples_exceed(samples: &[u16], max_sample: u16) -> bool {
-    const LANES: usize = 8;
-    let mut chunks = samples.chunks_exact(LANES);
-    let limit = Simd::<u16, LANES>::splat(max_sample);
-    if chunks.any(|chunk| Simd::from_slice(chunk).simd_gt(limit).any()) {
-        return true;
-    }
-    chunks.remainder().iter().any(|&sample| sample > max_sample)
-}
+pub(crate) use crate::sample_range::{samples_exceed, u16_samples_exceed};
 
 fn required_row_strided_samples(rect: PlaneRect, row_stride_samples: usize) -> Result<usize> {
     let row_offset = rect

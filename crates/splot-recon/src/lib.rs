@@ -46,6 +46,7 @@ mod plane;
 mod reconstruct;
 mod reconstruct_block;
 mod reference;
+mod sample_range;
 mod secondary_transform;
 mod subpel_mc;
 mod transform_params;

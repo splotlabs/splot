@@ -1204,6 +1204,61 @@ fn workspace_write_rejects_out_of_range_samples_without_partial_write() {
 }
 
 #[test]
+fn u16_range_scan_covers_every_lane_group_and_tail_position() {
+    for len in 0..=40usize {
+        let mut samples = vec![1023u16; len];
+        assert!(!u16_samples_exceed(&samples, 1023), "clean len {len}");
+        for index in 0..len {
+            samples[index] = 1024;
+            assert!(
+                u16_samples_exceed(&samples, 1023),
+                "len {len} index {index}"
+            );
+            samples[index] = 1023;
+        }
+    }
+}
+
+#[test]
+fn packed_and_strided_write_sources_agree_on_range_and_error() {
+    let info = monochrome_info(BitDepth::Eight, 8, 8);
+    for index in 0..16usize {
+        let mut packed = [7u16; 16];
+        packed[index] = 300;
+        let mut strided = [7u16; 32];
+        for (row, source) in packed.chunks_exact(4).enumerate() {
+            for (column, &sample) in source.iter().enumerate() {
+                strided[row * 8 + column] = sample;
+            }
+        }
+        let mut from_packed = CurrentFrameWorkspace::<u16>::new(info, 1).unwrap();
+        let mut from_strided = CurrentFrameWorkspace::<u16>::new(info, 1).unwrap();
+        let packed_err = from_packed
+            .write_rect(PlaneId::Y, rect(1, 2, 4, 4), &packed, 4)
+            .unwrap_err();
+        let strided_err = from_strided
+            .write_rect(PlaneId::Y, rect(1, 2, 4, 4), &strided, 8)
+            .unwrap_err();
+        assert_eq!(format!("{packed_err:?}"), format!("{strided_err:?}"));
+        assert!(matches!(
+            packed_err,
+            ReconError::SampleOutOfRange { value: 300, .. }
+        ));
+        assert_eq!(
+            from_packed.samples(PlaneId::Y).unwrap(),
+            from_strided.samples(PlaneId::Y).unwrap(),
+        );
+        assert!(
+            from_packed
+                .samples(PlaneId::Y)
+                .unwrap()
+                .iter()
+                .all(|&sample| sample == 1)
+        );
+    }
+}
+
+#[test]
 fn u16_range_scan_covers_vector_chunks_and_tail() {
     let mut samples = [1023u16; 17];
     assert!(!u16_samples_exceed(&samples, 1023));

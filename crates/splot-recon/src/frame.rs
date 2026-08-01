@@ -356,22 +356,18 @@ fn validate_plane_samples<T: ReconSample>(
     samples: &Plane<T>,
     max: u16,
 ) -> Result<()> {
-    let peak = samples
-        .samples()
-        .iter()
-        .fold(0u16, |peak, sample| peak.max(sample.to_u16()));
-    if peak <= max {
+    let values = samples.samples();
+    if !crate::workspace::samples_exceed(values, max) {
         return Ok(());
     }
-    let (sample_index, value) = samples
-        .samples()
+    let (sample_index, value) = values
         .iter()
         .enumerate()
         .find_map(|(sample_index, sample)| {
             let value = sample.to_u16();
             (value > max).then_some((sample_index, value))
         })
-        .unwrap_or((0, peak));
+        .unwrap_or((0, max));
     Err(ReconError::SampleOutOfRange {
         plane,
         sample_index,
