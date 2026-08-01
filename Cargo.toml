@@ -6,6 +6,7 @@ members = [
     "crates/splot-core",
     "crates/splot-parallel",
     "crates/splot-tables",
+    "crates/splot-simd",
     "crates/splot-recon",
     "crates/splot-decode",
     "crates/splot-validate",
@@ -17,6 +18,7 @@ default-members = [
     "crates/splot-core",
     "crates/splot-parallel",
     "crates/splot-tables",
+    "crates/splot-simd",
     "crates/splot-recon",
     "crates/splot-decode",
     "crates/splot-validate",
@@ -41,6 +43,7 @@ publish = false
 splot-core = { path = "crates/splot-core", version = "0.0.0" }
 splot-parallel = { path = "crates/splot-parallel", version = "0.0.0" }
 splot-tables = { path = "crates/splot-tables", version = "0.0.0" }
+splot-simd = { path = "crates/splot-simd", version = "0.0.0" }
 splot-recon = { path = "crates/splot-recon", version = "0.0.0" }
 splot-decode = { path = "crates/splot-decode", version = "0.0.0" }
 splot-validate = { path = "crates/splot-validate", version = "0.0.0" }

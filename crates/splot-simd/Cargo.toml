@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
+
+[package]
+name = "splot-simd"
+description = "Quarantined hand-scheduled SIMD kernels for the splot AV2 toolkit; the only crate that may write unsafe code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# This crate cannot use `[lints] workspace = true`: the workspace sets
+# `unsafe_code = "forbid"`, and `forbid` is by construction not overridable from
+# inside the crate. Cargo has no inherit-and-override form for a single lint, so
+# the quarantine is expressed by declaring the lint set here, identical to
+# `[workspace.lints]` except that `unsafe_code` is replaced by
+# `unsafe_op_in_unsafe_fn = "deny"`. Every other workspace member keeps
+# `[lints] workspace = true` and therefore keeps `forbid`.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+cast_precision_loss = "allow"
+chunks_exact_to_as_chunks = "allow"
+doc_markdown = "allow"
+manual_bit_width = "allow"
+manual_midpoint = "allow"
+manual_slice_fill = "allow"
+must_use_candidate = "allow"
+too_many_lines = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+wildcard_imports = "allow"
+if_not_else = "allow"

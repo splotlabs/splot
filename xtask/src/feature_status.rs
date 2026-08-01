@@ -64,6 +64,7 @@ const CRATES: &[&str] = &[
     "splot-core",
     "splot-parallel",
     "splot-tables",
+    "splot-simd",
     "splot-recon",
     "splot-decode",
     "splot-validate",
