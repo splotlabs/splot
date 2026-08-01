@@ -83,9 +83,9 @@ pub struct DecodeArgs {
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     pub threads: ThreadCount,
-    /// Frame-pipelining depth: `auto` (default) matches the resolved `--threads` count, and a
-    /// positive integer is clamped to it. `1` decodes frames strictly serially; `0` is an alias
-    /// for auto.
+    /// Frame-pipelining depth: `auto` (default) is the resolved `--threads` count, or 3 frames
+    /// when that count is 2, and a positive integer is honored as given. `1` decodes frames
+    /// strictly serially; `0` is an alias for auto.
     #[arg(long, default_value_t = FrameDelay::Auto)]
     pub frame_delay: FrameDelay,
     /// Stop after emitting this many output frames.

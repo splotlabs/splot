@@ -383,12 +383,12 @@ struct InflightEntry {
 /// a frame's own push and the next admission, which harvests back down. A depth
 /// of one keeps nothing in flight, which is the serial path.
 ///
-/// [`splot_parallel::FrameDelay::resolve`] clamps `D` to the pool width, so the
-/// driver plus the `D - 1` phases running beside it fit the workers. The
-/// transient `D`-th entry cannot strand the pipeline either: filter tasks never
-/// block on a slot, and every driver wait runs pool jobs
+/// `D` may exceed the pool width, and the pipeline cannot strand when it does:
+/// filter tasks never block on a slot, and every driver wait runs pool jobs
 /// ([`CompletionCell::wait_with_pool_assist`]) instead of parking, so the driver
-/// itself executes a task the pool has no free worker for.
+/// itself executes a task the pool has no free worker for. Depth beyond the
+/// worker count buys admission lead at the cost of retained frame storage, which
+/// the decoder's reference-store limit bounds.
 pub(crate) struct InflightRing {
     capacity: usize,
     entries: VecDeque<InflightEntry>,
