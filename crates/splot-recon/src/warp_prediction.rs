@@ -695,10 +695,7 @@ fn build_interior_intermediate<T: ReconSample>(
             let taps = warped_filter_row(projected.sx4 + shear.beta * i1);
             let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
             for (tap, &weight) in taps.iter().enumerate() {
-                let samples =
-                    Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(&source[first_col + tap..])
-                        .cast::<i32>();
-                sum += Simd::splat(i32::from(weight)) * samples;
+                sum = warp_tap_mac(sum, warp_source_lanes(source, first_col + tap), weight);
             }
             let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
             intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
@@ -772,6 +769,35 @@ fn build_output(
         output[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
             .copy_from_slice(&rounded.to_array()); // splot-copy-ok: publish row-wide SIMD warp output
     }
+}
+
+/// Reads eight consecutive reference samples as `i16` lanes.
+///
+/// § 6 Table 6.3 admits only `BitDepth` 8 and 10, so every reference sample is
+/// at most 1023 and the reinterpretation preserves the value. Keeping the lanes
+/// 16-bit is what lets [`warp_tap_mac`] fold its widening into the multiply,
+/// the same narrowing the § 7.13.3.18 sub-pel taps already use.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn warp_source_lanes(source: &[u16], start: usize) -> Simd<i16, WARPED_BLOCK_SIZE> {
+    Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(&source[start..]).cast()
+}
+
+/// Accumulates one AV2 § 7.13.3.19 warp tap across the eight prediction columns.
+///
+/// Both factors are 16-bit: samples fit `i16` by [`warp_source_lanes`], and
+/// every `Warped_Filters` tap is an `i8`. Sign-extending both sides lets the
+/// target fold the widening into one multiply-accumulate instead of widening
+/// each operand into 32 bits first.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn warp_tap_mac(
+    accumulator: Simd<i32, WARPED_BLOCK_SIZE>,
+    samples: Simd<i16, WARPED_BLOCK_SIZE>,
+    tap: i8,
+) -> Simd<i32, WARPED_BLOCK_SIZE> {
+    accumulator
+        + samples.cast::<i32>() * Simd::<i16, WARPED_BLOCK_SIZE>::splat(i16::from(tap)).cast()
 }
 
 #[allow(
@@ -1083,6 +1109,72 @@ mod tests {
         let want = reference_warp_8x8(&samples, ref_w, ref_h, &params);
         assert_eq!(out, want);
         assert_eq!(&out[..8], &[25, 33, 41, 49, 58, 115, 121, 129]);
+    }
+
+    /// The interior 16-bit-lane pass must equal the clamped scalar pass
+    /// everywhere the clamps are inactive, including at the largest legal
+    /// 10-bit sample, where reinterpreting `u16` as `i16` would change sign if
+    /// § 6 Table 6.3 admitted a wider sample. Every section here is centred far
+    /// enough inside the reference that `interior_warp_source_origin` accepts it.
+    #[test]
+    fn interior_intermediate_matches_the_clamped_pass_over_the_ten_bit_range() {
+        let (ref_w, ref_h) = (64usize, 64usize);
+        let samples = (0..ref_w * ref_h)
+            .map(|index| match index % 7 {
+                0 => 1023,
+                1 => 1022,
+                2 => 0,
+                _ => ((index * 149) % 1024) as u16,
+            })
+            .collect::<Vec<u16>>();
+        assert!(samples.contains(&1023));
+        let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
+
+        let models = [
+            IDENTITY_WARP_PARAMS,
+            [
+                0,
+                0,
+                1 << WARPEDMODEL_PREC_BITS,
+                384,
+                -256,
+                1 << WARPEDMODEL_PREC_BITS,
+            ],
+            [
+                1 << WARPEDMODEL_PREC_BITS,
+                -(2 << WARPEDMODEL_PREC_BITS),
+                (1 << WARPEDMODEL_PREC_BITS) + 256,
+                -128,
+                192,
+                (1 << WARPEDMODEL_PREC_BITS) - 320,
+            ],
+        ];
+        let mut covered = (false, false);
+        for warp_params in models {
+            for (block_x, block_y) in [(24, 24), (32, 24), (24, 32)] {
+                let mut params = default_params(block_x, block_y, ref_w as i32, ref_h as i32);
+                params.warp_params = warp_params;
+                params.bit_depth = BitDepth::Ten;
+                let shear = setup_shear(warp_params).unwrap();
+                let projected = project_section_center(&params).unwrap();
+                let origin = interior_warp_source_origin(&view, &params, &projected).unwrap();
+                if shear.alpha == 0 {
+                    covered.0 = true;
+                } else {
+                    covered.1 = true;
+                }
+
+                let mut fast = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
+                build_interior_intermediate(&view, &shear, &projected, origin, &mut fast);
+                let mut want = [0i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE];
+                build_intermediate(&view, &params, &shear, &projected, &mut want);
+                assert_eq!(
+                    fast, want,
+                    "model {warp_params:?} at ({block_x}, {block_y})"
+                );
+            }
+        }
+        assert_eq!(covered, (true, true), "both shear column cases exercised");
     }
 
     #[test]
