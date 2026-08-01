@@ -56,44 +56,58 @@ must pass exact output comparison, the required corpus/oracle checks,
 `cargo xtask check-duplication`, `cargo xtask ci`, and the 1/2/4/8/10 paired
 timing matrix.
 
-## Confirmed matrix 2026-08-02 (post-#1159)
+## Confirmed matrix 2026-08-01 (post-#1170)
 
-Ground truth for exact `origin/main` `2f6a5d1fc`, superseding the post-#1153
-matrix (its ratios are the "post-#1153" column) and the pre-SCALE-013 baseline
-before it. The timed binary hashes
-`7559cba84b0ae82430bfb3dc72e90c1d446a2c7e87e853933795a0641e27bf27`, identical to
-the shipped SCALE-052 build. Host Apple M2 Max (8 performance plus 4 efficiency
-cores), up 3 days 4 hours, one-minute load 1.5-4.1 throughout, all of it this
-session's own decodes. Method per width: 3 warmups per arm, then 11 alternating
+Ground truth for exact `origin/main` `a17b3d7ed`, superseding the post-#1159
+matrix (its ratios are the "post-#1159" column) and every earlier baseline. The
+timed binary hashes
+`7aa1462f878752d846094d4ebb395b737070e82f1c0235d4567fd1ab176db98f`, identical to
+the shipped SCALE-059 build. Host Apple M2 Max (8 performance plus 4 efficiency
+cores), up 3 days 9 hours, one-minute load 1.30 before the first sweep and 1.42
+after the last. Method per width: 3 warmups per arm, then 11 alternating
 splot/dav2d pairs with the slot order rotated each pair,
 `SPLOT_DECODE_DISCARD_HASH=1`, `--limit=30`, wall from `perf_counter` and CPU
 from `RUSAGE_CHILDREN` user plus sys, splot on `--frame-delay=auto` and dav2d on
-`--framedelay max(T, 3)`. A throwaway warm sweep ran first, so neither timed
-sweep is a cold-host control; medians are sweep 1 / sweep 2, and a third sweep
-at 2/8/10T settles the one disagreement above a point.
+`--framedelay max(T, 3)`. A throwaway warm sweep ran first, so no timed sweep is
+a cold-host control. Two sweeps agree at every width (largest disagreement 0.45
+points, at four workers) and a third deciding sweep ran at three and four
+workers, the two widths on the +-0.5% line; every column pools all sweeps.
 
-| T | splot wall | dav2d wall | ratio | post-#1153 | splot faster | splot CPU | dav2d CPU | splot cores | dav2d cores |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 0.9396 / 0.9555 s | 1.0243 / 1.0380 s | **0.9173 / 0.9206x** | 0.9305 / 0.9400x | **11/11, 11/11** | 0.937 / 0.953 s | 1.022 / 1.036 s | 1.00 | 1.00 |
-| 2 | 0.5317 / 0.5342 s | 0.5386 / 0.5387 s | **0.9872 / 0.9916x** | 1.0059 / 1.0220x | **11/11, 9/11** | 1.040 / 1.046 s | 1.065 / 1.065 s | 1.96 | 1.98 |
-| 3 | 0.3794 / 0.3811 s | 0.3750 / 0.3752 s | 1.0119 / 1.0158x | 1.0379 / 1.0437x | 0/11, 0/11 | 1.067 / 1.070 s | 1.101 / 1.101 s | 2.81 | 2.94 |
-| 4 | 0.2914 / 0.2914 s | 0.2860 / 0.2870 s | 1.0188 / 1.0155x | 1.0498 / 1.0484x | 0/11, 0/11 | 1.087 / 1.086 s | 1.110 / 1.114 s | 3.73 | 3.88 |
-| 8 | 0.1785 / 0.1782 s | 0.1587 / 0.1588 s | 1.1249 / 1.1219x | 1.1714 / 1.1781x | 0/11, 0/11 | 1.169 / 1.171 s | 1.153 / 1.154 s | 6.55 / 6.57 | 7.27 |
-| 10 | 0.1727 / 0.1736 s | 0.1543 / 0.1531 s | 1.1194 / 1.1341x | 1.1703x twice | 0/11, 0/11 | 1.313 / 1.314 s | 1.323 / 1.317 s | 7.60 / 7.57 | 8.57 / 8.60 |
+| T | splot wall | dav2d wall | ratio | post-#1159 | splot faster | splot CPU | dav2d CPU | splot cores | dav2d cores | verdict |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|:---|
+| 1 | 0.9464 s | 1.0359 s | **0.9135x** | 0.9173 / 0.9206x | **22/22** | 0.943 s | 1.034 s | 1.00 | 1.00 | **WIN** |
+| 2 | 0.5279 s | 0.5381 s | **0.9810x** | 0.9872 / 0.9916x | **22/22** | 1.033 s | 1.064 s | 1.96 | 1.98 | **WIN** |
+| 3 | 0.3777 s | 0.3749 s | 1.0076x | 1.0119 / 1.0158x | 1/33 | 1.059 s | 1.100 s | 2.80 | 2.94 | LOSS |
+| 4 | 0.2891 s | 0.2872 s | 1.0065x | 1.0188 / 1.0155x | 0/33 | 1.078 s | 1.113 s | 3.73 | 3.88 | LOSS |
+| 8 | 0.1780 s | 0.1593 s | 1.1179x | 1.1249 / 1.1219x | 0/22 | 1.164 s | 1.154 s | 6.54 | 7.25 | LOSS |
+| 10 | 0.1719 s | 0.1545 s | 1.1131x | 1.1194 / 1.1341x | 0/22 | 1.308 s | 1.326 s | 7.61 | 8.59 | LOSS |
 
-Sweep 3 reads 0.9928x at two workers (9/11), 1.1233x at eight and 1.1277x at
-ten, so the ten-worker pair is 1.12-1.13x and its 1.5-point sweep disagreement
-is that width's own spread: per-pair ratios span 0.7-2.1% at 1/2/3/4T, 1.8-3.1%
-at 8T and 3.7-6.9% at 10T, so a single pair still proves nothing at any width.
-**Splot wins at one and two workers and loses at three and above.** The
-two-worker win is new — SCALE-050, SCALE-051 and SCALE-052 moved that width from
-1.0059 / 1.0220x to 0.9872 / 0.9916 / 0.9928x — and the goal's one-thread clause
-still holds, 7.9-8.3% faster at 11 of 11 pairs in both sweeps.
+**Splot wins at one and two workers and loses at three and above**, the
+post-#1159 shape with every width moved toward parity by 0.54-1.37 points, which
+is SCALE-058 and SCALE-059 landing. Per-pair ratio spread is 1.4-3.3 points at
+1/2/3/4T, 8.8 at 8T and 7.8 at 10T, so a single pair still proves nothing and
+the paired counts, not the medians, carry the verdicts. **No lost width is
+inside measurement noise**: 3T and 4T are closest at +0.76% and +0.65% and were
+given the third sweep for it, which read 1.0085x (0/11) and 1.0075x (0/11).
 
-Marginal steady frame (`--limit=120` minus `--limit=60`, over 60 frames, median
-of 7 alternating reps at 8/10T and 5 at 1T), which the 30-frame benchmark
-understates because its prologue is where splot is relatively cheapest
-(SCALE-032):
+**Every remaining loss is occupancy, and its causes are ones the ledger already
+closed.** Splitting each benchmark into `T x wall - CPU`, splot's total CPU is
+41.5 core-ms *below* dav2d's at three workers, 35.4 below at four and 18.5 below
+at ten, and only 9.6 above at eight, while its excess idle is 50.0 / 42.9 /
+140.5 / 193.2 core-ms — 588%, 572%, 94% and 111% of the 2.83 / 1.88 / 18.77 /
+17.47 ms gaps. The largest named term is the first-pyramid fill, whose every
+reachable shape SCALE-054 closed on the AV2 § 8.2 CDF chain and whose one
+successor with headroom SCALE-055 priced at -2.04% of the ten-worker benchmark
+against a 4% go line; the fixed `--limit=1` term that dominates 3T and 4T is
+dav2d's `--framedelay max(T, 3)` depth cost, not splot's startup (SCALE-056);
+and the steady CPU residual behind 8T and 10T is 92% parallel inflation with
+every named sub-term under the 1%-of-wall bar. **No open candidate addresses
+any of them.**
+
+Marginal steady frame, carried unchanged from SCALE-053 on `2f6a5d1fc`
+(`--limit=120` minus `--limit=60` over 60 frames, median of 7 alternating reps
+at 8/10T and 5 at 1T), which the 30-frame benchmark understates because its
+prologue is where splot is relatively cheapest (SCALE-032):
 
 | T | splot CPU/frame | splot wall/frame | splot cores | dav2d CPU/frame | dav2d wall/frame | dav2d cores | CPU ratio | wall ratio |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -101,13 +115,10 @@ understates because its prologue is where splot is relatively cheapest
 | 8 | 27.642 ms | 3.625 ms | 7.625 | 23.052 ms | 2.990 ms | 7.710 | 1.199x | 1.212x |
 | 10 | 31.216 ms | 3.507 ms | **8.900** | 25.749 ms | 2.882 ms | **8.935** | 1.212x | 1.217x |
 
-Steady occupancy stays at parity, so the whole steady gap is still work: 5.467
-core-ms per frame at ten workers, down from SCALE-047's 7.327, and 4.590 at
-eight. The three retained candidates predicted 7.327 - 0.155 - 0.335 - 1.311 =
-5.526 and the independent measurement reads 5.467, 1.1% apart. **The one-worker
-steady gap is now +0.422 core-ms per frame, 2.0%, against SCALE-049's +1.324 at
-6.6%**, so **92% of the steady gap is parallel inflation**: from 1 to 10 workers
-splot pays +9.849 core-ms per frame against dav2d's +4.804.
+Steady occupancy is at parity, so the whole steady gap is work: +5.467 core-ms
+per frame at ten workers and +4.590 at eight against **+0.422, 2.0%, at one**,
+so **92% of the steady gap is parallel inflation** — from 1 to 10 workers splot
+pays +9.849 core-ms per frame against dav2d's +4.804.
 
 ### Post-SCALE-045 re-decomposition (SCALE-047)
 
@@ -270,7 +281,7 @@ SCALE-055 priced the last one**, so the ranked candidate list now begins at
 item 2 and the occupancy family carries no scoped successor at eight or ten
 workers. **No lost width is inside measurement noise**, and
 4T is the closest — 1.0155 / 1.0188x against a 0.8-1.6% per-pair spread, but
-0/11 in both sweeps.
+0/11 in both sweeps, and SCALE-060 re-reads it at 1.0065x with 0 of 33.
 
 ### Normalized steady-state CPU ledger (SCALE-049)
 
@@ -457,6 +468,8 @@ is retained in the task table below.
 | SCALE-058 | Committed; retention call open | Reopen SCALE-050's closure that `ext`-style window reuse cannot be expressed in safe Rust, and take the warp horizontal load shape if it can. | **The closure was right about `core::arch` and wrong about `std::simd`.** All six intrinsics the design needs (`vextq_s16`, `vmull_s16`, `vmlal_s16`, `vmlal_high_s16`, `vget_low_s16`, `vaddvq_s32`) are *safe* `fn`s on nightly-2026-07-22 — the compiler reports "call to function with `#[target_feature]`", not "call to unsafe function" — but the attribute gates them anyway, and rustc explicitly refuses to honour the baseline: "the neon target feature being enabled in the build configuration does not remove the requirement to list it in `#[target_feature]`", although `target_feature="neon"` is in `--print cfg` here. A `#[target_feature(enable = "neon")]` helper does compile its body under `forbid(unsafe_code)`, so target-feature inheritance works, but the first plain-safe caller still needs `unsafe`; the `core::arch` route is therefore closed for this workspace, permanently and for reasons unrelated to memory safety. **The portable route the closure never considered is open**: `simd_swizzle!(lo, hi, [t..t+8])` needs no attribute, is safe, and lowers to `ext.16b`. Codegen, § 7.13.3.19 uniform-column horizontal pass: before, eight overlapping unaligned loads (`ldur q` at byte offsets 0,2,4,6,8,10,12,14) feeding 14 `smlal`; after, `ldp q0, q1` plus `ext.16b` by #2/#4/#6/#8/#a/#c/#e feeding the same 14 `smlal` — dav2d's two-`ld1`-plus-seven-`ext` shape, with LLVM fusing the two loads into one paired load. Three bounds-safe window shapes were compared before choosing: loads at 0 and 8 give 7 `ext`; loads at 0 and 7, which fit the old admission exactly, degrade to 6 `tbl` plus constant-table loads; and a masked 16-lane `load_or_default` scalarises to 35 `mov.h`. The chosen shape reads one sample past the taps' own reach, so admission reserves the column after `last_col` and sections at the final column fall to the clamped `build_intermediate`, which yields identical samples; the reservation carries a mutation-checked regression test. Isolated micro-bench on the SCALE-050 histogram, 9,851 sections x 15 rows, **-8.55%**, both shapes asserted bit-identical over 512 column positions. Marginal steady CPU as two-order averages, which cancel slot bias by construction: **1T 21.803 to 21.746 and 21.912 to 21.849, mean -0.060 core-ms per frame; 10T 31.260 to 31.123 and 31.203 to 30.978, mean -0.181** — both orders negative at both widths, against same-binary A/A nulls of +0.115% at 1T and +0.881% at 10T that bound what a single order can prove. Byte-exact at 1/2/3/4/8/10 workers (186,624,000 B, SHA-256 `48f0dc14...`) and 1T = 10T over all 545 output frames. The 30-frame benchmark is inside its own null at every width and regresses nowhere. Bare `cargo xtask ci` exit 0. | Retention is a maintainer call: direction is consistent at both widths and nothing regresses, but the win is a fifth of the 0.31 core-ms stacking bar. The shape does **not** transfer to sub-pel through a runtime select over constant windows, which spills — but **SCALE-059 corrects the scope of that closure**: the full-span (`K = 8`) phase needs no select, because its `tap_start` is zero and every index is a literal, and that case is 74.6% of the stream's horizontal-filtered samples. |
 
 | SCALE-059 | Committed; retention call open | Sweep every remaining hot kernel for the constant-offset sliding-window loads SCALE-058's `simd_swizzle!` shape fits, ship the ones that measure, and close the technique. | **The census produced a pricing rule that closes the family, and one site the rule admits.** Rule: `K` overlapping windows over one contiguous span cost `2 loads + (K - 1) ext` against `K` loads — the shape never lowers instruction count, it trades `K - 2` load-port operations for `K - 1` vector-ALU operations, so it pays only when `K` is large and the kernel is load-port rather than ALU bound. CDEF is the clean counter-example: 13 windows per output row but at most 5 from any one source row against about 78 vector ALU operations, giving 8-10 loads plus 6-8 `ext` for 13 loads, and its direction index is runtime. Full site census, blocker taxonomy and per-site core-ms are in the checklist row; the four blockers are **runtime tap offsets** (Wiener-NS, PC-Wiener, GDF, CCSO — all four compute `dy * stride + dx` at runtime, and all four are stages splot already leads dav2d on), **runtime direction** (CDEF), **window multiplicity below break-even** (CDEF, optflow gradients, IDIF), and **shapes that are not windows at all** (deblock's `lane_stride` gather/transpose, the PC-Wiener classifier's scalar feature sums, the publication copies). **SCALE-058's sub-pel closure was wrong in one specific way and is corrected here**: a runtime *select among* constant windows does spill, but the full-span case needs no select. A weighted probe puts the § 7.13.3.18 active tap span at `K = 8` for **74.6%** of horizontal-filtered output samples, and at `K = 8` the span is `[0, 8)`, so `tap_start` is zero and every window index is a literal. Shipped: a `SlideLanes` trait over `Simd<i32, {4,8,16}>` used by all four horizontal sites, with an `admits` bound carrying the whole safety argument — the second load reaches past the taps' own reach, the extra lanes are discarded by the slide, and `admits` refuses the shape unless they are readable; `SLIDE_RESERVE = 9` widens the two window slices and every non-full-span phase, 8-bit source, and short row keeps the existing pruned loop. Isolated micro-bench against a const-unrolled control that separates the swizzle from the unrolling: **-30.98% at K=8**, -26.08% at K=6. Byte-exact at 1/2/3/4/8/10 workers and 1T = 10T over 545 frames. Marginal steady CPU, two-order averages: **1T -0.085 core-ms per frame** against a +0.039 A/A null, **10T -0.062** against a -0.195 null. 30-frame benchmark paired medians: **1T -0.617% (11/11)**, **2T -1.126% (11/11)**, 3T -0.420% (5/5), 4T -1.106% (5/5), **8T -1.332% (9/11)**, **10T -1.242% (8/11)** — negative at every width, against nulls of -0.025 / -0.029 / +0.277 / -0.604%. `cargo xtask ci` exit 0. | Full census, K histogram, codegen counts and pair tables are in the checklist row. **This exhausts the swizzle technique and with it the mission's in-scope kernel space**: every other site is closed on runtime offsets, runtime direction, or multiplicity below break-even, and re-opening one needs a restructure separating constant column displacement from a runtime row stride, priced at 0.02-0.09 core-ms per site. |
+
+| SCALE-060 | Investigated; no source change | Re-measure the ground-truth matrix on exact `a17b3d7ed` after the swizzle family and declare a WIN/LOSS verdict per width. | **Two 11-pair sweeps per width at 1/2/3/4/8/10 workers, plus a third deciding sweep at three and four.** Timed on the shipped release artifact: `cargo fmt --all -- --check` clean, whole-workspace `cargo build --release`, binary `7aa1462f878752d846094d4ebb395b737070e82f1c0235d4567fd1ab176db98f` — byte-identical to the build SCALE-059 measured, and `a17b3d7ed`'s tree is source-identical to that branch head. Method per the confirmed-matrix section: a throwaway warm sweep first, then per width 3 warmups per arm and 11 alternating pairs with the slot order rotated each pair, `SPLOT_DECODE_DISCARD_HASH=1`, `--limit=30`, wall from `perf_counter`, CPU from `RUSAGE_CHILDREN`, splot `--frame-delay=auto`, dav2d `--framedelay max(T, 3)`; host up 3 days 9 hours, one-minute load 1.30 before the first sweep and 1.42 after the last. **Sweep agreement.** Per-sweep ratios are 0.9123 / 0.9150 at 1T, 0.9797 / 0.9824 at 2T, 1.0052 / 1.0084 / 1.0085 at 3T, 1.0089 / 1.0044 / 1.0075 at 4T, 1.1190 / 1.1154 at 8T and 1.1120 / 1.1131 at 10T, so **the largest sweep-to-sweep disagreement is 0.45 points, at four workers**, and the rule that a disagreement above one point buys a third sweep never fired. The third sweep was run under the other rule instead: 3T read +0.52% in sweep 1 and 4T read +0.44% in sweep 2, both on the +-0.5% line and inside their own per-pair spread. **Verdicts, pooled over every sweep at that width: 1T WIN 0.9135x at 22/22 pairs, 2T WIN 0.9810x at 22/22, 3T LOSS 1.0076x at 1/33, 4T LOSS 1.0065x at 0/33, 8T LOSS 1.1179x at 0/22, 10T LOSS 1.1131x at 0/22.** Every width moved toward parity against the post-#1159 matrix by 0.54 / 0.84 / 0.63 / 1.06 / 0.55 / 1.37 points at 1/2/3/4/8/10T, which reproduces SCALE-059's own paired medians (-0.617 / -1.126 / -0.420 / -1.106 / -1.332 / -1.242%) to within the widths' spreads and is the swizzle family arriving on the ground-truth instrument. **The 3T and 4T calls are close and are reported as measured, not rounded to a story**: the throwaway warm sweep read 3T at 0.9966x, *below* parity, and all three timed sweeps then read it above, at 1.0052 / 1.0084 / 1.0085x — one sweep at these widths proves nothing, which is what the paired counts are for, and 1 of 33 and 0 of 33 pooled pairs are consistent losses however small the medians. **Residual gap at each lost width, and its ledger-proven cause.** Absolute gaps are +2.83 ms at 3T, +1.88 at 4T, +18.77 at 8T and +17.47 at 10T. Splitting each whole benchmark into `T x wall - CPU`, splot's total CPU is **41.5 core-ms below dav2d's at three workers, 35.4 below at four and 18.5 below at ten, and only 9.6 above at eight**, while its excess idle is 50.0 / 42.9 / 140.5 / 193.2 core-ms — **588% / 572% / 94% / 111% of the respective gaps**, and occupancy is 2.80 / 3.73 / 6.54 / 7.61 against dav2d's 2.94 / 3.88 / 7.25 / 8.59. So SCALE-053's finding is reproduced exactly one swizzle family later: **every remaining loss is occupancy, not work.** Its named terms all carry closure rows. The first-pyramid fill is the largest at every lost width (SCALE-053's region split); SCALE-054 closed every reachable shape of raising its occupancy on the AV2 § 8.2 CDF chain plus this stream's single tile at `context_update_tile_id = 0`; SCALE-055 priced its one successor with headroom, the within-frame row-granular parse-to-reconstruct handoff, at -2.04% of the ten-worker benchmark and -2.97% of the eight-worker one against a 4%-at-both-widths go line, with an unreachable no-parse-gate bound of only -3.28% at ten. The fixed `--limit=1` term that dominates the small 3T and 4T gaps is **dav2d's** `--framedelay max(T, 3)` cost and not splot's startup (SCALE-056: dav2d is flat at 17.0-19.8 ms from three workers up at framedelay 1, and the contract's depth costs it +0.71 / +1.61 ms at 3T/4T against splot's +0.74 / +1.00). The steady CPU residual behind 8T and 10T is +5.467 core-ms per frame but only +2.38 / +2.04 ms of this benchmark, is 92% parallel inflation (SCALE-034's host-and-threading term), and has every named sub-term under the 1%-of-wall stacking bar (SCALE-053 item 2). **Verification.** No source or diagnostics touched: the tree is docs-only against `a17b3d7ed`, and the timed binary is the shipped one, hash-checked before and after the sweeps. | Closed as a measurement. **Two of six widths are won, each at 22 of 22 pairs, and four remain lost with no open candidate.** The goal's separate no-1T-regression clause is carried by SCALE-059's paired 1T median of -0.617% (11/11) against its own frozen base, not by this matrix, whose absolute walls sit on a different host state and cannot compare splot to itself. The occupancy family is closed at 3/4/8/10T by SCALE-053/054/055/056 and the steady-CPU family by SCALE-049/050/051/052 plus SCALE-057/SCALE-011-G, and SCALE-059 closed the swizzle kernel space, so the ranked list is empty at every lost width. Re-measure this matrix before, not after, any future retention call, and do not quote a single sweep at 3T or 4T as a verdict. |
 
 ## Rejected experiments
 
