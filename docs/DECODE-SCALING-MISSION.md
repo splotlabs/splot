@@ -107,7 +107,11 @@ worker, 11 of 11 pairs in both sweeps. Dav2d's frame delay is confirmed
 irrelevant at two workers, where the contract's depths differ: dav2d measures
 0.5371 / 0.5388 s at `--framedelay 3` against 0.5381 / 0.5392 s at
 `--framedelay 2` (ratios 1.0246 / 1.0275x and 1.0226 / 1.0268x, 0/11 both), so
-splot's `auto = 3` at two workers is compared fairly either way.
+splot's `auto = 3` at two workers is compared fairly either way. The one-thread
+result is controlled the same way on a cooler host state (one-minute load 1.16):
+splot 0.9491 s against dav2d 1.0150 s at `--framedelay 3` and 1.0117 s at the
+contract's `--framedelay 1`, ratios 0.9351x and 0.9382x, 11/11 both — the
+absolute walls move with host warmth but the cross-decoder ratio does not.
 
 Marginal steady frame (`--limit=120` minus `--limit=60`, over 60 frames, median
 of 5 alternating reps), which the 30-frame benchmark understates because its
