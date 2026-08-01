@@ -1430,7 +1430,7 @@ fn prepare_tip_field(
     }
     if fill_holes {
         fill_tip_holes(projection, projection_step, tmvp_unit_size8);
-        average_tip_motion(projection, average, projection_step, tmvp_unit_size8);
+        average_tip_motion(projection, average, projection_step, tmvp_unit_size8)?;
         std::mem::swap(projection, average);
     }
     fill_temporal_sampling_gaps(projection, projection_step, tmvp_unit_size8);
@@ -1471,17 +1471,20 @@ fn fill_tip_holes(field: &mut ProjectedTemporalMotionField, step: usize, superbl
     }
 }
 
+/// Averages the § 7.10.4 TIP motion of every sampled cell into `averaged`.
+///
+/// The destination is reset rather than resized: above a projection step of one
+/// this writes only the sampled cells, so a reused scratch would carry another
+/// frame's motion in the cells between them, and
+/// [`fill_temporal_sampling_gaps`] overwrites those only where the sampled
+/// anchor is valid.
 fn average_tip_motion(
     field: &ProjectedTemporalMotionField,
     averaged: &mut ProjectedTemporalMotionField,
     step: usize,
     superblock_size8: usize,
-) {
-    averaged.width8 = field.width8;
-    averaged.height8 = field.height8;
-    averaged
-        .cells
-        .resize(field.cells.len(), ProjectedTemporalMotionCell::default());
+) -> Option<()> {
+    averaged.reset(field.height8.checked_mul(2)?, field.width8.checked_mul(2)?)?;
     let width8 = field.width8;
     for block_y in (0..field.height8).step_by(superblock_size8) {
         for block_x in (0..field.width8).step_by(superblock_size8) {
@@ -1529,6 +1532,7 @@ fn average_tip_motion(
             }
         }
     }
+    Some(())
 }
 
 #[doc = "AV2 § 7.10.4 Weight_Div_Mult motion-vector average."]
