@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use super::NeighbourMvGrid;
-use super::neighbour_grid::{EMPTY_NEIGHBOUR_MOTION, GridPlanes};
+use super::neighbour_grid::GridPlanes;
 
 /// Bounds how many tile-sized neighbour grids are retained between tiles. The
 /// grid is the widest per-MI tile buffer (one flag slot plus one motion slot per
@@ -23,6 +23,10 @@ const MAX_RETAINED_NEIGHBOUR_MV_GRIDS: usize = 8;
 const MAX_RETAINED_NEIGHBOUR_MV_CELLS: usize = 1 << 17;
 static RETAINED_NEIGHBOUR_MV_GRIDS: Mutex<Vec<GridPlanes>> = Mutex::new(Vec::new());
 
+/// Recycled planes for one tile-sized grid, with the flag plane sized and the
+/// motion plane left empty on its retained allocation: a grid that only ever
+/// publishes flags — the split path's parse pass — never pays the motion fill,
+/// and the first `record_motion` sizes it. See `NeighbourMvGrid::motion_plane`.
 pub(super) fn take_neighbour_mv_planes(cells: usize) -> GridPlanes {
     let mut planes = RETAINED_NEIGHBOUR_MV_GRIDS
         .lock()
@@ -32,7 +36,7 @@ pub(super) fn take_neighbour_mv_planes(cells: usize) -> GridPlanes {
     planes.flags.clear();
     planes.flags.resize(cells, None);
     planes.motion.clear();
-    planes.motion.resize(cells, EMPTY_NEIGHBOUR_MOTION);
+    planes.leaves.clear();
     planes
 }
 

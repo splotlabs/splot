@@ -7,8 +7,8 @@
 //! plane holds the syntax facts that neighbour context derivation reads while
 //! symbols are decoded; the motion plane holds the AV2 § 7.12 motion payload
 //! that the reference MV stack and the warp derivations read. Each plane
-//! carries its own occupancy — flags for context derivation, a non-zero `bw4`
-//! for motion — so the two may be published at different times, and context
+//! carries its own occupancy — flags for context derivation, a named leaf for
+//! motion — so the two may be published at different times, and context
 //! derivation never touches motion memory.
 
 use core::ops::Range;
@@ -91,6 +91,9 @@ pub(super) const EMPTY_NEIGHBOUR_FLAGS: NeighbourFlags = NeighbourFlags {
 };
 
 /// Motion payload read by AV2 § 7.12 stack, bank and warp-sample derivation.
+///
+/// This is the read-side value only. The plane stores it split in two, because
+/// every field but the sub-MVs is constant over a leaf: see [`MotionCell`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NeighbourMotion {
     pub(super) mv: Mv,
@@ -105,23 +108,47 @@ pub(super) struct NeighbourMotion {
     pub(super) bh4: u8,
 }
 
-pub(super) const EMPTY_NEIGHBOUR_MOTION: NeighbourMotion = NeighbourMotion {
-    mv: Mv::ZERO,
-    mv1: Mv::ZERO,
+/// The motion a leaf publishes into every cell it covers alike.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LeafMotion {
+    mv: Mv,
+    mv1: Mv,
+    warp_params: Option<[i32; 6]>,
+    cwp_weight: i16,
+    base_r: u32,
+    base_c: u32,
+    bw4: u8,
+    bh4: u8,
+}
+
+/// One motion-plane cell: the leaf that published it and the § 7.12.2.2 sub-MVs,
+/// which are the only motion that varies from cell to cell inside one leaf.
+///
+/// Publication writes one cell per mode-info position and reads perhaps ten
+/// positions per leaf, so the plane is a write surface: keeping the per-leaf
+/// constants out of it is what bounds the bytes a frame's publication touches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct MotionCell {
+    /// Index into the grid's leaf table; out of range on an unpublished cell.
+    leaf: u32,
+    sub_mv: Mv,
+    sub_mv1: Mv,
+}
+
+/// Names no leaf, so [`NeighbourMvGrid::get`] reads the cell as unpublished.
+const UNPUBLISHED_LEAF: u32 = u32::MAX;
+
+const EMPTY_MOTION_CELL: MotionCell = MotionCell {
+    leaf: UNPUBLISHED_LEAF,
     sub_mv: Mv::ZERO,
     sub_mv1: Mv::ZERO,
-    warp_params: None,
-    cwp_weight: CWP_EQUAL,
-    base_r: 0,
-    base_c: 0,
-    bw4: 0,
-    bh4: 0,
 };
 
 /// Plane footprint guard: neighbour context derivation reads eight bytes per
-/// grid cell, not the full record.
+/// grid cell and § 7.12 resolution writes twenty, not the full record.
 const _: () = {
     assert!(size_of::<Option<NeighbourFlags>>() == 8);
+    assert!(size_of::<MotionCell>() == 20);
     assert!(size_of::<NeighbourMotion>() == 72);
 };
 
@@ -232,7 +259,8 @@ pub(crate) const ZERO_NEIGHBOUR_MOTION_VALUES: NeighbourMotionValues = Neighbour
 #[derive(Default)]
 pub(super) struct GridPlanes {
     pub(super) flags: Vec<Option<NeighbourFlags>>,
-    pub(super) motion: Vec<NeighbourMotion>,
+    pub(super) motion: Vec<MotionCell>,
+    pub(super) leaves: Vec<LeafMotion>,
 }
 
 /// One leaf's flag-plane publication, replayable onto a second grid.
@@ -362,19 +390,27 @@ impl NeighbourMvGrid {
         let Some((rows, cols)) = self.footprint(r, c, n4w, n4h) else {
             return;
         };
-        let motion = NeighbourMotion {
+        self.motion_plane();
+        let leaf = u32::try_from(self.planes.leaves.len()).unwrap_or(UNPUBLISHED_LEAF);
+        if leaf == UNPUBLISHED_LEAF {
+            return;
+        }
+        self.planes.leaves.push(LeafMotion {
             mv: values.mv[0],
             mv1: values.mv[1],
-            sub_mv: values.mv[0],
-            sub_mv1: values.mv[1],
             warp_params: values.stored_warp,
             cwp_weight: values.cwp_weight,
             base_r: r as u32,
             base_c: c as u32,
             bw4: n4w as u8,
             bh4: n4h as u8,
+        });
+        let cell = MotionCell {
+            leaf,
+            sub_mv: values.mv[0],
+            sub_mv1: values.mv[1],
         };
-        self.publish_motion(motion, (r, c), rows, cols, values.splat_warp);
+        self.publish_motion(cell, (r, c), rows, cols, values.splat_warp);
     }
 
     #[cfg(test)]
@@ -607,6 +643,21 @@ impl NeighbourMvGrid {
         );
     }
 
+    /// Sizes the motion plane on the first publication.
+    ///
+    /// The split path parses on one grid and resolves on another, so the parse
+    /// grid's motion plane is never published and never read. Sizing it lazily
+    /// keeps the fill on the grid that uses it while leaving the pooled
+    /// allocation intact for the next grid that does. An unsized plane reads as
+    /// unpublished everywhere, which is what [`NeighbourMvGrid::get`] owes a
+    /// plane no leaf has published into.
+    fn motion_plane(&mut self) {
+        if self.planes.motion.is_empty() {
+            let cells = self.mi_rows.saturating_mul(self.mi_cols);
+            self.planes.motion.resize(cells, EMPTY_MOTION_CELL);
+        }
+    }
+
     /// Plane row and column ranges covered by one leaf, `None` when the leaf
     /// lies entirely outside this tile's grid.
     fn footprint(
@@ -636,7 +687,7 @@ impl NeighbourMvGrid {
 
     fn publish_motion(
         &mut self,
-        motion: NeighbourMotion,
+        cell: MotionCell,
         base: (usize, usize),
         rows: Range<usize>,
         cols: Range<usize>,
@@ -650,11 +701,11 @@ impl NeighbourMvGrid {
                 continue;
             };
             if warp_params[0].is_none() && warp_params[1].is_none() {
-                slots.fill(motion);
+                slots.fill(cell);
                 continue;
             }
             for (slot, cc) in slots.iter_mut().zip(cols.clone()) {
-                *slot = motion;
+                *slot = cell;
                 if let Some(params) = warp_params[0] {
                     slot.sub_mv = warp_sub_mv_at(params, base.0, base.1, rr, cc);
                 }
@@ -691,16 +742,31 @@ impl NeighbourMvGrid {
     }
 
     /// Reads both halves, and only where the motion half has been published:
-    /// `bw4` is zero exactly on cells no leaf has resolved yet, so a leaf whose
-    /// flags are already visible but whose § 7.12 resolution has not run is not
-    /// a candidate. That is what keeps the decode-order candidates (the § 7.12
-    /// bottom-left probe above all) out of the stack once the flag plane runs
-    /// ahead of resolution.
+    /// a cell names no leaf exactly while no leaf has resolved it, so a leaf
+    /// whose flags are already visible but whose § 7.12 resolution has not run
+    /// is not a candidate. That is what keeps the decode-order candidates (the
+    /// § 7.12 bottom-left probe above all) out of the stack once the flag plane
+    /// runs ahead of resolution.
     pub(super) fn get(&self, r: i32, c: i32) -> Option<NeighbourCell> {
         let index = self.index(r, c)?;
         let flags = (*self.planes.flags.get(index)?)?;
-        let motion = *self.planes.motion.get(index)?;
-        (motion.bw4 != 0).then_some(NeighbourCell { flags, motion })
+        let cell = *self.planes.motion.get(index)?;
+        let leaf = self.planes.leaves.get(cell.leaf as usize)?;
+        Some(NeighbourCell {
+            flags,
+            motion: NeighbourMotion {
+                mv: leaf.mv,
+                mv1: leaf.mv1,
+                sub_mv: cell.sub_mv,
+                sub_mv1: cell.sub_mv1,
+                warp_params: leaf.warp_params,
+                cwp_weight: leaf.cwp_weight,
+                base_r: leaf.base_r,
+                base_c: leaf.base_c,
+                bw4: leaf.bw4,
+                bh4: leaf.bh4,
+            },
+        })
     }
 
     pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {
