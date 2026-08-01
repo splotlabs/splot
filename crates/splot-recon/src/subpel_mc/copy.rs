@@ -333,9 +333,10 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
 ) {
     let h_filter = params.interp.pass_index(params.w as u32) as usize;
     let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
-    let taps = &SUBPEL_FILTERS[h_filter][phase];
+    let full_taps = &SUBPEL_FILTERS[h_filter][phase];
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter][phase];
-    let taps = &taps[tap_start..tap_end];
+    let taps = &full_taps[tap_start..tap_end];
+    let full_span = tap_start == 0 && tap_end == NUM_TAPS;
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let x_window_start = subpel_horizontal_window_x(reference, params);
 
@@ -346,19 +347,29 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
         let row_out = &mut output[r * output_stride..][..params.w];
         if let Some(window_start) = x_window_start {
             let row_base = ref_row * reference.stride + window_start;
-            let window = &reference.samples[row_base..row_base + params.w + NUM_TAPS - 1];
+            let taps_end = row_base + params.w + NUM_TAPS - 1;
+            let window = reference
+                .samples
+                .get(row_base..taps_end + SLIDE_RESERVE)
+                .unwrap_or(&reference.samples[row_base..taps_end]);
             if let Some(window) = T::u16_slice(window) {
+                let available = window.len();
                 let vector_width8 = params.w - params.w % 8;
                 for c in (0..vector_width8).step_by(8) {
-                    let mut sum = Simd::<i32, 8>::splat(0);
-                    for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum = tap_mac(
-                            sum,
-                            Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
-                                .cast(),
-                            tap,
-                        );
-                    }
+                    let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
+                        Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
+                    } else {
+                        let mut sum = Simd::<i32, 8>::splat(0);
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            sum = tap_mac(
+                                sum,
+                                Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
+                                    .cast(),
+                                tap,
+                            );
+                        }
+                        sum
+                    };
                     let values = round2_simd(
                         round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
                         inter_round1,
@@ -367,15 +378,20 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
                 }
                 let vector_width4 = params.w - params.w % 4;
                 for c in (vector_width8..vector_width4).step_by(4) {
-                    let mut sum = Simd::<i32, 4>::splat(0);
-                    for (tap_offset, &tap) in taps.iter().enumerate() {
-                        sum = tap_mac(
-                            sum,
-                            Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
-                                .cast(),
-                            tap,
-                        );
-                    }
+                    let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
+                        Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
+                    } else {
+                        let mut sum = Simd::<i32, 4>::splat(0);
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            sum = tap_mac(
+                                sum,
+                                Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
+                                    .cast(),
+                                tap,
+                            );
+                        }
+                        sum
+                    };
                     let values = round2_simd(
                         round2_simd(sum, INTER_ROUND0) << FILTER_BITS as i32,
                         inter_round1,
