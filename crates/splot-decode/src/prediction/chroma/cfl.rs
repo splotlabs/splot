@@ -310,8 +310,6 @@ fn cfl_prediction_into<T: ReconSample>(
     } else {
         predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?
     };
-    prediction.clear();
-    prediction.resize(width.saturating_mul(height), dc);
     let luma_ac = luma_ac.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
     apply_cfl_prediction(
         workspace,
@@ -324,6 +322,7 @@ fn cfl_prediction_into<T: ReconSample>(
         cfl_ds_filter_index,
         sb_mib,
         bit_depth,
+        dc,
         luma_ac,
         prediction,
     )?;
@@ -342,8 +341,9 @@ fn apply_cfl_prediction<T: ReconSample>(
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     bit_depth: BitDepth,
+    dc: T,
     luma_ac: &[i32],
-    prediction: &mut [T],
+    prediction: &mut Vec<T>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let alpha_q3 = cfl_alpha_q3(
         workspace,
@@ -357,14 +357,16 @@ fn apply_cfl_prediction<T: ReconSample>(
         sb_mib,
     )?;
     let max = i32::from(bit_depth.max_sample());
-    for row in 0..height {
-        for col in 0..width {
-            let index = row * width + col;
-            let scaled_luma = round2_signed_i32(alpha_q3 * luma_ac[index], CFL_ALPHA_SHIFT);
-            let dc = i32::from(prediction[index].to_u16());
-            let clipped = (dc + scaled_luma).clamp(0, max) as u16;
-            prediction[index] = T::try_from_u16(clipped)?;
-        }
+    let dc = i32::from(dc.to_u16());
+    let luma_ac = luma_ac
+        .get(..width.saturating_mul(height))
+        .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
+    prediction.clear();
+    prediction.reserve(luma_ac.len());
+    for &ac in luma_ac {
+        let scaled_luma = round2_signed_i32(alpha_q3 * ac, CFL_ALPHA_SHIFT);
+        let clipped = (dc + scaled_luma).clamp(0, max) as u16;
+        prediction.push(T::try_from_u16(clipped)?);
     }
     Ok(())
 }
