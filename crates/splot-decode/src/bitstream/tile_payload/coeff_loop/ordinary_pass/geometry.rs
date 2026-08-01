@@ -3,7 +3,7 @@
 
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{MODE_TO_ANGLE, MODE_TO_TXFM};
-use splot_recon::{ReconError, TransformClass, coefficient_scan_order};
+use splot_recon::{ReconError, TransformClass, coefficient_scan_slice};
 
 use super::super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -51,7 +51,6 @@ const TX_SET_DCT_IDTX: usize = 7;
 const TX_SET_DCT_IDTX_IDDCT: usize = 8;
 const MAX_REDUCED_TX_SET: usize = 3;
 const MAX_SCAN_DIMENSION: usize = 32;
-const MAX_SCAN_COEFFS: usize = MAX_SCAN_DIMENSION * MAX_SCAN_DIMENSION;
 
 macro_rules! coeff_default_tx_tables_adapter {
     (
@@ -276,23 +275,12 @@ struct CoeffOrdinaryTxSizeDimensions {
     tx_height_log2: u32,
 }
 
-struct CoeffOrdinaryScan {
-    positions: [u16; MAX_SCAN_COEFFS],
-    len: usize,
-}
-
-impl CoeffOrdinaryScan {
-    fn as_slice(&self) -> &[u16] {
-        &self.positions[..self.len]
-    }
-}
-
 struct CoeffOrdinaryDerivedTxSize {
     raw_dimensions: CoeffOrdinaryTxSizeDimensions,
     adjusted_dimensions: CoeffOrdinaryTxSizeDimensions,
     tx_size_ctx: usize,
     tx_class: CoeffTransformClass,
-    scan: CoeffOrdinaryScan,
+    scan: &'static [u16],
 }
 
 impl CoeffOrdinaryDerivedTxSize {
@@ -340,7 +328,7 @@ impl CoeffOrdinaryDerivedTxSize {
             .block_input();
         CoeffOrdinaryStateContextPassInput {
             start: input.start,
-            scan: self.scan.as_slice(),
+            scan: self.scan,
             base_config: CoeffBaseDerivedLevelPassConfig {
                 coeff_cdf_q_ctx: input.coeff_cdf_q_ctx,
                 tx_size_ctx: self.tx_size_ctx,
@@ -735,7 +723,7 @@ pub(crate) fn apply_coeff_ordinary_branch_from_tx_size_dimensions_with_tables(
                             input.is_inter,
                             input.coeff_cdf_q_ctx,
                         ),
-                        scan: derived.scan.as_slice(),
+                        scan: derived.scan,
                         base_config: input.base_config.base_config(
                             input.geometry,
                             derived.tx_size_ctx,
@@ -1052,26 +1040,21 @@ fn tx_size_table_tx_size(
 fn tx_size_scan(
     dimensions: CoeffOrdinaryTxSizeDimensions,
     tx_class: CoeffTransformClass,
-) -> Result<CoeffOrdinaryScan, CoeffOrdinaryBranchError> {
+) -> Result<&'static [u16], CoeffOrdinaryBranchError> {
     let width = dimensions.tx_width.min(MAX_SCAN_DIMENSION);
     let height = dimensions.tx_height.min(MAX_SCAN_DIMENSION);
-    let len = width * height;
-    let mut positions = [0u16; MAX_SCAN_COEFFS];
     let class = match tx_class {
         CoeffTransformClass::TwoD => TransformClass::TwoD,
         CoeffTransformClass::Horizontal => TransformClass::Horizontal,
         CoeffTransformClass::Vertical => TransformClass::Vertical,
     };
-    coefficient_scan_order(width, height, class, &mut positions[..len]).map_err(
-        |error| match error {
-            ReconError::InvalidScanShape { w, h } => CoeffOrdinaryBranchError::InvalidScanShape {
-                width: w,
-                height: h,
-            },
-            source => CoeffOrdinaryBranchError::ScanOrder(source),
+    coefficient_scan_slice(width, height, class).map_err(|error| match error {
+        ReconError::InvalidScanShape { w, h } => CoeffOrdinaryBranchError::InvalidScanShape {
+            width: w,
+            height: h,
         },
-    )?;
-    Ok(CoeffOrdinaryScan { positions, len })
+        source => CoeffOrdinaryBranchError::ScanOrder(source),
+    })
 }
 
 #[cfg(test)]
@@ -1089,7 +1072,7 @@ pub(crate) fn tx_size_scan_for_test(
         },
         CoeffTransformClass::from_plane_tx_type(plane_tx_type),
     )
-    .map(|scan| scan.as_slice().to_vec())
+    .map(<[u16]>::to_vec)
 }
 
 fn tx_size_table_usize(

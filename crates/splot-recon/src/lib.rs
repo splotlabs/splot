@@ -64,7 +64,9 @@ pub use cdef_filter::{
     cdef_filter_block_chroma_pair, cdef_filter_block_interior, cdef_filter_block_interior_to,
     cdef_filter_block_interior_to_valid_stride, cdef_filter_sample,
 };
-pub use coefficient_scan::{TransformClass, coefficient_scan_order, tx_class};
+pub use coefficient_scan::{
+    TransformClass, coefficient_scan_order, coefficient_scan_slice, tx_class,
+};
 pub use deblock_filter::{
     DeblockFilterChoice, DeblockSampleFilter, deblock_adaptive_filter_strength,
     deblock_filter_choice, deblock_filter_choice_and_sample_strided_4,
