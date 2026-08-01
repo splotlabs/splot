@@ -82,13 +82,13 @@ pub fn apply_intra_ibp_dc_rect<T: ReconSample>(
             have_other,
             stride_samples,
             |edge_index, log2_dimension, weight_index, pred_index| {
-                let edge_sample = samples.get(edge_index).copied().ok_or(
+                let edge_sample = samples.get(edge_index).copied().ok_or_else(|| {
                     ReconError::IntraPredictionEdgeLengthMismatch {
                         edge,
                         expected: edge_len(edge, size),
                         actual: samples.len(),
-                    },
-                )?;
+                    }
+                })?;
                 let weight = ibp_weight(log2_dimension, weight_index)?;
                 let sample = blend_sample(
                     bit_depth,

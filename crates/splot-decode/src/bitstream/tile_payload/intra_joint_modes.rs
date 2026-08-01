@@ -387,10 +387,6 @@ impl TileLumaPaletteState {
     ) {
         self.grid.record_block((r, c), (n4w, n4h), palette);
     }
-
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
-        self.grid.record_block((r, c), (n4w, n4h), None);
-    }
 }
 
 fn push_palette_cache(cache: &mut [u16; 2 * PALETTE_MAX_SIZE], len: &mut usize, value: u16) {
@@ -530,10 +526,6 @@ impl TileUsesMrlsState {
         uses_mrls: u8,
     ) {
         self.grid.record_block((r, c), (n4w, n4h), uses_mrls);
-    }
-
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
-        self.grid.record_block((r, c), (n4w, n4h), NO_MRL);
     }
 }
 
@@ -1058,10 +1050,6 @@ impl TileIntraYModeState {
                 angle_delta_y,
             }),
         );
-    }
-
-    pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
-        self.grid.record_block((r, c), (n4w, n4h), None);
     }
 
     pub(crate) fn y_mode_facts_at(&self, row: usize, col: usize) -> Option<TileIntraYModeFacts> {
