@@ -25,7 +25,7 @@
 
 use splot_tables::tables::secondary_transform::{IST_4X4_KERNEL, IST_8X8_KERNEL, STX_SCAN_MAP};
 
-use crate::coefficient_scan::{TransformClass, coefficient_scan_order};
+use crate::coefficient_scan::TransformClass;
 use crate::math::round2_signed_i32;
 use crate::{BitDepth, ReconError, Result};
 
@@ -45,8 +45,6 @@ const IST_SET_SIZE_8X8: usize = 11;
 /// `0..=3`; `0` is "no secondary transform", and types `1..=3` index the kernel
 /// at `sec_tx_type - 1`).
 const STX_TYPES: usize = 4;
-/// Maximum operating side (§ 7.15.3 caps `w` / `h` at `Min(32, Tx_*)`).
-const MAX_DIM: usize = 32;
 
 /// AV2 § 7.15.3 `Stx_Scan_Order_4x4[IST_4X4_WIDTH]`, transcribed verbatim from the
 /// spec process body (`07-decoding-process.md#s-7-15-3`). It is a § 7.15.3
@@ -159,9 +157,7 @@ pub fn secondary_inverse_transform(
     }
     let stx = sec_tx_type - 1;
 
-    let mut scan = [0u16; MAX_DIM * MAX_DIM];
-    let scan = &mut scan[..expected];
-    coefficient_scan_order(w, h, primary_scan_class, scan)?;
+    let scan = crate::coefficient_scan_slice(w, h, primary_scan_class)?;
     let bound = 1i32 << (u32::from(bit_depth.bits()) + 7);
     let mut coefs = [0i32; IST_8X8_HEIGHT];
     for (slot, &pos) in coefs[..n].iter_mut().zip(scan.iter()) {
@@ -216,6 +212,7 @@ const fn is_valid_side(side: usize) -> bool {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::coefficient_scan_order;
 
     fn round2_signed_reference(value: i64, shift: u32) -> i64 {
         let magnitude = value.unsigned_abs();
@@ -259,7 +256,7 @@ mod tests {
         } else {
             (IST_4X4_WIDTH, 2u32, 4usize)
         };
-        let mut scan = [0u16; MAX_DIM * MAX_DIM];
+        let mut scan = [0u16; 32 * 32];
         let scan = &mut scan[..p.w * p.h];
         coefficient_scan_order(p.w, p.h, p.primary_scan_class, scan).unwrap();
         let coefs: Vec<i64> = scan[..p.n]
