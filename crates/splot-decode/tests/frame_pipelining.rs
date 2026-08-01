@@ -146,10 +146,14 @@ fn an_early_output_limit_break_matches_serial_decode() {
 }
 
 #[test]
-fn frame_delay_resolves_once_and_clamps_to_the_pool_width() {
-    assert_eq!(context(4, FrameDelay::from(64usize)).frame_delay().get(), 4);
+fn frame_delay_resolves_once_against_the_pool_width() {
+    assert_eq!(
+        context(4, FrameDelay::from(64usize)).frame_delay().get(),
+        64
+    );
     assert_eq!(context(4, FrameDelay::Auto).frame_delay().get(), 4);
     assert_eq!(context(4, FrameDelay::from(2usize)).frame_delay().get(), 2);
+    assert_eq!(context(2, FrameDelay::Auto).frame_delay().get(), 3);
     assert_eq!(context(1, FrameDelay::Auto).frame_delay().get(), 1);
 }
 
