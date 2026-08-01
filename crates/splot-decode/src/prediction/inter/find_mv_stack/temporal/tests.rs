@@ -524,6 +524,30 @@ fn tip_newly_averaged_sample_keeps_the_scaled_reference_offset() {
 }
 
 #[test]
+fn tip_averaging_never_inherits_the_previous_frame_between_sampled_cells() {
+    let mut context = tip_context(10, vec![Some(6), Some(15)], 4, 8);
+    for y8 in 0..2 {
+        for x8 in 0..4 {
+            context.field.set(y8, x8, Mv { row: 18, col: -36 }, 9, true);
+        }
+    }
+    assert!(context.prepare_tip(1, 8, true));
+
+    context.field.reset(4, 8).unwrap();
+    assert!(context.prepare_tip(2, 16, true));
+
+    for y8 in 0..2 {
+        for x8 in 0..4 {
+            assert_eq!(
+                context.field.cell(y8, x8),
+                Some(ProjectedTemporalMotionCell::default()),
+                "cell ({y8}, {x8}) kept the previous frame's TIP motion"
+            );
+        }
+    }
+}
+
+#[test]
 fn refresh_reuses_projected_and_trajectory_storage() {
     let config = TemporalProjectionConfig {
         frame_size: (64, 64),
