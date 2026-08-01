@@ -1139,6 +1139,11 @@ struct PrepassSinks<'a, T: ReconSample> {
 /// `next_unit` supplies the units already resolved, so the same driver serves
 /// the fused walk, which resolves each unit as it parses it, and the deferred
 /// resolve pass, which resolves units the driver parsed earlier.
+///
+/// An empty `shadow_surfaces` runs the same driver with no precompute at all:
+/// every unit reaches the ordered commit whole, and the only concurrency left
+/// is the parse pass running ahead of that commit. That shape is what
+/// [`PARSE_AHEAD_POOL_WIDTH`] admits.
 #[allow(clippy::too_many_arguments)]
 fn run_superblock_prepass<T: ReconSample, P>(
     mut next_unit: P,
@@ -1734,6 +1739,16 @@ fn prepare_tile<T: ReconSample>(
     })
 }
 
+/// Pool width at which one tile's entropy pass runs ahead of its ordered
+/// commit.
+///
+/// One spare worker is the whole requirement: the commit still runs every unit
+/// in parse order, so parse-ahead is independent of the shadow-surface
+/// precompute, which needs a wider pool and cannot run at all under
+/// frame-level intra block copy. A one-worker pool keeps the fused serial
+/// parse-then-reconstruct loop.
+const PARSE_AHEAD_POOL_WIDTH: usize = 2;
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
     scratch: &mut TileDecodeScratch<T>,
@@ -1786,6 +1801,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         && !super::intrabc::global_intrabc_enabled(core.intrabc);
     let parallel_prepass = splot_parallel::current_pool_width() >= 4
         && !super::intrabc::global_intrabc_enabled(core.intrabc);
+    let parse_ahead = splot_parallel::current_pool_width() >= PARSE_AHEAD_POOL_WIDTH;
     if parallel_tiles {
         row_gate.wait("arm=tiles")?;
         let mut luma_rects = Vec::new();
@@ -1962,7 +1978,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             motion_field: motion.into_field(),
         });
     }
-    if !parallel_prepass {
+    if !parse_ahead {
         row_gate.wait("arm=serial")?;
     }
     for tile in work_units.iter_mut() {
@@ -1971,7 +1987,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut current_block_decoded_superblock = None;
         let quantizer = FrameQuantizerSnapshot::capture();
         let mut recon_ordinal = 0usize;
-        let superblock_rects = if parallel_prepass {
+        let superblock_rects = if parse_ahead {
             Some(tile_superblock_luma_rects(tile, workspace, sb_h4)?)
         } else {
             None
@@ -1986,7 +2002,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
-        if parallel_prepass {
+        if parse_ahead {
             let Some(rects) = superblock_rects else {
                 return Err(inter_cap!(
                     "inter_superblock_surface_state",
@@ -2018,7 +2034,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 })
             };
             let mut cursor = PrepassCursor::new(&block_decoded);
-            let mut shadow = CurrentFrameWorkspace::new(workspace.info(), T::default())?;
+            let mut shadow = parallel_prepass
+                .then(|| CurrentFrameWorkspace::new(workspace.info(), T::default()))
+                .transpose()?;
             let done_limit = rects.len().checked_add(1).ok_or_else(|| {
                 inter_cap!(
                     "inter_superblock_done_limit_overflow",
@@ -2027,13 +2045,17 @@ pub(super) fn decode_tiles<T: ReconSample>(
                     SPEC_MODE_INFO
                 )
             })?;
-            run_superblock_prepass(
-                next_unit,
-                shadow
+            let surfaces = match shadow.as_mut() {
+                Some(shadow) => shadow
                     .rect_surfaces(&rects)?
                     .into_iter()
                     .map(ReadyReconSurface::Borrowed)
                     .collect(),
+                None => Vec::new(),
+            };
+            run_superblock_prepass(
+                next_unit,
+                surfaces,
                 done_limit,
                 tile_offset,
                 &context,
