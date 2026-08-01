@@ -30,16 +30,15 @@ struct ScheduledCommit<T: ReconSample> {
 /// The chain runs beside the commit spine, so it owns the pixels it filters:
 /// either the sealed copy the spine hands it one superblock row at a time, or
 /// the canonical row bands a banded frame reconstructs directly into. A frame
-/// with no incremental frontier — IntraBC, or no active deblock plan, where
-/// sealing would only add a copy — instead receives the spine's whole
-/// workspace once reconstruction is complete.
+/// with no active deblock plan has nothing for the chain to advance, so sealing
+/// would only add a copy; it receives the spine's whole workspace once
+/// reconstruction is complete.
 struct ScheduledFrontier<T: ReconSample> {
     sealed: Option<CurrentFrameWorkspace<T>>,
     sealed_rows: usize,
     terminal_workspace: Option<CurrentFrameWorkspace<T>>,
     bands: Option<splot_recon::OwnedFrameBands<T>>,
     deblock: Option<crate::filters::deblock::FrameDeblock<'static>>,
-    contains_intrabc: bool,
     filter: Option<Arc<crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>>>,
     next_filter_stripe: usize,
 }
@@ -485,7 +484,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             terminal_workspace,
             bands,
             deblock,
-            contains_intrabc,
             filter,
             next_filter_stripe,
         } = &mut *frontier;
@@ -499,7 +497,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 self.params.sb_h4,
                 self.params.mi_rows,
                 terminal,
-                *contains_intrabc,
             )
         {
             let filter = filter.as_ref().ok_or_else(|| {
@@ -833,21 +830,20 @@ const RECON_READ_LEAD_MI_ROWS: usize = 6;
 
 /// Returns the § 7.17 deblock frontier after `completed_rows` canonical rows.
 ///
-/// IntraBC has a wider, non-row-shaped source lifetime and therefore stays
-/// whole-frame.
+/// The frontier deblocks the sealed copy or the frame's own canonical bands, so
+/// its only bound is the sealed rows it may read. Current-frame readers —
+/// ordinary intra, and local or global IntraBC — keep reading the spine's raw
+/// workspace, which no deblock pass writes, so an IntraBC source's liveness
+/// places no constraint here.
 fn safe_deblock_mi_end(
     completed_units: usize,
     units_per_row: usize,
     sb_h4: usize,
     mi_rows: usize,
     terminal: bool,
-    contains_intrabc: bool,
 ) -> Option<core::num::NonZeroUsize> {
     if terminal {
         return core::num::NonZeroUsize::new(mi_rows);
-    }
-    if contains_intrabc {
-        return None;
     }
     let completed_rows = completed_units
         .checked_div(units_per_row)
@@ -858,6 +854,18 @@ fn safe_deblock_mi_end(
             .min(mi_rows)
             .saturating_sub(RECON_READ_LEAD_MI_ROWS),
     )
+}
+
+/// Whether the frontier chain filters its own sealed copy of the frame.
+///
+/// Sealing is what decouples § 7.17 from the commit spine: deblock writes only
+/// the copy, so every current-frame reader — ordinary intra, and local or
+/// global IntraBC, whose source region is neither row-shaped nor bounded above
+/// — still reads raw reconstructed samples however far the frontier has run. A
+/// banded frame already owns its canonical rows, and a frame with no active
+/// deblock plan has nothing to advance, so neither seals.
+const fn seals_filter_copy(owned_bands: bool, has_deblock: bool, whole_frame: bool) -> bool {
+    !owned_bands && has_deblock && whole_frame
 }
 
 /// Whether one parsed tile owns every mode-info position in the frame, which
@@ -1095,10 +1103,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     }
     let prepass_block_decoded = parsed.block_decoded.clone();
     let block_decoded = parsed.block_decoded.clone();
-    let contains_intrabc = unresolved
-        .iter()
-        .flatten()
-        .any(|(row, _)| row.contains_intrabc());
     let unit_count = unresolved.len();
     let batches = if owned_bands {
         band_batches(unit_count, units_per_row.max(1), temporal_plan.len())
@@ -1134,10 +1138,11 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })
         .transpose()?
         .flatten();
-    let seals_filter_copy = !owned_bands
-        && deblock.is_some()
-        && !contains_intrabc
-        && covers_whole_frame(&parsed, &params);
+    let seals_filter_copy = seals_filter_copy(
+        owned_bands,
+        deblock.is_some(),
+        covers_whole_frame(&parsed, &params),
+    );
     let TileDecodeScratch { ordered, workers } = scratch;
     let filter_count = filter_setup.stripe_ranges().len();
     Ok(ScheduledTileRecon {
@@ -1166,7 +1171,6 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             terminal_workspace: None,
             bands: owned_bands.then(|| splot_recon::OwnedFrameBands::new(info)),
             deblock,
-            contains_intrabc,
             filter: Some(Arc::new(filter_setup)),
             next_filter_stripe: 0,
         }),
@@ -1213,17 +1217,9 @@ mod tests {
         sb_h4: usize,
         mi_rows: usize,
         terminal: bool,
-        contains_intrabc: bool,
     ) -> Option<usize> {
-        safe_deblock_mi_end(
-            completed_units,
-            units_per_row,
-            sb_h4,
-            mi_rows,
-            terminal,
-            contains_intrabc,
-        )
-        .map(core::num::NonZeroUsize::get)
+        safe_deblock_mi_end(completed_units, units_per_row, sb_h4, mi_rows, terminal)
+            .map(core::num::NonZeroUsize::get)
     }
 
     #[test]
@@ -1231,39 +1227,41 @@ mod tests {
         for (completed_units, expected) in
             [None, Some(10), Some(26), Some(42)].into_iter().enumerate()
         {
-            assert_eq!(frontier(completed_units, 1, 16, 64, false, false), expected);
+            assert_eq!(frontier(completed_units, 1, 16, 64, false), expected);
         }
-        assert_eq!(frontier(4, 1, 16, 64, true, false), Some(64));
+        assert_eq!(frontier(4, 1, 16, 64, true), Some(64));
     }
 
     #[test]
     fn wide_frame_frontier_counts_only_complete_superblock_rows() {
         for completed_units in 0..3 {
-            assert_eq!(frontier(completed_units, 3, 16, 64, false, false), None);
+            assert_eq!(frontier(completed_units, 3, 16, 64, false), None);
         }
         for completed_units in 3..6 {
-            assert_eq!(frontier(completed_units, 3, 16, 64, false, false), Some(10));
+            assert_eq!(frontier(completed_units, 3, 16, 64, false), Some(10));
         }
-        assert_eq!(frontier(6, 3, 16, 64, false, false), Some(26));
-        assert_eq!(frontier(9, 3, 16, 64, false, false), Some(42));
+        assert_eq!(frontier(6, 3, 16, 64, false), Some(26));
+        assert_eq!(frontier(9, 3, 16, 64, false), Some(42));
     }
 
     #[test]
     fn frontier_never_reaches_the_frame_bottom_before_terminal_commit() {
-        assert_eq!(frontier(12, 3, 16, 64, false, false), Some(58));
-        assert_eq!(frontier(15, 3, 16, 60, false, false), Some(54));
+        assert_eq!(frontier(12, 3, 16, 64, false), Some(58));
+        assert_eq!(frontier(15, 3, 16, 60, false), Some(54));
     }
 
     #[test]
     fn short_superblock_rows_keep_a_zero_frontier() {
-        assert_eq!(frontier(1, 1, 4, 64, false, false), None);
-        assert_eq!(frontier(2, 1, 4, 64, false, false), Some(2));
+        assert_eq!(frontier(1, 1, 4, 64, false), None);
+        assert_eq!(frontier(2, 1, 4, 64, false), Some(2));
     }
 
     #[test]
-    fn intrabc_deblock_frontier_waits_for_terminal_commit() {
-        assert_eq!(frontier(3, 1, 16, 64, false, true), None);
-        assert_eq!(frontier(4, 1, 16, 64, true, true), Some(64));
+    fn every_whole_frame_deblock_plan_seals_its_own_filter_copy() {
+        assert!(super::seals_filter_copy(false, true, true));
+        assert!(!super::seals_filter_copy(true, true, true));
+        assert!(!super::seals_filter_copy(false, false, true));
+        assert!(!super::seals_filter_copy(false, true, false));
     }
 
     #[test]

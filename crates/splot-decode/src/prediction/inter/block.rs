@@ -206,10 +206,6 @@ enum ReconDependency {
 }
 
 impl ReconCommand {
-    const fn is_intrabc(&self) -> bool {
-        matches!(self, Self::Intrabc(_))
-    }
-
     fn dependency(&self) -> ReconDependency {
         match self {
             Self::Intrabc(command) if command.requires_global_fence() => {

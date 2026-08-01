@@ -721,15 +721,6 @@ pub(super) struct ReconRow {
     pub(super) terminal: Option<crate::DecodeError>,
 }
 
-impl ReconRow {
-    fn contains_intrabc(&self) -> bool {
-        self.entries
-            .iter()
-            .filter_map(|entry| entry.command.as_ref())
-            .any(ReconCommand::is_intrabc)
-    }
-}
-
 #[derive(Default)]
 pub(super) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
