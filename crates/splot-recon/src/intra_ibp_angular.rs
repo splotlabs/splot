@@ -166,33 +166,48 @@ pub fn apply_ibp_dr_blend_rect<T: ReconSample>(
     let shift = IBP_WEIGHT_SIZE_LOG2 + 1;
     let c_shift = (width as u32) >> shift;
     let r_shift = (height as u32) >> shift;
-    for row in 0..height {
+    for (row, (primary_row, second_row)) in primary
+        .chunks_exact_mut(width)
+        .zip(second.chunks_exact(width))
+        .take(height)
+        .enumerate()
+    {
         let row_idx = (row as u32 >> r_shift) as usize;
-        for column in 0..width {
+        let zone1_weights = if zone1 {
+            Some(weight_row(weights, row_idx)?)
+        } else {
+            None
+        };
+        for (column, (target, &source)) in primary_row.iter_mut().zip(second_row).enumerate() {
             let col_idx = (column as u32 >> c_shift) as usize;
-            let s = if zone1 {
-                weight_at(weights, row_idx, col_idx)?
-            } else {
-                weight_at(weights, col_idx, row_idx)?
+            let s = match zone1_weights {
+                Some(row_weights) => weight_lane(row_weights, col_idx)?,
+                None => weight_lane(weight_row(weights, col_idx)?, row_idx)?,
             };
-            let index = row * width + column;
-            let primary_value = u32::from(primary[index].to_u16());
-            let second_value = u32::from(second[index].to_u16());
+            let primary_value = u32::from(target.to_u16());
+            let second_value = u32::from(source.to_u16());
             let inverse = u32::from(IBP_WEIGHT_MAX - s);
             let blended = round2_u32(
                 primary_value * u32::from(s) + second_value * inverse,
                 IBP_WEIGHT_SHIFT,
             ) as u16;
-            primary[index] = T::try_from_u16(blended)?;
+            *target = T::try_from_u16(blended)?;
         }
     }
     Ok(())
 }
 
-fn weight_at(weights: &IbpWeights, outer: usize, inner: usize) -> Result<u16> {
+fn weight_row(weights: &IbpWeights, outer: usize) -> Result<&[u16]> {
     weights
         .get(outer)
-        .and_then(|row| row.get(inner))
+        .map(AsRef::as_ref)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "IBP angular weight index",
+        })
+}
+
+fn weight_lane(row: &[u16], inner: usize) -> Result<u16> {
+    row.get(inner)
         .copied()
         .ok_or(ReconError::ArithmeticOverflow {
             context: "IBP angular weight index",
