@@ -56,6 +56,7 @@ mod clipped_compound;
 mod clipped_edges;
 mod copy;
 mod output;
+mod slide;
 mod tip_overlap;
 pub use copy::{
     blend_compound_average_equal, blend_compound_average_weighted,
@@ -67,6 +68,7 @@ use copy::{
     subpel_horizontal_window_x, subpel_vertical_only_into,
 };
 use output::*;
+use slide::SlideLanes;
 pub use tip_overlap::subpel_predict_16x16_bilinear_horizontal_overlap_into;
 /// AV2 § 3 `SCALE_SUBPEL_BITS`: number of fractional bits in the 1/1024-sample
 /// reference coordinates (`startX` / `startY` / `stepX` / `stepY` units).
@@ -117,6 +119,12 @@ const SMALL_BLOCK_EIGHTTAP_SMOOTH: u8 = 5;
 
 /// The number of filter taps in each `Subpel_Filters` row.
 const NUM_TAPS: usize = 8;
+
+/// Extra readable samples one reference row needs past its § 7.13.3.18 window
+/// before the sliding window shape may replace the eight overlapping tap loads
+/// with two loads and seven lane slides. Nine covers the widest window set
+/// (sixteen lanes); rows that cannot spare them keep the overlapping loads.
+const SLIDE_RESERVE: usize = 9;
 
 /// The number of sub-pel phases (the 16 rows of each filter type).
 const NUM_PHASES: usize = 16;
@@ -1663,7 +1671,12 @@ fn subpel_predict_block_compound_average_horizontal_validated<
         let filter = params.interp.pass_index(params.w as u32) as usize;
         let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
         let (start, end) = ACTIVE_TAP_SPANS[filter][phase];
-        (&SUBPEL_FILTERS[filter][phase][start..end], start)
+        let full = &SUBPEL_FILTERS[filter][phase];
+        (
+            &full[start..end],
+            start,
+            (start == 0 && end == NUM_TAPS).then_some(full),
+        )
     });
     let forward = i32::from(cwp_weight);
     let backward = 16 - forward;
@@ -1690,17 +1703,25 @@ fn subpel_predict_block_compound_average_horizontal_validated<
         for col in (0..vector_width8).step_by(8) {
             let mut predictors = [Simd::<i32, 8>::splat(0); 2];
             for reference in 0..2 {
-                let (taps, tap_start) = filters[reference];
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    predictors[reference] = tap_mac(
-                        predictors[reference],
-                        Simd::<u16, 8>::from_slice(
-                            &windows[reference][col + tap_start + tap_offset..],
-                        )
-                        .cast(),
-                        tap,
-                    );
-                }
+                let (taps, tap_start, full_taps) = filters[reference];
+                let window = windows[reference];
+                predictors[reference] = match full_taps {
+                    Some(full_taps) if Simd::<i32, 8>::admits(window.len(), col) => {
+                        Simd::<i32, 8>::slid_tap_sum(window, col, full_taps)
+                    }
+                    _ => {
+                        let mut sum = predictors[reference];
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            sum = tap_mac(
+                                sum,
+                                Simd::<u16, 8>::from_slice(&window[col + tap_start + tap_offset..])
+                                    .cast(),
+                                tap,
+                            );
+                        }
+                        sum
+                    }
+                };
                 predictors[reference] = round2_simd(predictors[reference], INTER_ROUND0);
             }
             let blended = round2_simd(
@@ -1715,17 +1736,25 @@ fn subpel_predict_block_compound_average_horizontal_validated<
         for col in (vector_width8..vector_width4).step_by(4) {
             let mut predictors = [Simd::<i32, 4>::splat(0); 2];
             for reference in 0..2 {
-                let (taps, tap_start) = filters[reference];
-                for (tap_offset, &tap) in taps.iter().enumerate() {
-                    predictors[reference] = tap_mac(
-                        predictors[reference],
-                        Simd::<u16, 4>::from_slice(
-                            &windows[reference][col + tap_start + tap_offset..],
-                        )
-                        .cast(),
-                        tap,
-                    );
-                }
+                let (taps, tap_start, full_taps) = filters[reference];
+                let window = windows[reference];
+                predictors[reference] = match full_taps {
+                    Some(full_taps) if Simd::<i32, 4>::admits(window.len(), col) => {
+                        Simd::<i32, 4>::slid_tap_sum(window, col, full_taps)
+                    }
+                    _ => {
+                        let mut sum = predictors[reference];
+                        for (tap_offset, &tap) in taps.iter().enumerate() {
+                            sum = tap_mac(
+                                sum,
+                                Simd::<u16, 4>::from_slice(&window[col + tap_start + tap_offset..])
+                                    .cast(),
+                                tap,
+                            );
+                        }
+                        sum
+                    }
+                };
                 predictors[reference] = round2_simd(predictors[reference], INTER_ROUND0);
             }
             let blended = round2_simd(
@@ -1740,7 +1769,7 @@ fn subpel_predict_block_compound_average_horizontal_validated<
             let col = vector_width4 + col;
             let mut predictors = [0i32; 2];
             for reference in 0..2 {
-                let (taps, tap_start) = filters[reference];
+                let (taps, tap_start, _) = filters[reference];
                 for (tap_offset, &tap) in taps.iter().enumerate() {
                     predictors[reference] +=
                         tap * i32::from(windows[reference][col + tap_start + tap_offset]);
@@ -1885,7 +1914,9 @@ fn fused_compound_average_2d<const LANES: usize>(
     scratch: &mut [i16],
     output: &mut [u16],
     output_stride: usize,
-) {
+) where
+    Simd<i32, LANES>: SlideLanes,
+{
     const MAX_INTERMEDIATE: usize = (8 + NUM_TAPS - 1) * 8;
     let (first, second) = scratch.split_at_mut(MAX_INTERMEDIATE);
     let intermediate = [first, second];
@@ -1893,7 +1924,12 @@ fn fused_compound_average_2d<const LANES: usize>(
         let filter = params.interp.pass_index(params.w as u32) as usize;
         let phase = ((params.start_x >> 6) & SUBPEL_MASK) as usize;
         let (start, end) = ACTIVE_TAP_SPANS[filter][phase];
-        (&SUBPEL_FILTERS[filter][phase][start..end], start)
+        let full = &SUBPEL_FILTERS[filter][phase];
+        (
+            &full[start..end],
+            start,
+            (start == 0 && end == NUM_TAPS).then_some(full),
+        )
     });
     for reference in 0..2 {
         for row in 0..params[reference].h + NUM_TAPS - 1 {
@@ -1903,15 +1939,23 @@ fn fused_compound_average_2d<const LANES: usize>(
             let source = &sources[reference][source_row.min(references[reference].height - 1)
                 * references[reference].stride
                 + windows[reference]..];
-            let (taps, tap_start) = horizontal[reference];
-            let mut sum = Simd::<i32, LANES>::splat(0);
-            for (offset, &tap) in taps.iter().enumerate() {
-                sum = tap_mac(
-                    sum,
-                    Simd::<u16, LANES>::from_slice(&source[tap_start + offset..]).cast(),
-                    tap,
-                );
-            }
+            let (taps, tap_start, full_taps) = horizontal[reference];
+            let sum = match full_taps {
+                Some(full_taps) if Simd::<i32, LANES>::admits(source.len(), 0) => {
+                    Simd::<i32, LANES>::slid_tap_sum(source, 0, full_taps)
+                }
+                _ => {
+                    let mut sum = Simd::<i32, LANES>::splat(0);
+                    for (offset, &tap) in taps.iter().enumerate() {
+                        sum = tap_mac(
+                            sum,
+                            Simd::<u16, LANES>::from_slice(&source[tap_start + offset..]).cast(),
+                            tap,
+                        );
+                    }
+                    sum
+                }
+            };
             let lanes = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
             intermediate[reference][row * LANES..(row + 1) * LANES].copy_from_slice(&lanes); // splot-copy-ok: store horizontal SIMD lanes in caller scratch
         }
@@ -2202,7 +2246,11 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
             let row_out = &mut intermediate[r * w..(r + 1) * w];
             let window = x_window_start.and_then(|window_start| {
                 let row_base = ref_row * reference.stride + window_start;
-                reference.samples.get(row_base..row_base + w + NUM_TAPS - 1)
+                let taps_end = row_base + w + NUM_TAPS - 1;
+                reference
+                    .samples
+                    .get(row_base..taps_end + SLIDE_RESERVE)
+                    .or_else(|| reference.samples.get(row_base..taps_end))
             });
             if let Some(window) = window {
                 let phase = ((start_x >> 6) & SUBPEL_MASK) as usize;
@@ -2212,49 +2260,72 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                     }
                     continue;
                 }
-                let taps = &h_filter_rows[phase];
+                let full_taps = &h_filter_rows[phase];
                 let (tap_start, tap_end) = ACTIVE_TAP_SPANS[h_filter as usize][phase];
-                let taps = &taps[tap_start..tap_end];
+                let taps = &full_taps[tap_start..tap_end];
                 if let Some(window) = T::u16_slice(window) {
+                    let full_span = tap_start == 0 && tap_end == NUM_TAPS;
+                    let available = window.len();
                     let vector_width16 = w - w % 16;
                     for c in (0..vector_width16).step_by(16) {
-                        let mut sum = Simd::<i32, 16>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 16>::from_slice(&window[c + tap_start + tap_offset..])
+                        let sum = if full_span && Simd::<i32, 16>::admits(available, c) {
+                            Simd::<i32, 16>::slid_tap_sum(window, c, full_taps)
+                        } else {
+                            let mut sum = Simd::<i32, 16>::splat(0);
+                            for (tap_offset, &tap) in taps.iter().enumerate() {
+                                sum = tap_mac(
+                                    sum,
+                                    Simd::<u16, 16>::from_slice(
+                                        &window[c + tap_start + tap_offset..],
+                                    )
                                     .cast(),
-                                tap,
-                            );
-                        }
+                                    tap,
+                                );
+                            }
+                            sum
+                        };
                         let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
                         row_out[c..c + 16].copy_from_slice(&filtered); // splot-copy-ok: publish sixteen SIMD convolution outputs
                     }
                     let vector_width8 = w - w % 8;
                     for c in (vector_width16..vector_width8).step_by(8) {
-                        let mut sum = Simd::<i32, 8>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 8>::from_slice(&window[c + tap_start + tap_offset..])
+                        let sum = if full_span && Simd::<i32, 8>::admits(available, c) {
+                            Simd::<i32, 8>::slid_tap_sum(window, c, full_taps)
+                        } else {
+                            let mut sum = Simd::<i32, 8>::splat(0);
+                            for (tap_offset, &tap) in taps.iter().enumerate() {
+                                sum = tap_mac(
+                                    sum,
+                                    Simd::<u16, 8>::from_slice(
+                                        &window[c + tap_start + tap_offset..],
+                                    )
                                     .cast(),
-                                tap,
-                            );
-                        }
+                                    tap,
+                                );
+                            }
+                            sum
+                        };
                         let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
                         row_out[c..c + 8].copy_from_slice(&filtered); // splot-copy-ok: publish eight SIMD convolution outputs
                     }
                     let vector_width4 = w - w % 4;
                     for c in (vector_width8..vector_width4).step_by(4) {
-                        let mut sum = Simd::<i32, 4>::splat(0);
-                        for (tap_offset, &tap) in taps.iter().enumerate() {
-                            sum = tap_mac(
-                                sum,
-                                Simd::<u16, 4>::from_slice(&window[c + tap_start + tap_offset..])
+                        let sum = if full_span && Simd::<i32, 4>::admits(available, c) {
+                            Simd::<i32, 4>::slid_tap_sum(window, c, full_taps)
+                        } else {
+                            let mut sum = Simd::<i32, 4>::splat(0);
+                            for (tap_offset, &tap) in taps.iter().enumerate() {
+                                sum = tap_mac(
+                                    sum,
+                                    Simd::<u16, 4>::from_slice(
+                                        &window[c + tap_start + tap_offset..],
+                                    )
                                     .cast(),
-                                tap,
-                            );
-                        }
+                                    tap,
+                                );
+                            }
+                            sum
+                        };
                         let filtered = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
                         row_out[c..c + 4].copy_from_slice(&filtered); // splot-copy-ok: publish four SIMD convolution lanes into row scratch
                     }
