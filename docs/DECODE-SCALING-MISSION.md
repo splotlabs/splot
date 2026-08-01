@@ -56,9 +56,10 @@ must pass exact output comparison, the required corpus/oracle checks,
 `cargo xtask check-duplication`, `cargo xtask ci`, and the 1/2/4/8/10 paired
 timing matrix.
 
-## Confirmed baseline
+## Historical baseline
 
-Measured 2026-07-31 on exact `5d78ba974` (pre-SCALE-013 base):
+Superseded as the current state by the confirmed matrix below; retained as the
+pre-SCALE-013 starting point. Measured 2026-07-31 on exact `5d78ba974`:
 
 | Threads | splot wall | dav2d wall | splot cores busy | dav2d cores busy |
 |---:|---:|---:|---:|---:|
@@ -73,6 +74,87 @@ versus 1.10 s), so the remaining gap is parallel occupancy plus per-kernel DSP,
 not excess scalar work. Steady state is worse than 30-frame walls suggest: the
 30/60/120-frame sweep gives splot 7.8/7.5/6.4 ms per frame versus dav2d
 5.0/4.3/3.6. After SCALE-013 the 10-thread wall is 0.2247 s.
+
+## Confirmed matrix 2026-08-01 (post-#1149)
+
+Ground truth for exact `origin/main` `f4e1b96c3`. The timed binary is a
+from-scratch `cargo clean --release` rebuild of that source, hashing
+`d34f6f33c3ae8a00902314e0bf553d0b1f8cd634b373a7059b7f8dd0c9b7dfc1`, byte-identical
+to the frozen base the SCALE-040 matrices used. Host Apple M2 Max (8 performance
+plus 4 efficiency cores), up 2 days 20 hours, one-minute load 1.6–2.7 throughout
+with no backup, build, or second decode running. Method per width: 3 warmups per
+arm, then 11 alternating splot/dav2d pairs with the slot order rotated each pair,
+`SPLOT_DECODE_DISCARD_HASH=1`, `--limit=30`, wall from `perf_counter` and CPU from
+`RUSAGE_CHILDREN` user plus sys. Splot runs the contract's `--frame-delay=auto`
+(the flag is omitted; `auto` is the default) and dav2d `--framedelay max(T, 3)`.
+Two independent sweeps were taken; medians below are sweep 1 / sweep 2 and agree
+to within 0.1–0.8 points at every width, so this session shows none of the
+SCALE-038 host drift. Per-pair ratio spread over the 11 pairs is 0.9–2.6% at
+1/2/3/4T and 3.2–5.4% at 8/10T, so sub-1% cross-decoder claims at eight or ten
+threads still require the interleave.
+
+| T | splot wall | dav2d wall | ratio | splot faster | splot CPU | dav2d CPU | splot cores | dav2d cores |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.9682 / 0.9744 s | 1.0321 / 1.0377 s | **0.9381 / 0.9390x** | **11/11, 11/11** | 0.965 / 0.972 s | 1.030 / 1.036 s | 1.00 | 1.00 |
+| 2 | 0.5503 / 0.5536 s | 0.5371 / 0.5388 s | 1.0246 / 1.0275x | 0/11, 0/11 | 1.073 / 1.076 s | 1.063 / 1.065 s | 1.95 / 1.94 | 1.98 / 1.98 |
+| 3 | 0.3948 / 0.3951 s | 0.3745 / 0.3748 s | 1.0543 / 1.0542x | 0/11, 0/11 | 1.100 / 1.099 s | 1.101 / 1.100 s | 2.79 / 2.78 | 2.94 / 2.93 |
+| 4 | 0.3074 / 0.3075 s | 0.2867 / 0.2869 s | 1.0720 / 1.0718x | 0/11, 0/11 | 1.121 / 1.122 s | 1.113 / 1.113 s | 3.65 / 3.65 | 3.88 / 3.88 |
+| 8 | 0.1964 / 0.1968 s | 0.1587 / 0.1585 s | 1.2379 / 1.2419x | 0/11, 0/11 | 1.218 / 1.219 s | 1.155 / 1.155 s | 6.20 / 6.19 | 7.28 / 7.29 |
+| 10 | 0.1895 / 0.1901 s | 0.1525 / 0.1520 s | 1.2427 / 1.2506x | 0/11, 0/11 | 1.360 / 1.358 s | 1.321 / 1.319 s | 7.18 / 7.14 | 8.66 / 8.67 |
+
+**The goal's one-thread clause is met**: splot is 6.2% faster than dav2d at one
+worker, 11 of 11 pairs in both sweeps. Dav2d's frame delay is confirmed
+irrelevant at two workers, where the contract's depths differ: dav2d measures
+0.5371 / 0.5388 s at `--framedelay 3` against 0.5381 / 0.5392 s at
+`--framedelay 2` (ratios 1.0246 / 1.0275x and 1.0226 / 1.0268x, 0/11 both), so
+splot's `auto = 3` at two workers is compared fairly either way.
+
+Marginal steady frame (`--limit=120` minus `--limit=60`, over 60 frames, median
+of 5 alternating reps), which the 30-frame benchmark understates because its
+intra-heavy prologue is where splot is relatively cheapest (SCALE-032): at two
+workers splot is 25.230 ms CPU and 12.728 ms wall per frame at 1.982 cores
+against dav2d's 21.819 ms, 10.910 ms and 2.000 cores (CPU **1.156x**, wall
+1.167x); at ten workers splot is 32.914 ms CPU and 4.166 ms wall at **7.900**
+cores against dav2d's 25.617 ms, 2.824 ms and **9.071** cores (CPU **1.285x**,
+wall 1.475x).
+
+Where the benchmark gap sits, as idle core-time (`T x wall - CPU`): splot's
+excess idle over dav2d is 0.017 core-s at 2T, 0.062 at 3T, 0.075 at 4T, 0.238 at
+8T and 0.331 at 10T, which divided by the width is 8.5 / 20.5 / 18.8 / 29.8 /
+33.1 ms of wall against measured gaps of 13.2 / 20.3 / 20.7 / 37.7 / 37.0 ms.
+**Occupancy is therefore essentially the whole gap at 3T and 4T and roughly 90%
+of it at 10T**, with the 30-frame CPU term small everywhere (1.009x at 2T,
+0.999x at 3T, 1.030x at 10T). Splitting the idle by regime at ten workers: the
+key frame's fused serial walk is 11.76 ms with nine workers idle, 106 core-ms or
+**32% of the 331 core-ms excess**, and the rest is steady state, where splot
+holds 7.90 cores against dav2d's 9.07.
+
+### Remaining-gap ranking
+
+Ranked by how much is left and whether anything open reaches it: **1T is done**
+(splot 6.2% ahead; the scalar ledger's remaining job there is protection, not
+gain). **2T is the closest miss at 2.5%**, and is now roughly half occupancy
+(1.5%) and half CPU (0.9%) — SCALE-039 already took the 3.5% depth item from
+SCALE-038's ceiling table and SCALE-040-B measured the key frame's post-filter
+overlap at a true 1.0% ceiling before killing it at 0.15–0.3% realizable, so
+nothing open is sized for what remains. **3T and 4T (5.4% and 7.2%) are pure
+occupancy and majority pipeline fill**; the one open item from SCALE-038's table
+that reaches them is the key frame's walk split N-way (ceiling 2.8% / 4.0%, of
+which SCALE-040's two-way `parse_ahead` already took 1.5% / 2.2%), leaving about
+1.3% / 1.8% behind an intra-frame admission to the scheduled path — real, but
+still a point or two short of parity on its own. **8T and 10T are the large
+misses at 23.8% and 24.3%, and no open ceiling closes them.** The
+E-core/software term is bounded the wrong way round for this: SCALE-034 measured
+49% of the 1T-to-10T cycle penalty as host topology that no decoder layout
+reaches, 24% as the split path's extra work closed behind a surface-ownership
+restructuring (SCALE-035), and 27% as software stall — of which `commit_intra`
+is 38%, about 2.9% of ten-thread per-frame CPU, which at unchanged occupancy is
+roughly 3.6 ms of the 190 ms benchmark wall, **under a tenth of the 37 ms gap**,
+and it is gated on pinning the ordered commit and its scratch to the producing
+worker. The honest reading is that the 8/10T gap is an occupancy gap of 1.5
+cores (7.18 against 8.66), only a third of it pipeline fill and the rest steady
+state, so the next material candidate has to raise steady-state occupancy rather
+than delete CPU; the 50%-of-dav2d target at ten threads (0.076 s) needs both.
 
 ## Delivery discipline
 
