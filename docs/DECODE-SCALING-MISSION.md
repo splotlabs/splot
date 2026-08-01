@@ -75,104 +75,167 @@ not excess scalar work. Steady state is worse than 30-frame walls suggest: the
 30/60/120-frame sweep gives splot 7.8/7.5/6.4 ms per frame versus dav2d
 5.0/4.3/3.6. After SCALE-013 the 10-thread wall is 0.2247 s.
 
-## Confirmed matrix 2026-08-01 (post-#1149)
+## Confirmed matrix 2026-08-01 (post-#1153)
 
-Ground truth for exact `origin/main` `f4e1b96c3`. The timed binary is a
-from-scratch `cargo clean --release` rebuild of that source, hashing
-`d34f6f33c3ae8a00902314e0bf553d0b1f8cd634b373a7059b7f8dd0c9b7dfc1`, byte-identical
-to the frozen base the SCALE-040 matrices used. Host Apple M2 Max (8 performance
-plus 4 efficiency cores), up 2 days 20 hours, one-minute load 1.6–2.7 throughout
-with no backup, build, or second decode running. Method per width: 3 warmups per
-arm, then 11 alternating splot/dav2d pairs with the slot order rotated each pair,
-`SPLOT_DECODE_DISCARD_HASH=1`, `--limit=30`, wall from `perf_counter` and CPU from
-`RUSAGE_CHILDREN` user plus sys. Splot runs the contract's `--frame-delay=auto`
-(the flag is omitted; `auto` is the default) and dav2d `--framedelay max(T, 3)`.
-Two independent sweeps were taken; medians below are sweep 1 / sweep 2 and agree
-to within 0.1–0.8 points at every width, so this session shows none of the
-SCALE-038 host drift. Per-pair ratio spread over the 11 pairs is 0.9–2.6% at
-1/2/3/4T and 3.2–5.4% at 8/10T, so sub-1% cross-decoder claims at eight or ten
-threads still require the interleave.
+Ground truth for exact `origin/main` `648d5581f`, superseding the post-#1149
+matrix (its ratios are the "pre-045" column). The timed binary is a
+from-scratch `cargo clean --release` rebuild hashing
+`b7b2680e63f6090b33fb8deb5fce3d4c90f1dbd27b36fc5e409226f1ad8aa069`, reproduced
+bit-identically from the pre-existing build. Host Apple M2 Max (8 performance
+plus 4 efficiency cores), up 2 days 23 hours, one-minute load 1.3–3.3
+throughout, all of it this session's own decodes. Method per width: 3 warmups
+per arm, then 11 alternating splot/dav2d pairs with the slot order rotated each
+pair, `SPLOT_DECODE_DISCARD_HASH=1`, `--limit=30`, wall from `perf_counter` and
+CPU from `RUSAGE_CHILDREN` user plus sys, splot on the contract's omitted
+`--frame-delay=auto` and dav2d on `--framedelay max(T, 3)`. Medians are sweep 1
+/ sweep 2, and a third sweep at 1/2/3T settles their one disagreement:
+**sweep 1 ran on a cool host** and is 1.1 points low at one thread and 1.6 at
+two, while sweeps 2 and 3, both thermally steady, agree to 0.1–0.4 points
+everywhere, so 2/3 are the representative pair and 1 is the cool-host control.
+Per-pair ratio spread is 1.2–2.5% at 1/2/3/4T, 2.1–3.4% at 8T and 3.7–4.9% at
+10T; one 1T pair in sweep 2 landed at 0.8693 against its own 0.9395 median, so
+a single pair still proves nothing at any width.
 
-| T | splot wall | dav2d wall | ratio | splot faster | splot CPU | dav2d CPU | splot cores | dav2d cores |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 0.9682 / 0.9744 s | 1.0321 / 1.0377 s | **0.9381 / 0.9390x** | **11/11, 11/11** | 0.965 / 0.972 s | 1.030 / 1.036 s | 1.00 | 1.00 |
-| 2 | 0.5503 / 0.5536 s | 0.5371 / 0.5388 s | 1.0246 / 1.0275x | 0/11, 0/11 | 1.073 / 1.076 s | 1.063 / 1.065 s | 1.95 / 1.94 | 1.98 / 1.98 |
-| 3 | 0.3948 / 0.3951 s | 0.3745 / 0.3748 s | 1.0543 / 1.0542x | 0/11, 0/11 | 1.100 / 1.099 s | 1.101 / 1.100 s | 2.79 / 2.78 | 2.94 / 2.93 |
-| 4 | 0.3074 / 0.3075 s | 0.2867 / 0.2869 s | 1.0720 / 1.0718x | 0/11, 0/11 | 1.121 / 1.122 s | 1.113 / 1.113 s | 3.65 / 3.65 | 3.88 / 3.88 |
-| 8 | 0.1964 / 0.1968 s | 0.1587 / 0.1585 s | 1.2379 / 1.2419x | 0/11, 0/11 | 1.218 / 1.219 s | 1.155 / 1.155 s | 6.20 / 6.19 | 7.28 / 7.29 |
-| 10 | 0.1895 / 0.1901 s | 0.1525 / 0.1520 s | 1.2427 / 1.2506x | 0/11, 0/11 | 1.360 / 1.358 s | 1.321 / 1.319 s | 7.18 / 7.14 | 8.66 / 8.67 |
+| T | splot wall | dav2d wall | ratio | pre-045 ratio | splot faster | splot CPU | dav2d CPU | splot cores | dav2d cores |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.9211 / 0.9764 s | 0.9900 / 1.0387 s | **0.9305 / 0.9400x** | 0.9381x | **11/11, 11/11** | 0.918 / 0.973 s | 0.988 / 1.037 s | 1.00 | 1.00 |
+| 2 | 0.5393 / 0.5507 s | 0.5361 / 0.5389 s | 1.0059 / 1.0220x | 1.0246x | 0/11, 0/11 | 1.054 / 1.075 s | 1.060 / 1.065 s | 1.95 | 1.98 |
+| 3 | 0.3886 / 0.3912 s | 0.3744 / 0.3748 s | 1.0379 / 1.0437x | 1.0543x | 0/11, 0/11 | 1.096 / 1.099 s | 1.099 / 1.101 s | 2.82 / 2.81 | 2.94 |
+| 4 | 0.3002 / 0.3010 s | 0.2860 / 0.2871 s | 1.0498 / 1.0484x | 1.0720x | 0/11, 0/11 | 1.119 / 1.122 s | 1.110 / 1.113 s | 3.73 | 3.88 |
+| 8 | 0.1861 / 0.1872 s | 0.1589 / 0.1589 s | **1.1714 / 1.1781x** | 1.2379x | 0/11, 0/11 | 1.216 / 1.217 s | 1.152 / 1.152 s | 6.54 / 6.50 | 7.25 |
+| 10 | 0.1792 / 0.1797 s | 0.1531 / 0.1536 s | **1.1703 / 1.1703x** | 1.2427x | 0/11, 0/11 | 1.364 / 1.368 s | 1.324 / 1.319 s | 7.61 | 8.65 / 8.59 |
 
-**The goal's one-thread clause is met**: splot is 6.2% faster than dav2d at one
-worker, 11 of 11 pairs in both sweeps. Dav2d's frame delay is confirmed
-irrelevant at two workers, where the contract's depths differ: dav2d measures
-0.5371 / 0.5388 s at `--framedelay 3` against 0.5381 / 0.5392 s at
-`--framedelay 2` (ratios 1.0246 / 1.0275x and 1.0226 / 1.0268x, 0/11 both), so
-splot's `auto = 3` at two workers is compared fairly either way. The one-thread
-result is controlled the same way on a cooler host state (one-minute load 1.16):
-splot 0.9491 s against dav2d 1.0150 s at `--framedelay 3` and 1.0117 s at the
-contract's `--framedelay 1`, ratios 0.9351x and 0.9382x, 11/11 both — the
-absolute walls move with host warmth but the cross-decoder ratio does not.
+Sweep 3 (1/2/3T only, warm) reads 0.9394 / 1.0213 / 1.0398x. The two-worker
+depth control is unchanged: dav2d at `--framedelay 2` measures 0.5368 / 0.5379
+/ 0.5396 s against 0.5361 / 0.5389 / 0.5393 s at the contract's 3, ratios
+1.0047 / 1.0237 / 1.0208x, so splot's `auto = 3` at two workers is compared
+fairly either way. **The goal's one-thread clause is still met**: splot is
+6.0–7.0% faster than dav2d at one worker, 11 of 11 pairs in all three sweeps.
 
 Marginal steady frame (`--limit=120` minus `--limit=60`, over 60 frames, median
-of 5 alternating reps), which the 30-frame benchmark understates because its
-intra-heavy prologue is where splot is relatively cheapest (SCALE-032): at two
-workers splot is 25.230 ms CPU and 12.728 ms wall per frame at 1.982 cores
-against dav2d's 21.819 ms, 10.910 ms and 2.000 cores (CPU **1.156x**, wall
-1.167x); at ten workers splot is 32.914 ms CPU and 4.166 ms wall at **7.900**
-cores against dav2d's 25.617 ms, 2.824 ms and **9.071** cores (CPU **1.285x**,
-wall 1.475x).
+of 7 alternating reps), which the 30-frame benchmark understates because its
+intra-heavy prologue is where splot is relatively cheapest (SCALE-032):
 
-Where the benchmark gap sits, as idle core-time (`T x wall - CPU`): splot's
-excess idle over dav2d is 0.017 core-s at 2T, 0.062 at 3T, 0.075 at 4T, 0.238 at
-8T and 0.331 at 10T, which divided by the width is 8.5 / 20.5 / 18.8 / 29.8 /
-33.1 ms of wall against measured gaps of 13.2 / 20.3 / 20.7 / 37.7 / 37.0 ms.
-**Occupancy is therefore essentially the whole gap at 3T and 4T and roughly 90%
-of it at 10T**, with the 30-frame CPU term small everywhere (1.009x at 2T,
-0.999x at 3T, 1.030x at 10T). Splitting the idle by regime at ten workers: the
-key frame's fused serial walk is 11.76 ms with nine workers idle, 106 core-ms or
-**32% of the 331 core-ms excess**, and the rest is steady state, where splot
-holds 7.90 cores against dav2d's 9.07. SCALE-041 measured that walk's interior
-and closed it: it is two normatively sequential chains of 8.0 and 8.5 ms running
-concurrently on two workers, so the idle is unreachable rather than unclaimed,
-and no more than 1.02 ms of the 10.46 ms walk can move.
+| T | splot CPU/frame | splot wall/frame | splot cores | dav2d CPU/frame | dav2d wall/frame | dav2d cores | CPU ratio | wall ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 | 29.185 ms | 3.852 ms | 7.576 | 23.068 ms | 3.006 ms | 7.673 | 1.265x | 1.281x |
+| 10 | 32.947 ms | 3.658 ms | **9.007** | 25.646 ms | 2.856 ms | **8.979** | 1.285x | 1.281x |
+
+**SCALE-045's steady effect is twice its benchmark effect, as predicted.** At
+ten threads the marginal frame moves from the pre-045 4.166 ms of wall to
+3.658, **-12.2%**, against -6.5% on the 30-frame benchmark, because 29% of
+steady frames were on the whole-frame fallback and only 2 of the benchmark's 31
+are. Per-frame CPU is unchanged (32.914 to 32.947 ms), as a pure scheduling
+change must be, and the occupancy it bought is **+1.107 cores, from 7.900 to
+9.007 against dav2d's 8.979**. Steady-state occupancy is now at parity, so the
+whole steady gap is the 32.95 against 25.65 core-ms of work per frame; wall
+ratio and CPU ratio agree to 0.3% at both widths.
+
+Where the benchmark gap sits, as idle core-time (`T x wall - CPU`, mean of the
+two full sweeps): splot's excess idle over dav2d is 0.157 core-s at 8T and
+0.217 at 10T, which
+divided by the width is 19.7 and 21.7 ms of wall against measured gaps of 27.8
+and 26.2 ms. **Occupancy is 71% of the eight-thread gap and 83% of the
+ten-thread one**, with CPU the remaining 8.1 and 4.5 ms.
+
+### Post-SCALE-045 re-decomposition (SCALE-047)
+
+Splot re-traced with SCALE-043's env-gated task timeline on exact `648d5581f`,
+ten threads, three reps at `--limit=90` and three at `--limit=30`; the
+instrumented binary is output-identical to the frozen base at 1 and 10 threads
+over 90 frames and wall-neutral (0.42 s traced and untraced, three pairs). The
+dav2d column is carried from SCALE-043 unchanged, because that decoder, its
+build and its configuration are untouched. Steady window is coded frames 30-60.
+
+| Term | pre-045 | post-045 (3 reps) | dav2d |
+|---|---:|---:|---:|
+| Frame period `P` | 5.18 ms | **4.14 / 3.94 / 4.07 ms** | 3.38 ms |
+| Work per frame `W` | 37.10 core-ms | 36.52 / 36.74 / 35.74 | 29.87 |
+| Busy cores | 7.16-7.40 | **9.21 / 9.42 / 9.21** | 8.83-9.02 |
+| Idle cores | 2.51-2.64 | **0.75 / 0.58 / 0.79** | 0.93-1.01 |
+| Above the ten-worker floor | 28-30% | 8.1 / 2.9 / 8.5% | 12-15% |
+| Ordered chain work `C` | 5.85 core-ms | 6.67 / 6.46 / 6.82 | 7.13 |
+| Chains at once `k = C / P` | 1.13 | **1.61 / 1.64 / 1.68** | 2.11 |
+| Window at <=3 busy workers | 21.0%, 63.2% of idle | 1.2 / 0.2 / 1.4%, 12.2 / 2.1 / 12.6% | 1.5%, 10.7% |
+
+**`k` has passed SCALE-043's 1.58 go line without the rebuild SCALE-044
+rejected**, and `P_splot / P_dav = (C_s / C_d) x (k_d / k_s) = 0.935 x 1.287 =
+1.204` still reproduces the traced period ratio exactly. `C` grew 11-17%
+because sealing the filter copy is charged to the commit chain on the frames
+that newly seal (commit 3.68 to 4.18-4.56 core-ms per frame, frontier 2.17 to
+2.26-2.28) — that is SCALE-045's CPU price, and `W` absorbed it at -1.6%.
+Splot's idle, attributed as in SCALE-043 to the releasable frontier of each
+edge, is the same shape 3.4x smaller: `precompute <- previous frame's stripe`
+0.20-0.23 cores (26-35% of idle, was 0.51-0.59 at 19.5-23.4%), `commit <- its
+own precompute` 0.08-0.11 (was 0.19-0.22), the ordered commit spine 0.06-0.09
+(was 0.42-0.43), the depth-4 lane gate 0.04-0.07 (was 0.31-0.32).
+
+The 30-frame benchmark decomposes differently from steady state, and this is
+the session's main structural finding. Traced pool window 163.9-167.7 ms of a
+177.7 ms process wall; the 13.6 ms outside the pool is fixed (16.5 ms at
+`--limit=90`) and is not a gap term, because a `--limit=1` control puts splot's
+whole fixed cost at 24.8 ms against dav2d's 28.7 ms. Inside the pool:
+
+| Region | wall | share | idle | share of idle |
+|---|---:|---:|---:|---:|
+| Coded frames 0-5 (prologue) | 49.8-51.5 ms | 30-31% | 213-228 core-ms | 75-80% |
+| — frame 0's interval alone | 16.3-17.0 ms at 2.70-2.82 cores | 10% | 117-124 core-ms | 41-43% |
+| Coded frames 6-31 (steady) | 113-116 ms, 4.63-4.92 ms/frame | 69-70% | 59-72 core-ms | 20-25% |
+| Whole window | 163.9-167.7 ms at 8.28-8.31 cores | 100% | 276-286 core-ms | 100% |
+
+Frame 0 is the key frame: 10.5 ms of fused serial walk (160 helper tasks, 16.7
+core-ms, median 0.3 us) and then its 17 filter stripes (20.1 core-ms, median
+843 us). At eight threads the shape is the same, prologue 29.3% of the window
+carrying 152 of 174 core-ms.
+
+**SCALE-046 is rejected on measurement**: its 2 frames of 92 are coded
+sequence 0 and 5, both in this prologue and neither in the steady window, and
+the timeline prices them under 0.1 ms. Its ledger row carries the census.
 
 ### Remaining-gap ranking
 
-Ranked by how much is left and whether anything open reaches it: **1T is done**
-(splot 6.2% ahead; the scalar ledger's remaining job there is protection, not
-gain). **2T is the closest miss at 2.5%**, and is now roughly half occupancy
-(1.5%) and half CPU (0.9%) — SCALE-039 already took the 3.5% depth item from
-SCALE-038's ceiling table and SCALE-040-B measured the key frame's post-filter
-overlap at a true 1.0% ceiling before killing it at 0.15–0.3% realizable, so
-nothing open is sized for what remains. **3T and 4T (5.4% and 7.2%) are pure
-occupancy and majority pipeline fill**; the one open item from SCALE-038's table
-that reached them was the key frame's walk split N-way (ceiling 2.8% / 4.0%, of
-which SCALE-040's two-way `parse_ahead` already took 1.5% / 2.2%), and
-**SCALE-041 closed the remainder**: the walk's two stages are both normatively
-sequential and already balanced within 0.5 ms, so no third worker has anything
-to run and the whole family caps at 0.26–0.40% at 3T. Nothing open is sized for
-2T, 3T or 4T any more. **8T and 10T are the large
-misses at 23.8% and 24.3%, and no open ceiling closes them** — superseded at
-those two widths by SCALE-045, which took them to 1.171x and 1.159x. The
-E-core/software term is bounded the wrong way round for this: SCALE-034 measured
-49% of the 1T-to-10T cycle penalty as host topology that no decoder layout
-reaches, 24% as the split path's extra work closed behind a surface-ownership
-restructuring (SCALE-035), and 27% as software stall — of which `commit_intra`
-is 38%, about 2.9% of ten-thread per-frame CPU, which at unchanged occupancy is
-roughly 3.6 ms of the 190 ms benchmark wall, **under a tenth of the 37 ms gap**,
-and it was gated on pinning the ordered commit and its scratch to the producing
-worker — **SCALE-042 built that pin and closed it**: the pin works (runnable
-handoffs that change worker fall from 20.5-20.9% to 4.9-5.0% at ten threads) and
-converts nothing, because the commit chain spans 13.15 ms of a ~25 ms frame
-reconstruction lifetime and was already finishing early. The honest reading is
-that the 8/10T gap is an occupancy gap of 1.5
-cores (7.18 against 8.66), only a third of it pipeline fill and the rest steady
-state, so the next material candidate has to raise steady-state occupancy rather
-than delete CPU; the 50%-of-dav2d target at ten threads (0.076 s) needs both.
+1. **Steady-state work, and it is now the only term that converts one for
+   one.** Occupancy is at parity (9.007 against 8.979 cores at ten threads,
+   7.576 against 7.673 at eight), so each core-ms per frame deleted moves the
+   steady wall by 1/9.0 ms, and deleting the 7.3 core-ms excess reaches dav2d's
+   steady wall exactly. The excess is reconstruction, not filtering: 15.99
+   against dav2d's 6.29 core-ms per frame, while splot's filters are already
+   13.23 against 19.99. On the 30-frame benchmark this term is only 4.5 of the
+   26.2 ms gap, because the prologue is where splot is relatively cheapest; on
+   any longer window it is the whole gap.
+2. **The prologue.** 30% of the benchmark wall and 75-80% of its idle;
+   reclaiming all of it is 21.3 ms of wall, 0.158 s, ratio 1.03x. Most of
+   frame 0 is unreachable — SCALE-040 took the two-way `parse_ahead` and
+   SCALE-041 measured the walk's interior as two normatively sequential chains
+   of 8.0 and 8.5 ms with at most 1.02 ms movable. What no trace has yet
+   covered at this granularity is the fill over coded frames 1-5, 33.5 ms at
+   2.3 to 9.9 busy cores, which every steady-window measurement in this mission
+   excluded by construction. Measure that before building anything.
+3. **The remaining steady in-pool idle**, 59-72 core-ms over the benchmark, is
+   5.9-7.2 ms of wall if perfectly reclaimed and its largest single edge
+   (`precompute` waiting on the previous frame's filter stripe) is 1.7 ms.
+   Below the per-pair spread at eight and ten threads.
+4. **SCALE-046**, under 0.1 ms. Rejected above.
+
+**Which closed families this legitimately re-opens.** SCALE-043 closed the CPU
+side with "the next material candidate has to raise steady-state occupancy
+rather than delete CPU", and that premise is now false: steady-state occupancy
+is at parity with dav2d, so **SCALE-033, SCALE-034 and SCALE-035 re-open on a
+changed condition** — SCALE-035's shadow-surface triple materialisation was
+priced at about 10% of reconstruction and rejected while occupancy was the
+gap. **SCALE-044's superblock-row rebuild does not re-open**: its replayed `k`
+of 0.62-0.65 was derived from per-list needs and per-frame work that SCALE-045
+did not touch, and its premise that the ordered chain is too short is now less
+true, not more. **SCALE-041, SCALE-042 and the depth family do not re-open**:
+their mechanisms are unchanged and only their share of a 3.4x smaller idle
+moved. The 50%-of-dav2d target at ten threads (0.076 s) remains out of reach of
+the union of every term above, which lands at dav2d's own 0.153 s.
 
 ### Ten-thread timeline attribution (SCALE-043)
 
-Both decoders traced on the same stream and host at ten threads, `--limit=90`,
+Measured on `10293339f`, before SCALE-045. Its splot column is superseded by
+the re-decomposition above; its dav2d column still stands. Both decoders traced
+on the same stream and host at ten threads, `--limit=90`,
 steady window = coded frames 30-60, three runs each. Per-coded-frame medians;
 the instrumented binaries are wall-neutral and are never used for a timing
 claim.
@@ -396,6 +459,8 @@ is retained in the task table below.
 | SCALE-043 | Investigated; no source change | Build both decoders' ten-thread steady-state task timelines on the same stream and host, align them per frame, and attribute the 1.2-core occupancy difference to named structural differences. | **Method.** Env-gated task timelines on both decoders, ten threads, `--limit=90`, steady window = coded frames 30-60, three runs each. Splot: a diagnostic recorded every `TaskScope::spawn` interval (`crates/splot-parallel/src/pool.rs:38`) with its admission order key, job kind, worker, nesting depth and the slot's submit and ready instants (`crates/splot-parallel/src/admission.rs`, kinds tagged at each job body in `crates/splot-decode/src/pipeline/frame_pipeline.rs`); only depth-0 intervals are used and the trace covers essentially all worker time (7.40 busy cores in the window). Dav2d: an instrumented **copy** of the tree in the scratch directory — the maintainer's `~/Devel/dav2d` source and `build/` were never touched and are byte-identical after the session — logging every `dav2d_decode_tile_sbrow`, `filter_slice_deblock_cols/rows`, `filter_slice_cdef`, `filter_slice_lr`, `dav2d_decode_frame_init` and `dav2d_decode_frame_init_cdf` interval plus every worker park (`src/thread_task.c:838`, `:905`, `:912`, `:943`, `:951`, `:711`), with a monotonic coded-frame sequence stamped in `dav2d_task_frame_init`. Both instrumented binaries are wall-neutral (splot 0.49 s traced and untraced at `--limit=90`; dav2d 0.34 s both, three reps) and the instrumented dav2d is output-identical to the maintainer's binary (`--muxer md5` `e88dd812b981f96fb66b0fe4b30f0e58` over 90 frames at ten threads). **No timing claim in this row comes from an instrumented run**; the wall and occupancy ground truth stays the confirmed matrix above. **Configuration correction.** At the contract's `--threads 10 --framedelay 10` dav2d runs **ten** frame contexts, not four: `n_fc = umin(max_frame_delay, n_tc)` (`src/lib.c:127`) and `n_passes = 1 + (n_tc > 1) + (n_fc > 1) = 3` (`src/lib.c:252`). SCALE-019's "four at 10T" is the default-`max_frame_delay` branch the contract does not use. **The extra contexts buy dav2d nothing, and cross-frame lead distance is not the difference.** Mean frames with a running task: splot **3.62**, dav2d **3.68**; mean coded-frame index spread among active frames splot 5.73 against dav2d 3.67. **Work mix per coded frame** (core-ms, median over the window, three reps agreeing to +-4%): splot parse **3.35** / MV **3.92** / recon **15.88** / filter **12.46**, total **37.10**; dav2d parse **0.47** / MV **3.09** / recon **6.29** / filter **19.99**, total **29.87**. Splot puts **43% of the frame in reconstruction and 34% in filters; dav2d puts 21% in reconstruction and 67% in filters**. **Within-frame concurrency** (mean while the stage is live / peak): splot parse 1.00/1, MV 1.00/1, recon **1.75/5**, filter **1.92/4**; dav2d parse 1.00/1, MV 1.00/1, recon **1.00/1**, filter **1.97/4** (CDEF 1.37/2, LR 1.64/3, deblock-rows 1.00/1). Tasks per frame: splot 1 entropy, 9 resolve, 37 precompute, 37 commit, 10 frontier, 17 stripe; dav2d 9 entropy, 9 MV-resolution, 9 reconstruction and 17 each of deblock-cols, deblock-rows, CDEF and LR, on one tile. **Supply is the visible difference.** Mean live `(frame, stage)` chains: **dav2d 9.6-10.5 against splot 6.7**. Dav2d's supply exceeds the pool width, so its idle is **0.93-1.01 cores** of short parks (960-970 parks per window, median 74-80 us, p90 324-344 us); splot's supply is under ten for about 80% of the window and its idle is **2.51-2.64 cores**. Splot spends **21.0% of the window at three or fewer busy workers and that carries 63.2% of all its idle core-time** (113 trough runs, 3.6 per frame period, p90 943 us, max 8.03 ms); dav2d spends 1.5% there, carrying 10.7% of its idle (22 runs, p90 161 us). **Splot's idle, attributed to the releasable frontier of each dependency edge** (three reps; a chain-internal edge is capped at one releasable job per frame so a whole blocked chain does not count 37 times): `precompute <- previous frame's filter stripe` **0.51 / 0.59 / 0.56 cores (19.5 / 23.4 / 21.5%)**; the ordered commit spine, `commit <- commit/frontier of its own frame`, **0.43 / 0.42 / 0.42 cores (16%)**; `prepare <- frame N-4's recon` (the depth-4 lane gate) **0.31 / 0.31 / 0.32 cores (12%)**; `commit <- its own precompute` (SCALE-024's `spine_prewait`) **0.19 / 0.18 / 0.22**; the intra-frame recon chain `precompute <- precompute/commit of its own frame` 0.31 / 0.32 / 0.39 summed; `resolve <- frame N-2's stripe` 0.06. Nothing is queued: ready-but-unstarted jobs average **2.95 per instant** against **49.1 submitted-but-blocked**, and the median queueing wait is 0.002-0.070 ms per kind, so this is a dependency-supply problem and not a scheduler-priority one, as K10.25 already found from the other side. **The lane gate is nominal, not binding — and this names the cause of three null depth sweeps.** 86% of the per-frame `prepare` jobs (`frame_pipeline.rs:575`, gated by `ReconAdmissionLane::new(ring.capacity().min(4))`, `pipeline/mod.rs:765`) have the lane gate as their last-cleared condition (`commit@-4` 53%, `frontier@-4` 33%), blocked a median **16.1-16.6 ms**. But the frame's first real work is `resolve[0]`, submitted at the end of `prepare` and itself blocked a median **3.9-4.6 ms** on the motion bands and stripes of frames N-1..N-3, so admitting earlier only lengthens dead time. Lane residency prepare-to-finish is **20.8-21.0 ms, of which 6.4-7.5 ms (31-36%) is dead time with no task of that frame running**, 4.2-4.8 ms of it the prepare-to-`resolve[0]` gap. That is the mechanism behind SCALE-023's "L/D near-invariant", SCALE-011-A3, and SCALE-028 slice 4's null depth-5 result: **the depth family is now closed with a named cause rather than three measured nulls.** **The reference gate is already exact and is not the lever.** Splot derives per-list luma-row requirements and admits on `RefFrameSlot::row_condition(need)` (`crates/splot-decode/src/prediction/inter/block/row_gate.rs:190`, bounds at `:228`), the same shape as dav2d's `lowest_px[n] + 8` (`src/thread_task.c:435`), and the whole-frame `settle` fallback counted **zero** warp, TIP and slot fallbacks on this stream. **The recurrence, measured head to head.** Dav2d's period is **3.38-3.50 ms per coded frame** and its head-of-frame cycle — reconstruction of superblock row 0, then deblock cols, deblock rows, CDEF, LR, then the next frame's first reconstruction — sums to **3.24 ms, 96% of the period**, of which only **1.42 ms is execution** and **1.81 ms is frame N+1's first reconstruction waiting on frame N's first filtered superblock row**. **Dav2d is at its physical floor.** Splot's period is **5.18-5.33 ms** and the same head cycle — `precompute[0]`, `commit[0]`, frontier, `stripe[0]`, next frame's `precompute[0]` — is only **1.88 ms**: splot's own publication recurrence is **1.7x shorter than dav2d's**, and splot runs **2.8x above it**. **What splot actually runs at.** A backward critical-path walk from frame 60's finish through last-releaser edges spans 133-153 ms of the ~205 ms window over 24-28 frames and is **83% execution, 17% waiting**. Its edges are overwhelmingly the ordered commit spine and the § 7.17 frontier chain of one frame at a time (`commit <- commit` 131 and 176 of 364 and 400 edges, `commit <- frontier` 43 and 57, `frontier <- commit` 25 and 36), hopping frames through `stripe -> precompute@+1` (16 and 13 edges). **The exact wall decomposition.** Write `C` for the strictly ordered per-frame chain work and `k = C / P` for how many frames' ordered chains run concurrently. Splot: `C = 5.85` core-ms (commit 3.68 over 37 links plus frontier 2.17 over 10), `k = 1.13`. Dav2d: `C = 7.13` core-ms (reconstruction 6.29 over 9 superblock rows plus deblock-rows 0.84 over 17), `k = 2.11`. Then `P_splot / P_dav = (C_splot / C_dav) x (k_dav / k_splot) = 0.820 x 1.867 = 1.531`, against the measured 5.18 / 3.383 = **1.531**. **The entire ten-thread steady-state wall gap is chain-overlap depth**: splot's ordered chain is 18% *shorter* than dav2d's, and it overlaps **1.87x less deeply across frames**. Equivalently, splot runs 1.81 commit chains at once at 39% density (work 3.68 over a 9.39 ms span) where dav2d runs 3.20 reconstruction chains at 58% density (6.29 over 10.84). **Ceiling arithmetic.** Splot's ten-worker work floor is **3.71 ms per coded frame** against its 5.18, so it is 28-30% above floor where dav2d is 12-15%. Raising `k` from 1.13 to **1.58** puts splot on that floor: 10T wall 0.1895 s to about **0.136 s**, which is below dav2d's 0.1525 s and is the whole remaining gap. Raising it to dav2d's 2.11 changes nothing further, because the pipeline becomes work-bound. **Verdict, stated as asked.** No scheduling change reaches this. More lanes are closed above with a cause; publication latency is closed at under 1 ms/frame by SCALE-029/030/031; the order key is closed by SCALE-024 at +-1%; handoff placement is closed by SCALE-042; the reference gate is already exact. `k` rises only by putting more of the frame's CPU somewhere that has no ordered chain, and **that is exactly what dav2d's shape does**: 56% of its frame (CDEF 5.17 plus LR 11.62 core-ms) sits in 17 per-superblock-row tasks that depend only on a 0.84 core-ms intra-frame deblock sweep and on nothing cross-frame at all, while every one of splot's 15.88 core-ms of reconstruction is behind the ordered commit spine. Moving splot's reconstruction off that spine is SCALE-011-B4, K10.9, K10.10, K10.11, K10.34 and SCALE-035 — all closed under safe Rust with one contiguous mutable workspace — so **the honest answer is that the remaining ten-thread difference is intrinsic to the superblock-row-granular three-pass design, and capturing it means rebuilding splot's per-frame pipeline around superblock-row tasks whose reconstruction writes disjoint row bands, not another scheduler candidate.** **Smallest discriminating pre-measurement if the maintainer wants that rebuild scoped before it is built**: on exact main, log per commit link the batch's exact per-list `need` in luma rows and the producing frame's published watermark at that instant, then replay the schedule with reconstruction of each superblock row treated as an independent task gated only on that `need` and on the previous row's § 7.17 frontier. If the replayed `k` does not reach 1.58 the rebuild cannot pay, and the mission's ten-thread target is unreachable on this stream. **Verification.** All splot diagnostics reverted; the worktree is byte-identical to `10293339f` apart from these documentation rows and the rebuilt release binary hashes identically to the frozen base (`d34f6f33c3ae8a00902314e0bf553d0b1f8cd634b373a7059b7f8dd0c9b7dfc1`). The dav2d instrumentation lives only in a scratch copy of the tree; `~/Devel/dav2d` is untouched. |
 | SCALE-044 | Investigated; no source change | Run SCALE-043's specified pre-measurement: log per commit link the batch's exact per-list reference `need` and the producing frame's watermark at that instant, then replay the schedule with each superblock row an independent task. | **No-go**, so by SCALE-043's stated rule the ten-thread target is unreachable on this stream. Full method, table, sensitivity and the successor the replay names are in the ten-thread timeline attribution section above. Headline: replayed `k` **0.62-0.65** at ten workers and 0.68-0.71 at eight, against today's 1.13 and the 1.58 go line, with a projected ten-thread wall of 0.31 s against 0.1895 s today; the harness reproduces the shipped structure's measured steady period to +2.4% at ten workers and +7.2% at eight. The rebuild loses because it moves splot's 11.56 core-ms of already-fanned-out per-frame precompute onto the ordered chain, taking it from 5.08 to 17.23 core-ms, 3.4x dav2d's 7.13, while the measured per-list needs cap cross-frame overlap near 2 — dav2d's own depth. Sensitivity is flat: +-20% on the calibrated 10 us per-task overhead moves `k` by at most 0.004, the filter chain is already superblock-row-chased (0.06%), lane depth 4 to 6 is 3.6%, and a 10% reconstruction saving reaches only 0.700. The unreachable bound with no intra-frame reconstruction order at all is `k` 1.28 and 0.154 s. | 
 | SCALE-045 | Committed | Give the § 7.17 frontier to the frames SCALE-011-C left on the whole-frame fallback, deriving the IntraBC raw-source liveness that row deferred. | Committed in `b66f80358`. **The liveness derivation is vacuous on the current tree and the fallback was stale.** SCALE-011-C ruled IntraBC unsafe because deblock then mutated the raw pixels a later IntraBC block could still read; SCALE-028 moved the frontier onto a sealed per-frame copy, so deblock writes only the copy while the spine keeps reconstructing into its own workspace, and the `contains_intrabc` term was carried into `seals_filter_copy` unchanged rather than re-derived. Sealing is now the only condition: a whole-frame tile with an active deblock plan seals whatever its commands read, every current-frame reader keeps seeing raw samples however far the frontier has run, and the frontier's only bound stays the sealed rows it may read — the unchanged SCALE-013 six-mode-info-row lead. The change is a net deletion, `+42/-57`, with `safe_deblock_mi_end` losing its IntraBC arm and the sealing rule named and unit-tested at `crates/splot-decode/src/prediction/inter/block/tile/admission.rs:833`. **Fallback census** (env-gated per-frame trace on exact `1225a5b5c`, `--limit=90`, ten threads, 92 coded frames): 14 frames fall back on IntraBC and 2 on a disabled deblock plan; in SCALE-044's steady window, coded frames 30-60, **all 9 of the 31 fallbacks are IntraBC** and none is deblock-disabled, confirming the replay's 29%. **Geometry**: 1-4 IntraBC commands per frame, **no global IntraBC anywhere on this stream** (`allow_global_intrabc` never set), maximum upward source reach 80 luma rows and every source inside its own 128-row superblock row — so the per-frame source-ceiling variant would have admitted these frames too, but it is not needed. Byte-exact at 1/2/4/8/10T (186,624,000 B, SHA-256 `48f0dc140be565069838bcf7141aba3c80cefaa14400284840b2e1475a3be945`), bare `cargo xtask ci` exit 0 (239 fixtures, 239 must_pass), `check-duplication` at budget, 9/9 `frame_pipelining` including the depth-proportional storage gate. Eleven alternating pairs against frozen `1225a5b5c`, medians: 10T **-6.49%** 0.1897 to 0.1774 s (11/11) against a -0.48% A/A null, 8T **-5.57%** 0.1966 to 0.1856 s (11/11) against +0.24%, 4T -2.64% (5/5) against -0.01%, 3T -1.18% (5/5) against +0.33%, 2T -0.67% (5/5) against -0.05%, 1T +0.11% over three pairs and -0.04% over five, inside its own +0.34% null and provably unchanged code because one worker never enters the scheduled path. Head to head after the change, eleven interleaved pairs: 10T 0.1782 s against dav2d 0.1537 s, ratio **1.159x** from 1.243x; 8T 0.1862 against 0.1590, **1.171x** from 1.238x — about a third of the eight- and ten-thread gap. The gain is well under SCALE-044's -18.4% because the replay priced the steady window, where 29% of frames fall back, while the 30-frame benchmark contains only 2 IntraBC frames in 30. **Remaining fallback**: the 2 deblock-disabled frames, both banded and both in the prologue. They cannot simply pass through — `frontier` releases stripes only inside `if let Some(deblock)`, and `extract_ready_window`/`extract_ready_band_window` ask the `FrameDeblock` plan which rows are final, so a frame with no plan needs a different final-row source. That is a mechanism, not a policy flip, and it is 2 of 92 frames outside the steady window. |
+| SCALE-047 | Investigated; no source change | Re-measure the ground-truth matrix on exact `648d5581f` and re-decompose the ten-thread wall after the SCALE-045 fallback removal, then re-rank what binds. | Full matrices, the steady-frame comparison, the trace table and the ranking are in the confirmed-matrix section above. Headline: **8T 1.1714 / 1.1781x and 10T 1.1703 / 1.1703x** over three sweeps (11 alternating pairs each), 1T **0.9305 / 0.9400 / 0.9394x** at 11/11, with sweep 1 identified as a cool-host control 1.1-1.6 points low at 1/2T and sweeps 2/3 agreeing to 0.1-0.4 points everywhere. **The marginal steady frame moves -12.2%** at ten threads (4.166 to 3.658 ms of wall) against -6.5% on the benchmark, at unchanged per-frame CPU (32.914 to 32.947 ms), and buys **+1.107 cores of occupancy, 7.900 to 9.007 against dav2d's 8.979** — **steady-state occupancy is now at parity and the whole steady gap is work**, 32.95 against 25.65 core-ms per frame, wall and CPU ratios agreeing to 0.3% at both widths. Re-traced steady window (frames 30-60 of `--limit=90`, three reps, dav2d terms carried from SCALE-043 on an untouched binary): `P` 5.18 to **4.14 / 3.94 / 4.07 ms**, busy cores 7.16-7.40 to **9.21-9.42**, idle 2.51-2.64 to **0.58-0.79**, `C` 5.85 to 6.46-6.82 core-ms, **`k` 1.13 to 1.61-1.68 — past SCALE-043's 1.58 go line without SCALE-044's rebuild**, and the period identity still reproduces exactly. `C` grew because sealing the filter copy is charged to the commit chain on the newly sealing frames (commit 3.68 to 4.18-4.56), which `W` absorbed at -1.6%. **The benchmark and the steady state now disagree about what binds**: at `--limit=30` the prologue (coded frames 0-5) is 30-31% of the traced pool window and carries **75-80% of its idle**, frame 0's interval alone 117-124 of 276-286 core-ms at 2.70-2.82 busy cores, while all 26 steady frames together carry 59-72. Non-pool process residue is 13.6 ms, fixed, and not a gap term (a `--limit=1` control puts splot's whole fixed cost at 24.8 ms against dav2d's 28.7). Idle-core accounting of the benchmark gap: occupancy is **71% at eight threads and 83% at ten**, CPU the rest. **Re-opened on a changed condition: SCALE-033, SCALE-034 and SCALE-035** — SCALE-043 closed the CPU side on "raise occupancy rather than delete CPU", and at parity occupancy each core-ms per frame now converts at 1/9.0 ms of wall. **Not re-opened**: SCALE-044 (its replayed `k` came from needs and per-frame work SCALE-045 did not touch), SCALE-041, SCALE-042 and the depth family (mechanisms unchanged; only their share of a 3.4x smaller idle moved). **Discovered, unrelated to this mission's throughput work**: one worker and two-or-more workers produce different output from coded frame 45 onward, deterministically, on `648d5581f` **and identically on pre-SCALE-045 `1225a5b5c`**, so it predates the fallback removal; the 30-frame gate never reached it. Tracked as SCALE-048. **Verification.** All diagnostics reverted; the rebuilt release binary hashes `b7b2680e63f6090b33fb8deb5fce3d4c90f1dbd27b36fc5e409226f1ad8aa069`, identical to the frozen base every number here was measured on. |
+| SCALE-046 | Rejected; no source change | Release filter stripes incrementally on frames with no active deblock plan. | **Killed on its own sizing gate.** An env-gated census on exact `648d5581f`, one line per prepared tile, finds exactly **2 of 92 coded frames with no deblock plan** — order hints 0 and 1, coded sequence 0 and 5, both banded, **both inside the 30-frame prologue and neither in the steady window**. The ten-thread `--limit=30` timeline prices them: frame 0 is the key frame, whose interval is SCALE-041's closed pair of normatively sequential chains and which has no filter chain to overlap at all, and frame 5's whole interval already runs at **9.89-9.96 of ten busy cores** carrying 0.23-0.68 core-ms of idle. Ceiling **under 0.1 ms** on the benchmark and **exactly zero** in steady state, against an extraction-API change to `extract_ready_window`/`extract_ready_band_window`. Do not build it. |
 | SCALE-012 | Open correctness task | Make deferred finish reporting happen-before in-flight harvest. | `PendingFinish::run_finish` in `crates/splot-decode/src/pipeline/inflight.rs` currently lets `FrameSlotWriter::complete` (or its failure Drop) settle the slot before writing `FinishOutcome.records` or `FinishOutcome.error`; `InflightRing::harvest_oldest` waits only for that slot and can therefore wake, observe an empty outcome, and lose recyclable records or the real filter diagnostic. Add a separate one-shot finish-report completion owned by `PendingFinish` and `InflightEntry`; publish it only after the outcome write, and make harvest wait for the report before consuming the outcome and slot. Cover success, failure, and exactly-once settlement in `crates/splot-decode/src/pipeline/inflight_tests.rs`. Keep this separate from SCALE-011 filter-seam work. |
 
 ## Rejected experiments
