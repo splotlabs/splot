@@ -18,6 +18,7 @@ use splot_core::tables::warp_filter::{EXT_WARPED_FILTERS, WARPED_FILTERS};
 use std::simd::{
     Simd,
     num::{SimdInt, SimdUint},
+    simd_swizzle,
 };
 
 use crate::error::{ReconError, Result};
@@ -426,6 +427,12 @@ fn warp_predict_block_prepared_into<T: ReconSample>(
     Ok(())
 }
 
+/// Admits the unclamped interior source origin for one 8x8 warp section.
+///
+/// The taps reach `last_col`, but [`warp_windows`] reads one whole vector past
+/// `first_col + WARPED_BLOCK_SIZE`, so admission reserves the column after
+/// `last_col` as well. Sections at the final column fall to the clamped
+/// [`build_intermediate`], which yields the same samples.
 fn interior_warp_source_origin<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &WarpPredictBlockParams,
@@ -443,7 +450,7 @@ fn interior_warp_source_origin<T: ReconSample>(
         && last_col <= params.last_x
         && first_row >= params.first_y
         && last_row <= params.last_y
-        && usize::try_from(last_col).is_ok_and(|col| col < reference.width())
+        && usize::try_from(last_col).is_ok_and(|col| col + 1 < reference.width())
         && usize::try_from(last_row).is_ok_and(|row| row < reference.height()))
     .then_some(source_origin)
 }
@@ -693,9 +700,10 @@ fn build_interior_intermediate<T: ReconSample>(
                 break;
             };
             let taps = warped_filter_row(projected.sx4 + shear.beta * i1);
+            let windows = warp_windows(source, first_col);
             let mut sum = Simd::<i32, WARPED_BLOCK_SIZE>::splat(0);
-            for (tap, &weight) in taps.iter().enumerate() {
-                sum = warp_tap_mac(sum, warp_source_lanes(source, first_col + tap), weight);
+            for (&window, &weight) in windows.iter().zip(taps.iter()) {
+                sum = warp_tap_mac(sum, window, weight);
             }
             let rounded = (sum + Simd::splat(1 << (INTER_ROUND0 - 1))) >> INTER_ROUND0 as i32;
             intermediate[row * WARPED_BLOCK_SIZE..(row + 1) * WARPED_BLOCK_SIZE]
@@ -781,6 +789,28 @@ fn build_output(
 #[inline(always)]
 fn warp_source_lanes(source: &[u16], start: usize) -> Simd<i16, WARPED_BLOCK_SIZE> {
     Simd::<u16, WARPED_BLOCK_SIZE>::from_slice(&source[start..]).cast()
+}
+
+/// Builds the eight overlapping tap windows from two loads instead of eight.
+///
+/// Window `t` is `source[first_col + t ..][..8]`. Reading the whole 16-sample
+/// span once and sliding it by lane leaves each window's values untouched, so
+/// the § 7.13.3.19 sum is unchanged; only the load shape differs.
+#[allow(clippy::inline_always, reason = "measured warp hot path")]
+#[inline(always)]
+fn warp_windows(source: &[u16], first_col: usize) -> [Simd<i16, WARPED_BLOCK_SIZE>; 8] {
+    let lo = warp_source_lanes(source, first_col);
+    let hi = warp_source_lanes(source, first_col + WARPED_BLOCK_SIZE);
+    [
+        lo,
+        simd_swizzle!(lo, hi, [1, 2, 3, 4, 5, 6, 7, 8]),
+        simd_swizzle!(lo, hi, [2, 3, 4, 5, 6, 7, 8, 9]),
+        simd_swizzle!(lo, hi, [3, 4, 5, 6, 7, 8, 9, 10]),
+        simd_swizzle!(lo, hi, [4, 5, 6, 7, 8, 9, 10, 11]),
+        simd_swizzle!(lo, hi, [5, 6, 7, 8, 9, 10, 11, 12]),
+        simd_swizzle!(lo, hi, [6, 7, 8, 9, 10, 11, 12, 13]),
+        simd_swizzle!(lo, hi, [7, 8, 9, 10, 11, 12, 13, 14]),
+    ]
 }
 
 /// Accumulates one AV2 § 7.13.3.19 warp tap across the eight prediction columns.
@@ -1175,6 +1205,36 @@ mod tests {
             }
         }
         assert_eq!(covered, (true, true), "both shear column cases exercised");
+    }
+
+    /// [`warp_windows`] reads a whole vector past `first_col + WARPED_BLOCK_SIZE`,
+    /// one sample beyond the taps' own reach, so admission must reserve the
+    /// column after `last_col`. Without the reservation the admitted section at
+    /// the final column reads off the end of its row.
+    #[test]
+    fn interior_admission_reserves_the_column_after_the_last_tap() {
+        let (stride, ref_h) = (64usize, 64usize);
+        let samples = vec![512u16; stride * ref_h];
+        let params = default_params(24, 24, stride as i32, ref_h as i32);
+        let projected = project_section_center(&params).unwrap();
+        let last_col = usize::try_from(projected.x4_int + 7).unwrap();
+
+        let tight =
+            ReferencePlaneView::from_strided(&samples, stride, last_col + 1, ref_h).unwrap();
+        assert_eq!(
+            interior_warp_source_origin(&tight, &params, &projected),
+            None,
+            "a section whose taps end at the final column must not be admitted"
+        );
+
+        let roomy =
+            ReferencePlaneView::from_strided(&samples, stride, last_col + 2, ref_h).unwrap();
+        let (first_col, first_row) =
+            interior_warp_source_origin(&roomy, &params, &projected).unwrap();
+        assert!(
+            first_col + 2 * WARPED_BLOCK_SIZE <= roomy.row(first_row).len(),
+            "the admitted origin must leave a full two-vector window in the row"
+        );
     }
 
     #[test]
