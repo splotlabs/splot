@@ -94,248 +94,225 @@ benchmark into `T x wall - CPU`, **splot's total CPU is now under dav2d's at all
 six widths** — by 59.7 core-ms at three workers, 51.2 at four, 43.5 at ten and
 4.2 at eight, where the post-#1175 matrix had it 6.0 above — while its excess
 idle is 45.2 / 42.8 / 126.5 / 189.9 core-ms, 15.8 and 19.0 per worker at eight
-and ten, 103% and 130% of the whole 15.28 and 14.64 ms wall gaps there. Named
-terms unchanged: the first-pyramid fill, every reachable shape of which
-SCALE-054 closed on the AV2 § 8.2 CDF chain and whose one successor SCALE-055
-priced at -2.04% of the ten-worker benchmark against a 4% go line; the fixed
-`--limit=1` term, which is dav2d's `--framedelay max(T, 3)` cost and not splot's
-startup (SCALE-056); and the steady CPU residual behind 8T and 10T, 92%
-parallel inflation with every sub-term under the 1%-of-wall bar. **All of them
-carry closure rows and no open candidate addresses any.**
+and ten, 103% and 130% of the whole 15.28 and 14.64 ms wall gaps there.
+**SCALE-068 re-measured the whole loss decomposition on this profile and every
+closure held**, so the named terms are unchanged and each keeps its row: the
+first-pyramid fill, whose AV2 § 8.2 CDF chain SCALE-054 closed and whose one
+successor SCALE-055 priced at -2.04% against a 4%-at-both-widths go line, now
+re-priced at -2.19% on a ceiling that grew from 5.05% to 5.41% of the ten-worker
+benchmark; the fixed `--limit=1` term, which is dav2d's `--framedelay max(T, 3)`
+cost and not splot's startup (SCALE-056) and is now a credit at both lost
+widths; and the steady CPU residual, down from +5.467 to +4.611 core-ms per
+frame and now **100%** parallel inflation with every sub-term under the
+1%-of-wall bar. **The one thing that moved is the mix: the fill is now 79% of
+the ten-worker gap and 62% of the eight-worker one**, because LTO compressed
+every region except the latency-bound serial chain.
 
-Marginal steady frame, carried unchanged from SCALE-053 on `2f6a5d1fc`
-(`--limit=120` minus `--limit=60` over 60 frames, median of 7 alternating reps
-at 8/10T and 5 at 1T), which the 30-frame benchmark understates because its
-prologue is where splot is relatively cheapest (SCALE-032):
+Marginal steady frame (`--limit=120` minus `--limit=60` over 60 frames), which
+the 30-frame benchmark understates because its prologue is where splot is
+relatively cheapest (SCALE-032). SCALE-068 re-measured 1T and 10T on the
+shipped artifact, 7 alternating reps at ten workers and 5 at one; the 8T row is
+SCALE-053's, pre-LTO, and is the only stale one:
 
 | T | splot CPU/frame | splot wall/frame | splot cores | dav2d CPU/frame | dav2d wall/frame | dav2d cores | CPU ratio | wall ratio |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 21.367 ms | 21.366 ms | 1.000 | 20.945 ms | 20.944 ms | 1.000 | **1.020x** | 1.020x |
-| 8 | 27.642 ms | 3.625 ms | 7.625 | 23.052 ms | 2.990 ms | 7.710 | 1.199x | 1.212x |
-| 10 | 31.216 ms | 3.507 ms | **8.900** | 25.749 ms | 2.882 ms | **8.935** | 1.212x | 1.217x |
+| 1 | 21.097 ms | 21.097 ms | 1.000 | 21.351 ms | 21.352 ms | 1.000 | **0.988x** | 0.988x |
+| 8 (pre-LTO) | 27.642 ms | 3.625 ms | 7.625 | 23.052 ms | 2.990 ms | 7.710 | 1.199x | 1.212x |
+| 10 | 30.157 ms | 3.405 ms | **8.857** | 25.546 ms | 2.851 ms | **8.959** | 1.181x | 1.194x |
 
-Steady occupancy is at parity, so the whole steady gap is work: +5.467 core-ms
-per frame at ten workers and +4.590 at eight against **+0.422, 2.0%, at one**,
-so **92% of the steady gap is parallel inflation** — from 1 to 10 workers splot
-pays +9.849 core-ms per frame against dav2d's +4.804.
+Steady occupancy is at parity, so the whole steady gap is work: +4.611 core-ms
+per frame at ten workers, down from +5.467, against **-0.254 at one**, where
+pre-LTO one worker still cost +0.422. **The steady gap is now 100% parallel
+inflation** — from 1 to 10 workers splot pays +9.060 core-ms per frame against
+dav2d's +4.195, and splot's one-worker steady frame is 1.2% *cheaper* than
+dav2d's.
 
-### Post-SCALE-045 re-decomposition (SCALE-047)
+### Steady lifecycle and the fill chain (SCALE-068, post-LTO)
 
-Splot re-traced with SCALE-043's env-gated task timeline on exact `648d5581f`,
-ten threads, three reps at `--limit=90` and three at `--limit=30`; the
-instrumented binary is output-identical to the frozen base at 1 and 10 threads
-over 90 frames and wall-neutral (0.42 s traced and untraced, three pairs). The
-dav2d column is carried from SCALE-043 unchanged, because that decoder, its
-build and its configuration are untouched. Steady window is coded frames 30-60.
+Re-traced with an env-gated task timeline — every pool task's worker interval
+plus each admission job's `order_key`, which names its frame and its phase — on
+exact `origin/main` `96e1dbe50`, ten threads. The instrumented binary is
+byte-identical to the shipped artifact at 1 and 10 workers and wall-neutral
+(-0.182% at ten and -0.128% at eight over nine alternating pairs each). Steady
+window is coded frames 30-60, three reps at `--limit=90`. The dav2d column is
+carried from SCALE-043, because that decoder and its build are untouched.
 
-| Term | pre-045 | post-045 (3 reps) | dav2d |
-|---|---:|---:|---:|
-| Frame period `P` | 5.18 ms | **4.14 / 3.94 / 4.07 ms** | 3.38 ms |
-| Work per frame `W` | 37.10 core-ms | 36.52 / 36.74 / 35.74 | 29.87 |
-| Busy cores | 7.16-7.40 | **9.21 / 9.42 / 9.21** | 8.83-9.02 |
-| Idle cores | 2.51-2.64 | **0.75 / 0.58 / 0.79** | 0.93-1.01 |
-| Above the ten-worker floor | 28-30% | 8.1 / 2.9 / 8.5% | 12-15% |
-| Ordered chain work `C` | 5.85 core-ms | 6.67 / 6.46 / 6.82 | 7.13 |
-| Chains at once `k = C / P` | 1.13 | **1.61 / 1.64 / 1.68** | 2.11 |
-| Window at <=3 busy workers | 21.0%, 63.2% of idle | 1.2 / 0.2 / 1.4%, 12.2 / 2.1 / 12.6% | 1.5%, 10.7% |
-
-**`k` has passed SCALE-043's 1.58 go line without the rebuild SCALE-044
-rejected**, and `P_splot / P_dav = (C_s / C_d) x (k_d / k_s) = 0.935 x 1.287 =
-1.204` still reproduces the traced period ratio exactly. `C` grew 11-17%
-because sealing the filter copy is charged to the commit chain on the frames
-that newly seal (commit 3.68 to 4.18-4.56 core-ms per frame, frontier 2.17 to
-2.26-2.28) — that is SCALE-045's CPU price, and `W` absorbed it at -1.6%.
-Splot's idle, attributed as in SCALE-043 to the releasable frontier of each
-edge, is the same shape 3.4x smaller: `precompute <- previous frame's stripe`
-0.20-0.23 cores (26-35% of idle, was 0.51-0.59 at 19.5-23.4%), `commit <- its
-own precompute` 0.08-0.11 (was 0.19-0.22), the ordered commit spine 0.06-0.09
-(was 0.42-0.43), the depth-4 lane gate 0.04-0.07 (was 0.31-0.32).
-
-The 30-frame benchmark decomposes differently from steady state, and this is
-the session's main structural finding. Traced pool window 163.9-167.7 ms of a
-177.7 ms process wall; the 13.6 ms outside the pool is fixed (16.5 ms at
-`--limit=90`) and is not a gap term, because a `--limit=1` control puts splot's
-whole fixed cost at 24.8 ms against dav2d's 28.7 ms — which SCALE-053 shows
-holds only at eight and ten workers. Inside the pool:
-
-| Region | wall | share | idle | share of idle |
+| Term | pre-045 | post-045 (SCALE-047) | **post-LTO (SCALE-068)** | dav2d |
 |---|---:|---:|---:|---:|
-| Coded frames 0-5 (prologue) | 49.8-51.5 ms | 30-31% | 213-228 core-ms | 75-80% |
-| — frame 0's interval alone | 16.3-17.0 ms at 2.70-2.82 cores | 10% | 117-124 core-ms | 41-43% |
-| Coded frames 6-31 (steady) | 113-116 ms, 4.63-4.92 ms/frame | 69-70% | 59-72 core-ms | 20-25% |
-| Whole window | 163.9-167.7 ms at 8.28-8.31 cores | 100% | 276-286 core-ms | 100% |
+| Frame period `P` | 5.18 ms | 4.14 / 3.94 / 4.07 ms | **3.94 / 4.02 / 4.02** | 3.38 ms |
+| Work per frame `W` | 37.10 core-ms | 36.52 / 36.74 / 35.74 | 37.33 / 37.60 / 37.29 | 29.87 |
+| Busy cores | 7.16-7.40 | 9.21 / 9.42 / 9.21 | **9.47 / 9.34 / 9.27** | 8.83-9.02 |
+| Idle cores | 2.51-2.64 | 0.75 / 0.58 / 0.79 | 0.53 / 0.66 / 0.73 | 0.93-1.01 |
+| Above the ten-worker floor | 28-30% | 8.1 / 2.9 / 8.5% | **5.6 / 7.0 / 7.8%** | 12-15% |
+| Ordered chain work `C` | 5.85 core-ms | 6.67 / 6.46 / 6.82 | **6.02 / 6.14 / 5.52** | 7.13 |
+| Chains at once `k = C / P` | 1.13 | 1.61 / 1.64 / 1.68 | **1.53 / 1.53 / 1.37** | 2.11 |
 
-Frame 0 is the key frame: 10.5 ms of fused serial walk (160 helper tasks, 16.7
-core-ms, median 0.3 us) and then its 17 filter stripes (20.1 core-ms, median
-843 us). At eight threads the shape is the same, prologue 29.3% of the window
-carrying 152 of 174 core-ms.
+**`C` fell about 10% under LTO and `P` did not follow, so `k` fell back below
+SCALE-043's 1.58 go line** — the arithmetic still closes, `P_s / P_d = (C_s /
+C_d) x (k_d / k_s) = 0.828 x 1.426 = 1.180` against a traced period ratio of
+1.183. Splot's ordered chain is now **17% cheaper than dav2d's** and its period
+is still 18% longer, purely because it runs 1.48 chains at once against 2.11.
+That is not a lever: steady runs **5.6-7.8% above its own ten-worker work
+floor** against dav2d's 12-15%, so there is no scheduling headroom left to
+convert and the steady period is set by `W`. Removing steady wall now means
+removing steady work, and every named sub-term is under the 1%-of-wall bar.
+
+**The fill's § 8.2 CDF chain is unchanged and LTO barely touched it.** Over
+eleven alternating pairs at ten workers the six parses of coded frames 2-7 span
+**16.690 ms and sum to 16.688** — 100.0% back-to-back, zero slack, tighter than
+the 0.01-0.05 ms starts SCALE-054 measured — and each successor starts within
+0.001 ms of its predecessor's end. Against a same-source build with the profile
+reverted to plain release, the chain is 16.690 against 17.438 ms (**-4.3%**) and
+frame 2's parse alone 6.829 against 6.989 (**-2.3%**), where the same profile
+change moves the whole ten-worker benchmark -1.8% and the marginal steady frame
+-3.6% of wall. The trough is the same shape: 1.6-3.0 of ten busy cores through
+the milliseconds where frame 2's parse is the only unfinished work. **This is
+why the fill's share of the gap rose: it is latency-bound on a spec-fixed
+serial chain, so a whole-program code-generation win cannot reach it.**
 
 **SCALE-046 is rejected on measurement**: its 2 frames of 92 are coded
-sequence 0 and 5, both in this prologue and neither in the steady window, and
+sequence 0 and 5, both inside the fill and neither in the steady window, and
 the timeline prices them under 0.1 ms. Its ledger row carries the census.
 
-### Benchmark region decomposition (SCALE-053)
+### Benchmark region decomposition (SCALE-068, post-LTO)
 
 The 30-frame benchmark split by `--limit` rather than by trace, so one
 instrument covers both decoders: `wall(L) - wall(L-1)` is the marginal cost of
 admitting output frame `L`, and `T x dwall - dcpu` is the idle core-time that
 region carries. Output frame 1 is coded frame 5 (order hint 1, SCALE-046's
-census), so `--limit=2` adds coded frames 1-5, the first pyramid — the fill
-SCALE-047 named and no measurement had covered. A per-frame phase counter
-confirms every step of the sweep: the decode advances by exactly five coded
-frames from `--limit=1` to 2, none from 2 to 3, three from 5 to 6, none from 6
-to 7 and one from 7 to 8, which is the lumpy marginal wall the sweep measures.
-Medians of 9 alternating reps; the regions sum to the gap by construction.
+census), so `--limit=2` adds coded frames 1-5, the first pyramid. Medians of 9
+alternating reps on the shipped `73d436e05b...` artifact; the regions sum to
+the gap by construction. `pre` is SCALE-053's same-instrument reading on
+`2f6a5d1fc`, before the fat-LTO profile.
 
-| Region | 10T gap | 8T gap | 4T gap | 3T gap |
-|---|---:|---:|---:|---:|
-| fixed, `--limit=1` (key frame plus process) | **-3.98 ms** | -0.14 | **+4.94** | **+5.07** |
-| coded frames 1-5, the first pyramid | **+10.01** | **+8.42** | +1.12 | +2.74 |
-| output frames 2-7 | +3.94 | +5.35 | +1.50 | +4.22 |
-| output frames 8-29 | +7.21 | +6.57 | **-4.61** | **-7.27** |
-| **benchmark gap** | **+17.17** | **+20.20** | **+2.94** | **+4.76** |
+| Region | 10T gap | pre | 8T gap | pre | 4T gap | pre | 3T gap | pre |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| fixed, `--limit=1` | **-6.60 ms** | -3.98 | **-2.07** | -0.14 | +4.22 | +4.94 | +4.69 | +5.07 |
+| coded frames 1-5, the fill | **+10.82** | +10.01 | **+9.42** | +8.42 | +0.90 | +1.12 | +1.22 | +2.74 |
+| output frames 2-7 | +2.47 | +3.94 | +4.04 | +5.35 | +1.78 | +1.50 | +3.90 | +4.22 |
+| output frames 8-29 | +7.00 | +7.21 | +3.81 | +6.57 | **-8.97** | -4.61 | **-15.92** | -7.27 |
+| **benchmark gap** | **+13.69** | +17.17 | **+15.20** | +20.20 | **-2.07** | +2.94 | **-6.11** | +4.76 |
 
-The first pyramid is the largest identified term and it is pure occupancy:
-splot spends 26.86 ms of wall on 171.7 core-ms there at ten workers, **6.39 of
-10 busy cores**, against dav2d's 16.86 ms on 159.5 at **9.46**; at eight it is
-5.75 against 7.68, at four 3.82 against 3.99 and at three 2.72 against 2.99.
-Splot's work in that region is within 7.6% of dav2d's at ten workers and
-*below* it at three and four. Running it at dav2d's own occupancy is worth
-**-8.72 ms at 10T (1.1117 to 1.0550x on this instrument), -6.83 at 8T (1.1276
-to 1.0845x), -4.61 at 3T (1.0127 to 1.0004x) and -1.60 at 4T (1.0102 to
-1.0047x)**.
+**Fat LTO compressed every region except the fill, so the fill is now the whole
+shape of both remaining losses**: its share of the gap rose from 58% to **79%**
+at ten workers and from 42% to **62%** at eight, while steady fell 0.21 and
+2.76 ms and the fixed term deepened its credit by 2.62 and 1.93. Splot spends
+26.26 ms of wall on 170.6 core-ms there at ten workers, **6.50 of 10 busy
+cores** against dav2d's 15.44 ms on 153.7 at **9.96**; at eight it is 5.76
+against 8.17, at four 3.80 against 3.98 and at three 2.73 against 2.98. Running
+the fill at dav2d's own occupancy is worth **-9.13 ms at 10T, 5.41% of the
+benchmark against 5.05% pre-LTO, and -8.03 at 8T, 4.56% against 3.83%** — but
+that unreachable ceiling still only reaches 1.029x at ten workers and 1.045x at
+eight, so **the fill family cannot win either lost width even in the limit**.
 
-### Endgame ranking (SCALE-053)
+### Endgame ranking (SCALE-068)
 
 Ceilings are priced at the current 1:1 conversion: steady occupancy is at
-parity, so one core-ms per frame is 0.112 ms of steady wall, 3.2% of splot's
-3.507, and the 1%-of-wall stacking bar is 0.31 core-ms.
+parity, so one core-ms per frame is 0.113 ms of steady wall, 3.3% of splot's
+3.405, and the 1%-of-wall stacking bar is 0.30 core-ms. **The order is
+unchanged from SCALE-053 and the fill's lead over the rest widened.**
 
-1. **The first-pyramid fill. Ceilings above, but SCALE-054 measured the region
-   and every reachable shape is closed.** The mechanism is the AV2 § 8.2 CDF
-   chain: frames 3-7 each start their parse within 0.01-0.05 ms of their
-   predecessor's parse end, on exact admission conditions, and this stream's
-   single tile with `context_update_tile_id = 0` makes the end of a frame's
-   only tile the earliest legal publication point, so the chain cannot be
-   shortened. The depth family was re-measured *inside* the region rather than
-   inferred from whole-benchmark medians and is null-to-negative at eight
-   workers; priority has nothing to reorder, because the trough runs 1.0-4.3 of
-   ten busy cores. Its one successor with headroom, a within-frame row-granular
-   parse-to-reconstruct handoff, was priced by SCALE-055 and is **NO-GO**: the
-   replay prices it at -2.04% of the ten-worker benchmark and -2.97% of the
-   eight-worker one against a 4%-at-both-widths go line, and an unreachable
-   bound that removes the parse gate entirely reaches only -3.28% at ten.
-   **This item is closed.**
-2. **Steady CPU residual**, +5.467 core-ms per frame at ten workers. It is
-   worth 0.614 ms of steady wall, which is exactly steady parity (2.893 against
-   dav2d's 2.882), but only **+2.38 ms of the 30-frame benchmark at 10T and
-   +2.04 at 8T**, because the benchmark's late frames run at 1.077x against
-   steady state's 1.217x. Carried forward stage by stage from SCALE-049:
-   prediction and MC **+5.99**, publication and copies **+3.25**, MV
-   bookkeeping +0.88, entropy +0.79, scheduling +0.72, deblock +0.38, less the
-   filter credit -5.91. **Adjacency: every named sub-term is under the bar.**
-   The copies' reachable residue after SCALE-051 is 0.17 core-ms, 0.5% of wall
-   (zero fill 0.088 and stripe margin 0.080, both measured and rejected; the
-   1.10 borrow and the 1.5 of rect and sealed copies are closed by SCALE-035,
-   K10.12 and K10.32), and SCALE-052's flag replay is 0.13, 0.4%. What is left
-   is not algorithmic: **92% of this term is parallel inflation**, SCALE-034's
-   territory, whose largest named member `commit_intra` is 2.9% of steady wall
-   and about half of which is host and memory-system pressure that SCALE-034
-   and SCALE-050 both measured as N one-worker decodes against one N-worker
-   decode on an identical core mix.
-3. **Steady idle residual**, 4.83 ms at 10T and 4.53 at 8T over output frames
-   8-29, against 0.035 and 0.085 cores of idle in true steady state. It is
-   therefore depth fill and drain inside the benchmark window rather than a
-   steady term, and it is item 1's mechanism measured later in the run.
-4. **The fixed `--limit=1` cost**, +4.94 ms at 4T and +5.07 at 3T — larger than
-   either width's whole gap — and a -3.98 ms credit at 10T, because splot's is
-   flat at 23.9-26.7 ms across widths while dav2d's runs 20.5 ms at three
-   workers to 28.1 at ten. **SCALE-056 decomposed both sides and corrects this
-   item.** The width dependence is dav2d's `--framedelay max(T, 3)`, not
-   splot's: at framedelay 1 dav2d's fixed cost is flat at 17.0-19.8 ms from
-   three workers up, and the contract's depth costs it +0.71 / +1.61 / +6.94 /
-   +10.93 ms at 3 / 4 / 8 / 10T against splot's own +0.74 / +1.00 / +1.59 /
-   +1.46. Splot's pool build is 0.06-0.19 ms and is not a term. The `--version`
-   floor understates splot's process cost, which is really 2.9-3.4 ms at
-   `--limit=1` and 5.6-7.6 at `--limit=30`: **whole-file input read 1.13-1.34
-   ms, whole-file container plan 0.61-0.97, and process teardown at about 11 us
-   per resident MB** (0.72-1.31 ms at `--limit=1`, 1.83-6.26 at `--limit=30`,
-   on a footprint 1.6-1.9x dav2d's). The rest is the key frame's own decode,
-   **covered by closed rows**: SCALE-040-B's upper bound, deleting the key
-   frame's whole filter phase, is -0.70% at 3T and null at 4T, and SCALE-041
-   caps walk fan-out at 1.02 ms. **SCALE-056 rejected the input terms**: their
-   own unreachable bound is under the 1.5 ms kill line at three workers.
+1. **The first-pyramid fill, now 79% of the ten-worker gap and 62% of the
+   eight-worker one. Ceilings above; SCALE-054's mechanism and SCALE-055's
+   price both reconfirm at the new numbers.** The chain is AV2 § 8.2: the six
+   parses of coded frames 2-7 are 100.0% back-to-back with zero slack, and this
+   stream's single tile with `context_update_tile_id = 0` makes the end of a
+   frame's only tile the earliest legal publication point, so it cannot be
+   shortened. Its one successor with headroom, a within-frame row-granular
+   parse-to-reconstruct handoff, was priced by SCALE-055 and stays **NO-GO**.
+   Re-pricing that replay by the ceiling's own move (x1.072 at ten workers,
+   x1.192 at eight) gives full handoff **-2.19% / -3.54%**, the bundled parse
+   re-key **-2.91% / -5.23%**, and the unreachable no-parse-gate bound
+   **-3.52% / -5.94%**, against a 4%-at-both-widths go line. **Eight workers
+   now crosses on the bundle and ten never crosses under any assumption**, so
+   the binding side is unchanged and so is the verdict. Decisive either way:
+   at the bundled price both widths still lose, 1.057x and 1.037x.
+2. **Steady CPU residual**, +4.611 core-ms per frame at ten workers, down from
+   +5.467. It is worth 0.521 ms of steady wall — steady parity is now within
+   reach of this term alone (2.884 against dav2d's 2.851) — but only about
+   **+2.7 ms of the 30-frame benchmark at 10T and +0.6 at 8T**, because the
+   benchmark's late frames run at 1.030 and 1.037x against steady state's
+   1.194x. Stage attribution in the refreshed ledger below. **Every named
+   sub-term is still under the bar**, and the term is now **100% parallel
+   inflation**: splot's one-worker steady frame went below dav2d's, so there is
+   no scalar residue left to charge it to. That is SCALE-034's territory, half
+   of it host and memory-system pressure both SCALE-034 and SCALE-050 measured
+   as N one-worker decodes against one N-worker decode on an identical core mix.
+3. **Steady idle residual**, 4.28 ms at 10T and 3.16 at 8T over output frames
+   8-29, down from 4.83 and 4.53, against 0.53-0.73 cores of idle in true
+   steady state. It is therefore depth fill and drain inside the benchmark
+   window rather than a steady term, and it is item 1's mechanism measured
+   later in the run.
+4. **The fixed `--limit=1` cost** is no longer a term at any width: it is a
+   credit of **-6.60 ms at 10T and -2.07 at 8T** and only +4.22 / +4.69 at 4T
+   and 3T, both of which are won outright. SCALE-056 already showed the width
+   dependence is dav2d's `--framedelay max(T, 3)` and not splot's, and LTO
+   deepened splot's credit by a further 2.62 and 1.93 ms.
 
-**Best next candidate per lost width.** Every lost width named the same one:
-raise occupancy across coded frames 1-5. Alone it reached parity at three
-workers and 1.005x at four, both of which SCALE-066's profile has since won
-outright (SCALE-067); at ten and eight it reaches 1.055x and 1.085x and must
-then stack with item 2. **SCALE-054 closed every reachable shape of it and
-SCALE-055 priced the last one**, so the ranked candidate list now begins at
-item 2 and the occupancy family carries no scoped successor at the two widths
-that are still lost.
+**Best next candidate per lost width.** Both lost widths still name the fill,
+and it still has no scoped successor: SCALE-054 closed every reachable shape,
+SCALE-055 priced the last one, and SCALE-068 re-priced that verdict at the new
+ceiling without moving it. **What the refresh adds is that the fill's own
+unreachable ceiling now leaves 1.029x and 1.045x**, so no fill candidate wins
+either width alone; the two remaining losses need the fill *and* item 2, and
+item 2 is now entirely parallel inflation with no member above the bar.
 
 ### Normalized steady-state CPU ledger (SCALE-049)
 
 Both decoders' marginal steady frame, split by one rule table applied to both
-symbol sets, superseding every earlier stage split whose boundaries differed per
-side. Core-ms per frame, `--limit=120` minus `--limit=60` over 60 frames for the
-totals and `/usr/bin/sample` at 1 ms over the steady window for the shares,
-medians of 6 reps at ten threads and 3 at one. Film grain is absent from the
-stream. At parity occupancy 1 core-ms per frame is 0.113 ms of steady wall,
-**3.0% of splot's 3.733**, so the 1%-of-wall stacking bar is 0.33 core-ms.
+symbol sets. Core-ms per frame, `--limit=120` minus `--limit=60` over 60 frames
+for the totals and `/usr/bin/sample` at 1 ms over the steady window for the
+shares. Film grain is absent from the stream. At parity occupancy 1 core-ms per
+frame is 0.113 ms of steady wall, **3.3% of splot's 3.405**, so the 1%-of-wall
+stacking bar is 0.30 core-ms. **SCALE-068 refreshed splot's columns on the
+shipped artifact** (6 reps at ten workers, 3 at one); dav2d's are SCALE-049's,
+unchanged binary and build. `LTO` is the same-source ten-worker move from a
+plain-release build of this exact tree to the shipped fat-LTO one, 6 reps each.
 
-| Stage | splot 1T | dav2d 1T | splot 10T | dav2d 10T | 10T delta | splot 1→10T | dav2d 1→10T |
+| Stage | splot 1T | dav2d 1T | splot 10T | dav2d 10T | 10T delta | LTO | pre-LTO 10T delta |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| entropy / parse | 1.334 | 0.595 | 1.623 | 0.832 | +0.791 | +0.289 | +0.237 |
-| MV / projection | 3.442 | 2.480 | 5.702 | 3.508 | **+2.194** | +2.260 | +1.028 |
-| prediction + MC | 6.243 | 2.566 | 9.672 | 3.532 | **+6.140** | +3.429 | +0.966 |
-| residual / transforms | 0.648 | 0.825 | 0.740 | 0.653 | +0.087 | +0.092 | −0.172 |
-| deblock | 1.243 | 1.056 | 2.053 | 1.671 | +0.382 | +0.810 | +0.615 |
-| CDEF + CCSO | 3.016 | 3.423 | 3.435 | 4.098 | −0.663 | +0.419 | +0.675 |
-| LR / wiener | 3.137 | 7.233 | 4.205 | 8.758 | **−4.553** | +1.068 | +1.525 |
-| GDF | 0.829 | 1.872 | 0.848 | 2.203 | −1.355 | +0.019 | +0.331 |
-| publication / copies | 1.484 | 0.112 | 3.642 | 0.061 | **+3.581** | +2.158 | −0.051 |
-| scheduling overhead | 0.121 | 0.011 | 1.049 | 0.325 | +0.724 | +0.928 | +0.314 |
-| **total** | **21.497** | **20.173** | **32.968** | **25.641** | **+7.327** | **+11.471** | **+5.468** |
+| entropy / parse | 0.306 | 0.595 | 0.204 | 0.832 | −0.628 | −0.06 | +0.791 |
+| MV / projection | 2.877 | 2.480 | 4.484 | 3.508 | **+0.976** | −0.08 | +2.194 |
+| prediction + MC | 6.943 | 2.566 | 9.437 | 3.532 | **+5.905** | +0.48 | +6.140 |
+| residual / transforms | 0.223 | 0.825 | 0.181 | 0.653 | −0.472 | −0.23 | +0.087 |
+| deblock | 1.448 | 1.056 | 2.058 | 1.671 | +0.387 | −0.06 | +0.382 |
+| CDEF + CCSO | 2.209 | 3.423 | 2.404 | 4.098 | −1.694 | **−1.14** | −0.663 |
+| LR / wiener | 4.724 | 7.233 | 5.817 | 8.758 | **−2.941** | +0.77 | −4.553 |
+| GDF | 0.260 | 1.872 | 0.305 | 2.203 | −1.898 | +0.05 | −1.355 |
+| publication / copies | 2.079 | 0.112 | 2.398 | 0.061 | **+2.337** | **−0.82** | +3.581 |
+| scheduling overhead | 0.019 | 0.011 | 2.862 | 0.325 | **+2.537** | **+0.52** | +0.724 |
+| **total** | **21.097** | **20.173** | **30.157** | **25.641** | **+4.516** | **−0.56** | **+7.327** |
+
+**Read the `LTO` column as attribution as much as work.** Fat LTO inlines
+across crates, so a helper that had its own frame is now charged to its caller;
+that is why CDEF, residual and the copies fall while prediction, LR and
+scheduling rise. Only the total, **−0.56 core-ms**, is instrument-independent,
+and it reproduces the −0.67 measured directly. Two readings do survive the
+caveat because they move the largest named non-kernel terms: **publication and
+copies fell 25%** and now sit at +2.34 against dav2d where SCALE-049 had them
+at +3.58, the biggest single improvement in the ledger since that row; and
+**scheduling rose 22%**, the one sub-term that moved the wrong way, landing at
++2.54 and 0.32 ms of steady wall — exactly on the 1%-of-wall bar and inside
+SCALE-032's coordination bound, with every scheduler shape already closed by
+SCALE-024, SCALE-042 and K10.16/K10.25/K10.31/K10.36. Totals carry a <0.01
+core-ms unmatched residue. The splot 1T column crossing below dav2d's is the
+same result the marginal-frame table reports, seen stage by stage.
 
 ### Ten-thread timeline attribution (SCALE-043)
 
-Measured on `10293339f`, before SCALE-045. Its splot column is superseded by
-the re-decomposition above; its dav2d column still stands. Both decoders traced
-on the same stream and host at ten threads, `--limit=90`,
-steady window = coded frames 30-60, three runs each. Per-coded-frame medians;
-the instrumented binaries are wall-neutral and are never used for a timing
-claim.
-
-| Term | splot | dav2d | Note |
-|---|---:|---:|---|
-| Frame period | 5.18 ms | 3.38 ms | ratio 1.531 |
-| Work per frame | 37.10 core-ms | 29.87 core-ms | parse / MV / recon / filter 3.35 / 3.92 / 15.88 / 12.46 against 0.47 / 3.09 / 6.29 / 19.99 |
-| Busy cores in window | 7.16-7.40 | 8.83-9.02 | matrix ground truth 7.90 against 9.07 |
-| Ten-worker work floor | 3.71 ms | 2.99 ms | splot 28-30% above floor, dav2d 12-15% |
-| Frames with a running task | 3.62 | 3.68 | equal; ten dav2d frame contexts buy nothing |
-| Live `(frame, stage)` chains | 6.7 | 9.6-10.5 | dav2d's supply exceeds the pool width |
-| Ordered chain work per frame `C` | 5.85 core-ms | 7.13 core-ms | splot commit + § 7.17 frontier; dav2d recon + deblock-rows |
-| Ordered chains running at once `k` | **1.13** | **2.11** | `P = C / k`; `0.820 x 1.867 = 1.531` reproduces the period ratio exactly |
-| Head-of-frame cycle | 1.88 ms | 3.24 ms | dav2d is at 96% of its period; splot runs 2.8x above its own |
-| Idle cores | 2.51-2.64 | 0.93-1.01 | dav2d's is 960-970 parks, median 74-80 us |
-
-Splot's idle, attributed to the releasable frontier of each dependency edge
-(cores of ten, three reps):
-
-| Blocked edge | cores | share of idle |
-|---|---:|---:|
-| `precompute` waiting on the previous frame's filter stripe | 0.51 / 0.59 / 0.56 | 19.5 / 23.4 / 21.5% |
-| ordered commit spine (`commit` on its own frame's commit or frontier) | 0.43 / 0.42 / 0.42 | 16% |
-| `prepare` waiting on frame N-4's reconstruction (depth-4 lane) | 0.31 / 0.31 / 0.32 | 12% |
-| intra-frame recon chain (`precompute` on its own frame) | 0.31 / 0.32 / 0.39 | 12-15% |
-| `commit` waiting on its own precompute (`spine_prewait`) | 0.19 / 0.18 / 0.22 | 7-9% |
-| `resolve` waiting on frame N-2's filter stripe | 0.06 | 2% |
-
-Ready-but-unstarted jobs average 2.95 per instant against 49.1
-submitted-but-blocked, so the remaining ten-thread idle is dependency supply,
-not scheduler priority.
+Measured on `10293339f`, before SCALE-045. Its splot column is superseded twice
+over — by SCALE-047 and then by SCALE-068 above — and its idle attribution with
+it, since SCALE-047 measured the same shape 3.4x smaller and SCALE-068 measured
+idle at 0.53-0.73 cores. **What still stands is its dav2d reference**, carried
+into the steady table above (`P` 3.38 ms, `W` 29.87 core-ms, `C` 7.13, `k`
+2.11, busy 8.83-9.02 cores, idle 0.93-1.01, 12-15% above its work floor), plus
+three terms nothing has re-measured: dav2d holds 3.68 frames with a running
+task against splot's 3.62, so **ten dav2d frame contexts buy it nothing**; it
+keeps 9.6-10.5 live `(frame, stage)` chains against splot's 6.7, so its supply
+exceeds the pool width; and its head-of-frame cycle is 3.24 ms, **96% of its
+own period**. Splot's remaining idle was dependency supply and not scheduler
+priority even then — ready-but-unstarted jobs averaged 2.95 per instant against
+49.1 submitted-but-blocked — and SCALE-024 has since bounded the order key.
 
 ## Delivery discipline
 
@@ -469,6 +446,7 @@ is retained in the task table below.
 | SCALE-065 | Investigated; no source change | Re-measure the ground-truth matrix on exact `origin/main` `ea71c8b85` after the SCALE-064 bundle and answer the one question SCALE-063 and SCALE-064 both left open: does splot now beat dav2d at three workers? | **Answer: no.** Timed on the shipped release artifact: `cargo fmt --all -- --check` clean, whole-workspace `cargo build --release`, binary `be713c756d1c128dbe57d404fcad9efaaae373e9c1a15a52dcdde5425b494ee4` — `ea71c8b85`'s tree is source-identical to the merged SCALE-064 branch head, so the checkout touched no file and cargo confirmed the artifact fresh. Method per the confirmed-matrix section; host up 3 days 12 hours, one-minute load 1.20 before the first timed sweep and 2.95 after the last. **Verdicts, pooled over every sweep at that width: 1T WIN 0.9056x at 11/11 pairs, 2T WIN 0.9784x at 11/11, 3T LOSS 1.0017x at 21/55, 4T LOSS 1.0035x at 4/22, 8T LOSS 1.1126x at 0/11, 10T LOSS 1.0955x at 0/11.** Per-sweep 3T ratios are 0.9992 / 1.0033 / 1.0025 / 1.0018 / 1.0006 and the throwaway warm sweep read 0.9938, so a fifth of the sweeps again land below parity and a single sweep at this width still proves nothing. **The protocol's own 55 pairs cannot decide 3T, and that is arithmetic rather than opinion.** Their paired median is +0.139% with a 95% bootstrap interval of [-0.030%, +0.287%] that spans parity, 21 of 55 faster is sign-test `p` = 0.10, and the per-pair ratio spread is 0.565 points, so 55 pairs buy a 95% interval whose half-width is +-0.149% — numerically the same as the +-0.15% tie band, which means the protocol resolves this width to exactly the width of the question. **So four further 55-pair sweeps ran at three workers, and 220 more pairs decide it.** They read 0.9996 / 1.0018 / 1.0015 / 1.0024 for 89 of 220 faster (40.5%), a +0.112% median, a [+0.021%, +0.181%] interval and `p` = 0.006; pooled with the matrix sweeps, **275 pairs give a wall-median ratio of 1.00127, a paired median of +0.126%, a [+0.032%, +0.178%] interval that excludes parity, 110 of 275 faster (40.0%) and `p` = 0.001**. Three workers is therefore a **TIE-AT-PARITY on effect size and a decided loss on sign**: the gap is inside the +-0.15% band and it is consistently a gap. Four workers needs no such treatment — +0.327% median, [+0.105%, +0.495%], 4 of 22 faster, `p` = 0.004, outside the band and decided at 22 pairs. **The SCALE-064 bundle's 3T preview did not reproduce against dav2d.** It measured -0.137% and -0.188% against its own base and needed -0.152% to reach parity; the matrix moved 3T by +0.02 points, which is nothing, and 4T by -0.11. The bundle's retained value is the 1T and 2T wins it did not disturb. **Residual gap at each lost width.** Absolute gaps are +0.60 ms at 3T, +1.00 at 4T, +17.90 at 8T and +14.80 at 10T. Splitting each whole benchmark into `T x wall - CPU`, splot's total CPU is **47.0 core-ms below dav2d's at three workers, 43.0 below at four and 28.0 below at ten, and only 6.0 above at eight**, while its excess idle is 48.8 / 47.0 / 137.2 / 176.0 core-ms, and occupancy is 2.80 / 3.72 / 6.55 / 7.64 against dav2d's 2.93 / 3.88 / 7.25 / 8.55. **Every remaining loss is still occupancy, not work**, and each named term keeps its closure row: SCALE-054 and SCALE-055 for the first-pyramid fill, SCALE-056 for the fixed `--limit=1` term behind 3T and 4T, and SCALE-049 through SCALE-052 plus SCALE-057 and SCALE-011-G for the steady CPU residual behind 8T and 10T. **Verification.** No source or diagnostics touched: the tree is docs-only against `ea71c8b85` and the timed binary is the shipped one. | Closed as a measurement. **Two of six widths are won and four remain lost with no open candidate**, and the three-worker question is now answered rather than deferred. **The instrument bound is the durable result**: at three workers one 11-pair sweep resolves +-0.33%, the mandated five resolve +-0.15%, and separating a sub-0.15% effect from parity takes about 275 pairs, which is 4 minutes of decoding and was run here. Do not accept or reject a 3T candidate on 11 or 55 pairs unless its own paired median exceeds 0.15%; below that, run the 220-pair confirmation or state the result as undecided. Re-measure this matrix before, not after, any future retention call. |
 | SCALE-066 | Committed; confirmed by SCALE-067 | Re-price LTO release profiles on current `origin/main` `139174c23` under the modern stacking bar, after SCALE-011-K10.50 rejected fat LTO under the old 10% gate. | **Retained: `lto = "fat"` plus `codegen-units = 1`, a `[profile.release]` change and nothing else.** **The K10.50 delta is pricing, not measurement**: that row was decided under the old 10%-per-candidate gate on a tree 30 PRs older, and its own +1.00% at 1T and +2.38% at 8T are several times today's stacking bar while its -0.19% at 10T sits inside the modern null band. **Three variants, each built whole-workspace and each byte-exact.** Fat with default codegen units: 60.83 s, 8,257,248 B (-16.1%). Thin: 28.41 s, 9,754,528 B (-0.9%). Fat plus `codegen-units = 1`: 78.26 s, 7,891,184 B (-19.8%). The base is 25.96 s and 9,838,960 B on a fresh target directory, and that rebuild reproduced the frozen artifact `be713c756d...` bit for bit. **Exactness came before timing and no variant is dead**: all three produce 186,624,000 B with SHA-256 `48f0dc14...` at 1/2/3/4/8/10 workers, and each one's 545-frame hash report is identical at 1T and 10T and identical to the frozen base's. **Screen, 5 pairs at 1T/8T**: fat -0.712% / -0.593%, thin -0.974% / -0.991%, fat+cgu1 -1.258% / -0.925%. A 7-pair head-to-head then put fat+cgu1 ahead of thin by -0.205% (6/7) at 1T, -0.116% (5/7) at 8T and -0.115% at 10T, so fat+cgu1 went forward. **Full paired timing against the frozen base, both instruments.** The primary numbers interleave base, candidate and the base copy inside every rep with the arm order rotated per rep, which is SCALE-064's correction applied to the whole-benchmark instrument; the classic two-arm sweeps with a separate A/A null agree at every width. Interleaved, candidate against its own null: 1T **-1.209% (11/11)** against +0.182%, 2T **-1.317% (9/11)** against +0.378%, 3T **-1.813% (32/33)** against -0.052%, 4T **-1.319% (33/33)** against +0.042%, 8T **-1.889% (31/33)** against -0.110%, 10T **-1.803% (30/33)** against -0.158%. Two-arm: 1T -1.294% (5/5), 2T -1.732% (5/5), 3T -1.145% (10/11), 4T -1.267% (9/11), 8T -1.453% (10/11), 10T -1.527% (11/11), against nulls of -0.064 / +0.171 / -0.380 / -0.222 / -0.291 / -0.794%. **Every width is negative, every width is beyond its own null, and the two won widths improve most in absolute terms.** **Three workers needed no confirmation run.** SCALE-065's rule mandates the 220-pair treatment only when a 3T paired median falls under 0.15%; this one is -1.813% over 33 interleaved reps and -1.145% over 11 classic pairs, an order of magnitude outside the tie band and 32 of 33 on sign, so the band is not in play. **Marginal steady CPU, interleaved, 9 reps**: 1T **-0.350 core-ms per frame (-1.633%), 9 of 9**, against a +0.045 null; 10T **-0.666 (-2.173%), 9 of 9**, against a +0.190 null. This is the first candidate in the mission to move the marginal frame by more than half a core-ms at ten workers. **dav2d preview, and it flips two widths.** 11 pairs per width and 22 at 3T/4T on the retained binary: 1T 0.8958x (11/11), 2T 0.9684x (11/11), **3T 0.9862x (21/22)** with a 95% bootstrap interval of [-1.46%, -1.28%] and sign-test `p` = 0.00001, **4T 0.9942x (19/22)** with [-0.81%, -0.45%] and `p` = 0.00086, 8T 1.0976x (0/11), 10T 1.0905x (0/11). Both flipped widths clear the +-0.15% tie band by 4x to 9x and are decided on sign, so **four of six widths are now won** against SCALE-065's two. Eight and ten workers move 1.50 and 0.50 points toward parity and stay lost; their occupancy shape is unchanged, splot's CPU still sitting below dav2d's at 3T/4T/10T. **Build and gate cost.** Local `cargo build --release` goes 25.96 s to 78.26 s, 3.0x. **`cargo xtask ci` is unaffected and this was checked rather than assumed**: `run_ci` runs fmt, clippy, `cargo test`, doc and the xtask checks, none of which build the release profile — `build_splot_binary(root, true)` is reached only from `cargo xtask perf` — and a bare run after the change exited 0 in 68.5 s with `target/release/splot` untouched. Duplication and doc budget both stay at budget. | Maintainer retention call under the 2026-07-31 stacking policy. **The durable result is that a rejection priced under the old gate is not evidence under the new one**: K10.50's own numbers passed today's bar, and the only new work here was re-measuring it and adding the codegen-units variant it never tried. Any other candidate rejected before 2026-07-31 on an under-10% margin deserves the same re-reading. **Re-measure the ground-truth matrix on the merged profile before the next retention call** — the 3T and 4T flips are an 11-and-22-pair preview, not the mandated sweep, and the confirmed-matrix section above still times the default profile. |
 | SCALE-067 | Investigated; no source change | Re-measure the official ground-truth matrix on exact `origin/main` `22e21b007`, the merged SCALE-066 fat-LTO profile, and settle whether that row's 22-pair 3T/4T preview holds at the mandated pair counts. | **Answer: it holds, and the goal's width set now stands at one, two, three and four workers won.** Timed on the shipped artifact: `cargo fmt --all -- --check` clean, whole-workspace `cargo build --release` of the exact tree, binary `73d436e05b179f64a919bfb254887922a264e18547fd11dcb24c1aa3ab73124f` at 7,891,184 B — the same artifact SCALE-066 measured, and cargo found nothing to rebuild because `22e21b007`'s tree is source-identical to the merged SCALE-066 head. Method per the confirmed-matrix section; a throwaway warm sweep ran first and read 0.8935 / 0.9491 / 0.9776 / 0.9954 / 1.0934 / 1.1103. Host up 3 days 13 hours, one-minute load 2.64 before the first timed sweep and 2.65 after the last, never outside 2.0-3.8. **Verdicts, pooled over every sweep at that width: 1T WIN 0.8953x at 22/22 pairs, 2T WIN 0.9665x at 22/22, 3T WIN 0.9871x at 52/55, 4T WIN 0.9927x at 45/55, 8T LOSS 1.0953x at 0/22, 10T LOSS 1.0939x at 0/22.** Paired medians with 95% bootstrap intervals are -10.49% [-10.66, -10.27], -3.38% [-3.52, -3.00], **-1.32% [-1.41, -1.10]**, **-0.74% [-0.89, -0.57]**, +9.54% [+8.98, +9.83] and +9.02% [+8.69, +10.43]; sign-test `p` is 1.5e-12 at three workers and 2.1e-6 at four. **SCALE-065's 220-pair rule was checked and is not in play at either flipped width.** It triggers only on a pooled call inside +-0.15%; three workers land 8.8x outside that band and four 4.9x, and even the nearest interval edge sits 7.4x and 3.8x out. Three sweeps were mandated at each of those widths and already decided them (-1.41% at 32/33 and -0.74% at 27/33); two further sweeps ran as confirmation and moved neither call. **Every one of the ten sweeps at the two flipped widths reads below parity** — 3T 0.9881 / 0.9863 / 0.9873 / 0.9888 / 0.9890 and 4T 0.9950 / 0.9912 / 0.9890 / 0.9945 / 0.9904 — where the pre-LTO matrix had a fifth of its 3T sweeps below parity and no stable sign. **The flips are the profile, not drift.** Against the post-#1175 baseline three workers move 1.5 points and four 1.1, which is SCALE-066's own -1.8% and -1.3% interleaved candidate medians arriving intact; eight and ten workers gain 1.73 and 0.16 points and stay lost at roughly 1.09-1.10x. **Residual shape, and it moved in splot's favour.** Absolute gaps are -4.82 ms at 3T, -2.09 at 4T, +15.28 at 8T and +14.64 at 10T. Splitting each whole benchmark into `T x wall - CPU`, **splot's total CPU is now below dav2d's at all six widths** — 109.3 / 47.5 / 59.7 / 51.2 / 4.2 / 43.5 core-ms below — where the post-#1175 matrix had it 6.0 core-ms above at eight workers. Excess idle is 0.7 / 11.4 / 45.2 / 42.8 / 126.5 / 189.9 core-ms, and at eight and ten workers that is 15.8 and 19.0 core-ms per worker, 103% and 130% of the whole wall gap. **Both remaining losses are idle and nothing else**, and each named cause keeps its closure row: SCALE-054 and SCALE-055 for the first-pyramid fill, SCALE-056 for the fixed `--limit=1` term, and SCALE-049 through SCALE-052 plus SCALE-057 and SCALE-011-G for the steady CPU residual. **Verification.** No source, profile or diagnostics touched: the tree is docs-only against `22e21b007` and the timed binary is the shipped one. | Closed as a measurement, and it closes SCALE-066's open re-measure action. **Four of six widths are won and the two that are not have no open candidate**, so the goal's remaining distance is entirely the eight- and ten-worker occupancy gap at about 1.09-1.10x, whose every named cause already carries a closure row. **The durable result is that the fat-LTO flip survived the mandated pair counts where the SCALE-064 bundle's 3T preview did not** — a whole-profile change moves every width at once and is visible at 11 pairs, whereas a sub-0.15% source candidate needs SCALE-065's 220-pair treatment. Keep that rule: it was checked here and correctly declined. Re-measure this matrix before, not after, any future retention call. |
+| SCALE-068 | Investigated; no source change | Re-measure the 8T/10T loss decomposition on the fat-LTO profile, after every occupancy closure — SCALE-047's region split, SCALE-054's fill timeline, SCALE-055's handoff replay and SCALE-049's stage ledger — was priced pre-LTO, and either re-open exactly one family with a stated magnitude delta or reconfirm all of them at the new numbers. | **Answer: reconfirmation, with one magnitude delta — the fill's share of both losses rose sharply and its price did not.** Measured on exact `origin/main` `96e1dbe50` behind a clean `cargo fmt --all -- --check`, whole-workspace `cargo build --release` reproducing the shipped `73d436e05b17...` artifact bit for bit; host up 3 days 14 hours, one-minute load 1.49-2.1 throughout. **Region split** (SCALE-053's `--limit` instrument, 9 alternating reps, 3/4/8/10T) is tabulated above. **Fat LTO compressed every region except the fill**: at ten workers fixed -3.98 to -6.60 ms, fill +10.01 to +10.82, output 2-7 +3.94 to +2.47, steady +7.21 to +7.00 and the whole gap +17.17 to +13.69, so the fill went from 58% to **79%** of the gap; at eight it went from 42% to **62%** (fill +8.42 to +9.42, steady +6.57 to +3.81, gap +20.20 to +15.20). **Why**: an env-gated task timeline — every pool task's worker interval plus each admission job's `order_key` — on a binary byte-identical to the shipped one at 1/10T and wall-neutral at -0.182%/-0.128% over nine pairs each, puts the six parses of coded frames 2-7 at **16.690 ms spanned and 16.688 summed, 100.0% back-to-back with zero slack**, each successor starting within 0.001 ms of its predecessor's end. Against a same-source plain-release build of the same tree the chain is 16.690 against 17.438 ms (**-4.3%**) and frame 2's parse 6.829 against 6.989 (**-2.3%**), where that profile change moves the whole ten-worker benchmark -1.8% and the marginal steady frame -3.6% of wall. **The fill is latency-bound on a spec-fixed serial chain, so a whole-program code-generation win cannot reach it** — that is the entire mechanism of the share shift, and it reconfirms SCALE-054 on a third instrument. **Re-priced kill numbers.** The fill's occupancy ceiling grew from -8.72 to **-9.13 ms at 10T (5.05% to 5.41% of the benchmark)** and -6.83 to **-8.03 at 8T (3.83% to 4.56%)**. Scaling SCALE-055's replay by that move gives full handoff -2.19% / -3.54%, the bundled parse re-key -2.91% / -5.23% and the unreachable no-parse-gate bound -3.52% / -5.94%, against its 4%-at-both-widths go line. **Eight workers now crosses on the bundle where it read -4.39%, and ten still never crosses under any assumption**, so the binding side and the NO-GO are both unchanged. Decisive independently of the line: at the bundled price both widths still lose (1.057x and 1.037x), and even the unreachable ceiling leaves 1.029x and 1.045x, so **no fill candidate wins either lost width even in the limit**. **Steady lifecycle** (three reps at `--limit=90`, coded frames 30-60): `P` 3.94/4.02/4.02 ms against SCALE-047's 4.14/3.94/4.07, busy 9.47/9.34/9.27 cores, idle 0.53/0.66/0.73, **`C` 6.02/6.14/5.52 core-ms against 6.67/6.46/6.82 and `k` 1.53/1.53/1.37 against 1.61/1.64/1.68**. `C` fell about 10% and `P` did not follow, so **`k` fell back below SCALE-043's 1.58 go line** — which cuts against the superblock-row rebuild rather than for it — and `P_s / P_d = 0.828 x 1.426 = 1.180` still reproduces the traced ratio of 1.183: splot's ordered chain is now **17% cheaper than dav2d's** while its period stays 18% longer. Steady runs **5.6-7.8% above its own ten-worker work floor** against dav2d's 12-15%, so there is no scheduling headroom left to convert and steady wall is set by `W`. The marginal steady frame is 30.157 core-ms against dav2d's 25.546 at ten workers (was 31.216 against 25.749) and **21.097 against 21.351 at one, which splot now wins**, so the steady gap is 100% parallel inflation. **Stage ledger** refreshed above with a same-source LTO/no-LTO column; read it as attribution as much as work, since cross-crate inlining moves helpers onto their callers. Only the total, -0.56 core-ms, is instrument-independent and it reproduces the -0.67 measured directly. Publication and copies fell 25% to +2.34 against dav2d (SCALE-049 had +3.58), the largest named non-kernel improvement since that row; scheduling rose 22% to +2.54, the one sub-term that moved the wrong way, landing exactly on the 1%-of-wall bar inside SCALE-032's coordination bound with every shape already closed. **Verdict: every closure holds and none re-opens.** The fill keeps SCALE-054's mechanism row and SCALE-055's price row, both now measured harder; the steady residual keeps SCALE-049 through SCALE-052, SCALE-057 and SCALE-011-G, and shrank; the fixed term keeps SCALE-056 and is a credit at both lost widths. **Verification.** All diagnostics reverted; the tree is docs-only against `96e1dbe50` and the rebuilt release binary hashes `73d436e05b179f64a919bfb254887922a264e18547fd11dcb24c1aa3ab73124f`, the shipped artifact. | Closed as a measurement. **The durable result is that a loss decomposition does not survive a whole-profile change: code-generation wins land on work-bound regions and miss latency-bound ones, so the same closures can hold while the ranking's weights move 20 points.** Re-run this decomposition, not just the matrix, after any future profile or toolchain change. The two remaining losses now need the fill *and* the steady residual together, and neither carries a scoped successor. |
 
 ## Rejected experiments
 
