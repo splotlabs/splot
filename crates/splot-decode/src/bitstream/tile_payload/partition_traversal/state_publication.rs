@@ -167,8 +167,6 @@ pub(super) fn publish_intra_leaf_state<E>(
             joint_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
             fsc_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
             use_dip.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
-            uses_mrls.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
-            palette_y.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
             if leaf_mode.is_intrabc() {
                 y_modes.record_block(
                     call.r,
@@ -178,8 +176,6 @@ pub(super) fn publish_intra_leaf_state<E>(
                     IntraYMode::DC_PRED, // § 5.20.5.3 AV2 intraBC mode = DC_PRED (decodemv.c); an SDP chroma-part reads this collocated luma mode
                     0,
                 );
-            } else {
-                y_modes.record_non_intra_block(call.r, call.c, block_n4w, block_n4h);
             }
         }
     }
