@@ -7,19 +7,17 @@ use std::sync::OnceLock;
 
 use libfuzzer_sys::fuzz_target;
 use splot_decode::{
-    DecodeContext, DecodeError, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
-    DecodeOutputOperation, DecodeRuntimeConfig,
+    DecodeContext, DecodeError, DecodeOptions, DecodeOutputOperation, DecodeRuntimeConfig,
 };
 use splot_parallel::ThreadCount;
 
+#[path = "../support/decode_runtime.rs"]
+mod decode_runtime;
+
 const FIXTURE_MODE_FLAG: u8 = 0b1000_0000;
 const FAILING_WRITER_FLAG: u8 = 0b0100_0000;
-const LOW_OUTPUT_LIMIT_FLAG: u8 = 0b0010_0000;
 const MAX_RAW_INPUT_BYTES: usize = 4096;
-const MAX_FIXTURE_MUTATIONS: usize = 8;
 const MAX_CAPTURE_BYTES: usize = 16 * 1024;
-const MINIMAL_FIXTURE: &[u8] =
-    include_bytes!("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
 const Y4M_MAGIC: &[u8] = b"YUV4MPEG2 ";
 const FRAME_MARKER: &[u8] = b"\nFRAME\n";
 const MINIMAL_LUMA_BYTES: usize = 64 * 64;
@@ -51,18 +49,18 @@ fuzz_target!(|data: &[u8]| {
         let len = payload.len().min(MAX_RAW_INPUT_BYTES);
         &payload[..len]
     } else {
-        fixture_bytes = mutated_minimal_fixture(payload);
+        fixture_bytes = decode_runtime::mutated_minimal_fixture(payload);
         fixture_bytes.as_slice()
     };
 
-    let options = DecodeOptions::new(runtime_y4m_fuzz_limits(flags, bitstream.len()));
+    let options = DecodeOptions::new(decode_runtime::limits(flags, bitstream.len()));
     if flags & FAILING_WRITER_FLAG == 0 {
         let mut writer = BoundedCaptureWriter::new(MAX_CAPTURE_BYTES);
         if context
             .decode_y4m_bytes(bitstream, options, &mut writer)
             .is_ok()
         {
-            if bitstream == MINIMAL_FIXTURE {
+            if bitstream == decode_runtime::MINIMAL_FIXTURE {
                 assert_minimal_y4m_shape(writer.bytes());
             }
         }
@@ -82,51 +80,6 @@ fn assert_failing_writer_output_error(source: &splot_decode::DecodeOutputError) 
         "y4m" | "frame_set" => assert_eq!(source.operation(), DecodeOutputOperation::SerializeY4m),
         kind => panic!("unexpected runtime Y4M output source kind {kind}"),
     }
-}
-
-fn mutated_minimal_fixture(mutations: &[u8]) -> Vec<u8> {
-    let mut bytes = MINIMAL_FIXTURE.to_vec();
-    let (count, mutation_bytes) = match mutations.split_first() {
-        Some((count, mutation_bytes)) => (usize::from(*count), mutation_bytes),
-        None => (0, &[][..]),
-    };
-    let mutation_count = count.min(MAX_FIXTURE_MUTATIONS);
-
-    for chunk in mutation_bytes.chunks_exact(3).take(mutation_count) {
-        let offset_seed = u16::from_le_bytes([chunk[0], chunk[1]]);
-        let offset = usize::from(offset_seed) % bytes.len();
-        bytes[offset] = chunk[2];
-    }
-
-    bytes
-}
-
-fn runtime_y4m_fuzz_limits(flags: u8, input_len: usize) -> DecodeLimits {
-    let raw_input_limit = input_len.max(MINIMAL_FIXTURE.len()).max(1) as u64;
-    let scale = 1 + u64::from(flags & 0b0000_1111);
-    let max = DecodeLimitThreshold::Max;
-    let output_limit = if flags & LOW_OUTPUT_LIMIT_FLAG == 0 {
-        8192 + scale * 512
-    } else {
-        scale * 384
-    };
-
-    DecodeLimits::DEFAULT
-        .with_max_input_bytes(max(raw_input_limit))
-        .with_max_obus(max(4 + scale * 4))
-        .with_max_ivf_frame_records(max(1 + scale))
-        .with_max_frames_to_decode(max(1))
-        .with_max_output_frames(max(1))
-        .with_max_frame_width(max(256))
-        .with_max_frame_height(max(256))
-        .with_max_luma_samples_per_frame(max(256 * 256))
-        .with_max_decoded_frame_bytes(max(256 * 256 * 3))
-        .with_max_reference_slots(max(8))
-        .with_max_reference_store_bytes(max(256 * 256 * 3 * 8))
-        .with_max_tile_count(max(1 + scale))
-        .with_max_tile_partition_steps(max(64 + scale * 32))
-        .with_max_tile_payload_bytes(max(128 + scale * 64))
-        .with_max_output_bytes(max(output_limit))
 }
 
 fn assert_minimal_y4m_shape(bytes: &[u8]) {
