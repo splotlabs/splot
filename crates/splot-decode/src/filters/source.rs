@@ -514,6 +514,9 @@ impl StripePlane {
     }
 
     pub(crate) fn rect_mut(&mut self, rect: PlaneRect) -> Option<(&mut [u16], usize)> {
+        if rect.x().checked_add(rect.width())? > self.width {
+            return None;
+        }
         let row = rect.y().checked_sub(self.origin_y)?;
         let start = row.checked_mul(self.width)?.checked_add(rect.x())?;
         let end = rect
