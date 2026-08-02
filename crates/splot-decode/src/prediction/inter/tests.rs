@@ -1735,25 +1735,6 @@ fn multiref_runtime_enforces_cumulative_reference_store_byte_limit() {
 }
 
 #[test]
-fn multiref_runtime_enforces_cumulative_output_byte_limit() {
-    let options = DecodeOptions::default().with_limits(
-        DecodeOptions::default()
-            .limits()
-            .with_max_output_bytes(DecodeLimitThreshold::Max(12_288)),
-    );
-    let Err(error) = decode_fixture_with_options(MULTIREF_FIXTURE, &options) else {
-        panic!("three-frame multiref fixture must exceed two output frame byte budget");
-    };
-    let DecodeError::Limit { source } = error else {
-        panic!("expected max_output_bytes resource-limit error");
-    };
-    assert_eq!(source.name(), DecodeLimitName::MaxOutputBytes);
-    let check = source.check().expect("limit failure carries check");
-    assert_eq!(check.actual(), 18_432);
-    assert_eq!(check.threshold(), DecodeLimitThreshold::Max(12_288));
-}
-
-#[test]
 fn multiref_frame2_reads_retained_inter_frame_not_key() {
     let frames = decode_fixture(MULTIREF_FIXTURE);
     let key = frames[0].frame();

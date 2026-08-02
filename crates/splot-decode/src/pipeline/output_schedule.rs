@@ -45,50 +45,27 @@ impl EmissionQueue {
     /// Emits the queued prefix whose frames have settled, leaving the rest.
     fn drain_settled(
         &mut self,
-        options: &DecodeOptions,
         frames: &[Option<PipelineFrame>],
-        output_frame_bytes: u64,
-        charge_output_bytes: bool,
         emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
-    ) -> Result<u64> {
-        self.drain(
-            options,
-            frames,
-            output_frame_bytes,
-            charge_output_bytes,
-            emit,
-            false,
-        )
+    ) -> Result<()> {
+        self.drain(frames, emit, false)
     }
 
     /// Emits every queued frame, waiting for the filter phases still running.
     pub(super) fn flush(
         &mut self,
-        options: &DecodeOptions,
         frames: &[Option<PipelineFrame>],
-        output_frame_bytes: u64,
-        charge_output_bytes: bool,
         emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
-    ) -> Result<u64> {
-        self.drain(
-            options,
-            frames,
-            output_frame_bytes,
-            charge_output_bytes,
-            emit,
-            true,
-        )
+    ) -> Result<()> {
+        self.drain(frames, emit, true)
     }
 
     fn drain(
         &mut self,
-        options: &DecodeOptions,
         frames: &[Option<PipelineFrame>],
-        mut output_frame_bytes: u64,
-        charge_output_bytes: bool,
         emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
         wait: bool,
-    ) -> Result<u64> {
+    ) -> Result<()> {
         while let Some(&frame_index) = self.pending.front() {
             let frame = frames
                 .get(frame_index)
@@ -101,13 +78,9 @@ impl EmissionQueue {
             frame.wait_settled()?;
             crate::timing::report("output_settle_wait", settle_started);
             emit(frame)?;
-            if charge_output_bytes {
-                output_frame_bytes =
-                    ensure_output_frame_byte_limits(options.limits(), output_frame_bytes, frame)?;
-            }
             self.pending.pop_front();
         }
-        Ok(output_frame_bytes)
+        Ok(())
     }
 }
 
@@ -130,17 +103,14 @@ fn missing_display_frame() -> crate::error::DecodeError {
 /// # Errors
 ///
 /// Returns the output-limit, output-effect, or `emit` diagnostic.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn charge_emitted_outputs(
     options: &DecodeOptions,
     frames: &[Option<PipelineFrame>],
     scheduler: &OutputScheduler,
     queue: &mut EmissionQueue,
     newly: &[usize],
-    mut output_frame_bytes: u64,
-    charge_output_bytes: bool,
     emit: &mut impl FnMut(&PipelineFrame) -> Result<()>,
-) -> Result<u64> {
+) -> Result<()> {
     if !newly.is_empty() {
         let requested = options
             .output_frame_limit()
@@ -152,13 +122,7 @@ pub(super) fn charge_emitted_outputs(
             if (first_new + offset) as u64 >= requested {
                 break;
             }
-            output_frame_bytes = queue.drain_settled(
-                options,
-                frames,
-                output_frame_bytes,
-                charge_output_bytes,
-                emit,
-            )?;
+            queue.drain_settled(frames, emit)?;
             let frame = frames
                 .get(frame_index)
                 .and_then(Option::as_ref)
@@ -167,13 +131,7 @@ pub(super) fn charge_emitted_outputs(
             queue.push(frame_index);
         }
     }
-    queue.drain_settled(
-        options,
-        frames,
-        output_frame_bytes,
-        charge_output_bytes,
-        emit,
-    )
+    queue.drain_settled(frames, emit)
 }
 
 pub(super) fn output_frame_limit_reached(
@@ -481,21 +439,6 @@ pub(super) fn retained_decoded_frame_bytes(frame: &PipelineFrame) -> Result<u64>
     }
 }
 
-pub(super) fn ensure_output_frame_byte_limits(
-    limits: crate::DecodeLimits,
-    output_frame_bytes: u64,
-    frame: &PipelineFrame,
-) -> Result<u64> {
-    let frame_bytes = frame.byte_len()? as u64;
-    let next_output_frame_bytes = checked_add(
-        DecodeLimitName::MaxOutputBytes,
-        output_frame_bytes,
-        frame_bytes,
-    )?;
-    limits.ensure(DecodeLimitName::MaxOutputBytes, next_output_frame_bytes)?;
-    Ok(next_output_frame_bytes)
-}
-
 #[cfg(test)]
 mod open_loop_tests {
     use super::*;
@@ -614,8 +557,6 @@ mod tests {
             &scheduler,
             &mut queue,
             &[0, 1],
-            0,
-            false,
             &mut |frame| {
                 widths.push(frame.frame.info().coded_luma_size().width());
                 Ok(())

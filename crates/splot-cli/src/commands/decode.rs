@@ -5,7 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, BufWriter, Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -524,9 +524,9 @@ fn decode_y4m_to_file(
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
-    let mut y4m = Vec::new();
-    context.decode_y4m_bytes(bytes, *options, &mut y4m)?;
-    publish_output(path, &y4m, Y4M_OUTPUT)
+    publish_output(path, Y4M_OUTPUT, |writer| {
+        context.decode_y4m_bytes(bytes, *options, writer)
+    })
 }
 
 fn decode_raw_to_file(
@@ -535,8 +535,9 @@ fn decode_raw_to_file(
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
-    let raw = context.decode_raw_output_bytes(bytes, *options)?;
-    publish_output(path, &raw, RAW_OUTPUT)
+    publish_output(path, RAW_OUTPUT, |writer| {
+        context.decode_raw_bytes(bytes, *options, writer)
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -581,55 +582,145 @@ const RAW_OUTPUT: OutputArtifact = OutputArtifact {
 
 fn publish_output(
     path: &Path,
-    bytes: &[u8],
     artifact: OutputArtifact,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
     if cfg!(unix) && path == Path::new("/dev/null") {
-        return write_stream_output(path, bytes, artifact);
+        return write_stream_output(path, artifact, write);
     }
 
     let (parent, final_name) = output_parent_and_name(path, artifact)?;
-    let (mut temp_file, temp_path) = create_temp_file(parent, final_name, artifact)?;
+    let mut output = AtomicOutput::new(parent, final_name, artifact);
 
-    if let Err(source) = temp_file.write_all(bytes) {
-        let error = output_io(artifact.write_temp_operation, source);
-        return Err(close_and_cleanup_temp_file(
-            temp_file, &temp_path, artifact, error,
-        ));
+    if let Err(error) = write(&mut output) {
+        let error = output.take_write_error().unwrap_or(error);
+        return Err(output.cleanup(error));
     }
-    if let Err(source) = temp_file.flush() {
-        let error = output_io(artifact.flush_temp_operation, source);
-        return Err(close_and_cleanup_temp_file(
-            temp_file, &temp_path, artifact, error,
-        ));
-    }
-    if let Err(source) = temp_file.sync_all() {
-        let error = output_io(artifact.sync_temp_operation, source);
-        return Err(close_and_cleanup_temp_file(
-            temp_file, &temp_path, artifact, error,
-        ));
-    }
-    drop(temp_file);
+    output.finish()
+}
 
-    let final_path = parent.join(final_name);
-    replace_output(&temp_path, &final_path, artifact)?;
-    sync_parent_directory_best_effort(parent);
+struct AtomicOutput<'a> {
+    parent: &'a Path,
+    final_name: &'a OsStr,
+    artifact: OutputArtifact,
+    file: Option<BufWriter<File>>,
+    temp_path: Option<PathBuf>,
+    write_error: Option<DecodeError>,
+}
 
-    Ok(())
+impl<'a> AtomicOutput<'a> {
+    fn new(parent: &'a Path, final_name: &'a OsStr, artifact: OutputArtifact) -> Self {
+        Self {
+            parent,
+            final_name,
+            artifact,
+            file: None,
+            temp_path: None,
+            write_error: None,
+        }
+    }
+
+    fn ensure_file(&mut self) -> core::result::Result<(), DecodeError> {
+        if self.file.is_none() {
+            let (file, temp_path) = create_temp_file(self.parent, self.final_name, self.artifact)?;
+            self.file = Some(BufWriter::new(file));
+            self.temp_path = Some(temp_path);
+        }
+        Ok(())
+    }
+
+    fn remember_write_error(&mut self, error: DecodeError) -> io::Error {
+        let message = error.to_string();
+        self.write_error = Some(error);
+        io::Error::other(message)
+    }
+
+    fn take_write_error(&mut self) -> Option<DecodeError> {
+        self.write_error.take()
+    }
+
+    fn cleanup(mut self, error: DecodeError) -> DecodeError {
+        self.file.take();
+        match self.temp_path.take() {
+            Some(path) => cleanup_temp_file(&path, self.artifact, error),
+            None => error,
+        }
+    }
+
+    fn finish(mut self) -> core::result::Result<(), DecodeError> {
+        if let Err(error) = self.ensure_file() {
+            return Err(self.cleanup(error));
+        }
+        let flush_result = self.file.as_mut().map(BufWriter::flush);
+        if let Some(Err(source)) = flush_result {
+            let error = output_io(self.artifact.flush_temp_operation, source);
+            return Err(self.cleanup(error));
+        }
+        let sync_result = self.file.as_ref().map(|file| file.get_ref().sync_all());
+        if let Some(Err(source)) = sync_result {
+            let error = output_io(self.artifact.sync_temp_operation, source);
+            return Err(self.cleanup(error));
+        }
+        self.file.take();
+
+        let temp_path = self.temp_path.take().ok_or_else(|| {
+            output_io(
+                self.artifact.create_temp_operation,
+                io::Error::other("temporary output path is unavailable"),
+            )
+        })?;
+        let final_path = self.parent.join(self.final_name);
+        replace_output(&temp_path, &final_path, self.artifact)?;
+        sync_parent_directory_best_effort(self.parent);
+        Ok(())
+    }
+}
+
+impl io::Write for AtomicOutput<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Err(error) = self.ensure_file() {
+            return Err(self.remember_write_error(error));
+        }
+        let result = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("temporary output file is unavailable"))?
+            .write(bytes);
+        result.map_err(|source| {
+            let error = output_io(self.artifact.write_temp_operation, source);
+            self.remember_write_error(error)
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if let Err(error) = self.ensure_file() {
+            return Err(self.remember_write_error(error));
+        }
+        let result = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("temporary output file is unavailable"))?
+            .flush();
+        result.map_err(|source| {
+            let error = output_io(self.artifact.flush_temp_operation, source);
+            self.remember_write_error(error)
+        })
+    }
 }
 
 fn write_stream_output(
     path: &Path,
-    bytes: &[u8],
     artifact: OutputArtifact,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
-    let mut output = OpenOptions::new()
+    let output = OpenOptions::new()
         .write(true)
         .open(path)
         .map_err(|source| output_io(artifact.write_stream_operation, source))?;
+    let mut output = BufWriter::new(output);
+    write(&mut output)?;
     output
-        .write_all(bytes)
-        .and_then(|()| output.flush())
+        .flush()
         .map_err(|source| output_io(artifact.write_stream_operation, source))
 }
 
@@ -722,16 +813,6 @@ fn temp_file_name(artifact: OutputArtifact, nonce: usize, attempt: usize) -> OsS
     name.push(attempt.to_string());
     name.push(".tmp");
     name
-}
-
-fn close_and_cleanup_temp_file(
-    file: File,
-    path: &Path,
-    artifact: OutputArtifact,
-    error: DecodeError,
-) -> DecodeError {
-    drop(file);
-    cleanup_temp_file(path, artifact, error)
 }
 
 fn cleanup_temp_file(path: &Path, artifact: OutputArtifact, error: DecodeError) -> DecodeError {

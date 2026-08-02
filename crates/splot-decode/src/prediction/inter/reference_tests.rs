@@ -26,12 +26,22 @@ use crate::prediction::inter::Mv;
 use crate::prediction::inter::mc::{
     InterBlockParams, McBlockRect, WorkspaceSink, motion_compensate_inter_block_into,
 };
-use crate::{DecodeContext, DecodeOptions, DecodeRuntimeConfig};
+use crate::{DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig};
 use splot_parallel::{FrameDelay, ThreadCount};
 
 const WIDTH: usize = 64;
 const HEIGHT: usize = 128;
 const OFFSET: ByteOffset = ByteOffset::new(0);
+
+fn collect_raw(
+    context: &DecodeContext,
+    bytes: &[u8],
+    options: DecodeOptions,
+) -> Result<Vec<u8>, DecodeError> {
+    let mut raw = Vec::new();
+    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    Ok(raw)
+}
 
 /// Serializes the process-wide forced-band flag between harness runs.
 static FORCED_BAND: Mutex<()> = Mutex::new(());
@@ -251,8 +261,7 @@ fn forced_banded_reads_decode_every_inter_fixture_byte_identically() {
     let expected: Vec<Vec<u8>> = FIXTURES
         .iter()
         .map(|(name, fixture)| {
-            let output = context
-                .decode_raw_output_bytes(fixture, DecodeOptions::default())
+            let output = collect_raw(&context, fixture, DecodeOptions::default())
                 .unwrap_or_else(|error| panic!("settled decode of {name} failed: {error}"));
             assert!(!output.is_empty(), "{name} decoded to no bytes");
             output
@@ -261,8 +270,7 @@ fn forced_banded_reads_decode_every_inter_fixture_byte_identically() {
 
     let _guard = forced_band_scope();
     for ((name, fixture), expected) in FIXTURES.iter().zip(&expected) {
-        let actual = context
-            .decode_raw_output_bytes(fixture, DecodeOptions::default())
+        let actual = collect_raw(&context, fixture, DecodeOptions::default())
             .unwrap_or_else(|error| panic!("banded decode of {name} failed: {error}"));
         assert_eq!(&actual, expected, "{name} diverged under banded reads");
     }

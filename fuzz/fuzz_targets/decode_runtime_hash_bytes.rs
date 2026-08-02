@@ -9,15 +9,15 @@ use splot_decode::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,
     DECODE_HASH_REPORT_CONTRACT_VERSION, DECODE_HASH_REPORT_HASH_ALGORITHM_ID,
     DECODE_HASH_REPORT_SHA256_DIGEST_HEX_LEN, DecodeContext, DecodeHashPixelFormat,
-    DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeOutputVariant, DecodeRuntimeConfig,
+    DecodeOptions, DecodeOutputVariant, DecodeRuntimeConfig,
 };
 use splot_parallel::ThreadCount;
 
+#[path = "../support/decode_runtime.rs"]
+mod decode_runtime;
+
 const FIXTURE_MODE_FLAG: u8 = 0b1000_0000;
 const MAX_RAW_INPUT_BYTES: usize = 4096;
-const MAX_FIXTURE_MUTATIONS: usize = 8;
-const MINIMAL_FIXTURE: &[u8] =
-    include_bytes!("../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.ivf");
 
 static CONTEXT: OnceLock<Option<DecodeContext>> = OnceLock::new();
 
@@ -41,57 +41,17 @@ fuzz_target!(|data: &[u8]| {
         let len = payload.len().min(MAX_RAW_INPUT_BYTES);
         &payload[..len]
     } else {
-        fixture_bytes = mutated_minimal_fixture(payload);
+        fixture_bytes = decode_runtime::mutated_minimal_fixture(payload);
         fixture_bytes.as_slice()
     };
 
-    let options = DecodeOptions::new(runtime_hash_fuzz_limits(flags, bitstream.len()));
+    let options = DecodeOptions::new(decode_runtime::limits(flags, bitstream.len()));
     if let Ok(report) = context.decode_hash_report_bytes(bitstream, options) {
-        if bitstream == MINIMAL_FIXTURE {
+        if bitstream == decode_runtime::MINIMAL_FIXTURE {
             assert_minimal_hash_report_shape(&report);
         }
     }
 });
-
-fn mutated_minimal_fixture(mutations: &[u8]) -> Vec<u8> {
-    let mut bytes = MINIMAL_FIXTURE.to_vec();
-    let (count, mutation_bytes) = match mutations.split_first() {
-        Some((count, mutation_bytes)) => (usize::from(*count), mutation_bytes),
-        None => (0, &[][..]),
-    };
-    let mutation_count = count.min(MAX_FIXTURE_MUTATIONS);
-
-    for chunk in mutation_bytes.chunks_exact(3).take(mutation_count) {
-        let offset_seed = u16::from_le_bytes([chunk[0], chunk[1]]);
-        let offset = usize::from(offset_seed) % bytes.len();
-        bytes[offset] = chunk[2];
-    }
-
-    bytes
-}
-
-fn runtime_hash_fuzz_limits(flags: u8, input_len: usize) -> DecodeLimits {
-    let raw_input_limit = input_len.max(MINIMAL_FIXTURE.len()).max(1) as u64;
-    let scale = 1 + u64::from(flags & 0b0000_1111);
-    let max = DecodeLimitThreshold::Max;
-
-    DecodeLimits::DEFAULT
-        .with_max_input_bytes(max(raw_input_limit))
-        .with_max_obus(max(4 + scale * 4))
-        .with_max_ivf_frame_records(max(1 + scale))
-        .with_max_frames_to_decode(max(1))
-        .with_max_output_frames(max(1))
-        .with_max_frame_width(max(256))
-        .with_max_frame_height(max(256))
-        .with_max_luma_samples_per_frame(max(256 * 256))
-        .with_max_decoded_frame_bytes(max(256 * 256 * 3))
-        .with_max_reference_slots(max(8))
-        .with_max_reference_store_bytes(max(256 * 256 * 3 * 8))
-        .with_max_tile_count(max(1 + scale))
-        .with_max_tile_partition_steps(max(64 + scale * 32))
-        .with_max_tile_payload_bytes(max(128 + scale * 64))
-        .with_max_output_bytes(max(8192 + scale * 512))
-}
 
 fn assert_minimal_hash_report_shape(report: &splot_decode::DecodeHashReport) {
     assert_eq!(report.contract_id, DECODE_HASH_REPORT_CONTRACT_ID);

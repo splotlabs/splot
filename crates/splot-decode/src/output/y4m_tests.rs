@@ -9,7 +9,7 @@ use splot_parallel::ThreadCount;
 
 use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
 use crate::{
-    DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError, DecodeLimitName,
+    DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig, OUTPUT_ERROR_RULE_ID,
 };
 
@@ -47,9 +47,7 @@ fn minimal_fixture_decodes_to_exact_y4m_bytes() {
 fn empty_ivf_y4m_fails_with_typed_empty_frame_set_error() {
     let input = empty_avmenc_ivf();
     let options = DecodeOptions::new(
-        DecodeLimits::default()
-            .with_max_output_frames(DecodeLimitThreshold::Max(0))
-            .with_max_output_bytes(DecodeLimitThreshold::Max(0)),
+        DecodeLimits::default().with_max_output_frames(DecodeLimitThreshold::Max(0)),
     );
     let mut bytes = Vec::new();
 
@@ -82,28 +80,6 @@ fn raw_annex_b_payload_y4m_fails_without_timebase() {
 }
 
 #[test]
-fn output_byte_limit_fails_before_writer_success() {
-    let expected = expected_minimal_y4m();
-    let options = DecodeOptions::new(
-        DecodeLimits::default()
-            .with_max_output_bytes(DecodeLimitThreshold::Max(expected.len() as u64 - 1)),
-    );
-    let mut bytes = Vec::new();
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_y4m_bytes(MINIMAL_FIXTURE, options, &mut bytes)
-        .unwrap_err();
-
-    assert!(bytes.is_empty());
-    assert!(matches!(
-        error,
-        DecodeError::Limit {
-            source
-        } if source.name() == DecodeLimitName::MaxOutputBytes
-    ));
-}
-
-#[test]
 fn monochrome_fixture_decodes_to_luma_only_y4m_bytes() {
     let mut raw = Vec::new();
     let mut bytes = Vec::new();
@@ -118,22 +94,6 @@ fn monochrome_fixture_decodes_to_luma_only_y4m_bytes() {
     let header = expected_mono_y4m_header();
     assert_eq!(&bytes[..header.len()], header);
     assert_eq!(&bytes[header.len()..], raw.as_slice());
-}
-
-#[test]
-fn monochrome_y4m_output_limit_charges_luma_only_payload() {
-    let expected_len = expected_mono_y4m_header().len() as u64
-        + (super::MINIMAL_Y4M_LUMA_WIDTH as u64 * super::MINIMAL_Y4M_LUMA_HEIGHT as u64);
-    let options = DecodeOptions::new(
-        DecodeLimits::default().with_max_output_bytes(DecodeLimitThreshold::Max(expected_len)),
-    );
-    let mut bytes = Vec::new();
-
-    context(ThreadCount::from(1usize))
-        .decode_y4m_bytes(MONO_FIXTURE, options, &mut bytes)
-        .unwrap();
-
-    assert_eq!(bytes.len() as u64, expected_len);
 }
 
 #[test]

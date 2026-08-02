@@ -131,25 +131,6 @@ pub(crate) fn decode_frames_from_plan(
     )
 }
 
-pub(crate) fn decode_frames_from_prepared(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
-    frame_delay: NonZeroUsize,
-) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_impl(
-        parsed,
-        bytes,
-        options,
-        plan,
-        frame_delay,
-        |_| Ok(()),
-        true,
-        |_| Ok(()),
-    )
-}
-
 pub(crate) fn emit_frames_from_prepared(
     bytes: &[u8],
     parsed: &FlatParsedBitstream<'_>,
@@ -165,6 +146,28 @@ pub(crate) fn emit_frames_from_prepared(
         plan,
         frame_delay,
         |_| Ok(()),
+        false,
+        emit,
+    )
+    .map(drop)
+}
+
+pub(crate) fn emit_materialized_frames_from_prepared(
+    bytes: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
+    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
+    emit: impl FnMut(&PipelineFrame) -> Result<()> + Send,
+) -> Result<()> {
+    decode_frames_from_plan_impl(
+        parsed,
+        bytes,
+        options,
+        plan,
+        frame_delay,
+        preflight,
         false,
         emit,
     )
@@ -580,26 +583,6 @@ where
     })
 }
 
-pub(crate) fn decode_frames_from_prepared_with_ivf_preflight(
-    bytes: &[u8],
-    parsed: &FlatParsedBitstream<'_>,
-    options: &DecodeOptions,
-    plan: &DecodeStreamPlan,
-    frame_delay: NonZeroUsize,
-    preflight: impl FnOnce(Option<IvfHeader>) -> Result<()> + Send,
-) -> Result<Vec<PipelineFrame>> {
-    decode_frames_from_plan_impl(
-        parsed,
-        bytes,
-        options,
-        plan,
-        frame_delay,
-        preflight,
-        true,
-        |_| Ok(()),
-    )
-}
-
 /// Runs the frame loop, pipelined when the resolved frame-delay depth is above
 /// one and the caller is inside a multi-worker pool, and serially otherwise.
 #[allow(clippy::too_many_arguments)]
@@ -872,7 +855,6 @@ where
     output_effect_state.observe_suffix(frame_suffix_obus(stream, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
     let mut retained_frame_bytes = 0;
-    let mut output_frame_bytes = 0;
     let mut next_unvalidated_following_ivf_record = 1;
     let mut next_unvalidated_following_annexb_obu = leading_frame_unit_len;
     ensure_retained_frame_byte_limits_for_core(
@@ -1017,14 +999,12 @@ where
         key_implicit,
         true,
     );
-    output_frame_bytes = charge_emitted_outputs(
+    charge_emitted_outputs(
         options,
         &frames,
         &scheduler,
         &mut emission_queue,
         &evicted,
-        output_frame_bytes,
-        retain_decoded_frames,
         &mut emit,
     )?;
     reference.update(0, &key_update);
@@ -1046,14 +1026,12 @@ where
     );
     if key_immediate && !scheduler.already_emitted(0) {
         let emitted = scheduler.on_immediate(0, key_hint);
-        output_frame_bytes = charge_emitted_outputs(
+        charge_emitted_outputs(
             options,
             &frames,
             &scheduler,
             &mut emission_queue,
             &emitted,
-            output_frame_bytes,
-            retain_decoded_frames,
             &mut emit,
         )?;
     }
@@ -1068,13 +1046,7 @@ where
         )?;
     }
     if output_frame_limit_reached(options, scheduler.emitted.len()) {
-        emission_queue.flush(
-            options,
-            &frames,
-            output_frame_bytes,
-            retain_decoded_frames,
-            &mut emit,
-        )?;
+        emission_queue.flush(&frames, &mut emit)?;
         return if retain_decoded_frames {
             select_output_frames(frames, scheduler.emitted)
         } else {
@@ -1117,14 +1089,12 @@ where
                 in_band_long_term_prelude.begin_frame(first_picture_in_tu);
                 let flushed =
                     scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
-                output_frame_bytes = charge_emitted_outputs(
+                charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
                     &flushed,
-                    output_frame_bytes,
-                    retain_decoded_frames,
                     &mut emit,
                 )?;
                 if output_frame_limit_reached(options, scheduler.emitted.len()) {
@@ -1230,14 +1200,12 @@ where
                     false,
                 );
                 let emitted = scheduler.on_immediate(frame_index, ordering);
-                output_frame_bytes = charge_emitted_outputs(
+                charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
                     &emitted,
-                    output_frame_bytes,
-                    retain_decoded_frames,
                     &mut emit,
                 )?;
                 if !retain_decoded_frames {
@@ -1284,14 +1252,12 @@ where
                 in_band_long_term_prelude.begin_frame(first_picture_in_tu);
                 let flushed =
                     scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
-                output_frame_bytes = charge_emitted_outputs(
+                charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
                     &flushed,
-                    output_frame_bytes,
-                    retain_decoded_frames,
                     &mut emit,
                 )?;
                 if output_frame_limit_reached(options, scheduler.emitted.len()) {
@@ -1339,14 +1305,12 @@ where
                             &presence,
                         );
                         let emitted = scheduler.restrict_slots(&slots);
-                        output_frame_bytes = charge_emitted_outputs(
+                        charge_emitted_outputs(
                             options,
                             &frames,
                             &scheduler,
                             &mut emission_queue,
                             &emitted,
-                            output_frame_bytes,
-                            retain_decoded_frames,
                             &mut emit,
                         )?;
                         if output_frame_limit_reached(options, scheduler.emitted.len()) {
@@ -1729,14 +1693,12 @@ where
                     inter_implicit,
                     inter_key_or_switch,
                 );
-                output_frame_bytes = charge_emitted_outputs(
+                charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
                     &evicted,
-                    output_frame_bytes,
-                    retain_decoded_frames,
                     &mut emit,
                 )?;
                 reference.update(frame_index, &inter_update);
@@ -1759,14 +1721,12 @@ where
                 );
                 if inter_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, inter_hint);
-                    output_frame_bytes = charge_emitted_outputs(
+                    charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
                         &emitted,
-                        output_frame_bytes,
-                        retain_decoded_frames,
                         &mut emit,
                     )?;
                 }
@@ -1866,14 +1826,12 @@ where
                 if !starts_new_sequence {
                     let flushed =
                         scheduler.prepare_for_frame(next_candidate.obu_type(), first_picture_in_tu);
-                    output_frame_bytes = charge_emitted_outputs(
+                    charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
                         &flushed,
-                        output_frame_bytes,
-                        retain_decoded_frames,
                         &mut emit,
                     )?;
                     if output_frame_limit_reached(options, scheduler.emitted.len()) {
@@ -1932,14 +1890,12 @@ where
                     let key_reference =
                         reference_buffer::RuntimeReferenceBuffer::new(key_num_ref_frames)?;
                     let flushed = scheduler.start_new_sequence(key_num_ref_frames);
-                    output_frame_bytes = charge_emitted_outputs(
+                    charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
                         &flushed,
-                        output_frame_bytes,
-                        retain_decoded_frames,
                         &mut emit,
                     )?;
                     reference = key_reference;
@@ -2018,14 +1974,12 @@ where
                     key_implicit,
                     true,
                 );
-                output_frame_bytes = charge_emitted_outputs(
+                charge_emitted_outputs(
                     options,
                     &frames,
                     &scheduler,
                     &mut emission_queue,
                     &evicted,
-                    output_frame_bytes,
-                    retain_decoded_frames,
                     &mut emit,
                 )?;
                 reference.update(frame_index, &key_update);
@@ -2049,14 +2003,12 @@ where
                 );
                 if key_immediate && !scheduler.already_emitted(frame_index) {
                     let emitted = scheduler.on_immediate(frame_index, key_hint);
-                    output_frame_bytes = charge_emitted_outputs(
+                    charge_emitted_outputs(
                         options,
                         &frames,
                         &scheduler,
                         &mut emission_queue,
                         &emitted,
-                        output_frame_bytes,
-                        retain_decoded_frames,
                         &mut emit,
                     )?;
                 }
@@ -2092,23 +2044,15 @@ where
     )?;
     if !output_frame_limit_reached(options, scheduler.emitted.len()) {
         let flushed = scheduler.flush_all();
-        output_frame_bytes = charge_emitted_outputs(
+        charge_emitted_outputs(
             options,
             &frames,
             &scheduler,
             &mut emission_queue,
             &flushed,
-            output_frame_bytes,
-            retain_decoded_frames,
             &mut emit,
         )?;
-        output_frame_bytes = emission_queue.flush(
-            options,
-            &frames,
-            output_frame_bytes,
-            retain_decoded_frames,
-            &mut emit,
-        )?;
+        emission_queue.flush(&frames, &mut emit)?;
         if !retain_decoded_frames {
             ring.harvest_all(decode_scratch_eight, decode_scratch_ten);
             reclaim_unowned_frames(
@@ -2120,15 +2064,8 @@ where
                 &mut retained_frame_bytes,
             )?;
         }
-        let _ = output_frame_bytes;
     } else {
-        emission_queue.flush(
-            options,
-            &frames,
-            output_frame_bytes,
-            retain_decoded_frames,
-            &mut emit,
-        )?;
+        emission_queue.flush(&frames, &mut emit)?;
     }
     if !retain_decoded_frames {
         return Ok(Vec::new());
