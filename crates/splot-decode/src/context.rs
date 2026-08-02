@@ -157,21 +157,6 @@ impl DecodeContext {
         })
     }
 
-    /// Decodes the supported envelope and returns complete raw sample bytes.
-    ///
-    /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`])
-    /// and collects the streamed frames into a caller-requested in-memory value.
-    ///
-    /// # Errors
-    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
-    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
-    /// failures, reconstruction model errors, or raw serialization errors.
-    pub fn decode_raw_output_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<Vec<u8>> {
-        let mut raw = Vec::new();
-        self.decode_raw_bytes(bytes, options, &mut raw)?;
-        Ok(raw)
-    }
-
     /// Decodes the supported envelope and streams a Y4M stream.
     ///
     /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).

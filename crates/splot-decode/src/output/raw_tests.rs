@@ -42,6 +42,16 @@ fn context(threads: ThreadCount) -> DecodeContext {
     DecodeContext::new(DecodeRuntimeConfig::new(threads)).unwrap()
 }
 
+fn collect_raw(
+    context: &DecodeContext,
+    bytes: &[u8],
+    options: DecodeOptions,
+) -> Result<Vec<u8>, DecodeError> {
+    let mut raw = Vec::new();
+    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    Ok(raw)
+}
+
 fn expected_minimal_raw() -> Vec<u8> {
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw")
         .to_vec()
@@ -60,9 +70,7 @@ fn minimal_fixture_with_advisory_metadata_and_empty_record() -> Vec<u8> {
 #[test]
 fn minimal_fixture_decodes_to_exact_raw_bytes() {
     let context = context(ThreadCount::from(1usize));
-    let bytes = context
-        .decode_raw_output_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
-        .unwrap();
+    let bytes = collect_raw(&context, MINIMAL_FIXTURE, DecodeOptions::default()).unwrap();
 
     assert_eq!(bytes, expected_minimal_raw());
 }

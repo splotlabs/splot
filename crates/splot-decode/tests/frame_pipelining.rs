@@ -13,7 +13,8 @@
 use core::num::NonZeroU64;
 
 use splot_decode::{
-    DecodeContext, DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig,
+    DecodeContext, DecodeError, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
+    DecodeRuntimeConfig,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -57,19 +58,27 @@ fn serial() -> DecodeContext {
     context(1, FrameDelay::from(1usize))
 }
 
+fn collect_raw(
+    context: &DecodeContext,
+    bytes: &[u8],
+    options: DecodeOptions,
+) -> Result<Vec<u8>, DecodeError> {
+    let mut raw = Vec::new();
+    context.decode_raw_bytes(bytes, options, &mut raw)?;
+    Ok(raw)
+}
+
 #[test]
 fn pipelined_raw_output_matches_serial_decode_at_every_depth() {
     let serial = serial();
     for (name, fixture) in FIXTURES {
-        let expected = serial
-            .decode_raw_output_bytes(fixture, DecodeOptions::default())
+        let expected = collect_raw(&serial, fixture, DecodeOptions::default())
             .unwrap_or_else(|error| panic!("serial decode of {name} failed: {error}"));
         assert!(!expected.is_empty(), "{name} decoded to no bytes");
 
         for depth in [1usize, 2, 4, 64] {
             let context = context(4, FrameDelay::from(depth));
-            let actual = context
-                .decode_raw_output_bytes(fixture, DecodeOptions::default())
+            let actual = collect_raw(&context, fixture, DecodeOptions::default())
                 .unwrap_or_else(|error| panic!("depth {depth} decode of {name} failed: {error}"));
             assert_eq!(actual, expected, "{name} diverged at frame delay {depth}");
         }
@@ -118,13 +127,14 @@ fn pipelined_y4m_output_matches_serial_decode() {
 
 #[test]
 fn key_filter_publication_repeatedly_admits_sef_reconstruction() {
-    let expected = serial()
-        .decode_raw_output_bytes(SEF_FAMILIES, DecodeOptions::default())
-        .unwrap();
+    let expected = collect_raw(&serial(), SEF_FAMILIES, DecodeOptions::default()).unwrap();
     for _ in 0..32 {
-        let actual = context(8, FrameDelay::Auto)
-            .decode_raw_output_bytes(SEF_FAMILIES, DecodeOptions::default())
-            .unwrap();
+        let actual = collect_raw(
+            &context(8, FrameDelay::Auto),
+            SEF_FAMILIES,
+            DecodeOptions::default(),
+        )
+        .unwrap();
         assert_eq!(actual, expected);
     }
 }
@@ -133,14 +143,11 @@ fn key_filter_publication_repeatedly_admits_sef_reconstruction() {
 fn an_early_output_limit_break_matches_serial_decode() {
     let options =
         DecodeOptions::default().with_output_frame_limit(Some(NonZeroU64::new(2).unwrap()));
-    let expected = serial()
-        .decode_raw_output_bytes(EIGHT_FRAME, options)
-        .unwrap();
+    let expected = collect_raw(&serial(), EIGHT_FRAME, options).unwrap();
 
     for depth in [2usize, 4] {
-        let actual = context(4, FrameDelay::from(depth))
-            .decode_raw_output_bytes(EIGHT_FRAME, options)
-            .unwrap();
+        let actual =
+            collect_raw(&context(4, FrameDelay::from(depth)), EIGHT_FRAME, options).unwrap();
         assert_eq!(actual, expected, "limited decode diverged at depth {depth}");
     }
 }
@@ -164,15 +171,18 @@ fn a_corrupt_stream_fails_with_the_serial_diagnostic_at_every_depth() {
     for offset in (MULTIREF.len() - 24)..MULTIREF.len() {
         let mut bytes = MULTIREF.to_vec();
         bytes[offset] ^= 0xff;
-        let Err(expected) = serial.decode_raw_output_bytes(&bytes, DecodeOptions::default()) else {
+        let Err(expected) = collect_raw(&serial, &bytes, DecodeOptions::default()) else {
             continue;
         };
         checked += 1;
 
         for depth in [2usize, 4] {
-            let actual = context(4, FrameDelay::from(depth))
-                .decode_raw_output_bytes(&bytes, DecodeOptions::default())
-                .expect_err("a corrupt stream must fail at every frame delay");
+            let actual = collect_raw(
+                &context(4, FrameDelay::from(depth)),
+                &bytes,
+                DecodeOptions::default(),
+            )
+            .expect_err("a corrupt stream must fail at every frame delay");
             assert_eq!(
                 format!("{actual:?}"),
                 format!("{expected:?}"),
@@ -189,14 +199,20 @@ fn a_corrupt_stream_fails_with_the_serial_diagnostic_at_every_depth() {
 /// only variable, which is what this stage owns.
 #[test]
 fn frame_delay_does_not_change_output_at_a_fixed_thread_count() {
-    let expected = context(8, FrameDelay::from(1usize))
-        .decode_raw_output_bytes(ORDER_HINT_WRAP, DecodeOptions::default())
-        .unwrap();
+    let expected = collect_raw(
+        &context(8, FrameDelay::from(1usize)),
+        ORDER_HINT_WRAP,
+        DecodeOptions::default(),
+    )
+    .unwrap();
 
     for depth in [2usize, 4, 8, 64] {
-        let actual = context(8, FrameDelay::from(depth))
-            .decode_raw_output_bytes(ORDER_HINT_WRAP, DecodeOptions::default())
-            .unwrap();
+        let actual = collect_raw(
+            &context(8, FrameDelay::from(depth)),
+            ORDER_HINT_WRAP,
+            DecodeOptions::default(),
+        )
+        .unwrap();
         assert_eq!(actual, expected, "output diverged at frame delay {depth}");
     }
 }

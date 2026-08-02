@@ -5,7 +5,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, BufWriter, Read as _, Write as _};
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -596,7 +596,7 @@ struct AtomicOutput<'a> {
     parent: &'a Path,
     final_name: &'a OsStr,
     artifact: OutputArtifact,
-    file: Option<File>,
+    file: Option<BufWriter<File>>,
     temp_path: Option<PathBuf>,
     write_error: Option<DecodeError>,
 }
@@ -616,7 +616,7 @@ impl<'a> AtomicOutput<'a> {
     fn ensure_file(&mut self) -> core::result::Result<(), DecodeError> {
         if self.file.is_none() {
             let (file, temp_path) = create_temp_file(self.parent, self.final_name, self.artifact)?;
-            self.file = Some(file);
+            self.file = Some(BufWriter::new(file));
             self.temp_path = Some(temp_path);
         }
         Ok(())
@@ -644,12 +644,12 @@ impl<'a> AtomicOutput<'a> {
         if let Err(error) = self.ensure_file() {
             return Err(self.cleanup(error));
         }
-        let flush_result = self.file.as_mut().map(File::flush);
+        let flush_result = self.file.as_mut().map(BufWriter::flush);
         if let Some(Err(source)) = flush_result {
             let error = output_io(self.artifact.flush_temp_operation, source);
             return Err(self.cleanup(error));
         }
-        let sync_result = self.file.as_ref().map(File::sync_all);
+        let sync_result = self.file.as_ref().map(|file| file.get_ref().sync_all());
         if let Some(Err(source)) = sync_result {
             let error = output_io(self.artifact.sync_temp_operation, source);
             return Err(self.cleanup(error));
