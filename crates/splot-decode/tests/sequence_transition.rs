@@ -8,10 +8,7 @@
 use core::num::NonZeroU64;
 
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
-use splot_decode::{
-    DecodeContext, DecodeError, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
-    DecodeRuntimeConfig,
-};
+use splot_decode::{DecodeContext, DecodeError, DecodeOptions, DecodeRuntimeConfig};
 use splot_parallel::ThreadCount;
 
 const FIRST: &[u8] =
@@ -118,7 +115,7 @@ fn following_inter_frame_uses_the_new_sequence_and_references() {
 }
 
 #[test]
-fn raw_output_allows_format_change_and_charges_both_frames() {
+fn raw_output_allows_format_change() {
     let input = CROPPED_TRANSITION;
     let mut raw = Vec::new();
 
@@ -127,20 +124,6 @@ fn raw_output_allows_format_change_and_charges_both_frames() {
         .unwrap();
 
     assert_eq!(raw.len(), 11_544);
-
-    let options = DecodeOptions::new(
-        DecodeLimits::default()
-            .with_max_output_bytes(DecodeLimitThreshold::Max(raw.len() as u64 - 1)),
-    );
-    let mut limited = Vec::new();
-    let error = context()
-        .decode_raw_bytes(input, options, &mut limited)
-        .unwrap_err();
-    assert!(limited.is_empty());
-    assert!(matches!(
-        error,
-        DecodeError::Limit { source } if source.name() == DecodeLimitName::MaxOutputBytes
-    ));
 }
 
 #[test]
@@ -167,7 +150,7 @@ fn compatible_sequence_change_writes_one_y4m_stream() {
 }
 
 #[test]
-fn incompatible_sequence_change_is_a_transactional_y4m_error() {
+fn incompatible_sequence_change_leaves_one_streamed_y4m_frame() {
     let input = repeated_sequence_ivf(CROPPED_SECOND);
     let mut y4m = Vec::new();
 
@@ -175,7 +158,9 @@ fn incompatible_sequence_change_is_a_transactional_y4m_error() {
         .decode_y4m_bytes(&input, DecodeOptions::default(), &mut y4m)
         .unwrap_err();
 
-    assert!(y4m.is_empty());
+    let first_frame_prefix = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n";
+    assert!(y4m.starts_with(first_frame_prefix));
+    assert_eq!(y4m.len(), first_frame_prefix.len() + 64 * 64 * 3 / 2);
     assert!(matches!(
         error,
         DecodeError::Output { ref source }
@@ -210,7 +195,9 @@ fn bit_depth_change_matches_reference_raw_and_is_rejected_by_y4m() {
             &mut y4m,
         )
         .unwrap_err();
-    assert!(y4m.is_empty());
+    let first_frame_prefix = b"YUV4MPEG2 W64 H64 F30:1 Ip A0:0 C420\nFRAME\n";
+    assert!(y4m.starts_with(first_frame_prefix));
+    assert_eq!(y4m.len(), first_frame_prefix.len() + 64 * 64 * 3 / 2);
     assert!(matches!(
         error,
         DecodeError::Output { ref source }

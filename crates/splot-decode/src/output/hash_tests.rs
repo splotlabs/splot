@@ -640,19 +640,6 @@ fn tile_payload_byte_mutations_return_typed_results() {
 }
 
 #[test]
-fn hash_report_is_not_raw_output_byte_limited() {
-    let options = DecodeOptions::new(
-        DecodeLimits::default().with_max_output_bytes(DecodeLimitThreshold::Max(0)),
-    );
-    let report = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(MINIMAL_FIXTURE, options)
-        .unwrap();
-
-    assert_eq!(report.frames.len(), 1);
-    assert_eq!(report.frames[0].hashes[0].digest_hex, EXPECTED_DIGEST);
-}
-
-#[test]
 fn long_hash_decode_keeps_reference_storage_bounded() {
     let options = DecodeOptions::new(
         DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_592)),

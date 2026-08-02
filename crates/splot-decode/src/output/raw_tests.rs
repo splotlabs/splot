@@ -30,6 +30,8 @@ const TEMPORAL_LAYER_STREAM_FIXTURE: &[u8] = include_bytes!(
 );
 const SEF_FAMILIES_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-frame-sef-families-64x64.ivf");
+const ORDER_HINT_WRAP_FIXTURE: &[u8] =
+    include_bytes!("../../../../tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf");
 const MONO_LUMA_BYTES: usize = 64 * 64;
 const TEMPORAL_LAYER_DECLARATION_AVM_DIGEST: &str =
     "ae245dff6e5b9272ba039d820c58fc77ed9d1184f031fa103b0ee101914eff32";
@@ -77,6 +79,34 @@ fn shared_show_existing_outputs_do_not_consume_reference_store_bytes() {
         .unwrap();
 
     assert_eq!(bytes.len(), 24_576);
+}
+
+#[test]
+fn long_raw_decode_keeps_output_frames_out_of_reference_storage() {
+    #[derive(Default)]
+    struct CountingWriter(usize);
+
+    impl io::Write for CountingWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let options = DecodeOptions::new(
+        DecodeLimits::default().with_max_reference_store_bytes(DecodeLimitThreshold::Max(110_592)),
+    );
+    let mut output = CountingWriter::default();
+
+    context(ThreadCount::from(1usize))
+        .decode_raw_bytes(ORDER_HINT_WRAP_FIXTURE, options, &mut output)
+        .unwrap();
+
+    assert_eq!(output.0, 121 * 64 * 64 * 3);
 }
 
 #[test]
@@ -183,14 +213,13 @@ fn truncated_ivf_payload_fails_before_raw_output() {
 }
 
 #[test]
-fn empty_ivf_decodes_to_zero_raw_bytes_with_zero_output_limits() {
+fn empty_ivf_decodes_to_zero_raw_bytes_with_zero_frame_limits() {
     let input = empty_avmenc_ivf();
     let limits = DecodeLimits::default()
         .with_max_obus(DecodeLimitThreshold::Max(0))
         .with_max_ivf_frame_records(DecodeLimitThreshold::Max(0))
         .with_max_frames_to_decode(DecodeLimitThreshold::Max(0))
-        .with_max_output_frames(DecodeLimitThreshold::Max(0))
-        .with_max_output_bytes(DecodeLimitThreshold::Max(0));
+        .with_max_output_frames(DecodeLimitThreshold::Max(0));
 
     for threads in [
         ThreadCount::from(1usize),
@@ -329,28 +358,6 @@ fn zero_ivf_timebase_does_not_block_raw_output() {
 
         assert_eq!(bytes, expected_minimal_raw());
     }
-}
-
-#[test]
-fn output_byte_limit_fails_before_writer_success() {
-    let expected = expected_minimal_raw();
-    let options = DecodeOptions::new(
-        DecodeLimits::default()
-            .with_max_output_bytes(DecodeLimitThreshold::Max(expected.len() as u64 - 1)),
-    );
-    let mut bytes = Vec::new();
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_raw_bytes(MINIMAL_FIXTURE, options, &mut bytes)
-        .unwrap_err();
-
-    assert!(bytes.is_empty());
-    assert!(matches!(
-        error,
-        DecodeError::Limit {
-            source
-        } if source.name() == DecodeLimitName::MaxOutputBytes
-    ));
 }
 
 #[test]

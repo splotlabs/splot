@@ -12,7 +12,7 @@ use crate::DecodeHashReport;
 use crate::DecodeOptions;
 use crate::bitstream::byte_stream::{plan_byte_stream, prepare_byte_stream};
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
-use crate::error::{DecodeOutputError, DecodeOutputOperation, Result};
+use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
 
 /// A decode context.
@@ -125,86 +125,82 @@ impl DecodeContext {
         report
     }
 
-    /// Decodes the supported envelope and writes complete raw sample bytes.
+    /// Decodes the supported envelope and streams raw sample bytes.
     ///
     /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).
-    /// The complete raw byte stream is buffered and checked against
-    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
+    /// Each displayed frame is written before its output-only decoded storage
+    /// is reclaimed; the complete output is not retained in decoder memory.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
     /// structures, runtime-tier rejections, resource-limit failures, worker-pool
     /// failures, reconstruction model errors, raw serialization errors, or
     /// caller-writer I/O errors.
-    pub fn decode_raw_bytes<W: std::io::Write>(
+    pub fn decode_raw_bytes<W: std::io::Write + Send>(
         &self,
         bytes: &[u8],
         options: DecodeOptions,
-        mut writer: W,
+        writer: W,
     ) -> Result<()> {
-        let raw = self.decode_raw_output_bytes(bytes, options)?;
-        std::io::Write::write_all(&mut writer, &raw).map_err(|source| {
-            DecodeOutputError::io(DecodeOutputOperation::WriteRawStream, source)
-        })?;
-        Ok(())
+        let plan_started = crate::timing::start();
+        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
+        crate::timing::report("plan", plan_started);
+        self.pool.install(|| {
+            crate::output::raw::write_raw_stream_from_plan(
+                bytes,
+                prepared.parsed(),
+                &options,
+                prepared.plan(),
+                self.frame_delay,
+                writer,
+            )
+        })
     }
 
     /// Decodes the supported envelope and returns complete raw sample bytes.
     ///
     /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`])
-    /// and checks the complete raw byte stream against
-    /// [`crate::DecodeLimitName::MaxOutputBytes`].
+    /// and collects the streamed frames into a caller-requested in-memory value.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
     /// structures, runtime-tier rejections, resource-limit failures, worker-pool
     /// failures, reconstruction model errors, or raw serialization errors.
     pub fn decode_raw_output_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<Vec<u8>> {
-        let plan_started = crate::timing::start();
-        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
-        crate::timing::report("plan", plan_started);
-        self.pool.install(|| {
-            crate::output::raw::encode_raw_stream_from_plan(
-                bytes,
-                prepared.parsed(),
-                &options,
-                prepared.plan(),
-                self.frame_delay,
-            )
-        })
+        let mut raw = Vec::new();
+        self.decode_raw_bytes(bytes, options, &mut raw)?;
+        Ok(raw)
     }
 
-    /// Decodes the supported envelope and writes a complete Y4M stream.
+    /// Decodes the supported envelope and streams a Y4M stream.
     ///
     /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).
-    /// The complete Y4M stream is buffered and checked against
-    /// [`crate::DecodeLimitName::MaxOutputBytes`] before any bytes reach `writer`.
+    /// The stream header is written with the first displayed frame, and each
+    /// frame is written before its output-only decoded storage is reclaimed.
     ///
     /// # Errors
     /// Returns [`crate::DecodeError`] for malformed sources, unsupported
     /// structures, runtime-tier rejections, resource-limit failures, worker-pool
     /// failures, reconstruction model errors, Y4M serialization errors, or
     /// caller-writer I/O errors.
-    pub fn decode_y4m_bytes<W: std::io::Write>(
+    pub fn decode_y4m_bytes<W: std::io::Write + Send>(
         &self,
         bytes: &[u8],
         options: DecodeOptions,
-        mut writer: W,
+        writer: W,
     ) -> Result<()> {
         let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
-        let y4m = self.pool.install(|| {
-            crate::output::y4m::encode_y4m_stream_from_plan(
+        self.pool.install(|| {
+            crate::output::y4m::write_y4m_stream_to_writer(
                 bytes,
                 prepared.parsed(),
                 &options,
                 prepared.plan(),
                 self.frame_delay,
+                writer,
             )
-        })?;
-        std::io::Write::write_all(&mut writer, &y4m).map_err(|source| {
-            DecodeOutputError::io(DecodeOutputOperation::WriteY4mStream, source)
-        })?;
-        Ok(())
+            .map(drop)
+        })
     }
 
     /// Builds a deterministic plan over an already parsed AV2 stream.

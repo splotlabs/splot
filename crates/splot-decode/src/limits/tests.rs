@@ -80,11 +80,6 @@ fn default_options_and_limits_are_finite_and_pinned() {
             limits.max_loop_restoration_source_reads(),
             1_048_576 * 16,
         ),
-        (
-            DecodeLimitName::MaxOutputBytes,
-            limits.max_output_bytes(),
-            256 * 1024 * 1024,
-        ),
     ];
 
     assert_eq!(DecodeOptions::default(), DecodeOptions::DEFAULT);
@@ -135,7 +130,6 @@ fn limit_names_and_units_are_stable() {
             "max_tile_partition_steps",
             "max_tile_payload_bytes",
             "max_loop_restoration_source_reads",
-            "max_output_bytes",
         ]
     );
     assert_eq!(
@@ -156,7 +150,6 @@ fn limit_names_and_units_are_stable() {
             DecodeLimitUnit::Count,
             DecodeLimitUnit::Bytes,
             DecodeLimitUnit::Count,
-            DecodeLimitUnit::Bytes,
         ]
     );
     assert_eq!(DecodeLimitUnit::Bytes.as_str(), "bytes");
@@ -186,8 +179,7 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
         .with_max_tile_count(MAX(12))
         .with_max_tile_partition_steps(MAX(13))
         .with_max_tile_payload_bytes(MAX(14))
-        .with_max_loop_restoration_source_reads(MAX(15))
-        .with_max_output_bytes(MAX(16));
+        .with_max_loop_restoration_source_reads(MAX(15));
     let cases = [
         (DecodeLimitName::MaxInputBytes, limits.max_input_bytes(), 1),
         (DecodeLimitName::MaxObus, limits.max_obus(), 2),
@@ -248,11 +240,6 @@ fn threshold_lookup_and_field_helpers_route_to_typed_names() {
             limits.max_loop_restoration_source_reads(),
             15,
         ),
-        (
-            DecodeLimitName::MaxOutputBytes,
-            limits.max_output_bytes(),
-            16,
-        ),
     ];
 
     for (name, getter, expected) in cases {
@@ -293,7 +280,7 @@ fn limit_checks_are_inclusive() {
     );
     assert!(
         DecodeLimits::unlimited()
-            .check(DecodeLimitName::MaxOutputBytes, u64::MAX)
+            .check(DecodeLimitName::MaxInputBytes, u64::MAX)
             .is_allowed()
     );
     assert_eq!(
@@ -306,62 +293,62 @@ fn limit_checks_are_inclusive() {
 
 #[test]
 fn checked_arithmetic_helpers_preserve_metadata() {
-    let limits = DecodeLimits::unlimited().with_max_output_bytes(MAX(100));
+    let limits = DecodeLimits::unlimited().with_max_input_bytes(MAX(100));
 
     assert_eq!(
-        limits.ensure_add(DecodeLimitName::MaxOutputBytes, 40, 2),
+        limits.ensure_add(DecodeLimitName::MaxInputBytes, 40, 2),
         Ok(DecodeLimitCheck::new(
-            DecodeLimitName::MaxOutputBytes,
+            DecodeLimitName::MaxInputBytes,
             MAX(100),
             42,
         ))
     );
     assert_eq!(
-        limits.ensure_mul(DecodeLimitName::MaxOutputBytes, 6, 7),
+        limits.ensure_mul(DecodeLimitName::MaxInputBytes, 6, 7),
         Ok(DecodeLimitCheck::new(
-            DecodeLimitName::MaxOutputBytes,
+            DecodeLimitName::MaxInputBytes,
             MAX(100),
             42,
         ))
     );
     assert_eq!(
-        limits.ensure_add(DecodeLimitName::MaxOutputBytes, u64::MAX, 1),
+        limits.ensure_add(DecodeLimitName::MaxInputBytes, u64::MAX, 1),
         Err(DecodeLimitError::ArithmeticOverflow {
-            name: DecodeLimitName::MaxOutputBytes,
+            name: DecodeLimitName::MaxInputBytes,
             op: DecodeLimitOp::Add,
             left: u64::MAX,
             right: 1,
         })
     );
     assert_eq!(
-        limits.ensure_mul(DecodeLimitName::MaxOutputBytes, u64::MAX, 2),
+        limits.ensure_mul(DecodeLimitName::MaxInputBytes, u64::MAX, 2),
         Err(DecodeLimitError::ArithmeticOverflow {
-            name: DecodeLimitName::MaxOutputBytes,
+            name: DecodeLimitName::MaxInputBytes,
             op: DecodeLimitOp::Mul,
             left: u64::MAX,
             right: 2,
         })
     );
     assert_eq!(
-        limits.ensure_mul(DecodeLimitName::MaxOutputBytes, 11, 10),
+        limits.ensure_mul(DecodeLimitName::MaxInputBytes, 11, 10),
         Err(DecodeLimitError::LimitExceeded {
-            check: DecodeLimitCheck::new(DecodeLimitName::MaxOutputBytes, MAX(100), 110,),
+            check: DecodeLimitCheck::new(DecodeLimitName::MaxInputBytes, MAX(100), 110,),
         })
     );
 }
 
 #[test]
 fn allocation_handoff_checks_limit_then_host_size() {
-    let limits = DecodeLimits::unlimited().with_max_output_bytes(MAX(42));
+    let limits = DecodeLimits::unlimited().with_max_input_bytes(MAX(42));
 
     assert_eq!(
-        limits.ensure_allocation_len(DecodeLimitName::MaxOutputBytes, 42),
+        limits.ensure_allocation_len(DecodeLimitName::MaxInputBytes, 42),
         Ok(42usize)
     );
     assert_eq!(
-        limits.ensure_allocation_len(DecodeLimitName::MaxOutputBytes, 43),
+        limits.ensure_allocation_len(DecodeLimitName::MaxInputBytes, 43),
         Err(DecodeLimitError::LimitExceeded {
-            check: DecodeLimitCheck::new(DecodeLimitName::MaxOutputBytes, MAX(42), 43,),
+            check: DecodeLimitCheck::new(DecodeLimitName::MaxInputBytes, MAX(42), 43,),
         })
     );
 }
@@ -370,12 +357,12 @@ fn allocation_handoff_checks_limit_then_host_size() {
 fn allocation_handoff_reports_platform_size_error() {
     let too_large = isize::MAX as u64 + 1;
     let err =
-        DecodeLimits::unlimited().ensure_allocation_len(DecodeLimitName::MaxOutputBytes, too_large);
+        DecodeLimits::unlimited().ensure_allocation_len(DecodeLimitName::MaxInputBytes, too_large);
 
     assert_eq!(
         err,
         Err(DecodeLimitError::HostAllocationTooLarge {
-            name: DecodeLimitName::MaxOutputBytes,
+            name: DecodeLimitName::MaxInputBytes,
             actual: too_large,
         })
     );
@@ -392,13 +379,13 @@ fn limit_errors_are_local_and_not_decoder_diagnostics() {
     let local_errors = [
         expected,
         DecodeLimitError::ArithmeticOverflow {
-            name: DecodeLimitName::MaxOutputBytes,
+            name: DecodeLimitName::MaxInputBytes,
             op: DecodeLimitOp::Mul,
             left: u64::MAX,
             right: 2,
         },
         DecodeLimitError::HostAllocationTooLarge {
-            name: DecodeLimitName::MaxOutputBytes,
+            name: DecodeLimitName::MaxInputBytes,
             actual: isize::MAX as u64 + 1,
         },
     ];
