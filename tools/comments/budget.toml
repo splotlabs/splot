@@ -4,4 +4,11 @@
 # Implementation comments only. Excludes SPDX license lines, Rustdoc, and
 # xtask-generated Rust sources. Lower this ceiling in the same commit that
 # removes comments; never raise it without maintainer approval.
-max_implementation_comment_lines = 248
+#
+# 248 -> 254 (SCALE-072): the `splot-simd` quarantine crate's six `// SAFETY:`
+# lines. They are not prose: `clippy::undocumented_unsafe_blocks` is `deny` in
+# that crate and every `unsafe` block must carry its argument, so the ceiling
+# has to move with the crate. This raise is part of the same maintainer
+# sign-off as the crate's `unsafe_code` exemption; if the crate is not taken,
+# ratchet back to 248.
+max_implementation_comment_lines = 254

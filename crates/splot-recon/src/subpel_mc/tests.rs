@@ -2028,3 +2028,66 @@ fn reference_plane_view_rejects_zero_dimension() {
         Err(ReconError::ZeroDimension { .. })
     ));
 }
+
+/// The hand-scheduled § 7.13.3.18 horizontal kernel must produce exactly what
+/// this loop's own portable arithmetic does, over every `Subpel_Filters` row the
+/// § 7.13.3.18 pass can select, the SCALE-050 two-axis block widths, and both
+/// § 6 Table 6.3 bit depths. Mutation-checked: negating one tap, shifting one
+/// window column, or dropping the `Round2` fails it.
+#[test]
+fn the_hand_scheduled_horizontal_kernel_matches_the_portable_pass_exactly() {
+    let mut taken = 0usize;
+    let mut phases = 0usize;
+    for bit_depth in [8u32, 10] {
+        let max = (1i64 << bit_depth) - 1;
+        for filter in 0..NUM_FILTER_TYPES {
+            for phase in 1..NUM_PHASES {
+                phases += 1;
+                let full_taps = &SUBPEL_FILTERS[filter][phase];
+                let (tap_start, tap_end) = ACTIVE_TAP_SPANS[filter][phase];
+                for width in [2usize, 4, 8, 12, 16, 32, 64, 128] {
+                    let len = width + NUM_TAPS + SLIDE_RESERVE;
+                    let window: Vec<u16> = (0..len as i64)
+                        .map(|index| {
+                            let mixed = index * 2_654_435_761 + phase as i64 * 7 + filter as i64;
+                            match index % 5 {
+                                0 => 0,
+                                1 => max as u16,
+                                _ => (mixed.rem_euclid(max + 1)) as u16,
+                            }
+                        })
+                        .collect();
+                    let mut expected = vec![0i16; width];
+                    for (column, out) in expected.iter_mut().enumerate() {
+                        let mut sum = 0i32;
+                        for tap in tap_start..tap_end {
+                            sum += full_taps[tap] * i32::from(window[column + tap]);
+                        }
+                        *out = round2_i32(sum, INTER_ROUND0) as i16;
+                    }
+                    let mut actual = vec![i16::MIN; width];
+                    if splot_simd::subpel::horizontal_8tap_row_u16(
+                        &window,
+                        full_taps,
+                        tap_start,
+                        tap_end,
+                        INTER_ROUND0,
+                        &mut actual,
+                    ) {
+                        taken += 1;
+                        assert_eq!(
+                            actual, expected,
+                            "depth {bit_depth} filter {filter} phase {phase} width {width}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(phases, 2 * NUM_FILTER_TYPES * (NUM_PHASES - 1));
+    if cfg!(all(target_arch = "aarch64", target_feature = "neon")) {
+        assert_eq!(taken, phases * 8, "every phase and width took the kernel");
+    } else {
+        assert_eq!(taken, 0, "no hand-scheduled kernel on this target");
+    }
+}

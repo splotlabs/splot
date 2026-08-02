@@ -18,5 +18,6 @@ workspace = true
 [dependencies]
 sha2.workspace = true
 splot-core.workspace = true
+splot-simd.workspace = true
 splot-tables.workspace = true
 thiserror.workspace = true

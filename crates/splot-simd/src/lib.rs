@@ -42,3 +42,5 @@
 //!
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
+
+pub mod subpel;

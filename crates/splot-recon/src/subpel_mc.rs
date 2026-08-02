@@ -2266,6 +2266,18 @@ fn subpel_predict_block_internal_into_validated<T: ReconSample, O>(
                 if let Some(window) = T::u16_slice(window) {
                     let full_span = tap_start == 0 && tap_end == NUM_TAPS;
                     let available = window.len();
+                    if !full_span
+                        && splot_simd::subpel::horizontal_8tap_row_u16(
+                            window,
+                            full_taps,
+                            tap_start,
+                            tap_end,
+                            INTER_ROUND0,
+                            row_out,
+                        )
+                    {
+                        continue;
+                    }
                     let vector_width16 = w - w % 16;
                     for c in (0..vector_width16).step_by(16) {
                         let sum = if full_span && Simd::<i32, 16>::admits(available, c) {
