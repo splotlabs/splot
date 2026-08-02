@@ -153,7 +153,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         plan,
         candidate,
         bytes,
-        frame_envelope,
         sequence,
         core,
         options,

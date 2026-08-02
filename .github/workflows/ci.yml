@@ -93,6 +93,9 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --locked
+      # Release disables overflow checks and enables fat LTO, so run decoder
+      # unit tests under the production code-generation profile as well.
+      - run: cargo test -p splot-decode --release --lib --locked
       # `--all-targets` skips doctests, so run them explicitly.
       - run: cargo test --doc --workspace --locked
       - run: cargo doc --workspace --no-deps --locked
