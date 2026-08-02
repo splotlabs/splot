@@ -10,7 +10,7 @@ use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
-use crate::bitstream::byte_stream::{plan_byte_stream, prepare_byte_stream};
+use crate::bitstream::byte_stream::{PreparedByteStream, plan_byte_stream, prepare_byte_stream};
 use crate::bitstream::stream_plan::{DecodeStreamInput, DecodeStreamPlan, plan_stream};
 use crate::error::Result;
 use crate::runtime::DecodeRuntimeConfig;
@@ -91,6 +91,17 @@ impl DecodeContext {
         self.pool.install(|| plan_byte_stream(bytes, &options))
     }
 
+    fn prepare_bytes<'a>(
+        &self,
+        bytes: &'a [u8],
+        options: &DecodeOptions,
+    ) -> Result<PreparedByteStream<'a>> {
+        let plan_started = crate::timing::start();
+        let prepared = self.pool.install(|| prepare_byte_stream(bytes, options))?;
+        crate::timing::report("plan", plan_started);
+        Ok(prepared)
+    }
+
     /// Decodes the supported envelope and returns a deterministic hash report.
     ///
     /// Runs the same bounded byte planning as [`Self::plan_bytes`] first so
@@ -107,9 +118,7 @@ impl DecodeContext {
         bytes: &[u8],
         options: DecodeOptions,
     ) -> Result<DecodeHashReport> {
-        let plan_started = crate::timing::start();
-        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
-        crate::timing::report("plan", plan_started);
+        let prepared = self.prepare_bytes(bytes, &options)?;
         let runtime_started = crate::timing::start();
         let report = self.pool.install(|| {
             crate::output::hash::decode_hash_report_from_plan(
@@ -142,9 +151,7 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        let plan_started = crate::timing::start();
-        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
-        crate::timing::report("plan", plan_started);
+        let prepared = self.prepare_bytes(bytes, &options)?;
         self.pool.install(|| {
             crate::output::raw::write_raw_stream_from_plan(
                 bytes,
@@ -174,7 +181,7 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        let prepared = self.pool.install(|| prepare_byte_stream(bytes, &options))?;
+        let prepared = self.prepare_bytes(bytes, &options)?;
         self.pool.install(|| {
             crate::output::y4m::write_y4m_stream_to_writer(
                 bytes,

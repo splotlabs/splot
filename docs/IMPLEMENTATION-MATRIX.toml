@@ -13153,7 +13153,7 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
-    "crates/splot-decode/src/output/raw.rs::tests::empty_ivf_decodes_to_zero_raw_bytes_with_zero_frame_limits",
+    "crates/splot-decode/src/output/raw.rs::tests::empty_ivf_decodes_to_zero_raw_bytes_with_zero_output_limits",
     "crates/splot-decode/src/output/raw.rs::tests::minimal_fixture_decodes_to_exact_raw_bytes",
     "crates/splot-decode/src/output/raw.rs::tests::raw_annex_b_payload_decodes_to_exact_raw_bytes",
     "crates/splot-decode/src/output/raw.rs::tests::zero_ivf_timebase_does_not_block_raw_output",

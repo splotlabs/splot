@@ -221,7 +221,7 @@ fn truncated_ivf_payload_fails_before_raw_output() {
 }
 
 #[test]
-fn empty_ivf_decodes_to_zero_raw_bytes_with_zero_frame_limits() {
+fn empty_ivf_decodes_to_zero_raw_bytes_with_zero_output_limits() {
     let input = empty_avmenc_ivf();
     let limits = DecodeLimits::default()
         .with_max_obus(DecodeLimitThreshold::Max(0))
