@@ -542,6 +542,7 @@ fn decode_raw_to_file(
 
 #[derive(Clone, Copy)]
 struct OutputArtifact {
+    write_stream_operation: DecodeOutputOperation,
     resolve_operation: DecodeOutputOperation,
     create_temp_operation: DecodeOutputOperation,
     write_temp_operation: DecodeOutputOperation,
@@ -554,6 +555,7 @@ struct OutputArtifact {
 }
 
 const Y4M_OUTPUT: OutputArtifact = OutputArtifact {
+    write_stream_operation: DecodeOutputOperation::WriteY4mStream,
     resolve_operation: DecodeOutputOperation::ResolveY4mOutputPath,
     create_temp_operation: DecodeOutputOperation::CreateY4mTempFile,
     write_temp_operation: DecodeOutputOperation::WriteY4mTempFile,
@@ -566,6 +568,7 @@ const Y4M_OUTPUT: OutputArtifact = OutputArtifact {
 };
 
 const RAW_OUTPUT: OutputArtifact = OutputArtifact {
+    write_stream_operation: DecodeOutputOperation::WriteRawStream,
     resolve_operation: DecodeOutputOperation::ResolveRawOutputPath,
     create_temp_operation: DecodeOutputOperation::CreateRawTempFile,
     write_temp_operation: DecodeOutputOperation::WriteRawTempFile,
@@ -580,8 +583,12 @@ const RAW_OUTPUT: OutputArtifact = OutputArtifact {
 fn publish_output(
     path: &Path,
     artifact: OutputArtifact,
-    write: impl FnOnce(&mut AtomicOutput<'_>) -> core::result::Result<(), DecodeError>,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
 ) -> core::result::Result<(), DecodeError> {
+    if cfg!(unix) && path == Path::new("/dev/null") {
+        return write_stream_output(path, artifact, write);
+    }
+
     let (parent, final_name) = output_parent_and_name(path, artifact)?;
     let mut output = AtomicOutput::new(parent, final_name, artifact);
 
@@ -699,6 +706,22 @@ impl io::Write for AtomicOutput<'_> {
             self.remember_write_error(error)
         })
     }
+}
+
+fn write_stream_output(
+    path: &Path,
+    artifact: OutputArtifact,
+    write: impl FnOnce(&mut (dyn io::Write + Send)) -> core::result::Result<(), DecodeError>,
+) -> core::result::Result<(), DecodeError> {
+    let output = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|source| output_io(artifact.write_stream_operation, source))?;
+    let mut output = BufWriter::new(output);
+    write(&mut output)?;
+    output
+        .flush()
+        .map_err(|source| output_io(artifact.write_stream_operation, source))
 }
 
 fn replace_output(

@@ -2123,13 +2123,13 @@ fn derive_tile_plan_with<'payload>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &'payload [u8],
-    envelope: ObuEnvelope<'payload>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
     kind: TileFactsKind,
     initial_cdfs: Option<&Arc<FrameCdfSubset>>,
 ) -> Result<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> {
+    let envelope = planned_envelope(bytes, candidate)?;
     let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
         unsupported_at(
             "missing_tq_entropy_config",
@@ -2149,11 +2149,7 @@ fn derive_tile_plan_with<'payload>(
     let group_count = candidates.len();
     let mut merged: Option<crate::bitstream::tile_payload::DecodeTilePayloadPlan<'payload>> = None;
     for (group_index, group_candidate) in candidates.into_iter().enumerate() {
-        let group_envelope = if group_index == 0 {
-            envelope
-        } else {
-            planned_envelope(bytes, group_candidate)?
-        };
+        let group_envelope = planned_envelope(bytes, group_candidate)?;
         let group_facts = if group_index == 0 {
             facts
         } else {
@@ -2332,7 +2328,6 @@ pub(crate) fn derive_tile_plan<'payload>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &'payload [u8],
-    envelope: ObuEnvelope<'payload>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
@@ -2341,7 +2336,6 @@ pub(crate) fn derive_tile_plan<'payload>(
         plan,
         candidate,
         bytes,
-        envelope,
         sequence,
         core,
         options,
@@ -2349,12 +2343,10 @@ pub(crate) fn derive_tile_plan<'payload>(
         None,
     )
 }
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn derive_inter_tile_plan<'payload>(
     plan: &DecodeStreamPlan,
     candidate: &DecodePlannedObu,
     bytes: &'payload [u8],
-    envelope: ObuEnvelope<'payload>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     options: &DecodeOptions,
@@ -2364,7 +2356,6 @@ pub(crate) fn derive_inter_tile_plan<'payload>(
         plan,
         candidate,
         bytes,
-        envelope,
         sequence,
         core,
         options,

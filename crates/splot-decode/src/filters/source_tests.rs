@@ -6,9 +6,10 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    MAX_RETAINED_STRIPE_SAMPLES, MAX_RETAINED_WINDOW_SAMPLES, WINDOW_SAMPLE_BUFFERS,
+    MAX_RETAINED_STRIPE_SAMPLES, MAX_RETAINED_WINDOW_SAMPLES, StripePlane, WINDOW_SAMPLE_BUFFERS,
     lock_stripe_sample_buffers, recycle_stripe_sample_buffer, recycle_window_buffer,
 };
+use splot_recon::PlaneRect;
 
 fn oversized(samples: usize) -> Vec<u16> {
     let mut buffer = Vec::new();
@@ -44,4 +45,12 @@ fn the_stripe_cache_never_retains_an_oversized_buffer() {
             .all(|buffer| buffer.capacity() <= MAX_RETAINED_STRIPE_SAMPLES),
         "the stripe cache is bounded by a constant"
     );
+}
+
+#[test]
+fn stripe_rect_mut_rejects_a_rectangle_overhanging_the_row() {
+    let mut stripe = StripePlane::from_samples(4, 2, 0, vec![0; 8]).expect("a valid stripe");
+    let rect = PlaneRect::new(3, 0, 2, 1).expect("a valid rectangle");
+
+    assert!(stripe.rect_mut(rect).is_none());
 }

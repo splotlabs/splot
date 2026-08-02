@@ -97,6 +97,25 @@ fn decode_explicit_raw_success_for_minimal_fixture() {
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_raw());
 }
 
+#[cfg(unix)]
+#[test]
+fn decode_raw_writes_to_null_device() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        "/dev/null",
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+}
+
 #[test]
 fn decode_empty_ivf_creates_empty_raw_output() {
     let input = temp_input("ivf", &empty_avmenc_ivf());

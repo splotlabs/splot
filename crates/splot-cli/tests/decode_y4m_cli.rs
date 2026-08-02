@@ -337,6 +337,25 @@ fn decode_y4m_success_replaces_existing_output_and_cleans_temp_file() {
     assert_eq!(read_dir_names(&dir), before_entries);
 }
 
+#[cfg(unix)]
+#[test]
+fn decode_y4m_writes_to_null_device() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "y4m",
+        input.to_str().unwrap(),
+        "-o",
+        "/dev/null",
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+}
+
 #[test]
 fn decode_y4m_skips_temp_name_that_matches_requested_output() {
     let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
