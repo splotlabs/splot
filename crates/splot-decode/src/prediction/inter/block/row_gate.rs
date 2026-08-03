@@ -291,8 +291,11 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
     /// [`TIP_FIELD_CELL`] granularity and predict at most [`TIP_MAX_UNIT`] rows
     /// from each cell they sample, so each band of cells is bounded as a
     /// [`TIP_MAX_UNIT`]-tall rectangle carrying that band's furthest-reaching
-    /// projected vector. Both lists are bounded even when the frame's weighting
-    /// leaves the future reference unread, which only delays admission.
+    /// projected vector. The batched optical-flow path also opens the whole
+    /// block from its first unit's candidate before applying that grid, so the
+    /// same candidate bounds the full block rectangle. Both lists are bounded
+    /// even when the frame's weighting leaves the future reference unread,
+    /// which only delays admission.
     fn note_tip(&self, placed: &PlacedInterBlock, bounds: &mut RowReferenceBounds) {
         let Some(references) = self.tip else {
             self.fallbacks.note(SettleReason::Tip);
@@ -300,6 +303,32 @@ impl<'a, T: ReconSample> RowReferenceGate<'a, T> {
             return;
         };
         let base = placed.block.mv;
+        let Some(batch_mvs) = self.temporal.tip_candidate(
+            placed.luma_y / TIP_FIELD_CELL,
+            placed.luma_x / TIP_FIELD_CELL,
+            base,
+        ) else {
+            self.fallbacks.note(SettleReason::Tip);
+            bounds.settle = true;
+            return;
+        };
+        let batch_reach = ListReach {
+            compound: true,
+            ..ListReach::default()
+        };
+        for (list, mv) in [references.past_ref, references.future_ref]
+            .into_iter()
+            .zip(batch_mvs)
+        {
+            self.note_list(
+                bounds,
+                list,
+                mv,
+                placed.motion_compensation_rect(),
+                placed.predict_chroma,
+                batch_reach,
+            );
+        }
         for band in (0..placed.luma_h).step_by(TIP_FIELD_CELL) {
             let luma_y = placed.luma_y.saturating_add(band);
             let mut furthest = [Mv::ZERO; 2];

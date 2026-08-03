@@ -10,7 +10,7 @@ const MI_SIZE: usize = 4;
 
 mod diagnostics;
 pub(crate) mod intrabc_records;
-mod intrabc_ref_mv_stack;
+pub(crate) mod intrabc_ref_mv_stack;
 pub(crate) mod recon;
 pub(crate) mod tx_records;
 

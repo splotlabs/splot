@@ -806,7 +806,7 @@ impl TemporalMvContext {
     }
 
     #[cfg(test)]
-    pub(super) fn with_tip_sample(
+    pub(in crate::prediction::inter) fn with_tip_sample(
         mi_rows: usize,
         mi_cols: usize,
         references: TipReferencePair,
@@ -1417,7 +1417,10 @@ fn prepare_tip_field(
             let index = row_start + x8;
             let source = source.cells[index];
             let projected = if source.valid {
-                project_mv(source.mv, references.ref_offset, source.ref_offset)
+                project_mv(source.mv, references.ref_offset, source.ref_offset).map(|mv| Mv {
+                    row: mv.row.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                    col: mv.col.clamp(-REFMVS_LIMIT, REFMVS_LIMIT),
+                })
             } else {
                 None
             };

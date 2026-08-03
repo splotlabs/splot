@@ -260,21 +260,21 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
             height,
             bit_depth,
         )?;
+        let left_idif = if availability.left {
+            build_two_sided_middle_idif_edge(height, filters.left, left[0], |i| {
+                Ok::<T, splot_recon::ReconError>(left[i + 1])
+            })?
+        } else {
+            extend_one_middle_idif_edge(&left, bit_depth)?
+        };
+        let above_idif = if availability.above {
+            build_two_sided_middle_idif_edge(width, filters.above, above[0], |i| {
+                Ok::<T, splot_recon::ReconError>(above[i + 1])
+            })?
+        } else {
+            extend_one_middle_idif_edge(&above, bit_depth)?
+        };
         if matches!(plane_id, PlaneId::Y) {
-            let left_idif = if availability.left {
-                build_two_sided_middle_idif_edge(height, filters.left, left[0], |i| {
-                    Ok::<T, splot_recon::ReconError>(left[i + 1])
-                })?
-            } else {
-                extend_one_middle_idif_edge(&left, bit_depth)?
-            };
-            let above_idif = if availability.above {
-                build_two_sided_middle_idif_edge(width, filters.above, above[0], |i| {
-                    Ok::<T, splot_recon::ReconError>(above[i + 1])
-                })?
-            } else {
-                extend_one_middle_idif_edge(&above, bit_depth)?
-            };
             predict_intra_middle_directional_angle_rect_idif_into(
                 bit_depth,
                 block_size,
@@ -284,11 +284,13 @@ pub(crate) fn reconstruct_general_intra_middle_neighbour_rect_block_into<T: Reco
                 width,
             )?;
         } else {
+            let left = &left_idif[1..height + 2];
+            let above = &above_idif[1..width + 2];
             predict_intra_middle_directional_angle_rect_into(
                 bit_depth,
                 block_size,
                 angle,
-                IntraMiddleDirectionalAngleEdges::both(&left, &above),
+                IntraMiddleDirectionalAngleEdges::both(left, above),
                 &mut prediction,
                 width,
             )?;

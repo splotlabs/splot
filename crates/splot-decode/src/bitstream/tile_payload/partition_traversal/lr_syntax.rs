@@ -273,6 +273,20 @@ fn read_lr_units_for_plane(
                     read_switchable_lr_unit(plane, unit_row, unit_col, cdfs, symbols, lr_activity)?
                 }
             };
+            if tool == TilePartitionLoopRestorationPlaneTool::Switchable
+                && restoration_type == LrUnitRestorationType::WienerNonsep
+                && !frame_filters_on
+            {
+                read_wiener_ns_unit_filter_for_unit(
+                    plane,
+                    unit_row,
+                    unit_col,
+                    cdfs,
+                    symbols,
+                    lr_activity,
+                    limits,
+                )?;
+            }
             if restoration_type.is_active() {
                 let unit_filter_index = lr_activity
                     .unit_filters
@@ -381,21 +395,42 @@ fn read_wiener_ns_lr_unit(
     };
     lr_activity.record(plane, unit_row, unit_col, restoration_type)?;
     if use_wiener_ns && !frame_filters_on {
-        let filter =
-            read_wiener_ns_unit_filter(plane, cdfs, symbols, &mut lr_activity.unit_filter_state)?;
-        lr_activity.record_unit_filter(
-            WienerNsLrUnitFilter {
-                plane,
-                unit_row,
-                unit_col,
-                coeff_count: wiener_ns_coeff_count(plane),
-                coeffs: filter,
-            },
+        read_wiener_ns_unit_filter_for_unit(
+            plane,
+            unit_row,
+            unit_col,
+            cdfs,
+            symbols,
+            lr_activity,
             limits,
         )?;
     }
     Ok(restoration_type)
 }
+
+fn read_wiener_ns_unit_filter_for_unit(
+    plane: usize,
+    unit_row: usize,
+    unit_col: usize,
+    cdfs: &mut super::cdf::TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    lr_activity: &mut WienerNsLrUnitActivity,
+    limits: DecodeLimits,
+) -> Result<(), TilePartitionTraversalError> {
+    let filter =
+        read_wiener_ns_unit_filter(plane, cdfs, symbols, &mut lr_activity.unit_filter_state)?;
+    lr_activity.record_unit_filter(
+        WienerNsLrUnitFilter {
+            plane,
+            unit_row,
+            unit_col,
+            coeff_count: wiener_ns_coeff_count(plane),
+            coeffs: filter,
+        },
+        limits,
+    )
+}
+
 pub(super) fn read_wiener_ns_unit_filter(
     plane: usize,
     cdfs: &mut super::cdf::TileCdfSubset,

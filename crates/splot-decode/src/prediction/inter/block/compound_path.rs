@@ -1001,6 +1001,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     mv_grid: &mut NeighbourMvGrid,
     block_ctx: &mut MvBlockContext,
     neighbour_ctx: &BlockNeighbourContext,
+    tip_ref_pair: Option<(i8, i8)>,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
     chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
@@ -1026,7 +1027,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         None
     };
     let default_pair = skip_mode_default_pair(current, ref_order_hints);
-    let (ref_frame0, ref_frame1) = neighbour_ctx.skip_mode_ref_pair(default_pair);
+    let (ref_frame0, ref_frame1) = neighbour_ctx.skip_mode_ref_pair(default_pair, tip_ref_pair);
     if ref_frame0 < 0
         || ref_frame1 < 0
         || ref_frame0 as usize >= num_total_refs

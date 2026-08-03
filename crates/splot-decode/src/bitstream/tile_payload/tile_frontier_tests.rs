@@ -125,6 +125,48 @@ fn temporal_frame_wiener_ns_without_local_bank_keeps_lr_unit_syntax_enabled() {
     );
 }
 
+#[test]
+fn switchable_luma_without_frame_filter_keeps_lr_unit_syntax_enabled() {
+    let restoration = CoreSeqRestorationView {
+        enable_restoration: true,
+        lr_pc_wiener_disabled: false,
+        lr_wiener_nonsep_disabled: false,
+        lr_uv_pc_wiener_disabled: true,
+        lr_uv_wiener_nonsep_disabled: true,
+    };
+    let geometry = LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Monochrome);
+    let mut reader = BitReader::new(&[0xd0], ByteOffset::new(0));
+    let outcome = parse_lr_params_for_inter(
+        &mut reader,
+        false,
+        1,
+        restoration,
+        geometry,
+        100,
+        1,
+        [0; 3],
+        &[Vec::new(), Vec::new(), Vec::new()],
+        splot_core::headers::frame::LrTemporalReferenceView::unknown(&[0]),
+    )
+    .unwrap();
+    let LrParseOutcome::Parsed(lr) = outcome else {
+        panic!("expected complete switchable LR params");
+    };
+
+    assert_eq!(
+        loop_restoration_state(&lr, 1),
+        TilePartitionLoopRestorationState::Frame(TilePartitionLoopRestorationFrameState::new(
+            [
+                TilePartitionLoopRestorationPlaneTool::Switchable,
+                TilePartitionLoopRestorationPlaneTool::None,
+                TilePartitionLoopRestorationPlaneTool::None,
+            ],
+            [false; 3],
+            [256, 0, 0],
+        ))
+    );
+}
+
 fn with_minimal_work_unit<R>(
     bytes: &[u8],
     f: impl FnOnce(&mut DecodeTileWorkUnit<'_>, &SequenceHeader, &FrameHeaderCore) -> R + Send,

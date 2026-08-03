@@ -537,6 +537,14 @@ impl ParsedGeneralIntraResidual {
     }
 }
 
+impl ResidualPlanePlan {
+    pub(super) fn publish_luma_transform(self, block_decoded: &mut TileBlockDecodedState) {
+        if self.plane_id == PlaneId::Y {
+            block_decoded.set_luma_transform(self.x, self.y, self.tx.width4(), self.tx.height4());
+        }
+    }
+}
+
 impl ParsedResidualPlane {
     pub(super) fn u_nonzero(&self) -> bool {
         match &self.kind {
@@ -564,16 +572,20 @@ impl ParsedResidualPlane {
             ParsedResidualPlaneKind::Single {
                 coeffs,
                 palette_color_map,
-            } => self.plane.reconstruct(
-                scratch,
-                workspace,
-                &coeffs,
-                block_decoded,
-                palette_color_map.as_deref(),
-                qindex,
-                intra_edge,
-                luma_context,
-            ),
+            } => {
+                self.plane.reconstruct(
+                    scratch,
+                    workspace,
+                    &coeffs,
+                    block_decoded,
+                    palette_color_map.as_deref(),
+                    qindex,
+                    intra_edge,
+                    luma_context,
+                )?;
+                self.plane.publish_luma_transform(block_decoded);
+                Ok(())
+            }
             ParsedResidualPlaneKind::Lossless(units) => {
                 for unit in units {
                     let plan = self.plane.transform_unit_plan(&unit.block)?;
@@ -616,10 +628,7 @@ impl ParsedResidualPlane {
                         intra_edge,
                         luma_context,
                     )?;
-                    let (log2_width, log2_height) = tx_size_log2(unit.block.tx_size)?;
-                    let width4 = ((1usize << log2_width) >> 2).max(1);
-                    let height4 = ((1usize << log2_height) >> 2).max(1);
-                    block_decoded.set_luma_transform(unit.block.x, unit.block.y, width4, height4);
+                    plan.publish_luma_transform(block_decoded);
                 }
                 Ok(())
             }

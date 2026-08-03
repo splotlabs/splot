@@ -21,9 +21,9 @@ use splot_recon::{
 };
 
 use super::find_mv_stack::{
-    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, MotionMode, MvBlockContext,
-    NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord, NeighbourFlagSyntax, NeighbourMvGrid,
-    TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
+    BlockNeighbourContext, BlockPrecisionRecord, DEFAULT_WARP_PARAMS, INTRABC_REF_FRAME,
+    MotionMode, MvBlockContext, NON_INTER_FLAG_SYNTAX, NeighbourFlagRecord, NeighbourFlagSyntax,
+    NeighbourMvGrid, TIP_REF_FRAME, TemporalMotionBlock, TemporalMotionField, TemporalMvContext,
     TemporalProjectionConfig, TipReferencePair, ZERO_NEIGHBOUR_MOTION_VALUES, block_neighbour_ctx,
     find_compound_mv_stack_with_temporal, find_mode_ctx, find_mode_ctx_with_tip,
     find_mv_stack_with_temporal, warp_predicted_mv,
@@ -53,7 +53,7 @@ use crate::bitstream::tile_payload::{
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
-    read_intrabc_info, read_intrabc_use_and_skip,
+    read_intrabc_use_and_skip, read_pending_intrabc_info,
 };
 use crate::filters::wienerns_lr::tx_records::{
     CdefState, DeltaQState, SelectableLumaTxRecord, ccso::CcsoState,
@@ -898,6 +898,18 @@ fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
         .unwrap_or(false)
 }
 
+#[cfg(test)]
+pub(crate) fn prepare_intrabc_leaf_entry(
+    intrabc_state: &mut TileIntrabcPreludeState,
+    mi_row: usize,
+    mi_col: usize,
+    is_chroma_part: bool,
+) {
+    if !is_chroma_part {
+        intrabc_state.prepare_for_block(mi_row, mi_col);
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -1061,6 +1073,7 @@ fn decode_block<T: ReconSample>(
             },
             None,
         );
+        let mut pending_intrabc = None;
         if !frontier.is_chroma_part() {
             if seg_pre_skip {
                 segment_id = read_segment_id(
@@ -1074,7 +1087,6 @@ fn decode_block<T: ReconSample>(
                     tile_offset,
                 )?;
             }
-            intrabc_state.prepare_for_block(frontier.r, frontier.c);
             let use_skip = read_intrabc_use_and_skip(
                 work_unit.cdf_mut().tile_cdfs_mut(),
                 symbols,
@@ -1114,26 +1126,30 @@ fn decode_block<T: ReconSample>(
                 use_skip.skip_flag,
                 tile_offset,
             )?;
-            let intrabc = if use_skip.use_intrabc {
-                Some(read_intrabc_info(
+            let geometry = IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h);
+            if use_skip.use_intrabc {
+                let info = read_pending_intrabc_info(
                     work_unit.cdf_mut().tile_cdfs_mut(),
                     symbols,
                     intrabc_state,
                     sequence,
                     core,
-                    IntrabcBlockGeometry::from_frontier(frontier, n4w, n4h),
+                    geometry,
                     tile_offset,
-                )?)
+                )?;
+                let spatial = intrabc_state.capture_spatial_intrabc_probes(geometry);
+                prelude = IntrabcBlockPrelude::from_use_skip(use_skip, None)
+                    .with_morph_pred(info.morph_pred());
+                pending_intrabc = Some((info, spatial));
             } else {
-                None
-            };
-            prelude = IntrabcBlockPrelude::from_use_skip(use_skip, intrabc);
+                prelude = IntrabcBlockPrelude::from_use_skip(use_skip, None);
+            }
         }
         if !frontier.is_chroma_part() {
             segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         }
         if prelude.use_intrabc {
-            let info = prelude.intrabc.ok_or_else(|| {
+            let (info, spatial) = pending_intrabc.ok_or_else(|| {
                 inter_missing!(
                     "inter_intrabc_info",
                     tile_offset,
@@ -1141,16 +1157,6 @@ fn decode_block<T: ReconSample>(
                     SPEC_MODE_INFO
                 )
             })?;
-            let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
-            let prediction = intrabc::IntrabcReconPrediction::derive(
-                core,
-                frontier,
-                n4w,
-                n4h,
-                info,
-                (u32::from(sub_x), u32::from(sub_y)),
-                tile_offset,
-            )?;
             let block_qindex = segment_block_qindex(
                 sequence,
                 core,
@@ -1199,16 +1205,6 @@ fn decode_block<T: ReconSample>(
                 lossless,
                 tile_offset,
             )?;
-            let command = intrabc::IntrabcReconCommand::new(
-                prediction,
-                residual,
-                segment_id,
-                block_qindex,
-                luma_use_tcq,
-                residual_use_ddt,
-                bit_depth,
-                tile_offset,
-            );
             let precision = frame_mv_precision(core, tile_offset)?;
             mv_grid.record_flags(
                 mi_row,
@@ -1217,6 +1213,7 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 NeighbourFlagSyntax {
                     is_inter: true,
+                    ref_frame0: INTRABC_REF_FRAME,
                     skip: prelude.skip_flag,
                     interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
                     precision: BlockPrecisionRecord::explicit(precision),
@@ -1224,11 +1221,32 @@ fn decode_block<T: ReconSample>(
                 },
             );
             intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
+            let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
+            let dependency = if intrabc::global_intrabc_enabled(core.intrabc) {
+                ReconDependency::GlobalIntrabcFence
+            } else {
+                ReconDependency::CurrentFrame
+            };
             return Ok((
                 non_intra_leaf_mode(frontier).mark_intrabc(),
-                ParsedLeaf::recon(
-                    ReconCommand::Intrabc(command),
-                    non_inter_leaf_motion(mi_row, mi_col, n4w, n4h),
+                pending_intrabc_leaf(
+                    PendingIntrabcBlock {
+                        frontier: *frontier,
+                        n4w,
+                        n4h,
+                        mi_rows,
+                        mi_cols,
+                        info,
+                        spatial,
+                        residual,
+                        segment_id,
+                        qindex: block_qindex,
+                        luma_use_tcq,
+                        residual_use_ddt,
+                        bit_depth,
+                        subsampling: (u32::from(sub_x), u32::from(sub_y)),
+                    },
+                    dependency,
                 ),
             ));
         }
@@ -1373,6 +1391,7 @@ fn decode_block<T: ReconSample>(
             mv_grid,
             &mut block_ctx,
             &neighbour_ctx,
+            tip_ref_pair,
             deblock_blocks,
             chroma_deblock_blocks,
             tx_skip_records,
@@ -2005,9 +2024,9 @@ use self::interintra::predict_interintra_planes;
 use self::prediction::placed_inter_geometry;
 use self::resolve::{
     CompoundJointMvProjection, CompoundMotionSyntax, InterBlockSyntax, InterMotionSyntax,
-    LeafMotion, LeafMotionKind, MvResolutionState, ParsedLeaf, PendingInterBlock, PendingInterKind,
-    SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource, WarpMotionSyntax, pending_inter_leaf,
-    resolve_parsed_leaves,
+    LeafMotion, LeafMotionKind, MvResolutionState, ParsedLeaf, PendingInterKind,
+    PendingIntrabcBlock, PendingMotionBlock, SingleMotionSyntax, WarpDeltaSyntax, WarpModelSource,
+    WarpMotionSyntax, pending_inter_leaf, pending_intrabc_leaf, resolve_parsed_leaves,
 };
 pub(crate) use self::syntax::interp_filter_no_neighbour_ctx;
 use self::syntax::{

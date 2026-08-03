@@ -10,6 +10,9 @@ use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext, SupportedChromaMode,
 };
 
+#[path = "reconstruct/edge_tests.rs"]
+mod edge_tests;
+
 impl IntraEdgeAvailability {
     const fn all() -> Self {
         Self {

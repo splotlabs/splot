@@ -97,10 +97,7 @@ pub(crate) fn record_inter_deblock_geometry(
                     n4w: tx_w4,
                     n4h: tx_h4,
                     luma_tx: tx_size,
-                    chroma_tx:
-                        crate::filters::wienerns_lr::fixed_largest_420_chroma_tx_size_from_luma_4x4(
-                            tx_w4, tx_h4,
-                        ),
+                    chroma_tx: None,
                     sub_pu_size,
                     chroma_transform_only: false,
                     qindex,
@@ -119,6 +116,22 @@ pub(crate) fn record_inter_deblock_geometry(
                     },
                 );
             }
+        }
+        if frontier.has_chroma {
+            record_skipped_chroma_deblock_geometry(
+                chroma_deblock_blocks,
+                chroma_ref.row(),
+                chroma_ref.col(),
+                chroma_ref.size(),
+                (sub_x, sub_y),
+                luma_prediction,
+                chroma_prediction,
+                sub_pu_size,
+                inherited_chroma_metadata,
+                qindex,
+                lossless,
+                tile_offset,
+            )?;
         }
         return Ok(());
     };
@@ -189,6 +202,70 @@ pub(crate) fn record_inter_deblock_geometry(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn record_skipped_chroma_deblock_geometry(
+    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    chroma_ref_row: usize,
+    chroma_ref_col: usize,
+    chroma_ref_size: BlockSize,
+    chroma_subsampling: (bool, bool),
+    luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
+    chroma_prediction: crate::filters::deblock::DeblockPredictionUnit,
+    sub_pu_size: Option<crate::filters::deblock::DeblockSubPuSize>,
+    inherited_chroma_metadata: bool,
+    qindex: u32,
+    lossless: bool,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    let (sub_x, sub_y) = chroma_subsampling;
+    let plane_size = get_plane_residual_size(chroma_ref_size, 1, sub_x, sub_y)
+        .map_err(|_| super::residual::residual_geometry_error(tile_offset))?
+        .valid()
+        .ok_or_else(|| super::residual::residual_geometry_error(tile_offset))?;
+    let chroma_tx = super::residual::max_tx_size(plane_size.index(), tile_offset)?;
+    let width = plane_size
+        .width_samples()
+        .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+    let height = plane_size
+        .height_samples()
+        .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
+    let tx_width =
+        super::residual::tx_size_dimension("Tx_Width", &TX_WIDTH, chroma_tx, tile_offset)?;
+    let tx_height =
+        super::residual::tx_size_dimension("Tx_Height", &TX_HEIGHT, chroma_tx, tile_offset)?;
+    let base_x = (chroma_ref_col >> usize::from(sub_x)) * MI_SIZE;
+    let base_y = (chroma_ref_row >> usize::from(sub_y)) * MI_SIZE;
+    let subsampling = (u32::from(sub_x), u32::from(sub_y));
+    for y in (0..height).step_by(tx_height.max(1)) {
+        for x in (0..width).step_by(tx_width.max(1)) {
+            for plane in [ReconPlaneId::U, ReconPlaneId::V] {
+                if let Some((plane_index, mut record)) =
+                    crate::filters::wienerns_lr::chroma_transform_deblock_block(
+                        plane,
+                        base_x + x,
+                        base_y + y,
+                        chroma_tx,
+                        subsampling,
+                        qindex,
+                        lossless,
+                    )
+                {
+                    retain_inter_prediction_metadata(
+                        &mut record,
+                        luma_prediction,
+                        chroma_prediction,
+                        sub_pu_size,
+                        inherited_chroma_metadata,
+                    );
+                    record.skip = true;
+                    chroma_deblock_blocks[plane_index].push(record);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn retain_inter_prediction_metadata(
     record: &mut crate::filters::deblock::DeblockBlock,
     luma_prediction: crate::filters::deblock::DeblockPredictionUnit,
@@ -246,5 +323,41 @@ mod tests {
         assert_eq!(record.chroma_prediction, chroma_prediction);
         assert_eq!(record.sub_pu_size, Some(sub_pu_size));
         assert!(!record.chroma_transform_only);
+    }
+
+    #[test]
+    fn skipped_64x128_420_chroma_keeps_one_transform_across_luma_chunks() {
+        let mut records = [Vec::new(), Vec::new()];
+        let prediction = crate::filters::deblock::DeblockPredictionUnit {
+            base_r: 128,
+            base_c: 96,
+            default_sub_pu_tx: 0,
+        };
+
+        record_skipped_chroma_deblock_geometry(
+            &mut records,
+            128,
+            96,
+            BlockSize::new(13).unwrap(),
+            (true, true),
+            prediction,
+            prediction,
+            Some(crate::filters::deblock::DeblockSubPuSize::square(4)),
+            false,
+            200,
+            false,
+            ByteOffset::new(0),
+        )
+        .unwrap();
+
+        for plane in &records {
+            assert_eq!(plane.len(), 1);
+            let record = plane[0];
+            assert_eq!((record.r, record.c), (128, 96));
+            assert_eq!((record.n4h, record.n4w), (32, 16));
+            assert_eq!((record.chroma_base_r, record.chroma_base_c), (128, 96));
+            assert!(record.skip);
+            assert_eq!(record.qindex, 200);
+        }
     }
 }

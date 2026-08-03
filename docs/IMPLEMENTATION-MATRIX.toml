@@ -87,6 +87,59 @@ fixtures = []
 diagnostics = []
 
 [[feature]]
+id = "DECODE-INTRABC-REF-MV-BANK-SB-LIFETIME"
+name = "Ordered IntrABC reference-MV bank lifetime"
+category = "conformance"
+kind = "bitstream-syntax"
+spec_sections = ["5.18.2", "5.20.2.2", "5.20.4.1", "6.19.2.2", "7.12.2.5", "7.12.2.6", "7.12.2.21"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-5",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-21",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/prediction/inter/block/resolve.rs"
+change_id = "decode-intrabc-ref-mv-bank-sb-lifetime"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Reads IntrABC DRL, precision, MVD, morph and residual syntax in the entropy pass, but resolves the BVP in the existing ordered §7.12 motion pass. IntrABC and ordinary inter leaves therefore share the same tagged nine-list RefMvBank, global hit budget, size-four list-8 ring, duplicate refresh and superblock-row lifetime. Parse time captures only the ordered IntrABC spatial probe coordinates and availability; resolve time reads their values after earlier leaves publish motion and before later leaves do. The ordered IntrABC leaf resets or seeds the bank, selects the spatial/list-8/default BVP, constructs checked prediction geometry, publishes its BV, then updates tagged list 8. Intra-only frames clear per superblock row without seeding. For an intra-only frame whose sequence superblock is 256 samples, `effective_intrabc_sb_h4` caps the shared bank, spatial scan, default-BVP validation, and reset boundary to 32 four-pixel units (128 samples); inter frames retain the sequence superblock geometry. The entropy-pass `TileIntrabcPreludeState` uses the same frame-aware geometry, so a sequence-256 row at 128 samples is a superblock boundary only in an intra frame; the paired regressions pin both NPos context filtering and the distinct spatial SMVP probe. The focused shared-bank regression proves the 128-sample default BVP and bank clear at the effective row boundary. The external mission stream's output frame 749 is byte-identical to AVM in both one-thread and ten-thread prefix checks; AVMenc cannot practically force its carried list-8 eviction topology, so the external stream remains the differential oracle."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate",
+    "crates/splot-decode/src/prediction/inter/block_tests.rs::intrabc_spatial_probe_waits_for_ordered_motion_publication",
+    "crates/splot-decode/src/prediction/inter/block_tests.rs::intra_frame_intrabc_uses_128_sample_shared_bank_geometry",
+    "crates/splot-decode/src/filters/wienerns_lr/intrabc_records_tests.rs::sequence_256_intrabc_context_uses_the_frame_superblock_size",
+    "crates/splot-decode/src/filters/wienerns_lr/intrabc_records_tests.rs::sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size",
+]
+commands = [
+    "cargo test -p splot-decode --lib shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate --locked",
+    "cargo test -p splot-decode --lib intrabc_spatial_probe_waits_for_ordered_motion_publication --locked",
+    "cargo test -p splot-decode --lib intra_frame_intrabc_uses_128_sample_shared_bank_geometry --locked",
+    "cargo test -p splot-decode --lib sequence_256_intrabc_ --locked",
+    "cargo xtask check-feature-status",
+]
+fixtures = []
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-GENERAL-INTRA-TRANSFORM-UNIT-PREDICTION"
 name = "Per-transform-unit intra prediction"
 category = "conformance"
@@ -127,6 +180,7 @@ tests = [
     "crates/splot-decode/src/residual/pipeline/tests.rs::directional_first_partition_handoff_uses_each_transform_units_edges",
     "crates/splot-decode/src/residual/pipeline/tests.rs::directional_first_partition_handoff_rejects_invalid_transform_geometry",
     "crates/splot-decode/src/residual/pipeline/tests.rs::active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping",
+    "crates/splot-decode/src/residual/pipeline/tests.rs::mrl_chunk_rows_use_transform_local_superblock_boundary",
     "crates/splot-decode/src/output/hash_tests.rs::directional_tx_partition_fixture_matches_reference_output_hash",
     "crates/splot-decode/src/output/hash_tests.rs::directional_tx_partition_fixture_eof_fails_closed",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
@@ -144,6 +198,49 @@ fixtures = [
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
 ]
 diagnostics = ["decode/malformed-source"]
+
+[[feature]]
+id = "DECODE-INTRA-CARDINAL-MRL-BOTTOM-EDGE"
+name = "Cardinal MRL luma prediction at cropped frame edges"
+category = "conformance"
+kind = "bitstream-semantics"
+spec_sections = ["5.20.7.27", "7.13.2.1", "7.13.2.8"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/pipeline/reconstruct/one_sided.rs"
+change_id = "decode-intra-cardinal-mrl-bottom-edge"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Cardinal MRL prediction now applies the AV2 section 7.13.2.1 cropped-frame leftLimit and aboveLimit bounds before reading horizontal left-reference rows and vertical above-reference columns. A bottom-edge 32x32 transform at y=1056 in the mission stream previously attempted to read CurrFrame[Y][1080][380] for prediction row 24; rows 24 through 31 now repeat the last stored row at maxY=1079 as the specification requires. Symmetric TX32 and MrlIndex=3 focused tests prove that bottom-edge rows repeat maxY and right-edge columns repeat maxX. The external mission stream advances past byte 2569232. No AVMenc fixture is added because the encoder does not expose controls that force this exact combination of a frame-edge 32x32 transform, cardinal mode, and active MRL index 3; oracle coverage remains partial pending full-stream identity."
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::horizontal_cardinal_mrl_tx32_clamps_bottom_edge_rows",
+    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::vertical_cardinal_mrl_tx32_clamps_right_edge_columns",
+]
+commands = [
+    "cargo test -p splot-decode cardinal_mrl_tx32_clamps --locked",
+    "cargo xtask check-feature-status",
+]
+fixtures = []
+diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
 id = "DECODE-REPEATED-KEY-SEQUENCE-ACTIVATION"
@@ -11707,7 +11804,7 @@ change_id = "decode-lr-unit-syntax-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Consumes AV2 §5.20.10.4-.6 loop-restoration unit syntax for the supported fixed Wiener NS and PC-Wiener paths plus luma `RESTORE_SWITCHABLE` when frame-level Wiener filters are present. The tile CDF subset owns the generated `Default_Flex_Restoration_Type_Cdf` rows with the same copy, blend, and scaling lifecycle as the existing LR rows. Switchable units read tool 0 then tool 1 exactly as §5.20.10.5 specifies, retain a typed `RESTORE_NONE` / `RESTORE_PC_WIENER` / `RESTORE_WIENER_NONSEP` selection, omit source blocks for None, and carry the active type through §7.20 source records. The final-filter sink dispatches each luma source run to the existing PC-Wiener or Wiener NS implementation while all runs read the same pre-restoration snapshots. The target stream's 32-unit sequence is retained as 25 Wiener NS, 5 None, and 2 PC-Wiener units and advances from the former `ReadLoopRestoration` gate to emitted output. Unsupported chroma Switchable, luma Switchable without frame filters, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, and other unproven forms remain fail-closed."
+notes = "Consumes AV2 §5.20.10.4-.6 loop-restoration unit syntax for the supported fixed Wiener NS and PC-Wiener paths plus luma `RESTORE_SWITCHABLE` with or without frame-level Wiener filters. The tile CDF subset owns the generated `Default_Flex_Restoration_Type_Cdf` rows with the same copy, blend, and scaling lifecycle as the existing LR rows. Switchable units read tool 0 then tool 1 exactly as §5.20.10.5 specifies, retain a typed `RESTORE_NONE` / `RESTORE_PC_WIENER` / `RESTORE_WIENER_NONSEP` selection, omit source blocks for None, and carry the active type through §7.20 source records. When a switchable unit selects `RESTORE_WIENER_NONSEP` without a frame-level filter bank, the decoder reads the §5.20.10.5 per-unit `read_wienerns_filter(plane, unitRow, unitCol, 0)` syntax and retains its coefficients for the existing final-filter sink; with a frame-level bank it retains the prior no-per-unit-filter path. The final-filter sink dispatches each luma source run to the existing PC-Wiener or Wiener NS implementation while all runs read the same pre-restoration snapshots. The target stream's 32-unit sequence is retained as 25 Wiener NS, 5 None, and 2 PC-Wiener units and advances from the former `ReadLoopRestoration` gate to emitted output. Unsupported chroma Switchable, SDP PlaneStart/PlaneEnd LR traversal, temporal/reference Wiener state, and other unproven forms remain fail-closed."
 
 [feature.status]
 mapped = "done"
@@ -11718,7 +11815,7 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -11732,23 +11829,30 @@ tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::frame_level_wiener_ns_rejects_invalid_unit_size_before_partition_read",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_luma_selects_none_pc_wiener_then_wiener_ns",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_luma_selector_reads_precede_partition_read",
-    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_lr_rejects_chroma_or_missing_luma_frame_filter_before_symbol_read",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_luma_without_frame_filter_reads_unit_wiener_filter",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal_tests.rs::switchable_lr_rejects_chroma_before_symbol_read",
+    "crates/splot-decode/src/bitstream/tile_payload/tile_frontier_tests.rs::switchable_luma_without_frame_filter_keeps_lr_unit_syntax_enabled",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::keeps_switchable_restoration_types_in_separate_runs",
     "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs::switchable_luma_dispatches_mixed_units_from_one_snapshot",
     "crates/splot-decode/src/prediction/inter/tests.rs::parsed_wienerns_bank_reports_next_tile_frontier",
     "crates/splot-decode/src/prediction/inter/tests.rs::wienerns_lr_unit_frontier_limit_errors_stay_limits",
     "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
     "cargo test -p splot-decode tile_payload::cdf --locked",
     "cargo test -p splot-decode partition_traversal --locked",
     "cargo test -p splot-decode wienerns --locked",
     "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output -- --ignored",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
+    "cargo xtask decoder-fixtures verify",
+    "cargo xtask check-reference-evidence",
     "cargo xtask check-feature-status",
     "cargo xtask check-decoder-support",
 ]
 fixtures = [
-    "local decoder mission fixture",
+    "tests/conformance/vectors/valid/syn-2frame-lr-switchable-unit-wienerns-128x64-q100.ivf",
+    "docs/LOCAL-REFERENCE-EVIDENCE.toml",
     "crates/splot-decode/src/bitstream/tile_payload/cdf.rs",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs",
     "crates/splot-decode/src/pipeline/mod.rs",
@@ -12560,7 +12664,7 @@ change_id = "decode-general-intra-cfl-non-420"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Implements the complete legal chroma-format dispatch for the existing CfL reconstruction path. PixelFormat supplies subsampling_x/subsampling_y to coordinate mapping, alpha/reference sampling, superblock reference bounds, and MHCCP reference extents. The §7.13.5 sample filter chooses the existing Cfl_Filters_420 table when both axes are subsampled, Cfl_Filters_422 when only X is subsampled, and 8*v when neither axis is subsampled. Two committed AVMenc oracles prove both newly admitted branches: syn-cfl-444-intra-64x64-q255.ivf is a minimal 73-byte 4:4:4 CfL stream, while syn-cfl-422-intra-64x64-q128.ivf is an active-CfL 4:2:2 stream. Pinned AVM, current AVM, and fixed splot agree byte-for-byte on each complete native planar raw output. The prior 4:2:0 unit coverage remains unchanged and guards its existing filter table."
+notes = "Implements the complete legal chroma-format dispatch for the existing CfL reconstruction path. PixelFormat supplies subsampling_x/subsampling_y to coordinate mapping, alpha/reference sampling, superblock reference bounds, and MHCCP reference extents. The §7.13.5 sample filter chooses the existing Cfl_Filters_420 table when both axes are subsampled, Cfl_Filters_422 when only X is subsampled, and 8*v when neither axis is subsampled. The lumaAbove/lumaLeft average and implicit-alpha reference filters clamp negative taps only at the transform-local left/top edge (`i == 0` / `j == 0`); internal absolute 64-luma-sample crossings retain the negative tap. The separate current-block L derivation keeps the §7.13.5 `lumaX % 64` / `lumaY % 64` clamps. At right and bottom frame overhang, one shared coordinate rule repeats the last valid downsampled luma sample, matching the §7.13.5 `prevSample` rule before implicit-alpha correlation rather than independently clamping each luma filter tap. Focused wide-above, symmetric tall-left, and frame-bottom 4:2:0 regressions prove block-edge controls, internal-boundary source samples, frame-edge repetition, and implicit-alpha derivation; the tall case additionally proves the corrected luma average, AC, and final prediction. Two committed AVMenc oracles prove both newly admitted non-4:2:0 branches: syn-cfl-444-intra-64x64-q255.ivf is a minimal 73-byte 4:4:4 CfL stream, while syn-cfl-422-intra-64x64-q128.ivf is an active-CfL 4:2:2 stream. Pinned AVM, current AVM, and fixed splot agree byte-for-byte on each complete native planar raw output."
 
 [feature.status]
 mapped = "done"
@@ -12576,6 +12680,10 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::cfl_derived_alpha_above_uses_transform_local_boundary",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::cfl_luma_sample_repeats_last_downsampled_row_at_frame_edge",
     "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::cfl_reconstruction_supports_non_420_chroma_geometry",
     "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::cfl_luma_sample_uses_422_and_444_filters",
     "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::mhccp_reference_extensions_use_non_420_subsampling",
@@ -12596,6 +12704,53 @@ fixtures = [
     "tests/conformance/vectors/valid/syn-cfl-422-intra-64x64-q128.ivf",
     "crates/splot-decode/src/prediction/chroma/cfl.rs",
 ]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-MHCCP-FRAME-EDGE-REFERENCE-EXTENT"
+name = "MHCCP frame-edge reference extent"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["7.13.2.1", "7.13.6", "7.13.7"]
+sources = [
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-6",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-7",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/prediction/chroma/cfl.rs"
+change_id = "decode-mhccp-frame-edge-reference-extent"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Separates the full MHCCP prediction buffer geometry from the captured in-frame CflRef extent at the right and bottom frame edges. AV2 §7.13.2.1 initializes enough CflRef storage for the whole transform prediction but limits CflRefWidth/CflRefHeight to the available coded-frame region; §7.13.7 derives multiParams only from that captured extent. The decoder now retains the full transform-sized zero-initialized buffer required by §7.13.6 prediction, fills and derives parameters from only the captured extent, and continues relying on CurrentFrameWorkspace to drop out-of-frame output samples. The external 1920x1080 10-bit local mission stream's bottom-edge U-plane TX_32X16 MHCCP block at chroma (128,528) advances from `general_intra_mhccp_reference_geometry` at byte 1195349 to the distinct `compound_exit_symbol` gap at byte 1242698. Focused tests prove full bottom-edge prediction, ignored uncaptured padding during parameter derivation, retained non-edge behavior, and rejection when the transform origin itself is outside the frame. This row does not claim padded current-frame storage, out-of-frame sample retention, a committed AVMenc fixture, the following compound exit-symbol branch, or full-file decode success."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "not-applicable"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "partial"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-recon/src/mhccp.rs::tests::parameter_derivation_ignores_uncaptured_prediction_padding",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::mhccp_rejects_reference_origin_outside_frame",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::mhccp_reference_extensions_use_luma_pixel_threshold_for_420",
+    "crates/splot-decode/src/prediction/chroma/cfl_tests.rs::mhccp_reference_extensions_use_non_420_subsampling",
+]
+commands = [
+    "cargo test -p splot-recon mhccp --locked",
+    "cargo test -p splot-decode --lib 'prediction::chroma::cfl::tests::mhccp_' --locked",
+    "cargo xtask check-feature-status",
+]
+fixtures = []
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
@@ -15728,12 +15883,15 @@ id = "DECODE-GENERAL-INTRA-DIRECTIONAL-FOLLOW-CHROMA"
 name = "General intra D135 and directional-follow D135 chroma decode"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.5.3", "5.20.7.27", "7.13.2.1", "7.13.2.8", "8.2.4", "9.2"]
+spec_sections = ["5.20.5.3", "5.20.7.27", "7.13.2.1", "7.13.2.8", "7.13.2.14", "7.13.2.17", "7.13.2.18", "8.2.4", "9.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-14",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-17",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-18",
 ]
 crate = "splot-decode"
 module = "crates/splot-decode/src/pipeline/reconstruct.rs"
@@ -15741,7 +15899,7 @@ change_id = "decode-general-intra-directional-follow-chroma"
 tracking_issue = ""
 owner = "decoder"
 risk = "low"
-notes = "Extends the general intra decode to the directional-follow chroma mode the minimal-tool avmenc pairs with a §7.13.2.8 D135_PRED luma block, which the prior chroma admission REJECTED (`general_intra_non_dc_chroma_mode`). When the §5.20.5.3 `read_intra_uv_mode` decodes `uv_mode == 0` over a directional luma, `get_intra_uv_mode_set(0)` returns `YMode` (the directional-follow branch, line 11316 of the §5.20.5.3 mirror), and the spec then sets `AngleDeltaUV = AngleDeltaY` (line 11288). For the supported luma D135 (`AngleDeltaY == 0`) this resolves the chroma to `UVMode == D135_PRED`, `AngleDeltaUV == 0` — a plain §7.13.2.8 middle-angle (pAngle 135) chroma intra prediction, NOT CfL / CCTX / MHCCP (those return UV_CFL_PRED at §5.20.5.3 line 11268 / read separate cross-component syntax and are explicitly out of scope and still rejected). `supported_chroma_mode` distinguishes directional-follow `D135Follow` from explicit non-follow `D135`, and both variants now share the same total §7.13.2.1 edge preparation and §7.13.2.8 bilinear reconstruction. The runtime admits `D135Follow` and explicit `D135` for every valid block position and neighbour state. In the no-neighbour case the chroma plane has no above/left neighbour so the §7.13.2.1 prediction edges reduce to the flat fallbacks (8-bit: AboveRow `127`, LeftCol `129`, shared corner `128`) and the `enable_intra_edge_filter` / IDIF / upsample synthesis is a no-op; pAngle 135's `dx = dy = Dr_Intra_Derivative[45] = 64` give `shift == 0` so the §7.13.2.8 bilinear middle-angle predictor (`enableIdif == 0` for chroma, since `enableIdif = plane == 0`) is a sample copy of the flat fallback edge. The new `reconstruct_general_intra_chroma_directional_first_into` builds that prediction via the shared `splot-recon` `predict_intra_middle_directional_angle_rect_into` (the SAME `predict_directional_noneighbour` helper the luma D135 path uses) and adds the §5.20.7.27 chroma residual through `reconstruct_general_intra_block_with_prediction`. Over the flat fallback edges the D135 chroma prediction is a genuine 135-degree anti-diagonal split (upper-right triangle `127`, lower-left `129`, anti-diagonal `128`), so with the diagonal chroma residual both U and V reconstruct as a genuine directional pattern (17 distinct values each), NOT a flat DC level. The committed `syn-dfchroma-intra-64x64-q80.ivf` (one 64x64 D135 luma block, top half near 40 / bottom half near 210, 135-degree anti-diagonal chroma) decodes bit-exactly to the avmdec AND dav2d oracle (md5 09fc23f0bced8ab5b9562d6d2478af1c, pinned frame hash 628b759dcb63356ad3174063652c54d7ebf6f54d1566ab9f1b64b3a74542154f), guarded by the §8.2.4 `exit_symbol()` bit-exactness check; all existing general-intra fixtures still decode bit-exact (the original `syn-hedge` fixture, which uses the `uv_mode == 1` DC chroma, is unchanged). The follow-up `syn-d135-chroma-nonfull-32x32-q7.ivf` is a deterministic 66-byte current-AVMenc fixture whose only non-full-superblock 32x32 block has DC luma, explicit D135 chroma, and neither neighbour available. Pre-fix splot rejected it at byte 64 with `general_intra_directional_chroma_neighbour`; fixed splot, pinned avmdec, and current avmdec emit byte-identical 1,536-byte raw I420 SHA-256 `9a1caf04eeed5402053edc129525d145477fcac645984e84ea2ec735ca4d47fa`. Together with the existing real-edge fixtures and 8/10-bit frame-origin/tile-origin unit coverage, this removes the D135/D135Follow neighbour/position gate. Out of scope: other directional chroma angles, non-zero `AngleDeltaUV`, CfL/CCTX/MHCCP, unsupported transform and partition syntax, inter prediction, in-loop filters, and live AVM invocation in CI."
+notes = "Extends the general intra decode to the directional-follow chroma mode the minimal-tool avmenc pairs with a §7.13.2.8 D135_PRED luma block, which the prior chroma admission REJECTED (`general_intra_non_dc_chroma_mode`). When the §5.20.5.3 `read_intra_uv_mode` decodes `uv_mode == 0` over a directional luma, `get_intra_uv_mode_set(0)` returns `YMode` (the directional-follow branch, line 11316 of the §5.20.5.3 mirror), and the spec then sets `AngleDeltaUV = AngleDeltaY` (line 11288). For the supported luma D135 (`AngleDeltaY == 0`) this resolves the chroma to `UVMode == D135_PRED`, `AngleDeltaUV == 0` — a plain §7.13.2.8 middle-angle (pAngle 135) chroma intra prediction, NOT CfL / CCTX / MHCCP (those return UV_CFL_PRED at §5.20.5.3 line 11268 / read separate cross-component syntax and are explicitly out of scope and still rejected). `supported_chroma_mode` distinguishes directional-follow `D135Follow` from explicit non-follow `D135`, and both variants now share the same total §7.13.2.1 edge preparation and §7.13.2.8 bilinear reconstruction. The runtime admits `D135Follow` and explicit `D135` for every valid block position and neighbour state. In the no-neighbour case the chroma plane has no above/left neighbour so the §7.13.2.1 prediction edges reduce to the flat fallbacks (8-bit: AboveRow `127`, LeftCol `129`, shared corner `128`) and the `enable_intra_edge_filter` / IDIF / upsample synthesis is a no-op; pAngle 135's `dx = dy = Dr_Intra_Derivative[45] = 64` give `shift == 0` so the §7.13.2.8 bilinear middle-angle predictor (`enableIdif == 0` for chroma, since `enableIdif = plane == 0`) is a sample copy of the flat fallback edge. The new `reconstruct_general_intra_chroma_directional_first_into` builds that prediction via the shared `splot-recon` `predict_intra_middle_directional_angle_rect_into` (the SAME `predict_directional_noneighbour` helper the luma D135 path uses) and adds the §5.20.7.27 chroma residual through `reconstruct_general_intra_block_with_prediction`. Over the flat fallback edges the D135 chroma prediction is a genuine 135-degree anti-diagonal split (upper-right triangle `127`, lower-left `129`, anti-diagonal `128`), so with the diagonal chroma residual both U and V reconstruct as a genuine directional pattern (17 distinct values each), NOT a flat DC level. The committed `syn-dfchroma-intra-64x64-q80.ivf` (one 64x64 D135 luma block, top half near 40 / bottom half near 210, 135-degree anti-diagonal chroma) decodes bit-exactly to the avmdec AND dav2d oracle (md5 09fc23f0bced8ab5b9562d6d2478af1c, pinned frame hash 628b759dcb63356ad3174063652c54d7ebf6f54d1566ab9f1b64b3a74542154f), guarded by the §8.2.4 `exit_symbol()` bit-exactness check; all existing general-intra fixtures still decode bit-exact (the original `syn-hedge` fixture, which uses the `uv_mode == 1` DC chroma, is unchanged). The follow-up `syn-d135-chroma-nonfull-32x32-q7.ivf` is a deterministic 66-byte current-AVMenc fixture whose only non-full-superblock 32x32 block has DC luma, explicit D135 chroma, and neither neighbour available. Pre-fix splot rejected it at byte 64 with `general_intra_directional_chroma_neighbour`; fixed splot, pinned avmdec, and current avmdec emit byte-identical 1,536-byte raw I420 SHA-256 `9a1caf04eeed5402053edc129525d145477fcac645984e84ea2ec735ca4d47fa`. A later external-stream correction applies the same normative edge preparation to chroma before the bilinear D135 prediction: §7.13.2.14 corner filtering and the §7.13.2.17-.18 selected edge filters. The focused 10-bit top-row regression has no available above edge and a strength-3, 65-sample available left edge; filtering that left edge changes the checked U sample to the AVM-observed value 513. Together with the existing real-edge fixtures and 8/10-bit frame-origin/tile-origin unit coverage, this removes the D135/D135Follow neighbour/position gate. Out of scope: other directional chroma angles, non-zero `AngleDeltaUV`, CfL/CCTX/MHCCP, unsupported transform and partition syntax, inter prediction, in-loop filters, and live AVM invocation in CI."
 
 [feature.status]
 mapped = "done"
@@ -15761,10 +15919,12 @@ tests = [
     "crates/splot-decode/src/pipeline/mod.rs::general_intra_d135_tests::d135_chroma_nonfull_no_neighbour_frame_decodes_to_oracle",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::supported_chroma_mode_directional_follow_resolves_d135_for_uv_mode_zero",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::supported_chroma_mode_non_follow_d135_is_deferred",
+    "crates/splot-decode/src/pipeline/reconstruct_tests.rs::chroma_d135_top_row_filters_available_left_edge",
 ]
 commands = [
     "cargo test -p splot-decode general_intra --locked",
     "cargo test -p splot-decode block_context --locked",
+    "cargo test -p splot-decode --lib chroma_d135_top_row_filters_available_left_edge --locked",
     "cargo test -p splot-cli --test decoder_oracle --locked",
     "cargo test -p splot-cli --test conformance --locked",
     "cargo xtask check-decoder-support",
@@ -16141,7 +16301,7 @@ change_id = "decode-general-intra-angle-d203"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Completes the AV2 §7.13.2.1, §7.13.2.7, §7.13.2.8, and §7.13.2.9 zone-3 luma path for square and rectangular leaves across top-left, first-column, interior, row-greater-than-zero, subpartition, non-64x64, angle-delta, IBP, and MRL cases. The planner and reconstruction matrices cover all neighbour-availability arms. The committed q80 D203 real-left-edge fixture and q120 pAngle-186 no-edge IBP fixture decode byte-identically to AVM; the active syn-mrl-intra-128x128 fixture also matches AVM. For the no-edge nonzero-MRL subcase, §7.13.2.1 synthesizes a constant reference edge, so changing the MRL index does not change prediction and AVM RDO does not select the costlier syntax; that subcase is proven by unit tests and an inline AVM zone-3 reference calculation, not claimed as an AVMenc hit. The obsolete general_intra_d203_unverified_position guard is removed. D67, chroma-only gates, and other independently named features remain separate."
+notes = "Completes the AV2 §7.13.2.1, §7.13.2.7, §7.13.2.8, and §7.13.2.9 zone-3 luma path for square and rectangular leaves across top-left, first-column, interior, row-greater-than-zero, subpartition, non-64x64, angle-delta, IBP, and MRL cases. The planner and reconstruction matrices cover all neighbour-availability arms. A successfully reconstructed Single luma transform chunk publishes its §5.20.2.3 BlockDecoded flags immediately, before the outer leaf publication, so a later chunk's §5.20.7.25 count_top_right_avail sees the already reconstructed top-right chunk; `single_luma_chunk_publication_exposes_top_right_to_later_chunk` pins the 64x64-to-64x64 16-unit handoff used by D203 IBP's opposite-zone secondary. The committed q80 D203 real-left-edge fixture and q120 pAngle-186 no-edge IBP fixture decode byte-identically to AVM; the active syn-mrl-intra-128x128 fixture also matches AVM. For the no-edge nonzero-MRL subcase, §7.13.2.1 synthesizes a constant reference edge, so changing the MRL index does not change prediction and AVM RDO does not select the costlier syntax; that subcase is proven by unit tests and an inline AVM zone-3 reference calculation, not claimed as an AVMenc hit. The obsolete general_intra_d203_unverified_position guard is removed. D67, chroma-only gates, and other independently named features remain separate."
 
 [feature.status]
 mapped = "done"
@@ -16165,6 +16325,7 @@ tests = [
     "crates/splot-decode/src/pipeline/reconstruct_tests.rs::zone3_d203_mrl_index_1_matches_inline_avm_z3_idif_reference",
     "crates/splot-decode/src/pipeline/reconstruct_tests.rs::zone3_d203_top_left_synthesizes_no_neighbour_left_fallback",
     "crates/splot-decode/src/pipeline/reconstruct_tests.rs::one_sided_ibp_p45_synthesizes_both_missing_edges",
+    "crates/splot-decode/src/residual/pipeline/tests.rs::single_luma_chunk_publication_exposes_top_right_to_later_chunk",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::supported_directional_admits_middle_d45_and_d203_but_rejects_d67",
     "crates/splot-decode/src/bitstream/tile_payload/cdf/block_context.rs::tests::supported_chroma_mode_directional_follow_resolves_d203_for_uv_mode_zero",
     "crates/splot-recon/src/intra_directional_angle.rs::tests::d203_one_sided_idif_interpolates_real_left_column",
@@ -16183,6 +16344,7 @@ fixtures = [
     "tests/conformance/vectors/valid/syn-mrl-intra-128x128.ivf",
     "crates/splot-decode/src/pipeline/general_intra.rs",
     "crates/splot-decode/src/pipeline/reconstruct.rs",
+    "crates/splot-decode/src/residual/pipeline/plane_execution.rs",
     "crates/splot-recon/src/intra_directional_angle.rs",
 ]
 diagnostics = ["decode/unsupported-feature"]
@@ -17202,6 +17364,8 @@ tests = [
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_opfl_near_near_uses_one_paired_drl_idx",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_opfl_near_near_selects_the_indexed_paired_candidate",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_skips_intrabc_neighbour_before_compound",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_projects_tip_neighbour_to_sorted_tip_pair",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::recorded_skip_mode_contributes_to_the_next_block_context",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_pairs_single_ref_spatial_neighbours_in_probe_order",
@@ -17354,16 +17518,19 @@ id = "DECODE-INTER-TIP-REFERENCE"
 name = "TIP reference block runtime"
 category = "infrastructure"
 kind = "infrastructure"
-spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.8", "7.12.2.10", "7.12.2.15", "7.13.3", "7.22", "8.3.2", "9.3"]
+spec_sections = ["5.20.7.6", "5.20.7.10", "5.20.7.13", "7.9.1", "7.9.3", "7.9.5", "7.9.8", "7.10.2", "7.12.2.10", "7.12.2.15", "7.12.2.18", "7.13.3", "7.22", "8.3.2", "9.3"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-3",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-5",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-9-8",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-10-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-10",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-15",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-18",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-22",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
@@ -17375,7 +17542,7 @@ change_id = "decode-inter-tip-reference"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Implements TIP-as-reference block selection with the two-neighbour tip context, TIP prediction-mode and dedicated DRL syntax, the TIP reference sentinel in spatial state, sharp interpolation inference, and projected temporal motion over 8x8 prediction units. The §7.9.1 selector persists each source frame's reference hints, type, and exact size, then prioritizes eligible side projections by the TIP pair, interpolation distance, and reference topology; target-specific replacement and the reduced-reference cap follow the same shared queue. On the external deltaq1 vector all 30 ordered projections across eight motion-field frames match AVM, improving frame-two luma MAE from 5.7045 to 5.3567 and exact luma samples from 46419 to 50729. The §7.9.3 reference projection samples source cells at the signaled ProjStep and aligns projected destinations to the same grid. The §7.9.8 position gate rejects source cells outside the projected destination's TMVP unit bounds. TIP-as-reference reconstruction passes the current frame's §7.22 motion-field sink through the existing TIP prediction units instead of discarding those stored MVs; on deltaq1 the saved order-hint-2 field grows from 264 valid cells per side to 1584 on list zero and 1352 on list one, and §7.22 single-reference normalization then fills list one to the same 1584 cells. Two-reference storage orders both motion-vector slots around the current order hint before they are projected. TIP-coded neighbours also match their underlying two-reference pair when deriving a following compound block's mode context; this keeps the shared DRL CDF context aligned instead of adding a target-specific exception. Compound DRL construction projects TIP-coded spatial neighbours through that pair after snapping the probe to its recorded 8x8 or 16x16 prediction-unit base and clamping the temporal-field coordinates per §7.12.2. Reconstruction reuses the existing compound motion-compensation and residual sinks with the frame TIP weight and optional projected-motion hole filling. Full-stream conformance remains partial: deltaq1 still differs from AVM (`c12e7fc9eac3c065c4fde249d9af8c59` versus `a51faffac365722f94697051af0d9e00`), later frame kinds still reject through decode/unsupported-feature, and no committed TIP vector yet proves an end-to-end AVM checksum."
+notes = "Implements TIP-as-reference block selection with the two-neighbour tip context, TIP prediction-mode and dedicated DRL syntax, the TIP reference sentinel in spatial state, sharp interpolation inference, and projected temporal motion over 8x8 prediction units. The §7.9.1 selector persists each source frame's reference hints, type, and exact size, then prioritizes eligible side projections by the TIP pair, interpolation distance, and reference topology; target-specific replacement and the reduced-reference cap follow the same shared queue. On the external deltaq1 vector all 30 ordered projections across eight motion-field frames match AVM, improving frame-two luma MAE from 5.7045 to 5.3567 and exact luma samples from 46419 to 50729. The §7.9.3 reference projection samples source cells at the signaled ProjStep and aligns projected destinations to the same grid. The §7.9.8 position gate rejects source cells outside the projected destination's TMVP unit bounds. TIP-as-reference reconstruction passes the current frame's §7.22 motion-field sink through the existing TIP prediction units instead of discarding those stored MVs; on deltaq1 the saved order-hint-2 field grows from 264 valid cells per side to 1584 on list zero and 1352 on list one, and §7.22 single-reference normalization then fills list one to the same 1584 cells. Two-reference storage orders both motion-vector slots around the current order hint before they are projected. TIP-coded neighbours also match their underlying two-reference pair when deriving a following compound block's mode context; this keeps the shared DRL CDF context aligned instead of adding a target-specific exception. Compound DRL construction projects TIP-coded spatial neighbours through that pair after snapping the probe to its recorded 8x8 or 16x16 prediction-unit base and clamping the temporal-field coordinates per §7.12.2. The §7.12.2.10 candidate loop invokes the §7.12.2.18 TIP add-derived process only for candList 0, so each qualifying compound neighbour contributes once and cannot exhaust the bounded derived stack with duplicate candidates before a later distinct neighbour is scanned; the A/A/A/B regression pins this ordering and capacity behavior. Reconstruction reuses the existing compound motion-compensation and residual sinks with the frame TIP weight and optional projected-motion hole filling. Full-stream conformance remains partial: deltaq1 still differs from AVM (`c12e7fc9eac3c065c4fde249d9af8c59` versus `a51faffac365722f94697051af0d9e00`), later frame kinds still reject through decode/unsupported-feature, and no committed TIP vector yet proves an end-to-end AVM checksum."
 
 [feature.status]
 mapped = "done"
@@ -17394,8 +17561,10 @@ tests = [
     "crates/splot-decode/src/prediction/inter/block/syntax.rs::tests::skip_and_tip_drl_idx_use_dedicated_cdf_banks",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::tip_neighbour_matches_its_underlying_compound_reference_pair",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::compound_mv_stack_projects_tip_neighbour_to_its_reference_pair",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::tip_mv_stack_keeps_a_later_distinct_compound_candidate",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_reference_pair_uses_the_nearest_past_and_future_references",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_projection_fills_unsampled_units_and_adds_the_block_mv",
+    "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_temporal_scaling_clamps_to_the_reference_mv_domain",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::step_two_projection_samples_and_stores_on_the_even_grid",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::step_one_projection_uses_64_pixel_tmvp_unit_bounds",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::temporal_projection_stays_within_the_vertical_tmvp_unit",
@@ -17464,6 +17633,7 @@ tests = [
     "crates/splot-decode/src/filters/deblock_tests.rs::tip_deblocking_handles_yuv422_and_yuv444_chroma_geometry",
     "crates/splot-decode/src/filters/deblock_tests.rs::tip_deblocking_obeys_cross_tile_filtering_flag",
     "crates/splot-decode/src/pipeline/mod_tests.rs::inter_frame_unit_order_accepts_regular_tip",
+    "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_output_edge_units_keep_nominal_prediction_size",
     "crates/splot-decode/src/prediction/inter/block/tip.rs::tests::tip_output_unit_size_requires_sharp_refinement",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal.rs::tests::tip_reference_pair_matches_sort_ref_order_for_equal_future_hints",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/temporal/selection.rs::tests::tip_projection_pair_matches_sort_ref_order_for_equal_future_hints",
@@ -21792,6 +21962,7 @@ tests = [
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::refinemv_deblock_subpu_geometry_preserves_rectangular_blocks",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::optflow_deblock_subpu_geometry_takes_precedence_over_refinemv",
     "crates/splot-decode/src/prediction/inter/block/filter_records.rs::tests::ordinary_chroma_residual_retains_parent_prediction_and_rectangular_subpu",
+    "crates/splot-decode/src/prediction/inter/block/filter_records.rs::tests::skipped_64x128_420_chroma_keeps_one_transform_across_luma_chunks",
     "crates/splot-core/src/write/frame_filters_tests.rs::deblocking_allow_df_sub_pu_rejected_before_write",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
@@ -21800,6 +21971,7 @@ commands = [
     "cargo test -p splot-decode allow_df_sub_pu_gates_prediction_boundary_filtering --locked",
     "cargo test -p splot-decode deblock_subpu --locked",
     "cargo test -p splot-decode ordinary_chroma_residual_retains_parent_prediction_and_rectangular_subpu --locked",
+    "cargo test -p splot-decode skipped_64x128_420_chroma_keeps_one_transform_across_luma_chunks --locked",
     "cargo test -p splot-core deblocking_allow_df_sub_pu_rejected_before_write --locked",
     "cargo xtask decoder-fixtures verify",
 ]
@@ -22235,6 +22407,7 @@ perf = "partial"
 [feature.proof]
 tests = [
     "crates/splot-decode/tests/frame_pipelining.rs",
+    "crates/splot-decode/src/prediction/inter/block/row_gate_tests.rs::a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle",
     "crates/splot-cli/tests/decode_cli.rs::decode_hash_json_success_hashes_are_frame_delay_deterministic",
     "crates/splot-cli/tests/decode_raw_cli.rs::decode_raw_outputs_are_frame_delay_deterministic",
     "crates/splot-cli/tests/decode_y4m_cli.rs::decode_y4m_outputs_are_frame_delay_deterministic",

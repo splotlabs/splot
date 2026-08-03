@@ -753,7 +753,7 @@ fn ensure_supported_traversal_frame(
     if let TilePartitionLoopRestorationState::Frame(lr) = frame.loop_restoration {
         for plane in 0..frame.num_planes.min(3) {
             if lr.plane_tool[plane] == TilePartitionLoopRestorationPlaneTool::Switchable
-                && (plane != 0 || !lr.frame_filters_on[plane])
+                && plane != 0
             {
                 return Err(TilePartitionTraversalError::Unsupported(
                     TilePartitionTraversalUnsupported::ReadLoopRestoration,

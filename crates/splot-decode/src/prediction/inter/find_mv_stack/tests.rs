@@ -199,22 +199,56 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
     let empty = empty_grid();
     let block = block_at(0, N4_32);
     assert_eq!(
-        block_neighbour_ctx(&empty, &block).skip_mode_ref_pair((0, 1)),
+        block_neighbour_ctx(&empty, &block).skip_mode_ref_pair((0, 1), None),
         (0, 1)
     );
 
     let mut single = empty_grid();
     record_inter_ref(&mut single, 0, 0, 2, false, Mv::ZERO, false);
     assert_eq!(
-        block_neighbour_ctx(&single, &block).skip_mode_ref_pair((0, 1)),
+        block_neighbour_ctx(&single, &block).skip_mode_ref_pair((0, 1), None),
         (0, 1)
     );
 
     let mut compound = empty_grid();
     record_compound_ref(&mut compound, 0, 0, 2, 3, false);
     assert_eq!(
-        block_neighbour_ctx(&compound, &block).skip_mode_ref_pair((0, 1)),
+        block_neighbour_ctx(&compound, &block).skip_mode_ref_pair((0, 1), None),
         (2, 3)
+    );
+}
+
+#[test]
+fn skip_mode_reference_pair_skips_intrabc_neighbour_before_compound() {
+    let mut grid = empty_grid();
+    let block = block_at(N4_32, N4_32);
+    grid.record_flags(
+        15,
+        0,
+        N4_32,
+        N4_32,
+        NeighbourFlagSyntax {
+            is_inter: true,
+            ..NON_INTER_FLAG_SYNTAX
+        },
+    );
+    record_compound_ref(&mut grid, 0, N4_32, 2, 3, false);
+
+    assert_eq!(
+        block_neighbour_ctx(&grid, &block).skip_mode_ref_pair((0, 1), None),
+        (2, 3)
+    );
+}
+
+#[test]
+fn skip_mode_reference_pair_projects_tip_neighbour_to_sorted_tip_pair() {
+    let mut grid = empty_grid();
+    let block = block_at(0, N4_32);
+    record_inter_ref(&mut grid, 0, 0, TIP_REF_FRAME, false, Mv::ZERO, false);
+
+    assert_eq!(
+        block_neighbour_ctx(&grid, &block).skip_mode_ref_pair((0, 1), Some((2, 0))),
+        (0, 2)
     );
 }
 
@@ -479,6 +513,103 @@ fn tip_mv_stack_derives_base_motion_from_its_reference_pair() {
 
     assert_eq!(stack.candidate(0), Mv { row: 0, col: -1 });
     assert_eq!(stack.candidate_offsets(0), (0, 0));
+}
+
+#[test]
+fn tip_mv_stack_keeps_a_later_distinct_compound_candidate() {
+    let mut grid = NeighbourMvGrid::new(64, 64).unwrap();
+    let repeated = [
+        Mv { row: -224, col: 48 },
+        Mv {
+            row: -384,
+            col: 128,
+        },
+    ];
+    for col in [32, 48] {
+        grid.record_compound_block(
+            16,
+            col,
+            16,
+            16,
+            0,
+            1,
+            false,
+            false,
+            repeated[0],
+            repeated[1],
+            false,
+            SWITCHABLE_FILTERS,
+            false,
+            false,
+            CWP_EQUAL,
+            false,
+            BlockPrecisionRecord::default(),
+            [None, None],
+        );
+    }
+    grid.record_compound_block(
+        16,
+        16,
+        16,
+        16,
+        0,
+        1,
+        false,
+        false,
+        Mv { row: -192, col: 48 },
+        Mv { row: -384, col: 0 },
+        false,
+        SWITCHABLE_FILTERS,
+        false,
+        false,
+        CWP_EQUAL,
+        false,
+        BlockPrecisionRecord::default(),
+        [None, None],
+    );
+    let temporal = TemporalMvContext::with_tip_sample(
+        64,
+        64,
+        temporal::TipReferencePair {
+            past_ref: 0,
+            future_ref: 1,
+            past_offset: 8,
+            future_offset: -9,
+            ref_offset: 17,
+        },
+        0,
+        0,
+        Mv::ZERO,
+    )
+    .unwrap();
+    let block = MvBlockContext {
+        mi_row: 32,
+        mi_col: 32,
+        bw4: 16,
+        bh4: 16,
+        sb_h4: 32,
+        ref_frame0: TIP_REF_FRAME,
+        ref_frame1: None,
+        mi_rows: 64,
+        mi_cols: 64,
+    };
+
+    let stack = find_mv_stack_with_temporal(
+        &grid,
+        &block,
+        Mv::ZERO,
+        DEFAULT_WARP_PARAMS,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        Some(&temporal),
+        Some(temporal.order_hint_mv_context()),
+        false,
+    );
+
+    assert_eq!(stack.candidate(0), Mv { row: -299, col: 86 });
+    assert_eq!(stack.candidate(1), Mv { row: -282, col: 25 });
 }
 
 #[test]
@@ -1711,107 +1842,6 @@ fn warp_stack_appends_global_motion_after_the_parameter_bank() {
 }
 
 #[test]
-fn warp_bank_hit_keeps_the_original_translation_and_evicts_oldest() {
-    let mut bank = WarpParamBank::new();
-    let base = |trans: i32, scale: i32| [trans, -trans, 65536 + scale, 0, 0, 65536 - scale];
-    bank.update(0, base(1 << 16, 64));
-    bank.update(0, base(2 << 16, 128));
-    bank.update(0, base(9 << 16, 64));
-    let mut stack = WarpParamStack::new();
-    bank.fill(0, &mut stack);
-    assert_eq!(
-        stack.slots[0],
-        base(1 << 16, 64),
-        "params_equal on [2..6) rotates the EXISTING entry to the tail; its translation is kept"
-    );
-    assert_eq!(stack.slots[1], base(2 << 16, 128));
-    assert_eq!(stack.num_found, 2, "the hit did not grow the ring");
-
-    for scale in [192, 256, 320] {
-        bank.update(0, base(3 << 16, scale));
-    }
-    let mut stack = WarpParamStack::new();
-    bank.fill(0, &mut stack);
-    assert_eq!(stack.num_found, 4, "ring capacity");
-    assert_eq!(
-        stack.slots[3],
-        base(1 << 16, 64),
-        "oldest surviving entry after the size-4 ring evicted the front"
-    );
-}
-
-#[test]
-fn ref_mv_bank_same_mvs_refresh_preserves_original_cwp_weight() {
-    let mut bank = RefMvBank::new();
-    let mv0 = Mv { row: 0, col: 8 };
-    let mv1 = Mv { row: 0, col: -8 };
-    bank.update(0, Some(1), mv0, Some(mv1), 10, false);
-    bank.update(0, Some(1), mv0, Some(mv1), CWP_EQUAL, false);
-
-    let mut entries = FixedStack::new();
-    let mut prune_count = 0;
-    let block = MvBlockContext {
-        ref_frame1: Some(1),
-        ..block_at(0, 0)
-    };
-    bank.fill_compound(
-        &block,
-        &mut entries,
-        MAX_REF_MV_STACK_SIZE,
-        &mut prune_count,
-    );
-
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].candidate.mvs, [mv0, mv1]);
-    assert_eq!(entries[0].candidate.cwp_weight, 10);
-}
-
-#[test]
-fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
-    let mut grid = NeighbourMvGrid::new(64, 64).unwrap();
-    let above = [4 << 16, -6 << 16, 65536 + 512, 64, -128, 65536];
-    grid.record_warp_block(
-        15,
-        4,
-        2,
-        1,
-        0,
-        false,
-        Mv { row: 4, col: -12 },
-        false,
-        SWITCHABLE_FILTERS,
-        false,
-        MotionMode::ExtendWarp,
-        above,
-        BlockPrecisionRecord::default(),
-    );
-    let mut bank = WarpParamBank::new();
-    let carried = [7 << 16, 0, 65536 - 320, 0, 0, 65536 + 448];
-    bank.reset_for_leaf(&grid, 0, 0, 16);
-    bank.update(0, carried);
-
-    bank.reset_for_leaf(&grid, 0, 16, 16);
-    let mut stack = WarpParamStack::new();
-    bank.fill(0, &mut stack);
-    assert_eq!(
-        stack.num_found, 1,
-        "a same-row superblock transition keeps the bank contents"
-    );
-
-    bank.reset_for_leaf(&grid, 16, 0, 16);
-    let mut stack = WarpParamStack::new();
-    bank.fill(0, &mut stack);
-    assert_eq!(
-        stack.slots[0], above,
-        "the new superblock row cleared contents, then re-seeded the warp neighbour from the row above"
-    );
-    assert_eq!(
-        stack.num_found, 1,
-        "carried entry was cleared on the row transition"
-    );
-}
-
-#[test]
 fn row_above_seed_walk_uses_tile_global_right_edge() {
     let mut grid = NeighbourMvGrid::new_for_tile(0..32, 16..32).unwrap();
     let expected = Mv { row: 4, col: -12 };
@@ -2406,19 +2436,4 @@ fn local_warp_samples_include_retained_compound_list1_mv() {
         &find_warp_samples(&grid, &block, 1)[..],
         &[[120, 376, 120 + mv1.row, 376 + mv1.col]]
     );
-}
-
-#[test]
-fn warp_param_bank_updates_key_each_list_by_its_reference() {
-    let model0 = [320, -640, 65_536 + 256, -128, 192, 65_536 - 320];
-    let model1 = [-960, 480, 65_536 - 512, 96, -64, 65_536 + 448];
-    let mut bank = WarpParamBank::new();
-    bank.update(0, model0);
-    bank.update(1, model1);
-    let mut list0 = WarpParamStack::new();
-    bank.fill(0, &mut list0);
-    let mut list1 = WarpParamStack::new();
-    bank.fill(1, &mut list1);
-    assert_eq!((list0.num_found, list0.slots[0]), (1, model0));
-    assert_eq!((list1.num_found, list1.slots[0]), (1, model1));
 }

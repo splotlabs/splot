@@ -189,6 +189,9 @@ impl<'a> DerivedMvState<'a> {
         cell: NeighbourCell,
     ) {
         if block.ref_frame0 == TIP_REF_FRAME {
+            if candidate_ref != cell.flags.ref_frame0 {
+                return;
+            }
             if let Some(ref_frame1) = cell.flags.ref_frame1
                 && let Some(candidate) = self.temporal.and_then(|temporal| {
                     temporal.derive_tip_base_mv(
