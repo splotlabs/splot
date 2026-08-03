@@ -37,10 +37,15 @@ use crate::prediction::inter::Mv;
 
 const REF_MV_BANK_SIZE: usize = 4;
 const MAX_SMVP_AXIS_MI: usize = 16;
+#[cfg(test)]
 const MAX_RMB_SB_HITS: u32 = 64;
+#[cfg(test)]
 pub(crate) const BANK_SB_ABOVE_ROW_MAX_HITS: usize = 4;
+#[cfg(test)]
 const BANK_1ST_UNIT_UPDATE_COUNT: u32 = 4;
+#[cfg(test)]
 const BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES: u32 = 16;
+#[cfg(test)]
 const SB_TO_RMB_UNITS_LOG2: u32 = 3;
 const MI_SIZE: i32 = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +65,7 @@ impl BlockWidthType {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcRefMvBank {
     mib_size: usize,
@@ -71,6 +77,7 @@ pub(crate) struct IntrabcRefMvBank {
     current_sb_col: Option<usize>,
 }
 
+#[cfg(test)]
 impl IntrabcRefMvBank {
     pub(crate) const fn new(mib_size: usize) -> Self {
         Self {
@@ -252,6 +259,84 @@ pub(crate) struct WeightedBv {
 pub(crate) struct SpatialIntrabcScan {
     pub(crate) candidates: Vec<WeightedBv>,
     pub(crate) nearest_len: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct WeightedIntrabcProbe {
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+    pub(crate) weight: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct SpatialIntrabcProbes {
+    probes: Vec<WeightedIntrabcProbe>,
+    nearest_len: usize,
+}
+
+impl SpatialIntrabcProbes {
+    pub(crate) fn resolve(
+        &self,
+        lookup: impl Fn(usize, usize) -> Option<Mv>,
+    ) -> SpatialIntrabcScan {
+        let mut candidates: Vec<WeightedBv> = Vec::new();
+        let mut nearest_len = 0;
+        for (index, probe) in self.probes.iter().enumerate() {
+            if index == self.nearest_len {
+                nearest_len = candidates.len();
+            }
+            let Some(mv) = lookup(probe.row, probe.col) else {
+                continue;
+            };
+            if let Some(existing) = candidates.iter_mut().find(|entry| entry.mv == mv) {
+                existing.weight = existing.weight.saturating_add(probe.weight);
+            } else {
+                candidates.push(WeightedBv {
+                    mv,
+                    weight: probe.weight,
+                });
+            }
+        }
+        if self.nearest_len == self.probes.len() {
+            nearest_len = candidates.len();
+        }
+        SpatialIntrabcScan {
+            candidates,
+            nearest_len,
+        }
+    }
+}
+
+pub(crate) fn capture_spatial_intrabc_probes(
+    geometry: SpatialScanGeometry,
+    is_coded: impl Fn(usize, usize) -> bool,
+    block_base_col: impl Fn(usize, usize) -> Option<usize>,
+) -> SpatialIntrabcProbes {
+    let encoded = spatial_intrabc_scan_with_base_col(
+        geometry,
+        |row, col| {
+            Some(Mv {
+                row: i32::try_from(row).ok()?,
+                col: i32::try_from(col).ok()?,
+            })
+        },
+        is_coded,
+        block_base_col,
+    );
+    SpatialIntrabcProbes {
+        nearest_len: encoded.nearest_len,
+        probes: encoded
+            .candidates
+            .into_iter()
+            .filter_map(|candidate| {
+                Some(WeightedIntrabcProbe {
+                    row: usize::try_from(candidate.mv.row).ok()?,
+                    col: usize::try_from(candidate.mv.col).ok()?,
+                    weight: candidate.weight,
+                })
+            })
+            .collect(),
+    }
 }
 
 pub(crate) fn spatial_intrabc_scan_with_base_col(
@@ -586,8 +671,24 @@ fn lookup_in_grid(
     lookup(row, col)
 }
 
+#[cfg(test)]
 pub(crate) fn build_intrabc_ref_mv_stack(
     bank: &IntrabcRefMvBank,
+    geometry: IntrabcStackGeometry,
+    enable_refmvbank: bool,
+    spatial: &[Mv],
+) -> Vec<Mv> {
+    let bank_candidates: Vec<Mv> = bank.entries().iter().rev().copied().collect();
+    build_intrabc_ref_mv_stack_from_candidates(
+        &bank_candidates,
+        geometry,
+        enable_refmvbank,
+        spatial,
+    )
+}
+
+pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
+    bank_candidates: &[Mv],
     geometry: IntrabcStackGeometry,
     enable_refmvbank: bool,
     spatial: &[Mv],
@@ -619,7 +720,7 @@ pub(crate) fn build_intrabc_ref_mv_stack(
     }
 
     if enable_refmvbank {
-        for &cand in bank.entries().iter().rev() {
+        for &cand in bank_candidates {
             if stack.len() >= max_count {
                 break;
             }
@@ -687,8 +788,28 @@ pub(crate) enum IntrabcStackAdmission {
     Defer,
 }
 
+#[cfg(test)]
 pub(crate) fn intrabc_ref_stack_admission(
     bank: &IntrabcRefMvBank,
+    geometry: IntrabcStackGeometry,
+    spatial: &SpatialIntrabcScan,
+    enable_refmvbank: bool,
+    drl_reorder: DrlReorderMode,
+    ref_mv_idx: usize,
+) -> IntrabcStackAdmission {
+    let bank_candidates: Vec<Mv> = bank.entries().iter().rev().copied().collect();
+    intrabc_ref_stack_admission_from_candidates(
+        &bank_candidates,
+        geometry,
+        spatial,
+        enable_refmvbank,
+        drl_reorder,
+        ref_mv_idx,
+    )
+}
+
+pub(crate) fn intrabc_ref_stack_admission_from_candidates(
+    bank_candidates: &[Mv],
     geometry: IntrabcStackGeometry,
     spatial: &SpatialIntrabcScan,
     enable_refmvbank: bool,
@@ -701,7 +822,12 @@ pub(crate) fn intrabc_ref_stack_admission(
         sort_nearest_max_weight_to_slot0(&mut ordered[..nearest_len]);
     }
     let sorted: Vec<Mv> = ordered.iter().map(|entry| entry.mv).collect();
-    let real_stack = build_intrabc_ref_mv_stack(bank, geometry, enable_refmvbank, &sorted);
+    let real_stack = build_intrabc_ref_mv_stack_from_candidates(
+        bank_candidates,
+        geometry,
+        enable_refmvbank,
+        &sorted,
+    );
     match real_stack.get(ref_mv_idx).copied() {
         Some(selected) => IntrabcStackAdmission::Admit { selected },
         None => IntrabcStackAdmission::Defer,

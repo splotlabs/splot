@@ -479,6 +479,34 @@ fn tip_projection_fills_unsampled_units_and_adds_the_block_mv() {
 }
 
 #[test]
+fn tip_temporal_scaling_clamps_to_the_reference_mv_domain() {
+    let mut context = tip_context(10, vec![Some(6), Some(15)], 2, 2);
+    context.field.set(
+        0,
+        0,
+        Mv {
+            row: -256,
+            col: 256,
+        },
+        1,
+        true,
+    );
+
+    assert!(context.prepare_tip(1, 8, false));
+    assert_eq!(
+        context.field.cell(0, 0),
+        Some(ProjectedTemporalMotionCell {
+            valid: true,
+            mv: Mv {
+                row: -REFMVS_LIMIT,
+                col: REFMVS_LIMIT,
+            },
+            ref_offset: 9,
+        })
+    );
+}
+
+#[test]
 fn tip_step_one_hole_fill_stays_within_64_pixel_tmvp_units() {
     let mut context = tip_context(10, vec![Some(8), Some(12)], 2, 32);
     context.field.set(0, 7, Mv { row: 8, col: -16 }, 4, true);

@@ -20,10 +20,14 @@ const DIVISION_POW2_B: [i32; 8] = [12784, 12054, 11670, 11583, 11764, 12195, 128
 
 /// Reference samples used to derive AV2 § 7.13.6 MHCCP parameters.
 pub struct MhccpRefs {
-    /// Reference grid width.
+    /// Reference-buffer row stride.
     pub width: usize,
-    /// Reference grid height.
+    /// Reference-buffer row count.
     pub height: usize,
+    /// Width of the captured reference region used for parameter derivation.
+    pub reference_width: usize,
+    /// Height of the captured reference region used for parameter derivation.
+    pub reference_height: usize,
     /// Number of above-reference rows.
     pub above: usize,
     /// Number of left-reference columns.
@@ -106,7 +110,9 @@ pub fn derive_mhccp_params(
     if refs.has_edge_refs() {
         let square_shift = u32::from(bit_depth.bits());
         let midpoint = 1i16 << (square_shift - 1);
-        for (row, col) in mhccp_interior_positions(refs.width, refs.height) {
+        let reference_width = refs.reference_width.min(refs.width);
+        let reference_height = refs.reference_height.min(refs.height);
+        for (row, col) in mhccp_interior_positions(reference_width, reference_height) {
             if refs.is_edge_ref_sample(row, col) {
                 let center = refs.luma_at(row, col);
                 let basis = mhccp_basis(refs, row, col, mh_dir, center, square_shift, midpoint);
@@ -309,6 +315,8 @@ mod tests {
         let refs = MhccpRefs {
             width: 64,
             height: 64,
+            reference_width: 64,
+            reference_height: 64,
             above: 2,
             left: 2,
             luma: vec![1023; 64 * 64],
@@ -324,6 +332,8 @@ mod tests {
         let refs = MhccpRefs {
             width: 3,
             height: 3,
+            reference_width: 3,
+            reference_height: 3,
             above: 0,
             left: 0,
             luma: vec![0; 9],
@@ -333,6 +343,33 @@ mod tests {
         assert_eq!(
             derive_mhccp_params(&refs, 0, BitDepth::Eight),
             [0, 0, 1 << MHCCP_BITS]
+        );
+    }
+
+    #[test]
+    fn parameter_derivation_ignores_uncaptured_prediction_padding() {
+        let refs = |padding| {
+            let mut luma = vec![64; 16];
+            let mut chroma = vec![96; 16];
+            luma[12..].fill(padding);
+            chroma[12..].fill(padding);
+            MhccpRefs {
+                width: 4,
+                height: 4,
+                reference_width: 4,
+                reference_height: 3,
+                above: 2,
+                left: 2,
+                luma,
+                chroma,
+            }
+        };
+
+        let expected = derive_mhccp_params(&refs(0), 0, BitDepth::Eight);
+        assert_ne!(expected, [0, 0, 1 << MHCCP_BITS]);
+        assert_eq!(
+            derive_mhccp_params(&refs(u8::MAX.into()), 0, BitDepth::Eight),
+            expected
         );
     }
 }

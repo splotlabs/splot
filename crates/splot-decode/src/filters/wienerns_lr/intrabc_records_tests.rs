@@ -14,6 +14,7 @@ use splot_core::symbol_encoder::SymbolEncoder;
 use crate::bitstream::tile_payload::{FrameCdfSubset, MvCdfSelector};
 use crate::error::DecodeError;
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
+use crate::prediction::inter::prepare_intrabc_leaf_entry;
 
 use super::*;
 
@@ -109,6 +110,22 @@ fn frontier_skip_neighbour() -> IntrabcBlockPrelude {
             mv_precision: MV_PRECISION_QUARTER_PEL,
             morph_pred: false,
             block_mv: IntrabcBlockVector { row: -512, col: 0 },
+        }),
+    }
+}
+
+fn horizontal_intrabc_neighbour() -> IntrabcBlockPrelude {
+    IntrabcBlockPrelude {
+        use_intrabc: true,
+        is_inter: true,
+        skip_flag: false,
+        morph_pred: false,
+        intrabc: Some(IntrabcInfo {
+            intrabc_mode: 0,
+            ref_mv_idx: 0,
+            mv_precision: MV_PRECISION_QUARTER_PEL,
+            morph_pred: false,
+            block_mv: IntrabcBlockVector { row: 0, col: -512 },
         }),
     }
 }
@@ -544,6 +561,58 @@ fn inter_frame_seeds_intrabc_bank_from_previous_superblock_row() {
 }
 
 #[test]
+fn decode_leaf_entry_prepare_keeps_late_first_intrabc_in_the_bank() {
+    let (mut sequence, _core) = selectable_large_frame_fixture();
+    sequence
+        .inter
+        .as_mut()
+        .unwrap()
+        .seq_max_bvp_drl_bits_minus_1 = 2;
+    let partition = sequence.partition.as_mut().unwrap();
+    partition.use_256x256_superblock = false;
+    partition.use_128x128_superblock = true;
+    let mut state = full_frame_state(64, 480, &sequence, false, no_off()).unwrap();
+
+    prepare_intrabc_leaf_entry(&mut state, 0, 288, false);
+    state
+        .record_block(0, 288, 16, 16, ordinary_neighbour().mark_inter(), no_off())
+        .unwrap();
+    prepare_intrabc_leaf_entry(&mut state, 22, 288, false);
+    state
+        .record_block(22, 288, 16, 8, horizontal_intrabc_neighbour(), no_off())
+        .unwrap();
+    prepare_intrabc_leaf_entry(&mut state, 28, 320, false);
+
+    assert_eq!(state.bank().entries(), [Mv { row: 0, col: -512 }]);
+    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(28, 336, 24, false), 16, 4);
+    let syntax = IntrabcInfoSyntax {
+        intrabc_mode: 0,
+        ref_mv_idx: 0,
+        mv_precision: MV_PRECISION_QUARTER_PEL,
+        max_bvp_drl_bits_minus_1: 2,
+    };
+    let pred_mv =
+        ensure_intrabc_ref_stack_supported(&state, &sequence, geometry, syntax, no_off()).unwrap();
+    assert_eq!(pred_mv, Mv { row: 0, col: -512 });
+}
+
+#[test]
+fn late_superblock_prepare_does_not_invent_ref_mv_bank_budget() {
+    let (mut sequence, _core) = selectable_large_frame_fixture();
+    let partition = sequence.partition.as_mut().unwrap();
+    partition.use_256x256_superblock = false;
+    partition.use_128x128_superblock = true;
+    let mut state = full_frame_state(64, 480, &sequence, false, no_off()).unwrap();
+
+    state.prepare_for_block(22, 288);
+    state
+        .record_block(22, 288, 16, 8, horizontal_intrabc_neighbour(), no_off())
+        .unwrap();
+
+    assert!(state.bank().entries().is_empty());
+}
+
+#[test]
 fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
     let (sequence, _core) = selectable_large_frame_fixture();
     let neighbour = frontier_skip_neighbour(); // BV (-512, 0).
@@ -570,6 +639,65 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
     let control = interior.spatial_intrabc_scan(at_interior);
     assert!(control.candidates.is_empty());
+}
+
+#[test]
+fn sequence_256_intrabc_context_uses_the_frame_superblock_size() {
+    let (mut sequence, _core) = selectable_large_frame_fixture();
+    let partition = sequence.partition.as_mut().unwrap();
+    partition.use_256x256_superblock = true;
+    partition.use_128x128_superblock = false;
+    let neighbour = frontier_skip_neighbour();
+    let mut intra = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let mut inter = full_frame_state(64, 64, &sequence, false, no_off()).unwrap();
+    intra
+        .record_block(31, 11, 1, 1, neighbour, no_off())
+        .unwrap();
+    inter
+        .record_block(31, 11, 1, 1, neighbour, no_off())
+        .unwrap();
+
+    assert_eq!(intra.sb_size4, 32);
+    assert_eq!(inter.sb_size4, 64);
+    assert_eq!(intra.intrabc_ctx(32, 8, 4, 4, no_off()).unwrap(), 0);
+    assert_eq!(inter.intrabc_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
+    assert_eq!(intra.skip_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
+    assert_eq!(inter.skip_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
+}
+
+#[test]
+fn sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size() {
+    let (mut sequence, _core) = selectable_large_frame_fixture();
+    let partition = sequence.partition.as_mut().unwrap();
+    partition.use_256x256_superblock = true;
+    partition.use_128x128_superblock = false;
+    let neighbour = frontier_skip_neighbour();
+    let mut intra = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let mut inter = full_frame_state(64, 64, &sequence, false, no_off()).unwrap();
+    intra
+        .record_block(31, 11, 1, 1, neighbour, no_off())
+        .unwrap();
+    inter
+        .record_block(31, 11, 1, 1, neighbour, no_off())
+        .unwrap();
+    let geometry =
+        IntrabcBlockGeometry::new(IntrabcBlockContext::new(32, 8, BLOCK_16X16, false), 4, 4);
+
+    let intra_scan = intra
+        .capture_spatial_intrabc_probes(geometry)
+        .resolve(|row, col| intra.block_vector_at(row, col));
+    let inter_scan = inter
+        .capture_spatial_intrabc_probes(geometry)
+        .resolve(|row, col| inter.block_vector_at(row, col));
+
+    assert!(intra_scan.candidates.is_empty());
+    assert_eq!(
+        inter_scan.candidates,
+        vec![super::super::intrabc_ref_mv_stack::WeightedBv {
+            mv: Mv { row: -512, col: 0 },
+            weight: 1,
+        }]
+    );
 }
 
 #[test]

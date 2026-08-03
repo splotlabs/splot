@@ -355,7 +355,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
 }
 
 #[allow(clippy::too_many_arguments)]
-fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
+pub(super) fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     direction: IntraCardinalDirection,
     x: usize,
@@ -375,12 +375,15 @@ fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
                 .checked_sub(1)
                 .and_then(|row| row.checked_sub(above_mrl_index))
                 .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            let max_x = workspace
+                .plane(PlaneId::Y)?
+                .storage_size()
+                .width()
+                .checked_sub(1)
+                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
             for column in 0..width {
-                let sample = workspace.reconstructed_sample(
-                    PlaneId::Y,
-                    x.saturating_add(column),
-                    above_row,
-                )?;
+                let sample_x = x.saturating_add(column).min(max_x);
+                let sample = workspace.reconstructed_sample(PlaneId::Y, sample_x, above_row)?;
                 for row in 0..height {
                     prediction[row * width + column] = sample;
                 }
@@ -403,9 +406,15 @@ fn cardinal_mrl_luma_prediction_into<T: ReconSample>(
                 .checked_sub(1)
                 .and_then(|col| col.checked_sub(mrl_index))
                 .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            let max_y = workspace
+                .plane(PlaneId::Y)?
+                .storage_size()
+                .height()
+                .checked_sub(1)
+                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
             for row in 0..height {
-                let sample =
-                    workspace.reconstructed_sample(PlaneId::Y, left_col, y.saturating_add(row))?;
+                let sample_y = y.saturating_add(row).min(max_y);
+                let sample = workspace.reconstructed_sample(PlaneId::Y, left_col, sample_y)?;
                 for column in 0..width {
                     prediction[row * width + column] = sample;
                 }

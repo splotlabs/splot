@@ -4,7 +4,9 @@
 use std::ops::Range;
 
 use splot_core::headers::frame::{FrameHeaderCore, MvPrecision};
-use splot_core::headers::sequence::{DrlReorder, SequenceHeader, SuperblockSize};
+#[cfg(test)]
+use splot_core::headers::sequence::DrlReorder;
+use splot_core::headers::sequence::{SequenceHeader, SuperblockSize};
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::{PlaneRect, PlaneSize};
@@ -22,10 +24,13 @@ use crate::prediction::inter::{
     },
 };
 
+#[cfg(test)]
 use super::intrabc_ref_mv_stack::{
     BANK_SB_ABOVE_ROW_MAX_HITS, DrlReorderMode, IntrabcRefMvBank, IntrabcStackAdmission,
-    IntrabcStackGeometry, SpatialIntrabcScan, SpatialScanGeometry, intrabc_ref_stack_admission,
-    spatial_intrabc_scan_with_base_col,
+    IntrabcStackGeometry, SpatialIntrabcScan, intrabc_ref_stack_admission,
+};
+use super::intrabc_ref_mv_stack::{
+    SpatialIntrabcProbes, SpatialScanGeometry, capture_spatial_intrabc_probes,
 };
 use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
 
@@ -82,6 +87,11 @@ impl IntrabcBlockPrelude {
 
     pub(crate) const fn mark_inter(mut self) -> Self {
         self.is_inter = true;
+        self
+    }
+
+    pub(crate) const fn with_morph_pred(mut self, morph_pred: bool) -> Self {
+        self.morph_pred = morph_pred;
         self
     }
 }
@@ -205,6 +215,13 @@ struct IntrabcInfoSyntax {
     ref_mv_idx: usize,
     mv_precision: u8,
     max_bvp_drl_bits_minus_1: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PendingIntrabcInfo {
+    syntax: IntrabcInfoSyntax,
+    mvd: Option<Mv>,
+    morph_pred: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,9 +389,13 @@ pub(crate) struct TileIntrabcPreludeState {
     tile_cols: usize,
     sb_size4: usize,
     values: Vec<Option<IntrabcBlockFacts>>,
+    #[cfg(test)]
     bank: IntrabcRefMvBank,
+    #[cfg(test)]
     enable_refmvbank: bool,
+    #[cfg(test)]
     seed_bank_from_above: bool,
+    #[cfg(test)]
     drl_reorder: DrlReorderMode,
 }
 
@@ -384,6 +405,7 @@ struct IntrabcBlockFacts {
     is_inter: bool,
     skip_flag: bool,
     morph_pred: bool,
+    #[cfg(test)]
     block_mv: Option<IntrabcBlockVector>,
     base_col: usize,
     n4w: usize,
@@ -431,12 +453,14 @@ impl TileIntrabcPreludeState {
         } else {
             0
         };
-        let sb_size4 = intra_sb_size4(sequence, tile_offset)?;
+        let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only, tile_offset)?;
+        #[cfg(test)]
         let enable_refmvbank = enabled
             && sequence
                 .inter
                 .as_ref()
                 .is_some_and(|inter| inter.enable_refmvbank);
+        #[cfg(test)]
         let drl_reorder = match sequence.inter.as_ref().map(|inter| inter.drl_reorder) {
             Some(DrlReorder::Always) => DrlReorderMode::Always,
             Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
@@ -452,9 +476,13 @@ impl TileIntrabcPreludeState {
             tile_cols: cols,
             sb_size4,
             values: vec![None; values_len],
+            #[cfg(test)]
             bank: IntrabcRefMvBank::new(sb_size4),
+            #[cfg(test)]
             enable_refmvbank,
+            #[cfg(test)]
             seed_bank_from_above: !frame_is_intra_only,
+            #[cfg(test)]
             drl_reorder,
         })
     }
@@ -471,12 +499,14 @@ impl TileIntrabcPreludeState {
         if !self.enabled {
             return Ok(());
         }
+        #[cfg(test)]
         let block_mv = prelude.intrabc.map(|info| info.block_mv);
         let facts = IntrabcBlockFacts {
             use_intrabc: prelude.use_intrabc,
             is_inter: prelude.is_inter,
             skip_flag: prelude.skip_flag,
             morph_pred: prelude.morph_pred,
+            #[cfg(test)]
             block_mv,
             base_col: col,
             n4w,
@@ -497,6 +527,7 @@ impl TileIntrabcPreludeState {
                 row_values.fill(Some(facts));
             }
         }
+        #[cfg(test)]
         if self.enable_refmvbank {
             self.bank.update_after_block(
                 row,
@@ -510,15 +541,15 @@ impl TileIntrabcPreludeState {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_for_block(&mut self, row: usize, col: usize) {
-        if self.enable_refmvbank
-            && self.bank.enter_block_superblock(row, col)
-            && self.seed_bank_from_above
-        {
+        let entered = self.enable_refmvbank && self.bank.enter_block_superblock(row, col);
+        if entered && self.seed_bank_from_above {
             self.seed_bank_from_above_row(row, col);
         }
     }
 
+    #[cfg(test)]
     fn seed_bank_from_above_row(&mut self, row: usize, col: usize) {
         if self.sb_size4 == 0 {
             return;
@@ -748,8 +779,25 @@ impl TileIntrabcPreludeState {
             })
     }
 
+    #[cfg(test)]
     fn spatial_intrabc_scan(&self, geometry: IntrabcBlockGeometry) -> SpatialIntrabcScan {
-        let scan_geometry = SpatialScanGeometry {
+        self.capture_spatial_intrabc_probes(geometry)
+            .resolve(|row, col| self.block_vector_at(row, col))
+    }
+
+    pub(crate) fn capture_spatial_intrabc_probes(
+        &self,
+        geometry: IntrabcBlockGeometry,
+    ) -> SpatialIntrabcProbes {
+        capture_spatial_intrabc_probes(
+            self.spatial_scan_geometry(geometry),
+            |row, col| self.is_mi_coded(row, col),
+            |row, col| self.block_base_col_at(row, col),
+        )
+    }
+
+    fn spatial_scan_geometry(&self, geometry: IntrabcBlockGeometry) -> SpatialScanGeometry {
+        SpatialScanGeometry {
             mi_row: geometry.block.row,
             mi_col: geometry.block.col,
             n4w: geometry.n4w,
@@ -757,15 +805,10 @@ impl TileIntrabcPreludeState {
             mi_rows: self.mi_rows,
             mi_cols: self.mi_cols,
             sb_size4: self.sb_size4,
-        };
-        spatial_intrabc_scan_with_base_col(
-            scan_geometry,
-            |row, col| self.block_vector_at(row, col),
-            |row, col| self.is_mi_coded(row, col),
-            |row, col| self.block_base_col_at(row, col),
-        )
+        }
     }
 
+    #[cfg(test)]
     fn block_vector_at(&self, row: usize, col: usize) -> Option<Mv> {
         let facts = self.facts_at(row, col)?;
         if !facts.use_intrabc {
@@ -800,6 +843,7 @@ impl TileIntrabcPreludeState {
             .flatten()
     }
 
+    #[cfg(test)]
     fn bank(&self) -> &IntrabcRefMvBank {
         &self.bank
     }
@@ -849,6 +893,7 @@ pub(crate) fn read_intrabc_use_and_skip(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn read_intrabc_info(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -858,9 +903,34 @@ pub(crate) fn read_intrabc_info(
     geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
-    let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
+    let pending =
+        read_pending_intrabc_info(cdfs, symbols, state, sequence, core, geometry, tile_offset)?;
     let pred_mv =
-        ensure_intrabc_ref_stack_supported(state, sequence, geometry, syntax, tile_offset)?;
+        ensure_intrabc_ref_stack_supported(state, sequence, geometry, pending.syntax, tile_offset)?;
+    Ok(resolve_pending_intrabc_info(pending, pred_mv))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_pending_intrabc_info(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    state: &TileIntrabcPreludeState,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    geometry: IntrabcBlockGeometry,
+    tile_offset: ByteOffset,
+) -> Result<PendingIntrabcInfo> {
+    let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
+    let mvd = if syntax.intrabc_mode == 0 {
+        Some(read_intrabc_mvd(
+            cdfs,
+            symbols,
+            syntax.mv_precision,
+            tile_offset,
+        )?)
+    } else {
+        None
+    };
     let block = geometry.block;
     let morph_pred_ctx = state.morph_pred_ctx(
         block.row,
@@ -869,17 +939,55 @@ pub(crate) fn read_intrabc_info(
         geometry.n4h,
         tile_offset,
     )?;
-    let info = finish_intrabc_info_record(
-        cdfs,
-        symbols,
-        sequence,
-        core,
+    let morph_pred =
+        read_intrabc_morph_pred(cdfs, symbols, sequence, core, morph_pred_ctx, tile_offset)?;
+    Ok(PendingIntrabcInfo {
         syntax,
-        pred_mv,
-        morph_pred_ctx,
-        tile_offset,
-    )?;
-    Ok(info)
+        mvd,
+        morph_pred,
+    })
+}
+
+pub(crate) fn resolve_pending_intrabc_info(
+    pending: PendingIntrabcInfo,
+    pred_mv: Mv,
+) -> IntrabcInfo {
+    let syntax = pending.syntax;
+    let block_mv = match pending.mvd {
+        Some(diff) => {
+            let pred_mv = if syntax.mv_precision == MV_PRECISION_ONE_PEL {
+                lower_mv_precision(syntax.mv_precision, pred_mv)
+            } else {
+                pred_mv
+            };
+            Mv {
+                row: mv_clamp_to_integer(pred_mv.row + diff.row),
+                col: mv_clamp_to_integer(pred_mv.col + diff.col),
+            }
+        }
+        None => pred_mv,
+    };
+    IntrabcInfo {
+        intrabc_mode: u8::try_from(syntax.intrabc_mode).unwrap_or(1),
+        ref_mv_idx: syntax.ref_mv_idx,
+        mv_precision: syntax.mv_precision,
+        morph_pred: pending.morph_pred,
+        block_mv: block_mv.into(),
+    }
+}
+
+impl PendingIntrabcInfo {
+    pub(crate) const fn ref_mv_idx(self) -> usize {
+        self.syntax.ref_mv_idx
+    }
+
+    pub(crate) const fn max_bvp_drl_bits_minus_1(self) -> u32 {
+        self.syntax.max_bvp_drl_bits_minus_1
+    }
+
+    pub(crate) const fn morph_pred(self) -> bool {
+        self.morph_pred
+    }
 }
 
 fn read_intrabc_info_syntax(
@@ -986,6 +1094,7 @@ fn resolve_intrabc_force_integer_mv(
     }
 }
 
+#[cfg(test)]
 fn ensure_intrabc_ref_stack_supported(
     state: &TileIntrabcPreludeState,
     sequence: &SequenceHeader,
@@ -1004,14 +1113,15 @@ fn ensure_intrabc_ref_stack_supported(
         max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
     };
     let spatial = state.spatial_intrabc_scan(geometry);
-    match intrabc_ref_stack_admission(
+    let admission = intrabc_ref_stack_admission(
         state.bank(),
         stack_geometry,
         &spatial,
         state.enable_refmvbank,
         state.drl_reorder,
         syntax.ref_mv_idx,
-    ) {
+    );
+    match admission {
         IntrabcStackAdmission::Admit { selected } => Ok(selected),
         IntrabcStackAdmission::Defer => Err(wienerns_lr_selectable_transform_record_error_reason(
             tile_offset,
@@ -1020,6 +1130,27 @@ fn ensure_intrabc_ref_stack_supported(
     }
 }
 
+fn read_intrabc_mvd(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    mv_precision: u8,
+    tile_offset: ByteOffset,
+) -> Result<Mv> {
+    read_newmv_block_mvd_with_config(
+        cdfs,
+        symbols,
+        tile_offset,
+        MvReadConfig::intrabc(mv_precision),
+    )
+    .map_err(|_| {
+        wienerns_lr_selectable_transform_record_error_reason(
+            tile_offset,
+            "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv",
+        )
+    })
+}
+
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn finish_intrabc_info_record(
     cdfs: &mut TileCdfSubset,
@@ -1031,23 +1162,56 @@ fn finish_intrabc_info_record(
     morph_pred_ctx: usize,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
-    let block_mv = assign_intrabc_mv(
-        cdfs,
-        symbols,
-        syntax.intrabc_mode,
-        syntax.mv_precision,
-        pred_mv,
-        tile_offset,
-    )?;
+    let mvd = if syntax.intrabc_mode == 0 {
+        Some(read_intrabc_mvd(
+            cdfs,
+            symbols,
+            syntax.mv_precision,
+            tile_offset,
+        )?)
+    } else {
+        None
+    };
     let morph_pred =
         read_intrabc_morph_pred(cdfs, symbols, sequence, core, morph_pred_ctx, tile_offset)?;
-    Ok(IntrabcInfo {
-        intrabc_mode: u8::try_from(syntax.intrabc_mode).unwrap_or(1),
-        ref_mv_idx: syntax.ref_mv_idx,
-        mv_precision: syntax.mv_precision,
-        morph_pred,
-        block_mv,
-    })
+    Ok(resolve_pending_intrabc_info(
+        PendingIntrabcInfo {
+            syntax,
+            mvd,
+            morph_pred,
+        },
+        pred_mv,
+    ))
+}
+
+#[cfg(test)]
+fn assign_intrabc_mv(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    intrabc_mode: usize,
+    mv_precision: u8,
+    pred_mv: Mv,
+    tile_offset: ByteOffset,
+) -> Result<IntrabcBlockVector> {
+    let mvd = if intrabc_mode == 0 {
+        Some(read_intrabc_mvd(cdfs, symbols, mv_precision, tile_offset)?)
+    } else {
+        None
+    };
+    Ok(resolve_pending_intrabc_info(
+        PendingIntrabcInfo {
+            syntax: IntrabcInfoSyntax {
+                intrabc_mode,
+                ref_mv_idx: 0,
+                mv_precision,
+                max_bvp_drl_bits_minus_1: 0,
+            },
+            mvd,
+            morph_pred: false,
+        },
+        pred_mv,
+    )
+    .block_mv)
 }
 
 fn read_intrabc_morph_pred(
@@ -1075,42 +1239,6 @@ fn read_intrabc_morph_pred(
         },
         tile_offset,
     )? != 0)
-}
-
-fn assign_intrabc_mv(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    intrabc_mode: usize,
-    mv_precision: u8,
-    pred_mv: Mv,
-    tile_offset: ByteOffset,
-) -> Result<IntrabcBlockVector> {
-    let block_mv = if intrabc_mode == 0 {
-        let diff = read_newmv_block_mvd_with_config(
-            cdfs,
-            symbols,
-            tile_offset,
-            MvReadConfig::intrabc(mv_precision),
-        )
-        .map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv",
-            )
-        })?;
-        let pred_mv = if mv_precision == MV_PRECISION_ONE_PEL {
-            lower_mv_precision(mv_precision, pred_mv)
-        } else {
-            pred_mv
-        };
-        Mv {
-            row: mv_clamp_to_integer(pred_mv.row + diff.row),
-            col: mv_clamp_to_integer(pred_mv.col + diff.col),
-        }
-    } else {
-        pred_mv
-    };
-    Ok(block_mv.into())
 }
 
 pub(crate) fn derive_intrabc_luma_prediction_geometry(
@@ -1386,6 +1514,7 @@ fn intrabc_luma_source_envelope(
     .map_err(|_| intrabc_geometry_error(tile_offset))
 }
 
+#[cfg(test)]
 fn superblock_samples(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<i32> {
     let partition = sequence.partition.as_ref().ok_or_else(|| {
         wienerns_lr_selectable_transform_record_error_reason(
@@ -1459,10 +1588,17 @@ fn max_bvp_drl_bits_minus_1(
     Ok(inter.seq_max_bvp_drl_bits_minus_1)
 }
 
-fn intra_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
-    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
+fn intrabc_sb_size4(
+    sequence: &SequenceHeader,
+    frame_is_intra_only: bool,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    let seq_sb_size = intra_capped_seq_sb_size(sequence, tile_offset)?;
+    Ok(match seq_sb_size {
         SuperblockSize::Block64x64 => 16,
-        SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 32,
+        SuperblockSize::Block128x128 => 32,
+        SuperblockSize::Block256x256 if frame_is_intra_only => 32,
+        SuperblockSize::Block256x256 => 64,
     })
 }
 

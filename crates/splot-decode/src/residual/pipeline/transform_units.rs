@@ -15,6 +15,71 @@ use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4};
 
+impl ResidualReconstructionPlan {
+    pub(super) fn for_luma_transform_row(self, is_parent_row: bool) -> Self {
+        if is_parent_row {
+            return self;
+        }
+        match self {
+            Self::LumaRectOneSidedLeftMrl {
+                p_angle,
+                mrl_index,
+                secondary_mrl,
+                use_tcq,
+                ..
+            } => Self::LumaRectOneSidedLeftMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index: mrl_index,
+                is_sb_boundary: false,
+                secondary_mrl,
+                use_tcq,
+            },
+            Self::LumaRectOneSidedAboveMrl {
+                p_angle,
+                mrl_index,
+                secondary_mrl,
+                use_tcq,
+                ..
+            } => Self::LumaRectOneSidedAboveMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index: mrl_index,
+                secondary_mrl,
+                use_tcq,
+            },
+            Self::LumaRectCardinalMrl {
+                direction,
+                mrl_index,
+                secondary_mrl,
+                use_tcq,
+                ..
+            } => Self::LumaRectCardinalMrl {
+                direction,
+                mrl_index,
+                above_mrl_index: mrl_index,
+                secondary_mrl,
+                use_tcq,
+            },
+            Self::LumaRectMiddleMrl {
+                p_angle,
+                mrl_index,
+                secondary_mrl,
+                use_tcq,
+                ..
+            } => Self::LumaRectMiddleMrl {
+                p_angle,
+                mrl_index,
+                above_mrl_index: mrl_index,
+                is_sb_boundary: false,
+                secondary_mrl,
+                use_tcq,
+            },
+            _ => self,
+        }
+    }
+}
+
 impl ResidualPlanePlan {
     pub(super) fn lossless_transform_unit_tx_size(
         self,
@@ -48,92 +113,10 @@ impl ResidualPlanePlan {
         &self,
         block: &PositionedLumaCoeffBlock,
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
-        let reconstruction = match self.reconstruction {
-            ResidualReconstructionPlan::Rect { .. }
-            | ResidualReconstructionPlan::Chroma { .. }
-            | ResidualReconstructionPlan::ChromaCfl { .. }
-            | ResidualReconstructionPlan::ChromaMiddle(..)
-            | ResidualReconstructionPlan::ChromaOneSided(..)
-            | ResidualReconstructionPlan::LumaPalette { .. }
-            | ResidualReconstructionPlan::LumaRectCardinal { .. }
-            | ResidualReconstructionPlan::LumaRectPaeth { .. }
-            | ResidualReconstructionPlan::LumaRectSmooth { .. }
-            | ResidualReconstructionPlan::LumaRectMiddle { .. }
-            | ResidualReconstructionPlan::LumaRectOneSidedAbove { .. }
-            | ResidualReconstructionPlan::LumaRectOneSidedLeft { .. }
-            | ResidualReconstructionPlan::LumaRectDip { .. } => self.reconstruction,
-            ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index,
-                is_sb_boundary,
-                secondary_mrl,
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectOneSidedLeftMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index: if block.y == self.y {
-                    above_mrl_index
-                } else {
-                    mrl_index
-                },
-                is_sb_boundary: is_sb_boundary && block.y == self.y,
-                secondary_mrl,
-                use_tcq,
-            },
-            ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index,
-                secondary_mrl,
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index: if block.y == self.y {
-                    above_mrl_index
-                } else {
-                    mrl_index
-                },
-                secondary_mrl,
-                use_tcq,
-            },
-            ResidualReconstructionPlan::LumaRectCardinalMrl {
-                direction,
-                mrl_index,
-                above_mrl_index,
-                secondary_mrl,
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectCardinalMrl {
-                direction,
-                mrl_index,
-                above_mrl_index: if block.y == self.y {
-                    above_mrl_index
-                } else {
-                    mrl_index
-                },
-                secondary_mrl,
-                use_tcq,
-            },
-            ResidualReconstructionPlan::LumaRectMiddleMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index,
-                is_sb_boundary,
-                secondary_mrl,
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectMiddleMrl {
-                p_angle,
-                mrl_index,
-                above_mrl_index: if block.y == self.y {
-                    above_mrl_index
-                } else {
-                    mrl_index
-                },
-                is_sb_boundary: is_sb_boundary && block.y == self.y,
-                secondary_mrl,
-                use_tcq,
-            },
+        let reconstruction = match self
+            .reconstruction
+            .for_luma_transform_row(block.y == self.y)
+        {
             ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::Palette { palette },
                 use_tcq,
@@ -189,6 +172,7 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::NonDcFirst { mode } | IntraLumaPlan::NonDcNeighbour { mode },
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq },
+            reconstruction => reconstruction,
         };
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let width4 = (1usize << log2_width) >> 2;

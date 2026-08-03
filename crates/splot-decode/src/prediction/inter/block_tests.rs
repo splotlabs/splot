@@ -13,6 +13,7 @@ use splot_recon::{
 
 use super::interintra::InterIntraScratch;
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
+use super::resolve::effective_intrabc_sb_h4;
 use super::warp::extend_warp_base_position;
 use super::{
     chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
@@ -22,11 +23,165 @@ use crate::bitstream::tile_payload::{
     BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
 };
 use crate::error::DecodeError;
+use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
+    DrlReorderMode, IntrabcStackAdmission, IntrabcStackGeometry, SpatialScanGeometry,
+    capture_spatial_intrabc_probes, intrabc_ref_stack_admission_from_candidates,
+};
 use crate::prediction::inter::{
     BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock,
-    find_mv_stack::{BlockPrecisionRecord, MvBlockContext, NeighbourMvGrid},
+    find_mv_stack::{
+        BlockPrecisionRecord, INTRABC_REF_FRAME, MvBlockContext, NON_INTER_FLAG_SYNTAX,
+        NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, RefMvBank,
+    },
     mc::{CompoundBlend, McBlockRect},
 };
+
+#[test]
+fn intrabc_spatial_probe_waits_for_ordered_motion_publication() -> TestResult {
+    let geometry = SpatialScanGeometry {
+        mi_row: 4,
+        mi_col: 4,
+        n4w: 2,
+        n4h: 2,
+        mi_rows: 16,
+        mi_cols: 16,
+        sb_size4: 16,
+    };
+    let probes = capture_spatial_intrabc_probes(geometry, |_, _| true, |_, col| Some(col));
+    let mut grid = NeighbourMvGrid::new(16, 16).ok_or("valid neighbour grid")?;
+    grid.record_flags(
+        4,
+        2,
+        2,
+        2,
+        NeighbourFlagSyntax {
+            is_inter: true,
+            ref_frame0: INTRABC_REF_FRAME,
+            ..NON_INTER_FLAG_SYNTAX
+        },
+    );
+    assert!(
+        probes
+            .resolve(|row, col| grid.intrabc_mv_at(row, col))
+            .candidates
+            .is_empty(),
+        "future flags alone are not an IntrABC candidate"
+    );
+
+    let bv = Mv { row: 0, col: -128 };
+    grid.record_motion(
+        4,
+        2,
+        2,
+        2,
+        NeighbourMotionValues {
+            mv: [bv, Mv::ZERO],
+            cwp_weight: 0,
+            stored_warp: None,
+            splat_warp: [None, None],
+        },
+    );
+    assert_eq!(
+        probes
+            .resolve(|row, col| grid.intrabc_mv_at(row, col))
+            .candidates[0]
+            .mv,
+        bv
+    );
+    Ok(())
+}
+
+#[test]
+fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
+    let sb_h4 = effective_intrabc_sb_h4(64, true);
+    assert_eq!(sb_h4, 32);
+    assert_eq!(effective_intrabc_sb_h4(64, false), 64);
+
+    let spatial = capture_spatial_intrabc_probes(
+        SpatialScanGeometry {
+            mi_row: 0,
+            mi_col: 0,
+            n4w: 4,
+            n4h: 4,
+            mi_rows: 64,
+            mi_cols: 64,
+            sb_size4: sb_h4,
+        },
+        |_, _| false,
+        |_, _| None,
+    )
+    .resolve(|_, _| None);
+    assert_eq!(
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
+            IntrabcStackGeometry {
+                mi_row: 0,
+                mi_col: 0,
+                n4w: 4,
+                n4h: 4,
+                sb_samples: i32::try_from(sb_h4 * 4)?,
+                frame_w: 256,
+                frame_h: 256,
+                max_bvp_drl_bits_minus_1: 2,
+            },
+            &spatial,
+            true,
+            DrlReorderMode::Disabled,
+            0,
+        ),
+        IntrabcStackAdmission::Admit {
+            selected: Mv { row: -1024, col: 0 }
+        }
+    );
+
+    let grid = NeighbourMvGrid::new(64, 64).ok_or("valid neighbour grid")?;
+    let mut bank = RefMvBank::new();
+    bank.reset_for_leaf(&grid, 0, 0, sb_h4, false);
+    bank.update_count_for_non_inter(0, 0, 4, 4, sb_h4);
+    bank.update_for_block(
+        INTRABC_REF_FRAME,
+        None,
+        Mv { row: 0, col: -128 },
+        None,
+        0,
+        0,
+        4,
+        4,
+        4,
+        sb_h4,
+    );
+    assert_eq!(
+        bank.intrabc_candidates(&MvBlockContext {
+            mi_row: 0,
+            mi_col: 4,
+            bw4: 4,
+            bh4: 4,
+            sb_h4,
+            ref_frame0: INTRABC_REF_FRAME,
+            ref_frame1: None,
+            mi_rows: 64,
+            mi_cols: 64,
+        }),
+        vec![Mv { row: 0, col: -128 }]
+    );
+    bank.reset_for_leaf(&grid, 32, 0, sb_h4, false);
+    assert!(
+        bank.intrabc_candidates(&MvBlockContext {
+            mi_row: 32,
+            mi_col: 4,
+            bw4: 4,
+            bh4: 4,
+            sb_h4,
+            ref_frame0: INTRABC_REF_FRAME,
+            ref_frame1: None,
+            mi_rows: 64,
+            mi_cols: 64,
+        })
+        .is_empty(),
+        "the shared bank clears at the effective 128-pixel SB-row boundary"
+    );
+    Ok(())
+}
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 

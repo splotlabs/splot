@@ -390,6 +390,14 @@ const fn output_prediction_unit_size(
     }
 }
 
+fn prediction_unit_extent(output: bool, remaining: usize, unit_size: usize) -> usize {
+    if output {
+        unit_size
+    } else {
+        remaining.min(unit_size)
+    }
+}
+
 fn output_interpolation_filter(
     inter: &splot_core::headers::frame::InterControl,
     offset: ByteOffset,
@@ -509,6 +517,7 @@ struct TipBlockPlan {
     references: TipReferencePair,
     plan: Option<TipReferencePlan>,
     two_references: bool,
+    output: bool,
     use_optflow: bool,
     unit_size: usize,
     unit_count: usize,
@@ -711,6 +720,7 @@ fn tip_block_plan<T: ReconSample>(
         references,
         plan,
         two_references,
+        output,
         use_optflow,
         unit_size,
         unit_count,
@@ -769,12 +779,22 @@ fn build_units<T: ReconSample>(
             }
             let luma_x = placed.luma_x + local_x;
             let luma_y = placed.luma_y + local_y;
-            let luma_w = (plan.block_w - local_x).min(plan.unit_size);
-            let luma_h = (plan.block_h - local_y).min(plan.unit_size);
+            let luma_w =
+                prediction_unit_extent(plan.output, plan.block_w - local_x, plan.unit_size);
+            let luma_h =
+                prediction_unit_extent(plan.output, plan.block_h - local_y, plan.unit_size);
             let chroma_x = luma_x.max(placed.chroma_luma_x);
             let chroma_y = luma_y.max(placed.chroma_luma_y);
-            let chroma_end_x = (luma_x + luma_w).min(placed.chroma_luma_x + placed.chroma_luma_w);
-            let chroma_end_y = (luma_y + luma_h).min(placed.chroma_luma_y + placed.chroma_luma_h);
+            let chroma_end_x = if plan.output {
+                luma_x + luma_w
+            } else {
+                (luma_x + luma_w).min(placed.chroma_luma_x + placed.chroma_luma_w)
+            };
+            let chroma_end_y = if plan.output {
+                luma_y + luma_h
+            } else {
+                (luma_y + luma_h).min(placed.chroma_luma_y + placed.chroma_luma_h)
+            };
             let predict_chroma =
                 placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
             let mvs = temporal
@@ -1314,9 +1334,9 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 mod tests {
     use super::{
         TipPrediction, TipUnit, compute_parallel_outputs, output_prediction_unit_size,
-        prediction_unit_size, tip_optflow_references_allowed, tip_refinemv_offsets_allowed,
-        tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
-        tip_uses_two_references, tmvp_unit_size8,
+        prediction_unit_extent, prediction_unit_size, tip_optflow_references_allowed,
+        tip_refinemv_offsets_allowed, tip_refinemv_references_allowed, tip_temporal_mvs,
+        tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::reference::ReferenceSamples;
     use crate::prediction::inter::{Mv, mc};
@@ -1325,7 +1345,7 @@ mod tests {
     use splot_parallel::{ThreadCount, WorkerPool};
     use splot_recon::{
         BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, InterpolationFilter, OutputIndex,
-        PixelFormat, PlaneRect, PlaneSize,
+        PixelFormat, PlaneId, PlaneRect, PlaneSize,
     };
 
     #[test]
@@ -1414,6 +1434,17 @@ mod tests {
             output_prediction_unit_size(false, InterpolationFilter::EightTapSharp),
             16
         );
+    }
+
+    #[test]
+    fn tip_output_edge_units_keep_nominal_prediction_size() {
+        let output_height = prediction_unit_extent(true, 8, 16);
+        let reference_height = prediction_unit_extent(false, 8, 16);
+        let output = mc::McBlockRect::from_luma_rect(432, 1072, 16, output_height);
+        let reference = mc::McBlockRect::from_luma_rect(432, 1072, 16, reference_height);
+
+        assert_eq!(output.plane_rect(PlaneId::V, 1, 1).3, 8);
+        assert_eq!(reference.plane_rect(PlaneId::V, 1, 1).3, 4);
     }
 
     #[test]

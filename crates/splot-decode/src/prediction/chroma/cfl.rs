@@ -3,7 +3,12 @@
 
 //! AV2 § 7.13.5/§ 7.13.6 chroma-from-luma reconstruction helpers.
 //!
-//! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
+//! § 7.13.5 applies 64-sample clamping to `L`; `lumaAvg` and `implicitAlpha` use
+//! transform-local reference lines (docs/spec/av2/1.0.0/07-decoding-process.md).
+//!
+//! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`,
+//! `DECODE-GENERAL-INTRA-CFL-NON-420`,
+//! `DECODE-MHCCP-FRAME-EDGE-REFERENCE-EXTENT`.
 
 use std::simd::{Simd, num::SimdUint, simd_swizzle};
 
@@ -405,6 +410,9 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
         bit_depth,
     )?;
     let luma_plane = workspace.plane(PlaneId::Y)?;
+    let luma_size = luma_plane.storage_size();
+    let max_luma_x = luma_size.width().saturating_sub(1);
+    let max_luma_y = luma_size.height().saturating_sub(1);
     if pixel_format == PixelFormat::Yuv420
         && cfl_ds_filter_index == 1
         && let Some(luma) = T::u16_slice(luma_plane.samples())
@@ -428,12 +436,12 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     samples_q3.reserve(width.saturating_mul(height));
     for row in 0..height {
         let chroma_y = y.saturating_add(row);
-        let luma_y = chroma_y << sub_y;
-        let clamp_y = row == 0 || luma_y % 64 == 0;
+        let luma_y = clamped_cfl_luma_coordinate(chroma_y, sub_y, max_luma_y);
+        let clamp_y = row == 0 || luma_y.is_multiple_of(64);
         for col in 0..width {
             let chroma_x = x.saturating_add(col);
-            let luma_x = chroma_x << sub_x;
-            let clamp_x = col == 0 || luma_x % 64 == 0;
+            let luma_x = clamped_cfl_luma_coordinate(chroma_x, sub_x, max_luma_x);
+            let clamp_x = col == 0 || luma_x.is_multiple_of(64);
             samples_q3.push(
                 cfl_luma_q3(
                     workspace,
@@ -481,9 +489,7 @@ fn fill_cfl_luma_ac_420_filter1_u16(
         let Some(chroma_y) = y.checked_add(row) else {
             return false;
         };
-        let Some(luma_y) = chroma_y.checked_mul(2) else {
-            return false;
-        };
+        let luma_y = clamped_cfl_luma_coordinate(chroma_y, 1, max_y);
         let row0 = luma_y.min(max_y);
         let row1 = luma_y.saturating_add(1).min(max_y);
         let Some(row0_start) = row0.checked_mul(stride) else {
@@ -504,9 +510,7 @@ fn fill_cfl_luma_ac_420_filter1_u16(
             let Some(chroma_x) = x.checked_add(col) else {
                 return false;
             };
-            let Some(luma_x) = chroma_x.checked_mul(2) else {
-                return false;
-            };
+            let luma_x = clamped_cfl_luma_coordinate(chroma_x, 1, max_x);
             let offset_in_64 = luma_x & 63;
             if col + 8 <= width
                 && col != 0
@@ -684,8 +688,6 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     sb_mib: usize,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
-    let sub_x = usize::from(pixel_format.subsampling_x());
-    let sub_y = usize::from(pixel_format.subsampling_y());
     let have_above = y > 0;
     let have_left = x > 0;
     let (mut num_above, mut num_left) = if have_above && have_left {
@@ -716,13 +718,11 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
         let start = if step == 1 { 0 } else { step >> 1 };
         for col in (start..width).step_by(step) {
             let chroma_x = x.saturating_add(col);
-            let luma_x = chroma_x << sub_x;
-            let clamp_x = col == 0 || luma_x % 64 == 0;
             let luma = cfl_luma_q3_with_min_y(
                 workspace,
                 chroma_x,
                 y - 1,
-                clamp_x,
+                col == 0,
                 false,
                 min_luma_ref_y,
                 cfl_ds_filter_index,
@@ -741,14 +741,12 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
         let start = if step == 1 { 0 } else { step >> 1 };
         for row in (start..height).step_by(step) {
             let chroma_y = y.saturating_add(row);
-            let luma_y = chroma_y << sub_y;
-            let clamp_y = row == 0 || luma_y % 64 == 0;
             let luma = cfl_luma_q3(
                 workspace,
                 x - 1,
                 chroma_y,
                 false,
-                clamp_y,
+                row == 0,
                 cfl_ds_filter_index,
             )? >> 3;
             let chroma =
@@ -787,8 +785,6 @@ fn cfl_luma_average_q3<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
-    let sub_x = usize::from(pixel_format.subsampling_x());
-    let sub_y = usize::from(pixel_format.subsampling_y());
     let step_w = if width > 32 { 2 } else { 1 };
     let step_h = if height > 32 { 2 } else { 1 };
     let mut sum = 0u32;
@@ -797,13 +793,11 @@ fn cfl_luma_average_q3<T: ReconSample>(
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
         for col in (0..width).step_by(step_w) {
             let chroma_x = x.saturating_add(col);
-            let luma_x = chroma_x << sub_x;
-            let clamp_x = col == 0 || luma_x % 64 == 0;
             sum = sum.saturating_add(cfl_luma_q3_with_min_y(
                 workspace,
                 chroma_x,
                 above_y,
-                clamp_x,
+                col == 0,
                 false,
                 min_luma_ref_y,
                 cfl_ds_filter_index,
@@ -814,14 +808,12 @@ fn cfl_luma_average_q3<T: ReconSample>(
     if let Some(left_x) = x.checked_sub(1) {
         for row in (0..height).step_by(step_h) {
             let chroma_y = y.saturating_add(row);
-            let luma_y = chroma_y << sub_y;
-            let clamp_y = row == 0 || luma_y % 64 == 0;
             sum = sum.saturating_add(cfl_luma_q3(
                 workspace,
                 left_x,
                 chroma_y,
                 false,
-                clamp_y,
+                row == 0,
                 cfl_ds_filter_index,
             )? as u32);
             count = count.saturating_add(1);
@@ -923,23 +915,25 @@ fn mhccp_references<T: ReconSample>(
     let chroma_size = workspace.plane(plane_id)?.storage_size();
     let frame_right = chroma_size.width().saturating_sub(x);
     let frame_bottom = chroma_size.height().saturating_sub(y);
-    let ref_width = left
+    let reference_width = left
         .saturating_add(width)
         .saturating_add(extra_right)
         .min(128 >> sub_x)
         .min(left.saturating_add(frame_right));
-    let ref_height = above
+    let reference_height = above
         .saturating_add(height)
         .saturating_add(extra_bottom)
         .min(128 >> sub_y)
         .min(above.saturating_add(frame_bottom));
-    if ref_width < left.saturating_add(width) || ref_height < above.saturating_add(height) {
+    if frame_right == 0 || frame_bottom == 0 {
         return Err(
             GeneralIntraResidualError::UnsupportedTransformToolResidual {
                 reason: "general_intra_mhccp_reference_geometry",
             },
         );
     }
+    let ref_width = reference_width.max(left.saturating_add(width));
+    let ref_height = reference_height.max(above.saturating_add(height));
 
     let sample_count = ref_width.saturating_mul(ref_height);
     let [luma, chroma] = reference_scratch;
@@ -947,8 +941,8 @@ fn mhccp_references<T: ReconSample>(
     luma.resize(sample_count, 0);
     chroma.clear();
     chroma.resize(sample_count, 0);
-    for row in 0..ref_height {
-        for col in 0..ref_width {
+    for row in 0..reference_height {
+        for col in 0..reference_width {
             let chroma_x = x + col - left;
             let chroma_y = y + row - above;
             if row < above || col < left {
@@ -974,6 +968,8 @@ fn mhccp_references<T: ReconSample>(
     Ok(MhccpRefs {
         width: ref_width,
         height: ref_height,
+        reference_width,
+        reference_height,
         above,
         left,
         luma: core::mem::take(luma),
@@ -996,12 +992,12 @@ fn cfl_luma_q3_with_min_y<T: ReconSample>(
     let pixel_format = workspace.info().pixel_format();
     let sub_x = isize::from(pixel_format.subsampling_x());
     let sub_y = isize::from(pixel_format.subsampling_y());
-    let luma_x = (chroma_x << sub_x) as isize;
-    let luma_y = (chroma_y << sub_y) as isize;
     let y_plane = workspace.plane(PlaneId::Y)?;
     let size = y_plane.storage_size();
     let max_x = size.width().saturating_sub(1) as isize;
     let max_y = size.height().saturating_sub(1) as isize;
+    let luma_x = clamped_cfl_luma_coordinate(chroma_x, sub_x as usize, max_x as usize) as isize;
+    let luma_y = clamped_cfl_luma_coordinate(chroma_y, sub_y as usize, max_y as usize) as isize;
     let mut total = 0i32;
     for dy in -sub_y..=sub_y {
         for dx in -sub_x..=sub_x {
@@ -1046,6 +1042,14 @@ fn clamped_chroma_sample<T: ReconSample>(
         x.min(size.width().saturating_sub(1)),
         y.min(size.height().saturating_sub(1)),
     )
+}
+
+fn clamped_cfl_luma_coordinate(
+    chroma_coordinate: usize,
+    subsampling: usize,
+    max_luma_coordinate: usize,
+) -> usize {
+    chroma_coordinate.min(max_luma_coordinate >> subsampling) << subsampling
 }
 
 const fn cfl_filter_index(cfl_ds_filter_index: u8) -> Option<usize> {

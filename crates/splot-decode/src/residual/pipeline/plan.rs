@@ -310,10 +310,12 @@ fn push_ordered_planes(
         for start_chunk_x in (0..width_chunks).step_by(2) {
             for chunk_y in start_chunk_y..(start_chunk_y + 2).min(height_chunks) {
                 for chunk_x in start_chunk_x..(start_chunk_x + 2).min(width_chunks) {
+                    let chunk_luma_reconstruction =
+                        luma_reconstruction.for_luma_transform_row(chunk_y == 0);
                     planes.push(ResidualPlanePlan::new(
                         residual_chunk_ctx(block_ctx, chunk_x, chunk_y, 1, 1)?,
                         PlaneId::Y,
-                        luma_reconstruction,
+                        chunk_luma_reconstruction,
                         block.width4(),
                         block.height4(),
                         luma_fsc_mode,

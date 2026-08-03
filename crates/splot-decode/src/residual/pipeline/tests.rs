@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::bitstream::tile_payload::TileBlockDecodedState;
 use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
 use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
 use splot_recon::{BitDepth, DpcmDirection};
@@ -271,6 +272,49 @@ fn large_luma_chunks_do_not_fill_parent_residual_block() {
         luma.iter()
             .all(|plane| (plane.residual_width4, plane.residual_height4) == (32, 16))
     );
+}
+
+#[test]
+fn mrl_chunk_rows_use_transform_local_superblock_boundary() {
+    let block = BlockRect::new(32, 0, 16, 32);
+    let tx = TxShape::from_luma_4x4(block.width4(), block.height4()).expect("test tx shape");
+    let block_ctx = BlockCtx::new(block, tx, 64, 64, BitDepth::Ten, ChromaSampling::Yuv420);
+    let plan = GeneralIntraResidualPlan::rect(
+        block_ctx,
+        RectLumaPlan::MiddleMrl {
+            p_angle: 157,
+            mrl_index: 3,
+            above_mrl_index: 0,
+            is_sb_boundary: true,
+            secondary_mrl: false,
+            use_tcq: false,
+        },
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("64x128 MRL plan");
+    let luma: Vec<_> = plan
+        .planes
+        .iter()
+        .filter(|plane| plane.plane_id == PlaneId::Y)
+        .copied()
+        .collect();
+
+    assert_eq!(luma.len(), 2);
+    let mrl_state = |plane: ResidualPlanePlan| match plane.reconstruction {
+        ResidualReconstructionPlan::LumaRectMiddleMrl {
+            above_mrl_index,
+            is_sb_boundary,
+            ..
+        } => (plane.y, above_mrl_index, is_sb_boundary),
+        other => panic!("unexpected reconstruction plan: {other:?}"),
+    };
+    assert_eq!(mrl_state(luma[0]), (128, 0, true));
+    assert_eq!(mrl_state(luma[1]), (192, 3, false));
+    assert_eq!(luma[0].y - 1, 127);
+    assert_eq!(luma[1].y - 1 - 3, 188);
 }
 
 #[test]
@@ -642,6 +686,52 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
 
     assert!(!parsed(vec![unit(false), unit(true)]).u_nonzero());
     assert!(parsed(vec![unit(true), unit(false)]).u_nonzero());
+}
+
+#[test]
+fn single_luma_chunk_publication_exposes_top_right_to_later_chunk() {
+    let plane = GeneralIntraResidualPlan::square(
+        ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight),
+        IntraLumaPlan::Dc,
+        None,
+        false,
+        false,
+        None,
+        false,
+    )
+    .expect("64x64 luma plan")
+    .plane_plan(PlaneId::Y)
+    .expect("luma plane");
+    let parsed = ParsedResidualPlane {
+        plane: ResidualPlanePlan {
+            x: 64,
+            y: 0,
+            ..plane
+        },
+        kind: ParsedResidualPlaneKind::Single {
+            coeffs: empty_luma_coeffs(),
+            palette_color_map: None,
+        },
+        cctx_role: CctxRole::None,
+    };
+    let mut block_decoded =
+        TileBlockDecodedState::new(3, 1, 1, 32, 32, 32).expect("block-decoded state");
+    block_decoded.clear_superblock(0, 0);
+    let later = ctx(BlockRect::new(16, 0, 16, 16), BitDepth::Eight);
+
+    assert_eq!(
+        later
+            .neighbours_from_block_decoded(PlaneId::Y, &block_decoded)
+            .num_above_right(),
+        0
+    );
+    parsed.plane.publish_luma_transform(&mut block_decoded);
+    assert_eq!(
+        later
+            .neighbours_from_block_decoded(PlaneId::Y, &block_decoded)
+            .num_above_right(),
+        16
+    );
 }
 
 fn assert_large_chroma_order(plan: &GeneralIntraResidualPlan, defer: bool) {

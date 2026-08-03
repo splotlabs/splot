@@ -14,7 +14,9 @@
 use core::ops::Range;
 
 use super::mv_grid_pool::take_neighbour_mv_planes;
-use super::{CWP_EQUAL, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at};
+use super::{
+    CWP_EQUAL, INTRABC_REF_FRAME, MotionMode, Mv, SWITCHABLE_FILTERS, TIP_REF_FRAME, warp_sub_mv_at,
+};
 
 /// Syntax facts read by neighbour context derivation during symbol decode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -767,6 +769,12 @@ impl NeighbourMvGrid {
                 bh4: leaf.bh4,
             },
         })
+    }
+
+    pub(crate) fn intrabc_mv_at(&self, r: usize, c: usize) -> Option<Mv> {
+        let cell = self.get(i32::try_from(r).ok()?, i32::try_from(c).ok()?)?;
+        (cell.flags.ref_frame0 == INTRABC_REF_FRAME && cell.flags.ref_frame1.is_none())
+            .then_some(cell.motion.mv)
     }
 
     pub(crate) fn is_non_tip_at(&self, r: i32, c: i32) -> bool {

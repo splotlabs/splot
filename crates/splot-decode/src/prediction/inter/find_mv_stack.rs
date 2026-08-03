@@ -71,6 +71,7 @@ impl<T, const N: usize> core::ops::DerefMut for FixedStack<T, N> {
 }
 
 pub(crate) const TIP_REF_FRAME: i8 = 7;
+pub(crate) const INTRABC_REF_FRAME: i8 = -2;
 
 const GM_TRANS_ONLY_PREC_DIFF: u32 = WARPEDMODEL_PREC_BITS - 3;
 
@@ -402,12 +403,21 @@ impl BlockNeighbourContext {
         })
     }
 
-    pub(crate) fn skip_mode_ref_pair(&self, default: (i8, i8)) -> (i8, i8) {
+    pub(crate) fn skip_mode_ref_pair(
+        &self,
+        default: (i8, i8),
+        tip_ref_pair: Option<(i8, i8)>,
+    ) -> (i8, i8) {
         for cell in self.cells.iter().take(self.cell_count) {
-            if !cell.is_inter() {
+            if cell.ref_frame0 < 0 {
                 continue;
             }
-            if let Some(ref_frame1) = cell.ref_frame1 {
+            if cell.ref_frame0 == TIP_REF_FRAME {
+                return tip_ref_pair.map_or(default, |(first, second)| {
+                    (first.min(second), first.max(second))
+                });
+            }
+            if let Some(ref_frame1) = cell.ref_frame1.filter(|&ref_frame| ref_frame >= 0) {
                 return (cell.ref_frame0, ref_frame1);
             }
             break;
@@ -992,6 +1002,7 @@ impl RefMvBank {
         mi_row: usize,
         mi_col: usize,
         sb_size4: usize,
+        seed_from_above: bool,
     ) {
         let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::MvBank);
         let sb = (mi_row / sb_size4.max(1), mi_col / sb_size4.max(1));
@@ -1011,16 +1022,18 @@ impl RefMvBank {
                 *start = 0;
             }
         }
-        seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
-            self.update(
-                cell.flags.ref_frame0,
-                cell.flags.ref_frame1,
-                cell.motion.mv,
-                cell.flags.ref_frame1.map(|_| cell.motion.mv1),
-                cell.motion.cwp_weight,
-                false,
-            );
-        });
+        if seed_from_above {
+            seed_walk_from_row_above(grid, sb.0 * sb_size4, sb.1 * sb_size4, sb_size4, |cell| {
+                self.update(
+                    cell.flags.ref_frame0,
+                    cell.flags.ref_frame1,
+                    cell.motion.mv,
+                    cell.flags.ref_frame1.map(|_| cell.motion.mv1),
+                    cell.motion.cwp_weight,
+                    false,
+                );
+            });
+        }
     }
 
     fn update_unit_budget(
@@ -1170,6 +1183,33 @@ impl RefMvBank {
                 return;
             }
         }
+    }
+
+    pub(crate) fn intrabc_candidates(&self, block: &MvBlockContext) -> Vec<Mv> {
+        let list = Self::list_index(INTRABC_REF_FRAME, None);
+        let key = Self::bank_key(INTRABC_REF_FRAME, None);
+        let count = self.sizes[list];
+        let start = self.starts[list];
+        let bw = block.bw4 as i32 * MI_SIZE;
+        let bh = block.bh4 as i32 * MI_SIZE;
+        let mut candidates = Vec::with_capacity(count);
+        for i in (0..count).rev() {
+            let candidate = self.entries[list][(start + i) % REF_MV_BANK_SIZE];
+            if candidate.key != key {
+                continue;
+            }
+            let ref_y = block.mi_row as i32 * MI_SIZE + candidate.mv0.row / 8;
+            let ref_x = block.mi_col as i32 * MI_SIZE + candidate.mv0.col / 8;
+            if ref_x <= -bw
+                || ref_y <= -bh
+                || ref_x >= block.mi_cols as i32 * MI_SIZE
+                || ref_y >= block.mi_rows as i32 * MI_SIZE
+            {
+                continue;
+            }
+            candidates.push(candidate.mv0);
+        }
+        candidates
     }
 
     fn fill_compound(
@@ -2057,5 +2097,7 @@ fn clamp_mv(block: &MvBlockContext, mv: Mv) -> Mv {
     }
 }
 
+#[cfg(test)]
+mod bank_tests;
 #[cfg(test)]
 mod tests;

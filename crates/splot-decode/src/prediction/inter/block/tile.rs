@@ -705,7 +705,7 @@ pub(super) struct ReconRow {
     /// before the row leaves the parser.
     pub(super) motion_queue: Vec<LeafMotion>,
     /// The inter leaves' § 7.12 records, in the queue's own order.
-    pub(super) pending_inter: Vec<PendingInterBlock>,
+    pub(super) pending_inter: Vec<PendingMotionBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     /// The unit's flag-plane publications, replayed by a resolve pass that runs
@@ -726,7 +726,7 @@ pub(super) struct ReconRowBuffers {
     pub(super) superblocks: Vec<ReconSuperblock>,
     pub(super) entries: Vec<ReconRowEntry>,
     pub(super) motion_queue: Vec<LeafMotion>,
-    pub(super) pending_inter: Vec<PendingInterBlock>,
+    pub(super) pending_inter: Vec<PendingMotionBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,

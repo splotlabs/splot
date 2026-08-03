@@ -18,7 +18,8 @@ use crate::bitstream::tile_payload::encode_symbol_sequence;
 use crate::{DecodeLayerSelection, DecodeLimitError, DecodeLimitThreshold, DecodeObuSourceKind};
 use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::{ByteOffset, ByteSpan};
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
+use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
 use splot_core::tables::cdf::DEFAULT_Y_MODE_SET_CDF;
 
 const BLOCK_4X4: usize = 0;
@@ -955,44 +956,75 @@ fn switchable_luma_selector_reads_precede_partition_read() {
 }
 
 #[test]
-fn switchable_lr_rejects_chroma_or_missing_luma_frame_filter_before_symbol_read() {
-    let invalid_states = [
-        TilePartitionLoopRestorationFrameState::new(
-            [
-                TilePartitionLoopRestorationPlaneTool::None,
-                TilePartitionLoopRestorationPlaneTool::Switchable,
-                TilePartitionLoopRestorationPlaneTool::None,
-            ],
-            [false, true, false],
-            [0, 128, 0],
-        ),
-        TilePartitionLoopRestorationFrameState::new(
-            [
-                TilePartitionLoopRestorationPlaneTool::Switchable,
-                TilePartitionLoopRestorationPlaneTool::None,
-                TilePartitionLoopRestorationPlaneTool::None,
-            ],
-            [false, false, false],
-            [256, 0, 0],
-        ),
-    ];
-
-    for lr in invalid_states {
-        let mut work_unit = make_work_unit(&[], CdfUpdateMode::Enabled);
-        let before = work_unit.cdf().tile_cdfs().clone();
-        let mut facts = frame(BLOCK_32X32);
-        facts.loop_restoration = TilePartitionLoopRestorationState::Frame(lr);
-
-        let err = frontier(&mut work_unit, facts, context()).unwrap_err();
-
-        assert!(matches!(
-            err,
-            TilePartitionTraversalError::Unsupported(
-                TilePartitionTraversalUnsupported::ReadLoopRestoration
-            )
-        ));
-        assert_eq!(work_unit.cdf().tile_cdfs(), &before);
+fn switchable_luma_without_frame_filter_reads_unit_wiener_filter() {
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::with_config(
+        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+    );
+    for tool in 0..2 {
+        tile.with_row_mut(
+            TileCdfSelector::FlexRestorationType { tool, plane: 0 },
+            |row| encoder.write_symbol_u16(row, Symbol::new(0)),
+        )
+        .unwrap()
+        .unwrap();
     }
+    encoder.write_literal(1, 1).unwrap();
+    let payload = encoder.finish().unwrap().into_bytes();
+    let mut work_unit = make_work_unit(&payload, CdfUpdateMode::Disabled);
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = frame_level_luma_lr(
+        TilePartitionLoopRestorationPlaneTool::Switchable,
+        false,
+        256,
+    );
+
+    let root = root_lr_frontier(&mut work_unit, facts).unwrap();
+
+    assert_eq!(root.symbol_count_after(), 3);
+    assert_eq!(root.active_wiener_ns_units(), 1);
+    assert_eq!(
+        root.selections(),
+        &[WienerNsLrUnitSelection {
+            plane: 0,
+            unit_row: 0,
+            unit_col: 0,
+            restoration_type: LrUnitRestorationType::WienerNonsep,
+        }]
+    );
+    assert!(
+        root.active_source_blocks()
+            .iter()
+            .all(|block| block.unit_filter_index == Some(0))
+    );
+}
+
+#[test]
+fn switchable_lr_rejects_chroma_before_symbol_read() {
+    let invalid_state = TilePartitionLoopRestorationFrameState::new(
+        [
+            TilePartitionLoopRestorationPlaneTool::None,
+            TilePartitionLoopRestorationPlaneTool::Switchable,
+            TilePartitionLoopRestorationPlaneTool::None,
+        ],
+        [false, true, false],
+        [0, 128, 0],
+    );
+
+    let mut work_unit = make_work_unit(&[], CdfUpdateMode::Enabled);
+    let before = work_unit.cdf().tile_cdfs().clone();
+    let mut facts = frame(BLOCK_32X32);
+    facts.loop_restoration = TilePartitionLoopRestorationState::Frame(invalid_state);
+
+    let err = frontier(&mut work_unit, facts, context()).unwrap_err();
+
+    assert!(matches!(
+        err,
+        TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration
+        )
+    ));
+    assert_eq!(work_unit.cdf().tile_cdfs(), &before);
 }
 
 #[test]

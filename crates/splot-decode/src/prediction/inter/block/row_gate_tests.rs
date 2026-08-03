@@ -182,6 +182,69 @@ fn the_bound_never_passes_the_last_reference_row() {
     );
 }
 
+#[test]
+fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
+    let frame = info(FRAME_WIDTH, FRAME_HEIGHT);
+    let (past, _past_writer) = RefFrameSlot::<u8>::pending(frame).expect("pending past");
+    let (future, _future_writer) = RefFrameSlot::<u8>::pending(frame).expect("pending future");
+    for slot in [&past, &future] {
+        assert!(slot.progress().expect("progress").begin(&[
+            (0, 568),
+            (568, 582),
+            (582, FRAME_HEIGHT)
+        ]));
+        slot.progress().expect("progress").publish(0);
+    }
+    let references = TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let temporal = TemporalMvContext::with_tip_sample(
+        FRAME_HEIGHT.div_ceil(4),
+        FRAME_WIDTH.div_ceil(4),
+        references,
+        384 / TIP_FIELD_CELL,
+        0,
+        Mv { row: 361, col: 0 },
+    )
+    .expect("TIP field");
+    let lists = [
+        Some(&past),
+        Some(&future),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
+    let gate = RowReferenceGate {
+        lists,
+        settle: PixelReferenceGate { slots: Vec::new() },
+        frame,
+        temporal: &temporal,
+        tip: Some(references),
+        fallbacks: RowGateFallbacks::default(),
+    };
+    let mut block = placed(384, 128, 0);
+    block.luma_w = 128;
+    block.chroma_luma_w = 128;
+    let mut bounds = RowReferenceBounds::default();
+
+    gate.note_tip(&block, &mut bounds);
+
+    assert_eq!(bounds.needs[1], 582);
+    assert!(
+        !gate.admits(&bounds),
+        "568 rows do not cover the first candidate over the 128-row batch"
+    );
+    future.progress().expect("progress").publish(1);
+    assert!(gate.admits(&bounds));
+}
+
 /// The luma row `splot-recon`'s § 7.13.3.19 block warp reads last, over every
 /// 8x8 luma section of one block, derived section by section the way
 /// `warp_prediction.rs` derives it: project the section centre through the

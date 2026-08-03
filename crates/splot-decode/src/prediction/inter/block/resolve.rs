@@ -17,8 +17,9 @@
 
 use super::super::compound::{CompoundBlockSyntax, CompoundYMode};
 use super::super::find_mv_stack::{
-    CompoundMvCandidate, MvStack, NeighbourFlagSyntax, NeighbourMotionValues, OrderHintMvContext,
-    RefMvBank, WarpParamBank, compound_motion_mode, find_warp_samples, reduce_warp_model,
+    CompoundMvCandidate, INTRABC_REF_FRAME, MvStack, NeighbourFlagSyntax, NeighbourMotionValues,
+    OrderHintMvContext, RefMvBank, WarpParamBank, compound_motion_mode, find_warp_samples,
+    reduce_warp_model,
 };
 use super::compound_path::{
     add_mv_clamped, compound_local_warp_models, project_joint_mvd, scale_joint_projected_mvd,
@@ -37,7 +38,7 @@ pub(super) struct ParsedLeaf {
     pub(super) command: Option<ReconCommand>,
     pub(super) dependency: ReconDependency,
     pub(super) motion: LeafMotion,
-    pub(super) pending: Option<PendingInterBlock>,
+    pub(super) pending: Option<PendingMotionBlock>,
 }
 
 impl ParsedLeaf {
@@ -70,7 +71,29 @@ pub(super) enum LeafMotionKind {
     /// Full § 7.12 resolution, taken from the unit's pending-inter list. Only
     /// inter leaves pay for that record, so it rides in its own list rather
     /// than widening every leaf's queue slot.
-    Inter,
+    Pending,
+}
+
+pub(super) enum PendingMotionBlock {
+    Inter(PendingInterBlock),
+    Intrabc(PendingIntrabcBlock),
+}
+
+impl PendingMotionBlock {
+    pub(super) fn prepass_write_is_contained(
+        &self,
+        superblock_origin: [usize; 2],
+        sb_h4: usize,
+        info: splot_recon::DecodedFrameInfo,
+        residual_blocks: &[InterResidualBlock],
+    ) -> bool {
+        match self {
+            Self::Inter(pending) => {
+                pending.prepass_write_is_contained(superblock_origin, sb_h4, info, residual_blocks)
+            }
+            Self::Intrabc(_) => false,
+        }
+    }
 }
 
 /// One inter leaf's parse output, held until the resolve pass reaches it.
@@ -81,6 +104,40 @@ pub(super) struct PendingInterBlock {
     segment_id: usize,
     qindex: u32,
     frame_precision: u8,
+}
+
+pub(super) struct PendingIntrabcBlock {
+    pub(super) frontier: DecodeBlockFrontier,
+    pub(super) n4w: usize,
+    pub(super) n4h: usize,
+    pub(super) mi_rows: usize,
+    pub(super) mi_cols: usize,
+    pub(super) info: crate::filters::wienerns_lr::intrabc_records::PendingIntrabcInfo,
+    pub(super) spatial: crate::filters::wienerns_lr::intrabc_ref_mv_stack::SpatialIntrabcProbes,
+    pub(super) residual: Option<InterResidual>,
+    pub(super) segment_id: u8,
+    pub(super) qindex: u32,
+    pub(super) luma_use_tcq: bool,
+    pub(super) residual_use_ddt: bool,
+    pub(super) bit_depth: BitDepth,
+    pub(super) subsampling: (u32, u32),
+}
+
+pub(super) fn pending_intrabc_leaf(
+    pending: PendingIntrabcBlock,
+    dependency: ReconDependency,
+) -> ParsedLeaf {
+    let motion = LeafMotion {
+        mi_row: pending.frontier.r,
+        mi_col: pending.frontier.c,
+        kind: LeafMotionKind::Pending,
+    };
+    ParsedLeaf {
+        command: None,
+        dependency,
+        motion,
+        pending: Some(PendingMotionBlock::Intrabc(pending)),
+    }
 }
 
 impl PendingInterBlock {
@@ -147,20 +204,20 @@ pub(super) fn pending_inter_leaf(
     let motion = LeafMotion {
         mi_row: syntax.block_ctx.mi_row,
         mi_col: syntax.block_ctx.mi_col,
-        kind: LeafMotionKind::Inter,
+        kind: LeafMotionKind::Pending,
     };
     ParsedLeaf {
         command: None,
         dependency,
         motion,
-        pending: Some(PendingInterBlock {
+        pending: Some(PendingMotionBlock::Inter(PendingInterBlock {
             syntax,
             geometry,
             kind,
             segment_id: current_frame_qm_segment_id(),
             qindex,
             frame_precision,
-        }),
+        })),
     }
 }
 
@@ -172,7 +229,7 @@ pub(super) fn pending_inter_leaf(
 /// than silently skew.
 pub(super) fn resolve_parsed_leaves(
     queue: &mut Vec<LeafMotion>,
-    pending: &mut Vec<PendingInterBlock>,
+    pending: &mut Vec<PendingMotionBlock>,
     entries: &mut [ReconRowEntry],
     state: &mut MvResolutionState<'_>,
     sb_h4: usize,
@@ -186,10 +243,17 @@ pub(super) fn resolve_parsed_leaves(
             SPEC_MODE_INFO
         ));
     }
+    let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
     let mut pending = pending.drain(..);
     for (leaf, entry) in queue.drain(..).zip(entries.iter_mut()) {
         if let Some(bank) = state.ref_mv_bank.as_mut() {
-            bank.reset_for_leaf(state.grid, leaf.mi_row, leaf.mi_col, sb_h4);
+            bank.reset_for_leaf(
+                state.grid,
+                leaf.mi_row,
+                leaf.mi_col,
+                intrabc_sb_h4,
+                state.core.frame_is_intra != Some(true),
+            );
         }
         state
             .warp_param_bank
@@ -205,10 +269,16 @@ pub(super) fn resolve_parsed_leaves(
                     ZERO_NEIGHBOUR_MOTION_VALUES,
                 );
                 if let Some(bank) = state.ref_mv_bank.as_mut() {
-                    bank.update_count_for_non_inter(leaf.mi_row, leaf.mi_col, n4w, n4h, sb_h4);
+                    bank.update_count_for_non_inter(
+                        leaf.mi_row,
+                        leaf.mi_col,
+                        n4w,
+                        n4h,
+                        intrabc_sb_h4,
+                    );
                 }
             }
-            LeafMotionKind::Inter => {
+            LeafMotionKind::Pending => {
                 let Some(block) = pending.next() else {
                     return Err(inter_cap!(
                         "inter_resolve_pending_missing",
@@ -217,11 +287,159 @@ pub(super) fn resolve_parsed_leaves(
                         SPEC_MODE_INFO
                     ));
                 };
-                entry.command = Some(ReconCommand::Inter(resolve_pending_inter(block, state)?));
+                entry.command = Some(match block {
+                    PendingMotionBlock::Inter(block) => {
+                        ReconCommand::Inter(resolve_pending_inter(block, state)?)
+                    }
+                    PendingMotionBlock::Intrabc(block) => {
+                        ReconCommand::Intrabc(resolve_pending_intrabc(block, state, intrabc_sb_h4)?)
+                    }
+                });
             }
         }
     }
+    if pending.next().is_some() {
+        return Err(inter_cap!(
+            "inter_resolve_pending_leftover",
+            state.tile_offset,
+            "inter.row.resolve_queue",
+            SPEC_MODE_INFO
+        ));
+    }
     Ok(())
+}
+
+pub(super) fn effective_intrabc_sb_h4(sb_h4: usize, frame_is_intra: bool) -> usize {
+    if frame_is_intra { sb_h4.min(32) } else { sb_h4 }
+}
+
+fn resolve_pending_intrabc(
+    pending: PendingIntrabcBlock,
+    state: &mut MvResolutionState<'_>,
+    sb_h4: usize,
+) -> Result<intrabc::IntrabcReconCommand> {
+    use crate::filters::wienerns_lr::intrabc_records::resolve_pending_intrabc_info;
+    use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
+        DrlReorderMode, IntrabcStackAdmission, IntrabcStackGeometry,
+        intrabc_ref_stack_admission_from_candidates,
+    };
+
+    let PendingIntrabcBlock {
+        frontier,
+        n4w,
+        n4h,
+        mi_rows,
+        mi_cols,
+        info,
+        spatial,
+        residual,
+        segment_id,
+        qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        subsampling,
+    } = pending;
+    let spatial = spatial.resolve(|row, col| state.grid.intrabc_mv_at(row, col));
+    let block = MvBlockContext {
+        mi_row: frontier.r,
+        mi_col: frontier.c,
+        bw4: n4w,
+        bh4: n4h,
+        sb_h4,
+        ref_frame0: INTRABC_REF_FRAME,
+        ref_frame1: None,
+        mi_rows,
+        mi_cols,
+    };
+    let bank_candidates = state
+        .ref_mv_bank
+        .as_ref()
+        .map_or_else(Vec::new, |bank| bank.intrabc_candidates(&block));
+    let drl_reorder = match state.drl_reorder {
+        DrlReorder::Always => DrlReorderMode::Always,
+        DrlReorder::Constraint => DrlReorderMode::Constraint,
+        DrlReorder::Disabled => DrlReorderMode::Disabled,
+    };
+    let stack_geometry = IntrabcStackGeometry {
+        mi_row: frontier.r,
+        mi_col: frontier.c,
+        n4w,
+        n4h,
+        sb_samples: i32::try_from(sb_h4.saturating_mul(4)).unwrap_or(i32::MAX),
+        frame_w: i32::try_from(block.mi_cols.saturating_mul(4)).unwrap_or(i32::MAX),
+        frame_h: i32::try_from(block.mi_rows.saturating_mul(4)).unwrap_or(i32::MAX),
+        max_bvp_drl_bits_minus_1: info.max_bvp_drl_bits_minus_1(),
+    };
+    let pred_mv = match intrabc_ref_stack_admission_from_candidates(
+        &bank_candidates,
+        stack_geometry,
+        &spatial,
+        state.ref_mv_bank.is_some(),
+        drl_reorder,
+        info.ref_mv_idx(),
+    ) {
+        IntrabcStackAdmission::Admit { selected } => selected,
+        IntrabcStackAdmission::Defer => {
+            return Err(inter_cap!(
+                "inter_intrabc_ref_stack",
+                state.tile_offset,
+                "inter.intrabc.ref_stack",
+                "7.12.2"
+            ));
+        }
+    };
+    let info = resolve_pending_intrabc_info(info, pred_mv);
+    let mv = Mv {
+        row: info.block_mv.row,
+        col: info.block_mv.col,
+    };
+    let prediction = intrabc::IntrabcReconPrediction::derive(
+        state.core,
+        &frontier,
+        n4w,
+        n4h,
+        info,
+        subsampling,
+        state.tile_offset,
+    )?;
+    let command = intrabc::IntrabcReconCommand::new(
+        prediction,
+        residual,
+        segment_id,
+        qindex,
+        luma_use_tcq,
+        residual_use_ddt,
+        bit_depth,
+        state.tile_offset,
+    );
+    state.grid.record_motion(
+        frontier.r,
+        frontier.c,
+        n4w,
+        n4h,
+        NeighbourMotionValues {
+            mv: [mv, Mv::ZERO],
+            cwp_weight: mc::CWP_EQUAL,
+            stored_warp: None,
+            splat_warp: [None, None],
+        },
+    );
+    if let Some(bank) = state.ref_mv_bank.as_mut() {
+        bank.update_for_block(
+            INTRABC_REF_FRAME,
+            None,
+            mv,
+            None,
+            mc::CWP_EQUAL,
+            frontier.r,
+            frontier.c,
+            n4w,
+            n4h,
+            sb_h4,
+        );
+    }
+    Ok(command)
 }
 
 fn resolve_pending_inter(

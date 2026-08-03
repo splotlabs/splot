@@ -1783,6 +1783,8 @@ pub(crate) mod read_mv;
 pub(crate) mod reference;
 mod single_ref;
 
+#[cfg(test)]
+pub(crate) use block::prepare_intrabc_leaf_entry;
 pub(crate) use block::{
     InterBlockFacts, InterDecodeScratch, InterFilterInputs, InterFrameParse,
     ScheduledFrameProgress, decode_inter_blocks, parse_inter_frame_blocks,

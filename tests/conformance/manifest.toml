@@ -1454,6 +1454,11 @@ description = "Procedural 525-byte AVM mixed luma loop-restoration fixture. Both
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-2frame-lr-switchable-unit-wienerns-128x64-q100.ivf"
+description = "Minimal deterministic AVMenc luma RESTORE_SWITCHABLE fixture with frame_filters_on equal to 0 and per-unit Wiener NS syntax. Pre-fix splot rejected it at the loop-restoration partition walk; fixed splot, pinned avmdec, and current avmdec produce the same 24,576-byte raw I420 SHA-256 956a9b73f17edbcdb396706662153bd38a16b606f17453a86be065069b842bf0; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-gdf-intra-128x128.ivf"
 description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
