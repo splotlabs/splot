@@ -316,6 +316,58 @@ fn fixed_filter_rejects_out_of_range_subclass_without_writing() {
 }
 
 #[test]
+fn padded_u16_lane_groups_match_the_callback_reference() {
+    let radius = PC_WIENER_FILTER_TAP_RADIUS;
+    for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+        let max = i64::from(bit_depth.max_sample());
+        for &width in &[4, 7, 8, 16, 31, 32, 64, 67, 100, 128, 191] {
+            let height = 3;
+            let source_at = |x: isize, y: isize| -> u16 {
+                let index = x as i64 * 7 + y as i64 * 3;
+                match index.rem_euclid(4) {
+                    0 => max as u16,
+                    1 => 0,
+                    _ => (index * 29).rem_euclid(max + 1) as u16,
+                }
+            };
+            for (filter_set_index, run) in [(0, 1), (1, 5), (2, 16), (3, width)] {
+                let subclasses: Vec<usize> = (0..width * height)
+                    .map(|index| (index / run) % 64)
+                    .collect();
+                let params = PcWienerFilter {
+                    width,
+                    height,
+                    output_stride: width,
+                    bit_depth,
+                    filter_set_index,
+                    subclass_block_size: 1,
+                    subclasses: &subclasses,
+                };
+                let mut reference = vec![0u16; width * height];
+                pc_wiener_filter_block(&mut reference, &params, |x, y| Ok(source_at(x, y)))
+                    .unwrap();
+                let stride = width + 2 * radius + 1;
+                let padded: Vec<u16> = (0..(height + 2 * radius) * stride)
+                    .map(|index| {
+                        source_at(
+                            (index % stride) as isize - radius as isize,
+                            (index / stride) as isize - radius as isize,
+                        )
+                    })
+                    .collect();
+                let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+                let mut actual = vec![0u16; width * height];
+                pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
+                assert_eq!(
+                    actual, reference,
+                    "{bit_depth:?} width {width} {filter_set_index}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn padded_and_callback_filters_match_bit_exactly() {
     let width = 31;
     let height = 5;

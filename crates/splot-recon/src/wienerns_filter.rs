@@ -123,7 +123,7 @@ pub struct WienerNsLumaScratch<T> {
 struct PreparedLumaClass {
     center_scale: i32,
     pairs: [(usize, usize, usize, usize, i32); WIENER_NS_LUMA_COEFFS],
-    flat_pairs: [(usize, usize, i32); WIENER_NS_LUMA_COEFFS],
+    flat_pairs: [(usize, usize, i16); WIENER_NS_LUMA_COEFFS],
     pair_count: usize,
 }
 
@@ -398,7 +398,7 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
                     flat_pairs[pair_count] = (
                         (dy + radius) as usize * stride + (dx + radius) as usize,
                         (-dy + radius) as usize * stride + (-dx + radius) as usize,
-                        i32::from(coeff),
+                        coeff,
                     );
                     pair_count += 1;
                 }
@@ -725,7 +725,8 @@ fn filter_luma_segment_u16(
         let sample = base + col + offset;
         let mut sum = class.center_scale * i32::from(samples[sample + center_offset]);
         for &(plus, minus, coeff) in pairs {
-            sum += coeff * (i32::from(samples[sample + plus]) + i32::from(samples[sample + minus]));
+            sum += i32::from(coeff)
+                * (i32::from(samples[sample + plus]) + i32::from(samples[sample + minus]));
         }
         *slot = round2_i32(sum, WIENER_NS_PREC_BITS).clamp(0, i32::from(max_sample)) as u16;
     }
@@ -734,7 +735,10 @@ fn filter_luma_segment_u16(
 /// One `LANES`-wide group of [`filter_luma_segment_u16`].
 ///
 /// `Round2` is expanded as `(sum >> n) + ((sum >> (n - 1)) & 1)`, which is the
-/// definition of [`round2_i32`] for every `i32` and cannot overflow.
+/// definition of [`round2_i32`] for every `i32` and cannot overflow. `plus +
+/// minus` stays in `i16` lanes because § 6 Table 6.3 caps `BitDepth` at 10 and
+/// this path only runs over rows validated against `max_sample`, so both
+/// multiply factors are 16-bit and the widening folds into the accumulate.
 #[allow(clippy::inline_always, reason = "measured Wiener NS luma hot path")]
 #[inline(always)]
 fn filter_luma_lanes<const LANES: usize>(
@@ -742,16 +746,16 @@ fn filter_luma_lanes<const LANES: usize>(
     samples: &[u16],
     base: usize,
     center_offset: usize,
-    pairs: &[(usize, usize, i32)],
+    pairs: &[(usize, usize, i16)],
     center_scale: i32,
     max_sample: u16,
 ) {
     let mut sum = Simd::<u16, LANES>::from_slice(&samples[base + center_offset..]).cast::<i32>()
         * Simd::splat(center_scale);
     for &(plus, minus, coeff) in pairs {
-        let plus = Simd::<u16, LANES>::from_slice(&samples[base + plus..]).cast::<i32>();
-        let minus = Simd::<u16, LANES>::from_slice(&samples[base + minus..]).cast::<i32>();
-        sum += (plus + minus) * Simd::splat(coeff);
+        let plus = Simd::<u16, LANES>::from_slice(&samples[base + plus..]).cast::<i16>();
+        let minus = Simd::<u16, LANES>::from_slice(&samples[base + minus..]).cast::<i16>();
+        sum += (plus + minus).cast::<i32>() * Simd::<i16, LANES>::splat(coeff).cast::<i32>();
     }
     let shift = WIENER_NS_PREC_BITS as i32;
     let rounded = (sum >> Simd::splat(shift)) + ((sum >> Simd::splat(shift - 1)) & Simd::splat(1));
@@ -1073,8 +1077,10 @@ mod tests {
                 (31, 2),
                 (32, 2),
                 (37, 3),
+                (64, 2),
                 (67, 2),
                 (100, 2),
+                (128, 2),
             ] {
                 let coeffs: Vec<[i16; WIENER_NS_LUMA_COEFFS]> = (0..3)
                     .map(|_| core::array::from_fn(|_| (next() % 65) as i16 - 32))
@@ -1084,7 +1090,11 @@ mod tests {
                     .collect();
                 let stride = width + 2 * WIENER_NS_LUMA_TAP_RADIUS + (next() % 3) as usize;
                 let padded: Vec<u16> = (0..(height + 2 * WIENER_NS_LUMA_TAP_RADIUS) * stride)
-                    .map(|_| (next() % max) as u16)
+                    .map(|index| match index % 4 {
+                        0 => bit_depth.max_sample(),
+                        1 => 0,
+                        _ => (next() % max) as u16,
+                    })
                     .collect();
                 let source_at = |x: isize, y: isize| -> u16 {
                     let radius = WIENER_NS_LUMA_TAP_RADIUS as isize;

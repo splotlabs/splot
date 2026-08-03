@@ -1662,6 +1662,18 @@ fn filter_pc_wiener_padded_u16(
             &params.subclasses[subclass_row * subclass_cols..(subclass_row + 1) * subclass_cols];
         let row_base = row * stride;
         let output = &mut destination[row * params.output_stride..][..params.width];
+        let center_row = &samples[row_base + center_offset..][..params.width];
+        let mut tap_rows: [(&[u16], &[u16]); PC_WIENER_CONFIG.len()] =
+            [(&[], &[]); PC_WIENER_CONFIG.len()];
+        for (tap, (&pos, &neg)) in tap_rows
+            .iter_mut()
+            .zip(pos_offsets.iter().zip(neg_offsets.iter()))
+        {
+            *tap = (
+                &samples[row_base + pos..][..params.width],
+                &samples[row_base + neg..][..params.width],
+            );
+        }
         let mut c0 = 0usize;
         while c0 < params.width {
             let subclass_col = c0 / params.subclass_block_size;
@@ -1672,18 +1684,21 @@ fn filter_pc_wiener_padded_u16(
             }
             let c1 = (subclass_end * params.subclass_block_size).min(params.width);
             let coeffs = &filters[subclass];
+            let mut coeffs16 = [0i16; 13];
+            for (slot, &coeff) in coeffs16.iter_mut().zip(coeffs) {
+                *slot = coeff as i16;
+            }
+            coeffs16[12] = ((1 << PC_WIENER_PREC_BITS) + coeffs[12]) as i16;
             let mut col = c0;
             macro_rules! filter_chunks {
                 ($lanes:literal) => {
                     while col + $lanes <= c1 {
                         filter_pc_wiener_padded_u16_simd::<$lanes>(
                             &mut output[col..],
-                            samples,
-                            row_base + col,
-                            center_offset,
-                            pos_offsets,
-                            neg_offsets,
-                            coeffs,
+                            center_row,
+                            &tap_rows,
+                            col,
+                            &coeffs16,
                             max_sample,
                         );
                         col += $lanes;
@@ -1711,24 +1726,27 @@ fn filter_pc_wiener_padded_u16(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::inline_always)]
+/// One `LANES`-wide group of [`filter_pc_wiener_padded_u16`], with both § 7.20.4
+/// multiply factors paired as `i16`: `Pc_Wiener_Filters` spans `-208..=127`, and
+/// § 6 Table 6.3 caps `BitDepth` at 10 over a source this path has already
+/// validated, so `plus + minus` is at most 2046 and `coeffs[12]` carries the
+/// folded `(1 << PC_WIENER_PREC_BITS) + centerCoeff` scale.
+#[allow(clippy::inline_always)]
 #[inline(always)]
 fn filter_pc_wiener_padded_u16_simd<const LANES: usize>(
     output: &mut [u16],
-    samples: &[u16],
-    base: usize,
-    center_offset: usize,
-    pos_offsets: &[usize; PC_WIENER_CONFIG.len()],
-    neg_offsets: &[usize; PC_WIENER_CONFIG.len()],
-    coeffs: &[i32; 13],
+    center_row: &[u16],
+    tap_rows: &[(&[u16], &[u16]); PC_WIENER_CONFIG.len()],
+    col: usize,
+    coeffs: &[i16; 13],
     max_sample: u16,
 ) {
-    let center = Simd::<u16, LANES>::from_slice(&samples[base + center_offset..]).cast::<i32>();
-    let mut sum = (center << PC_WIENER_PREC_BITS as i32) + center * Simd::splat(coeffs[12]);
-    for i in 0..PC_WIENER_CONFIG.len() {
-        let plus = Simd::<u16, LANES>::from_slice(&samples[base + pos_offsets[i]..]).cast::<i32>();
-        let minus = Simd::<u16, LANES>::from_slice(&samples[base + neg_offsets[i]..]).cast::<i32>();
-        sum += (plus + minus) * Simd::splat(coeffs[i]);
+    let center = Simd::<u16, LANES>::from_slice(&center_row[col..]).cast::<i16>();
+    let mut sum = center.cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[12]).cast::<i32>();
+    for (i, &(pos, neg)) in tap_rows.iter().enumerate() {
+        let plus = Simd::<u16, LANES>::from_slice(&pos[col..]).cast::<i16>();
+        let minus = Simd::<u16, LANES>::from_slice(&neg[col..]).cast::<i16>();
+        sum += (plus + minus).cast::<i32>() * Simd::<i16, LANES>::splat(coeffs[i]).cast::<i32>();
     }
     let values = ((sum + Simd::splat(1 << (PC_WIENER_PREC_BITS - 1)))
         >> PC_WIENER_PREC_BITS as i32)
