@@ -348,7 +348,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         symbols,
         frame_interpolation_filter,
         compound.use_optflow || refinemv_signalled,
-        !local_warp && compound.y_mode != CompoundYMode::GlobalGlobal,
+        compound_needs_interp_filter(n4w, n4h, compound.y_mode, local_warp),
         neighbour_ctx.interp_filter_ctx(compound.ref_frame0, true),
         tile_offset,
     )?;
@@ -445,6 +445,15 @@ fn resolve_compound_interp_filter(
         ctx,
         tile_offset,
     )
+}
+
+fn compound_needs_interp_filter(
+    n4w: usize,
+    n4h: usize,
+    y_mode: CompoundYMode,
+    local_warp: bool,
+) -> bool {
+    !local_warp && (n4w < 2 || n4h < 2 || y_mode != CompoundYMode::GlobalGlobal)
 }
 
 fn compound_local_warp_signal_allowed(

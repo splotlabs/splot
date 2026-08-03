@@ -6,7 +6,9 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use crate::bitstream::tile_payload::{GeneralIntraResidualError, SupportedChromaMode};
+use crate::bitstream::tile_payload::{
+    GeneralIntraResidualError, IntraYMode, LumaTransformTypeContext, SupportedChromaMode,
+};
 
 impl IntraEdgeAvailability {
     const fn all() -> Self {
@@ -89,6 +91,65 @@ fn inter_secondary_transform_applies_parsed_sec_tx_type() {
     let mut wrong_plane_tx_type = block;
     wrong_plane_tx_type.plane_tx_type = 1;
     assert!(reconstruct(&wrong_plane_tx_type).is_err());
+}
+
+#[test]
+fn cardinal_mrl_luma_applies_intra_secondary_transform() {
+    let mut quant = vec![0; 32 * 16];
+    quant[0] = 1;
+    quant[33] = 1;
+    quant[64] = 1;
+    quant[96] = 2;
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 7,
+        quant,
+        intra_ist: Some(crate::bitstream::tile_payload::IntraIstSyntax {
+            sec_tx_type: 3,
+            most_probable_stx_set: Some(5),
+        }),
+        cctx_type: None,
+        plane_tx_type: 0,
+        use_tcq: true,
+        lossless: false,
+    };
+    let reconstruct = |block: &LumaCoeffBlock| {
+        let mut workspace =
+            new_general_intra_workspace::<u8>(32, 16, BitDepth::Eight, PixelFormat::Yuv420)
+                .unwrap();
+        reconstruct_general_intra_cardinal_mrl_luma_block_into(
+            &mut workspace,
+            block,
+            IntraCardinalDirection::Vertical,
+            0,
+            0,
+            5,
+            4,
+            215,
+            0,
+            0,
+            false,
+            true,
+            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
+            IntraEdgeAvailability {
+                above: false,
+                left: false,
+            },
+            BitDepth::Eight,
+        )
+        .unwrap();
+        (0..16)
+            .flat_map(|y| {
+                let workspace = &workspace;
+                (0..32).map(move |x| workspace.reconstructed_sample(PlaneId::Y, x, y).unwrap())
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let with_ist = reconstruct(&block);
+    let mut without_ist = block;
+    without_ist.intra_ist = None;
+    assert_ne!(with_ist, reconstruct(&without_ist));
 }
 
 #[test]
@@ -659,6 +720,7 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
             above_mrl_index: 1,
         },
         false,
+        LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
@@ -697,6 +759,7 @@ fn cardinal_mrl_synthesizes_both_missing_edges() {
             0,
             false,
             false,
+            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
             IntraEdgeAvailability {
                 above: false,
                 left: false,

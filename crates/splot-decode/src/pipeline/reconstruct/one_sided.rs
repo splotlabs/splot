@@ -224,6 +224,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
     num4_above_right: usize,
     primary_mrl: OneSidedAboveMrl,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -286,7 +287,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_above_block_into<T: ReconS
         block_size,
         qindex,
         use_tcq,
-        None,
+        Some(luma_context),
         None,
         bit_depth,
     )
@@ -306,6 +307,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
     above_mrl_index: usize,
     secondary_mrl: bool,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     availability: IntraEdgeAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -346,7 +348,7 @@ pub(crate) fn reconstruct_general_intra_cardinal_mrl_luma_block_into<T: ReconSam
         block_size,
         qindex,
         use_tcq,
-        None,
+        Some(luma_context),
         None,
         bit_depth,
     )
@@ -715,6 +717,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
     mrl_index: usize,
     above_mrl_index: usize,
     use_tcq: bool,
+    luma_context: LumaTransformTypeContext,
     have_left: bool,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -778,7 +781,7 @@ pub(crate) fn reconstruct_general_intra_mrl_secondary_left_block_into<T: ReconSa
         block_size,
         qindex,
         use_tcq,
-        None,
+        Some(luma_context),
         None,
         bit_depth,
     )
