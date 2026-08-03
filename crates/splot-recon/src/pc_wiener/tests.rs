@@ -129,6 +129,41 @@ fn grid_classification_matches_scalar_cells_and_reuses_features() {
 }
 
 #[test]
+fn grid_classification_matches_scalar_cells_across_shapes_and_clamps() {
+    let source = |x: isize, y: isize| {
+        Ok(u8::try_from((7 * x - 11 * y + 3 * x * y).rem_euclid(233) + 11).unwrap())
+    };
+    let tx_skip =
+        |lookup: PcWienerTxSkipLookup| Ok(i32::from((lookup.row * 3 + lookup.col * 5) % 3 == 1));
+    for cell_cols in 1..=10usize {
+        for cell_rows in 1..=4usize {
+            for block_end_x in [2usize, 7, 27, 63, 200] {
+                let mut params = params(BitDepth::Eight);
+                params.x = 8;
+                params.y = 8;
+                params.base_q_idx = 96;
+                params.block_end_x = block_end_x;
+                let grid = pc_wiener_classify_grid::<u8, _, _>(
+                    &params, cell_cols, cell_rows, source, tx_skip,
+                )
+                .unwrap();
+                let mut scalar = Vec::new();
+                for row in 0..cell_rows {
+                    for col in 0..cell_cols {
+                        let mut cell = params;
+                        cell.x += isize::try_from(col * PC_WIENER_BLOCK_SIZE).unwrap();
+                        cell.y += isize::try_from(row * PC_WIENER_BLOCK_SIZE).unwrap();
+                        scalar
+                            .push(pc_wiener_classify::<u8, _, _>(&cell, source, tx_skip).unwrap());
+                    }
+                }
+                assert_eq!(grid, scalar, "{cell_cols}x{cell_rows} end {block_end_x}");
+            }
+        }
+    }
+}
+
+#[test]
 fn tx_skip_lookup_clips_to_block_stripe_and_tile_bounds() {
     let params = PcWienerClassifyParams {
         x: 70,
