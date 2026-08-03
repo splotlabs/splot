@@ -614,31 +614,34 @@ fn filter_chroma_padded_u16(
         let vector_width = params.width - params.width % LANES;
         for c in (0..vector_width).step_by(LANES) {
             let center = Simd::<u16, LANES>::from_slice(&chroma[chroma_base + center_offset + c..])
-                .cast::<i32>();
-            let mut sum = center << WIENER_NS_PREC_BITS as i32;
+                .cast::<i16>();
+            let mut sum = center.cast::<i32>() << WIENER_NS_PREC_BITS as i32;
+            let twice_center = center + center;
             for &(dy, dx, coeff_index) in &WIENER_NS_CONFIG_UV_PAIRS {
-                let coeff = i32::from(params.coeffs[coeff_index]);
+                let coeff = params.coeffs[coeff_index];
                 let plus = Simd::<u16, LANES>::from_slice(
                     &chroma[chroma_base + padded_tap_offset(chroma_stride, dy, dx) + c..],
                 )
-                .cast::<i32>();
+                .cast::<i16>();
                 let minus = Simd::<u16, LANES>::from_slice(
                     &chroma[chroma_base + padded_tap_offset(chroma_stride, -dy, -dx) + c..],
                 )
-                .cast::<i32>();
-                sum += (plus + minus - center * Simd::splat(2)) * Simd::splat(coeff);
+                .cast::<i16>();
+                sum += (plus + minus - twice_center).cast::<i32>()
+                    * Simd::<i16, LANES>::splat(coeff).cast::<i32>();
             }
             let luma_center =
                 Simd::<u16, LANES>::from_slice(&luma_ds[luma_base + luma_center_offset + c..])
-                    .cast::<i32>();
+                    .cast::<i16>();
             for (tap_index, &(dy, dx, _)) in WIENER_NS_CONFIG_UV.iter().enumerate() {
-                let coeff = i32::from(params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS]);
+                let coeff = params.coeffs[tap_index + WIENER_NS_CHROMA_COEFF_SLOTS];
                 if coeff != 0 {
                     let tap = Simd::<u16, LANES>::from_slice(
                         &luma_ds[luma_base + padded_tap_offset(luma_stride, dy, dx) + c..],
                     )
-                    .cast::<i32>();
-                    sum += (tap - luma_center) * Simd::splat(coeff);
+                    .cast::<i16>();
+                    sum += (tap - luma_center).cast::<i32>()
+                        * Simd::<i16, LANES>::splat(coeff).cast::<i32>();
                 }
             }
             let values = ((sum + Simd::splat(1 << (WIENER_NS_PREC_BITS - 1)))
@@ -1080,6 +1083,50 @@ mod tests {
             luma_end_x: 15,
             mi_rows: 4,
             cfl_ds_filter_index: 0,
+        }
+    }
+
+    #[test]
+    fn padded_u16_chroma_lanes_match_the_scalar_kernel() {
+        const RADIUS: usize = WIENER_NS_CHROMA_TAP_RADIUS;
+        let mut coeffs = ZERO_CHROMA;
+        for (index, coeff) in coeffs.iter_mut().enumerate() {
+            *coeff = (index as i16 * 13 % 41) - 20;
+        }
+        for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+            let max = bit_depth.max_sample();
+            for &width in &[64, 65, 70, 127, 128, 191, 200] {
+                let height = 3;
+                let stride = width + 2 * RADIUS;
+                let plane = |seed: usize| -> Vec<u16> {
+                    (0..stride * (height + 2 * RADIUS))
+                        .map(|index| match (index + seed) % 4 {
+                            0 => max,
+                            1 => 0,
+                            _ => ((index * 37 + seed) % (usize::from(max) + 1)) as u16,
+                        })
+                        .collect()
+                };
+                let chroma = plane(0);
+                let luma_ds = plane(3);
+                let params = chroma_params(width, height, width, bit_depth, &coeffs);
+                let mut lanes = vec![0u16; width * height];
+                let mut scalar = vec![0u16; width * height];
+                filter_chroma_padded_u16(
+                    &mut lanes, &params, &chroma, stride, &luma_ds, stride, max,
+                );
+                filter_chroma_padded_scalar(
+                    &mut scalar,
+                    &params,
+                    &chroma,
+                    stride,
+                    &luma_ds,
+                    stride,
+                    max,
+                )
+                .unwrap();
+                assert_eq!(lanes, scalar, "{bit_depth:?} width {width}");
+            }
         }
     }
 

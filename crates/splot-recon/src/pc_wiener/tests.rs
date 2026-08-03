@@ -129,6 +129,41 @@ fn grid_classification_matches_scalar_cells_and_reuses_features() {
 }
 
 #[test]
+fn grid_classification_matches_scalar_cells_across_shapes_and_clamps() {
+    let source = |x: isize, y: isize| {
+        Ok(u8::try_from((7 * x - 11 * y + 3 * x * y).rem_euclid(233) + 11).unwrap())
+    };
+    let tx_skip =
+        |lookup: PcWienerTxSkipLookup| Ok(i32::from((lookup.row * 3 + lookup.col * 5) % 3 == 1));
+    for cell_cols in 1..=10usize {
+        for cell_rows in 1..=4usize {
+            for block_end_x in [2usize, 7, 27, 63, 200] {
+                let mut params = params(BitDepth::Eight);
+                params.x = 8;
+                params.y = 8;
+                params.base_q_idx = 96;
+                params.block_end_x = block_end_x;
+                let grid = pc_wiener_classify_grid::<u8, _, _>(
+                    &params, cell_cols, cell_rows, source, tx_skip,
+                )
+                .unwrap();
+                let mut scalar = Vec::new();
+                for row in 0..cell_rows {
+                    for col in 0..cell_cols {
+                        let mut cell = params;
+                        cell.x += isize::try_from(col * PC_WIENER_BLOCK_SIZE).unwrap();
+                        cell.y += isize::try_from(row * PC_WIENER_BLOCK_SIZE).unwrap();
+                        scalar
+                            .push(pc_wiener_classify::<u8, _, _>(&cell, source, tx_skip).unwrap());
+                    }
+                }
+                assert_eq!(grid, scalar, "{cell_cols}x{cell_rows} end {block_end_x}");
+            }
+        }
+    }
+}
+
+#[test]
 fn tx_skip_lookup_clips_to_block_stripe_and_tile_bounds() {
     let params = PcWienerClassifyParams {
         x: 70,
@@ -313,6 +348,58 @@ fn fixed_filter_rejects_out_of_range_subclass_without_writing() {
         }
     );
     assert_eq!(output, [7]);
+}
+
+#[test]
+fn padded_u16_lane_groups_match_the_callback_reference() {
+    let radius = PC_WIENER_FILTER_TAP_RADIUS;
+    for &bit_depth in &[BitDepth::Eight, BitDepth::Ten] {
+        let max = i64::from(bit_depth.max_sample());
+        for &width in &[4, 7, 8, 16, 31, 32, 64, 67, 100, 128, 191] {
+            let height = 3;
+            let source_at = |x: isize, y: isize| -> u16 {
+                let index = x as i64 * 7 + y as i64 * 3;
+                match index.rem_euclid(4) {
+                    0 => max as u16,
+                    1 => 0,
+                    _ => (index * 29).rem_euclid(max + 1) as u16,
+                }
+            };
+            for (filter_set_index, run) in [(0, 1), (1, 5), (2, 16), (3, width)] {
+                let subclasses: Vec<usize> = (0..width * height)
+                    .map(|index| (index / run) % 64)
+                    .collect();
+                let params = PcWienerFilter {
+                    width,
+                    height,
+                    output_stride: width,
+                    bit_depth,
+                    filter_set_index,
+                    subclass_block_size: 1,
+                    subclasses: &subclasses,
+                };
+                let mut reference = vec![0u16; width * height];
+                pc_wiener_filter_block(&mut reference, &params, |x, y| Ok(source_at(x, y)))
+                    .unwrap();
+                let stride = width + 2 * radius + 1;
+                let padded: Vec<u16> = (0..(height + 2 * radius) * stride)
+                    .map(|index| {
+                        source_at(
+                            (index % stride) as isize - radius as isize,
+                            (index / stride) as isize - radius as isize,
+                        )
+                    })
+                    .collect();
+                let source = PcWienerPaddedSource::new(&padded, stride, width, height).unwrap();
+                let mut actual = vec![0u16; width * height];
+                pc_wiener_filter_block_padded(&mut actual, &params, &source).unwrap();
+                assert_eq!(
+                    actual, reference,
+                    "{bit_depth:?} width {width} {filter_set_index}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
