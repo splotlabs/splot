@@ -268,6 +268,22 @@ fn compound_optflow_forces_sharp_interp_without_symbols() {
 }
 
 #[test]
+fn narrow_global_compound_block_needs_interp_filter() {
+    assert!(compound_needs_interp_filter(
+        1,
+        4,
+        CompoundYMode::GlobalGlobal,
+        false
+    ));
+    assert!(!compound_needs_interp_filter(
+        2,
+        2,
+        CompoundYMode::GlobalGlobal,
+        false
+    ));
+}
+
+#[test]
 fn compound_simple_motion_consumes_local_warp_gate() {
     let (mode_ctx, neighbour_ctx) = compound_motion_contexts();
     assert!(mode_ctx.warp_sample_found && mode_ctx.warp_sample_found1);

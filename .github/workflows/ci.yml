@@ -135,7 +135,7 @@ jobs:
   dav2d-test-data:
     runs-on: ubuntu-latest
     env:
-      DAV2D_TEST_DATA_REV: ff12d7e790bfe015c86e1a4dc87883e6a1142c1d
+      DAV2D_TEST_DATA_REV: ec53c12d4170372c1ad71532217a204e1553f898
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -171,25 +171,32 @@ jobs:
           pattern = re.compile(
               r"\['([^']+)',\s*files\('([^']+)'\),\s*'([0-9a-f]{32})'\]"
           )
-          entries = {name: (path, digest) for name, path, digest in pattern.findall(manifest)}
-          required = [
-              "avm-v15.0.0-bus.352x288.l1.partial_lossless",
-              "avm-v15.0.0-bus.352x288.l10.deltaq1",
-              "avm-v15.0.0-bus.352x288.l5.seg1",
-              "avm-v15.0.0-hm.64x64.l5.filmgrain",
-              "avm-v15.0.0-bus.64x64.l1.sdp0",
-              "avm-v15.0.0-bus.64x64.l1.sdp1",
-              "avm-v15.0.0-bus.64x64.l5.lossless",
-              "avm-v15.0.0-bus.64x64.l5",
-              "avm-v15.0.0-bus.64x64.l5.opfl0-refinemv0",
-          ]
-          missing = sorted(set(required) - entries.keys())
-          if missing:
-              raise SystemExit(f"missing upstream test entries: {missing}")
+          entries = pattern.findall(manifest)
+          if not entries:
+              raise SystemExit("upstream AVM manifest contains no test entries")
+
+          names = [name for name, _, _ in entries]
+          paths = [path for _, path, _ in entries]
+          if len(names) != len(set(names)):
+              raise SystemExit("upstream AVM manifest contains duplicate test names")
+          if len(paths) != len(set(paths)):
+              raise SystemExit("upstream AVM manifest contains duplicate test paths")
+
+          avm_root = root / "avm"
+          listed = set(paths)
+          present = {
+              path.relative_to(avm_root).as_posix()
+              for path in avm_root.rglob("*.obu")
+          }
+          missing = sorted(listed - present)
+          unlisted = sorted(present - listed)
+          if missing or unlisted:
+              raise SystemExit(
+                  f"upstream AVM manifest/file mismatch: missing={missing}, unlisted={unlisted}"
+              )
 
           with tempfile.TemporaryDirectory() as temp:
-              for name in required:
-                  relative, expected = entries[name]
+              for name, relative, expected in sorted(entries):
                   output = pathlib.Path(temp) / f"{name}.raw"
                   subprocess.run(
                       [
@@ -199,7 +206,7 @@ jobs:
                           "--threads=1",
                           "--output-format=raw",
                           f"--output={output}",
-                          root / "avm" / relative,
+                          avm_root / relative,
                       ],
                       check=True,
                   )
@@ -207,6 +214,7 @@ jobs:
                   if actual != expected:
                       raise SystemExit(f"{name}: expected {expected}, got {actual}")
                   print(f"{name}: {actual}")
+          print(f"verified all {len(entries)} upstream AVM streams")
           PY
 
   # Supply-chain policy. The deterministic checks (bans, licenses, sources) gate the

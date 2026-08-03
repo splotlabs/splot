@@ -342,6 +342,7 @@ impl ResidualPlanePlan {
                         neighbours.num_above_right(),
                         mrl,
                         use_tcq,
+                        luma_context,
                         availability,
                         block_ctx.bit_depth(),
                     )
@@ -469,6 +470,7 @@ impl ResidualPlanePlan {
                         mrl_index,
                         above_mrl_index,
                         use_tcq,
+                        luma_context,
                         availability.left,
                         block_ctx.bit_depth(),
                     )
@@ -517,6 +519,7 @@ impl ResidualPlanePlan {
                     above_mrl_index,
                     secondary_mrl,
                     use_tcq,
+                    luma_context,
                     EdgeAvail::new(edges.has_above(), edges.has_left()),
                     block_ctx.bit_depth(),
                 )
