@@ -446,6 +446,88 @@ pub(super) fn subpel_horizontal_only_into<T: ReconSample, O>(
     }
 }
 
+/// Reports the first source row of an unscaled vertical-pass block whose whole
+/// `h + NUM_TAPS - 1` tap-row window already lies inside `[firstY, lastY]` and
+/// inside the plane, so every § 7.13.3.18 `Clip3` and the plane clamp are the
+/// identity and the tap rows sit exactly `stride` apart.
+fn vertical_interior_top<T: ReconSample>(
+    reference: &ReferencePlaneView<'_, T>,
+    params: &SubpelPredictParams,
+    y0: i32,
+) -> Option<usize> {
+    let top = usize::try_from(i64::from(y0) - 3).ok()?;
+    let bottom = top + params.h + NUM_TAPS - 2;
+    (i64::from(params.first_y) <= top as i64
+        && bottom as i64 <= i64::from(params.last_y)
+        && bottom < reference.height)
+        .then_some(top)
+}
+
+/// Runs the § 7.13.3.18 vertical pass over a block whose tap rows need no
+/// clipping.
+///
+/// The eight taps run over the whole filter row instead of its active span: a
+/// zero tap contributes exactly zero to the integer accumulator, so the sum and
+/// the order of its non-zero terms are those of the clipped path, while the
+/// constant trip count keeps the tap coefficients and the eight row bases in
+/// registers across the column loop.
+#[allow(clippy::too_many_arguments)]
+fn subpel_vertical_interior_into<O>(
+    source: &[u16],
+    stride: usize,
+    params: &SubpelPredictParams,
+    taps: &[i32; NUM_TAPS],
+    top: usize,
+    x: usize,
+    inter_round1: u32,
+    output: &mut [O],
+    output_stride: usize,
+    finish: &mut impl SubpelOutput<O>,
+) {
+    let vector_width8 = params.w - params.w % 8;
+    let vector_width4 = params.w - params.w % 4;
+    for r in 0..params.h {
+        let base = (top + r) * stride + x;
+        let rows: [&[u16]; NUM_TAPS] =
+            core::array::from_fn(|t| &source[base + t * stride..][..params.w]);
+        let row_out = &mut output[r * output_stride..][..params.w];
+        for c in (0..vector_width8).step_by(8) {
+            let mut sum = Simd::<i32, 8>::splat(0);
+            for t in 0..NUM_TAPS {
+                sum = tap_mac(
+                    sum,
+                    Simd::<u16, 8>::from_slice(&rows[t][c..]).cast(),
+                    taps[t],
+                );
+            }
+            let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
+            finish.eight(values, &mut row_out[c..c + 8]);
+        }
+        for c in (vector_width8..vector_width4).step_by(4) {
+            let mut sum = Simd::<i32, 4>::splat(0);
+            for t in 0..NUM_TAPS {
+                sum = tap_mac(
+                    sum,
+                    Simd::<u16, 4>::from_slice(&rows[t][c..]).cast(),
+                    taps[t],
+                );
+            }
+            let values = round2_simd(sum << (FILTER_BITS - INTER_ROUND0) as i32, inter_round1);
+            finish.four(values, &mut row_out[c..c + 4]);
+        }
+        for c in vector_width4..params.w {
+            let mut sum = 0i32;
+            for t in 0..NUM_TAPS {
+                sum += taps[t] * i32::from(rows[t][c]);
+            }
+            row_out[c] = finish.one(round2_i32(
+                sum << (FILTER_BITS - INTER_ROUND0),
+                inter_round1,
+            ));
+        }
+    }
+}
+
 pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,
@@ -456,12 +538,33 @@ pub(super) fn subpel_vertical_only_into<T: ReconSample, O>(
 ) {
     let v_filter = params.interp.pass_index(params.h as u32) as usize;
     let phase = ((params.start_y >> 6) & SUBPEL_MASK) as usize;
-    let taps = &SUBPEL_FILTERS[v_filter][phase];
+    let full_taps = &SUBPEL_FILTERS[v_filter][phase];
     let (tap_start, tap_end) = ACTIVE_TAP_SPANS[v_filter][phase];
-    let taps = &taps[tap_start..tap_end];
+    let taps = &full_taps[tap_start..tap_end];
     let x0 = params.start_x >> SCALE_SUBPEL_BITS;
     let y0 = params.start_y >> SCALE_SUBPEL_BITS;
     let direct_x = subpel_direct_copy_x(reference, params);
+
+    if let (Some(x), Some(source), Some(top)) = (
+        direct_x,
+        T::u16_slice(reference.samples),
+        vertical_interior_top(reference, params, y0),
+    ) {
+        subpel_vertical_interior_into(
+            source,
+            reference.stride,
+            params,
+            full_taps,
+            top,
+            x,
+            inter_round1,
+            output,
+            output_stride,
+            finish,
+        );
+        return;
+    }
+
     let mut acc = [0i32; MAX_BLOCK_DIM];
 
     for r in 0..params.h {

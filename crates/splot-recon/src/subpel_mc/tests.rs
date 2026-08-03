@@ -2028,3 +2028,79 @@ fn reference_plane_view_rejects_zero_dimension() {
         Err(ReconError::ZeroDimension { .. })
     ));
 }
+
+/// The vertical-only pass runs a clip-free interior shape whenever the whole
+/// tap-row window is inside `[firstY, lastY]` and the plane, and the clipped
+/// walk otherwise. Sweeping block shapes, tap-window regimes and bit depths
+/// covers both against the § 7.13.3.18 re-trace.
+#[test]
+fn vertical_only_matches_independent_reference_across_shapes() {
+    let ref_w = 160usize;
+    let ref_h = 96usize;
+    let mut state: u64 = 0x5150_c0de_1357_9bdf;
+    let mut next = || {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (state >> 33) as u32
+    };
+    let eight: Vec<u16> = (0..ref_w * ref_h).map(|_| (next() % 256) as u16).collect();
+    let ten: Vec<u16> = (0..ref_w * ref_h).map(|_| (next() % 1024) as u16).collect();
+    let eight = build_ref(eight, ref_w, ref_h);
+    let ten = build_ref(ten, ref_w, ref_h);
+
+    let filters = [
+        InterpolationFilter::EightTap,
+        InterpolationFilter::EightTapSmooth,
+        InterpolationFilter::EightTapSharp,
+        InterpolationFilter::Bilinear,
+    ];
+    let widths = [2usize, 3, 4, 5, 8, 9, 16, 17, 32, 64, 128];
+    let heights = [2usize, 4, 5, 8, 16, 32, 64];
+    let mut case = 0usize;
+    for &w in &widths {
+        for &h in &heights {
+            let bottom = (ref_h - h) as i32;
+            for &base_y in &[-2, 0, 3, bottom / 2, bottom - 4, bottom] {
+                for pad in [0i32, 4, 3] {
+                    case += 1;
+                    let phase_y = 1 + (case % 15) as i32;
+                    let (bit_depth, samples) = if case.is_multiple_of(2) {
+                        (BitDepth::Eight, &eight)
+                    } else {
+                        (BitDepth::Ten, &ten)
+                    };
+                    let (first_y, last_y) = if pad == 0 {
+                        (0, ref_h as i32 - 1)
+                    } else {
+                        (
+                            (base_y - pad + 1).clamp(0, ref_h as i32 - 1),
+                            (base_y + h as i32 + pad - 1).clamp(0, ref_h as i32 - 1),
+                        )
+                    };
+                    let params = SubpelPredictParams {
+                        interp: filters[case % filters.len()],
+                        w,
+                        h,
+                        start_x: 8 << SCALE_SUBPEL_BITS,
+                        start_y: (base_y << SCALE_SUBPEL_BITS) + (phase_y << 6),
+                        step_x: 1 << SCALE_SUBPEL_BITS,
+                        step_y: 1 << SCALE_SUBPEL_BITS,
+                        first_x: 0,
+                        first_y,
+                        last_x: ref_w as i32 - 1,
+                        last_y,
+                        bit_depth,
+                    };
+                    let view = ReferencePlaneView::new(samples, ref_w, ref_h).unwrap();
+                    let out = subpel_predict_block(&view, &params).unwrap();
+                    let want = reference_subpel(samples, ref_w, ref_h, &params);
+                    assert_eq!(
+                        out, want,
+                        "case {case} w={w} h={h} by={base_y} pad={pad} py={phase_y}"
+                    );
+                }
+            }
+        }
+    }
+}
