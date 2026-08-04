@@ -142,6 +142,47 @@ fn mc_worker_scratch_reuses_all_installed_buffers() {
 }
 
 #[test]
+fn nested_mc_install_keeps_the_outer_worker_buffers_active() {
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+    let mut outer = McScratch::default();
+    let mut nested = McScratch::default();
+
+    let pointers = outer.with_installed(|| {
+        let outer_pointer = COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+            slot.take()
+                .map(|buffers| {
+                    let pointer = buffers[0].as_ptr();
+                    slot.set(Some(buffers));
+                    pointer
+                })
+                .expect("outer compound buffers")
+        });
+        let nested_pointer = nested.with_installed(|| {
+            COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+                slot.take()
+                    .map(|buffers| {
+                        let pointer = buffers[0].as_ptr();
+                        slot.set(Some(buffers));
+                        pointer
+                    })
+                    .expect("nested compound buffers")
+            })
+        });
+        (outer_pointer, nested_pointer)
+    });
+
+    assert_eq!(pointers.0, pointers.1);
+    MC_INSTALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+}
+
+#[test]
 fn dispatcher_copies_non420_reference_planes() {
     for format in [PixelFormat::Yuv422, PixelFormat::Yuv444] {
         let reference = flat_frame_with_format(format, 8, 8, 40, 90, 120);

@@ -116,6 +116,18 @@ fn inter_recon_scratch_pool_reuses_worker_context() {
 }
 
 #[test]
+fn scheduled_tile_context_moves_the_bounded_worker_pool_for_reuse() {
+    let mut pool = InterReconScratchPool::<u8>::default();
+    pool.ensure_workers(3);
+
+    let reused =
+        TileDecodeScratch::from_scheduled(deferred_recon::InterReconScratch::default(), &pool);
+
+    assert_eq!(pool.available_len(), 0);
+    assert_eq!(reused.workers.available_len(), 3);
+}
+
+#[test]
 fn mixed_superblock_prepass_selects_every_independent_entry() {
     assert!(select_prepass_entry(ReconDependency::ReferenceOnly, true));
     assert!(!select_prepass_entry(ReconDependency::CurrentFrame, true));

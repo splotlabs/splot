@@ -165,10 +165,18 @@ pub(crate) struct InterDecodeScratch<T: ReconSample> {
 }
 
 impl<T: ReconSample> InterDecodeScratch<T> {
-    pub(crate) fn with_temporal_scratch(scratch: super::find_mv_stack::TemporalMvScratch) -> Self {
+    pub(crate) fn install_temporal_scratch(
+        &mut self,
+        scratch: super::find_mv_stack::TemporalMvScratch,
+    ) {
+        self.temporal_context = Some(TemporalMvContext::from_scratch(scratch));
+    }
+
+    fn from_scheduled_tile_scratch(tile: tile::TileDecodeScratch<T>) -> Self {
         Self {
-            temporal_context: Some(TemporalMvContext::from_scratch(scratch)),
-            ..Self::default()
+            tile,
+            temporal_context: None,
+            frame_filter_records: crate::filters::wienerns_lr::FrameFilterRecords::default(),
         }
     }
 

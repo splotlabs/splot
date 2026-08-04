@@ -359,6 +359,10 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
         self.reconstruction.commit(index)
     }
 
+    pub(crate) fn take_scheduled_scratch(&self) -> Result<InterDecodeScratch<T>> {
+        self.reconstruction.take_scheduled_scratch()
+    }
+
     /// Number of ordered links in this frame's § 7.17 frontier chain.
     pub(crate) const fn frontier_len(&self) -> usize {
         self.reconstruction.frontier_len()
@@ -478,6 +482,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
     /// per-unit reconstruction state consumed by the admission scheduler.
     pub(crate) fn prepare_scheduled(
         self,
+        mut decode_scratch: InterDecodeScratch<T>,
         temporal_scratch: super::find_mv_stack::TemporalMvScratch,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
     ) -> Result<(
@@ -499,8 +504,9 @@ impl<T: ReconSample> DeferredInterWalk<T> {
         } = self;
         let _quantizer_scopes = quantizer.install_frame();
         let core_for_reconstruction = Arc::clone(&core);
+        decode_scratch.install_temporal_scratch(temporal_scratch);
         let (reconstruction, temporal_scratch) = parse.prepare_scheduled(
-            InterDecodeScratch::with_temporal_scratch(temporal_scratch),
+            decode_scratch,
             setup,
             progress,
             sequence,

@@ -379,6 +379,16 @@ impl InterReconCommand {
 }
 
 impl<T: ReconSample> InterReconScratch<T> {
+    pub(super) fn with_installed<R>(
+        &mut self,
+        f: impl FnOnce(&mut InterReconScratch<T>) -> R,
+    ) -> R {
+        let mut mc = core::mem::replace(&mut self.mc, mc::McScratch::empty());
+        let result = mc.with_installed(|| f(self));
+        self.mc = mc;
+        result
+    }
+
     pub(super) fn general_intra_mut(
         &mut self,
     ) -> &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T> {

@@ -8,7 +8,10 @@
 use core::num::NonZeroUsize;
 
 use std::io::Write;
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, PoisonError};
 
+use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, ReconSample};
 
 use crate::bitstream::byte_stream::FlatParsedBitstream;
@@ -23,36 +26,95 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     options: &DecodeOptions,
     plan: &DecodeStreamPlan,
     frame_delay: NonZeroUsize,
-    mut writer: W,
+    writer: W,
 ) -> Result<()> {
     let decode_started = crate::timing::start();
-    crate::pipeline::emit_materialized_frames_from_prepared(
-        bitstream,
-        parsed,
-        options,
-        plan,
-        frame_delay,
-        |_| Ok(()),
-        |output| {
-            let serialize_started = crate::timing::start();
-            let result = match &output.ready_frame()? {
-                PipelineDecodedFrame::Eight(frame) => {
-                    let display =
-                        film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
-                    write_raw_frame(display.as_ref(), &mut writer)
+    let writer = Mutex::new(writer);
+    let output_error = Mutex::new(None);
+    let decode_result = splot_parallel::ready_task_scope(|scope| {
+        let mut outstanding: Option<Arc<CompletionCell<()>>> = None;
+        let decode_result = crate::pipeline::emit_materialized_frames_from_prepared(
+            bitstream,
+            parsed,
+            options,
+            plan,
+            frame_delay,
+            |_| Ok(()),
+            |output| {
+                if let Some(done) = outstanding.take() {
+                    let () = done.wait_with_pool_assist();
+                    if let Some(error) = output_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .take()
+                    {
+                        return Err(error);
+                    }
                 }
-                PipelineDecodedFrame::Ten(frame) => {
-                    let display =
-                        film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
-                    write_raw_frame(display.as_ref(), &mut writer)
-                }
-            };
-            crate::timing::report("raw_serialize", serialize_started);
-            result
-        },
-    )?;
+                let frame = output.ready_frame()?;
+                let display_grain = output.display_grain.clone();
+                let writer = &writer;
+                let output_error = &output_error;
+                let done = Arc::new(CompletionCell::new());
+                outstanding = Some(Arc::clone(&done));
+                scope.spawn(move |_| {
+                    let result = catch_unwind(AssertUnwindSafe(|| {
+                        let mut writer = writer.lock().unwrap_or_else(PoisonError::into_inner);
+                        let serialize_started = crate::timing::start();
+                        let result = match &frame {
+                            PipelineDecodedFrame::Eight(frame) => {
+                                let display = film_grain::frame_for_output(
+                                    frame.get(),
+                                    display_grain.as_ref(),
+                                )?;
+                                write_raw_frame(display.as_ref(), &mut *writer)
+                            }
+                            PipelineDecodedFrame::Ten(frame) => {
+                                let display = film_grain::frame_for_output(
+                                    frame.get(),
+                                    display_grain.as_ref(),
+                                )?;
+                                write_raw_frame(display.as_ref(), &mut *writer)
+                            }
+                        };
+                        crate::timing::report("raw_serialize", serialize_started);
+                        result
+                    }))
+                    .unwrap_or_else(|_| Err(raw_output_task_error("raw output task panicked")));
+                    if let Err(error) = result {
+                        let mut failure =
+                            output_error.lock().unwrap_or_else(PoisonError::into_inner);
+                        if failure.is_none() {
+                            *failure = Some(error);
+                        }
+                    }
+                    let _ = done.set(());
+                });
+                Ok(())
+            },
+        );
+        if let Some(done) = outstanding {
+            let () = done.wait_with_pool_assist();
+        }
+        decode_result
+    })?;
+    if let Some(error) = output_error
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+    {
+        return Err(error);
+    }
+    decode_result?;
     crate::timing::report("runtime_decode", decode_started);
     Ok(())
+}
+
+fn raw_output_task_error(message: &'static str) -> crate::error::DecodeError {
+    DecodeOutputError::io(
+        DecodeOutputOperation::WriteRawStream,
+        std::io::Error::other(message),
+    )
+    .into()
 }
 
 fn write_raw_frame<T: ReconSample>(frame: &DecodedFrame<T>, writer: &mut impl Write) -> Result<()> {
