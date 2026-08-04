@@ -472,14 +472,16 @@ impl TrajectoryBand<'_> {
         Some((self.round_step(y8), self.round_step(x8)))
     }
 
-    fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
+    fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) -> Mv {
+        let mv = clamp_mv(mv);
         if let Some(slot) = self
             .fields
             .get_mut(reference)
             .and_then(|field| field.get_mut(index))
         {
-            *slot = clamp_mv(mv);
+            *slot = mv;
         }
+        mv
     }
 
     pub(super) fn check_intersection(
@@ -522,8 +524,7 @@ impl TrajectoryBand<'_> {
                 if source_mv == INVALID_TRAJECTORY_MV {
                     continue;
                 }
-                let end_mv = add_mv(source_mv, mv);
-                self.set_field_at(end, traj_index, end_mv);
+                let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
                 if let Some(position) = self
                     .sampled_position(trajectory.0, trajectory.1, end_mv)
                     .filter(|&position| Self::position_allowed(position, bounds))
@@ -565,8 +566,7 @@ impl TrajectoryBand<'_> {
             if end_mv == INVALID_TRAJECTORY_MV {
                 continue;
             }
-            let source_mv = subtract_mv(end_mv, mv);
-            self.set_field_at(source, traj_index, source_mv);
+            let source_mv = self.set_field_at(source, traj_index, subtract_mv(end_mv, mv));
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
                 .filter(|&position| Self::position_allowed(position, bounds))
@@ -832,6 +832,20 @@ mod tests {
 
     use super::*;
 
+    fn recorded_trajectory(
+        state: &TrajectoryState,
+        reference: usize,
+        at: Position,
+        phase: usize,
+    ) -> Option<Position> {
+        let index = temporal_grid_index(state.width8, state.height8, at.0, at.1)?;
+        let positions = state.positions.get(reference)?.get(index)?;
+        if positions.mask & (1 << phase) == 0 {
+            return None;
+        }
+        positions.phases.get(phase)?.unpack()
+    }
+
     #[test]
     fn trajectory_storage_stays_compact() {
         assert_eq!(std::mem::size_of::<Mv>(), 8);
@@ -915,6 +929,96 @@ mod tests {
             .check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
 
         assert_eq!(state.fields[2].cell(1, 1), Some(Mv { row: 0, col: 96 }));
+    }
+
+    #[test]
+    fn forward_intersection_samples_the_clipped_positive_boundary() {
+        let mut state = TrajectoryState::new((2, 80), 2, 2, 16).unwrap();
+        state.whole_band().unwrap().observe_projection(
+            0,
+            None,
+            None,
+            0,
+            2,
+            Mv { row: 0, col: 1984 },
+            -1,
+            31,
+            false,
+        );
+
+        state
+            .whole_band()
+            .unwrap()
+            .check_intersection(0, Some(1), 0, 2, Mv { row: 0, col: 1984 });
+
+        assert_eq!(state.fields[1].cell(0, 0), Some(Mv { row: 0, col: 2047 }));
+        assert_eq!(recorded_trajectory(&state, 1, (0, 30), 0), Some((0, 0)));
+        assert_eq!(recorded_trajectory(&state, 1, (0, 32), 0), None);
+    }
+
+    #[test]
+    fn reverse_intersection_samples_the_clipped_positive_boundary() {
+        let mut state = TrajectoryState::new((2, 160), 3, 2, 16).unwrap();
+        state.whole_band().unwrap().observe_projection(
+            2,
+            Some(1),
+            None,
+            0,
+            34,
+            Mv { row: 0, col: -1088 },
+            19,
+            17,
+            false,
+        );
+
+        state.whole_band().unwrap().check_intersection(
+            0,
+            Some(1),
+            0,
+            46,
+            Mv { row: 0, col: -1920 },
+        );
+
+        assert_eq!(state.fields[0].cell(0, 16), Some(Mv { row: 0, col: 2047 }));
+        assert_eq!(recorded_trajectory(&state, 0, (0, 46), 1), Some((0, 16)));
+        assert_eq!(recorded_trajectory(&state, 0, (0, 48), 1), None);
+    }
+
+    #[test]
+    fn negative_boundary_positions_differ_but_both_exceed_the_unit_bounds() {
+        let mut state = TrajectoryState::new((2, 160), 2, 1, 8).unwrap();
+        state.whole_band().unwrap().observe_projection(
+            0,
+            None,
+            None,
+            0,
+            34,
+            Mv { row: 0, col: -1984 },
+            -1,
+            31,
+            false,
+        );
+
+        state.whole_band().unwrap().check_intersection(
+            0,
+            Some(1),
+            0,
+            34,
+            Mv { row: 0, col: -1984 },
+        );
+
+        assert_eq!(state.fields[1].cell(0, 35), Some(Mv { row: 0, col: -2047 }));
+        assert_eq!(recorded_trajectory(&state, 1, (0, 3), 0), None);
+        assert_eq!(recorded_trajectory(&state, 1, (0, 4), 0), None);
+        let band = state.whole_band().unwrap();
+        assert_eq!(
+            band.sampled_position(0, 35, Mv { row: 0, col: -2048 }),
+            Some((0, 3))
+        );
+        assert_eq!(
+            band.sampled_position(0, 35, Mv { row: 0, col: -2047 }),
+            Some((0, 4))
+        );
     }
 
     #[test]
