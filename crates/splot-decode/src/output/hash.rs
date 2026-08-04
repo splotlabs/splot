@@ -10,7 +10,7 @@ use core::num::NonZeroUsize;
 use splot_parallel::CompletionCell;
 use splot_recon::{DecodedFrame, DecodedFrameHashInput, PixelFormat, ReconSample};
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use crate::bitstream::byte_stream::FlatParsedBitstream;
 use crate::error::Result;
@@ -28,20 +28,6 @@ pub(crate) fn decode_hash_report_from_plan(
     resolved_threads: NonZeroUsize,
     frame_delay: NonZeroUsize,
 ) -> Result<DecodeHashReport> {
-    if discard_hash() {
-        crate::pipeline::emit_frames_from_prepared(
-            bytes,
-            parsed,
-            options,
-            plan,
-            frame_delay,
-            |_| Ok(()),
-        )?;
-        return Ok(DecodeHashReport::raw_intermediate_output(
-            resolved_threads.to_string(),
-            Vec::new(),
-        ));
-    }
     let report_frames = if splot_parallel::on_multiworker_pool() {
         decode_hash_frames_pipelined(bytes, parsed, options, plan, frame_delay)?
     } else {
@@ -127,11 +113,6 @@ fn decode_hash_frames_pipelined(
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     completed.sort_unstable_by_key(|frame| frame.output_index);
     Ok(completed)
-}
-
-fn discard_hash() -> bool {
-    static DISCARD_HASH: OnceLock<bool> = OnceLock::new();
-    *DISCARD_HASH.get_or_init(|| std::env::var_os("SPLOT_DECODE_DISCARD_HASH").is_some())
 }
 
 /// Hashes one emitted frame, recording `emitted` as its report row index.

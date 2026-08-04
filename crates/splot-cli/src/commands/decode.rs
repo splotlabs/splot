@@ -49,6 +49,8 @@ pub enum DecodeOutputFormat {
     Raw,
     /// Deterministic decoded-frame hash output.
     Hash,
+    /// Decode all requested frames without producing an output artifact.
+    Null,
 }
 
 impl DecodeOutputFormat {
@@ -57,6 +59,7 @@ impl DecodeOutputFormat {
             Self::Y4m => "y4m",
             Self::Raw => "raw",
             Self::Hash => "hash",
+            Self::Null => "null",
         }
     }
 }
@@ -67,7 +70,7 @@ pub struct DecodeArgs {
     /// Emit the unsupported decode diagnostic as JSON.
     #[arg(long)]
     pub json: bool,
-    /// Select the future decode output artifact.
+    /// Select the decoded output mode.
     #[arg(
         long = "output-format",
         value_enum,
@@ -98,6 +101,7 @@ enum DecodeOutputTarget<'a> {
     Y4m { path: &'a Path },
     Raw { path: &'a Path },
     Hash { path: Option<&'a Path> },
+    Null,
 }
 
 impl DecodeOutputTarget<'_> {
@@ -106,6 +110,7 @@ impl DecodeOutputTarget<'_> {
             Self::Y4m { .. } => DecodeOutputFormat::Y4m,
             Self::Raw { .. } => DecodeOutputFormat::Raw,
             Self::Hash { .. } => DecodeOutputFormat::Hash,
+            Self::Null => DecodeOutputFormat::Null,
         }
     }
 }
@@ -120,8 +125,17 @@ impl DecodeArgs {
             (DecodeOutputFormat::Raw, Some(path)) => Some(DecodeOutputTarget::Raw { path }),
             (DecodeOutputFormat::Y4m | DecodeOutputFormat::Raw, None) => None,
             (DecodeOutputFormat::Hash, path) => Some(DecodeOutputTarget::Hash { path }),
+            (DecodeOutputFormat::Null, _) => Some(DecodeOutputTarget::Null),
         }
     }
+}
+
+fn decode_profile_repeats() -> usize {
+    std::env::var("SPLOT_DECODE_PROFILE_REPEATS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1)
 }
 
 #[derive(Debug)]
@@ -434,7 +448,7 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
 
 /// Runs `splot decode` through the byte-stream decode handoff.
 ///
-/// Hash, raw, and Y4M modes decode streams the runtime supports; unsupported
+/// Null, hash, raw, and Y4M modes decode streams the runtime supports; unsupported
 /// streams surface structured diagnostics instead of output.
 ///
 /// # Errors
@@ -459,22 +473,30 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
             )?;
             timing_report("context_new", context_started);
             match target {
+                DecodeOutputTarget::Null => {
+                    let repeats = decode_profile_repeats();
+                    let mut decoded = context.decode_discard_bytes(&bytes, options);
+                    for _ in 1..repeats {
+                        decoded = context.decode_discard_bytes(&bytes, options);
+                    }
+                    match decoded {
+                        Ok(()) => {
+                            timing_report("total", total_started);
+                            return Ok(ExitCode::SUCCESS);
+                        }
+                        Err(error) => decode_report_from_error(&error)?,
+                    }
+                }
                 DecodeOutputTarget::Hash { path } => {
                     let _ = path;
-                    let repeats = std::env::var("SPLOT_DECODE_PROFILE_REPEATS")
-                        .ok()
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(1)
-                        .max(1);
+                    let repeats = decode_profile_repeats();
                     let mut decoded = context.decode_hash_report_bytes(&bytes, options);
                     for _ in 1..repeats {
                         decoded = context.decode_hash_report_bytes(&bytes, options);
                     }
                     match decoded {
                         Ok(report) => {
-                            if std::env::var_os("SPLOT_DECODE_DISCARD_HASH").is_none() {
-                                render_hash_report(&report, args.json)?;
-                            }
+                            render_hash_report(&report, args.json)?;
                             timing_report("total", total_started);
                             return Ok(ExitCode::SUCCESS);
                         }

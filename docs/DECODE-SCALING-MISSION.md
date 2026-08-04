@@ -27,8 +27,8 @@ stands, and third-party decoders remain engineering inspiration only.
 Splot decoder-only timing:
 
 ```sh
-SPLOT_DECODE_DISCARD_HASH=1 ./target/release/splot decode \
-  --quiet --output-format hash --limit=30 \
+./target/release/splot decode \
+  --quiet --output-format null --limit=30 \
   /Users/bartosztomczyk/Documents/SplotLabs/test.ivf \
   --threads=10 --frame-delay=auto
 ```

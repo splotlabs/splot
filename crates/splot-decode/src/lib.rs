@@ -12,7 +12,7 @@
 //! [`DecodeContext`]/[`DecodeRuntimeConfig`] pair that owns a
 //! [`splot_parallel::WorkerPool`]. The stream planners consume either bounded
 //! raw bytes or already parsed `splot-core` stream facts; the runtime decodes
-//! planned streams to hash, raw, and Y4M byte output.
+//! planned streams to hash, raw, or Y4M byte output, or discards decoded output.
 //!
 //! Feature tracking: `INFRA-DECODER-CRATE-SCAFFOLDING`,
 //! `DECODE-UNSUPPORTED-DIAGNOSTIC-API`, `DECODE-LIMITS-RUNTIME-API`,

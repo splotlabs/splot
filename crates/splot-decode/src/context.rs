@@ -18,8 +18,8 @@ use crate::runtime::DecodeRuntimeConfig;
 /// A decode context.
 ///
 /// Owns exactly one [`WorkerPool`], plans bounded stream metadata from raw Annex
-/// B/IVF or parsed streams, and exposes the runtime hash, raw, and Y4M byte
-/// paths for the supported decode envelope (tracked in
+/// B/IVF or parsed streams, and exposes the runtime hash, raw, Y4M, and
+/// discard-output paths for the supported decode envelope (tracked in
 /// `docs/DECODER-SUPPORT-MATRIX.toml`). It does not touch the filesystem or
 /// invoke any external decoder.
 #[derive(Debug)]
@@ -132,6 +132,33 @@ impl DecodeContext {
         });
         crate::timing::report("runtime_decode", runtime_started);
         report
+    }
+
+    /// Decodes the supported envelope and discards each displayed frame.
+    ///
+    /// Runs the same bounded byte planning as [`Self::decode_hash_report_bytes`]
+    /// and waits for each displayed frame to settle, but does not hash or
+    /// serialize its samples.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
+    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
+    /// failures, or reconstruction model errors.
+    pub fn decode_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
+        let prepared = self.prepare_bytes(bytes, &options)?;
+        let runtime_started = crate::timing::start();
+        let decoded = self.pool.install(|| {
+            crate::pipeline::emit_frames_from_prepared(
+                bytes,
+                prepared.parsed(),
+                &options,
+                prepared.plan(),
+                self.frame_delay,
+                |_| Ok(()),
+            )
+        });
+        crate::timing::report("runtime_decode", runtime_started);
+        decoded
     }
 
     /// Decodes the supported envelope and streams raw sample bytes.

@@ -4,6 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
+use crate::test_support::MINIMAL_FIXTURE;
 
 #[test]
 fn default_runtime_config_is_auto() {
@@ -29,4 +30,12 @@ fn requested_threads_round_trips() {
 fn zero_threads_maps_to_auto() {
     let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(0usize))).unwrap();
     assert!(ctx.threads().get() >= 1);
+}
+
+#[test]
+fn discard_output_decodes_supported_fixture() {
+    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(1usize))).unwrap();
+
+    ctx.decode_discard_bytes(MINIMAL_FIXTURE, DecodeOptions::default())
+        .unwrap();
 }
