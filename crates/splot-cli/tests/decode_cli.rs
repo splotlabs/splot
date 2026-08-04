@@ -224,6 +224,31 @@ fn decode_null_output_format_discards_supported_frame() {
 }
 
 #[test]
+fn decode_null_output_format_with_output_path_does_not_touch_file() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+    let output = temp_output("null");
+    let original_output = b"null output sentinel";
+    std::fs::write(&output, original_output).expect("write temporary output sentinel");
+
+    let out = splot(&[
+        "decode",
+        "--output-format",
+        "null",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+    assert_eq!(
+        std::fs::read(&output).expect("read temporary output sentinel"),
+        original_output
+    );
+}
+
+#[test]
 fn decode_null_output_format_reports_its_diagnostic_mode() {
     let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
 

@@ -448,7 +448,7 @@ fn render_hash_report(report: &DecodeHashReport, json: bool) -> Result<()> {
 
 /// Runs `splot decode` through the byte-stream decode handoff.
 ///
-/// Hash, raw, and Y4M modes decode streams the runtime supports; unsupported
+/// Null, hash, raw, and Y4M modes decode streams the runtime supports; unsupported
 /// streams surface structured diagnostics instead of output.
 ///
 /// # Errors

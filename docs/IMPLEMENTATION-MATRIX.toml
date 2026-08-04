@@ -21429,6 +21429,7 @@ tests = [
     "crates/splot-cli/tests/decode_cli.rs::decode_invalid_output_format_is_usage_error",
     "crates/splot-cli/tests/decode_cli.rs::decode_hash_output_format_with_output_path_does_not_touch_file",
     "crates/splot-cli/tests/decode_cli.rs::decode_null_output_format_discards_supported_frame",
+    "crates/splot-cli/tests/decode_cli.rs::decode_null_output_format_with_output_path_does_not_touch_file",
     "crates/splot-cli/tests/decode_cli.rs::decode_null_output_format_reports_its_diagnostic_mode",
     "crates/splot-cli/tests/decode_cli.rs::decode_without_output_selection_is_usage_error",
     "crates/splot-cli/tests/decode_y4m_cli.rs::decode_explicit_y4m_output_format_requires_output_path",
