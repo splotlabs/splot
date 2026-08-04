@@ -1396,6 +1396,20 @@ impl Default for McScratch {
     }
 }
 
+struct McInstallGuard<'a> {
+    scratch: &'a mut McScratch,
+    swapped: bool,
+}
+
+impl Drop for McInstallGuard<'_> {
+    fn drop(&mut self) {
+        if self.swapped {
+            self.scratch.swap_with_thread_locals();
+        }
+        MC_INSTALL_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 impl McScratch {
     pub(crate) const fn empty() -> Self {
         Self {
@@ -1414,15 +1428,15 @@ impl McScratch {
             depth.set(depth.get().saturating_add(1));
             nested
         });
+        let mut guard = McInstallGuard {
+            scratch: self,
+            swapped: false,
+        };
         if !nested {
-            self.swap_with_thread_locals();
+            guard.scratch.swap_with_thread_locals();
+            guard.swapped = true;
         }
-        let result = f();
-        if !nested {
-            self.swap_with_thread_locals();
-        }
-        MC_INSTALL_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-        result
+        f()
     }
 
     fn swap_with_thread_locals(&mut self) {

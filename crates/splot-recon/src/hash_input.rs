@@ -228,6 +228,9 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
                 "decoded frame hash input row byte length overflow",
             )
         })?;
+    if row_byte_len == 0 {
+        return Ok(());
+    }
     let rows_per_batch = WRITE_BATCH_BYTES
         .checked_div(row_byte_len)
         .unwrap_or(1)
@@ -684,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn write_to_batches_each_visible_plane() {
+    fn write_to_batches_each_visible_row() {
         #[derive(Default)]
         struct CountingWriter {
             writes: usize,
