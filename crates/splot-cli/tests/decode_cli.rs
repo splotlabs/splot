@@ -213,6 +213,32 @@ fn decode_hash_empty_ivf_emits_success_report_without_frames() {
 }
 
 #[test]
+fn decode_null_output_format_discards_supported_frame() {
+    let input = conformance_vector("syn-flat-intra-64x64-minimal.ivf");
+
+    let out = splot(&["decode", "--output-format", "null", input.to_str().unwrap()]);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    assert!(out.stderr.is_empty(), "stderr was not empty");
+}
+
+#[test]
+fn decode_null_output_format_reports_its_diagnostic_mode() {
+    let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
+
+    let out = splot(&["decode", "--output-format", "null", input.to_str().unwrap()]);
+
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("output_format: null"),
+        "stderr was: {stderr}"
+    );
+}
+
+#[test]
 fn decode_hash_output_format_missing_input_is_operational_error() {
     let input = temp_path("missing-input", "av2");
     let cwd = temp_dir("hash-cwd");
