@@ -472,14 +472,16 @@ impl TrajectoryBand<'_> {
         Some((self.round_step(y8), self.round_step(x8)))
     }
 
-    fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) {
+    fn set_field_at(&mut self, reference: usize, index: usize, mv: Mv) -> Mv {
+        let mv = clamp_mv(mv);
         if let Some(slot) = self
             .fields
             .get_mut(reference)
             .and_then(|field| field.get_mut(index))
         {
-            *slot = clamp_mv(mv);
+            *slot = mv;
         }
+        mv
     }
 
     pub(super) fn check_intersection(
@@ -522,8 +524,7 @@ impl TrajectoryBand<'_> {
                 if source_mv == INVALID_TRAJECTORY_MV {
                     continue;
                 }
-                let end_mv = add_mv(source_mv, mv);
-                self.set_field_at(end, traj_index, end_mv);
+                let end_mv = self.set_field_at(end, traj_index, add_mv(source_mv, mv));
                 if let Some(position) = self
                     .sampled_position(trajectory.0, trajectory.1, end_mv)
                     .filter(|&position| Self::position_allowed(position, bounds))
@@ -565,8 +566,7 @@ impl TrajectoryBand<'_> {
             if end_mv == INVALID_TRAJECTORY_MV {
                 continue;
             }
-            let source_mv = subtract_mv(end_mv, mv);
-            self.set_field_at(source, traj_index, source_mv);
+            let source_mv = self.set_field_at(source, traj_index, subtract_mv(end_mv, mv));
             if let Some(position) = self
                 .sampled_position(trajectory.0, trajectory.1, source_mv)
                 .filter(|&position| Self::position_allowed(position, bounds))
@@ -941,3 +941,6 @@ mod tests {
         assert_eq!(state.fields[0].cell(0, 9), state.fields[0].cell(0, 8));
     }
 }
+
+#[cfg(test)]
+mod clamped_sampling_tests;
