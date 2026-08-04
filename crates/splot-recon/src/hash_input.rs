@@ -119,7 +119,7 @@ impl<'a, T: ReconSample> DecodedFrameHashInput<'a, T> {
 
     /// Writes canonical decoded output sample bytes to `writer`.
     ///
-    /// This method writes one visible row at a time and may leave `writer`
+    /// This method writes bounded groups of visible rows and may leave `writer`
     /// partially written if the writer returns an error.
     ///
     /// # Errors
@@ -215,6 +215,8 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
     plane: &Plane<T>,
     writer: &mut W,
 ) -> io::Result<()> {
+    const WRITE_BATCH_BYTES: usize = 64 * 1024;
+
     let bytes_per_sample = bytes_per_sample(bit_depth);
     let row_byte_len = plane
         .visible_size()
@@ -226,17 +228,37 @@ fn write_visible_plane<T: ReconSample, W: Write + ?Sized>(
                 "decoded frame hash input row byte length overflow",
             )
         })?;
-    let mut row_bytes = Vec::new();
-    row_bytes.try_reserve_exact(row_byte_len).map_err(|err| {
+    if row_byte_len == 0 {
+        return Ok(());
+    }
+    let rows_per_batch = WRITE_BATCH_BYTES
+        .checked_div(row_byte_len)
+        .unwrap_or(1)
+        .max(1);
+    let batch_byte_len = row_byte_len.checked_mul(rows_per_batch).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "decoded frame hash input write batch length overflow",
+        )
+    })?;
+    let mut batch = Vec::new();
+    batch.try_reserve_exact(batch_byte_len).map_err(|err| {
         io::Error::other(format!(
-            "decoded frame hash input row buffer allocation failed: {err}"
+            "decoded frame hash input write buffer allocation failed: {err}"
         ))
     })?;
 
     for row in plane.visible_rows() {
-        row_bytes.resize(row_byte_len, 0);
-        fill_sample_bytes(bit_depth, row, &mut row_bytes);
-        writer.write_all(&row_bytes)?;
+        let start = batch.len();
+        batch.resize(start + row_byte_len, 0);
+        fill_sample_bytes(bit_depth, row, &mut batch[start..]);
+        if batch.len() == batch_byte_len {
+            writer.write_all(&batch)?;
+            batch.clear();
+        }
+    }
+    if !batch.is_empty() {
+        writer.write_all(&batch)?;
     }
     Ok(())
 }
@@ -706,7 +728,7 @@ mod tests {
             .write_to(&mut writer)
             .unwrap();
 
-        assert_eq!(writer.writes, 4);
+        assert_eq!(writer.writes, 3);
         assert_eq!(writer.bytes, vec![1, 0, 2, 1, 255, 1, 255, 3, 33, 0, 1, 2]);
     }
 

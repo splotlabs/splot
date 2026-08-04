@@ -92,6 +92,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     filter_count: usize,
     frontier_rows: usize,
     commit: Mutex<Option<ScheduledCommit<T>>>,
+    scratch: Mutex<Option<TileDecodeScratch<T>>>,
     frontier: Mutex<ScheduledFrontier<T>>,
     resolve: Mutex<ScheduledResolve<T>>,
     workers: InterReconScratchPool<T>,
@@ -295,7 +296,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .workers
             .with_scratch(|scratch| -> Result<PreparedBatch<T>> {
                 let _quantizer_scopes = self.quantizer.install_frame();
-                let mut ready = ready;
+                let ready = ready;
                 let shared = deferred_recon::ReconShared {
                     reference: &self.reference,
                     ref_frame_idx: &self.ref_frame_idx,
@@ -329,64 +330,19 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     let mut surface = band.surface_mut();
                     let mut rows = Vec::with_capacity(ready.len());
                     for mut ready in ready {
-                        if ready.row.terminal.is_none() && !ready.row.motion_derived {
-                            mvres::derive_unit_motion_on_surface(
-                                &mut ready.row,
-                                &surface,
-                                scratch,
-                                &self.motion,
-                                &shared,
-                            );
-                        }
-                        let row = precompute_recon_row_on_surface(
-                            ready.row,
-                            &mut surface,
-                            scratch,
-                            &self.prepass_block_decoded,
-                            &self.motion,
-                            &self.quantizer,
-                            &self.temporal,
-                            &self.reference,
-                            &self.ref_frame_idx,
-                            &self.sequence,
-                            &self.core,
-                            self.params.sb_h4,
-                            self.params.mi_rows,
-                            self.params.mi_cols,
-                            self.params.current_order_hint,
-                            self.params.luma_use_tcq,
-                            self.params.residual_use_ddt,
-                            self.params.bit_depth,
-                        );
-                        if row.entries.iter().any(|entry| entry.command.is_some()) {
-                            return Err(inter_cap!(
-                                "inter_admission_band_command_remaining",
-                                self.tile_offset,
-                                "inter.row.task_capacity",
-                                SPEC_MODE_INFO
-                            ));
-                        }
-                        rows.push(row);
-                    }
-                    return Ok(PreparedBatch::Banded { rows, band });
-                }
-                for ready in &mut ready {
-                    if ready.row.terminal.is_none() && !ready.row.motion_derived {
-                        mvres::derive_unit_motion(
-                            &mut ready.row,
-                            ready.surface.as_mut(),
-                            scratch,
-                            &self.motion,
-                            &shared,
-                        );
-                    }
-                }
-                Ok(PreparedBatch::Legacy(
-                    ready
-                        .into_iter()
-                        .map(|ready| {
-                            precompute_recon_row(
-                                ready,
+                        let row = scratch.with_installed(|scratch| {
+                            if ready.row.terminal.is_none() && !ready.row.motion_derived {
+                                mvres::derive_unit_motion_on_surface(
+                                    &mut ready.row,
+                                    &surface,
+                                    scratch,
+                                    &self.motion,
+                                    &shared,
+                                );
+                            }
+                            precompute_recon_row_on_surface(
+                                ready.row,
+                                &mut surface,
                                 scratch,
                                 &self.prepass_block_decoded,
                                 &self.motion,
@@ -404,6 +360,53 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 self.params.residual_use_ddt,
                                 self.params.bit_depth,
                             )
+                        });
+                        if row.entries.iter().any(|entry| entry.command.is_some()) {
+                            return Err(inter_cap!(
+                                "inter_admission_band_command_remaining",
+                                self.tile_offset,
+                                "inter.row.task_capacity",
+                                SPEC_MODE_INFO
+                            ));
+                        }
+                        rows.push(row);
+                    }
+                    return Ok(PreparedBatch::Banded { rows, band });
+                }
+                Ok(PreparedBatch::Legacy(
+                    ready
+                        .into_iter()
+                        .map(|mut ready| {
+                            scratch.with_installed(|scratch| {
+                                if ready.row.terminal.is_none() && !ready.row.motion_derived {
+                                    mvres::derive_unit_motion(
+                                        &mut ready.row,
+                                        ready.surface.as_mut(),
+                                        scratch,
+                                        &self.motion,
+                                        &shared,
+                                    );
+                                }
+                                precompute_recon_row(
+                                    ready,
+                                    scratch,
+                                    &self.prepass_block_decoded,
+                                    &self.motion,
+                                    &self.quantizer,
+                                    &self.temporal,
+                                    &self.reference,
+                                    &self.ref_frame_idx,
+                                    &self.sequence,
+                                    &self.core,
+                                    self.params.sb_h4,
+                                    self.params.mi_rows,
+                                    self.params.mi_cols,
+                                    self.params.current_order_hint,
+                                    self.params.luma_use_tcq,
+                                    self.params.residual_use_ddt,
+                                    self.params.bit_depth,
+                                )
+                            })
                         })
                         .collect::<Vec<_>>(),
                 ))
@@ -486,6 +489,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             deblock,
             filter,
             next_filter_stripe,
+            ..
         } = &mut *frontier;
         let sealed_rows = sealed.as_ref().map(|_| *sealed_rows);
         let filtered = sealed.as_mut().or(terminal_workspace.as_mut());
@@ -632,6 +636,23 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         })
     }
 
+    pub(in crate::prediction::inter::block) fn take_scheduled_scratch(
+        &self,
+    ) -> Result<TileDecodeScratch<T>> {
+        self.scratch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+            .ok_or_else(|| {
+                inter_cap!(
+                    "inter_admission_recon_scratch_owner",
+                    self.tile_offset,
+                    "inter.row.task_capacity",
+                    SPEC_MODE_INFO
+                )
+            })
+    }
+
     /// Commits one precomputed unit after its predecessor has completed.
     ///
     /// The one caller that commits the final unit receives the completed tile.
@@ -697,30 +718,32 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             if let Some(surface) = ready.surface.as_ref() {
                 surface.publish_into(&mut commit.workspace)?;
             }
-            let buffers = pixel_commit::replay_recon_row(
-                ready.row,
-                &mut commit.next,
-                &mut commit.decoded_any,
-                &self.quantizer,
-                &mut commit.ordered,
-                &mut commit.workspace,
-                &mut commit.block_decoded,
-                &mut commit.current_block_decoded_superblock,
-                &self.motion,
-                &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
-                &self.temporal,
-                &self.reference,
-                &self.ref_frame_idx,
-                &self.sequence,
-                &self.core,
-                self.params.mi_rows,
-                self.params.mi_cols,
-                self.params.current_order_hint,
-                self.params.luma_use_tcq,
-                self.params.residual_use_ddt,
-                self.params.bit_depth,
-                self.tile_offset,
-            )?;
+            let buffers = commit.ordered.with_installed(|scratch| {
+                pixel_commit::replay_recon_row(
+                    ready.row,
+                    &mut commit.next,
+                    &mut commit.decoded_any,
+                    &self.quantizer,
+                    scratch,
+                    &mut commit.workspace,
+                    &mut commit.block_decoded,
+                    &mut commit.current_block_decoded_superblock,
+                    &self.motion,
+                    &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
+                    &self.temporal,
+                    &self.reference,
+                    &self.ref_frame_idx,
+                    &self.sequence,
+                    &self.core,
+                    self.params.mi_rows,
+                    self.params.mi_cols,
+                    self.params.current_order_hint,
+                    self.params.luma_use_tcq,
+                    self.params.residual_use_ddt,
+                    self.params.bit_depth,
+                    self.tile_offset,
+                )
+            })?;
             self.row_buffers.recycle(buffers);
         }
         if let Some(band) = completed_band {
@@ -774,6 +797,8 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 SPEC_MODE_INFO
             )
         })?;
+        let scratch = TileDecodeScratch::from_scheduled(commit.ordered, &self.workers);
+        *self.scratch.lock().unwrap_or_else(PoisonError::into_inner) = Some(scratch);
         {
             let mut frontier = self.frontier.lock().unwrap_or_else(PoisonError::into_inner);
             if frontier.sealed.is_some() || frontier.bands.is_some() {
@@ -1163,6 +1188,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             current_block_decoded_superblock: None,
             decoded_any: false,
         })),
+        scratch: Mutex::new(None),
         frontier: Mutex::new(ScheduledFrontier {
             sealed: seals_filter_copy
                 .then(|| CurrentFrameWorkspace::new_recycled(info))

@@ -104,6 +104,12 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
         self.tile.commit(index)
     }
 
+    pub(crate) fn take_scheduled_scratch(&self) -> Result<InterDecodeScratch<T>> {
+        self.tile
+            .take_scheduled_scratch()
+            .map(InterDecodeScratch::from_scheduled_tile_scratch)
+    }
+
     /// Number of ordered links in this frame's § 7.17 frontier chain.
     pub(crate) const fn frontier_len(&self) -> usize {
         self.tile.frontier_len()

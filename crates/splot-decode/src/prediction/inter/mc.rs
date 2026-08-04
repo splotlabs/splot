@@ -1396,12 +1396,47 @@ impl Default for McScratch {
     }
 }
 
+struct McInstallGuard<'a> {
+    scratch: &'a mut McScratch,
+    swapped: bool,
+}
+
+impl Drop for McInstallGuard<'_> {
+    fn drop(&mut self) {
+        if self.swapped {
+            self.scratch.swap_with_thread_locals();
+        }
+        MC_INSTALL_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 impl McScratch {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            compound_predictions: [Vec::new(), Vec::new()],
+            initial_luma_predictions: Vec::new(),
+            subpel_prediction: Vec::new(),
+            samples: [None, None],
+            optflow: None,
+            motion_cells: [None, None],
+        }
+    }
+
     pub(crate) fn with_installed<R>(&mut self, f: impl FnOnce() -> R) -> R {
-        self.swap_with_thread_locals();
-        let result = f();
-        self.swap_with_thread_locals();
-        result
+        let nested = MC_INSTALL_DEPTH.with(|depth| {
+            let nested = depth.get() != 0;
+            depth.set(depth.get().saturating_add(1));
+            nested
+        });
+        let mut guard = McInstallGuard {
+            scratch: self,
+            swapped: false,
+        };
+        if !nested {
+            guard.scratch.swap_with_thread_locals();
+            guard.swapped = true;
+        }
+        f()
     }
 
     fn swap_with_thread_locals(&mut self) {
@@ -1428,6 +1463,7 @@ impl McScratch {
 }
 
 std::thread_local! {
+    static MC_INSTALL_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static COMPOUND_PREDICTION_BUFFERS: std::cell::Cell<Option<[Vec<i32>; 2]>> =
         const { std::cell::Cell::new(None) };
     static INITIAL_LUMA_PREDICTIONS: std::cell::Cell<Option<Vec<u16>>> =

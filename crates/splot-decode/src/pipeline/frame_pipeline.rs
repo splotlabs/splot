@@ -187,11 +187,52 @@ where
 
 const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
 type TemporalScratchSlot = Arc<CompletionCell<Mutex<Option<inter::TemporalMvScratch>>>>;
+type ReconScratchSlot = Arc<CompletionCell<Mutex<Option<ScheduledReconScratch>>>>;
+
+enum ScheduledReconScratch {
+    Eight(inter::InterDecodeScratch<u8>),
+    Ten(inter::InterDecodeScratch<u16>),
+}
+
+trait ScheduledScratchSample: splot_recon::ReconSample {
+    fn take_scheduled_scratch(
+        scratch: &mut Option<ScheduledReconScratch>,
+    ) -> Option<inter::InterDecodeScratch<Self>>;
+
+    fn wrap_scheduled_scratch(scratch: inter::InterDecodeScratch<Self>) -> ScheduledReconScratch;
+}
+
+macro_rules! impl_scheduled_scratch_sample {
+    ($sample:ty, $variant:ident) => {
+        impl ScheduledScratchSample for $sample {
+            fn take_scheduled_scratch(
+                scratch: &mut Option<ScheduledReconScratch>,
+            ) -> Option<inter::InterDecodeScratch<Self>> {
+                match scratch.take() {
+                    Some(ScheduledReconScratch::$variant(scratch)) => Some(scratch),
+                    other => {
+                        *scratch = other;
+                        None
+                    }
+                }
+            }
+
+            fn wrap_scheduled_scratch(
+                scratch: inter::InterDecodeScratch<Self>,
+            ) -> ScheduledReconScratch {
+                ScheduledReconScratch::$variant(scratch)
+            }
+        }
+    };
+}
+
+impl_scheduled_scratch_sample!(u8, Eight);
+impl_scheduled_scratch_sample!(u16, Ten);
 
 /// The frame-context admission bound for scheduled reconstruction.
 pub(super) struct ReconAdmissionLane {
     depth: usize,
-    recon: VecDeque<Arc<CompletionCell<()>>>,
+    recon: VecDeque<ReconScratchSlot>,
     filters: VecDeque<Arc<CompletionCell<()>>>,
     temporal: VecDeque<TemporalScratchSlot>,
 }
@@ -206,10 +247,10 @@ impl ReconAdmissionLane {
         }
     }
 
-    fn reserve(
+    fn reserve<T>(
         depth: usize,
-        lane: &mut VecDeque<Arc<CompletionCell<()>>>,
-    ) -> (Option<Arc<CompletionCell<()>>>, Arc<CompletionCell<()>>) {
+        lane: &mut VecDeque<Arc<CompletionCell<T>>>,
+    ) -> (Option<Arc<CompletionCell<T>>>, Arc<CompletionCell<T>>) {
         let gate = (lane.len() >= depth).then(|| Arc::clone(&lane[0]));
         let done = Arc::new(CompletionCell::new());
         lane.push_back(Arc::clone(&done));
@@ -219,7 +260,7 @@ impl ReconAdmissionLane {
         (gate, done)
     }
 
-    fn reserve_recon(&mut self) -> (Option<Arc<CompletionCell<()>>>, Arc<CompletionCell<()>>) {
+    fn reserve_recon(&mut self) -> (Option<ReconScratchSlot>, ReconScratchSlot) {
         Self::reserve(self.depth, &mut self.recon)
     }
 
@@ -228,13 +269,7 @@ impl ReconAdmissionLane {
     }
 
     fn reserve_temporal(&mut self) -> (Option<TemporalScratchSlot>, TemporalScratchSlot) {
-        let prior = (self.temporal.len() >= self.depth).then(|| Arc::clone(&self.temporal[0]));
-        let done = Arc::new(CompletionCell::new());
-        self.temporal.push_back(Arc::clone(&done));
-        while self.temporal.len() > self.depth {
-            self.temporal.pop_front();
-        }
-        (prior, done)
+        Self::reserve(self.depth, &mut self.temporal)
     }
 }
 
@@ -243,6 +278,7 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     finish: Mutex<Option<PendingFinish<T>>>,
     motion: inter::MotionFieldHandle,
     recon_done: Arc<CompletionCell<()>>,
+    scratch_done: ReconScratchSlot,
     filter_gate: Option<Arc<CompletionCell<()>>>,
     filter_done: Arc<CompletionCell<()>>,
     prepared: Vec<Arc<CompletionCell<()>>>,
@@ -254,7 +290,7 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     order_base: u64,
 }
 
-impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
+impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn submit_batch(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
         let mut precompute_conditions = self.walk.conditions(index);
         if self.walk.owns_canonical_bands() && index > 0 {
@@ -399,6 +435,16 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
         match self.walk.commit(index) {
             Ok(progress) => {
                 if progress.recon_complete {
+                    let scratch = match self.walk.take_scheduled_scratch() {
+                        Ok(scratch) => scratch,
+                        Err(error) => {
+                            self.fail(error, admit);
+                            return;
+                        }
+                    };
+                    let _ = self
+                        .scratch_done
+                        .set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
                     let _ = self.recon_done.set(());
                 }
                 for row in progress.frontier_rows {
@@ -509,6 +555,7 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
         }
         self.walk.fail_temporal();
         self.motion.fail();
+        let _ = self.scratch_done.set(Mutex::new(None));
         let _ = self.recon_done.set(());
         let _ = self.filter_done.set(());
         for completion in self
@@ -532,7 +579,7 @@ impl<T: splot_recon::ReconSample + Send + 'static> ScheduledFrame<T> {
     }
 }
 
-fn schedule_typed<'job, 'scope, T: splot_recon::ReconSample + Send + 'static>(
+fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
     deferred: inter::DeferredInterWalk<T>,
     finish: PendingFinish<T>,
     frame_index: usize,
@@ -548,20 +595,23 @@ where
         .saturating_mul(ORDER_KEY_FRAME_STRIDE);
     let motion = deferred.motion.clone();
     let dependencies = deferred.motion_dependencies();
-    let (gate, recon_done) = lane.reserve_recon();
+    let (scratch_source, scratch_done) = lane.reserve_recon();
+    let recon_done = Arc::new(CompletionCell::new());
     let (filter_gate, filter_done) = lane.reserve_filter();
     let (temporal_gate, temporal_done) = lane.reserve_temporal();
     let mut conditions = dependencies
         .iter()
         .map(inter::MotionFieldHandle::metadata_condition)
         .collect::<Vec<_>>();
-    if let Some(gate) = gate.as_deref() {
+    if let Some(gate) = scratch_source.as_deref() {
         conditions.push(Condition::Completion(gate));
     }
     if let Some(gate) = temporal_gate.as_deref() {
         conditions.push(Condition::Completion(gate));
     }
     let temporal_source = temporal_gate.clone();
+    let scheduled_scratch_source = scratch_source.clone();
+    let scratch_done_for_job = Arc::clone(&scratch_done);
     let done_for_job = Arc::clone(&recon_done);
     let filter_done_for_job = Arc::clone(&filter_done);
     scheduler.submit(
@@ -579,36 +629,47 @@ where
                         .take()
                 })
                 .unwrap_or_default();
-            let Some(progress) = finish.progress_handle() else {
+            let decode_scratch = scheduled_scratch_source
+                .as_deref()
+                .and_then(CompletionCell::get)
+                .and_then(|scratch| {
+                    T::take_scheduled_scratch(
+                        &mut scratch.lock().unwrap_or_else(PoisonError::into_inner),
+                    )
+                })
+                .unwrap_or_default();
+            let settle_prepare_failure = |finish: PendingFinish<T>, error| {
                 let _ = temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
+                let _ = scratch_done_for_job.set(Mutex::new(None));
                 motion.fail();
                 let _ = done_for_job.set(());
                 let _ = filter_done_for_job.set(());
-                finish.fail(unsupported(
-                    "inter_admission_filter_progress",
-                    None,
-                    "scheduled filter progress handle is missing",
-                ));
+                finish.fail(error);
                 admit.admit_ready();
+            };
+            let Some(progress) = finish.progress_handle() else {
+                settle_prepare_failure(
+                    finish,
+                    unsupported(
+                        "inter_admission_filter_progress",
+                        None,
+                        "scheduled filter progress handle is missing",
+                    ),
+                );
                 return;
             };
-            let scheduled = match deferred.prepare_scheduled(temporal_scratch, progress) {
-                Ok((scheduled, temporal_scratch)) => {
-                    let _ = temporal_done.set(Mutex::new(Some(temporal_scratch)));
-                    admit.admit_ready();
-                    scheduled
-                }
-                Err(error) => {
-                    let _ =
-                        temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
-                    motion.fail();
-                    let _ = done_for_job.set(());
-                    let _ = filter_done_for_job.set(());
-                    finish.fail(error);
-                    admit.admit_ready();
-                    return;
-                }
-            };
+            let scheduled =
+                match deferred.prepare_scheduled(decode_scratch, temporal_scratch, progress) {
+                    Ok((scheduled, temporal_scratch)) => {
+                        let _ = temporal_done.set(Mutex::new(Some(temporal_scratch)));
+                        admit.admit_ready();
+                        scheduled
+                    }
+                    Err(error) => {
+                        settle_prepare_failure(finish, error);
+                        return;
+                    }
+                };
             let frame = Arc::new(ScheduledFrame {
                 prepared: (0..scheduled.len())
                     .map(|_| Arc::new(CompletionCell::new()))
@@ -627,6 +688,7 @@ where
                 finish: Mutex::new(Some(finish)),
                 motion,
                 recon_done: done_for_job,
+                scratch_done: scratch_done_for_job,
                 filter_gate,
                 filter_done: filter_done_for_job,
                 failed: AtomicBool::new(false),
@@ -804,4 +866,51 @@ fn frame_task_scope() -> DecodeError {
         None,
         "internal invariant violation: a frame entropy pass task did not report an outcome",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn recon_lane_returns_the_same_typed_context_at_bounded_depth() {
+        let mut lane = ReconAdmissionLane::new(1);
+        let (prior, first) = lane.reserve_recon();
+        assert!(prior.is_none());
+        assert!(
+            first
+                .set(Mutex::new(Some(ScheduledReconScratch::Ten(
+                    inter::InterDecodeScratch::default(),
+                ))))
+                .is_ok()
+        );
+
+        let (prior, _) = lane.reserve_recon();
+        assert_eq!(lane.recon.len(), 1);
+        let prior = prior.expect("prior context");
+        let stored = prior.get().expect("settled prior context");
+        let mut stored = stored.lock().unwrap_or_else(PoisonError::into_inner);
+        assert!(u8::take_scheduled_scratch(&mut stored).is_none());
+        assert!(u16::take_scheduled_scratch(&mut stored).is_some());
+    }
+
+    #[test]
+    fn failed_recon_context_still_settles_the_lane() {
+        let mut lane = ReconAdmissionLane::new(1);
+        let (_, failed) = lane.reserve_recon();
+        assert!(failed.set(Mutex::new(None)).is_ok());
+
+        let (prior, _) = lane.reserve_recon();
+        assert!(
+            prior
+                .expect("failed prior context")
+                .get()
+                .expect("settled failure")
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_none()
+        );
+    }
 }

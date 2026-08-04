@@ -876,6 +876,26 @@ impl<T: ReconSample> InterReconScratchPool<T> {
             .push(scratch);
         result
     }
+
+    fn take_reusable(&self) -> Self {
+        let available = core::mem::take(
+            &mut *self
+                .available
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        Self {
+            available: Mutex::new(available),
+        }
+    }
+
+    #[cfg(test)]
+    fn available_len(&self) -> usize {
+        self.available
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
 }
 
 impl<T: ReconSample> Default for InterReconScratchPool<T> {
@@ -887,9 +907,21 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 }
 
 #[derive(Default)]
-pub(super) struct TileDecodeScratch<T: ReconSample> {
+pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
+}
+
+impl<T: ReconSample> TileDecodeScratch<T> {
+    fn from_scheduled(
+        ordered: deferred_recon::InterReconScratch<T>,
+        workers: &InterReconScratchPool<T>,
+    ) -> Self {
+        Self {
+            ordered,
+            workers: workers.take_reusable(),
+        }
+    }
 }
 
 impl<T: ReconSample> OrderedDone for ReadyReconRow<'_, T> {

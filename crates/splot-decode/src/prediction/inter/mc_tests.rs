@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::expect_used)]
+#![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
 use splot_core::headers::sequence::SuperblockSize;
@@ -135,6 +135,77 @@ fn mc_worker_scratch_reuses_all_installed_buffers() {
     let second = scratch.with_installed(use_buffers);
 
     assert_eq!(second, first);
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+}
+
+#[test]
+fn nested_mc_install_keeps_the_outer_worker_buffers_active() {
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+    let mut outer = McScratch::default();
+    let mut nested = McScratch::default();
+
+    let pointers = outer.with_installed(|| {
+        let outer_pointer = COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+            slot.take()
+                .map(|buffers| {
+                    let pointer = buffers[0].as_ptr();
+                    slot.set(Some(buffers));
+                    pointer
+                })
+                .expect("outer compound buffers")
+        });
+        let nested_pointer = nested.with_installed(|| {
+            COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+                slot.take()
+                    .map(|buffers| {
+                        let pointer = buffers[0].as_ptr();
+                        slot.set(Some(buffers));
+                        pointer
+                    })
+                    .expect("nested compound buffers")
+            })
+        });
+        (outer_pointer, nested_pointer)
+    });
+
+    assert_eq!(pointers.0, pointers.1);
+    MC_INSTALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+}
+
+#[test]
+fn panicking_mc_install_restores_worker_buffers_and_depth() {
+    COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
+    INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
+    SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
+    MC_SAMPLES_RECYCLER.with(|slot| *slot.borrow_mut() = [None, None]);
+    let mut scratch = McScratch::default();
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        scratch.with_installed(|| panic!("installed MC panic"));
+    }));
+
+    assert!(result.is_err());
+    MC_INSTALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
+    let buffers_restored = scratch.with_installed(|| {
+        COMPOUND_PREDICTION_BUFFERS.with(|slot| {
+            let buffers = slot.take().expect("restored compound buffers");
+            let restored = buffers[0].capacity() == MAX_MC_BLOCK_SAMPLES;
+            slot.set(Some(buffers));
+            restored
+        })
+    });
+    assert!(buffers_restored);
+    MC_INSTALL_DEPTH.with(|depth| assert_eq!(depth.get(), 0));
     COMPOUND_PREDICTION_BUFFERS.with(|slot| slot.set(None));
     INITIAL_LUMA_PREDICTIONS.with(|slot| slot.set(None));
     SUBPEL_PREDICTION_BUFFER.with(|slot| slot.set(None));
