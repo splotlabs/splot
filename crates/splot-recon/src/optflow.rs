@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use std::simd::{Select, Simd, cmp::SimdPartialOrd, num::SimdInt, num::SimdUint};
+use std::simd::{
+    Select, Simd,
+    cmp::SimdOrd,
+    num::{SimdInt, SimdUint},
+};
 
 use crate::intra_dc_math::resolve_divisor_32;
 use crate::math::round2_signed_i32;
@@ -139,58 +143,49 @@ pub fn derive_optflow_mv_deltas_into<'a>(
     let (difference, scratch_samples) = scratch_samples.split_at_mut(expected);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(expected);
     let max_sample = bit_depth.max_sample();
-    let mut index = 0;
-    while index + 8 <= expected {
-        let left_samples = Simd::<u16, 8>::from_slice(&pred0[index..]);
-        let right_samples = Simd::<u16, 8>::from_slice(&pred1[index..]);
-        let max_samples = Simd::splat(max_sample);
-        if left_samples.simd_gt(max_samples).any() || right_samples.simd_gt(max_samples).any() {
-            for lane in 0..8 {
-                for (predictor, value) in [(0, left_samples[lane]), (1, right_samples[lane])] {
-                    if value > max_sample {
-                        return Err(ReconError::OptflowPredictorSampleOutOfRange {
-                            predictor,
-                            sample_index: index + lane,
-                            value,
-                            max: max_sample,
-                        });
-                    }
-                }
-            }
-        }
+    let (pred0_chunks, pred0_remainder) = pred0.as_chunks::<8>();
+    let (pred1_chunks, pred1_remainder) = pred1.as_chunks::<8>();
+    let (weighted_chunks, weighted_remainder) = weighted.as_chunks_mut::<8>();
+    let (difference_chunks, difference_remainder) = difference.as_chunks_mut::<8>();
+    debug_assert!(pred0_remainder.is_empty());
+    debug_assert!(pred1_remainder.is_empty());
+    debug_assert!(weighted_remainder.is_empty());
+    debug_assert!(difference_remainder.is_empty());
+    let mut peak = Simd::<u16, 8>::splat(0);
+    for (((left_samples, right_samples), weighted), difference) in pred0_chunks
+        .iter()
+        .zip(pred1_chunks)
+        .zip(weighted_chunks)
+        .zip(difference_chunks)
+    {
+        let left_samples = Simd::from_array(*left_samples);
+        let right_samples = Simd::from_array(*right_samples);
+        peak = peak.simd_max(left_samples).simd_max(right_samples);
         let left = left_samples.cast::<i32>();
         let right = right_samples.cast::<i32>();
-        let weighted_values = round2_signed_simd(
+        *weighted = round2_signed_simd(
             Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
             downshift,
         )
         .cast::<i16>()
         .to_array();
-        weighted[index..index + 8].copy_from_slice(&weighted_values); // splot-copy-ok: publish SIMD optical-flow weights into caller scratch
-        let difference_values = round2_signed_simd(left - right, downshift)
+        *difference = round2_signed_simd(left - right, downshift)
             .cast::<i16>()
             .to_array();
-        difference[index..index + 8].copy_from_slice(&difference_values); // splot-copy-ok: publish SIMD optical-flow differences into caller scratch
-        index += 8;
     }
-    for index in index..expected {
-        let left = pred0[index];
-        let right = pred1[index];
-        for (predictor, value) in [(0, left), (1, right)] {
-            if value > max_sample {
-                return Err(ReconError::OptflowPredictorSampleOutOfRange {
-                    predictor,
-                    sample_index: index,
-                    value,
-                    max: max_sample,
-                });
+    if peak.reduce_max() > max_sample {
+        for (sample_index, (&left, &right)) in pred0.iter().zip(pred1).enumerate() {
+            for (predictor, value) in [(0, left), (1, right)] {
+                if value > max_sample {
+                    return Err(ReconError::OptflowPredictorSampleOutOfRange {
+                        predictor,
+                        sample_index,
+                        value,
+                        max: max_sample,
+                    });
+                }
             }
         }
-        let left = i32::from(left);
-        let right = i32::from(right);
-        weighted[index] =
-            round2_signed_i32(distances[0] * left - distances[1] * right, downshift) as i16;
-        difference[index] = round2_signed_i32(left - right, downshift) as i16;
     }
 
     gradients(weighted, width, height, gradient_x, gradient_y);
@@ -266,20 +261,69 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
     let (weighted, scratch_samples) = scratch.samples.split_at_mut(8 * 8);
     let (difference, scratch_samples) = scratch_samples.split_at_mut(8 * 8);
     let (gradient_x, gradient_y) = scratch_samples.split_at_mut(8 * 8);
-    let max_sample = bit_depth.max_sample();
-    for row in 0..8 {
+    prepare_optflow_strided_rows(
+        pred0,
+        pred1,
+        stride,
+        bit_depth.max_sample(),
+        distances,
+        downshift,
+        weighted,
+        difference,
+    )?;
+
+    gradients(weighted, 8, 8, gradient_x, gradient_y);
+    solve_unit(gradient_x, gradient_y, difference, 8, 0, 0, 8, distances)
+}
+
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn prepare_optflow_strided_rows(
+    pred0: &[u16],
+    pred1: &[u16],
+    stride: usize,
+    max_sample: u16,
+    distances: [i32; 2],
+    downshift: u32,
+    weighted: &mut [i16],
+    difference: &mut [i16],
+) -> Result<()> {
+    let (weighted_rows, weighted_remainder) = weighted.as_chunks_mut::<8>();
+    let (difference_rows, difference_remainder) = difference.as_chunks_mut::<8>();
+    debug_assert!(weighted_remainder.is_empty());
+    debug_assert!(difference_remainder.is_empty());
+    let mut peak = Simd::<u16, 8>::splat(0);
+    for (row, (weighted, difference)) in weighted_rows
+        .iter_mut()
+        .zip(difference_rows.iter_mut())
+        .enumerate()
+    {
         let source = row * stride;
-        let destination = row * 8;
         let left_samples = Simd::<u16, 8>::from_slice(&pred0[source..]);
         let right_samples = Simd::<u16, 8>::from_slice(&pred1[source..]);
-        let max_samples = Simd::splat(max_sample);
-        if left_samples.simd_gt(max_samples).any() || right_samples.simd_gt(max_samples).any() {
+        peak = peak.simd_max(left_samples).simd_max(right_samples);
+        let left = left_samples.cast::<i32>();
+        let right = right_samples.cast::<i32>();
+        *weighted = round2_signed_simd(
+            Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
+            downshift,
+        )
+        .cast::<i16>()
+        .to_array();
+        *difference = round2_signed_simd(left - right, downshift)
+            .cast::<i16>()
+            .to_array();
+    }
+    if peak.reduce_max() > max_sample {
+        for row in 0..weighted_rows.len() {
+            let source = row * stride;
+            let sample_index = row * 8;
             for lane in 0..8 {
-                for (predictor, value) in [(0, left_samples[lane]), (1, right_samples[lane])] {
+                for (predictor, value) in [(0, pred0[source + lane]), (1, pred1[source + lane])] {
                     if value > max_sample {
                         return Err(ReconError::OptflowPredictorSampleOutOfRange {
                             predictor,
-                            sample_index: destination + lane,
+                            sample_index: sample_index + lane,
                             value,
                             max: max_sample,
                         });
@@ -287,23 +331,8 @@ pub fn derive_optflow_mv_delta_8x8_strided_into(
                 }
             }
         }
-        let left = left_samples.cast::<i32>();
-        let right = right_samples.cast::<i32>();
-        let weighted_values = round2_signed_simd(
-            Simd::splat(distances[0]) * left - Simd::splat(distances[1]) * right,
-            downshift,
-        )
-        .cast::<i16>()
-        .to_array();
-        weighted[destination..destination + 8].copy_from_slice(&weighted_values); // splot-copy-ok: publish SIMD optical-flow weights into caller scratch
-        let difference_values = round2_signed_simd(left - right, downshift)
-            .cast::<i16>()
-            .to_array();
-        difference[destination..destination + 8].copy_from_slice(&difference_values); // splot-copy-ok: publish SIMD optical-flow differences into caller scratch
     }
-
-    gradients(weighted, 8, 8, gradient_x, gradient_y);
-    solve_unit(gradient_x, gradient_y, difference, 8, 0, 0, 8, distances)
+    Ok(())
 }
 
 fn round2_signed_simd<const LANES: usize>(value: Simd<i32, LANES>, shift: u32) -> Simd<i32, LANES> {
@@ -344,43 +373,18 @@ fn gradients(
     horizontal: &mut [i16],
     vertical: &mut [i16],
 ) {
-    for row in 0..height {
-        let row_offset = row * width;
-        for col_start in (0..width).step_by(GRADIENT_UNIT) {
-            let col_end = (col_start + GRADIENT_UNIT).min(width) - 1;
-            let mut col = col_start;
-            while col <= col_end {
-                if col >= col_start + 2 && col + 5 <= col_end {
-                    let next =
-                        Simd::<i16, 4>::from_slice(&values[row_offset + col + 1..]).cast::<i32>();
-                    let prev =
-                        Simd::<i16, 4>::from_slice(&values[row_offset + col - 1..]).cast::<i32>();
-                    let next2 =
-                        Simd::<i16, 4>::from_slice(&values[row_offset + col + 2..]).cast::<i32>();
-                    let prev2 =
-                        Simd::<i16, 4>::from_slice(&values[row_offset + col - 2..]).cast::<i32>();
-                    let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
-                    horizontal[row_offset + col..row_offset + col + 4]
-                        .copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
-                    col += 4;
-                    continue;
-                }
-                let col_prev = col.saturating_sub(1).max(col_start);
-                let col_prev2 = col.saturating_sub(2).max(col_start);
-                let col_next = (col + 1).min(col_end);
-                let col_next2 = (col + 2).min(col_end);
-                let mut value = 42
-                    * (i32::from(values[row_offset + col_next])
-                        - i32::from(values[row_offset + col_prev]))
-                    - 5 * (i32::from(values[row_offset + col_next2])
-                        - i32::from(values[row_offset + col_prev2]));
-                if col + 1 > col_end || col < col_start + 1 {
-                    value *= 2;
-                }
-                horizontal[row_offset + col] = round2_signed_i32(value, 7) as i16;
-                col += 1;
-            }
+    for (source, output) in values
+        .chunks_exact(width)
+        .zip(horizontal.chunks_exact_mut(width))
+    {
+        let (source_units, source_remainder) = source.as_chunks::<GRADIENT_UNIT>();
+        let (output_units, output_remainder) = output.as_chunks_mut::<GRADIENT_UNIT>();
+        for (source, output) in source_units.iter().zip(output_units) {
+            horizontal_gradient_unit(source, output);
         }
+        horizontal_gradient_partial(source_remainder, output_remainder);
+    }
+    for row in 0..height {
         let row_start = (row / GRADIENT_UNIT) * GRADIENT_UNIT;
         let row_end = (row_start + GRADIENT_UNIT).min(height) - 1;
         let row_prev = row.saturating_sub(1).max(row_start);
@@ -388,37 +392,112 @@ fn gradients(
         let row_next = (row + 1).min(row_end);
         let row_next2 = (row + 2).min(row_end);
         let double = row + 1 > row_end || row < row_start + 1;
-        let mut col = 0;
-        while col + 8 <= width {
-            let mut value = Simd::<i16, 8>::from_slice(&values[row_next * width + col..])
-                .cast::<i32>()
-                - Simd::<i16, 8>::from_slice(&values[row_prev * width + col..]).cast::<i32>();
-            value *= Simd::splat(42);
-            value -= (Simd::<i16, 8>::from_slice(&values[row_next2 * width + col..]).cast::<i32>()
-                - Simd::<i16, 8>::from_slice(&values[row_prev2 * width + col..]).cast::<i32>())
-                * Simd::splat(5);
-            if double {
-                value += value;
-            }
-            let rounded = round2_signed_simd(value, 7).cast::<i16>().to_array();
-            vertical[row * width + col..row * width + col + 8].copy_from_slice(&rounded); // splot-copy-ok: publish SIMD gradients into caller scratch
-            col += 8;
+        let row_slice = |row| &values[row * width..][..width];
+        let output = &mut vertical[row * width..][..width];
+        vertical_gradient_row(
+            row_slice(row_prev),
+            row_slice(row_prev2),
+            row_slice(row_next),
+            row_slice(row_next2),
+            double,
+            output,
+        );
+    }
+}
+
+fn horizontal_gradient_unit(source: &[i16; GRADIENT_UNIT], output: &mut [i16; GRADIENT_UNIT]) {
+    for col in [0, 1, GRADIENT_UNIT - 2, GRADIENT_UNIT - 1] {
+        output[col] = horizontal_gradient_scalar(source, col);
+    }
+    let next = Simd::<i16, 8>::from_slice(&source[3..11]).cast::<i32>();
+    let prev = Simd::<i16, 8>::from_slice(&source[1..9]).cast::<i32>();
+    let next2 = Simd::<i16, 8>::from_slice(&source[4..12]).cast::<i32>();
+    let prev2 = Simd::<i16, 8>::from_slice(&source[..8]).cast::<i32>();
+    let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
+    output[2..10].copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
+
+    let next = Simd::<i16, 4>::from_slice(&source[11..15]).cast::<i32>();
+    let prev = Simd::<i16, 4>::from_slice(&source[9..13]).cast::<i32>();
+    let next2 = Simd::<i16, 4>::from_slice(&source[12..]).cast::<i32>();
+    let prev2 = Simd::<i16, 4>::from_slice(&source[8..12]).cast::<i32>();
+    let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
+    output[10..14].copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
+}
+
+fn horizontal_gradient_partial(source: &[i16], output: &mut [i16]) {
+    if source.is_empty() {
+        return;
+    }
+    let col_end = source.len() - 1;
+    let mut col = 0;
+    while col <= col_end {
+        if col >= 2 && col + 5 <= col_end {
+            let next = Simd::<i16, 4>::from_slice(&source[col + 1..]).cast::<i32>();
+            let prev = Simd::<i16, 4>::from_slice(&source[col - 1..]).cast::<i32>();
+            let next2 = Simd::<i16, 4>::from_slice(&source[col + 2..]).cast::<i32>();
+            let prev2 = Simd::<i16, 4>::from_slice(&source[col - 2..]).cast::<i32>();
+            let value = Simd::splat(42) * (next - prev) - Simd::splat(5) * (next2 - prev2);
+            output[col..col + 4]
+                .copy_from_slice(&round2_signed_simd(value, 7).cast::<i16>().to_array()); // splot-copy-ok: publish SIMD horizontal gradients into caller scratch
+            col += 4;
+            continue;
         }
-        for col in col..width {
-            let row_prev = row.saturating_sub(1).max(row_start);
-            let row_prev2 = row.saturating_sub(2).max(row_start);
-            let row_next = (row + 1).min(row_end);
-            let row_next2 = (row + 2).min(row_end);
-            let mut value = 42
-                * (i32::from(values[row_next * width + col])
-                    - i32::from(values[row_prev * width + col]))
-                - 5 * (i32::from(values[row_next2 * width + col])
-                    - i32::from(values[row_prev2 * width + col]));
-            if double {
-                value *= 2;
-            }
-            vertical[row * width + col] = round2_signed_i32(value, 7) as i16;
+        output[col] = horizontal_gradient_scalar(source, col);
+        col += 1;
+    }
+}
+
+fn horizontal_gradient_scalar(source: &[i16], col: usize) -> i16 {
+    let col_end = source.len() - 1;
+    let col_prev = col.saturating_sub(1);
+    let col_prev2 = col.saturating_sub(2);
+    let col_next = (col + 1).min(col_end);
+    let col_next2 = (col + 2).min(col_end);
+    let mut value = 42 * (i32::from(source[col_next]) - i32::from(source[col_prev]))
+        - 5 * (i32::from(source[col_next2]) - i32::from(source[col_prev2]));
+    if col + 1 > col_end || col < 1 {
+        value *= 2;
+    }
+    round2_signed_i32(value, 7) as i16
+}
+
+fn vertical_gradient_row(
+    prev: &[i16],
+    prev2: &[i16],
+    next: &[i16],
+    next2: &[i16],
+    double: bool,
+    output: &mut [i16],
+) {
+    let (prev_chunks, prev_remainder) = prev.as_chunks::<8>();
+    let (prev2_chunks, prev2_remainder) = prev2.as_chunks::<8>();
+    let (next_chunks, next_remainder) = next.as_chunks::<8>();
+    let (next2_chunks, next2_remainder) = next2.as_chunks::<8>();
+    let (output_chunks, output_remainder) = output.as_chunks_mut::<8>();
+    for ((((prev, prev2), next), next2), output) in prev_chunks
+        .iter()
+        .zip(prev2_chunks)
+        .zip(next_chunks)
+        .zip(next2_chunks)
+        .zip(output_chunks)
+    {
+        let mut value = (Simd::from_array(*next).cast::<i32>()
+            - Simd::from_array(*prev).cast::<i32>())
+            * Simd::splat(42);
+        value -= (Simd::from_array(*next2).cast::<i32>() - Simd::from_array(*prev2).cast::<i32>())
+            * Simd::splat(5);
+        if double {
+            value += value;
         }
+        *output = round2_signed_simd(value, 7).cast::<i16>().to_array();
+    }
+    for col in 0..output_remainder.len() {
+        let mut value = 42 * (i32::from(next_remainder[col]) - i32::from(prev_remainder[col]))
+            - 5 * (i32::from(next2_remainder[col]) - i32::from(prev2_remainder[col]));
+        if double {
+            value *= 2;
+        }
+        output_remainder[col] = round2_signed_i32(value, 7) as i16;
     }
 }
 
@@ -707,6 +786,64 @@ mod tests {
             Err(ReconError::OptflowPredictorSampleOutOfRange {
                 predictor: 0,
                 sample_index: 7,
+                value: 256,
+                max: 255,
+            })
+        ));
+    }
+
+    #[test]
+    fn predictor_range_error_keeps_sample_then_predictor_order() {
+        let mut left = vec![0; 8 * 8];
+        let mut right = vec![0; 8 * 8];
+        right[2] = 256;
+        left[3] = 257;
+
+        assert!(matches!(
+            derive_optflow_mv_deltas(&left, &right, 8, 8, 8, BitDepth::Eight, [1, -1]),
+            Err(ReconError::OptflowPredictorSampleOutOfRange {
+                predictor: 1,
+                sample_index: 2,
+                value: 256,
+                max: 255,
+            })
+        ));
+
+        left[2] = 258;
+        assert!(matches!(
+            derive_optflow_mv_deltas(&left, &right, 8, 8, 8, BitDepth::Eight, [1, -1]),
+            Err(ReconError::OptflowPredictorSampleOutOfRange {
+                predictor: 0,
+                sample_index: 2,
+                value: 258,
+                max: 255,
+            })
+        ));
+    }
+
+    #[test]
+    fn strided_predictor_range_error_uses_logical_sample_order() {
+        const STRIDE: usize = 12;
+        let mut left = vec![0; STRIDE * 8];
+        let mut right = vec![0; STRIDE * 8];
+        right[STRIDE] = 256;
+        left[STRIDE + 1] = 257;
+        let mut scratch = OptflowScratch::default();
+
+        assert!(matches!(
+            derive_optflow_mv_delta_8x8_strided_into(
+                &left,
+                0,
+                &right,
+                0,
+                STRIDE,
+                BitDepth::Eight,
+                [1, -1],
+                &mut scratch,
+            ),
+            Err(ReconError::OptflowPredictorSampleOutOfRange {
+                predictor: 1,
+                sample_index: 8,
                 value: 256,
                 max: 255,
             })
