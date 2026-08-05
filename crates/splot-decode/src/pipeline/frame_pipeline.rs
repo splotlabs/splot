@@ -15,13 +15,19 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use splot_core::headers::frame::FrameHeaderCore;
+use splot_core::headers::sequence::SequenceHeader;
+use splot_core::span::ByteOffset;
 use splot_parallel::{AdmissionScheduler, CompletionCell, Condition};
+use splot_recon::{BitDepth, ReconSample};
 
 use crate::Result;
 use crate::error::DecodeError;
 use crate::prediction::inter;
 
-use super::inflight::{FinishSpawner, PendingFinish};
+use super::inflight::{
+    FinishSpawner, InflightRing, PendingFinish, PipelineFrameSlot, RefFrameSlot,
+};
 use super::unsupported;
 
 /// One frame whose entropy pass is done and whose reconstruction the driver
@@ -189,12 +195,12 @@ const ORDER_KEY_FRAME_STRIDE: u64 = 1 << 32;
 type TemporalScratchSlot = Arc<CompletionCell<Mutex<Option<inter::TemporalMvScratch>>>>;
 type ReconScratchSlot = Arc<CompletionCell<Mutex<Option<ScheduledReconScratch>>>>;
 
-enum ScheduledReconScratch {
+pub(super) enum ScheduledReconScratch {
     Eight(inter::InterDecodeScratch<u8>),
     Ten(inter::InterDecodeScratch<u16>),
 }
 
-trait ScheduledScratchSample: splot_recon::ReconSample {
+pub(super) trait ScheduledScratchSample: splot_recon::ReconSample {
     fn take_scheduled_scratch(
         scratch: &mut Option<ScheduledReconScratch>,
     ) -> Option<inter::InterDecodeScratch<Self>>;
@@ -228,6 +234,104 @@ macro_rules! impl_scheduled_scratch_sample {
 
 impl_scheduled_scratch_sample!(u8, Eight);
 impl_scheduled_scratch_sample!(u16, Ten);
+
+type PendingTipProducts<T> = (
+    PipelineFrameSlot,
+    PendingFinish<T>,
+    inter::FrameCdfHandle,
+    inter::CcsoGridHandle,
+    inter::MotionFieldHandle,
+);
+
+/// Reserves the pending frame and product handles published by one TIP job.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reserve_tip_output<T: ReconSample>(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    bit_depth: BitDepth,
+    offset: ByteOffset,
+    erase: fn(RefFrameSlot<T>) -> PipelineFrameSlot,
+    ring: &mut InflightRing,
+    frame_index: usize,
+) -> Result<PendingTipProducts<T>> {
+    let info = inter::inter_frame_info(core, sequence, bit_depth, offset)?;
+    let (slot, finish) = super::inflight::reserve_pending_slot(info, erase, ring, frame_index)?;
+    let frame_cdfs = inter::FrameCdfHandle::pending();
+    let ccso_grid = inter::CcsoGridHandle::pending();
+    let motion = inter::MotionFieldHandle::pending_with_layout(inter::motion_field_layout(
+        core, sequence, info, offset,
+    )?);
+    Ok((slot, finish, frame_cdfs, ccso_grid, motion))
+}
+
+/// Admits one reference-gated TIP output reconstruction without stopping the
+/// frame driver at its pixel-reference barrier.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
+    reconstruct: P,
+    frame_index: usize,
+    dependencies: &[Condition<'_>],
+    frame_cdfs: inter::FrameCdfHandle,
+    ccso_grid: inter::CcsoGridHandle,
+    motion: inter::MotionFieldHandle,
+    finish: PendingFinish<T>,
+    scheduler: &'scope AdmissionScheduler<'job>,
+    spawner: &FinishSpawner<'_, 'scope>,
+    lane: &mut ReconAdmissionLane,
+) -> Result<()>
+where
+    T: ScheduledScratchSample + Send + 'static,
+    P: FnOnce(&mut inter::InterDecodeScratch<T>) -> Result<inter::InterDecodeOutput<T>>
+        + Send
+        + 'job,
+    'job: 'scope,
+{
+    let FinishSpawner::Deferred(scope) = spawner else {
+        return Err(frame_task_scope());
+    };
+    let (scratch_source, scratch_done) = lane.reserve_recon();
+    let mut conditions = dependencies.to_vec();
+    if let Some(gate) = scratch_source.as_deref() {
+        conditions.push(Condition::Completion(gate));
+    }
+    let scratch_for_job = scratch_source.clone();
+    let order_key = u64::try_from(frame_index)
+        .unwrap_or(u64::MAX / ORDER_KEY_FRAME_STRIDE)
+        .saturating_mul(ORDER_KEY_FRAME_STRIDE);
+    scheduler.submit(
+        scope,
+        order_key,
+        &conditions,
+        Box::new(move |admit| {
+            let mut scratch = scratch_for_job
+                .as_deref()
+                .and_then(CompletionCell::get)
+                .and_then(|scratch| {
+                    T::take_scheduled_scratch(
+                        &mut scratch.lock().unwrap_or_else(PoisonError::into_inner),
+                    )
+                })
+                .unwrap_or_default();
+            match reconstruct(&mut scratch) {
+                Ok((frame, _, cdfs, ccso, field)) => {
+                    frame_cdfs.publish(cdfs);
+                    ccso_grid.publish(ccso.map(Arc::new));
+                    motion.publish(field);
+                    finish.complete_frame(frame);
+                }
+                Err(error) => {
+                    frame_cdfs.fail();
+                    ccso_grid.fail();
+                    motion.fail();
+                    finish.fail(error);
+                }
+            }
+            let _ = scratch_done.set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
+            admit.admit_ready();
+        }),
+    );
+    Ok(())
+}
 
 /// The frame-context admission bound for scheduled reconstruction.
 pub(super) struct ReconAdmissionLane {
@@ -292,23 +396,13 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
 
 impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     fn submit_batch(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
-        let mut precompute_conditions = self.walk.conditions(index);
-        if self.walk.owns_canonical_bands() && index > 0 {
-            precompute_conditions.push(Condition::Completion(self.committed[index - 1].as_ref()));
-        }
+        let precompute_conditions = self.walk.conditions(index);
         let row = Arc::clone(self);
         admit.submit(
             self.batch_key(index, 1),
             &precompute_conditions,
-            if self.walk.owns_canonical_bands() {
-                Box::new(move |admit| row.run_batch(index, admit))
-            } else {
-                Box::new(move |admit| row.precompute(index, admit))
-            },
+            Box::new(move |admit| row.precompute(index, admit)),
         );
-        if self.walk.owns_canonical_bands() {
-            return;
-        }
         let mut commit_conditions = vec![Condition::Completion(self.prepared[index].as_ref())];
         if index > 0 {
             commit_conditions.push(Condition::Completion(self.committed[index - 1].as_ref()));
@@ -397,19 +491,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             self.submit_resolve(next, admit);
         }
         admit.admit_ready();
-    }
-
-    fn run_batch(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
-        if !self.failed.load(Ordering::Acquire)
-            && let Err(error) = self.walk.precompute(index)
-        {
-            self.fail(error, admit);
-            return;
-        }
-        if let Some(prepared) = self.prepared.get(index) {
-            let _ = prepared.set(());
-        }
-        self.commit(index, admit);
     }
 
     fn precompute(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {

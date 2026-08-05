@@ -557,6 +557,9 @@ fn decode_raw_to_file(
     options: &DecodeOptions,
     path: &Path,
 ) -> core::result::Result<(), DecodeError> {
+    if cfg!(unix) && path == Path::new("/dev/null") {
+        return context.decode_raw_discard_bytes(bytes, *options);
+    }
     publish_output(path, RAW_OUTPUT, |writer| {
         context.decode_raw_bytes(bytes, *options, writer)
     })

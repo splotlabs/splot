@@ -579,12 +579,33 @@ fn solve_unit_sums<const N: usize>(
     unit_x: usize,
     unit_y: usize,
 ) -> [i32; 5] {
+    let row_chunks = stride / N;
+    let first_chunk = unit_y * row_chunks + unit_x / N;
+    let end_chunk = (unit_y + N) * row_chunks;
+    let (gradient_x, gradient_x_remainder) = gradient_x.as_chunks::<N>();
+    let (gradient_y, gradient_y_remainder) = gradient_y.as_chunks::<N>();
+    let (difference, difference_remainder) = difference.as_chunks::<N>();
+    debug_assert!(gradient_x_remainder.is_empty());
+    debug_assert!(gradient_y_remainder.is_empty());
+    debug_assert!(difference_remainder.is_empty());
     let mut sums = [Simd::<i32, N>::splat(0); 5];
-    for row in unit_y..unit_y + N {
-        let index = row * stride + unit_x;
-        let u = Simd::<i16, N>::from_slice(&gradient_x[index..]).cast::<i32>();
-        let v = Simd::<i16, N>::from_slice(&gradient_y[index..]).cast::<i32>();
-        let w = Simd::<i16, N>::from_slice(&difference[index..]).cast::<i32>();
+    for ((u, v), w) in gradient_x[first_chunk..end_chunk]
+        .iter()
+        .step_by(row_chunks)
+        .zip(
+            gradient_y[first_chunk..end_chunk]
+                .iter()
+                .step_by(row_chunks),
+        )
+        .zip(
+            difference[first_chunk..end_chunk]
+                .iter()
+                .step_by(row_chunks),
+        )
+    {
+        let u = Simd::from_array(*u).cast::<i32>();
+        let v = Simd::from_array(*v).cast::<i32>();
+        let w = Simd::from_array(*w).cast::<i32>();
         sums[0] += u * u;
         sums[1] += v * v;
         sums[2] += u * v;
@@ -773,6 +794,58 @@ mod tests {
         let deltas =
             derive_optflow_mv_deltas(&left, &right, 8, 8, 8, BitDepth::Ten, [2, -1]).unwrap();
         assert!(deltas[0].iter().flatten().all(|&value| value.abs() <= 16));
+    }
+
+    #[test]
+    fn vector_sums_match_scalar_sums_across_unit_grids() {
+        for (width, height, unit_size) in [(8, 8, 4), (16, 12, 4), (16, 16, 8), (24, 16, 8)] {
+            let len = width * height;
+            let gradient_x: Vec<i16> = (0..len).map(|index| (index % 17) as i16 - 8).collect();
+            let gradient_y: Vec<i16> = (0..len).map(|index| (index % 13) as i16 - 6).collect();
+            let difference: Vec<i16> = (0..len).map(|index| (index % 11) as i16 - 5).collect();
+            for unit_y in (0..height).step_by(unit_size) {
+                for unit_x in (0..width).step_by(unit_size) {
+                    let area = (unit_size * unit_size) as i32;
+                    let mut expected = [area, area, 0, 0, 0];
+                    for row in unit_y..unit_y + unit_size {
+                        for col in unit_x..unit_x + unit_size {
+                            let index = row * width + col;
+                            let u = i32::from(gradient_x[index]);
+                            let v = i32::from(gradient_y[index]);
+                            let w = i32::from(difference[index]);
+                            expected[0] += u * u;
+                            expected[1] += v * v;
+                            expected[2] += u * v;
+                            expected[3] += u * w;
+                            expected[4] += v * w;
+                        }
+                    }
+                    let actual = match unit_size {
+                        4 => solve_unit_sums::<4>(
+                            &gradient_x,
+                            &gradient_y,
+                            &difference,
+                            width,
+                            unit_x,
+                            unit_y,
+                        ),
+                        8 => solve_unit_sums::<8>(
+                            &gradient_x,
+                            &gradient_y,
+                            &difference,
+                            width,
+                            unit_x,
+                            unit_y,
+                        ),
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(
+                        actual, expected,
+                        "{width}x{height} unit at {unit_x},{unit_y}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

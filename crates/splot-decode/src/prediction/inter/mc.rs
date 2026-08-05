@@ -627,11 +627,12 @@ pub(super) fn tip_batch_motion_grid<T: ReconSample>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     columns: usize,
-    units: impl ExactSizeIterator<Item = (McBlockRect, [Mv; 2])>,
+    unit_count: usize,
+    unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
 ) -> Result<CompoundMotionGrid> {
     let motion_timer = crate::timing::start();
-    let motion = optflow::tip_motion_grid(sink, block, 8, columns, units, offset)?;
+    let motion = optflow::tip_motion_grid(sink, block, 8, columns, unit_count, unit_at, offset)?;
     crate::timing::accumulate(crate::timing::Phase::TipMotionGrid, motion_timer);
     Ok(motion)
 }
@@ -1245,7 +1246,7 @@ fn predict_compound_plane_output<T: ReconSample>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput>(
+fn predict_motion_compound_average_into<T: ReconSample, O: CompoundAverageOutput + Send>(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
     plane: PlaneId,
@@ -2081,50 +2082,22 @@ fn blend_compound_average<T: ReconSample>(
         );
     }
 
-    let last_x = frame_w as i32 - 1;
-    let last_y = frame_h as i32 - 1;
-    let ref_start_x0 = scaling0.start_x >> 10;
-    let ref_start_y0 = scaling0.start_y >> 10;
-    let ref_start_x1 = scaling1.start_x >> 10;
-    let ref_start_y1 = scaling1.start_y >> 10;
-    let max_sample = i32::from(bit_depth.max_sample());
-    let shift = 1 + compound_inter_post_round();
-    for (idx, (slot, (&left, &right))) in output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
-    {
-        let row = idx / w;
-        let col = idx % w;
-        let starts = if let Some(motion) = motion {
-            let mvs = motion.at_luma_offset(col << sub_x, row << sub_y)?;
-            core::array::from_fn(|reference| {
-                let scaling = scaling_templates[reference].with_prescaled_mv(
-                    (plane_x + col) as i32,
-                    (plane_y + row) as i32,
-                    mvs[reference][0],
-                    mvs[reference][1],
-                    sub_x,
-                    sub_y,
-                );
-                (scaling.start_x >> 10, scaling.start_y >> 10)
-            })
-        } else {
-            [
-                (ref_start_x0 + col as i32, ref_start_y0 + row as i32),
-                (ref_start_x1 + col as i32, ref_start_y1 + row as i32),
-            ]
-        };
-        let ref0_onscreen =
-            (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
-        let ref1_onscreen =
-            (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
-        let mask = match (ref0_onscreen, ref1_onscreen) {
-            (true, false) => 2,
-            (false, true) => 0,
-            _ => 1,
-        };
-        let sample = round2_i32(mask * left + (2 - mask) * right, shift);
-        *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
-    }
-    Ok(())
+    optflow::blend_nonuniform_implicit_mask(
+        pred0,
+        pred1,
+        bit_depth,
+        w,
+        h,
+        motion,
+        plane_x,
+        plane_y,
+        scaling_templates,
+        frame_w,
+        frame_h,
+        sub_x,
+        sub_y,
+        output,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

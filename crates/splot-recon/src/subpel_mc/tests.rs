@@ -1638,61 +1638,63 @@ fn clipped_two_axis_compound_matches_materialized_predictors() {
     let view0 = ReferencePlaneView::new(&samples0, ref_w, ref_h).unwrap();
     let view1 = ReferencePlaneView::new(&samples1, ref_w, ref_h).unwrap();
     for width in [4, 8] {
-        let params0 = SubpelPredictParams {
-            interp: InterpolationFilter::EightTapSharp,
-            w: width,
-            h: 6,
-            start_x: (5 << SCALE_SUBPEL_BITS) + (5 << 6),
-            start_y: (4 << SCALE_SUBPEL_BITS) + (11 << 6),
-            step_x: 1 << SCALE_SUBPEL_BITS,
-            step_y: 1 << SCALE_SUBPEL_BITS,
-            first_x: 5,
-            first_y: 3,
-            last_x: 8,
-            last_y: 8,
-            bit_depth: BitDepth::Ten,
-        };
-        let params1 = SubpelPredictParams {
-            interp: InterpolationFilter::EightTapSmooth,
-            start_x: (11 << SCALE_SUBPEL_BITS) + (13 << 6),
-            start_y: (7 << SCALE_SUBPEL_BITS) + (3 << 6),
-            first_x: 9,
-            first_y: 6,
-            last_x: 13,
-            last_y: 11,
-            ..params0
-        };
-        let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
-        let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
-        for weight in [8, 12] {
-            let expected =
-                blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
-            let stride = width + 3;
-            let mut output = vec![u16::MAX; stride * params0.h];
-            let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
-            assert!(
-                subpel_predict_block_compound_average_2d_strided_into(
-                    &view0,
-                    &params0,
-                    &view1,
-                    &params1,
-                    weight,
-                    &mut scratch,
-                    &mut output,
-                    stride,
-                )
-                .unwrap()
-            );
-            for row in 0..params0.h {
-                assert_eq!(
-                    &output[row * stride..row * stride + width],
-                    &expected[row * width..(row + 1) * width],
-                );
+        for (start0, start1) in [(5i32, 11i32), (-8, -6), (30, 32)] {
+            let params0 = SubpelPredictParams {
+                interp: InterpolationFilter::EightTapSharp,
+                w: width,
+                h: 6,
+                start_x: (start0 << SCALE_SUBPEL_BITS) + (5 << 6),
+                start_y: (4 << SCALE_SUBPEL_BITS) + (11 << 6),
+                step_x: 1 << SCALE_SUBPEL_BITS,
+                step_y: 1 << SCALE_SUBPEL_BITS,
+                first_x: 5,
+                first_y: 3,
+                last_x: 8,
+                last_y: 8,
+                bit_depth: BitDepth::Ten,
+            };
+            let params1 = SubpelPredictParams {
+                interp: InterpolationFilter::EightTapSmooth,
+                start_x: (start1 << SCALE_SUBPEL_BITS) + (13 << 6),
+                start_y: (7 << SCALE_SUBPEL_BITS) + (3 << 6),
+                first_x: 9,
+                first_y: 6,
+                last_x: 13,
+                last_y: 11,
+                ..params0
+            };
+            let pred0 = subpel_predict_block_compound_intermediate(&view0, &params0).unwrap();
+            let pred1 = subpel_predict_block_compound_intermediate(&view1, &params1).unwrap();
+            for weight in [8, 12] {
+                let expected =
+                    blend_compound_average_weighted(&pred0, &pred1, BitDepth::Ten, weight).unwrap();
+                let stride = width + 3;
+                let mut output = vec![u16::MAX; stride * params0.h];
+                let mut scratch = [0i16; 2 * (8 + NUM_TAPS - 1) * 8];
                 assert!(
-                    output[row * stride + width..(row + 1) * stride]
-                        .iter()
-                        .all(|&sample| sample == u16::MAX)
+                    subpel_predict_block_compound_average_2d_strided_into(
+                        &view0,
+                        &params0,
+                        &view1,
+                        &params1,
+                        weight,
+                        &mut scratch,
+                        &mut output,
+                        stride,
+                    )
+                    .unwrap()
                 );
+                for row in 0..params0.h {
+                    assert_eq!(
+                        &output[row * stride..row * stride + width],
+                        &expected[row * width..(row + 1) * width],
+                    );
+                    assert!(
+                        output[row * stride + width..(row + 1) * stride]
+                            .iter()
+                            .all(|&sample| sample == u16::MAX)
+                    );
+                }
             }
         }
     }

@@ -123,10 +123,6 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         self.filter_count
     }
 
-    pub(in crate::prediction::inter::block) const fn owns_canonical_bands(&self) -> bool {
-        self.owned_bands
-    }
-
     pub(in crate::prediction::inter::block) fn resolve_len(&self) -> usize {
         self.temporal_plan.len()
     }

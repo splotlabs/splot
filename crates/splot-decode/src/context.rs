@@ -191,6 +191,30 @@ impl DecodeContext {
         })
     }
 
+    /// Decodes raw output through output-effect materialization without
+    /// serializing its sample bytes.
+    ///
+    /// This is the raw-output equivalent of writing to a platform null device:
+    /// displayed frames and output-only effects are still resolved, but no
+    /// temporary sample-byte buffer is produced.
+    ///
+    /// # Errors
+    /// Returns [`crate::DecodeError`] for malformed sources, unsupported
+    /// structures, runtime-tier rejections, resource-limit failures, worker-pool
+    /// failures, reconstruction model errors, or output-effect errors.
+    pub fn decode_raw_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
+        let prepared = self.prepare_bytes(bytes, &options)?;
+        self.pool.install(|| {
+            crate::output::raw::discard_raw_stream_from_plan(
+                bytes,
+                prepared.parsed(),
+                &options,
+                prepared.plan(),
+                self.frame_delay,
+            )
+        })
+    }
+
     /// Decodes the supported envelope and streams a Y4M stream.
     ///
     /// Runs bounded byte planning first (see [`Self::decode_hash_report_bytes`]).

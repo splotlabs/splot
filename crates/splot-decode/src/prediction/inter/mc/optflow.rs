@@ -3,6 +3,7 @@
 
 use std::simd::{Simd, num::SimdUint};
 
+use splot_parallel::prelude::*;
 use splot_recon::math::round2_signed_i32;
 use splot_recon::{
     OptflowScratch, derive_optflow_mv_delta_8x8_strided_into, derive_optflow_mv_deltas_into,
@@ -676,15 +677,82 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     block: CompoundMcBlock<'_, T>,
     unit_size: usize,
     columns: usize,
-    units: impl ExactSizeIterator<Item = (McBlockRect, [Mv; 2])>,
+    unit_count: usize,
+    unit_at: impl Fn(usize) -> (McBlockRect, [Mv; 2]) + Sync,
     offset: ByteOffset,
 ) -> Result<CompoundMotionGrid> {
-    let unit_count = units.len();
     if unit_count == 0 || columns == 0 {
         return Err(ReconError::ZeroDimension {
             field: "TIP compound motion grid",
         }
         .into());
+    }
+    if unit_count >= 1024 && splot_parallel::on_worker_pool() {
+        let mut cells = take_motion_cells(
+            unit_count,
+            MotionCell::uninitialized([block.mv0, block.mv1]),
+        );
+        cells
+            .par_chunks_mut(columns)
+            .enumerate()
+            .try_for_each(|(row, cells)| {
+                let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
+                let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
+                let mut previous_refined = false;
+                for (column, destination) in cells.iter_mut().enumerate() {
+                    let (rect, mvs) = unit_at(row * columns + column);
+                    let reuse_horizontal =
+                        previous_unit.map_or([false; 2], |(previous_rect, previous_mvs)| {
+                            core::array::from_fn(|reference| {
+                                previous_refined
+                                    && rect.luma_x == previous_rect.luma_x + previous_rect.luma_w
+                                    && mvs[reference] == previous_mvs[reference]
+                            })
+                        });
+                    let mut unit = block;
+                    unit.rect = rect;
+                    unit.mv0 = mvs[0];
+                    unit.mv1 = mvs[1];
+                    unit.has_chroma = false;
+                    unit.sub8x8_chroma = false;
+                    let refined = super::refinemv::tip_refinemv_optflow_motion_cell(
+                        sink,
+                        unit,
+                        offset,
+                        reuse_horizontal,
+                        &mut initial_predictions,
+                    )?;
+                    previous_unit = Some((rect, mvs));
+                    previous_refined = refined.is_some();
+                    *destination = if let Some(cell) = refined {
+                        cell
+                    } else {
+                        let refinemv = unit
+                            .use_refinemv
+                            .then(|| {
+                                super::refinemv::compound_default_refinemv_motion_grid(
+                                    sink, unit, offset,
+                                )
+                            })
+                            .transpose()?;
+                        compound_motion_grid(sink, unit, Some(unit_size), refinemv, offset)?
+                            .as_ref()
+                            .map(|motion| motion.cell_at_luma_offset(0, 0))
+                            .transpose()?
+                            .unwrap_or_else(|| MotionCell::from_refinemv(mvs))
+                    };
+                }
+                Ok::<_, crate::error::DecodeError>(())
+            })?;
+        return Ok(CompoundMotionGrid {
+            unit_size,
+            columns,
+            cells: MotionCells::from_vec(cells),
+            refinemv_candidates: RefinemvCandidates::PerCell {
+                candidates: (0..unit_count).map(|index| unit_at(index).1).collect(),
+                unit_size,
+            },
+        });
     }
     let mut cells = take_motion_cells(
         unit_count,
@@ -694,7 +762,8 @@ pub(super) fn tip_motion_grid<T: ReconSample>(
     let mut initial_predictions = [[0u16; super::refinemv::TIP_PREDICTION_AREA]; 2];
     let mut previous_unit: Option<(McBlockRect, [Mv; 2])> = None;
     let mut previous_refined = false;
-    for (index, (rect, mvs)) in units.enumerate() {
+    for index in 0..unit_count {
+        let (rect, mvs) = unit_at(index);
         let reuse_horizontal = previous_unit.map_or([false; 2], |(previous_rect, previous_mvs)| {
             core::array::from_fn(|reference| {
                 previous_refined
@@ -894,7 +963,7 @@ fn compound_optflow_subpel_params<T: ReconSample>(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_uniform_motion_compound_average_into<
     T: ReconSample,
-    O: CompoundAverageOutput,
+    O: CompoundAverageOutput + Send,
 >(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -974,7 +1043,7 @@ pub(super) fn predict_uniform_motion_compound_average_into<
 #[allow(clippy::too_many_arguments)]
 pub(super) fn predict_motion_grid_compound_average_into<
     T: ReconSample,
-    O: CompoundAverageOutput,
+    O: CompoundAverageOutput + Send,
 >(
     sink: &WorkspaceSink<'_, '_, T>,
     block: CompoundMcBlock<'_, T>,
@@ -1008,9 +1077,12 @@ pub(super) fn predict_motion_grid_compound_average_into<
     let frame_h = (coded_luma_size.height().div_ceil(4) * 4) >> sub_y;
     let subblock_w = (motion.unit_size >> sub_x).max(4);
     let subblock_h = (motion.unit_size >> sub_y).max(4);
-    let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
-    let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
-    for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
+    let process_row = |cell_row: usize,
+                       row: usize,
+                       output: &mut [O],
+                       pred0_scratch: &mut [i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES],
+                       intermediate_scratch: &mut [i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE]|
+     -> Result<bool> {
         for (cell_col, col) in (0..prediction.block_w).step_by(subblock_w).enumerate() {
             let width = subblock_w.min(prediction.block_w - col);
             let height = subblock_h.min(prediction.block_h - row);
@@ -1061,15 +1133,14 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 block_h: height,
                 scalings,
             };
-            let output_start = row * prediction.block_w + col;
             if O::predict_fast(
                 &subplane.views[0],
                 &params[0],
                 &subplane.views[1],
                 &params[1],
                 cwp_weight,
-                &mut intermediate_scratch,
-                &mut output[output_start..],
+                intermediate_scratch,
+                &mut output[col..],
                 prediction.block_w,
             )? {
                 continue;
@@ -1078,14 +1149,147 @@ pub(super) fn predict_motion_grid_compound_average_into<
                 &subplane,
                 &params,
                 cwp_weight,
-                Some(&mut pred0_scratch),
-                Some(&mut intermediate_scratch),
-                &mut output[output_start..],
+                Some(pred0_scratch),
+                Some(intermediate_scratch),
+                &mut output[col..],
                 prediction.block_w,
             )?;
         }
+        Ok(true)
+    };
+    let parallel = prediction
+        .block_w
+        .checked_mul(prediction.block_h)
+        .is_some_and(|samples| samples >= 256 * 256)
+        && splot_parallel::on_worker_pool();
+    if parallel {
+        let uniform = std::sync::atomic::AtomicBool::new(true);
+        let row_samples = prediction.block_w * subblock_h;
+        output
+            .par_chunks_mut(row_samples)
+            .enumerate()
+            .try_for_each(|(cell_row, output)| {
+                let row = cell_row * subblock_h;
+                let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
+                let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+                if !process_row(
+                    cell_row,
+                    row,
+                    output,
+                    &mut pred0_scratch,
+                    &mut intermediate_scratch,
+                )? {
+                    uniform.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok::<_, crate::error::DecodeError>(())
+            })?;
+        return Ok(uniform.load(std::sync::atomic::Ordering::Relaxed));
+    }
+    let mut pred0_scratch = [0i32; MAX_MOTION_GRID_SUBBLOCK_SAMPLES];
+    let mut intermediate_scratch = [0i16; MAX_MOTION_GRID_SUBPEL_INTERMEDIATE];
+    for (cell_row, row) in (0..prediction.block_h).step_by(subblock_h).enumerate() {
+        let output_start = row * prediction.block_w;
+        if !process_row(
+            cell_row,
+            row,
+            &mut output[output_start..],
+            &mut pred0_scratch,
+            &mut intermediate_scratch,
+        )? {
+            return Ok(false);
+        }
     }
     Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn blend_nonuniform_implicit_mask<T: ReconSample>(
+    pred0: &[i32],
+    pred1: &[i32],
+    bit_depth: splot_recon::BitDepth,
+    width: usize,
+    height: usize,
+    motion: Option<&CompoundMotionGrid>,
+    plane_x: usize,
+    plane_y: usize,
+    scaling_templates: [PlaneScaling; 2],
+    frame_w: usize,
+    frame_h: usize,
+    sub_x: u32,
+    sub_y: u32,
+    output: &mut [T],
+) -> splot_recon::Result<()> {
+    if output.is_empty() {
+        return Ok(());
+    }
+    let last_x = frame_w as i32 - 1;
+    let last_y = frame_h as i32 - 1;
+    let max_sample = i32::from(bit_depth.max_sample());
+    let shift = 1 + compound_inter_post_round();
+    let blend = |slot: &mut T, left: i32, right: i32, starts: [(i32, i32); 2]| {
+        let ref0_onscreen =
+            (0..=last_x).contains(&starts[0].0) && (0..=last_y).contains(&starts[0].1);
+        let ref1_onscreen =
+            (0..=last_x).contains(&starts[1].0) && (0..=last_y).contains(&starts[1].1);
+        let mask = match (ref0_onscreen, ref1_onscreen) {
+            (true, false) => 2,
+            (false, true) => 0,
+            _ => 1,
+        };
+        let sample = round2_i32(mask * left + (2 - mask) * right, shift);
+        *slot = T::try_from_u16(sample.clamp(0, max_sample) as u16)?;
+        Ok(())
+    };
+    if let Some(motion) = motion {
+        let unit_width = (motion.unit_size >> sub_x).max(1);
+        let unit_height = (motion.unit_size >> sub_y).max(1);
+        for cell_y in (0..height).step_by(unit_height) {
+            for cell_x in (0..width).step_by(unit_width) {
+                let mvs = motion.at_luma_offset(cell_x << sub_x, cell_y << sub_y)?;
+                let cell_end_x = (cell_x + unit_width).min(width);
+                let cell_end_y = (cell_y + unit_height).min(height);
+                for row in cell_y..cell_end_y {
+                    let start = row * width + cell_x;
+                    let end = row * width + cell_end_x;
+                    let row_samples = output[start..end]
+                        .iter_mut()
+                        .zip(pred0[start..end].iter().zip(&pred1[start..end]));
+                    for (local_col, (slot, (&left, &right))) in row_samples.enumerate() {
+                        let col = cell_x + local_col;
+                        let starts = core::array::from_fn(|reference| {
+                            let scaling = scaling_templates[reference].with_prescaled_mv(
+                                (plane_x + col) as i32,
+                                (plane_y + row) as i32,
+                                mvs[reference][0],
+                                mvs[reference][1],
+                                sub_x,
+                                sub_y,
+                            );
+                            (scaling.start_x >> 10, scaling.start_y >> 10)
+                        });
+                        blend(slot, left, right, starts)?;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+    let reference_starts =
+        scaling_templates.map(|scaling| (scaling.start_x >> 10, scaling.start_y >> 10));
+    for (row, ((output, pred0), pred1)) in output
+        .chunks_mut(width)
+        .zip(pred0.chunks(width))
+        .zip(pred1.chunks(width))
+        .enumerate()
+    {
+        for (col, (slot, (&left, &right))) in
+            output.iter_mut().zip(pred0.iter().zip(pred1)).enumerate()
+        {
+            let starts = reference_starts.map(|(x, y)| (x + col as i32, y + row as i32));
+            blend(slot, left, right, starts)?;
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn compound_optflow_plane_prediction<T: ReconSample>(

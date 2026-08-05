@@ -1446,6 +1446,66 @@ where
                                 finish,
                             });
                             products
+                        } else if inter_envelope.header.obu_type.is_tip_frame()
+                            && matches!(spawner, inflight::FinishSpawner::Deferred(_))
+                        {
+                            frame_pipeline::drain_entropy_before_barrier(
+                                &mut pending_entropy,
+                                spawner,
+                                admission,
+                                &mut recon_lane,
+                            )?;
+                            let admission = admission.ok_or_else(|| {
+                                unsupported(
+                                    "scheduled_tip_without_admission",
+                                    Some(inter_envelope.offset),
+                                    "scheduled TIP output requires the frame admission scheduler",
+                                )
+                            })?;
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            let (slot, finish, frame_cdfs, ccso_grid, motion) =
+                                frame_pipeline::reserve_tip_output(
+                                    &inter_core,
+                                    &sequence,
+                                    BitDepth::Eight,
+                                    inter_envelope.offset,
+                                    inflight::PipelineFrameSlot::Eight,
+                                    ring,
+                                    frame_index,
+                                )?;
+                            let dependencies = inter::tip_output_dependencies(
+                                &inter_core,
+                                &sequence,
+                                &inter_state,
+                            );
+                            let conditions = dependencies.conditions();
+                            let task_core = inter_core.clone();
+                            let published_core = Arc::new(inter_core);
+                            let shared =
+                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
+                            frame_pipeline::schedule_tip_output(
+                                move |scratch| {
+                                    inter::decode_tip_output_frame(
+                                        scratch,
+                                        inter_envelope,
+                                        task_core,
+                                        &shared,
+                                        options,
+                                        &inter_state,
+                                        BitDepth::Eight,
+                                    )
+                                },
+                                frame_index,
+                                &conditions,
+                                frame_cdfs.clone(),
+                                ccso_grid.clone(),
+                                motion.clone(),
+                                finish,
+                                admission,
+                                spawner,
+                                &mut recon_lane,
+                            )?;
+                            (slot, published_core, frame_cdfs, ccso_grid, motion)
                         } else {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
@@ -1607,6 +1667,66 @@ where
                                 finish,
                             });
                             products
+                        } else if inter_envelope.header.obu_type.is_tip_frame()
+                            && matches!(spawner, inflight::FinishSpawner::Deferred(_))
+                        {
+                            frame_pipeline::drain_entropy_before_barrier(
+                                &mut pending_entropy,
+                                spawner,
+                                admission,
+                                &mut recon_lane,
+                            )?;
+                            let admission = admission.ok_or_else(|| {
+                                unsupported(
+                                    "scheduled_tip_without_admission",
+                                    Some(inter_envelope.offset),
+                                    "scheduled TIP output requires the frame admission scheduler",
+                                )
+                            })?;
+                            ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            let (slot, finish, frame_cdfs, ccso_grid, motion) =
+                                frame_pipeline::reserve_tip_output(
+                                    &inter_core,
+                                    &sequence,
+                                    BitDepth::Ten,
+                                    inter_envelope.offset,
+                                    inflight::PipelineFrameSlot::Ten,
+                                    ring,
+                                    frame_index,
+                                )?;
+                            let dependencies = inter::tip_output_dependencies(
+                                &inter_core,
+                                &sequence,
+                                &inter_state,
+                            );
+                            let conditions = dependencies.conditions();
+                            let task_core = inter_core.clone();
+                            let published_core = Arc::new(inter_core);
+                            let shared =
+                                frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
+                            frame_pipeline::schedule_tip_output(
+                                move |scratch| {
+                                    inter::decode_tip_output_frame(
+                                        scratch,
+                                        inter_envelope,
+                                        task_core,
+                                        &shared,
+                                        options,
+                                        &inter_state,
+                                        BitDepth::Ten,
+                                    )
+                                },
+                                frame_index,
+                                &conditions,
+                                frame_cdfs.clone(),
+                                ccso_grid.clone(),
+                                motion.clone(),
+                                finish,
+                                admission,
+                                spawner,
+                                &mut recon_lane,
+                            )?;
+                            (slot, published_core, frame_cdfs, ccso_grid, motion)
                         } else {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
