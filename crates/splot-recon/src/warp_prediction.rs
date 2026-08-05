@@ -664,19 +664,58 @@ fn build_intermediate<T: ReconSample>(
     projected: &ProjectedCenter,
     intermediate: &mut [i16; WARP_INTERMEDIATE_ROWS * WARPED_BLOCK_SIZE],
 ) {
+    const SOURCE_WINDOW: usize = WARPED_BLOCK_SIZE + WARP_FILTER_TAPS - 1;
+    let first_col = projected.x4_int.saturating_sub(7);
+    let last_col = projected.x4_int.saturating_add(7);
+    let view_last = i32::try_from(reference.width().saturating_sub(1)).unwrap_or(i32::MAX);
+    let bounded_first = params.first_x.min(view_last);
+    let bounded_last = params.last_x.min(view_last);
+    let copy_first = first_col.max(bounded_first);
+    let copy_last = last_col.min(bounded_last);
+    let copy_len = if copy_first <= copy_last {
+        (copy_last - copy_first) as usize + 1
+    } else {
+        0
+    };
+    let prefix_len = if copy_len == 0 {
+        SOURCE_WINDOW
+    } else {
+        (copy_first - first_col) as usize
+    };
     for i1 in -7i32..8 {
+        let ref_row = (projected.y4_int + i1).clamp(params.first_y, params.last_y) as usize;
+        let source = reference.row(ref_row);
+        let mut window = [0u16; SOURCE_WINDOW];
+        if copy_len == 0 {
+            let source_col = first_col.clamp(bounded_first, bounded_last) as usize;
+            window.fill(source[source_col].to_u16());
+        } else {
+            let source_start = copy_first as usize;
+            let source_end = source_start + copy_len;
+            let copied_end = prefix_len + copy_len;
+            window[..prefix_len].fill(source[source_start].to_u16());
+            if let Some(source) = T::u16_slice(source) {
+                window[prefix_len..copied_end].copy_from_slice(&source[source_start..source_end]); // splot-copy-ok: materialize one clipped warp tap window from its contiguous span
+            } else {
+                for (destination, source) in window[prefix_len..copied_end]
+                    .iter_mut()
+                    .zip(&source[source_start..source_end])
+                {
+                    *destination = source.to_u16();
+                }
+            }
+            window[copied_end..].fill(source[source_end - 1].to_u16());
+        }
         for i2 in -4i32..4 {
             let sx = projected.sx4 + shear.alpha * i2 + shear.beta * i1;
             let taps = warped_filter_row(sx);
-            let ref_row = (projected.y4_int + i1).clamp(params.first_y, params.last_y);
-            let mut sum = 0i32;
-            for (i3, &tap) in taps.iter().enumerate() {
-                let ref_col =
-                    (projected.x4_int + i2 - 3 + i3 as i32).clamp(params.first_x, params.last_x);
-                sum += i32::from(tap) * reference.sample(ref_row as usize, ref_col as usize);
-            }
             let row = (i1 + 7) as usize;
             let col = (i2 + 4) as usize;
+            let sum = taps
+                .iter()
+                .zip(&window[col..col + WARP_FILTER_TAPS])
+                .map(|(&tap, &sample)| i32::from(tap) * i32::from(sample))
+                .sum();
             intermediate[row * WARPED_BLOCK_SIZE + col] =
                 narrow_warp_intermediate(round2_i32(sum, INTER_ROUND0));
         }
@@ -1243,21 +1282,36 @@ mod tests {
         let ref_h = 12usize;
         let samples = build_ref(ref_w, ref_h);
         let view = ReferencePlaneView::new(&samples, ref_w, ref_h).unwrap();
-        let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
-        params.warp_params[0] = -(2 << WARPEDMODEL_PREC_BITS);
-        params.warp_params[1] = -(1 << WARPEDMODEL_PREC_BITS);
-        let projected = project_section_center(&params).unwrap();
-        assert_eq!(
-            interior_warp_source_origin(&view, &params, &projected),
-            None
-        );
+        let samples_u8 = samples
+            .iter()
+            .map(|&sample| sample as u8)
+            .collect::<Vec<_>>();
+        let view_u8 = ReferencePlaneView::new(&samples_u8, ref_w, ref_h).unwrap();
+        for (translate_x, translate_y) in [(-2, -1), (-20, -20), (6, 5), (20, 20)] {
+            let mut params = default_params(0, 0, ref_w as i32, ref_h as i32);
+            params.warp_params[0] = translate_x << WARPEDMODEL_PREC_BITS;
+            params.warp_params[1] = translate_y << WARPEDMODEL_PREC_BITS;
+            let projected = project_section_center(&params).unwrap();
+            assert_eq!(
+                interior_warp_source_origin(&view, &params, &projected),
+                None
+            );
 
-        let out = crate::math::clip1_predicted_samples(
-            warp_predict_block(&view, &params, false).unwrap(),
-            i32::from(params.bit_depth.max_sample()),
-        );
-        let want = reference_warp_8x8(&samples, ref_w, ref_h, &params);
-        assert_eq!(out, want);
+            let out = crate::math::clip1_predicted_samples(
+                warp_predict_block(&view, &params, false).unwrap(),
+                i32::from(params.bit_depth.max_sample()),
+            );
+            let want = reference_warp_8x8(&samples, ref_w, ref_h, &params);
+            assert_eq!(out, want, "translation ({translate_x}, {translate_y})");
+            let out_u8 = crate::math::clip1_predicted_samples(
+                warp_predict_block(&view_u8, &params, false).unwrap(),
+                i32::from(params.bit_depth.max_sample()),
+            );
+            assert_eq!(
+                out_u8, want,
+                "u8 translation ({translate_x}, {translate_y})"
+            );
+        }
     }
 
     #[test]

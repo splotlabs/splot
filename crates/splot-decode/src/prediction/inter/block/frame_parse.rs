@@ -68,10 +68,6 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
         self.tile.filter_count()
     }
 
-    pub(crate) const fn owns_canonical_bands(&self) -> bool {
-        self.tile.owns_canonical_bands()
-    }
-
     pub(crate) fn resolve_len(&self) -> usize {
         self.tile.resolve_len()
     }

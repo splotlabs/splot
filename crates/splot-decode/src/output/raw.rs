@@ -109,6 +109,38 @@ pub(crate) fn write_raw_stream_from_plan<W: Write + Send>(
     Ok(())
 }
 
+pub(crate) fn discard_raw_stream_from_plan(
+    bitstream: &[u8],
+    parsed: &FlatParsedBitstream<'_>,
+    options: &DecodeOptions,
+    plan: &DecodeStreamPlan,
+    frame_delay: NonZeroUsize,
+) -> Result<()> {
+    let decode_started = crate::timing::start();
+    crate::pipeline::emit_materialized_frames_from_prepared(
+        bitstream,
+        parsed,
+        options,
+        plan,
+        frame_delay,
+        |_| Ok(()),
+        |output| {
+            let frame = output.ready_frame()?;
+            match &frame {
+                PipelineDecodedFrame::Eight(frame) => {
+                    film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
+                }
+                PipelineDecodedFrame::Ten(frame) => {
+                    film_grain::frame_for_output(frame.get(), output.display_grain.as_ref())?;
+                }
+            }
+            Ok(())
+        },
+    )?;
+    crate::timing::report("runtime_decode", decode_started);
+    Ok(())
+}
+
 fn raw_output_task_error(message: &'static str) -> crate::error::DecodeError {
     DecodeOutputError::io(
         DecodeOutputOperation::WriteRawStream,

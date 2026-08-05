@@ -323,10 +323,6 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
         self.reconstruction.filter_count()
     }
 
-    pub(crate) const fn owns_canonical_bands(&self) -> bool {
-        self.reconstruction.owns_canonical_bands()
-    }
-
     pub(crate) fn resolve_len(&self) -> usize {
         self.reconstruction.resolve_len()
     }
@@ -460,22 +456,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
     /// Shares the reference motion handles that gate this frame's temporal
     /// prelude.
     pub(crate) fn motion_dependencies(&self) -> Vec<MotionFieldHandle> {
-        let mut seen = vec![false; self.reference.ref_motion_fields.len()];
-        self.ref_frame_idx
-            .iter()
-            .filter_map(|&slot| {
-                let index = slot as usize;
-                if *seen.get(index)? {
-                    return None;
-                }
-                seen[index] = true;
-                self.reference
-                    .ref_motion_fields
-                    .get(index)
-                    .and_then(Option::as_ref)
-            })
-            .cloned()
-            .collect()
+        self.reference.motion_dependencies(&self.ref_frame_idx)
     }
 
     /// Runs the temporal prelude and resolve/motion half-pass, returning the

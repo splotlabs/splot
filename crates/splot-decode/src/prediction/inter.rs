@@ -165,6 +165,11 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             SPEC_HEADER
         ));
     }
+    if let Some(inter) = core.inter.as_ref() {
+        for dependency in reference.motion_dependencies(&inter.ref_frame_idx) {
+            dependency.wait_field();
+        }
+    }
     let frame_walk::InterWalkPrologue {
         tile_plan,
         mut workspace,
@@ -200,7 +205,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, true))
 }
 
-fn decode_tip_output_frame<T: ReconSample>(
+pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
@@ -410,6 +415,24 @@ impl EntropyDependencies {
     }
 }
 
+/// Owned product handles that gate one asynchronous TIP output frame.
+pub(crate) struct TipOutputDependencies<T: ReconSample> {
+    samples: Vec<RefFrameSlot<T>>,
+    entropy: EntropyDependencies,
+    motion: Vec<MotionFieldHandle>,
+}
+
+impl<T: ReconSample> TipOutputDependencies<T> {
+    pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'_>> {
+        self.samples
+            .iter()
+            .map(RefFrameSlot::settled_condition)
+            .chain(self.entropy.conditions())
+            .chain(self.motion.iter().map(MotionFieldHandle::field_condition))
+            .collect()
+    }
+}
+
 /// Resolves entropy-product identities before the current frame refreshes slots.
 pub(crate) fn entropy_dependencies(
     core: &FrameHeaderCore,
@@ -484,6 +507,26 @@ pub(crate) fn entropy_dependencies(
     EntropyDependencies { cdfs, ccso_grids }
 }
 
+/// Resolves every sample, entropy, and motion product a TIP output may read.
+pub(crate) fn tip_output_dependencies<T: ReconSample>(
+    core: &FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<T>,
+) -> TipOutputDependencies<T> {
+    let samples = reference
+        .pixel_reference_gate(named_pixel_reference_slots(core))
+        .shared_slots();
+    let entropy = entropy_dependencies(core, sequence, reference);
+    let motion = core.inter.as_ref().map_or_else(Vec::new, |inter| {
+        reference.motion_dependencies(&inter.ref_frame_idx)
+    });
+    TipOutputDependencies {
+        samples,
+        entropy,
+        motion,
+    }
+}
+
 const fn cdf_blending_enabled(enable_avg_cdf: bool, tip_frame_mode: Option<TipFrameMode>) -> bool {
     enable_avg_cdf && !matches!(tip_frame_mode, Some(TipFrameMode::AsOutput))
 }
@@ -520,12 +563,10 @@ pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSamp
         .ref_frame1
         .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1, offset))
         .transpose()?;
+    let (reference0, reference1) = hold_reference_pair(reference, slot0, slot1, offset)?;
     Ok(HeldInterBlockReferences {
-        reference0: hold_reference_slot(reference, slot0, offset)?,
-        reference1: match slot1 {
-            Some(slot1) if slot1 != slot0 => Some(hold_reference_slot(reference, slot1, offset)?),
-            _ => None,
-        },
+        reference0,
+        reference1,
         compound: slot1.is_some(),
     })
 }
@@ -601,6 +642,42 @@ fn hold_reference_slot<T: ReconSample>(
             SPEC_REFERENCE
         )
     })
+}
+
+/// Borrows two named references in a stable lock order while returning them in
+/// list order. This prevents two compound readers from each holding one live
+/// frame's progress lock while waiting behind the other frame's writer.
+pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
+    reference: &InterReferenceState<T>,
+    first: u32,
+    second: Option<u32>,
+    offset: ByteOffset,
+) -> Result<(
+    reference::HeldFrameSamples<'_, T>,
+    Option<reference::HeldFrameSamples<'_, T>>,
+)> {
+    let Some(second) = second.filter(|second| *second != first) else {
+        return Ok((hold_reference_slot(reference, first, offset)?, None));
+    };
+    let first_progress = reference.slot(first).and_then(RefFrameSlot::progress);
+    let second_progress = reference.slot(second).and_then(RefFrameSlot::progress);
+    if first_progress
+        .zip(second_progress)
+        .is_some_and(|(first, second)| core::ptr::eq(first, second))
+    {
+        return Ok((hold_reference_slot(reference, first, offset)?, None));
+    }
+    let first_key = first_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
+    let second_key = second_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
+    if first_key <= second_key {
+        let first = hold_reference_slot(reference, first, offset)?;
+        let second = hold_reference_slot(reference, second, offset)?;
+        Ok((first, Some(second)))
+    } else {
+        let second = hold_reference_slot(reference, second, offset)?;
+        let first = hold_reference_slot(reference, first, offset)?;
+        Ok((first, Some(second)))
+    }
 }
 
 fn validate_compound_sequence_subset(
@@ -1157,6 +1234,12 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
             .collect()
     }
 
+    /// Shares the named slots so a scheduler can register their conditions
+    /// before moving the complete reference state into the admitted job.
+    pub(crate) fn shared_slots(&self) -> Vec<RefFrameSlot<T>> {
+        self.slots.iter().map(|slot| slot.share()).collect()
+    }
+
     /// Blocks the calling driver thread until every named reference frame has
     /// settled, running pool jobs instead of parking idle.
     ///
@@ -1175,6 +1258,23 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
 }
 
 impl<T: ReconSample> InterReferenceState<T> {
+    /// Shares each distinct motion-field product named by a reference map.
+    pub(crate) fn motion_dependencies(&self, ref_frame_idx: &[u32]) -> Vec<MotionFieldHandle> {
+        let mut seen = vec![false; self.ref_motion_fields.len()];
+        ref_frame_idx
+            .iter()
+            .filter_map(|&slot| {
+                let index = slot as usize;
+                if *seen.get(index)? {
+                    return None;
+                }
+                seen[index] = true;
+                self.ref_motion_fields.get(index).and_then(Option::as_ref)
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Gates on the stored frames the named reference slots resolve to.
     ///
     /// Slots without a stored frame are left out: reading one is already a
@@ -1200,12 +1300,12 @@ impl<T: ReconSample> InterReferenceState<T> {
 
     /// Borrows one reference slot's samples for the returned handle's lifetime.
     fn hold_slot(&self, slot: u32) -> Option<reference::HeldFrameSamples<'_, T>> {
+        self.slot(slot).and_then(RefFrameSlot::hold_samples)
+    }
+
+    fn slot(&self, slot: u32) -> Option<&RefFrameSlot<T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
-        self.store
-            .get(slot)
-            .ok()
-            .flatten()
-            .and_then(RefFrameSlot::hold_samples)
+        self.store.get(slot).ok().flatten()
     }
 
     fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<Arc<FrameCdfSubset>> {

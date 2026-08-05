@@ -597,6 +597,12 @@ impl<T: ReconSample + Send + 'static> PendingFinish<T> {
         self.progress.clone()
     }
 
+    /// Publishes a frame whose reconstruction is already terminal and has no
+    /// filter records to return to the driver's scratch pool.
+    pub(crate) fn complete_frame(self, frame: DecodedFrame<T>) {
+        self.writer.complete(SharedFrame::new(frame));
+    }
+
     /// Runs the owed filter phase in the calling scheduler job.
     pub(crate) fn run_finish(
         self,

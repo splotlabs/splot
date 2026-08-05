@@ -425,6 +425,8 @@ impl TrajectoryBand<'_> {
         }
     }
 
+    #[allow(clippy::inline_always, reason = "measured trajectory hot path")]
+    #[inline(always)]
     fn set_position(&mut self, reference: usize, at: Position, phase: usize, position: Position) {
         if let Some(index) = self.band_index(at.0, at.1) {
             self.set_position_at(reference, index, phase, position);
@@ -501,17 +503,19 @@ impl TrajectoryBand<'_> {
         {
             return None;
         }
-        let source_mask = self
+        let mut source_mask = self
             .positions_at(source, (y8, x8))
             .map_or(0, |slots| slots.mask);
         if source_mask != 0 {
             let phases = self
                 .positions_at(source, (y8, x8))
                 .map_or(TrajectoryPositions::EMPTY.phases, |slots| slots.phases);
-            for (phase, packed) in phases.into_iter().enumerate() {
-                if source_mask & (1 << phase) == 0 {
-                    continue;
-                }
+            while source_mask != 0 {
+                let phase = source_mask.trailing_zeros() as usize;
+                source_mask &= source_mask - 1;
+                let Some(&packed) = phases.get(phase) else {
+                    break;
+                };
                 let trajectory = (packed.y as usize, packed.x as usize);
                 let bounds = self.position_bounds(trajectory);
                 let Some(traj_index) = self.band_index(trajectory.0, trajectory.1) else {
@@ -538,7 +542,7 @@ impl TrajectoryBand<'_> {
         if self.unit_base(end_position.0) != self.unit_base(y8) {
             return Some(end_position);
         }
-        let end_mask = self
+        let mut end_mask = self
             .positions_at(end, end_position)
             .map_or(0, |slots| slots.mask);
         if end_mask == 0 {
@@ -547,10 +551,12 @@ impl TrajectoryBand<'_> {
         let phases = self
             .positions_at(end, end_position)
             .map_or(TrajectoryPositions::EMPTY.phases, |slots| slots.phases);
-        for (phase, packed) in phases.into_iter().enumerate() {
-            if end_mask & (1 << phase) == 0 {
-                continue;
-            }
+        while end_mask != 0 {
+            let phase = end_mask.trailing_zeros() as usize;
+            end_mask &= end_mask - 1;
+            let Some(&packed) = phases.get(phase) else {
+                break;
+            };
             let trajectory = (packed.y as usize, packed.x as usize);
             let bounds = self.position_bounds(trajectory);
             if !Self::position_allowed((y8, x8), bounds) {
@@ -915,6 +921,30 @@ mod tests {
             .check_intersection(1, Some(2), 1, 2, Mv { row: 0, col: 64 });
 
         assert_eq!(state.fields[2].cell(1, 1), Some(Mv { row: 0, col: 96 }));
+    }
+
+    #[test]
+    fn intersection_visits_only_the_recorded_sparse_phases() {
+        let mut state = TrajectoryState::new((8, 8), 2, 1, 8).unwrap();
+        let source_index = state.fields[0].index(1, 2).unwrap();
+        state.positions[0][source_index] = TrajectoryPositions {
+            phases: [
+                PackedPosition::new((1, 1)).unwrap(),
+                PackedPosition::INVALID,
+                PackedPosition::new((1, 3)).unwrap(),
+            ],
+            mask: 0b101,
+        };
+        state.fields[0].set(1, 1, Mv { row: 8, col: 16 });
+        state.fields[0].set(1, 3, Mv { row: 24, col: 32 });
+
+        state
+            .whole_band()
+            .unwrap()
+            .check_intersection(0, Some(1), 1, 2, Mv::ZERO);
+
+        assert_eq!(state.fields[1].cell(1, 1), Some(Mv { row: 8, col: 16 }));
+        assert_eq!(state.fields[1].cell(1, 3), Some(Mv { row: 24, col: 32 }));
     }
 
     #[test]

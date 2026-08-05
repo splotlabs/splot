@@ -55,50 +55,63 @@ fn two_axis_lanes<const LANES: usize, T: ReconSample>(
         (&SUBPEL_FILTERS[filter][phase][start..end], start)
     });
     for reference in 0..2 {
+        let (taps, tap_start) = horizontal[reference];
+        let first_x = (params[reference].start_x >> SCALE_SUBPEL_BITS) + tap_start as i32 - 3;
+        let window_len = LANES + taps.len() - 1;
+        let last_x = first_x + window_len as i32 - 1;
+        let in_range = first_x >= params[reference].first_x
+            && last_x <= params[reference].last_x
+            && first_x >= 0
+            && last_x < references[reference].width as i32;
+        if in_range {
+            for row in 0..params[reference].h + NUM_TAPS - 1 {
+                let source_row = ((params[reference].start_y >> SCALE_SUBPEL_BITS) + row as i32 - 3)
+                    .clamp(params[reference].first_y, params[reference].last_y)
+                    as usize;
+                let row_start =
+                    source_row.min(references[reference].height - 1) * references[reference].stride;
+                let start = row_start + first_x as usize;
+                let source = &sources[reference][start..start + window_len];
+                let lanes = clipped_horizontal_filter::<LANES>(source, taps);
+                intermediate[reference][row * LANES..(row + 1) * LANES].copy_from_slice(&lanes); // splot-copy-ok: store clipped horizontal SIMD lanes in caller scratch
+            }
+            continue;
+        }
+        let physical_last = references[reference].width as i32 - 1;
+        let bounded_first = params[reference].first_x.clamp(0, physical_last);
+        let bounded_last = params[reference].last_x.clamp(0, physical_last);
+        let copy_first = first_x.max(bounded_first);
+        let copy_last = last_x.min(bounded_last);
+        let copy_len = if copy_first <= copy_last {
+            (copy_last - copy_first) as usize + 1
+        } else {
+            0
+        };
+        let prefix_len = if copy_len == 0 {
+            window_len
+        } else {
+            (copy_first - first_x) as usize
+        };
         for row in 0..params[reference].h + NUM_TAPS - 1 {
             let source_row = ((params[reference].start_y >> SCALE_SUBPEL_BITS) + row as i32 - 3)
                 .clamp(params[reference].first_y, params[reference].last_y)
                 as usize;
-            let x0 = params[reference].start_x >> SCALE_SUBPEL_BITS;
             let row_start =
                 source_row.min(references[reference].height - 1) * references[reference].stride;
-            let (taps, tap_start) = horizontal[reference];
-            let mut sum = Simd::<i32, LANES>::splat(0);
-            let first_x = x0 + tap_start as i32 - 3;
-            let last_x = first_x + (LANES + taps.len() - 2) as i32;
-            if first_x >= params[reference].first_x
-                && last_x <= params[reference].last_x
-                && first_x >= 0
-                && last_x < references[reference].width as i32
-            {
-                let start = row_start + first_x as usize;
-                for (offset, &tap) in taps.iter().enumerate() {
-                    sum = tap_mac(
-                        sum,
-                        Simd::<u16, LANES>::from_slice(&sources[reference][start + offset..])
-                            .cast(),
-                        tap,
-                    );
-                }
+            let mut window = [0u16; 8 + NUM_TAPS - 1];
+            if copy_len == 0 {
+                let source_column = first_x.clamp(bounded_first, bounded_last) as usize;
+                window[..window_len].fill(sources[reference][row_start + source_column]);
             } else {
-                let mut window = [0u16; 8 + NUM_TAPS - 1];
-                let window_len = LANES + taps.len() - 1;
-                for (column, sample) in window[..window_len].iter_mut().enumerate() {
-                    let source_column = (first_x + column as i32)
-                        .clamp(params[reference].first_x, params[reference].last_x)
-                        .clamp(0, references[reference].width as i32 - 1)
-                        as usize;
-                    *sample = sources[reference][row_start + source_column];
-                }
-                for (offset, &tap) in taps.iter().enumerate() {
-                    sum = tap_mac(
-                        sum,
-                        Simd::<u16, LANES>::from_slice(&window[offset..]).cast(),
-                        tap,
-                    );
-                }
+                let source_start = row_start + copy_first as usize;
+                let source_end = source_start + copy_len;
+                let copied_end = prefix_len + copy_len;
+                window[..prefix_len].fill(sources[reference][source_start]);
+                window[prefix_len..copied_end]
+                    .copy_from_slice(&sources[reference][source_start..source_end]); // splot-copy-ok: materialize one clamped SIMD row window
+                window[copied_end..window_len].fill(sources[reference][source_end - 1]);
             }
-            let lanes = round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array();
+            let lanes = clipped_horizontal_filter::<LANES>(&window[..window_len], taps);
             intermediate[reference][row * LANES..(row + 1) * LANES].copy_from_slice(&lanes); // splot-copy-ok: store clipped horizontal SIMD lanes in caller scratch
         }
     }
@@ -110,6 +123,16 @@ fn two_axis_lanes<const LANES: usize, T: ReconSample>(
         output,
         output_stride
     );
+}
+
+#[allow(clippy::inline_always, reason = "measured clipped compound hot path")]
+#[inline(always)]
+fn clipped_horizontal_filter<const LANES: usize>(window: &[u16], taps: &[i32]) -> [i16; LANES] {
+    let mut sum = Simd::<i32, LANES>::splat(0);
+    for (samples, &tap) in window.windows(LANES).zip(taps) {
+        sum = tap_mac(sum, Simd::<u16, LANES>::from_slice(samples).cast(), tap);
+    }
+    round2_simd(sum, INTER_ROUND0).cast::<i16>().to_array()
 }
 
 pub(super) fn horizontal<T: ReconSample>(

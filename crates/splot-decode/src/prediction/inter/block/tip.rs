@@ -98,16 +98,11 @@ impl TipReferencePlan {
         reference: &'a InterReferenceState<T>,
         tile_offset: ByteOffset,
     ) -> Result<TipHeldReferences<'a, T>> {
+        let (past, future) =
+            super::super::hold_reference_pair(reference, self.past, self.future, tile_offset)?;
         Ok(TipHeldReferences {
-            past: super::super::hold_reference_slot(reference, self.past, tile_offset)?,
-            future: match self.future {
-                Some(slot) if slot != self.past => Some(super::super::hold_reference_slot(
-                    reference,
-                    slot,
-                    tile_offset,
-                )?),
-                _ => None,
-            },
+            past,
+            future,
             compound: self.future.is_some(),
         })
     }
@@ -918,7 +913,11 @@ fn tip_motion_grid<T: ReconSample>(
         sink,
         compound,
         plan.block_w.div_ceil(plan.unit_size),
-        scratch.units.iter().map(|unit| (unit.rect, unit.mvs)),
+        scratch.units.len(),
+        |index| {
+            let unit = &scratch.units[index];
+            (unit.rect, unit.mvs)
+        },
         tile_offset,
     )
 }

@@ -202,6 +202,7 @@ const PARALLEL_CRATE_PREFIX: &str = "crates/splot-parallel/";
 const PAR_ITER_RULE_ALLOWLIST: &[&str] = &[
     "crates/splot-decode/src/filters/deblock.rs",
     "crates/splot-decode/src/prediction/inter/block/tip.rs",
+    "crates/splot-decode/src/prediction/inter/mc/optflow.rs",
 ];
 
 /// Returns the unbounded-channel source needle matched in `text`, including braced

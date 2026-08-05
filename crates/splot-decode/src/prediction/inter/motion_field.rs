@@ -136,6 +136,11 @@ impl MotionFieldHandle {
         self.0.field.get().and_then(Option::as_ref)
     }
 
+    /// Waits for terminal field publication while assisting the installed pool.
+    pub(crate) fn wait_field(&self) {
+        let _ = self.0.field.wait_with_pool_assist();
+    }
+
     pub(crate) fn layout(&self) -> MotionFieldLayout {
         self.0.layout
     }
@@ -150,6 +155,10 @@ impl MotionFieldHandle {
 
     pub(crate) fn metadata_condition(&self) -> Condition<'_> {
         Condition::Completion(&self.0.metadata)
+    }
+
+    pub(crate) fn field_condition(&self) -> Condition<'_> {
+        Condition::Completion(&self.0.field)
     }
 
     pub(crate) fn band_condition(&self, index: usize) -> Option<Condition<'_>> {
