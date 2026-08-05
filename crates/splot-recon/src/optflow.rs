@@ -579,6 +579,7 @@ fn solve_unit_sums<const N: usize>(
     unit_x: usize,
     unit_y: usize,
 ) -> [i32; 5] {
+    debug_assert!(stride.is_multiple_of(N));
     let row_chunks = stride / N;
     let first_chunk = unit_y * row_chunks + unit_x / N;
     let end_chunk = (unit_y + N) * row_chunks;
