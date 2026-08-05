@@ -102,6 +102,23 @@ impl DecodeContext {
         Ok(prepared)
     }
 
+    fn decode_raw_with<'a>(
+        &self,
+        bytes: &'a [u8],
+        options: DecodeOptions,
+        decode: impl FnOnce(
+            &'a [u8],
+            &PreparedByteStream<'a>,
+            &DecodeOptions,
+            NonZeroUsize,
+        ) -> Result<()>
+        + Send,
+    ) -> Result<()> {
+        let prepared = self.prepare_bytes(bytes, &options)?;
+        self.pool
+            .install(|| decode(bytes, &prepared, &options, self.frame_delay))
+    }
+
     /// Decodes the supported envelope and returns a deterministic hash report.
     ///
     /// Runs the same bounded byte planning as [`Self::plan_bytes`] first so
@@ -178,17 +195,20 @@ impl DecodeContext {
         options: DecodeOptions,
         writer: W,
     ) -> Result<()> {
-        let prepared = self.prepare_bytes(bytes, &options)?;
-        self.pool.install(|| {
-            crate::output::raw::write_raw_stream_from_plan(
-                bytes,
-                prepared.parsed(),
-                &options,
-                prepared.plan(),
-                self.frame_delay,
-                writer,
-            )
-        })
+        self.decode_raw_with(
+            bytes,
+            options,
+            move |bytes, prepared, options, frame_delay| {
+                crate::output::raw::write_raw_stream_from_plan(
+                    bytes,
+                    prepared.parsed(),
+                    options,
+                    prepared.plan(),
+                    frame_delay,
+                    writer,
+                )
+            },
+        )
     }
 
     /// Decodes raw output through output-effect materialization without
@@ -203,14 +223,13 @@ impl DecodeContext {
     /// structures, runtime-tier rejections, resource-limit failures, worker-pool
     /// failures, reconstruction model errors, or output-effect errors.
     pub fn decode_raw_discard_bytes(&self, bytes: &[u8], options: DecodeOptions) -> Result<()> {
-        let prepared = self.prepare_bytes(bytes, &options)?;
-        self.pool.install(|| {
+        self.decode_raw_with(bytes, options, |bytes, prepared, options, frame_delay| {
             crate::output::raw::discard_raw_stream_from_plan(
                 bytes,
                 prepared.parsed(),
-                &options,
+                options,
                 prepared.plan(),
-                self.frame_delay,
+                frame_delay,
             )
         })
     }
