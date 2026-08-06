@@ -54,15 +54,7 @@ impl ResidualPlanePlan {
         let (use_tcq, mrl) = match self.reconstruction {
             ResidualReconstructionPlan::LumaRectOneSidedAbove { use_tcq, .. }
             | ResidualReconstructionPlan::LumaRectOneSidedLeft { use_tcq, .. }
-            | ResidualReconstructionPlan::LumaRectMiddle { use_tcq, .. }
-            | ResidualReconstructionPlan::LumaSquare {
-                plan:
-                    crate::prediction::intra::IntraLumaPlan::DirectionalMiddle { .. }
-                    | crate::prediction::intra::IntraLumaPlan::DirectionalOneSidedAbove { .. }
-                    | crate::prediction::intra::IntraLumaPlan::DirectionalOneSidedLeft { .. }
-                    | crate::prediction::intra::IntraLumaPlan::DirectionalNeighbour { .. },
-                use_tcq,
-            } => (use_tcq, None),
+            | ResidualReconstructionPlan::LumaRectMiddle { use_tcq, .. } => (use_tcq, None),
             ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
                 mrl_index,
                 above_mrl_index,

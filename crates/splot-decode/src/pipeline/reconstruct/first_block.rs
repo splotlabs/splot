@@ -190,35 +190,6 @@ fn predict_nondc_noneighbour_smooth<T: ReconSample>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_luma_directional_first_block_into<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    block: &LumaCoeffBlock,
-    mode: SupportedDirectionalLumaMode,
-    x: usize,
-    y: usize,
-    log2_side: u32,
-    qindex: u32,
-    use_tcq: bool,
-    luma_context: LumaTransformTypeContext,
-    bit_depth: BitDepth,
-) -> core::result::Result<(), GeneralIntraResidualError> {
-    reconstruct_general_intra_luma_first_block_with(
-        workspace,
-        block,
-        x,
-        y,
-        log2_side,
-        qindex,
-        use_tcq,
-        luma_context,
-        bit_depth,
-        |block_size, side, bit_depth, prediction| {
-            predict_directional_noneighbour_into(mode, block_size, side, bit_depth, prediction)
-        },
-    )
-}
-
 pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
     mode: SupportedDirectionalLumaMode,
     block_size: IntraRectBlockSize,

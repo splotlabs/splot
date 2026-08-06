@@ -27,7 +27,6 @@ mod transform_units;
 #[cfg(test)]
 use crate::bitstream::tile_payload::{
     GeneralIntraResidualError, LumaTransformTypeContext, PositionedLumaCoeffBlock,
-    SupportedDirectionalLumaMode,
 };
 pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
