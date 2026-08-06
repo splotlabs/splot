@@ -10,7 +10,6 @@ use splot_core::tables::conversion::{
 };
 use splot_recon::{DpcmDirection, dpcm_direction};
 
-use super::DecodeTileWorkUnit;
 use super::cdf::block_context::{
     IntraYMode, MODE_INDEX_COUNT, NON_DIRECTIONAL_MODES_COUNT, SupportedChromaMode,
     SupportedNonDcLumaMode, YModeEscapeResult, reconstruct_minimal_y_mode,
@@ -24,6 +23,7 @@ use super::intra_joint_modes::{
     LumaPalette, PALETTE_MAX_SIZE, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
     TileUseDipState, TileUsesMrlsState,
 };
+use super::{DecodeTileWorkUnit, partition_size::BlockSize};
 
 const CHROMA_MODE_COUNT: u8 = 8;
 const UV_INTRA_MODES_CFL_NOT_ALLOWED: u8 = 13;
@@ -511,8 +511,6 @@ pub(crate) enum GeneralIntraBlockModeError {
     UnsupportedYMode { y_mode_set: u8, mode_idx: usize },
     #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
     InvalidUvMode { uv_mode: u8 },
-    #[error("general intra mode-info block-size index {block_size_index} has no FSC group")]
-    InvalidFscBlockSizeIndex { block_size_index: usize },
     #[error(
         "general intra mode-info block-size index {block_size_index} has no CfL MH direction size group"
     )]
@@ -544,7 +542,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     uses_mrls: &TileUsesMrlsState,
     fsc_modes: &TileFscModeState,
     use_neighbor_fsc_context: bool,
-    block_size_index: usize,
+    block_size: BlockSize,
     block_r: usize,
     block_c: usize,
     block_n4w: usize,
@@ -566,8 +564,7 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
     )?;
 
     let fsc_mode = if allow_fsc_intra(chroma_tools, block_n4w, block_n4h) {
-        let bsize_group = fsc_bsize_group(block_size_index)
-            .ok_or(GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { block_size_index })?;
+        let bsize_group = fsc_bsize_group(block_size);
         let ctx = if use_neighbor_fsc_context {
             fsc_modes.fsc_mode_ctx(block_r, block_c, block_n4w, block_n4h)
         } else {
@@ -640,7 +637,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     use_neighbor_fsc_context: bool,
     palette_state: &TileLumaPaletteState,
     is_cfl_ctx: usize,
-    luma_block_size_index: usize,
+    luma_block_size: BlockSize,
     block_r: usize,
     block_c: usize,
     block_n4w: usize,
@@ -658,7 +655,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         uses_mrls,
         fsc_modes,
         use_neighbor_fsc_context,
-        luma_block_size_index,
+        luma_block_size,
         block_r,
         block_c,
         block_n4w,
@@ -670,7 +667,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         chroma_tools,
         GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
         luma.y_mode,
-        luma_block_size_index,
+        luma_block_size.index(),
         chroma_n4w,
         chroma_n4h,
     )?;
@@ -680,7 +677,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         chroma_tools,
         palette_state,
         luma.y_mode,
-        luma_block_size_index,
+        luma_block_size.index(),
         block_r,
         block_c,
         block_n4w,
@@ -1270,8 +1267,8 @@ fn dip_mode_info_allowed(
         && block_n4w.saturating_mul(block_n4h) >= 8
 }
 
-fn fsc_bsize_group(block_size_index: usize) -> Option<usize> {
-    FSC_BSIZE_GROUPS.get(block_size_index).copied()
+fn fsc_bsize_group(block_size: BlockSize) -> usize {
+    FSC_BSIZE_GROUPS[block_size.index()]
 }
 
 fn lossless_tx_size_group(block_size_index: usize) -> Option<usize> {
