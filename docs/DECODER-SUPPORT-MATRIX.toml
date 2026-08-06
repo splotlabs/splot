@@ -3289,7 +3289,7 @@ status = "supported"
 self_contained_tests = ["crates/splot-decode/src/pipeline/general_intra.rs::tests::lossless_luma_uses_generic_prediction_planner", "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_luma_10bit_frames_decode_to_oracle", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest", "cargo test -p splot-decode lossless_luma --locked", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask check-reference-evidence", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-splot-syn-lossless-nondc-luma-paeth-intra-64x64-10bit", "docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-splot-syn-lossless-cardinal-y-v-intra-64x64-10bit"]
-notes = "Lossless non-DPCM luma uses the generic square and rectangular intra prediction planners without a separate mode, bit-depth, or geometry allowlist. The deterministic 159-byte AVMenc 10-bit 4:2:0 PAETH_PRED fixture proves the former general_intra_lossless_other_nondc_luma_unverified rejection is gone and matches pinned AVM, current AVM, and splot byte-for-byte. A 69-byte AVMenc 10-bit V_PRED fixture separately pins top-left no-neighbour cardinal synthesis against pinned AVM, current AVM, and splot. Independent chroma, FSC, MRL, palette, residual, and loop-filter limitations retain their own fail-closed diagnostics."
+notes = "Lossless non-DPCM luma uses the generic square and rectangular intra prediction planners without a separate mode, bit-depth, or geometry allowlist. The deterministic 159-byte AVMenc 10-bit 4:2:0 PAETH_PRED fixture proves the former general_intra_lossless_other_nondc_luma_unverified rejection is gone and matches pinned AVM, current AVM, and splot byte-for-byte. A 69-byte AVMenc 10-bit V_PRED fixture separately pins top-left no-neighbour cardinal synthesis against pinned AVM, current AVM, and splot. Independent chroma, MRL, palette, residual, and loop-filter limitations retain their own fail-closed diagnostics; FSC prediction is tracked separately by lossless-fsc-prediction."
 
 [[row]]
 id = "lossless-chroma-prediction"
@@ -3304,3 +3304,17 @@ self_contained_tests = ["crates/splot-decode/src/residual/pipeline/tests.rs::chr
 diagnostics = ["decode/unsupported-feature"]
 local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-splot-syn-lossless-nondc-chroma-v-intra-64x64-10bit", "docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-splot-syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit"]
 notes = "Lossless normal-block and SDP/chroma-part chroma use the generic resolved-mode planner without separate mode, bit-depth, geometry, or neighbour allowlists. Directional mode and AngleDeltaUV are retained until the actual transform unit is known, so §7.13.2.7 wide-angle mapping is recomputed for lossless TX_4X4 units and any smaller non-lossless transform units. Two deterministic 102-byte AVMenc 10-bit V_PRED chroma fixtures prove the former normal-block and SDP/chroma-part rejections are gone and match pinned AVM, current AVM, and splot byte-for-byte."
+
+[[row]]
+id = "lossless-fsc-prediction"
+name = "Lossless FSC intra prediction"
+feature_id = "DECODE-LOSSLESS-FSC-PREDICTION"
+spec_sections = ["5.20.5.5", "5.20.7.27", "5.20.7.29", "7.13.2.7", "7.15.2.3"]
+parser_source = "docs/spec/av2/1.0.0/05-syntax-structures.md; docs/spec/av2/1.0.0/07-decoding-process.md"
+decode_module = "crates/splot-decode/src/pipeline/general_intra.rs; crates/splot-decode/src/residual/pipeline"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_fsc_d135_10bit_frame_decodes_to_oracle", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest", "cargo test -p splot-decode lossless_fsc_d135_10bit_frame_decodes_to_oracle --locked", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask decoder-fixtures verify", "cargo xtask check-reference-evidence", "cargo xtask check-decoder-support", "cargo xtask check-decoder-conformance-coverage", "cargo xtask check-feature-status"]
+diagnostics = ["decode/unsupported-feature"]
+local_reference_evidence = ["docs/LOCAL-REFERENCE-EVIDENCE.toml::lref-avm-splot-syn-lossless-fsc-d135-intra-32x32-10bit"]
+notes = "Lossless active FSC uses the existing generic intra prediction and FSC/IDTX coefficient-reconstruction pipeline without a separate prediction-mode, bit-depth, geometry, or neighbour allowlist. A deterministic 203-byte AVMenc 10-bit 4:2:0 lossless 32x32 D135_PRED, active-FSC, non-DPCM fixture proves the former general_intra_lossless_fsc_unverified rejection is gone and matches pinned AVM, current AVM, and splot byte-for-byte over the complete 3,072-byte raw I420 output."
