@@ -569,14 +569,6 @@ fn read_warp_ref_idx(
             .read_block_symbol_trace(TileCdfSelector::WarpIdx { ctx: bit_idx }, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get();
-        if warp_idx > 1 {
-            return Err(inter_cap!(
-                "inter_warp_ref_idx_symbol",
-                tile_offset,
-                "inter.warp_ref_idx symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
         ref_warp_idx = bit_idx + usize::from(warp_idx);
         if warp_idx == 0 {
             break;
@@ -644,53 +636,21 @@ pub(crate) fn interintra_prediction_mode(
     }))
 }
 
-pub(crate) fn read_warp_inter_intra_syntax(
+/// Reads the AV2 section 5.20.7.15 inter-intra tail shared by the plain and warp
+/// readers: the inter-intra mode, the wedge flag, and the wedge index. Each caller
+/// keeps its own eligibility test and enable symbol and delegates once the block is
+/// known to be inter-intra coded.
+pub(super) fn read_active_inter_intra_tail(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    bsize_group: usize,
     b_size: usize,
-    n4w: usize,
-    n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<WarpInterIntraSyntax> {
-    if n4w < 2 || n4h < 2 || n4w.max(n4h) > CHUNK_64_N4 {
-        return Ok(WarpInterIntraSyntax::default());
-    }
-    let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
-        inter_cap!(
-            "inter_warp_interintra_bsize_group",
-            tile_offset,
-            "inter.warp_inter_intra block size out of range",
-            SPEC_MODE_INFO
-        )
-    })?;
-    let enabled = cdfs
-        .read_block_symbol_trace(TileCdfSelector::WarpInterIntra { bsize_group }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
-        .get();
-    if enabled > 1 {
-        return Err(inter_cap!(
-            "inter_warp_interintra_symbol",
-            tile_offset,
-            "inter.warp_inter_intra symbol out of range",
-            SPEC_MODE_INFO
-        ));
-    }
-    if enabled == 0 {
-        return Ok(WarpInterIntraSyntax::default());
-    }
-
     let mode = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntraMode { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    if mode >= INTERINTRA_MODES {
-        return Err(inter_cap!(
-            "inter_warp_interintra_mode_symbol",
-            tile_offset,
-            "inter.interintra_mode symbol out of range",
-            SPEC_MODE_INFO
-        ));
-    }
 
     let use_wedge = if WEDGE_USED_BY_BSIZE.get(b_size).copied().unwrap_or(false) {
         let symbol = cdfs
@@ -715,6 +675,36 @@ pub(crate) fn read_warp_inter_intra_syntax(
     })
 }
 
+pub(crate) fn read_warp_inter_intra_syntax(
+    cdfs: &mut TileCdfSubset,
+    symbols: &mut SymbolDecoder<'_>,
+    b_size: usize,
+    n4w: usize,
+    n4h: usize,
+    tile_offset: ByteOffset,
+) -> Result<WarpInterIntraSyntax> {
+    if n4w < 2 || n4h < 2 || n4w.max(n4h) > CHUNK_64_N4 {
+        return Ok(WarpInterIntraSyntax::default());
+    }
+    let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
+        inter_cap!(
+            "inter_warp_interintra_bsize_group",
+            tile_offset,
+            "inter.warp_inter_intra block size out of range",
+            SPEC_MODE_INFO
+        )
+    })?;
+    let enabled = cdfs
+        .read_block_symbol_trace(TileCdfSelector::WarpInterIntra { bsize_group }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get();
+    if enabled == 0 {
+        return Ok(WarpInterIntraSyntax::default());
+    }
+
+    read_active_inter_intra_tail(cdfs, symbols, bsize_group, b_size, tile_offset)
+}
+
 pub(crate) fn read_wedge_mode_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -724,14 +714,6 @@ pub(crate) fn read_wedge_mode_syntax(
         .read_block_symbol_trace(TileCdfSelector::WedgeQuad, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    if quad >= WEDGE_QUADS {
-        return Err(inter_cap!(
-            "inter_wedge_quad_symbol",
-            tile_offset,
-            "inter.wedge_quad symbol out of range",
-            SPEC_MODE_INFO
-        ));
-    }
     let angle_in_quad = cdfs
         .read_block_symbol_trace(
             TileCdfSelector::WedgeAngle {
@@ -741,14 +723,6 @@ pub(crate) fn read_wedge_mode_syntax(
         )
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    if angle_in_quad >= QUAD_WEDGE_ANGLES {
-        return Err(inter_cap!(
-            "inter_wedge_angle_symbol",
-            tile_offset,
-            "inter.wedge_angle symbol out of range",
-            SPEC_MODE_INFO
-        ));
-    }
     let angle = quad
         .checked_mul(QUAD_WEDGE_ANGLES)
         .and_then(|base| base.checked_add(angle_in_quad))
@@ -759,29 +733,11 @@ pub(crate) fn read_wedge_mode_syntax(
             .read_block_symbol_trace(TileCdfSelector::WedgeDist2, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get();
-        if symbol >= NUM_WEDGE_DIST - 1 {
-            return Err(inter_cap!(
-                "inter_wedge_dist2_symbol",
-                tile_offset,
-                "inter.wedge_dist_cdf2 symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
         symbol + 1
     } else {
-        let symbol = cdfs
-            .read_block_symbol_trace(TileCdfSelector::WedgeDist1, symbols)
+        cdfs.read_block_symbol_trace(TileCdfSelector::WedgeDist1, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
-            .get();
-        if symbol >= NUM_WEDGE_DIST {
-            return Err(inter_cap!(
-                "inter_wedge_dist1_symbol",
-                tile_offset,
-                "inter.wedge_dist_cdf symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
-        symbol
+            .get()
     };
     let index = WEDGE_ANGLE_DIST_TO_INDEX
         .get(usize::from(angle))
@@ -825,14 +781,6 @@ fn read_warp_delta_syntax(
         )
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    if precision_idx > 1 {
-        return Err(inter_cap!(
-            "inter_warp_precision_symbol",
-            tile_offset,
-            "inter.warp_delta_precision symbol out of range",
-            SPEC_MODE_INFO
-        ));
-    }
     let high = precision_idx != 0;
     let mut deltas = [0i32; 4];
     deltas[0] = read_warp_delta_param(cdfs, symbols, WarpDeltaParam::Two, high, tile_offset)?;
