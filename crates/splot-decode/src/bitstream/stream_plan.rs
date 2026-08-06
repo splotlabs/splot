@@ -340,20 +340,8 @@ pub enum DecodeSourceIssueKind {
     IvfWarning,
     /// IVF codec metadata selects a codec outside the AV2 decoder input domain.
     IvfUnsupportedCodec,
-}
-
-impl DecodeSourceIssueKind {
-    /// Stable snake-case issue kind label.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AnnexBParseError => "annex_b_parse_error",
-            Self::IvfContainerError => "ivf_container_error",
-            Self::IvfFramePayloadError => "ivf_frame_payload_error",
-            Self::IvfWarning => "ivf_warning",
-            Self::IvfUnsupportedCodec => "ivf_unsupported_codec",
-        }
-    }
+    /// Fatal AV2 tile-payload syntax decode error.
+    TilePayloadParseError,
 }
 
 impl fmt::Display for DecodeSourceIssueKind {
@@ -362,17 +350,33 @@ impl fmt::Display for DecodeSourceIssueKind {
     }
 }
 
-/// Source/container issue observed while planning.
+/// Source, container, or runtime bitstream issue observed while decoding.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeSourceIssue {
     kind: DecodeSourceIssueKind,
     rule_id: Option<&'static str>,
+    spec_section: Option<&'static str>,
     offset: Option<ByteOffset>,
     frame_index: Option<usize>,
     message: String,
 }
 
 impl DecodeSourceIssue {
+    pub(crate) fn tile_payload(
+        offset: ByteOffset,
+        spec_section: &'static str,
+        message: String,
+    ) -> Self {
+        Self {
+            kind: DecodeSourceIssueKind::TilePayloadParseError,
+            rule_id: None,
+            spec_section: Some(spec_section),
+            offset: Some(offset),
+            frame_index: None,
+            message,
+        }
+    }
+
     /// Source issue category.
     #[must_use]
     pub const fn kind(&self) -> DecodeSourceIssueKind {
@@ -383,6 +387,12 @@ impl DecodeSourceIssue {
     #[must_use]
     pub const fn rule_id(&self) -> Option<&'static str> {
         self.rule_id
+    }
+
+    /// AV2 section associated with the issue, when known.
+    #[must_use]
+    pub const fn spec_section(&self) -> Option<&'static str> {
+        self.spec_section
     }
 
     /// Source byte offset, when known.
@@ -450,15 +460,14 @@ pub enum DecodeUnsupportedReason {
 /// flags those).
 ///
 /// The leading `$vis` token sets the generated `as_str` visibility so the macro
-/// serves both a `pub` enum (`DecodeUnsupportedReason`) and a `pub(crate)` enum
-/// (`TilePayloadUnsupportedReason`) without tripping pedantic clippy's
-/// `unreachable_pub`. `#[macro_export]` makes it reachable as
+/// serves both public and crate-visible enums without tripping pedantic
+/// clippy's `unreachable_pub`. `#[macro_export]` makes it reachable as
 /// `crate::impl_reason_labels!` from sibling modules.
 #[macro_export]
 macro_rules! impl_reason_labels {
     ($vis:vis $name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
         impl $name {
-            /// Stable snake-case reason label.
+            /// Stable snake-case label.
             #[must_use]
             $vis const fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $label),+ }
@@ -472,6 +481,15 @@ impl_reason_labels!(pub DecodeUnsupportedReason {
     NonBaseEmbeddedLayer => "non_base_embedded_layer",
     NonBaseExtendedLayer => "non_base_extended_layer",
     MultistreamSelection => "multistream_selection",
+});
+
+impl_reason_labels!(pub DecodeSourceIssueKind {
+    AnnexBParseError => "annex_b_parse_error",
+    IvfContainerError => "ivf_container_error",
+    IvfFramePayloadError => "ivf_frame_payload_error",
+    IvfWarning => "ivf_warning",
+    IvfUnsupportedCodec => "ivf_unsupported_codec",
+    TilePayloadParseError => "tile_payload_parse_error",
 });
 
 impl fmt::Display for DecodeUnsupportedReason {
@@ -932,6 +950,7 @@ fn issue_from_core_error(
     DecodeSourceIssue {
         kind,
         rule_id: None,
+        spec_section: None,
         offset: core_error_offset(error),
         frame_index,
         message: error.to_string(),
@@ -962,6 +981,7 @@ fn issue_from_unsupported_ivf_codec(fourcc: [u8; 4]) -> DecodeSourceIssue {
     DecodeSourceIssue {
         kind: DecodeSourceIssueKind::IvfUnsupportedCodec,
         rule_id: Some("decode/unsupported-ivf-codec"),
+        spec_section: None,
         offset: Some(ByteOffset::new(8)),
         frame_index: None,
         message: format!(
@@ -981,6 +1001,7 @@ fn issue_from_ivf_source(
     DecodeSourceIssue {
         kind,
         rule_id: Some(rule_id),
+        spec_section: None,
         offset: Some(offset),
         frame_index,
         message,

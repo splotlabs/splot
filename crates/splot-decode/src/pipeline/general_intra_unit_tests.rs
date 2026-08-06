@@ -5,6 +5,35 @@
 
 use super::*;
 use crate::bitstream::tile_payload::{CflIndex, CflParams, GeneralIntraChromaBlockMode};
+use crate::{DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeSourceIssueKind};
+
+#[test]
+fn invalid_uv_mode_is_malformed_tile_syntax() {
+    let error = general_intra_block_mode_error(
+        GeneralIntraBlockModeError::InvalidUvMode { uv_mode: 13 },
+        ByteOffset::new(42),
+    );
+    assert!(matches!(
+        &error,
+        DecodeError::MalformedSource { issue }
+            if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                && issue.rule_id().is_none()
+                && issue.spec_section() == Some(GENERAL_INTRA_MODE_SPEC_SECTION)
+                && issue.offset() == Some(ByteOffset::new(42))
+                && issue.message().contains("out-of-range uv_mode 13")
+    ));
+
+    let report = DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("malformed source has a diagnostic report");
+    assert_eq!(
+        report.diagnostic.spec_section,
+        Some(GENERAL_INTRA_MODE_SPEC_SECTION)
+    );
+    assert!(matches!(
+        report.details,
+        DecodeDiagnosticDetails::MalformedSource(_)
+    ));
+}
 
 #[test]
 fn general_intra_recon_command_is_send() {

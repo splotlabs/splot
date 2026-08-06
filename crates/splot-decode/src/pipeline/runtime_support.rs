@@ -7,6 +7,7 @@ use splot_core::span::ByteOffset;
 use splot_recon::BitDepth;
 
 use crate::DecodeLimitName;
+use crate::bitstream::stream_plan::DecodeSourceIssue;
 use crate::bitstream::tile_payload::{
     FrameCandidateTileBoundaryError, FrameCandidateTileMalformed,
 };
@@ -139,4 +140,14 @@ pub(crate) fn unsupported_feature_at(
     spec_section: &'static str,
 ) -> DecodeError {
     unsupported_with_spec(reason, Some(byte_offset), message, spec_section)
+}
+
+pub(crate) fn malformed_tile_payload(
+    byte_offset: ByteOffset,
+    spec_section: &'static str,
+    error: impl core::fmt::Display,
+) -> DecodeError {
+    DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::tile_payload(byte_offset, spec_section, error.to_string()),
+    }
 }

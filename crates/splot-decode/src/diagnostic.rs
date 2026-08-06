@@ -4,12 +4,13 @@
 //! Library-owned diagnostic adaptation for decode planner results.
 //!
 //! Feature tracking: `CLI-DECODE`, `DECODE-BYTE-STREAM-PLANNER`,
-//! `DECODE-STREAM-STATE-PLANNER`, `DOC-DECODE-LIMITS-CONTRACT`.
+//! `DECODE-STREAM-STATE-PLANNER`, `DECODE-GENERAL-INTRA-BLOCK-MODES`,
+//! `DOC-DECODE-LIMITS-CONTRACT`.
 
 use crate::{
     DecodeDiagnostic, DecodeError, DecodeLimitError, DecodeLimitName, DecodeOutputError,
-    DecodeSeverity, DecodeSourceIssue, DecodeSourceIssueKind, DecodeUnsupportedFeature,
-    DecodeUnsupportedStructure, UNSUPPORTED_FEATURE_RULE_ID,
+    DecodeSeverity, DecodeSourceIssue, DecodeUnsupportedFeature, DecodeUnsupportedStructure,
+    UNSUPPORTED_FEATURE_RULE_ID,
 };
 
 /// Stable rule id for malformed decode-source diagnostics.
@@ -57,8 +58,8 @@ impl DecodeDiagnosticReport {
         Self {
             diagnostic: error_diagnostic(
                 MALFORMED_SOURCE_RULE_ID,
-                malformed_source_spec_section(issue.kind()),
-                "decode source is malformed and could not be planned.",
+                issue.spec_section(),
+                "decode source is malformed and could not be parsed.",
             ),
             details: DecodeDiagnosticDetails::MalformedSource(DecodeMalformedSourceDetails {
                 source_issue_kind: issue.kind().as_str(),
@@ -232,16 +233,6 @@ pub struct DecodeOutputErrorDetails {
     pub source_kind: &'static str,
     /// Human-readable underlying output error message.
     pub source_message: String,
-}
-
-const fn malformed_source_spec_section(kind: DecodeSourceIssueKind) -> Option<&'static str> {
-    match kind {
-        DecodeSourceIssueKind::AnnexBParseError
-        | DecodeSourceIssueKind::IvfFramePayloadError
-        | DecodeSourceIssueKind::IvfContainerError
-        | DecodeSourceIssueKind::IvfWarning
-        | DecodeSourceIssueKind::IvfUnsupportedCodec => None,
-    }
 }
 
 const fn resource_limit_spec_section(name: DecodeLimitName) -> Option<&'static str> {

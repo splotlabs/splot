@@ -475,7 +475,7 @@ the source (the `Parse §` column is the section the OBU's syntax is parsed from
 
 | Rule ID | Severity | Section | Feature | Matrix Row | Message | Remediation |
 |---|---|---|---|---|---|---|
-| `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | decode source is malformed and could not be planned. | Check the AV2 Annex B or IVF source bytes before retrying `splot decode`. |
+| `decode/malformed-source` | Error | optional parser section | `DECODE-BYTE-STREAM-PLANNER` / `DECODE-GENERAL-INTRA-BLOCK-MODES` | `decode-byte-stream-planner` / `decode-general-intra-block-modes` | decode source is malformed and could not be parsed. | Check the AV2 Annex B, IVF container, or tile-payload bytes before retrying `splot decode`. |
 | `decode/output-error` | Error | none | `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT` / `DECODE-Y4M-RUNTIME-OUTPUT` | `decode-minimal-raw-runtime-output` / `decode-y4m-runtime-output` | decode output could not be serialized or written. | Check the output destination and retry the decode operation. |
 | `decode/resource-limit` | Error | optional policy / § 5.2.1 / § 7.1 | `DOC-DECODE-LIMITS-CONTRACT` | `decode-limits-budget` | decode planning stopped because a configured resource limit was exceeded. | Use a smaller input or raise the decode limit policy before retrying. |
 | `decode/unsupported-ivf-codec` | Error | none | `DECODE-BYTE-STREAM-PLANNER` | `decode-byte-stream-planner` | IVF codec metadata selects a codec outside the AV2 decoder input domain. | Use AV02 IVF codec metadata or provide the AV2 Annex B bitstream directly. |
@@ -489,7 +489,8 @@ the source (the `Parse §` column is the section the OBU's syntax is parsed from
 `parser_rule_id`, `byte_offset`, `ivf_frame_index`, and `parser_message` when
 known. Annex B wrapper errors and IVF container errors leave `spec_section`
 unset unless the underlying parser exposes one AV2 section precisely enough to
-cite.
+cite. Runtime tile syntax errors use `source_issue_kind: tile_payload_parse_error`
+and preserve the tile syntax section and byte offset.
 
 An IVF FourCC other than `AV02` is reported through `decode/malformed-source`
 with `source_issue_kind: ivf_unsupported_codec` and
