@@ -1091,13 +1091,6 @@ fn read_intrabc_info_syntax(
             )
         })?;
     let intrabc_mode = read_symbol(cdfs, symbols, TileCdfSelector::IntrabcMode, tile_offset)?;
-    if intrabc_mode > 1 {
-        return Err(wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_mode",
-        ));
-    }
-
     let mut ref_mv_idx = 0usize;
     for idx in 0..m {
         let drl_mode = symbols.read_literal(1).map_err(|_| {
@@ -1130,12 +1123,6 @@ fn read_intrabc_info_syntax(
             TileCdfSelector::IntrabcPrecision,
             tile_offset,
         )?;
-        if precision > 1 {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_precision",
-            ));
-        }
         mv_precision = if precision != 0 {
             MV_PRECISION_QUARTER_PEL
         } else {
