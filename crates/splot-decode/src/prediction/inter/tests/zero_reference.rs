@@ -77,16 +77,26 @@ fn zero_reference_inter_frame_requires_an_empty_reference_map() {
 }
 
 #[test]
-fn ccso_reference_slot_checks_num_total_refs() {
+fn ccso_reference_slot_checks_all_reuse_modes_and_num_total_refs() {
     let offset = ByteOffset::new(74);
     assert_eq!(
-        ccso_reference_slot(&[3], 0, offset)
+        ccso_reference_slot(&[3], true, false, 0, offset)
             .expect("in-range CCSO reference index resolves its slot"),
-        3
+        Some(3)
+    );
+    assert_eq!(
+        ccso_reference_slot(&[3], false, true, 0, offset)
+            .expect("block-reuse-only CCSO also resolves its slot"),
+        Some(3)
+    );
+    assert_eq!(
+        ccso_reference_slot(&[], false, false, 7, offset)
+            .expect("a plane without either reuse mode has no reference"),
+        None
     );
 
-    let error = ccso_reference_slot(&[3], 1, offset)
-        .expect_err("CCSO reference index must be less than NumTotalRefs");
+    let error = ccso_reference_slot(&[3], false, true, 1, offset)
+        .expect_err("block-reuse-only CCSO index must be less than NumTotalRefs");
     let DecodeError::UnsupportedFeature { unsupported } = error else {
         panic!("out-of-range CCSO reference index must be an unsupported-feature error");
     };

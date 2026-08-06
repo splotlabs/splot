@@ -1588,11 +1588,21 @@ fn resolve_ccso_reference_reuse(
         return Ok(());
     };
     for plane_index in 0..ccso.planes.len() {
-        if !ccso.planes[plane_index].reuse_ccso {
+        let plane = &ccso.planes[plane_index];
+        let reuse_ccso = plane.reuse_ccso;
+        let Some(slot) = ccso_reference_slot(
+            ref_frame_idx,
+            reuse_ccso,
+            plane.sb_reuse_ccso,
+            plane.ccso_ref_idx.unwrap_or(0),
+            offset,
+        )?
+        else {
+            continue;
+        };
+        if !reuse_ccso {
             continue;
         }
-        let ref_index = ccso.planes[plane_index].ccso_ref_idx.unwrap_or(0);
-        let slot = ccso_reference_slot(ref_frame_idx, ref_index, offset)?;
         let ref_ccso = reference.ccso_params_for_slot(slot, offset)?;
         let Some(ref_plane) = ref_ccso.planes.get(plane_index) else {
             return Err(inter_missing!(
@@ -1614,10 +1624,20 @@ fn resolve_ccso_reference_reuse(
     Ok(())
 }
 
-fn ccso_reference_slot(ref_frame_idx: &[u32], ref_index: u32, offset: ByteOffset) -> Result<u32> {
+fn ccso_reference_slot(
+    ref_frame_idx: &[u32],
+    reuse_ccso: bool,
+    sb_reuse_ccso: bool,
+    ref_index: u32,
+    offset: ByteOffset,
+) -> Result<Option<u32>> {
+    if !reuse_ccso && !sb_reuse_ccso {
+        return Ok(None);
+    }
     ref_frame_idx
         .get(ref_index as usize)
         .copied()
+        .map(Some)
         .ok_or_else(|| {
             inter_diag!(
                 "inter_ccso_reference_index_out_of_range",
