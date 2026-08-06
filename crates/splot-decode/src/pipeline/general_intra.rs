@@ -477,15 +477,6 @@ pub(crate) fn decode_one_general_intra_block(
         )
         .map_err(|error| general_intra_block_mode_error(error, tile_offset))?
     };
-    let rect_mrl_admitted = rect_luma_plan(&modes, block_ctx, luma_use_tcq, sb_mib).is_ok();
-    if modes.uses_active_mrl() && !rect_mrl_admitted {
-        return Err(general_intra_at!(
-            "general_intra_unsupported_mrl_mode",
-            tile_offset,
-            missing_capability_message!("intra.luma.mrl", mode = "active"),
-            "7.13.2",
-        ));
-    }
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
             read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size.index(), true, true)

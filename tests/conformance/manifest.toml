@@ -517,7 +517,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-mrl-largest-intra-128x128.ivf"
-description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder fails closed with decode/unsupported-feature general_intra_unsupported_mrl_mode."
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte at SHA-256 540a4b340038dbb60fde144372a891681ff330a103ccd60ea2d19a8e64cf69d9."
 expect = "clean"
 
 [[vector]]
