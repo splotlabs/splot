@@ -344,21 +344,6 @@ pub enum DecodeSourceIssueKind {
     TilePayloadParseError,
 }
 
-impl DecodeSourceIssueKind {
-    /// Stable snake-case issue kind label.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::AnnexBParseError => "annex_b_parse_error",
-            Self::IvfContainerError => "ivf_container_error",
-            Self::IvfFramePayloadError => "ivf_frame_payload_error",
-            Self::IvfWarning => "ivf_warning",
-            Self::IvfUnsupportedCodec => "ivf_unsupported_codec",
-            Self::TilePayloadParseError => "tile_payload_parse_error",
-        }
-    }
-}
-
 impl fmt::Display for DecodeSourceIssueKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -475,15 +460,14 @@ pub enum DecodeUnsupportedReason {
 /// flags those).
 ///
 /// The leading `$vis` token sets the generated `as_str` visibility so the macro
-/// serves both a `pub` enum (`DecodeUnsupportedReason`) and a `pub(crate)` enum
-/// (`TilePayloadUnsupportedReason`) without tripping pedantic clippy's
-/// `unreachable_pub`. `#[macro_export]` makes it reachable as
+/// serves both public and crate-visible enums without tripping pedantic
+/// clippy's `unreachable_pub`. `#[macro_export]` makes it reachable as
 /// `crate::impl_reason_labels!` from sibling modules.
 #[macro_export]
 macro_rules! impl_reason_labels {
     ($vis:vis $name:ident { $($variant:ident => $label:literal),+ $(,)? }) => {
         impl $name {
-            /// Stable snake-case reason label.
+            /// Stable snake-case label.
             #[must_use]
             $vis const fn as_str(self) -> &'static str {
                 match self { $(Self::$variant => $label),+ }
@@ -497,6 +481,15 @@ impl_reason_labels!(pub DecodeUnsupportedReason {
     NonBaseEmbeddedLayer => "non_base_embedded_layer",
     NonBaseExtendedLayer => "non_base_extended_layer",
     MultistreamSelection => "multistream_selection",
+});
+
+impl_reason_labels!(pub DecodeSourceIssueKind {
+    AnnexBParseError => "annex_b_parse_error",
+    IvfContainerError => "ivf_container_error",
+    IvfFramePayloadError => "ivf_frame_payload_error",
+    IvfWarning => "ivf_warning",
+    IvfUnsupportedCodec => "ivf_unsupported_codec",
+    TilePayloadParseError => "tile_payload_parse_error",
 });
 
 impl fmt::Display for DecodeUnsupportedReason {
