@@ -851,11 +851,11 @@ fn read_warp_delta_syntax(
     }
     let high = precision_idx != 0;
     let mut deltas = [0i32; 4];
-    deltas[0] = read_warp_delta_param(cdfs, symbols, 2, high, tile_offset)?;
-    deltas[1] = read_warp_delta_param(cdfs, symbols, 3, high, tile_offset)?;
+    deltas[0] = read_warp_delta_param(cdfs, symbols, WarpDeltaParam::Two, high, tile_offset)?;
+    deltas[1] = read_warp_delta_param(cdfs, symbols, WarpDeltaParam::Three, high, tile_offset)?;
     if six_param {
-        deltas[2] = read_warp_delta_param(cdfs, symbols, 4, high, tile_offset)?;
-        deltas[3] = read_warp_delta_param(cdfs, symbols, 5, high, tile_offset)?;
+        deltas[2] = read_warp_delta_param(cdfs, symbols, WarpDeltaParam::Four, high, tile_offset)?;
+        deltas[3] = read_warp_delta_param(cdfs, symbols, WarpDeltaParam::Five, high, tile_offset)?;
     }
     Ok(WarpDeltaSyntax {
         deltas: Some(deltas),
@@ -898,25 +898,33 @@ pub(super) fn apply_warp_delta(
     Ok(params)
 }
 
+/// The four AV2 section 5.20.5.9 `warp_delta_param` positions. Their CDF context is
+/// shared pairwise, so the enum keeps the index-to-context mapping total.
+#[derive(Clone, Copy)]
+enum WarpDeltaParam {
+    Two,
+    Three,
+    Four,
+    Five,
+}
+
+impl WarpDeltaParam {
+    const fn index_type(self) -> usize {
+        match self {
+            Self::Two | Self::Five => 0,
+            Self::Three | Self::Four => 1,
+        }
+    }
+}
+
 fn read_warp_delta_param(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    index: usize,
+    param: WarpDeltaParam,
     high_precision: bool,
     tile_offset: ByteOffset,
 ) -> Result<i32> {
-    let index_type = match index {
-        2 | 5 => 0,
-        3 | 4 => 1,
-        _ => {
-            return Err(inter_cap!(
-                "inter_warp_delta_param_index",
-                tile_offset,
-                "inter.warp_delta_param index out of range",
-                SPEC_MODE_INFO
-            ));
-        }
-    };
+    let index_type = param.index_type();
     let mut value = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamLow { index_type }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
@@ -926,14 +934,6 @@ fn read_warp_delta_param(
             .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamHigh { index_type }, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get();
-        if high >= WARP_DELTA_NUM_SYMBOLS_HIGH {
-            return Err(inter_cap!(
-                "inter_warp_delta_param_high_symbol",
-                tile_offset,
-                "inter.warp_delta_param_high symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
         value = value
             .checked_add(high)
             .ok_or_else(|| warp_model_error(tile_offset))?;
@@ -944,14 +944,6 @@ fn read_warp_delta_param(
             .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamSign, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get();
-        if sign > 1 {
-            return Err(inter_cap!(
-                "inter_warp_delta_param_sign_symbol",
-                tile_offset,
-                "inter.warp_delta_param_sign symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
         if sign != 0 {
             signed = -signed;
         }
