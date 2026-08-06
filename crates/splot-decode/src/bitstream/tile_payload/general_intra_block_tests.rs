@@ -814,6 +814,47 @@ fn sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl() {
     assert_eq!(symbols.finish().unwrap().symbol_count, 1);
 }
 
+#[test]
+fn undefined_uv_mode_indices_are_rejected_after_complete_syntax() {
+    for uv_mode_idx in [6u8, 7] {
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+        );
+        tile.with_row_mut(TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, |row| {
+            encoder.write_symbol_u16(row, Symbol::new(CHROMA_MODE_COUNT - 1))
+        })
+        .unwrap()
+        .unwrap();
+        encoder
+            .write_literal(u32::from(uv_mode_idx), UV_MODE_IDX_BITS)
+            .unwrap();
+        let payload = encoder.finish().unwrap().into_bytes();
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+
+        let error = decode_general_intra_chroma_block_mode(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled(),
+            GeneralIntraChromaModeContext::shared_or_non_sdp(0),
+            IntraYMode::DC_PRED,
+            block_size(BLOCK_64X64),
+            SB_N4,
+            SB_N4,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            GeneralIntraBlockModeError::InvalidUvMode { uv_mode }
+                if uv_mode == CHROMA_MODE_COUNT - 1 + uv_mode_idx
+        ));
+        assert_eq!(symbols.symbol_count(), 4);
+        assert_eq!(symbols.finish().unwrap().symbol_count, 4);
+    }
+}
+
 fn decode_lossless_chroma_uv_mode_without_is_cfl(
     chroma_tools: GeneralIntraChromaToolConfig,
     block_size_index: usize,
