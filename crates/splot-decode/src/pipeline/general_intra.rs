@@ -288,25 +288,9 @@ pub(crate) fn decode_one_general_intra_block(
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let _qm_segment_scope =
         crate::bitstream::tile_payload::FrameQmSegmentScope::install(usize::from(segment_id));
-    let geometry_error = || {
-        general_intra_at!(
-            "general_intra_block_geometry",
-            tile_offset,
-            "general intra block geometry lookup failed",
-            GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        )
-    };
-    let n4w = frontier
-        .b_size
-        .num_4x4_wide()
-        .map_err(|_| geometry_error())?;
-    let n4h = frontier
-        .b_size
-        .num_4x4_high()
-        .map_err(|_| geometry_error())?;
-    let Some(block_tx_shape) = TxShape::from_luma_4x4(n4w, n4h) else {
-        return Err(geometry_error());
-    };
+    let block_tx_shape = TxShape::from_av2_block_size(frontier.b_size);
+    let n4w = block_tx_shape.width4();
+    let n4h = block_tx_shape.height4();
     let chroma_sampling =
         ChromaSampling::from_chroma_format_idc(sequence.general.chroma_format_idc);
     let mi_row_range = work_unit.mi_row_range();
@@ -327,17 +311,9 @@ pub(crate) fn decode_one_general_intra_block(
     );
     let chroma_mode_geometry = if frontier.has_chroma {
         let chroma_ref = frontier.chroma_ref_geometry();
-        let chroma_n4w = chroma_ref
-            .size()
-            .num_4x4_wide()
-            .map_err(|_| geometry_error())?;
-        let chroma_n4h = chroma_ref
-            .size()
-            .num_4x4_high()
-            .map_err(|_| geometry_error())?;
-        let Some(chroma_tx_shape) = TxShape::from_luma_4x4(chroma_n4w, chroma_n4h) else {
-            return Err(geometry_error());
-        };
+        let chroma_tx_shape = TxShape::from_av2_block_size(chroma_ref.size());
+        let chroma_n4w = chroma_tx_shape.width4();
+        let chroma_n4h = chroma_tx_shape.height4();
         block_ctx = block_ctx.with_chroma_ref(
             BlockRect::new(chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h),
             chroma_tx_shape,
