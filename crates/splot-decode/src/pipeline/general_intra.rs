@@ -1286,7 +1286,8 @@ fn general_intra_block_mode_error(
 ) -> DecodeError {
     match error {
         GeneralIntraBlockModeError::SymbolRead { .. }
-        | GeneralIntraBlockModeError::Literal { .. } => general_intra_at!(
+        | GeneralIntraBlockModeError::Literal { .. }
+        | GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_at!(
             "general_intra_block_mode_parse",
             offset,
             "general intra block mode-info syntax could not be parsed from the tile payload",
@@ -1296,12 +1297,6 @@ fn general_intra_block_mode_error(
             "general_intra_unsupported_y_mode",
             offset,
             missing_capability_message!("intra.luma.mode", mode = "unsupported"),
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_at!(
-            "general_intra_invalid_uv_mode",
-            offset,
-            "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
         GeneralIntraBlockModeError::InvalidLosslessTxSizeGroup { .. } => general_intra_at!(
