@@ -487,7 +487,6 @@ pub(crate) fn decode_one_general_intra_block(
             "7.13.2",
         ));
     }
-    ensure_lossless_fsc_prediction_subset(lossless, &modes, block_ctx, sb_mib, tile_offset)?;
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
             read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size.index(), true, true)
@@ -739,82 +738,6 @@ fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> Gene
     } else {
         leaf
     }
-}
-
-fn ensure_lossless_fsc_prediction_subset(
-    lossless: bool,
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if !lossless
-        || !modes.uses_active_fsc()
-        || lossless_fsc_luma_prediction_verified(modes, block_ctx, sb_mib)
-    {
-        return Ok(());
-    }
-    Err(general_intra_at!(
-        "general_intra_lossless_fsc_unverified",
-        tile_offset,
-        missing_capability_message!("intra.lossless.fsc", mode = "active"),
-        "5.20.7.29",
-    ))
-}
-
-fn lossless_fsc_luma_prediction_verified(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-) -> bool {
-    use SupportedDirectionalLumaMode as L;
-
-    if modes.luma_is_dc() || modes.uses_dpcm_y() {
-        return true;
-    }
-    let block = block_ctx.block();
-    let full_64_sb_8bit = block_ctx.bit_depth() == BitDepth::Eight
-        && sb_mib == FULL_SB_N4_LUMA
-        && block.width4() == FULL_SB_N4_LUMA
-        && block.height4() == FULL_SB_N4_LUMA;
-    let directional = modes.y_mode.supported_directional();
-    let top_left_directional = block_ctx.is_top_left()
-        && matches!(
-            directional,
-            Some(
-                L::Vertical
-                    | L::Horizontal
-                    | L::D45
-                    | L::D67
-                    | L::D113
-                    | L::D135
-                    | L::D157
-                    | L::D203
-            )
-        );
-    let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
-    let y_neighbours = block_ctx.neighbours(PlaneId::Y);
-    let left_edge_directional = !y_neighbours.has_above()
-        && y_neighbours.has_left()
-        && (directional == Some(L::D45)
-            || (directional == Some(L::D113)
-                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D113Follow))
-            || (directional == Some(L::D135)
-                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D135Follow))
-            || (directional == Some(L::D157)
-                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D157Follow))
-            || (directional == Some(L::D203)
-                && modes.supported_chroma_mode() == Some(SupportedChromaMode::D203Follow)));
-    (full_64_sb_8bit
-        && modes.angle_delta_y == 0
-        && (top_left_directional || top_left_paeth || left_edge_directional))
-        || (block_ctx.bit_depth() == BitDepth::Eight
-            && modes.palette_y().is_none()
-            && (modes.y_mode.supported_directional().is_some()
-                || modes.supported_nondc_luma().is_some()
-                || modes.y_mode.is_paeth())
-            && (y_neighbours.has_above() || y_neighbours.has_left())
-            && rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok())
 }
 
 fn top_left_no_neighbour_directional_prediction_verified(

@@ -111,11 +111,6 @@ fn luma_modes_with_angle(y_mode: IntraYMode, angle_delta_y: i8) -> GeneralIntraB
     luma_modes_with_parts(y_mode, angle_delta_y, 0, 0)
 }
 
-fn with_active_fsc(mut modes: GeneralIntraBlockModes) -> GeneralIntraBlockModes {
-    modes.fsc_mode = 1;
-    modes
-}
-
 fn luma_modes_with_parts(
     y_mode: IntraYMode,
     angle_delta_y: i8,
@@ -179,51 +174,6 @@ fn lossless_luma_uses_generic_prediction_planner() {
             );
         }
     }
-}
-
-#[test]
-fn lossless_fsc_guard_preserves_verified_subset() {
-    for (modes, block_ctx) in [
-        (
-            with_active_fsc(luma_modes(IntraYMode::DC_PRED)),
-            ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
-        ),
-        (
-            with_active_fsc(luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2)),
-            ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight),
-        ),
-    ] {
-        ensure_lossless_fsc_prediction_subset(
-            true,
-            &modes,
-            block_ctx,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(12),
-        )
-        .expect("previously verified active-FSC subset must remain admitted");
-    }
-}
-
-#[test]
-fn lossless_fsc_guard_rejects_unverified_10bit_luma() {
-    let modes = with_active_fsc(luma_modes(IntraYMode::D45_PRED_FOR_TEST));
-    let error = ensure_lossless_fsc_prediction_subset(
-        true,
-        &modes,
-        ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
-        FULL_SB_N4_LUMA,
-        splot_core::span::ByteOffset::new(11),
-    )
-    .expect_err("unverified 10-bit active-FSC lossless luma must fail closed");
-
-    let (reason, offset) = match error {
-        DecodeError::UnsupportedFeature { unsupported } => {
-            (unsupported.reason(), unsupported.byte_offset())
-        }
-        _ => ("", None),
-    };
-    assert_eq!(reason, "general_intra_lossless_fsc_unverified");
-    assert_eq!(offset, Some(splot_core::span::ByteOffset::new(11)));
 }
 
 #[test]

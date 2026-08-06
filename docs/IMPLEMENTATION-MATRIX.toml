@@ -105,7 +105,7 @@ change_id = "decode-lossless-luma-prediction"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Removes the non-normative lossless luma mode, bit-depth, and block-geometry allowlist. Lossless luma now uses the same square and rectangular prediction planners as other intra blocks, including their normative no-neighbour synthesis, while independent chroma, FSC, MRL, palette, residual, and filter capability checks remain at their own boundaries. A deterministic AVMenc 10-bit 4:2:0 lossless PAETH_PRED fixture failed at the removed general_intra_lossless_other_nondc_luma_unverified marker before this change; fixed splot, pinned AVM, and current AVM emit byte-identical 12,288-byte raw output SHA-256 c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b. A second deterministic 69-byte AVMenc 10-bit V_PRED fixture pins the newly admitted top-left no-neighbour cardinal synthesis path to three-way byte-identical raw SHA-256 840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6."
+notes = "Removes the non-normative lossless luma mode, bit-depth, and block-geometry allowlist. Lossless luma now uses the same square and rectangular prediction planners as other intra blocks, including their normative no-neighbour synthesis, while independent chroma, MRL, palette, residual, and filter capability checks remain at their own boundaries. FSC prediction is tracked separately by DECODE-LOSSLESS-FSC-PREDICTION. A deterministic AVMenc 10-bit 4:2:0 lossless PAETH_PRED fixture failed at the removed general_intra_lossless_other_nondc_luma_unverified marker before this change; fixed splot, pinned AVM, and current AVM emit byte-identical 12,288-byte raw output SHA-256 c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b. A second deterministic 69-byte AVMenc 10-bit V_PRED fixture pins the newly admitted top-left no-neighbour cardinal synthesis path to three-way byte-identical raw SHA-256 840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6."
 replaces = []
 
 [feature.status]
@@ -193,6 +193,61 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-lossless-nondc-chroma-v-intra-64x64-10bit.ivf",
     "tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit.ivf",
+    "tests/conformance/decoder-oracle.toml",
+    "docs/LOCAL-REFERENCE-EVIDENCE.toml",
+]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
+id = "DECODE-LOSSLESS-FSC-PREDICTION"
+name = "Lossless FSC prediction without admission allowlist"
+category = "infrastructure"
+kind = "bitstream-semantics"
+spec_sections = ["5.20.5.5", "5.20.7.27", "5.20.7.29", "7.13.2.7", "7.15.2.3"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-5",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-29",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-15-2-3",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/pipeline/general_intra.rs"
+change_id = "decode-lossless-fsc-prediction"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Removes the non-normative lossless FSC prediction-mode, bit-depth, geometry, and neighbour allowlist. Active lossless FSC now proceeds through the existing generic intra prediction and FSC/IDTX coefficient-reconstruction pipeline; unsupported prediction planners and independently unsupported syntax still retain their typed capability boundaries. A deterministic 203-byte AVMenc 10-bit 4:2:0 lossless 32x32 D135_PRED active-FSC, non-DPCM fixture failed at byte 65 with general_intra_lossless_fsc_unverified before this change. Fixed splot, pinned AVM, and current AVM emit byte-identical complete 3,072-byte raw output SHA-256 7c5ddec5653a8baddfbfa039dd8048666a3526e1a7a62a4f77d0a4e58bc82ac8."
+replaces = []
+
+[feature.status]
+mapped = "done"
+types = "not-applicable"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-decode/src/pipeline/general_intra_tests.rs::lossless_fsc_d135_10bit_frame_decodes_to_oracle",
+    "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
+]
+commands = [
+    "cargo test -p splot-decode lossless_fsc_d135_10bit_frame_decodes_to_oracle --locked",
+    "cargo test -p splot-cli --test decoder_oracle --locked",
+    "cargo xtask decoder-fixtures verify",
+    "cargo xtask check-reference-evidence",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-decoder-conformance-coverage",
+    "cargo xtask check-feature-status",
+]
+fixtures = [
+    "tests/conformance/vectors/valid/syn-lossless-fsc-d135-intra-32x32-10bit.ivf",
     "tests/conformance/decoder-oracle.toml",
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
 ]

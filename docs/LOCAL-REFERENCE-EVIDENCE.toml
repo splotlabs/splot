@@ -11225,3 +11225,74 @@ right = "avm-lossless-sdp-chroma-vpred-10bit-current-raw-sha256"
 kind = "digest-equality"
 left = "avm-lossless-sdp-chroma-vpred-10bit-pinned-raw-sha256"
 right = "splot-lossless-sdp-chroma-vpred-10bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-lossless-fsc-d135-intra-32x32-10bit"
+feature_id = "DECODE-LOSSLESS-FSC-PREDICTION"
+decoder_support_rows = ["lossless-fsc-prediction"]
+kind = "reference-output-agreement"
+summary = "Pinned AVM, current AVM, and splot emit byte-identical raw I420 output for a deterministic AVMenc 10-bit lossless 32x32 D135_PRED luma frame with active FSC."
+recorded_at = "2026-08-06"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-fsc-d135-intra-32x32-10bit.ivf"
+sha256 = "d4eb85c3200604cd2aca8b851d9f797563c7def103ebb369db88f9e822d2dba0"
+size_bytes = 203
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically by AVMenc revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 from a project-owned 32x32 yuv420p10le diagonal luma source with flat 512 chroma. Lossless mode, fixed 32x32 partitions, FSC and intra IDTX enabled, and broad unrelated tools disabled were selected. Splot parsed-mode debugging identifies one D135_PRED luma block with fsc_mode=1, use_dpcm_y=0, and 32x32 geometry; the encoded stream reconstructs the source byte-for-byte, and a repeated encode was byte-identical. Before this change splot failed at byte offset 65 with general_intra_lossless_fsc_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-33-g457cd5868."
+command_summary = "Pinned avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-fsc-d135-10bit-pinned-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7c5ddec5653a8baddfbfa039dd8048666a3526e1a7a62a4f77d0a4e58bc82ac8"
+output_scope = "Complete 3,072-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-63-g3efe9fa8e."
+command_summary = "Current avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-fsc-d135-10bit-current-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7c5ddec5653a8baddfbfa039dd8048666a3526e1a7a62a4f77d0a4e58bc82ac8"
+output_scope = "Complete 3,072-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree without the lossless FSC admission allowlist."
+command_summary = "splot decode --quiet --output-format raw --threads=1 decoded {fixture:input}."
+output_digest_id = "splot-lossless-fsc-d135-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7c5ddec5653a8baddfbfa039dd8048666a3526e1a7a62a4f77d0a4e58bc82ac8"
+output_scope = "Complete 3,072-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-fsc-d135-10bit-pinned-raw-sha256"
+right = "avm-lossless-fsc-d135-10bit-current-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-fsc-d135-10bit-pinned-raw-sha256"
+right = "splot-lossless-fsc-d135-10bit-raw-sha256"
