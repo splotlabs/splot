@@ -663,7 +663,7 @@ fn active_cfl_chroma_mode_returns_typed_uv_cfl_pred() {
         GeneralIntraChromaToolConfig::new(true, false),
         GeneralIntraChromaModeContext::shared_or_non_sdp(0),
         IntraYMode::DC_PRED,
-        BLOCK_64X64,
+        block_size(BLOCK_64X64),
         SB_N4,
         SB_N4,
     )
@@ -687,7 +687,7 @@ fn active_cfl_chroma_mode_returns_typed_uv_cfl_pred() {
 
 #[test]
 fn active_mhccp_chroma_mode_is_admitted_when_cfl_is_disabled() {
-    let size_group = cfl_mh_dir_size_group(BLOCK_16X16).unwrap();
+    let size_group = cfl_mh_dir_size_group(block_size(BLOCK_16X16));
     let payload = encode_symbol_sequence(&[
         (TileCdfSelector::IsCfl { ctx: 0 }, 1),
         (TileCdfSelector::CflMhDir { size_group }, 2),
@@ -701,7 +701,7 @@ fn active_mhccp_chroma_mode_is_admitted_when_cfl_is_disabled() {
         GeneralIntraChromaToolConfig::new(false, true),
         GeneralIntraChromaModeContext::shared_or_non_sdp(0),
         IntraYMode::DC_PRED,
-        BLOCK_16X16,
+        block_size(BLOCK_16X16),
         4,
         4,
     )
@@ -724,8 +724,8 @@ fn active_mhccp_chroma_mode_is_admitted_when_cfl_is_disabled() {
 
 #[test]
 fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
-    let syntax_size_group = cfl_mh_dir_size_group(BLOCK_4X16).unwrap();
-    let inherited_chroma_size_group = cfl_mh_dir_size_group(BLOCK_32X16).unwrap();
+    let syntax_size_group = cfl_mh_dir_size_group(block_size(BLOCK_4X16));
+    let inherited_chroma_size_group = cfl_mh_dir_size_group(block_size(BLOCK_32X16));
     assert_ne!(syntax_size_group, inherited_chroma_size_group);
     let payload = encode_symbol_sequence(&[
         (TileCdfSelector::YModeSet, 0),
@@ -792,7 +792,7 @@ fn sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl() {
         GeneralIntraChromaToolConfig::new(true, true),
         GeneralIntraChromaModeContext::sdp_chroma_part(false, 0),
         IntraYMode::DC_PRED,
-        BLOCK_64X64,
+        block_size(BLOCK_64X64),
         SB_N4,
         SB_N4,
     )
@@ -823,7 +823,7 @@ fn decode_lossless_chroma_uv_mode_without_is_cfl(
         chroma_tools,
         GeneralIntraChromaModeContext::shared_or_non_sdp(0),
         IntraYMode::DC_PRED,
-        block_size_index,
+        block_size(block_size_index),
         block_n4w,
         block_n4h,
     )
@@ -847,7 +847,7 @@ fn lossless_chroma_cfl_gate_uses_subsampled_plane_size() {
 
 #[test]
 fn lossless_420_chroma_4x4_reads_cfl_and_mhccp_syntax() {
-    let size_group = cfl_mh_dir_size_group(BLOCK_8X8).unwrap();
+    let size_group = cfl_mh_dir_size_group(block_size(BLOCK_8X8));
     let payload = encode_symbol_sequence(&[
         (TileCdfSelector::UseDpcmUv, 0),
         (TileCdfSelector::IsCfl { ctx: 0 }, 1),
@@ -863,7 +863,7 @@ fn lossless_420_chroma_4x4_reads_cfl_and_mhccp_syntax() {
         GeneralIntraChromaToolConfig::new(true, true).with_lossless(true),
         GeneralIntraChromaModeContext::shared_or_non_sdp(0),
         IntraYMode::DC_PRED,
-        BLOCK_8X8,
+        block_size(BLOCK_8X8),
         2,
         2,
     )
@@ -983,7 +983,7 @@ fn read_cfl_alphas_consumes_explicit_sign_and_alpha_contexts() {
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::new(true, false),
-        BLOCK_64X64,
+        block_size(BLOCK_64X64),
         SB_N4,
         SB_N4,
     )
@@ -1012,7 +1012,7 @@ fn read_cfl_alphas_empty_payload_fails_exit_symbol_validation() {
         &mut work_unit,
         &mut symbols,
         GeneralIntraChromaToolConfig::new(true, false),
-        BLOCK_64X64,
+        block_size(BLOCK_64X64),
         SB_N4,
         SB_N4,
     )
@@ -1049,17 +1049,14 @@ fn cfl_alpha_contexts_match_spec_tables() {
 }
 
 #[test]
-fn cfl_mh_dir_size_group_uses_generated_size_group() {
-    assert_eq!(cfl_mh_dir_size_group(BLOCK_64X64).unwrap(), 3);
-
-    let invalid = splot_core::tables::conversion::SIZE_GROUP.len();
-    let err = cfl_mh_dir_size_group(invalid).unwrap_err();
-    assert!(matches!(
-        err,
-        GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex {
-            block_size_index
-        } if block_size_index == invalid
-    ));
+fn cfl_mh_dir_size_group_is_total_over_valid_block_sizes() {
+    for (index, expected) in SIZE_GROUP.iter().copied().enumerate() {
+        assert_eq!(
+            cfl_mh_dir_size_group(block_size(index)),
+            usize::try_from(expected).unwrap()
+        );
+    }
+    assert!(BlockSize::new(SIZE_GROUP.len()).is_err());
 }
 
 #[test]

@@ -617,7 +617,7 @@ fn parse_one_general_intra_chroma_part_block(
             is_cfl_ctx.get(),
         ),
         y_mode,
-        frontier.b_size.index(),
+        frontier.b_size,
         block_ctx.block().width4(),
         block_ctx.block().height4(),
     )
@@ -1337,14 +1337,6 @@ fn general_intra_block_mode_error(
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex { .. } => {
-            general_intra_at!(
-                "general_intra_invalid_cfl_mh_dir_size_group",
-                offset,
-                "general intra decode could not map MiSize through Size_Group for cfl_mh_dir",
-                "8.3.2",
-            )
-        }
         GeneralIntraBlockModeError::InvalidLosslessTxSizeGroup { .. } => general_intra_at!(
             "general_intra_invalid_lossless_tx_size_group",
             offset,
