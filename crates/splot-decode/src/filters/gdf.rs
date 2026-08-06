@@ -210,14 +210,13 @@ fn gdf_config(
     reference: Option<GdfReferenceContext>,
     offset: ByteOffset,
 ) -> Result<Option<GdfConfig>> {
-    let Some(gdf) = core.gdf_params.as_ref().filter(|gdf| gdf.gdf_frame_enable) else {
+    let Some((gdf, per_block)) = core
+        .gdf_params
+        .as_ref()
+        .filter(|gdf| gdf.gdf_frame_enable)
+        .and_then(|gdf| gdf.gdf_per_block.map(|per_block| (gdf, per_block)))
+    else {
         return Ok(None);
-    };
-    let Some(per_block) = gdf.gdf_per_block else {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_per_block",
-        ));
     };
     if per_block && block_grid.is_none() {
         return Err(gdf_filter_error(
