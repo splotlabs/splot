@@ -11,8 +11,6 @@ use splot_recon::{
 };
 
 use super::*;
-use crate::bitstream::tile_payload::{IntraYMode, SupportedChromaMode};
-use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 use crate::{DecodeContext, DecodeRuntimeConfig};
 
 const Q80_FIXTURE: &[u8] =
@@ -109,6 +107,9 @@ const LOSSLESS_NONDC_CHROMA_V_FIXTURE: &[u8] = include_bytes!(
 );
 const LOSSLESS_NONDC_CHROMA_V_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-v-intra-64x64-10bit.ivf"
+);
+const LOSSLESS_SDP_NONDC_CHROMA_V_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit.ivf"
 );
 const LOSSLESS_NONDC_CHROMA_D135_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-d135-intra-64x64.ivf"
@@ -231,41 +232,6 @@ pub(super) fn assert_chroma_size<T: ReconSample>(
     let size = PlaneSize::new(width, height).unwrap();
     assert_eq!(frame.u().unwrap().visible_size(), size);
     assert_eq!(frame.v().unwrap().visible_size(), size);
-}
-
-fn block_ctx(
-    row4: usize,
-    col4: usize,
-    width4: usize,
-    height4: usize,
-    bit_depth: BitDepth,
-) -> BlockCtx {
-    block_ctx_with_chroma(
-        row4,
-        col4,
-        width4,
-        height4,
-        bit_depth,
-        ChromaSampling::Yuv420,
-    )
-}
-
-fn block_ctx_with_chroma(
-    row4: usize,
-    col4: usize,
-    width4: usize,
-    height4: usize,
-    bit_depth: BitDepth,
-    chroma: ChromaSampling,
-) -> BlockCtx {
-    BlockCtx::new(
-        BlockRect::new(row4, col4, width4, height4),
-        TxShape::from_luma_4x4(width4, height4).expect("valid transform shape"),
-        480,
-        270,
-        bit_depth,
-        chroma,
-    )
 }
 
 fn frame_hash<T: ReconSample>(frame: &DecodedFrame<T>) -> String {
@@ -811,16 +777,25 @@ fn lossless_nondc_chroma_v_and_lossless_sdp_nondc_chroma_v_frames_decode_to_orac
         "f9e6cee7db3659e1c280789df8307ff8168a8b4ff043b64d489fa50816ebdba4",
         decode_eight,
     );
-}
-
-#[test]
-fn lossless_nondc_chroma_v_10bit_frame_decodes_to_oracle() {
+    assert_ne!(
+        LOSSLESS_NONDC_CHROMA_V_10BIT_FIXTURE,
+        LOSSLESS_SDP_NONDC_CHROMA_V_10BIT_FIXTURE
+    );
     assert_lossless_chroma_v_oracle(
         LOSSLESS_NONDC_CHROMA_V_10BIT_FIXTURE,
         102,
         BitDepth::Ten,
         512,
         "lossless 10-bit V chroma luma",
+        "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f",
+        decode_ten,
+    );
+    assert_lossless_chroma_v_oracle(
+        LOSSLESS_SDP_NONDC_CHROMA_V_10BIT_FIXTURE,
+        102,
+        BitDepth::Ten,
+        512,
+        "lossless SDP 10-bit V chroma luma",
         "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f",
         decode_ten,
     );
@@ -1108,33 +1083,6 @@ fn assert_lossless_chroma_d135_oracle(
         expected_v_distinct
     );
     assert_hash(&frame, expected_hash);
-}
-
-#[test]
-fn lossless_chroma_part_guard_remains_fail_closed_outside_verified_subset() {
-    let top_left_10 = block_ctx(
-        0,
-        0,
-        general_intra::FULL_SB_N4_LUMA,
-        general_intra::FULL_SB_N4_LUMA,
-        BitDepth::Ten,
-    );
-
-    assert!(general_intra::lossless_chroma_prediction_verified(
-        Some(SupportedChromaMode::Dc),
-        false,
-    ));
-    assert!(general_intra::lossless_chroma_prediction_verified(
-        Some(SupportedChromaMode::Vertical),
-        true,
-    ));
-    assert!(!general_intra::lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Vertical),
-        false,
-        IntraYMode::DC_PRED,
-        top_left_10,
-        general_intra::FULL_SB_N4_LUMA,
-    ));
 }
 
 fn assert_lossless_dpcm_uv_oracle(

@@ -11154,3 +11154,74 @@ right = "avm-lossless-chroma-vpred-10bit-current-raw-sha256"
 kind = "digest-equality"
 left = "avm-lossless-chroma-vpred-10bit-pinned-raw-sha256"
 right = "splot-lossless-chroma-vpred-10bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit"
+feature_id = "DECODE-LOSSLESS-CHROMA-PREDICTION"
+decoder_support_rows = ["lossless-chroma-prediction"]
+kind = "reference-output-agreement"
+summary = "Pinned AVM, current AVM, and splot emit byte-identical raw I420 output for a deterministic AVMenc 10-bit lossless SDP/chroma-part V_PRED chroma key frame."
+recorded_at = "2026-08-06"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit.ivf"
+sha256 = "3882ab66f3adc69279d8db24faa0511b850012858d1d6fa473cf6a76c80d190f"
+size_bytes = 102
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically by AVMenc revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 from a project-owned 64x64 yuv420p10le source with flat luma 512, alternating vertical U stripes 320 and 704, and inverse V stripes 700 and 316. Lossless mode, fixed 64x64 partitions, SDP enabled, extended SDP and CfL disabled, and broad unsupported tools disabled were selected. AVM inspection identifies BLOCK_64X64, TX_4X4, DC_PRED luma, explicit non-DPCM UV_V_PRED chroma, use_dpcm_uv=0, and baseQIndex=0; a repeated encode was byte-identical. Pre-fix splot failed at byte offset 64 with general_intra_lossless_nondc_chroma_part_unverified. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-33-g457cd5868."
+command_summary = "Pinned avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-sdp-chroma-vpred-10bit-pinned-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-63-g3efe9fa8e."
+command_summary = "Current avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-sdp-chroma-vpred-10bit-current-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree without the lossless normal-block or SDP/chroma-part chroma allowlists and with transform-unit directional replanning."
+command_summary = "splot decode --quiet --output-format raw --threads=1 decoded {fixture:input}."
+output_digest_id = "splot-lossless-sdp-chroma-vpred-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-sdp-chroma-vpred-10bit-pinned-raw-sha256"
+right = "avm-lossless-sdp-chroma-vpred-10bit-current-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-sdp-chroma-vpred-10bit-pinned-raw-sha256"
+right = "splot-lossless-sdp-chroma-vpred-10bit-raw-sha256"
