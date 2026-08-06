@@ -103,6 +103,10 @@ fn empty_palette_state() -> TileLumaPaletteState {
     TileLumaPaletteState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
 }
 
+fn block_size(index: usize) -> BlockSize {
+    BlockSize::new(index).unwrap()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn decode_general_intra_luma_block_mode(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -125,7 +129,7 @@ fn decode_general_intra_luma_block_mode(
         uses_mrls,
         fsc_modes,
         true,
-        block_size_index,
+        block_size(block_size_index),
         block_r,
         block_c,
         block_n4w,
@@ -161,7 +165,7 @@ fn decode_general_intra_block_modes(
         true,
         palette_state,
         is_cfl_ctx,
-        block_size_index,
+        block_size(block_size_index),
         block_r,
         block_c,
         block_n4w,
@@ -361,7 +365,7 @@ fn active_fsc_mode_metadata_is_retained() {
         (
             TileCdfSelector::FscMode {
                 ctx: 0,
-                bsize_group: fsc_bsize_group(BLOCK_16X16).unwrap(),
+                bsize_group: fsc_bsize_group(block_size(BLOCK_16X16)),
             },
             1,
         ),
@@ -392,8 +396,16 @@ fn active_fsc_mode_metadata_is_retained() {
 }
 
 #[test]
+fn fsc_size_group_is_total_over_valid_block_sizes() {
+    for (index, expected) in FSC_BSIZE_GROUPS.iter().copied().enumerate() {
+        assert_eq!(fsc_bsize_group(block_size(index)), expected);
+    }
+    assert!(BlockSize::new(FSC_BSIZE_GROUPS.len()).is_err());
+}
+
+#[test]
 fn mixed_region_fsc_mode_uses_inter_context() {
-    let bsize_group = fsc_bsize_group(BLOCK_16X16).unwrap();
+    let bsize_group = fsc_bsize_group(block_size(BLOCK_16X16));
     let payload = encode_symbol_sequence(&[
         (TileCdfSelector::YModeSet, 0),
         (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
@@ -421,7 +433,7 @@ fn mixed_region_fsc_mode_uses_inter_context() {
         &uses_mrls,
         &fsc_modes,
         false,
-        BLOCK_16X16,
+        block_size(BLOCK_16X16),
         8,
         8,
         4,
@@ -566,7 +578,7 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
         true,
         &empty_palette_state(),
         0,
-        BLOCK_16X16,
+        block_size(BLOCK_16X16),
         8,
         8,
         4,
@@ -742,7 +754,7 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
         true,
         &empty_palette_state(),
         0,
-        BLOCK_4X16,
+        block_size(BLOCK_4X16),
         0,
         15,
         1,

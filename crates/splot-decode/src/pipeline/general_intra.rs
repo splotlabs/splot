@@ -415,7 +415,7 @@ pub(crate) fn decode_one_general_intra_block(
                 uses_mrls,
                 fsc_modes,
                 use_neighbor_fsc_context,
-                frontier.b_size.index(),
+                frontier.b_size,
                 frontier.r,
                 frontier.c,
                 n4w,
@@ -466,7 +466,7 @@ pub(crate) fn decode_one_general_intra_block(
             use_neighbor_fsc_context,
             palette_state,
             is_cfl_ctx.get(),
-            frontier.b_size.index(),
+            frontier.b_size,
             frontier.r,
             frontier.c,
             n4w,
@@ -1336,12 +1336,6 @@ fn general_intra_block_mode_error(
             offset,
             "general intra decode rejected an out-of-range chroma uv_mode index",
             GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        GeneralIntraBlockModeError::InvalidFscBlockSizeIndex { .. } => general_intra_at!(
-            "general_intra_invalid_fsc_block_size_index",
-            offset,
-            "general intra decode could not map MiSize through Fsc_Bsize_Groups",
-            "8.3.2",
         ),
         GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex { .. } => {
             general_intra_at!(
