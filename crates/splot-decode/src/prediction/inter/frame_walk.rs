@@ -36,6 +36,15 @@ pub(super) struct InterWalkPrologue<'payload, T: ReconSample> {
     pub(super) quantizer_deltas: splot_recon::QuantizerDeltas,
 }
 
+fn invalid_inter_reference_map(offset: splot_core::span::ByteOffset) -> DecodeError {
+    inter_missing!(
+        "inter_missing_ref_frame_idx",
+        offset,
+        "inter.num_total_refs in 0..=7 with matching inter.ref_frame_idx",
+        SPEC_HEADER
+    )
+}
+
 /// Derives the pending slot's header-known geometry without parsing tile syntax.
 pub(crate) fn inter_frame_info(
     core: &FrameHeaderCore,
@@ -127,23 +136,13 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         .inter_tail
         .as_ref()
         .ok_or_else(|| inter_missing!("inter_missing_tail", offset, "inter.tail", SPEC_HEADER))?;
-    let num_total_refs = inter.num_total_refs.unwrap_or(0);
-    if !(1..=7).contains(&num_total_refs) {
-        return Err(inter_cap!(
-            "inter_unsupported_num_total_refs",
-            offset,
-            "inter.single_ref.num_total_refs not in 1..=7",
-            SPEC_MODE_INFO
-        ));
-    }
+    let num_total_refs = inter
+        .num_total_refs
+        .filter(|count| *count <= 7)
+        .ok_or_else(|| invalid_inter_reference_map(offset))?;
     let ref_frame_idx = &inter.ref_frame_idx;
-    if ref_frame_idx.len() != num_total_refs as usize || ref_frame_idx.is_empty() {
-        return Err(inter_missing!(
-            "inter_missing_ref_frame_idx",
-            offset,
-            "inter.ref_frame_idx",
-            SPEC_HEADER
-        ));
+    if ref_frame_idx.len() != num_total_refs as usize {
+        return Err(invalid_inter_reference_map(offset));
     }
     let block_reference_select = tail.reference_select;
     if block_reference_select {

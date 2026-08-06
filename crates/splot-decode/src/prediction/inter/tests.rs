@@ -6,7 +6,7 @@
 use splot_parallel::ThreadCount;
 
 use splot_core::headers::frame::{
-    FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams, TipFrameMode,
+    FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams, RefIdxBuf, TipFrameMode,
 };
 use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
@@ -38,6 +38,8 @@ use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
     DecodeRuntimeConfig, DecodeStreamPlan,
 };
+
+mod zero_reference;
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
@@ -237,15 +239,28 @@ fn decode_inter_frame_after_quantization_mutation(
     bytes: &[u8],
     mutate: impl FnOnce(&mut QuantizationParams) + Send,
 ) -> Result<SharedFrame<u8>> {
+    decode_inter_frame_after_core_mutation(bytes, move |core| {
+        mutate(
+            core.quantization_params
+                .as_mut()
+                .expect("fixture inter core has quantization params"),
+        );
+    })
+}
+
+fn decode_inter_frame_after_core_mutation(
+    bytes: &[u8],
+    mutate: impl FnOnce(&mut FrameHeaderCore) + Send,
+) -> Result<SharedFrame<u8>> {
     let context = decode_context();
     context
         .pool()
-        .install(move || decode_inter_frame_after_quantization_mutation_inner(bytes, mutate))
+        .install(move || decode_inter_frame_after_core_mutation_inner(bytes, mutate))
 }
 
-fn decode_inter_frame_after_quantization_mutation_inner(
+fn decode_inter_frame_after_core_mutation_inner(
     bytes: &[u8],
-    mutate: impl FnOnce(&mut QuantizationParams),
+    mutate: impl FnOnce(&mut FrameHeaderCore),
 ) -> Result<SharedFrame<u8>> {
     let options = DecodeOptions::default();
     let plan = plan_fixture(bytes, &options);
@@ -313,11 +328,7 @@ fn decode_inter_frame_after_quantization_mutation_inner(
         first_picture_in_tu,
         None,
     )?;
-    mutate(
-        core.quantization_params
-            .as_mut()
-            .expect("fixture inter core has quantization params"),
-    );
+    mutate(&mut core);
     super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
     let walk = crate::pipeline::frame_engine::walk_frame(
         &mut super::InterDecodeScratch::default(),

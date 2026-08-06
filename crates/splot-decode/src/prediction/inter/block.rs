@@ -1329,6 +1329,9 @@ fn decode_block<T: ReconSample>(
             SPEC_MODE_INFO
         ));
     }
+    if num_total_refs == 0 {
+        return Err(super::block_reference_out_of_range(tile_offset));
+    }
     let skip = {
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
         cdfs.read_block_symbol_trace(
