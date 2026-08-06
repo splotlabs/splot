@@ -2,7 +2,10 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use splot_core::headers::sequence::ChromaFormatIdc;
+use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE};
 use splot_recon::{BitDepth, PlaneId};
+
+use crate::bitstream::tile_payload::BlockSize;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChromaSampling {
@@ -73,6 +76,15 @@ pub(crate) struct TxShape {
 }
 
 impl TxShape {
+    pub(crate) fn from_av2_block_size(block_size: BlockSize) -> Self {
+        let width4 = NUM_4X4_BLOCKS_WIDE[block_size.index()];
+        let height4 = NUM_4X4_BLOCKS_HIGH[block_size.index()];
+        Self {
+            width_log2: width4.trailing_zeros() + 2,
+            height_log2: height4.trailing_zeros() + 2,
+        }
+    }
+
     pub(crate) fn from_luma_4x4(width4: usize, height4: usize) -> Option<Self> {
         if width4 == 0 || height4 == 0 || !width4.is_power_of_two() || !height4.is_power_of_two() {
             return None;

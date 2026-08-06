@@ -21,6 +21,22 @@ fn ctx(row4: usize, col4: usize, width4: usize, height4: usize) -> BlockCtx {
     )
 }
 
+#[test]
+fn every_av2_block_size_has_a_transform_shape() {
+    for index in 0..NUM_4X4_BLOCKS_WIDE.len() {
+        let block_size = BlockSize::new(index).expect("valid AV2 block size");
+        let tx = TxShape::from_av2_block_size(block_size);
+
+        assert_eq!(tx.width4(), block_size.num_4x4_wide().expect("block width"));
+        assert_eq!(
+            tx.height4(),
+            block_size.num_4x4_high().expect("block height")
+        );
+    }
+
+    assert!(BlockSize::new(NUM_4X4_BLOCKS_WIDE.len()).is_err());
+}
+
 fn assert_plane_block(
     ctx: &BlockCtx,
     plane_id: PlaneId,
