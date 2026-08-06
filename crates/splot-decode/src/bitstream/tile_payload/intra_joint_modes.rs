@@ -8,6 +8,8 @@ use std::collections::TryReserveError;
 use std::num::NonZeroUsize;
 use std::ops::Range;
 
+use splot_core::symbol::Symbol;
+
 use super::cdf::block_context::IntraYMode;
 use crate::support::reusable_scratch::{ErasedVecSlot, recycle_reusable_vec, take_reusable_vec};
 
@@ -291,6 +293,13 @@ impl LumaPalette {
             return None;
         }
         Some(Self { size, colors })
+    }
+
+    pub(crate) fn from_size_symbol(size_symbol: Symbol, colors: [u16; PALETTE_MAX_SIZE]) -> Self {
+        Self {
+            size: size_symbol.get() + 2,
+            colors,
+        }
     }
 
     pub(crate) const fn size(self) -> usize {

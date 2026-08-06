@@ -1350,12 +1350,6 @@ fn general_intra_block_mode_error(
             "general intra decode could not derive a lossless transform size for MiSize",
             "5.20.6.1",
         ),
-        GeneralIntraBlockModeError::InvalidPaletteYSize { .. } => general_intra_at!(
-            "general_intra_invalid_palette_y_size",
-            offset,
-            "general intra decode rejected an out-of-range luma palette size",
-            "5.20.8.1",
-        ),
         GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
             general_intra_at!(
                 "general_intra_directional_neighbour_reorder",
