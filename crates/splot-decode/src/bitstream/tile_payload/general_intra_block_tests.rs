@@ -6,6 +6,9 @@
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+use splot_core::tables::conversion::{
+    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT, TX_WIDTH,
+};
 
 use super::super::cdf::FrameCdfSubset;
 use super::super::encode_symbol_sequence;
@@ -1125,8 +1128,9 @@ fn read_encoded_lossless_tx_size(
     fsc_mode: bool,
     allow_select: bool,
 ) -> (usize, u64) {
+    let block_size = block_size(block_size_index);
     let is_inter_index = usize::from(is_inter);
-    let size_group = lossless_tx_size_group(block_size_index).unwrap();
+    let size_group = lossless_tx_size_group(block_size);
     let payload = encode_symbol_sequence(&[(
         TileCdfSelector::LosslessTxSize {
             size_group,
@@ -1139,7 +1143,7 @@ fn read_encoded_lossless_tx_size(
     let tx_size = read_lossless_tx_size(
         &mut work_unit,
         &mut symbols,
-        block_size_index,
+        block_size,
         fsc_mode,
         allow_select,
         is_inter,
@@ -1170,7 +1174,14 @@ fn lossless_luma_tx_size_skips_intra_non_fsc() {
     let mut symbols = symbol_decoder(&[]);
 
     assert_eq!(
-        read_lossless_luma_tx_size(&mut work_unit, &mut symbols, BLOCK_16X16, false, true).unwrap(),
+        read_lossless_luma_tx_size(
+            &mut work_unit,
+            &mut symbols,
+            block_size(BLOCK_16X16),
+            false,
+            true,
+        )
+        .unwrap(),
         TX_4X4
     );
     assert_eq!(symbols.symbol_count(), 0);
@@ -1182,4 +1193,26 @@ fn lossless_luma_tx_size_caps_large_blocks_to_32x32() {
 
     assert_eq!(tx_size, TX_32X32);
     assert_eq!(symbol_count, 1);
+}
+
+#[test]
+fn lossless_tx_size_mapping_is_total_over_valid_block_sizes() {
+    for index in 0..SIZE_GROUP.len() {
+        let block_size = block_size(index);
+        assert_eq!(
+            lossless_tx_size_group(block_size),
+            SIZE_GROUP[index] as usize
+        );
+
+        let tx_size = lossless_max_tx_size(block_size);
+        assert_eq!(
+            TX_WIDTH[tx_size] as usize,
+            (NUM_4X4_BLOCKS_WIDE[index] as usize * 4).min(32)
+        );
+        assert_eq!(
+            TX_HEIGHT[tx_size] as usize,
+            (NUM_4X4_BLOCKS_HIGH[index] as usize * 4).min(32)
+        );
+    }
+    assert!(BlockSize::new(SIZE_GROUP.len()).is_err());
 }

@@ -178,7 +178,7 @@ pub(crate) fn read_inter_residual(
         let luma_tx_size = inter_residual_tx_size(
             work_unit,
             symbols,
-            frontier.b_size.index(),
+            frontier.b_size,
             lossless,
             luma_tx_size_mode,
             tile_offset,
@@ -769,13 +769,13 @@ pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<
 fn inter_residual_tx_size(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
-    block_size: usize,
+    block_size: BlockSize,
     lossless: bool,
     mode: InterResidualLumaTxSizeMode,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
     if !lossless {
-        return max_tx_size(block_size, tile_offset);
+        return max_tx_size(block_size.index(), tile_offset);
     }
     match mode {
         InterResidualLumaTxSizeMode::Inter | InterResidualLumaTxSizeMode::Intrabc => {

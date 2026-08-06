@@ -175,7 +175,7 @@ fn lossless_inter_residual_tx_size_reads_selector() {
         inter_residual_tx_size(
             &mut work_unit,
             &mut symbols,
-            BLOCK_16X8,
+            BlockSize::new(BLOCK_16X8).unwrap(),
             true,
             InterResidualLumaTxSizeMode::Inter,
             offset,

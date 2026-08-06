@@ -479,7 +479,7 @@ pub(crate) fn decode_one_general_intra_block(
     };
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
-            read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size.index(), true, true)
+            read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size, true, true)
                 .map_err(|error| general_intra_block_mode_error(error, tile_offset))?,
         )
     } else {
@@ -1203,19 +1203,6 @@ fn general_intra_block_mode_error(
             offset,
             missing_capability_message!("intra.luma.mode", mode = "unsupported"),
             GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        GeneralIntraBlockModeError::InvalidLosslessTxSizeGroup { .. } => general_intra_at!(
-            "general_intra_invalid_lossless_tx_size_group",
-            offset,
-            "general intra decode could not map MiSize through Size_Group for lossless_tx_size",
-            "8.3.2",
-        ),
-        GeneralIntraBlockModeError::InvalidLosslessTxSizeBlock { .. }
-        | GeneralIntraBlockModeError::InvalidLosslessTxSize { .. } => general_intra_at!(
-            "general_intra_invalid_lossless_tx_size",
-            offset,
-            "general intra decode could not derive a lossless transform size for MiSize",
-            "5.20.6.1",
         ),
         GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
             general_intra_at!(
