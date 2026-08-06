@@ -1290,7 +1290,7 @@ fn general_intra_block_mode_error(
         | GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_at!(
             "general_intra_block_mode_parse",
             offset,
-            "general intra block mode-info syntax could not be parsed from the tile payload",
+            "general intra block mode-info syntax could not be parsed or decoded an undefined value",
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
         GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_at!(
