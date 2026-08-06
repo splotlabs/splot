@@ -2110,18 +2110,18 @@ fn temporal_scan_duplicate_weight_can_promote_candidate() {
         mi_cols: MI_DIM,
     };
     let mut source = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();
-    source.record_block(TemporalMotionBlock {
-        mi_row: 4,
-        mi_col: 4,
-        n4w: 2,
-        n4h: 2,
-        mi_rows: MI_DIM,
-        mi_cols: MI_DIM,
-        current_order_hint: 2,
-        ref_order_hints: [Some(0), None],
-        mvs: [temporal_mv, Mv::ZERO],
-        warp_params: [None, None],
-    });
+    source.record_block(TemporalMotionBlock::new(
+        4,
+        4,
+        2,
+        2,
+        MI_DIM,
+        MI_DIM,
+        2,
+        [Some(0), None],
+        [temporal_mv, Mv::ZERO],
+        [None, None],
+    ));
     let frame_size = (MI_DIM * 4, MI_DIM * 4);
     source.set_reference_metadata(true, frame_size, &[Some(0)]);
     let mut other = TemporalMotionField::new(MI_DIM, MI_DIM).unwrap();

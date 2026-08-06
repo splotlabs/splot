@@ -385,10 +385,10 @@ struct ScheduledFrame<T: splot_recon::ReconSample> {
     scratch_done: ReconScratchSlot,
     filter_gate: Option<Arc<CompletionCell<()>>>,
     filter_done: Arc<CompletionCell<()>>,
-    prepared: Vec<Arc<CompletionCell<()>>>,
-    committed: Vec<Arc<CompletionCell<()>>>,
-    frontier_done: Vec<Arc<CompletionCell<()>>>,
-    filtered: Vec<Arc<CompletionCell<()>>>,
+    prepared: Vec<CompletionCell<()>>,
+    committed: Vec<CompletionCell<()>>,
+    frontier_done: Vec<CompletionCell<()>>,
+    filtered: Vec<CompletionCell<()>>,
     filter_error: Mutex<Option<DecodeError>>,
     failed: AtomicBool,
     order_base: u64,
@@ -403,14 +403,14 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             &precompute_conditions,
             Box::new(move |admit| row.precompute(index, admit)),
         );
-        let mut commit_conditions = vec![Condition::Completion(self.prepared[index].as_ref())];
-        if index > 0 {
-            commit_conditions.push(Condition::Completion(self.committed[index - 1].as_ref()));
-        }
+        let prepared = Condition::Completion(&self.prepared[index]);
+        let previous = (index > 0).then(|| Condition::Completion(&self.committed[index - 1]));
+        let commit_conditions = [prepared, previous.unwrap_or(prepared)];
+        let commit_conditions = &commit_conditions[..=usize::from(previous.is_some())];
         let commit = Arc::clone(self);
         admit.submit(
             self.batch_key(index, 2),
-            &commit_conditions,
+            commit_conditions,
             Box::new(move |admit| commit.commit(index, admit)),
         );
     }
@@ -437,7 +437,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         let conditions = row
             .checked_sub(1)
             .and_then(|previous| self.frontier_done.get(previous))
-            .map(|previous| vec![Condition::Completion(previous.as_ref())])
+            .map(|previous| vec![Condition::Completion(previous)])
             .unwrap_or_default();
         let frame = Arc::clone(self);
         admit.submit(
@@ -549,7 +549,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
     ) {
         for filter in progress.filters {
             let stripe = filter.stripe();
-            let Some(done) = self.filtered.get(stripe).cloned() else {
+            if self.filtered.get(stripe).is_none() {
                 self.fail(
                     unsupported(
                         "inter_admission_filter_index",
@@ -559,7 +559,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                     admit,
                 );
                 break;
-            };
+            }
             let frame = Arc::clone(self);
             admit.submit(
                 self.order_base
@@ -575,7 +575,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                             *owed = Some(error);
                         }
                     }
-                    let _ = done.set(());
+                    let _ = frame.filtered[stripe].set(());
                     admit.admit_ready();
                 }),
             );
@@ -594,11 +594,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 .as_deref()
                 .map(|gate| vec![Condition::Completion(gate)])
                 .unwrap_or_default();
-            conditions.extend(
-                self.filtered
-                    .iter()
-                    .map(|done| Condition::Completion(done.as_ref())),
-            );
+            conditions.extend(self.filtered.iter().map(|done| Condition::Completion(done)));
             let filter_done = Arc::clone(&self.filter_done);
             let frame = Arc::clone(self);
             admit.submit(
@@ -753,16 +749,16 @@ where
                 };
             let frame = Arc::new(ScheduledFrame {
                 prepared: (0..scheduled.len())
-                    .map(|_| Arc::new(CompletionCell::new()))
+                    .map(|_| CompletionCell::new())
                     .collect(),
                 committed: (0..scheduled.len())
-                    .map(|_| Arc::new(CompletionCell::new()))
+                    .map(|_| CompletionCell::new())
                     .collect(),
                 frontier_done: (0..scheduled.frontier_len())
-                    .map(|_| Arc::new(CompletionCell::new()))
+                    .map(|_| CompletionCell::new())
                     .collect(),
                 filtered: (0..scheduled.filter_count())
-                    .map(|_| Arc::new(CompletionCell::new()))
+                    .map(|_| CompletionCell::new())
                     .collect(),
                 filter_error: Mutex::new(None),
                 walk: scheduled,

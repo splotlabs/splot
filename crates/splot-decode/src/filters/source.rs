@@ -128,6 +128,20 @@ impl<'a, T: ReconSample> FramePlane<'a, T> {
         self.samples
     }
 
+    fn contiguous_rows(self, origin_y: usize, end_y: usize) -> Option<&'a [T]> {
+        if self.stride != self.width || origin_y > end_y {
+            return None;
+        }
+        let start = origin_y
+            .checked_sub(self.origin_y)?
+            .checked_mul(self.stride)?;
+        let end = end_y.checked_sub(self.origin_y)?.checked_mul(self.stride)?;
+        if end_y > self.end_y() {
+            return None;
+        }
+        self.samples.get(start..end)
+    }
+
     pub(crate) fn row(self, y: usize) -> Option<&'a [T]> {
         let row = y.checked_sub(self.origin_y)?;
         if row >= self.rows {
@@ -309,8 +323,12 @@ impl<T: ReconSample> WindowPlane<T> {
     fn copy(source: FramePlane<'_, T>, start: usize, end: usize) -> Option<Self> {
         let rows = end.checked_sub(start)?;
         let mut samples = take_window_buffer::<T>(rows.checked_mul(source.width())?)?;
-        for y in start..end {
-            samples.extend_from_slice(source.row(y)?);
+        if let Some(source) = source.contiguous_rows(start, end) {
+            samples.extend_from_slice(source);
+        } else {
+            for y in start..end {
+                samples.extend_from_slice(source.row(y)?);
+            }
         }
         Some(Self {
             samples,
@@ -422,7 +440,11 @@ impl StripePlane {
         }
         let sample_count = source.width().checked_mul(end_y - origin_y)?;
         let mut samples = take_stripe_sample_buffer(sample_count)?;
-        if let Some(source_samples) = T::u16_slice(source.samples()) {
+        if let Some(source_rows) = source.contiguous_rows(origin_y, end_y)
+            && let Some(source_samples) = T::u16_slice(source_rows)
+        {
+            samples.extend_from_slice(source_samples);
+        } else if let Some(source_samples) = T::u16_slice(source.samples()) {
             for y in origin_y..end_y {
                 let start = y
                     .checked_sub(source.origin_y())

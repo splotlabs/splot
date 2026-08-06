@@ -479,14 +479,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             .is_some_and(|lossless| lossless.has_lossless_segment)
         {
             self.lossless_grid = Some(
-                crate::filters::lossless::LosslessBlockGrid::from_deblock_blocks(
+                crate::filters::lossless::LosslessBlockGrid::from_deblock_records(
                     mi_rows,
                     mi_cols,
                     &self.filter_records.deblock_blocks,
-                    [
-                        &self.filter_records.chroma_deblock_blocks[0],
-                        &self.filter_records.chroma_deblock_blocks[1],
-                    ],
+                    &self.filter_records.chroma_deblock_blocks,
                 )
                 .map_err(|_| {
                     wienerns_lr_selectable_transform_record_error_reason(
@@ -617,10 +614,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             match setup.core.deblocking_filter_params {
                 Some(filter) => crate::filters::deblock::FrameDeblock::prepare(
                     &setup.filter_records.deblock_blocks,
-                    [
-                        &setup.filter_records.chroma_deblock_blocks[0],
-                        &setup.filter_records.chroma_deblock_blocks[1],
-                    ],
+                    &setup.filter_records.chroma_deblock_blocks,
                     mi_rows,
                     mi_cols,
                     filter,
@@ -1058,11 +1052,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .is_some();
         if has_restored_deblock
             && (!self.filter_records.deblock_blocks.is_empty()
-                || self
-                    .filter_records
-                    .chroma_deblock_blocks
-                    .iter()
-                    .any(|blocks| !blocks.is_empty()))
+                || !self.filter_records.chroma_deblock_blocks.is_empty())
         {
             return Err(wienerns_lr_selectable_transform_record_error_reason(
                 offset,
@@ -1333,6 +1323,19 @@ fn publish_filter_stripe_to<T: ReconSample>(
         return Err(error());
     }
     let samples = view.samples_mut();
+    if stride == stripe.width()
+        && let Some(destination) = T::u16_slice_mut(samples)
+    {
+        let start = stripe.origin_y().checked_mul(stride).ok_or_else(&error)?;
+        let end = start
+            .checked_add(stripe.samples().len())
+            .ok_or_else(&error)?;
+        destination
+            .get_mut(start..end)
+            .ok_or_else(&error)?
+            .copy_from_slice(stripe.samples());
+        return Ok(());
+    }
     for y in stripe.origin_y()..end_y {
         let source = stripe.row(y).ok_or_else(&error)?;
         let start = y.checked_mul(stride).ok_or_else(&error)?;

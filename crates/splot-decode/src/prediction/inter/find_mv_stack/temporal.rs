@@ -13,7 +13,7 @@ use super::{
 use selection::projection_queue;
 #[cfg(test)]
 use trajectory::TrajectoryMotionField;
-use trajectory::{OwnedTrajectoryBand, TrajectoryBand, TrajectoryState};
+use trajectory::{OwnedTrajectoryBand, OwnedTrajectoryFields, TrajectoryBand, TrajectoryState};
 
 mod selection;
 mod trajectory;
@@ -74,11 +74,17 @@ pub(crate) struct TemporalMotionField {
     width8: usize,
     height8: usize,
     band_rows8: usize,
-    cells: Vec<TemporalMotionCell>,
+    storage: TemporalMotionStorage,
     pending_ref_hints: Option<Vec<[u32; 2]>>,
     is_inter: bool,
     frame_size: Option<(usize, usize)>,
     ref_order_hints: Vec<Option<u32>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TemporalMotionStorage {
+    Contiguous(Vec<TemporalMotionCell>),
+    Bands(Vec<Arc<TemporalMotionBand>>),
 }
 
 /// Fixed geometry of one frame's motion-field publication.
@@ -195,7 +201,7 @@ impl TemporalMotionField {
             width8: 0,
             height8: 0,
             band_rows8: 8,
-            cells: Vec::new(),
+            storage: TemporalMotionStorage::Contiguous(Vec::new()),
             pending_ref_hints: Some(Vec::new()),
             is_inter: false,
             frame_size: None,
@@ -210,7 +216,7 @@ impl TemporalMotionField {
             width8,
             height8,
             band_rows8: 8,
-            cells,
+            storage: TemporalMotionStorage::Contiguous(cells),
             pending_ref_hints: Some(pending_ref_hints),
             is_inter: false,
             frame_size: None,
@@ -227,8 +233,10 @@ impl TemporalMotionField {
         self.is_inter = is_inter;
         self.frame_size = Some(frame_size);
         self.ref_order_hints = ref_order_hints.to_vec();
-        if let Some(pending) = self.pending_ref_hints.take() {
-            for (cell, hints) in self.cells.iter_mut().zip(pending) {
+        if let Some(pending) = self.pending_ref_hints.take()
+            && let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
+        {
+            for (cell, hints) in cells.iter_mut().zip(pending) {
                 for (list, hint) in hints.into_iter().enumerate() {
                     if hint == u32::MAX {
                         continue;
@@ -269,10 +277,16 @@ impl TemporalMotionField {
     }
 
     pub(crate) fn into_bands(self) -> Vec<TemporalMotionBand> {
+        if let TemporalMotionStorage::Bands(bands) = self.storage {
+            return bands.into_iter().map(Arc::unwrap_or_clone).collect();
+        }
         let layout = self.layout();
         let metadata = self.metadata();
         let stride = layout.width8.saturating_mul(layout.band_rows8).max(1);
-        self.cells
+        let TemporalMotionStorage::Contiguous(cells) = self.storage else {
+            return Vec::new();
+        };
+        cells
             .chunks(stride)
             .enumerate()
             .map(|(index, cells)| TemporalMotionBand {
@@ -287,17 +301,16 @@ impl TemporalMotionField {
     pub(crate) fn from_bands(
         layout: MotionFieldLayout,
         metadata: &TemporalMotionFieldMetadata,
-        bands: &[Arc<TemporalMotionBand>],
+        bands: Vec<Arc<TemporalMotionBand>>,
     ) -> Option<Self> {
         let cells = bands
             .iter()
-            .flat_map(|band| band.cells.iter().copied())
-            .collect::<Vec<_>>();
-        (cells.len() == layout.width8.checked_mul(layout.height8)?).then(|| Self {
+            .try_fold(0usize, |cells, band| cells.checked_add(band.cells.len()))?;
+        (cells == layout.width8.checked_mul(layout.height8)?).then(|| Self {
             width8: layout.width8,
             height8: layout.height8,
             band_rows8: layout.band_rows8,
-            cells,
+            storage: TemporalMotionStorage::Bands(bands),
             pending_ref_hints: None,
             is_inter: metadata.is_inter,
             frame_size: metadata.frame_size,
@@ -319,21 +332,26 @@ impl TemporalMotionField {
             if let Some(pending) = self.pending_ref_hints.as_mut() {
                 pending[index] = hints.map(|hint| hint.unwrap_or(u32::MAX));
             }
-            self.cells[index] = cell;
+            if let TemporalMotionStorage::Contiguous(cells) = &mut self.storage
+                && let Some(target) = cells.get_mut(index)
+            {
+                *target = cell;
+            }
         });
     }
 
     #[cfg(test)]
     fn cell(&self, y8: usize, x8: usize) -> Option<TemporalMotionCell> {
-        self.cells
-            .get(temporal_grid_index(self.width8, self.height8, y8, x8)?)
-            .copied()
+        self.row(y8)?.get(x8).copied()
     }
 
     #[cfg(test)]
     fn cell_mut(&mut self, y8: usize, x8: usize) -> Option<&mut TemporalMotionCell> {
-        self.cells
-            .get_mut(temporal_grid_index(self.width8, self.height8, y8, x8)?)
+        let index = temporal_grid_index(self.width8, self.height8, y8, x8)?;
+        let TemporalMotionStorage::Contiguous(cells) = &mut self.storage else {
+            return None;
+        };
+        cells.get_mut(index)
     }
 }
 
@@ -368,11 +386,9 @@ fn visit_temporal_block_cells(
                 let Some(order_hint) = block.ref_order_hints[list] else {
                     continue;
                 };
-                let mv = if let Some(params) = block.warp_params[list] {
-                    warp_sub_mv_at(params, block.mi_row, block.mi_col, y8 * 2, x8 * 2)
-                } else {
-                    block.mvs[list]
-                };
+                let mv = block
+                    .motion
+                    .mv_at(list, block.mi_row, block.mi_col, y8 * 2, x8 * 2);
                 if mv.row.abs() > REFMVS_LIMIT || mv.col.abs() > REFMVS_LIMIT {
                     continue;
                 }
@@ -439,16 +455,97 @@ fn resolve_temporal_refs(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TemporalMotionBlock {
-    pub(crate) mi_row: usize,
-    pub(crate) mi_col: usize,
-    pub(crate) n4w: usize,
-    pub(crate) n4h: usize,
-    pub(crate) mi_rows: usize,
-    pub(crate) mi_cols: usize,
-    pub(crate) current_order_hint: u32,
-    pub(crate) ref_order_hints: [Option<u32>; 2],
-    pub(crate) mvs: [Mv; 2],
-    pub(crate) warp_params: [Option<[i32; 6]>; 2],
+    mi_row: usize,
+    mi_col: usize,
+    n4w: usize,
+    n4h: usize,
+    mi_rows: usize,
+    mi_cols: usize,
+    current_order_hint: u32,
+    ref_order_hints: [Option<u32>; 2],
+    motion: TemporalBlockMotion,
+}
+
+impl TemporalMotionBlock {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        mi_row: usize,
+        mi_col: usize,
+        n4w: usize,
+        n4h: usize,
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+        ref_order_hints: [Option<u32>; 2],
+        mvs: [Mv; 2],
+        warp_params: [Option<[i32; 6]>; 2],
+    ) -> Self {
+        Self {
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            ref_order_hints,
+            motion: TemporalBlockMotion::new(mvs, warp_params),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TemporalBlockMotion {
+    Mvs([Mv; 2]),
+    Warp0 { params: [i32; 6], mv1: Mv },
+    Warp1 { mv0: Mv, params: [i32; 6] },
+    WarpBoth([[i32; 6]; 2]),
+}
+
+impl TemporalBlockMotion {
+    fn new(mvs: [Mv; 2], warp_params: [Option<[i32; 6]>; 2]) -> Self {
+        match warp_params {
+            [None, None] => Self::Mvs(mvs),
+            [Some(params), None] => Self::Warp0 {
+                params,
+                mv1: mvs[1],
+            },
+            [None, Some(params)] => Self::Warp1 {
+                mv0: mvs[0],
+                params,
+            },
+            [Some(first), Some(second)] => Self::WarpBoth([first, second]),
+        }
+    }
+
+    fn mv_at(
+        self,
+        list: usize,
+        mi_row: usize,
+        mi_col: usize,
+        cell_row: usize,
+        cell_col: usize,
+    ) -> Mv {
+        let warp = |params| warp_sub_mv_at(params, mi_row, mi_col, cell_row, cell_col);
+        match self {
+            Self::Mvs(mvs) => mvs[list],
+            Self::Warp0 { params, mv1 } => {
+                if list == 0 {
+                    warp(params)
+                } else {
+                    mv1
+                }
+            }
+            Self::Warp1 { mv0, params } => {
+                if list == 0 {
+                    mv0
+                } else {
+                    warp(params)
+                }
+            }
+            Self::WarpBoth(params) => warp(params[list]),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -538,7 +635,7 @@ struct BandedTemporalContext {
 struct TemporalBandResult {
     row_base8: usize,
     field: Vec<ProjectedTemporalMotionCell>,
-    trajectories: Option<Vec<Vec<Mv>>>,
+    trajectories: Option<OwnedTrajectoryFields>,
 }
 
 pub(crate) struct TemporalBandPlan {
@@ -584,9 +681,10 @@ impl BandedTemporalContext {
         let row = y8.checked_sub(band.row_base8)?;
         band.trajectories
             .as_ref()?
-            .get(reference)?
-            .get(row.checked_mul(self.layout.width8())?.checked_add(x8)?)
-            .copied()
+            .cell(
+                reference,
+                row.checked_mul(self.layout.width8())?.checked_add(x8)?,
+            )
             .filter(|mv| *mv != trajectory::INVALID_TRAJECTORY_MV)
     }
 
@@ -663,7 +761,10 @@ impl TemporalBandPlan {
             {
                 return None;
             }
-            let mut trajectory = trajectories.as_mut().map(OwnedTrajectoryBand::as_band);
+            let mut trajectory = match trajectories.as_mut() {
+                Some(trajectories) => Some(trajectories.as_band()?),
+                None => None,
+            };
             project_temporal_motion_field(
                 &projection.source,
                 source.as_ref(),
@@ -1983,8 +2084,13 @@ impl TemporalMotionRows for TemporalMotionField {
     }
 
     fn row(&self, y8: usize) -> Option<&[TemporalMotionCell]> {
-        let start = y8.checked_mul(self.width8)?;
-        self.cells.get(start..start.checked_add(self.width8)?)
+        match &self.storage {
+            TemporalMotionStorage::Contiguous(cells) => {
+                let start = y8.checked_mul(self.width8)?;
+                cells.get(start..start.checked_add(self.width8)?)
+            }
+            TemporalMotionStorage::Bands(bands) => bands.get(y8 / self.band_rows8.max(1))?.row(y8),
+        }
     }
 }
 

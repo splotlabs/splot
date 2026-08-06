@@ -12,7 +12,7 @@ use super::*;
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_inter_deblock_geometry(
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     frontier: &DecodeBlockFrontier,
     block_size4: (usize, usize),
@@ -74,8 +74,7 @@ pub(crate) fn record_inter_deblock_geometry(
             skip: residual.is_none(),
             lossless,
         };
-        chroma_deblock_blocks[0].push(block);
-        chroma_deblock_blocks[1].push(block);
+        chroma_deblock_blocks.push_both(block);
     }
     let Some(residual) = residual else {
         let tx_size = super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
@@ -194,7 +193,7 @@ pub(crate) fn record_inter_deblock_geometry(
                         sub_pu_size,
                         inherited_chroma_metadata,
                     );
-                    chroma_deblock_blocks[plane_index].push(record);
+                    chroma_deblock_blocks.push(plane_index, record);
                 }
             }
         }
@@ -204,7 +203,7 @@ pub(crate) fn record_inter_deblock_geometry(
 
 #[allow(clippy::too_many_arguments)]
 fn record_skipped_chroma_deblock_geometry(
-    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     chroma_ref_row: usize,
     chroma_ref_col: usize,
     chroma_ref_size: BlockSize,
@@ -238,28 +237,26 @@ fn record_skipped_chroma_deblock_geometry(
     let subsampling = (u32::from(sub_x), u32::from(sub_y));
     for y in (0..height).step_by(tx_height.max(1)) {
         for x in (0..width).step_by(tx_width.max(1)) {
-            for plane in [ReconPlaneId::U, ReconPlaneId::V] {
-                if let Some((plane_index, mut record)) =
-                    crate::filters::wienerns_lr::chroma_transform_deblock_block(
-                        plane,
-                        base_x + x,
-                        base_y + y,
-                        chroma_tx,
-                        subsampling,
-                        qindex,
-                        lossless,
-                    )
-                {
-                    retain_inter_prediction_metadata(
-                        &mut record,
-                        luma_prediction,
-                        chroma_prediction,
-                        sub_pu_size,
-                        inherited_chroma_metadata,
-                    );
-                    record.skip = true;
-                    chroma_deblock_blocks[plane_index].push(record);
-                }
+            if let Some((_, mut record)) =
+                crate::filters::wienerns_lr::chroma_transform_deblock_block(
+                    ReconPlaneId::U,
+                    base_x + x,
+                    base_y + y,
+                    chroma_tx,
+                    subsampling,
+                    qindex,
+                    lossless,
+                )
+            {
+                retain_inter_prediction_metadata(
+                    &mut record,
+                    luma_prediction,
+                    chroma_prediction,
+                    sub_pu_size,
+                    inherited_chroma_metadata,
+                );
+                record.skip = true;
+                chroma_deblock_blocks.push_both(record);
             }
         }
     }
@@ -327,7 +324,7 @@ mod tests {
 
     #[test]
     fn skipped_64x128_420_chroma_keeps_one_transform_across_luma_chunks() {
-        let mut records = [Vec::new(), Vec::new()];
+        let mut records = crate::filters::deblock::ChromaDeblockRecords::default();
         let prediction = crate::filters::deblock::DeblockPredictionUnit {
             base_r: 128,
             base_c: 96,
@@ -350,7 +347,11 @@ mod tests {
         )
         .unwrap();
 
-        for plane in &records {
+        for plane in 0..2 {
+            let plane: Vec<_> = records
+                .iter_plane(plane)
+                .map(|(_, record)| record)
+                .collect();
             assert_eq!(plane.len(), 1);
             let record = plane[0];
             assert_eq!((record.r, record.c), (128, 96));

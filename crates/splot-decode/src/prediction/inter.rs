@@ -1207,7 +1207,7 @@ impl<T: ReconSample> Drop for InterReferenceState<T> {
 /// reads samples, and blocks on [`Self::wait`] when it is about to read them on
 /// the driver thread itself.
 pub(crate) struct PixelReferenceGate<'a, T: ReconSample> {
-    slots: Vec<&'a RefFrameSlot<T>>,
+    slots: [Option<&'a RefFrameSlot<T>>; ReferenceSlot::MAX_SLOTS],
 }
 
 /// The reference slots a parsed frame header names for pixel prediction.
@@ -1223,13 +1223,14 @@ pub(crate) fn named_pixel_reference_slots(core: &FrameHeaderCore) -> impl Iterat
 impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     /// Whether every named reference frame has settled.
     pub(crate) fn is_ready(&self) -> bool {
-        self.slots.iter().all(|slot| slot.is_settled())
+        self.slots.iter().flatten().all(|slot| slot.is_settled())
     }
 
     /// Returns the admission conditions for every named reference settling.
     pub(crate) fn conditions(&self) -> Vec<splot_parallel::Condition<'a>> {
         self.slots
             .iter()
+            .flatten()
             .map(|slot| slot.settled_condition())
             .collect()
     }
@@ -1237,7 +1238,11 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     /// Shares the named slots so a scheduler can register their conditions
     /// before moving the complete reference state into the admitted job.
     pub(crate) fn shared_slots(&self) -> Vec<RefFrameSlot<T>> {
-        self.slots.iter().map(|slot| slot.share()).collect()
+        self.slots
+            .iter()
+            .flatten()
+            .map(|slot| slot.share())
+            .collect()
     }
 
     /// Blocks the calling driver thread until every named reference frame has
@@ -1249,7 +1254,7 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
     /// failed; the driver replaces it with that frame's own recorded failure.
     pub(crate) fn wait(&self, arm: &str) -> Result<()> {
         let started = crate::timing::start();
-        for slot in &self.slots {
+        for slot in self.slots.iter().flatten() {
             slot.wait_settled()?;
         }
         crate::timing::report_detail("pipeline_gate_wait", started, arm);
@@ -1283,7 +1288,8 @@ impl<T: ReconSample> InterReferenceState<T> {
         &self,
         named: impl IntoIterator<Item = u32>,
     ) -> PixelReferenceGate<'_, T> {
-        let mut slots: Vec<&RefFrameSlot<T>> = Vec::new();
+        let mut slots: [Option<&RefFrameSlot<T>>; ReferenceSlot::MAX_SLOTS] =
+            [None; ReferenceSlot::MAX_SLOTS];
         for slot in named {
             let Ok(index) = ReferenceSlot::new(slot as usize) else {
                 continue;
@@ -1291,8 +1297,13 @@ impl<T: ReconSample> InterReferenceState<T> {
             let Ok(Some(frame)) = self.store.get(index) else {
                 continue;
             };
-            if !slots.iter().any(|held| core::ptr::eq(*held, frame)) {
-                slots.push(frame);
+            if !slots
+                .iter()
+                .flatten()
+                .any(|held| core::ptr::eq(*held, frame))
+                && let Some(entry) = slots.iter_mut().find(|entry| entry.is_none())
+            {
+                *entry = Some(frame);
             }
         }
         PixelReferenceGate { slots }

@@ -5,6 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::TryReserveError;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use super::cdf::block_context::IntraYMode;
@@ -308,7 +309,8 @@ impl LumaPalette {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileLumaPaletteState {
-    grid: MiGrid<Option<LumaPalette>>,
+    grid: MiGrid<Option<NonZeroUsize>>,
+    palettes: Vec<LumaPalette>,
 }
 
 impl TileLumaPaletteState {
@@ -328,25 +330,26 @@ impl TileLumaPaletteState {
     ) -> Result<Self, TileLumaPaletteStateError> {
         let grid = mi_grid_new_for_tile!(
             TileLumaPaletteStateError,
-            None::<LumaPalette>,
+            None::<NonZeroUsize>,
             row_range,
             col_range,
             require_nonzero(sb_size4, TileLumaPaletteStateError::EmptySuperblockSize),
         )?;
-        Ok(Self { grid })
+        Ok(Self {
+            grid,
+            palettes: take_mi_grid_vec(),
+        })
     }
 
     pub(crate) fn palette_cache(&self, r: usize, c: usize) -> ([u16; 2 * PALETTE_MAX_SIZE], usize) {
         const MIN_SB_SIZE4: usize = 16;
 
         let above = if r != 0 && !r.is_multiple_of(MIN_SB_SIZE4) {
-            self.grid.cell(r - 1, c).flatten()
+            self.palette_at(r - 1, c)
         } else {
             None
         };
-        let left = c
-            .checked_sub(1)
-            .and_then(|col| self.grid.cell(r, col).flatten());
+        let left = c.checked_sub(1).and_then(|col| self.palette_at(r, col));
         let mut cache = [0u16; 2 * PALETTE_MAX_SIZE];
         let mut len = 0usize;
         let mut above_idx = 0usize;
@@ -385,7 +388,22 @@ impl TileLumaPaletteState {
         n4h: usize,
         palette: Option<LumaPalette>,
     ) {
+        let palette = palette.and_then(|palette| {
+            let index = NonZeroUsize::new(self.palettes.len().checked_add(1)?)?;
+            self.palettes.push(palette);
+            Some(index)
+        });
         self.grid.record_block((r, c), (n4w, n4h), palette);
+    }
+
+    fn palette_at(&self, row: usize, col: usize) -> Option<LumaPalette> {
+        let index = self.grid.cell(row, col).flatten()?.get() - 1;
+        self.palettes.get(index).copied()
+    }
+
+    pub(crate) fn recycle(self) {
+        recycle_mi_grid_vec(self.grid.into_cells());
+        recycle_mi_grid_vec(self.palettes);
     }
 }
 
@@ -1063,7 +1081,6 @@ impl_grid_recycle!(
     TileUsesMrlsState,
     TileUseDipState,
     TileFscModeState,
-    TileLumaPaletteState,
     TileUvCflState,
     TileIntraYModeState,
 );

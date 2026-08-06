@@ -5,7 +5,7 @@
 
 pub(crate) struct DeblockRecorder<'a> {
     pub(crate) blocks: &'a mut Vec<crate::filters::deblock::DeblockBlock>,
-    pub(crate) chroma_blocks: &'a mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    pub(crate) chroma_blocks: &'a mut crate::filters::deblock::ChromaDeblockRecords,
     pub(crate) tx_skip_records:
         &'a mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     pub(crate) block_r: usize,
@@ -35,7 +35,7 @@ impl DeblockRecorder<'_> {
                 self.lossless,
             )
         {
-            self.chroma_blocks[plane_index].push(record);
+            self.chroma_blocks.push(plane_index, record);
         }
     }
 

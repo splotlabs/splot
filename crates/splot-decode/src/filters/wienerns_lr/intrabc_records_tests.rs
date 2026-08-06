@@ -1395,3 +1395,8 @@ fn disabled_intrabc_state_skips_the_tile_grid() {
         .unwrap();
     assert!(state.values.is_empty());
 }
+
+#[test]
+fn intrabc_grid_cell_stays_compact() {
+    assert_eq!(core::mem::size_of::<IntrabcGridCell>(), 8);
+}

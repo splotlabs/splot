@@ -954,7 +954,7 @@ fn decode_block<T: ReconSample>(
     palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
     is_cfl_ctx: IsCflContext,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
-    chroma_deblock_blocks: &mut [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    chroma_deblock_blocks: &mut crate::filters::deblock::ChromaDeblockRecords,
     tx_skip_records: &mut Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
     luma_use_tcq: bool,
     residual_use_ddt: bool,

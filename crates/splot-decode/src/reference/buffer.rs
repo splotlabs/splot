@@ -15,7 +15,7 @@ use splot_core::headers::frame::{
 use splot_core::types::{EmbeddedLayerId, ObuType};
 use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::ActiveFilmGrain;
@@ -560,25 +560,25 @@ impl ReferenceMetadata {
     }
 }
 
-std::thread_local! {
-    static METADATA_RECYCLER: std::cell::RefCell<Vec<ReferenceMetadata>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+static METADATA_RECYCLER: Mutex<Vec<ReferenceMetadata>> = Mutex::new(Vec::new());
 
 pub(crate) fn take_reference_metadata(capacity: usize) -> ReferenceMetadata {
     let mut meta = METADATA_RECYCLER
-        .with(|cell| cell.borrow_mut().pop())
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pop()
         .unwrap_or_else(|| ReferenceMetadata::with_capacity(capacity));
     meta.clear();
     meta
 }
 
 pub(crate) fn recycle_reference_metadata(meta: ReferenceMetadata) {
-    METADATA_RECYCLER.with(|cell| {
-        let mut recycler = cell.borrow_mut();
-        if recycler.len() < 8 {
-            recycler.push(meta);
-        }
-    });
+    let mut recycler = METADATA_RECYCLER
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if recycler.len() < 32 {
+        recycler.push(meta);
+    }
 }
 
 #[cfg(test)]

@@ -458,7 +458,7 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
     setup
         .restore_deblock_records(crate::filters::deblock::OwnedDeblockRecords {
             blocks: restored.clone(),
-            chroma: [Vec::new(), Vec::new()],
+            chroma: crate::filters::deblock::ChromaDeblockRecords::default(),
         })
         .unwrap();
     workspace.recycle_planes();

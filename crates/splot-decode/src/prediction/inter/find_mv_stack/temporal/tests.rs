@@ -5,6 +5,31 @@
 
 use super::*;
 
+#[test]
+fn temporal_motion_block_stays_compact() {
+    assert_eq!(size_of::<TemporalMotionBlock>(), 120);
+}
+
+#[test]
+fn compact_temporal_motion_preserves_every_warp_shape() {
+    let mvs = [Mv { row: 9, col: -7 }, Mv { row: -5, col: 3 }];
+    let first = [1 << 16, 0, 2 << 16, 0, 1 << 16, -(1 << 16)];
+    let second = [1 << 16, 0, -(3 << 16), 0, 1 << 16, 2 << 16];
+    for warp_params in [
+        [None, None],
+        [Some(first), None],
+        [None, Some(second)],
+        [Some(first), Some(second)],
+    ] {
+        let motion = TemporalBlockMotion::new(mvs, warp_params);
+        for list in 0..2 {
+            let expected =
+                warp_params[list].map_or(mvs[list], |params| warp_sub_mv_at(params, 4, 6, 8, 10));
+            assert_eq!(motion.mv_at(list, 4, 6, 8, 10), expected);
+        }
+    }
+}
+
 fn tip_context(
     current_order_hint: u32,
     ref_order_hints: Vec<Option<u32>>,
@@ -22,6 +47,33 @@ fn tip_context(
         tip: None,
         banded: None,
     }
+}
+
+#[test]
+fn whole_field_reuses_published_band_cells() {
+    let mut field = TemporalMotionField::new(4, 4).unwrap();
+    field.set_reference_metadata(true, (16, 16), &[Some(0)]);
+    *field.cell_mut(0, 0).unwrap() = TemporalMotionCell {
+        ref_indices: [0, INVALID_TEMPORAL_REF],
+        mvs: [
+            CompressedTemporalMv { row: 1, col: 2 },
+            CompressedTemporalMv::ZERO,
+        ],
+    };
+    let layout = field.layout();
+    let metadata = field.metadata();
+    let expected = field.cell(0, 0);
+    let bands = field
+        .into_bands()
+        .into_iter()
+        .map(Arc::new)
+        .collect::<Vec<_>>();
+    let first_band_cells = bands[0].cells.as_ptr();
+
+    let rebuilt = TemporalMotionField::from_bands(layout, &metadata, bands).unwrap();
+
+    assert_eq!(rebuilt.cell(0, 0), expected);
+    assert_eq!(rebuilt.row(0).unwrap().as_ptr(), first_band_cells);
 }
 
 #[test]
@@ -183,18 +235,18 @@ fn single_reference_motion_is_stored_in_both_slots() {
         ref_order_hints[source_list] = Some(7);
         mvs[source_list] = Mv { row: 8, col: -12 };
 
-        field.record_block(TemporalMotionBlock {
-            mi_row: 0,
-            mi_col: 0,
-            n4w: 2,
-            n4h: 2,
-            mi_rows: 2,
-            mi_cols: 2,
-            current_order_hint: 8,
+        field.record_block(TemporalMotionBlock::new(
+            0,
+            0,
+            2,
+            2,
+            2,
+            2,
+            8,
             ref_order_hints,
             mvs,
-            warp_params: [None; 2],
-        });
+            [None; 2],
+        ));
 
         let cell = field.cell(0, 0).unwrap();
         assert_eq!(cell.ref_indices, [0; 2]);
@@ -216,18 +268,18 @@ fn compound_references_are_stored_in_temporal_slot_order() {
     for (input, expected) in cases {
         let mut field = TemporalMotionField::new(2, 2).unwrap();
         field.set_reference_metadata(true, (8, 8), &[Some(1), Some(3), Some(5), Some(6)]);
-        field.record_block(TemporalMotionBlock {
-            mi_row: 0,
-            mi_col: 0,
-            n4w: 2,
-            n4h: 2,
-            mi_rows: 2,
-            mi_cols: 2,
-            current_order_hint: 4,
-            ref_order_hints: input,
-            mvs: [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
-            warp_params: [None; 2],
-        });
+        field.record_block(TemporalMotionBlock::new(
+            0,
+            0,
+            2,
+            2,
+            2,
+            2,
+            4,
+            input,
+            [Mv { row: 8, col: 16 }, Mv { row: 24, col: 32 }],
+            [None; 2],
+        ));
 
         let cell = field.cell(0, 0).unwrap();
         assert_eq!(
@@ -252,7 +304,7 @@ fn step_two_projection_samples_and_stores_on_the_even_grid() {
     let mut source = TemporalMotionField::new(8, 8).unwrap();
     source.set_reference_metadata(true, (32, 32), &[Some(0)]);
     for x8 in 0..source.width8 {
-        source.cells[x8] = TemporalMotionCell {
+        *source.cell_mut(0, x8).unwrap() = TemporalMotionCell {
             ref_indices: [0, INVALID_TEMPORAL_REF],
             mvs: [
                 compress_tmvp_mv(Mv { row: 0, col: -64 }),
@@ -399,18 +451,18 @@ fn side_rejected_projection_still_extends_existing_trajectory() {
     );
     let mut source = TemporalMotionField::new(112, 252).unwrap();
     source.set_reference_metadata(true, (1008, 448), &[Some(0)]);
-    source.record_block(TemporalMotionBlock {
-        mi_row: 110,
-        mi_col: 242,
-        n4w: 2,
-        n4h: 2,
-        mi_rows: 112,
-        mi_cols: 252,
-        current_order_hint: 4,
-        ref_order_hints: [Some(0), None],
-        mvs: [Mv { row: 36, col: -160 }, Mv::ZERO],
-        warp_params: [None; 2],
-    });
+    source.record_block(TemporalMotionBlock::new(
+        110,
+        242,
+        2,
+        2,
+        112,
+        252,
+        4,
+        [Some(0), None],
+        [Mv { row: 36, col: -160 }, Mv::ZERO],
+        [None; 2],
+    ));
     let mut output = ProjectedTemporalMotionField::new(112, 252).unwrap();
 
     project_whole_temporal_motion_field(

@@ -81,6 +81,78 @@ pub(crate) struct DeblockBlock {
     pub(crate) lossless: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ChromaDeblockBlock {
+    block: DeblockBlock,
+    planes: u8,
+}
+
+pub(crate) struct ChromaDeblockRecords {
+    blocks: Vec<ChromaDeblockBlock>,
+}
+
+impl Default for ChromaDeblockRecords {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ChromaDeblockRecords {
+    const U: u8 = 1;
+    const V: u8 = 2;
+
+    pub(crate) const fn new() -> Self {
+        Self { blocks: Vec::new() }
+    }
+
+    pub(crate) fn push(&mut self, plane: usize, block: DeblockBlock) {
+        let planes = [Self::U, Self::V][plane];
+        self.blocks.push(ChromaDeblockBlock { block, planes });
+    }
+
+    pub(crate) fn push_both(&mut self, block: DeblockBlock) {
+        self.blocks.push(ChromaDeblockBlock {
+            block,
+            planes: Self::U | Self::V,
+        });
+    }
+
+    pub(crate) fn append(&mut self, other: &mut Self) {
+        self.blocks.append(&mut other.blocks);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.blocks.clear();
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    fn from_planes(planes: [&[DeblockBlock]; 2]) -> Self {
+        let mut records = Self::default();
+        for (plane, blocks) in planes.into_iter().enumerate() {
+            for &block in blocks {
+                records.push(plane, block);
+            }
+        }
+        records
+    }
+
+    fn get(&self, index: usize) -> Option<&DeblockBlock> {
+        self.blocks.get(index).map(|record| &record.block)
+    }
+
+    pub(crate) fn iter_plane(&self, plane: usize) -> impl Iterator<Item = (usize, &DeblockBlock)> {
+        let mask = [Self::U, Self::V][plane];
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter(move |(_, record)| record.planes & mask != 0)
+            .map(|(index, record)| (index, &record.block))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct DeblockQuantDeltas {
     u_ac: i32,
@@ -165,9 +237,10 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     quant_deltas: DeblockQuantDeltas,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
+    let chroma_records = ChromaDeblockRecords::from_planes(chroma_blocks);
     let Some(mut sections) = FrameDeblock::prepare(
         blocks,
-        chroma_blocks,
+        &chroma_records,
         mi_rows,
         mi_cols,
         filter,
@@ -263,9 +336,10 @@ fn deblock_one_row_pass<T: ReconSample>(
     if mi_rows > SB_SIZE / MI_SIZE {
         return Err(DeblockError::Workspace);
     }
+    let chroma_records = ChromaDeblockRecords::from_planes(chroma_blocks);
     let Some(sections) = FrameDeblock::prepare(
         blocks,
-        chroma_blocks,
+        &chroma_records,
         mi_rows,
         mi_cols,
         filter,
@@ -330,13 +404,13 @@ struct PlaneJob<'a, T> {
 
 pub(crate) struct OwnedDeblockRecords {
     pub(crate) blocks: Vec<DeblockBlock>,
-    pub(crate) chroma: [Vec<DeblockBlock>; 2],
+    pub(crate) chroma: ChromaDeblockRecords,
 }
 
 enum DeblockRecords<'a> {
     Borrowed {
         blocks: &'a [DeblockBlock],
-        chroma: [&'a [DeblockBlock]; 2],
+        chroma: &'a ChromaDeblockRecords,
     },
     Owned(OwnedDeblockRecords),
 }
@@ -364,10 +438,10 @@ impl DeblockRecords<'_> {
         }
     }
 
-    fn chroma(&self, plane: usize) -> &[DeblockBlock] {
+    fn chroma(&self) -> &ChromaDeblockRecords {
         match self {
-            Self::Borrowed { chroma, .. } => chroma[plane],
-            Self::Owned(records) => &records.chroma[plane],
+            Self::Borrowed { chroma, .. } => chroma,
+            Self::Owned(records) => &records.chroma,
         }
     }
 }
@@ -413,7 +487,7 @@ impl<'a> FrameDeblock<'a> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare(
         blocks: &'a [DeblockBlock],
-        chroma_blocks: [&'a [DeblockBlock]; 2],
+        chroma_blocks: &'a ChromaDeblockRecords,
         mi_rows: usize,
         mi_cols: usize,
         filter: DeblockingFilterParams,
@@ -435,7 +509,8 @@ impl<'a> FrameDeblock<'a> {
             let overlay_timer = crate::timing::start();
             *slot = Some(overlay_mi_grid(
                 &grid,
-                chroma_blocks[plane],
+                chroma_blocks,
+                plane,
                 mi_rows,
                 mi_cols,
             )?);
@@ -481,7 +556,8 @@ impl<'a> FrameDeblock<'a> {
             if filter.apply_deblocking_filter[plane + 2] {
                 *slot = Some(overlay_mi_grid(
                     &grid,
-                    &records.chroma[plane],
+                    &records.chroma,
+                    plane,
                     mi_rows,
                     mi_cols,
                 )?);
@@ -912,9 +988,9 @@ impl<'a> FrameDeblock<'a> {
         let (storage, overlay_blocks) = match plane.checked_sub(1) {
             Some(chroma) => (
                 self.chroma[chroma].as_ref().unwrap_or(&self.grid),
-                self.records.chroma(chroma),
+                self.records.chroma(),
             ),
-            None => (&self.grid, &[][..]),
+            None => (&self.grid, self.records.chroma()),
         };
         MiGrid {
             storage,

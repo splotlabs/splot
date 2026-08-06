@@ -54,7 +54,7 @@
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fmt;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::completion::CompletionCell;
@@ -65,7 +65,8 @@ use crate::watermark::WatermarkCell;
 /// The scheduler-side token a condition source notifies once its condition
 /// holds.
 ///
-/// Sources store tokens as `Arc<dyn AdmissionWaiter>`, so the trait carries no
+/// The scheduler retains each token until its job runs, while condition sources
+/// store reference-counted handles to it. The trait therefore carries no
 /// lifetime and a source may outlive the scheduler that registered with it.
 /// `Debug` keeps the cells that hold waiter lists printable.
 pub trait AdmissionWaiter: fmt::Debug + Send + Sync {
@@ -167,9 +168,17 @@ impl ReadyQueue {
 #[derive(Debug)]
 struct AdmissionToken {
     pending: AtomicUsize,
-    order_key: u64,
-    index: usize,
+    order_key: AtomicU64,
+    index: AtomicUsize,
     ready: Arc<ReadyQueue>,
+}
+
+impl AdmissionToken {
+    fn reset(&self, pending: usize, order_key: u64, index: usize) {
+        self.order_key.store(order_key, Ordering::Relaxed);
+        self.index.store(index, Ordering::Relaxed);
+        self.pending.store(pending, Ordering::Release);
+    }
 }
 
 impl AdmissionWaiter for AdmissionToken {
@@ -184,7 +193,10 @@ impl AdmissionWaiter for AdmissionToken {
             ) {
                 Ok(_) => {
                     if pending == 1 {
-                        self.ready.push(self.order_key, self.index);
+                        self.ready.push(
+                            self.order_key.load(Ordering::Relaxed),
+                            self.index.load(Ordering::Relaxed),
+                        );
                     }
                     return;
                 }
@@ -198,6 +210,34 @@ impl AdmissionWaiter for AdmissionToken {
 struct Slot<'job> {
     order_key: u64,
     job: Option<Job<'job>>,
+    token: Option<Arc<AdmissionToken>>,
+}
+
+#[derive(Default)]
+struct SchedulerSlots<'job> {
+    entries: Vec<Slot<'job>>,
+    tokens: Vec<Arc<AdmissionToken>>,
+}
+
+impl SchedulerSlots<'_> {
+    fn take_token(
+        &mut self,
+        pending: usize,
+        order_key: u64,
+        index: usize,
+        ready: &Arc<ReadyQueue>,
+    ) -> Arc<AdmissionToken> {
+        if let Some(token) = self.tokens.pop() {
+            token.reset(pending, order_key, index);
+            return token;
+        }
+        Arc::new(AdmissionToken {
+            pending: AtomicUsize::new(pending),
+            order_key: AtomicU64::new(order_key),
+            index: AtomicUsize::new(index),
+            ready: Arc::clone(ready),
+        })
+    }
 }
 
 /// A dependency-ordered admission scheduler over a [`TaskScope`].
@@ -255,7 +295,7 @@ struct Slot<'job> {
 /// ```
 #[derive(Default)]
 pub struct AdmissionScheduler<'job> {
-    slots: Mutex<Vec<Slot<'job>>>,
+    slots: Mutex<SchedulerSlots<'job>>,
     ready: Arc<ReadyQueue>,
 }
 
@@ -264,7 +304,7 @@ impl<'job> AdmissionScheduler<'job> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            slots: Mutex::new(Vec::new()),
+            slots: Mutex::new(SchedulerSlots::default()),
             ready: Arc::new(ReadyQueue::default()),
         }
     }
@@ -286,26 +326,24 @@ impl<'job> AdmissionScheduler<'job> {
     ) where
         'job: 'scope,
     {
-        let index = {
+        let token = {
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-            slots.push(Slot {
+            let index = slots.entries.len();
+            let token = slots.take_token(conditions.len() + 1, order_key, index, &self.ready);
+            slots.entries.push(Slot {
                 order_key,
                 job: Some(job),
+                token: Some(Arc::clone(&token)),
             });
-            slots.len() - 1
+            token
         };
-        let token = Arc::new(AdmissionToken {
-            pending: AtomicUsize::new(conditions.len() + 1),
-            order_key,
-            index,
-            ready: Arc::clone(&self.ready),
-        });
         for condition in conditions {
             if !condition.register(Arc::clone(&token) as Arc<dyn AdmissionWaiter>) {
                 token.satisfy();
             }
         }
         token.satisfy();
+        drop(token);
         self.admit_ready(scope);
     }
 
@@ -321,7 +359,7 @@ impl<'job> AdmissionScheduler<'job> {
     {
         let mut spawned = 0;
         while let Some(index) = self.ready.pop() {
-            let Some(job) = self.take_job(index) else {
+            let Some((job, token)) = self.take_job(index) else {
                 continue;
             };
             scope.spawn(move |scope| {
@@ -330,6 +368,7 @@ impl<'job> AdmissionScheduler<'job> {
                     scope,
                 });
                 self.admit_ready(scope);
+                self.recycle_token(token);
             });
             spawned += 1;
         }
@@ -351,7 +390,7 @@ impl<'job> AdmissionScheduler<'job> {
         let mut stranded = Vec::new();
         {
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-            for slot in slots.iter_mut() {
+            for slot in &mut slots.entries {
                 if let Some(job) = slot.job.take() {
                     stranded.push((slot.order_key, job));
                 }
@@ -367,12 +406,21 @@ impl<'job> AdmissionScheduler<'job> {
     }
 
     /// Takes the job stored in `index`, or `None` when another drain won it.
-    fn take_job(&self, index: usize) -> Option<Job<'job>> {
-        self.slots
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_mut(index)
-            .and_then(|slot| slot.job.take())
+    fn take_job(&self, index: usize) -> Option<(Job<'job>, Arc<AdmissionToken>)> {
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let slot = slots.entries.get_mut(index)?;
+        let token = slot.token.take()?;
+        slot.job.take().map(|job| (job, token))
+    }
+
+    fn recycle_token(&self, token: Arc<AdmissionToken>) {
+        if Arc::strong_count(&token) == 1 {
+            self.slots
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .tokens
+                .push(token);
+        }
     }
 }
 
@@ -405,6 +453,30 @@ mod tests {
 
     fn pool(threads: usize) -> WorkerPool {
         WorkerPool::new(ThreadCount::Fixed(NonZeroUsize::new(threads).unwrap())).unwrap()
+    }
+
+    #[test]
+    fn a_token_with_a_stale_weak_handle_is_reset_and_reused() {
+        let scheduler = AdmissionScheduler::new();
+        let token = scheduler
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_token(3, 7, 11, &scheduler.ready);
+        let address = Arc::as_ptr(&token);
+        let stale = Arc::downgrade(&token);
+        scheduler.recycle_token(token);
+
+        let token = scheduler
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_token(2, 13, 17, &scheduler.ready);
+        assert_eq!(Arc::as_ptr(&token), address);
+        assert_eq!(Arc::as_ptr(&stale.upgrade().unwrap()), address);
+        assert_eq!(token.pending.load(Ordering::Acquire), 2);
+        assert_eq!(token.order_key.load(Ordering::Relaxed), 13);
+        assert_eq!(token.index.load(Ordering::Relaxed), 17);
     }
 
     /// Records the order in which jobs ran.

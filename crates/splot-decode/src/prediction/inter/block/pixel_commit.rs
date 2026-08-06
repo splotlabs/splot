@@ -34,10 +34,9 @@ fn append_row_filter_records(
     filter_records
         .deblock_blocks
         .append(&mut row_filter_records.deblock_blocks);
-    filter_records.chroma_deblock_blocks[0]
-        .append(&mut row_filter_records.chroma_deblock_blocks[0]);
-    filter_records.chroma_deblock_blocks[1]
-        .append(&mut row_filter_records.chroma_deblock_blocks[1]);
+    filter_records
+        .chroma_deblock_blocks
+        .append(&mut row_filter_records.chroma_deblock_blocks);
     filter_records
         .tx_skip_records
         .append(&mut row_filter_records.tx_skip_records);
@@ -103,10 +102,13 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         mut pending_inter,
         mut residual_blocks,
         mut temporal,
+        mut motion_grids,
         mut flag_log,
         filter_records: mut row_filter_records,
+        precompute_error,
         ..
     } = row;
+    let mut precompute_error = precompute_error;
     for superblock in &superblocks {
         let superblock_entries = entries.get_mut(superblock.entries.clone()).ok_or_else(|| {
             inter_cap!(
@@ -121,11 +123,15 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 .iter()
                 .all(|entry| entry.publication.superblock_origin() == superblock.origin)
         );
-        for entry in superblock_entries {
+        for (offset, entry) in superblock_entries.iter_mut().enumerate() {
             entry
                 .publication
                 .prepare_block_decoded(block_decoded, current_superblock);
-            if let Some(error) = entry.error.take() {
+            if precompute_error
+                .as_ref()
+                .is_some_and(|(index, _)| *index == superblock.entries.start + offset)
+                && let Some((_, error)) = precompute_error.take()
+            {
                 return Err(error);
             }
             if let Some(command) = entry.command.take() {
@@ -152,7 +158,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                                 &command,
                                 &mut WorkspaceSink::Frame(workspace),
                                 block_decoded,
-                                entry.motion.take(),
+                                entry.take_motion(&mut motion_grids),
                                 &residual_blocks,
                                 &deferred_recon::ReconShared {
                                     reference,
@@ -232,6 +238,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     pending_inter.clear();
     residual_blocks.clear();
     temporal.clear();
+    motion_grids.clear();
     flag_log.clear();
     Ok(ReconRowBuffers {
         superblocks,
@@ -240,6 +247,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
         pending_inter,
         residual_blocks,
         temporal,
+        motion_grids,
         flag_log,
         filter_records: row_filter_records,
     })
