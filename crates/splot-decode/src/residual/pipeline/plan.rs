@@ -7,7 +7,6 @@ use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
 use splot_recon::PlaneId;
 
 use crate::bitstream::tile_payload::SupportedChromaMode;
-use crate::prediction::intra::IntraLumaPlan;
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
@@ -34,40 +33,6 @@ fn take_residual_plane_plans() -> RecycledVec<ResidualPlanePlan> {
 }
 
 impl GeneralIntraResidualPlan {
-    pub(crate) fn square(
-        block_ctx: BlockCtx,
-        luma_plan: IntraLumaPlan,
-        chroma_plan: Option<RectChromaPlan>,
-        luma_use_tcq: bool,
-        luma_fsc_mode: bool,
-        luma_lossless_tx_size: Option<usize>,
-        lossless: bool,
-    ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
-        let mut planes = take_residual_plane_plans();
-        let luma_reconstruction = ResidualReconstructionPlan::LumaSquare {
-            plan: luma_plan,
-            use_tcq: luma_use_tcq,
-        };
-        let luma_reconstruction = match luma_plan {
-            IntraLumaPlan::Palette { palette } => ResidualReconstructionPlan::LumaPalette {
-                palette,
-                use_tcq: luma_use_tcq,
-            },
-            _ => luma_reconstruction,
-        };
-        let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
-        push_ordered_planes(
-            &mut planes,
-            block_ctx,
-            luma_reconstruction,
-            chroma_reconstruction,
-            luma_fsc_mode,
-            luma_lossless_tx_size,
-            lossless,
-        )?;
-        Ok(Self { planes })
-    }
-
     pub(crate) fn rect(
         block_ctx: BlockCtx,
         luma_plan: RectLumaPlan,

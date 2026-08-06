@@ -13,7 +13,6 @@ use std::thread::LocalKey;
 use crate::bitstream::tile_payload::{
     CflParams, LumaPalette, SupportedChromaMode, SupportedNonDcLumaMode,
 };
-use crate::prediction::intra::IntraLumaPlan;
 use crate::tile::block_context::{BlockCtx, TxShape};
 
 mod chroma_pair;
@@ -254,10 +253,6 @@ struct ResidualPlanePlan {
 enum ResidualReconstructionPlan {
     LumaPalette {
         palette: LumaPalette,
-        use_tcq: bool,
-    },
-    LumaSquare {
-        plan: IntraLumaPlan,
         use_tcq: bool,
     },
     LumaRectSmooth {

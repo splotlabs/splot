@@ -170,8 +170,7 @@ fn lossless_luma_uses_generic_prediction_planner() {
         ] {
             let modes = luma_modes(mode);
             assert!(
-                plan_luma_prediction(&modes, block_ctx).is_ok()
-                    || rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
+                rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
                 "lossless {bit_depth:?} {mode:?}"
             );
         }
@@ -190,7 +189,6 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
     ] {
         let modes = luma_modes_with_angle(mode, angle_delta_y);
 
-        assert!(plan_luma_prediction(&modes, block_ctx).is_err());
         assert_eq!(
             rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA),
             Ok(RectLumaPlan::Middle {
@@ -198,12 +196,6 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
                 use_tcq: false,
             })
         );
-        assert!(square_luma_needs_rect_residual_path(
-            &modes,
-            block_ctx,
-            false,
-            FULL_SB_N4_LUMA,
-        ));
     }
 }
 
@@ -252,7 +244,7 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
     let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
     let modes = GeneralIntraBlockModes::from_luma_chroma_palette(luma, chroma, None);
 
-    let result = chroma_plan_for_modes(&modes, 1, 16);
+    let result = rect_chroma_plan(&modes, 1, 16);
     assert_eq!(
         result.ok(),
         Some(RectChromaPlan::Cfl {
@@ -264,7 +256,7 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
 }
 
 #[test]
-fn directional_luma_always_plans_through_the_rect_planner() {
+fn rect_planner_serves_every_directional_luma_shape() {
     let shapes = [
         ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
         ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Ten),
@@ -288,16 +280,8 @@ fn directional_luma_always_plans_through_the_rect_planner() {
             for angle_delta_y in [-3, 0, 2] {
                 let modes = luma_modes_with_angle(mode, angle_delta_y);
                 assert!(
-                    plan_luma_prediction(&modes, block_ctx).is_err(),
-                    "square planner must defer directional luma {mode:?} {angle_delta_y}"
-                );
-                assert!(
                     rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
                     "rect planner must serve directional luma {mode:?} {angle_delta_y}"
-                );
-                assert!(
-                    square_luma_needs_rect_residual_path(&modes, block_ctx, false, FULL_SB_N4_LUMA),
-                    "directional luma {mode:?} {angle_delta_y} must take the rect residual path"
                 );
             }
         }
@@ -413,13 +397,6 @@ fn active_dip_luma_routes_before_dc() {
     );
     let block = ctx(0, 10, 2, 4);
 
-    assert_eq!(
-        plan_luma_prediction(&modes, block),
-        Ok(crate::prediction::intra::IntraLumaPlan::Dip {
-            mode: 2,
-            transpose: true,
-        })
-    );
     assert_eq!(
         rect_luma_plan(&modes, block, true, 16),
         Ok(RectLumaPlan::Dip {
@@ -861,7 +838,6 @@ fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
         },
     );
 
-    assert!(plan_luma_prediction(&modes, first_col_block).is_err());
     assert_eq!(
         rect_luma_plan(&modes, first_col_block, false, 32),
         Ok(RectLumaPlan::OneSidedAbove {
@@ -869,12 +845,6 @@ fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
             use_tcq: false,
         })
     );
-    assert!(square_luma_needs_rect_residual_path(
-        &modes,
-        first_col_block,
-        false,
-        32
-    ));
 }
 
 #[test]

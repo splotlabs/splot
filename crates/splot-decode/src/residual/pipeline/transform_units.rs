@@ -10,7 +10,6 @@ use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, PositionedLumaCoeffBlock,
     current_frame_qm_segment_id,
 };
-use crate::prediction::intra::IntraLumaPlan;
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan, TX_4X4};
@@ -113,36 +112,9 @@ impl ResidualPlanePlan {
         &self,
         block: &PositionedLumaCoeffBlock,
     ) -> core::result::Result<ResidualPlanePlan, GeneralIntraResidualError> {
-        let reconstruction = match self
+        let reconstruction = self
             .reconstruction
-            .for_luma_transform_row(block.y == self.y)
-        {
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::Palette { palette },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaPalette { palette, use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::Dc,
-                use_tcq,
-            } => ResidualReconstructionPlan::Rect { use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::Dip { mode, transpose },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectDip {
-                mode,
-                transpose,
-                use_tcq,
-            },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::PaethNeighbour,
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectPaeth { use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::NonDcFirst { mode } | IntraLumaPlan::NonDcNeighbour { mode },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq },
-            reconstruction => reconstruction,
-        };
+            .for_luma_transform_row(block.y == self.y);
         let (log2_width, log2_height) = tx_size_log2(block.tx_size)?;
         let width4 = (1usize << log2_width) >> 2;
         let height4 = (1usize << log2_height) >> 2;
