@@ -512,10 +512,6 @@ pub(crate) enum GeneralIntraBlockModeError {
     #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
     InvalidUvMode { uv_mode: u8 },
     #[error(
-        "general intra mode-info block-size index {block_size_index} has no CfL MH direction size group"
-    )]
-    InvalidCflMhDirBlockSizeIndex { block_size_index: usize },
-    #[error(
         "general intra mode-info block-size index {block_size_index} has no lossless tx-size group"
     )]
     InvalidLosslessTxSizeGroup { block_size_index: usize },
@@ -667,7 +663,7 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
         chroma_tools,
         GeneralIntraChromaModeContext::shared_or_non_sdp(is_cfl_ctx),
         luma.y_mode,
-        luma_block_size.index(),
+        luma_block_size,
         chroma_n4w,
         chroma_n4h,
     )?;
@@ -884,7 +880,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
     chroma_tools: GeneralIntraChromaToolConfig,
     mode_context: GeneralIntraChromaModeContext,
     y_mode: IntraYMode,
-    block_size_index: usize,
+    block_size: BlockSize,
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<GeneralIntraChromaBlockMode, GeneralIntraBlockModeError> {
@@ -926,7 +922,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
                 work_unit,
                 symbols,
                 chroma_tools,
-                block_size_index,
+                block_size,
                 block_n4w,
                 block_n4h,
             )?;
@@ -963,7 +959,7 @@ fn read_cfl_alphas(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     chroma_tools: GeneralIntraChromaToolConfig,
-    block_size_index: usize,
+    block_size: BlockSize,
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<CflParams, GeneralIntraBlockModeError> {
@@ -984,7 +980,7 @@ fn read_cfl_alphas(
     };
 
     if cfl_index == CFL_MULTI {
-        let size_group = cfl_mh_dir_size_group(block_size_index)?;
+        let size_group = cfl_mh_dir_size_group(block_size);
         let mh_dir = read_symbol(
             cdfs,
             symbols,
@@ -1311,11 +1307,8 @@ fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
         })
 }
 
-fn cfl_mh_dir_size_group(block_size_index: usize) -> Result<usize, GeneralIntraBlockModeError> {
-    SIZE_GROUP
-        .get(block_size_index)
-        .and_then(|value| usize::try_from(*value).ok())
-        .ok_or(GeneralIntraBlockModeError::InvalidCflMhDirBlockSizeIndex { block_size_index })
+fn cfl_mh_dir_size_group(block_size: BlockSize) -> usize {
+    SIZE_GROUP[block_size.index()] as usize
 }
 
 const fn cfl_alpha_u_ctx(sign_u: u8, sign_v: u8) -> usize {
