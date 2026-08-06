@@ -17295,6 +17295,59 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-INTER-ZERO-REFERENCE-INTRA-BLOCKS"
+name = "zero-reference inter frames with intra-coded blocks"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.2", "5.18.4.3", "5.20.7.6", "5.20.7.10", "5.20.7.11", "5.20.7.12", "6.17.2", "6.19.7.10", "6.19.7.11"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-4-3",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-6",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-10",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-11",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-12",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-10",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-11",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/prediction/inter/frame_walk.rs"
+change_id = "decode-inter-zero-reference-intra-blocks"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Admits a complete regular-inter header with NumTotalRefs == 0 and an empty ref_frame_idx, as permitted by §§5.18.2 and 6.17.2. Intra-coded blocks continue through the existing general-intra path. If tile syntax selects an inter-coded block, the runtime rejects at inter_block_ref_frame_out_of_range before skip, single-reference, or compound-reference parsing can fabricate reference slot zero; §§6.19.7.10 and 6.19.7.11 require a nonzero reference count for those readers. The positive unit seed is a 115-byte AVMenc-generated two-frame IVF (SHA-256 133166055845472c2362f53dde58328912a1fdf4a376148a4c2227c04dfbe32e) whose second frame is one intra-coded block; mutating its parsed reference count/map to zero still reconstructs successfully. Stock AVMenc cannot encode the exact header because --max-reference-frames is restricted to 1..=7, so the exact zero-reference case uses the requested unit-test fallback."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "not-applicable"
+perf = "not-applicable"
+
+[feature.proof]
+tests = [
+    "crates/splot-core/src/headers/frame/inter.rs::tests::inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs",
+    "crates/splot-decode/src/prediction/inter/tests/zero_reference.rs::zero_reference_inter_frame_decodes_when_every_block_is_intra",
+    "crates/splot-decode/src/prediction/inter/tests/zero_reference.rs::zero_reference_inter_frame_reaches_the_inter_block_boundary",
+    "crates/splot-decode/src/prediction/inter/tests/zero_reference.rs::zero_reference_inter_frame_requires_an_empty_reference_map",
+]
+commands = [
+    "cargo test -p splot-core --locked inter_implicit_map_no_valid_slot_reaches_shared_tail_with_zero_refs",
+    "cargo test -p splot-decode --locked zero_reference_inter_frame",
+    "cargo xtask check-decoder-support",
+    "cargo xtask check-feature-status",
+]
+fixtures = ["crates/splot-decode/src/prediction/inter/tests/zero_reference.rs"]
+diagnostics = ["decode/unsupported-feature"]
+
+[[feature]]
 id = "DECODE-INTER-COMPOUND-AVERAGE"
 name = "two-reference compound-average inter runtime"
 category = "infrastructure"

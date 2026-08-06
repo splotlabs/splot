@@ -619,14 +619,16 @@ fn block_reference_slot(ref_frame_idx: &[u32], ref_frame: i8, offset: ByteOffset
     ref_frame_idx
         .get(ref_frame as usize)
         .copied()
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_block_ref_frame_out_of_range",
-                offset,
-                "inter.block.ref_frame out of range",
-                SPEC_MODE_INFO
-            )
-        })
+        .ok_or_else(|| block_reference_out_of_range(offset))
+}
+
+fn block_reference_out_of_range(offset: ByteOffset) -> DecodeError {
+    inter_cap!(
+        "inter_block_ref_frame_out_of_range",
+        offset,
+        "inter.block.ref_frame out of range",
+        SPEC_MODE_INFO
+    )
 }
 
 fn hold_reference_slot<T: ReconSample>(
