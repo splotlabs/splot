@@ -259,68 +259,7 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
 }
 
 #[test]
-fn lossless_chroma_part_guard_admits_rect_prediction_subset() {
-    let top_left_smooth_part = ctx_with_bit_depth(0, 0, 4, 16, BitDepth::Eight);
-    assert!(lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Smooth),
-        false,
-        IntraYMode::DC_PRED,
-        top_left_smooth_part,
-        32,
-    ));
-
-    let top_left_full = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-    assert!(lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::HorizontalFollow),
-        false,
-        IntraYMode::H_PRED_FOR_TEST,
-        top_left_full,
-        FULL_SB_N4_LUMA,
-    ));
-
-    let edge_backed_horizontal_part = ctx_with_bit_depth(8, 4, 8, 8, BitDepth::Eight);
-    assert!(lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Horizontal),
-        false,
-        IntraYMode::DC_PRED,
-        edge_backed_horizontal_part,
-        32,
-    ));
-
-    let first_row_left_edge = ctx_with_bit_depth(
-        0,
-        FULL_SB_N4_LUMA,
-        FULL_SB_N4_LUMA,
-        FULL_SB_N4_LUMA,
-        BitDepth::Eight,
-    );
-    assert!(lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D113Follow),
-        false,
-        IntraYMode::D113_PRED_FOR_TEST,
-        first_row_left_edge,
-        FULL_SB_N4_LUMA,
-    ));
-    assert!(lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::D203Follow),
-        false,
-        IntraYMode::D203_PRED_FOR_TEST,
-        first_row_left_edge,
-        FULL_SB_N4_LUMA,
-    ));
-
-    assert!(!lossless_chroma_part_prediction_verified(
-        Some(SupportedChromaMode::Horizontal),
-        false,
-        IntraYMode::DC_PRED,
-        top_left_smooth_part,
-        32,
-    ));
-}
-
-#[test]
-fn lossless_chroma_part_guard_delegates_cfl_to_cfl_plan() {
-    let block = ctx_with_bit_depth(2, 0, 2, 2, BitDepth::Eight);
+fn chroma_part_cfl_reaches_cfl_plan() {
     let params = CflParams {
         index: CflIndex::Explicit,
         alpha_u: 1,
@@ -329,25 +268,13 @@ fn lossless_chroma_part_guard_delegates_cfl_to_cfl_plan() {
     };
     let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
 
-    assert!(lossless_chroma_part_prediction_guard_passes(
-        chroma,
-        IntraYMode::H_PRED_FOR_TEST,
-        block,
-        32,
-    ));
-    let result = chroma_plan_for_parts(chroma, IntraYMode::H_PRED_FOR_TEST, 0, 1, 32);
-    assert!(result.is_ok());
-    let plan = result
-        .ok()
-        .expect("CFL chroma part should reach the CFL planner");
-
     assert_eq!(
-        plan,
-        RectChromaPlan::Cfl {
+        chroma_plan_for_parts(chroma, IntraYMode::H_PRED_FOR_TEST, 0, 1, 32).ok(),
+        Some(RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index: 1,
             sb_mib: 32,
-        }
+        })
     );
 }
 

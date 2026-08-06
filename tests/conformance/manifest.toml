@@ -1659,3 +1659,8 @@ expect = "clean"
 path = "vectors/valid/syn-lossless-nondc-chroma-v-intra-64x64-10bit.ivf"
 description = "Deterministic AVMenc 10-bit 4:2:0 lossless key frame with one 64x64 DC_PRED luma block, explicit non-DPCM V_PRED chroma, TX_4X4 lossless residuals, SDP disabled, and broad tools disabled. It proves normal-block lossless chroma no longer depends on an 8-bit geometry allowlist; pinned AVM, current AVM, and splot produce byte-identical 12,288-byte raw I420 output SHA-256 7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit.ivf"
+description = "Deterministic AVMenc 10-bit 4:2:0 lossless key frame with one 64x64 DC_PRED luma block, SDP/chroma-part explicit non-DPCM V_PRED chroma, TX_4X4 lossless residuals, SDP enabled, and broad tools disabled. It proves lossless SDP/chroma-part prediction no longer depends on a mode, bit-depth, geometry, or neighbour allowlist; pinned AVM, current AVM, and splot produce byte-identical 12,288-byte raw I420 output SHA-256 7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f; validates clean."
+expect = "clean"
