@@ -483,55 +483,65 @@ fn inactive_palette_y_mode_is_consumed_after_chroma_mode() {
 }
 
 #[test]
-fn active_palette_y_mode_reads_size_and_literal_colors() {
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut encoder = SymbolEncoder::with_config(
-        SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
-    );
-    for (selector, value) in [
-        (TileCdfSelector::YModeSet, 0),
-        (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
-        (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 1),
-        (TileCdfSelector::PaletteYMode, 1),
-        (TileCdfSelector::PaletteYSize, 0),
-    ] {
-        tile.with_row_mut(selector, |row| {
-            encoder.write_symbol_u16(row, Symbol::new(value))
-        })
-        .unwrap()
+fn active_palette_y_mode_accepts_every_size_symbol() {
+    for size_symbol in 0..=(PALETTE_MAX_SIZE as u8 - 2) {
+        let palette_size = usize::from(size_symbol) + 2;
+        let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+        assert_eq!(
+            tile.row(TileCdfSelector::PaletteYSize).unwrap().len(),
+            PALETTE_MAX_SIZE
+        );
+        let mut encoder = SymbolEncoder::with_config(
+            SymbolEncoderConfig::new().with_cdf_update_mode(CdfUpdateMode::Disabled),
+        );
+        for (selector, value) in [
+            (TileCdfSelector::YModeSet, 0),
+            (TileCdfSelector::YModeIndex { ctx: 0 }, 0),
+            (TileCdfSelector::UvModeCflNotAllowed { ctx: 0 }, 1),
+            (TileCdfSelector::PaletteYMode, 1),
+            (TileCdfSelector::PaletteYSize, size_symbol),
+        ] {
+            tile.with_row_mut(selector, |row| {
+                encoder.write_symbol_u16(row, Symbol::new(value))
+            })
+            .unwrap()
+            .unwrap();
+        }
+        encoder.write_literal(10, 8).unwrap();
+        encoder.write_literal(0, 2).unwrap();
+        for _ in 1..palette_size {
+            encoder.write_literal(0, 5).unwrap();
+        }
+        let payload = encoder.finish().unwrap().into_bytes();
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
+        let joint_modes = empty_joint_modes();
+        let uses_mrls = empty_uses_mrls();
+
+        let modes = decode_general_intra_block_modes(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::disabled().with_allow_screen_content_tools(true),
+            &joint_modes,
+            &uses_mrls,
+            &empty_fsc_modes(),
+            &empty_palette_state(),
+            0,
+            BLOCK_16X16,
+            0,
+            0,
+            4,
+            4,
+            8,
+        )
         .unwrap();
+
+        let palette = modes.palette_y().expect("active palette");
+        assert_eq!(palette.size(), palette_size);
+        let expected = (10..10 + palette_size as u16).collect::<Vec<_>>();
+        assert_eq!(&palette.colors()[..palette_size], expected.as_slice());
+        assert_eq!(symbols.symbol_count(), (10 + 5 * palette_size) as u64);
     }
-    encoder.write_literal(10, 8).unwrap();
-    encoder.write_literal(0, 2).unwrap();
-    encoder.write_literal(3, 5).unwrap();
-    let payload = encoder.finish().unwrap().into_bytes();
-    let mut work_unit = make_work_unit(&payload);
-    let mut symbols = symbol_decoder(&payload);
-    let joint_modes = empty_joint_modes();
-    let uses_mrls = empty_uses_mrls();
-
-    let modes = decode_general_intra_block_modes(
-        &mut work_unit,
-        &mut symbols,
-        GeneralIntraChromaToolConfig::disabled().with_allow_screen_content_tools(true),
-        &joint_modes,
-        &uses_mrls,
-        &empty_fsc_modes(),
-        &empty_palette_state(),
-        0,
-        BLOCK_16X16,
-        0,
-        0,
-        4,
-        4,
-        8,
-    )
-    .unwrap();
-
-    let palette = modes.palette_y().expect("active palette");
-    assert_eq!(palette.size(), 2);
-    assert_eq!(&palette.colors()[..2], &[10, 14]);
-    assert_eq!(symbols.symbol_count(), 20);
 }
 
 #[test]

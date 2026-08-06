@@ -521,8 +521,6 @@ pub(crate) enum GeneralIntraBlockModeError {
         "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
     )]
     UnsupportedDirectionalNeighbourReorder { ctx: usize, mode_idx: usize },
-    #[error("general intra mode-info decoded invalid luma palette size {palette_size}")]
-    InvalidPaletteYSize { palette_size: usize },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -721,12 +719,13 @@ pub(crate) fn read_general_intra_palette_y_mode(
         PALETTE_Y_MODE_REASON,
     )?;
     if has_palette_y != 0 {
-        let palette_size = usize::from(read_symbol(
-            cdfs,
-            symbols,
-            TileCdfSelector::PaletteYSize,
-            PALETTE_Y_SIZE_REASON,
-        )?) + 2;
+        let palette_size_symbol = cdfs
+            .read_block_symbol_trace(TileCdfSelector::PaletteYSize, symbols)
+            .map_err(|source| GeneralIntraBlockModeError::SymbolRead {
+                reason: PALETTE_Y_SIZE_REASON,
+                source,
+            })?;
+        let palette_size = usize::from(palette_size_symbol.get()) + 2;
         let colors = read_palette_colors_y(
             symbols,
             palette_state,
@@ -735,9 +734,10 @@ pub(crate) fn read_general_intra_palette_y_mode(
             palette_size,
             bit_depth_bits,
         )?;
-        return LumaPalette::new(palette_size as u8, colors)
-            .ok_or(GeneralIntraBlockModeError::InvalidPaletteYSize { palette_size })
-            .map(Some);
+        return Ok(Some(LumaPalette::from_size_symbol(
+            palette_size_symbol,
+            colors,
+        )));
     }
     Ok(None)
 }
@@ -829,9 +829,6 @@ fn read_palette_colors_y(
     palette_size: usize,
     bit_depth_bits: u32,
 ) -> Result<[u16; PALETTE_MAX_SIZE], GeneralIntraBlockModeError> {
-    if !(2..=PALETTE_MAX_SIZE).contains(&palette_size) {
-        return Err(GeneralIntraBlockModeError::InvalidPaletteYSize { palette_size });
-    }
     let (cache, cache_len) = palette_state.palette_cache(block_r, block_c);
     let mut colors = [0u16; PALETTE_MAX_SIZE];
     let mut idx = 0usize;
