@@ -76,7 +76,7 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
         self.tile.resolve_conditions(index)
     }
 
-    pub(crate) fn resolve(&self, index: usize) -> Result<Vec<usize>> {
+    pub(crate) fn resolve(&self, index: usize) -> Result<core::ops::Range<usize>> {
         self.tile.resolve(index)
     }
 

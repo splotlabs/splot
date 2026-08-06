@@ -2,8 +2,8 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::{
-    COVERED_CANDIDATE, DeblockBlock, DeblockError, EdgeBlock, HORIZONTAL_TX_CANDIDATE,
-    SUB_PU_CANDIDATE, VERTICAL_TX_CANDIDATE,
+    COVERED_CANDIDATE, ChromaDeblockRecords, DeblockBlock, DeblockError, EdgeBlock,
+    HORIZONTAL_TX_CANDIDATE, SUB_PU_CANDIDATE, VERTICAL_TX_CANDIDATE,
 };
 
 const NO_BLOCK_INDEX: u32 = u32::MAX;
@@ -35,7 +35,7 @@ pub(super) struct MiGridStorage {
 pub(super) struct MiGrid<'a> {
     pub(super) storage: &'a MiGridStorage,
     pub(super) base_blocks: &'a [DeblockBlock],
-    pub(super) overlay_blocks: &'a [DeblockBlock],
+    pub(super) overlay_blocks: &'a ChromaDeblockRecords,
 }
 
 impl MiGrid<'_> {
@@ -183,7 +183,8 @@ pub(super) fn build_mi_grid(
 
 pub(super) fn overlay_mi_grid(
     base: &MiGridStorage,
-    blocks: &[DeblockBlock],
+    blocks: &ChromaDeblockRecords,
+    plane: usize,
     mi_rows: usize,
     mi_cols: usize,
 ) -> Result<MiGridStorage, DeblockError> {
@@ -197,8 +198,7 @@ pub(super) fn overlay_mi_grid(
         candidates,
     };
     for (block_index, block) in blocks
-        .iter()
-        .enumerate()
+        .iter_plane(plane)
         .filter(|(_, block)| !block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;
@@ -214,8 +214,7 @@ pub(super) fn overlay_mi_grid(
         mark_block_candidates(&mut grid.candidates, block, mi_rows, mi_cols);
     }
     for (block_index, block) in blocks
-        .iter()
-        .enumerate()
+        .iter_plane(plane)
         .filter(|(_, block)| block.chroma_transform_only)
     {
         let block_index = mi_block_index(block_index)?;

@@ -3,7 +3,8 @@
 
 //! A one-shot completion slot ([`CompletionCell`]) for pipeline hand-off.
 use core::time::Duration;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 
 use crate::admission::AdmissionWaiter;
 use crate::pool::{PoolAssist, assist_installed_pool};
@@ -14,12 +15,17 @@ use crate::pool::{PoolAssist, assist_installed_pool};
 /// pool is idle.
 pub(crate) const ASSIST_PARK: Duration = Duration::from_micros(100);
 
+const ADMISSION_EMPTY: u8 = 0;
+const ADMISSION_REGISTERED: u8 = 1;
+const ADMISSION_SET: u8 = 2;
+
 /// A write-once slot that a consumer can block on until the value lands.
 ///
 /// The value is published through a [`OnceLock`], so [`CompletionCell::get`] and
-/// [`CompletionCell::is_set`] are lock-free; the mutex and condition variable
-/// exist only to park a blocked [`CompletionCell::wait`] caller instead of
-/// spinning. A cell accepts exactly one value: a second
+/// [`CompletionCell::is_set`] are lock-free. The first admission waiter is
+/// registered without a mutex; wait state is allocated lazily only when a
+/// caller blocks or registers another waiter. A cell accepts exactly one value:
+/// a second
 /// [`CompletionCell::set`] hands the rejected value back to its caller.
 ///
 /// # Usage contract
@@ -34,18 +40,27 @@ pub(crate) const ASSIST_PARK: Duration = Duration::from_micros(100);
 #[derive(Debug)]
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
+    admission_waiter: OnceLock<Weak<dyn AdmissionWaiter>>,
+    admission_state: AtomicU8,
+    wait: OnceLock<CompletionWait>,
+}
+
+/// State needed only when publication has an observer.
+#[derive(Debug)]
+struct CompletionWait {
     state: Mutex<CompletionState>,
     cond: Condvar,
 }
 
-/// Whether the value landed, plus the admission waiters still to be fired.
+/// Blocking state plus the admission waiters still to be fired.
 ///
-/// Both live under one mutex so a registration either sees the settled cell or
-/// is guaranteed to be fired by the [`CompletionCell::set`] that settles it.
+/// The value is checked again while this mutex is held, so a registration
+/// either sees the settled cell or is guaranteed to be fired by the
+/// [`CompletionCell::set`] that settles it.
 #[derive(Debug)]
 struct CompletionState {
-    done: bool,
-    waiters: Vec<Arc<dyn AdmissionWaiter>>,
+    parked_waiters: usize,
+    additional_waiters: Vec<Weak<dyn AdmissionWaiter>>,
 }
 
 impl<V> CompletionCell<V> {
@@ -54,11 +69,9 @@ impl<V> CompletionCell<V> {
     pub const fn new() -> Self {
         Self {
             value: OnceLock::new(),
-            state: Mutex::new(CompletionState {
-                done: false,
-                waiters: Vec::new(),
-            }),
-            cond: Condvar::new(),
+            admission_waiter: OnceLock::new(),
+            admission_state: AtomicU8::new(ADMISSION_EMPTY),
+            wait: OnceLock::new(),
         }
     }
 
@@ -67,11 +80,9 @@ impl<V> CompletionCell<V> {
     pub fn completed(value: V) -> Self {
         Self {
             value: OnceLock::from(value),
-            state: Mutex::new(CompletionState {
-                done: true,
-                waiters: Vec::new(),
-            }),
-            cond: Condvar::new(),
+            admission_waiter: OnceLock::new(),
+            admission_state: AtomicU8::new(ADMISSION_SET),
+            wait: OnceLock::new(),
         }
     }
 
@@ -88,14 +99,28 @@ impl<V> CompletionCell<V> {
     /// value is never overwritten.
     pub fn set(&self, value: V) -> Result<(), V> {
         self.value.set(value)?;
-        let waiters = {
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.done = true;
-            core::mem::take(&mut state.waiters)
-        };
-        self.cond.notify_all();
-        for waiter in waiters {
+        if self.admission_state.swap(ADMISSION_SET, Ordering::AcqRel) == ADMISSION_REGISTERED
+            && let Some(waiter) = self.admission_waiter.get().and_then(Weak::upgrade)
+        {
             waiter.satisfy();
+        }
+        let Some(wait) = self.wait.get() else {
+            return Ok(());
+        };
+        let (has_parked_waiters, additional_waiters) = {
+            let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+            (
+                state.parked_waiters != 0,
+                core::mem::take(&mut state.additional_waiters),
+            )
+        };
+        if has_parked_waiters {
+            wait.cond.notify_all();
+        }
+        for waiter in additional_waiters {
+            if let Some(waiter) = waiter.upgrade() {
+                waiter.satisfy();
+            }
         }
         Ok(())
     }
@@ -105,14 +130,31 @@ impl<V> CompletionCell<V> {
     /// Returns `false` when the cell is already set; the waiter is then not
     /// stored and never called, so the caller must treat the condition as
     /// satisfied itself. Returning `true` promises exactly one later
-    /// [`AdmissionWaiter::satisfy`] call, made by [`CompletionCell::set`] after
-    /// it releases the cell's lock.
+    /// [`AdmissionWaiter::satisfy`] call while the caller retains another
+    /// strong reference to `waiter`.
     pub fn register_waiter(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.done {
+        if self.is_set() {
             return false;
         }
-        state.waiters.push(waiter);
+        let weak_waiter = Arc::downgrade(&waiter);
+        drop(waiter);
+        let Err(waiter) = self.admission_waiter.set(weak_waiter) else {
+            return self
+                .admission_state
+                .compare_exchange(
+                    ADMISSION_EMPTY,
+                    ADMISSION_REGISTERED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok();
+        };
+        let wait = self.wait_state();
+        let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_set() {
+            return false;
+        }
+        state.additional_waiters.push(waiter);
         true
     }
 
@@ -138,12 +180,15 @@ impl<V> CompletionCell<V> {
             if let Some(value) = self.value.get() {
                 return value;
             }
-            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            while !state.done {
-                state = self
+            let wait = self.wait_state();
+            let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+            while self.value.get().is_none() {
+                state.parked_waiters += 1;
+                state = wait
                     .cond
                     .wait(state)
                     .unwrap_or_else(PoisonError::into_inner);
+                state.parked_waiters -= 1;
             }
         }
     }
@@ -180,14 +225,30 @@ impl<V> CompletionCell<V> {
 
     /// Parks for at most [`ASSIST_PARK`], returning early when the value lands.
     fn park_briefly(&self) {
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if !state.done {
-            drop(
-                self.cond
-                    .wait_timeout(state, ASSIST_PARK)
-                    .unwrap_or_else(PoisonError::into_inner),
-            );
+        if self.is_set() {
+            return;
         }
+        let wait = self.wait_state();
+        let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.is_set() {
+            return;
+        }
+        state.parked_waiters += 1;
+        let (mut state, _) = wait
+            .cond
+            .wait_timeout(state, ASSIST_PARK)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.parked_waiters -= 1;
+    }
+
+    fn wait_state(&self) -> &CompletionWait {
+        self.wait.get_or_init(|| CompletionWait {
+            state: Mutex::new(CompletionState {
+                parked_waiters: 0,
+                additional_waiters: Vec::new(),
+            }),
+            cond: Condvar::new(),
+        })
     }
 }
 
@@ -210,6 +271,7 @@ mod tests {
         assert_eq!(cell.set(7u32), Ok(()));
         assert_eq!(cell.get(), Some(&7));
         assert_eq!(cell.wait(), &7);
+        assert!(cell.wait.get().is_none());
     }
 
     #[test]
@@ -272,6 +334,32 @@ mod tests {
     }
 
     #[test]
+    fn set_wakes_every_blocked_waiter() {
+        let cell = Arc::new(CompletionCell::new());
+        let waiters = (0..2)
+            .map(|_| {
+                let cell = Arc::clone(&cell);
+                std::thread::spawn(move || *cell.wait())
+            })
+            .collect::<Vec<_>>();
+
+        while cell.wait.get().is_none_or(|wait| {
+            wait.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .parked_waiters
+                != 2
+        }) {
+            std::thread::yield_now();
+        }
+        assert_eq!(cell.set(99u32), Ok(()));
+
+        for waiter in waiters {
+            assert_eq!(waiter.join().unwrap(), 99);
+        }
+    }
+
+    #[test]
     fn assisted_wait_off_pool_blocks_like_plain_wait() {
         let cell = Arc::new(CompletionCell::new());
         let waiter_cell = Arc::clone(&cell);
@@ -315,11 +403,55 @@ mod tests {
         let cell = CompletionCell::new();
         let waiter = Arc::new(CountingWaiter::default());
         assert!(cell.register_waiter(waiter.clone()));
+        assert!(cell.admission_waiter.get().is_some());
+        assert!(cell.wait.get().is_none());
         assert_eq!(waiter.0.load(Ordering::Acquire), 0);
         assert_eq!(cell.set(1u32), Ok(()));
         assert_eq!(waiter.0.load(Ordering::Acquire), 1);
         assert_eq!(cell.set(2u32), Err(2), "a rejected set fires nothing");
         assert_eq!(waiter.0.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn additional_registered_waiters_use_the_locked_fallback() {
+        let cell = CompletionCell::new();
+        let first = Arc::new(CountingWaiter::default());
+        let second = Arc::new(CountingWaiter::default());
+        assert!(cell.register_waiter(first.clone()));
+        assert!(cell.register_waiter(second.clone()));
+        assert_eq!(
+            cell.wait
+                .get()
+                .unwrap()
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .additional_waiters
+                .len(),
+            1
+        );
+
+        assert_eq!(cell.set(1u32), Ok(()));
+        assert_eq!(first.0.load(Ordering::Acquire), 1);
+        assert_eq!(second.0.load(Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn registration_racing_publication_fires_exactly_once() {
+        for _ in 0..128 {
+            let cell = Arc::new(CompletionCell::new());
+            let waiter = Arc::new(CountingWaiter::default());
+            let registering_cell = Arc::clone(&cell);
+            let registering_waiter = Arc::clone(&waiter);
+            let registration = std::thread::spawn(move || {
+                if !registering_cell.register_waiter(registering_waiter.clone()) {
+                    registering_waiter.satisfy();
+                }
+            });
+            assert_eq!(cell.set(1u32), Ok(()));
+            registration.join().unwrap();
+            assert_eq!(waiter.0.load(Ordering::Acquire), 1);
+        }
     }
 
     #[test]

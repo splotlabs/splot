@@ -331,7 +331,7 @@ impl<T: ReconSample> ScheduledInterWalk<T> {
         self.reconstruction.resolve_conditions(index)
     }
 
-    pub(crate) fn resolve(&self, index: usize) -> Result<Vec<usize>> {
+    pub(crate) fn resolve(&self, index: usize) -> Result<core::ops::Range<usize>> {
         self.reconstruction.resolve(index)
     }
 

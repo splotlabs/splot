@@ -12,10 +12,45 @@ type Position = (usize, usize);
 type PhasePositions = [PackedPosition; 3];
 
 const INVALID_PROJECTION_OFFSET: i32 = i32::MIN;
+const MAX_TRAJECTORY_REFERENCES: usize = 7;
 pub(super) const INVALID_TRAJECTORY_MV: Mv = Mv {
     row: i32::MIN,
     col: 0,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PackedTrajectoryMv {
+    row: i16,
+    col: i16,
+}
+
+impl Default for PackedTrajectoryMv {
+    fn default() -> Self {
+        Self::INVALID
+    }
+}
+
+impl PackedTrajectoryMv {
+    const INVALID: Self = Self {
+        row: i16::MIN,
+        col: 0,
+    };
+
+    fn new(mv: Mv) -> Self {
+        let mv = clamp_mv(mv);
+        Self {
+            row: mv.row as i16,
+            col: mv.col as i16,
+        }
+    }
+
+    fn unpack(self) -> Option<Mv> {
+        (self != Self::INVALID).then_some(Mv {
+            row: i32::from(self.row),
+            col: i32::from(self.col),
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PackedPosition {
@@ -59,13 +94,13 @@ impl TrajectoryPositions {
 pub(super) struct TrajectoryMotionField {
     width8: usize,
     height8: usize,
-    pub(super) cells: Vec<Mv>,
+    pub(super) cells: Vec<PackedTrajectoryMv>,
 }
 
 impl TrajectoryMotionField {
     pub(super) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
         let (width8, height8, mut cells) = allocate_temporal_grid(mi_rows, mi_cols)?;
-        cells.fill(INVALID_TRAJECTORY_MV);
+        cells.fill(PackedTrajectoryMv::INVALID);
         Some(Self {
             width8,
             height8,
@@ -79,8 +114,8 @@ impl TrajectoryMotionField {
         let cells = width8.checked_mul(height8)?;
         self.width8 = width8;
         self.height8 = height8;
-        self.cells.resize(cells, INVALID_TRAJECTORY_MV);
-        self.cells.fill(INVALID_TRAJECTORY_MV);
+        self.cells.resize(cells, PackedTrajectoryMv::INVALID);
+        self.cells.fill(PackedTrajectoryMv::INVALID);
         Some(())
     }
 
@@ -96,7 +131,7 @@ impl TrajectoryMotionField {
         self.cells
             .get(index)
             .copied()
-            .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
+            .and_then(PackedTrajectoryMv::unpack)
     }
 
     pub(super) fn set(&mut self, y8: usize, x8: usize, mv: Mv) {
@@ -108,7 +143,7 @@ impl TrajectoryMotionField {
 
     fn set_at(&mut self, index: usize, mv: Mv) {
         if let Some(cell) = self.cells.get_mut(index) {
-            *cell = mv;
+            *cell = PackedTrajectoryMv::new(mv);
         }
     }
 }
@@ -246,6 +281,8 @@ impl TrajectoryState {
         let total = width8.checked_mul(height8)?;
         let stride = band_rows.checked_mul(width8)?;
         if band_rows == 0
+            || fields.len() > MAX_TRAJECTORY_REFERENCES
+            || positions.len() > MAX_TRAJECTORY_REFERENCES
             || projection_offsets.len() != total
             || fields.iter().any(|field| field.cells.len() != total)
             || positions.iter().any(|slots| slots.len() != total)
@@ -256,8 +293,8 @@ impl TrajectoryState {
             .chunks_mut(stride.max(1))
             .enumerate()
             .map(|(index, projection_offsets)| TrajectoryBand {
-                fields: Vec::with_capacity(fields.len()),
-                positions: Vec::with_capacity(positions.len()),
+                fields: BandSlices::new(),
+                positions: BandSlices::new(),
                 projection_offsets,
                 row_base: index * band_rows,
                 step: *step,
@@ -271,12 +308,12 @@ impl TrajectoryState {
             .collect::<Vec<_>>();
         for field in fields.iter_mut() {
             for (band, cells) in bands.iter_mut().zip(field.cells.chunks_mut(stride.max(1))) {
-                band.fields.push(cells);
+                band.fields.push(cells)?;
             }
         }
         for slots in positions.iter_mut() {
             for (band, slots) in bands.iter_mut().zip(slots.chunks_mut(stride.max(1))) {
-                band.positions.push(slots);
+                band.positions.push(slots)?;
             }
         }
         Some(bands)
@@ -303,8 +340,8 @@ impl TrajectoryState {
 /// Geometry stays whole-frame — projections are sampled against the full grid
 /// — while the storage slices cover `row_base .. row_base + band_rows` only.
 pub(super) struct TrajectoryBand<'a> {
-    fields: Vec<&'a mut [Mv]>,
-    positions: Vec<&'a mut [TrajectoryPositions]>,
+    fields: BandSlices<'a, PackedTrajectoryMv>,
+    positions: BandSlices<'a, TrajectoryPositions>,
     projection_offsets: &'a mut [i32],
     row_base: usize,
     step: usize,
@@ -316,16 +353,73 @@ pub(super) struct TrajectoryBand<'a> {
     height8: usize,
 }
 
+struct BandSlices<'a, T> {
+    slots: [Option<&'a mut [T]>; MAX_TRAJECTORY_REFERENCES],
+    len: usize,
+}
+
+impl<'a, T> BandSlices<'a, T> {
+    fn new() -> Self {
+        Self {
+            slots: core::array::from_fn(|_| None),
+            len: 0,
+        }
+    }
+
+    fn from_chunks(cells: &'a mut [T], chunk_size: usize) -> Option<Self> {
+        let mut slices = Self::new();
+        for chunk in cells.chunks_mut(chunk_size.max(1)) {
+            slices.push(chunk)?;
+        }
+        Some(slices)
+    }
+
+    fn push(&mut self, cells: &'a mut [T]) -> Option<()> {
+        *self.slots.get_mut(self.len)? = Some(cells);
+        self.len += 1;
+        Some(())
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn get(&self, index: usize) -> Option<&[T]> {
+        self.slots.get(index)?.as_deref()
+    }
+
+    fn get_mut(&mut self, index: usize) -> Option<&mut [T]> {
+        self.slots.get_mut(index)?.as_deref_mut()
+    }
+}
+
 pub(super) struct OwnedTrajectoryBand {
-    fields: Vec<Vec<Mv>>,
-    positions: Vec<Vec<TrajectoryPositions>>,
+    fields: Vec<PackedTrajectoryMv>,
+    positions: Vec<TrajectoryPositions>,
     projection_offsets: Vec<i32>,
+    cells_per_reference: usize,
     row_base: usize,
     step: usize,
     unit_size8: usize,
     width8: usize,
     height8: usize,
     row_count: usize,
+}
+
+#[derive(Debug)]
+pub(super) struct OwnedTrajectoryFields {
+    cells: Vec<PackedTrajectoryMv>,
+    cells_per_reference: usize,
+}
+
+impl OwnedTrajectoryFields {
+    pub(super) fn cell(&self, reference: usize, index: usize) -> Option<Mv> {
+        let base = reference.checked_mul(self.cells_per_reference)?;
+        self.cells
+            .get(base.checked_add(index)?)
+            .copied()
+            .and_then(PackedTrajectoryMv::unpack)
+    }
 }
 
 impl OwnedTrajectoryBand {
@@ -338,11 +432,16 @@ impl OwnedTrajectoryBand {
         step: usize,
         unit_size8: usize,
     ) -> Option<Self> {
+        if reference_count > MAX_TRAJECTORY_REFERENCES {
+            return None;
+        }
         let cell_count = width8.checked_mul(row_count)?;
+        let total_cells = cell_count.checked_mul(reference_count)?;
         Some(Self {
-            fields: vec![vec![INVALID_TRAJECTORY_MV; cell_count]; reference_count],
-            positions: vec![vec![TrajectoryPositions::EMPTY; cell_count]; reference_count],
+            fields: vec![PackedTrajectoryMv::INVALID; total_cells],
+            positions: vec![TrajectoryPositions::EMPTY; total_cells],
             projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
+            cells_per_reference: cell_count,
             row_base,
             step: step.clamp(1, 2),
             unit_size8: unit_size8.max(1),
@@ -352,11 +451,12 @@ impl OwnedTrajectoryBand {
         })
     }
 
-    pub(super) fn as_band(&mut self) -> TrajectoryBand<'_> {
+    pub(super) fn as_band(&mut self) -> Option<TrajectoryBand<'_>> {
         let unit_mask = self.unit_size8 - 1;
-        TrajectoryBand {
-            fields: self.fields.iter_mut().map(Vec::as_mut_slice).collect(),
-            positions: self.positions.iter_mut().map(Vec::as_mut_slice).collect(),
+        let cells_per_reference = self.cells_per_reference.max(1);
+        Some(TrajectoryBand {
+            fields: BandSlices::from_chunks(&mut self.fields, cells_per_reference)?,
+            positions: BandSlices::from_chunks(&mut self.positions, cells_per_reference)?,
             projection_offsets: &mut self.projection_offsets,
             row_base: self.row_base,
             step: self.step,
@@ -366,12 +466,12 @@ impl OwnedTrajectoryBand {
             unit_shift: self.unit_size8.trailing_zeros(),
             width8: self.width8,
             height8: self.height8,
-        }
+        })
     }
 
-    pub(super) fn finish(mut self) -> Vec<Vec<Mv>> {
+    pub(super) fn finish(mut self) -> OwnedTrajectoryFields {
         if self.step == 2 {
-            for field in &mut self.fields {
+            for field in self.fields.chunks_mut(self.cells_per_reference.max(1)) {
                 fill_band_field_gaps(
                     field,
                     self.width8,
@@ -381,7 +481,10 @@ impl OwnedTrajectoryBand {
                 );
             }
         }
-        self.fields
+        OwnedTrajectoryFields {
+            cells: self.fields,
+            cells_per_reference: self.cells_per_reference,
+        }
     }
 }
 
@@ -401,6 +504,7 @@ impl TrajectoryBand<'_> {
             .get(reference)
             .and_then(|field| field.get(index))
             .copied()
+            .and_then(PackedTrajectoryMv::unpack)
             .unwrap_or(INVALID_TRAJECTORY_MV)
     }
 
@@ -481,7 +585,7 @@ impl TrajectoryBand<'_> {
             .get_mut(reference)
             .and_then(|field| field.get_mut(index))
         {
-            *slot = mv;
+            *slot = PackedTrajectoryMv::new(mv);
         }
         mv
     }
@@ -699,18 +803,18 @@ impl TrajectoryBand<'_> {
 }
 
 fn fill_band_field_gaps(
-    cells: &mut [Mv],
+    cells: &mut [PackedTrajectoryMv],
     width8: usize,
     row_base: usize,
     row_count: usize,
     unit_size8: usize,
 ) {
-    let get = |cells: &[Mv], y8: usize, x8: usize| {
+    let get = |cells: &[PackedTrajectoryMv], y8: usize, x8: usize| {
         let row = y8.checked_sub(row_base)?;
         cells
             .get(row.checked_mul(width8)?.checked_add(x8)?)
             .copied()
-            .filter(|mv| *mv != INVALID_TRAJECTORY_MV)
+            .and_then(PackedTrajectoryMv::unpack)
     };
     for y8 in (row_base..row_base.saturating_add(row_count)).step_by(2) {
         for x8 in (0..width8).step_by(2) {
@@ -749,10 +853,10 @@ fn fill_band_field_gaps(
                     continue;
                 };
                 if let Some(cell) = cells.get_mut(index) {
-                    *cell = Mv {
+                    *cell = PackedTrajectoryMv::new(Mv {
                         row: average(sum.row, count),
                         col: average(sum.col, count),
-                    };
+                    });
                 }
             }
         }
@@ -841,6 +945,7 @@ mod tests {
     #[test]
     fn trajectory_storage_stays_compact() {
         assert_eq!(std::mem::size_of::<Mv>(), 8);
+        assert_eq!(std::mem::size_of::<PackedTrajectoryMv>(), 4);
         assert_eq!(std::mem::size_of::<PackedPosition>(), 4);
         assert_eq!(std::mem::size_of::<PhasePositions>(), 12);
         assert_eq!(std::mem::size_of::<TrajectoryPositions>(), 14);
@@ -849,6 +954,11 @@ mod tests {
             PackedPosition::new((8191, 8191)).and_then(PackedPosition::unpack),
             Some((8191, 8191))
         );
+    }
+
+    #[test]
+    fn owned_band_rejects_more_than_seven_references() {
+        assert!(OwnedTrajectoryBand::new(1, 1, 0, 1, 8, 1, 8).is_none());
     }
 
     #[test]

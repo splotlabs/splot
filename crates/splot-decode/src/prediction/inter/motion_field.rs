@@ -116,7 +116,7 @@ impl MotionFieldHandle {
             .map(|band| band.get().and_then(Option::as_ref).cloned())
             .collect::<Option<Vec<_>>>();
         let field = bands.and_then(|bands| {
-            TemporalMotionField::from_bands(self.0.layout, metadata, &bands).map(Arc::new)
+            TemporalMotionField::from_bands(self.0.layout, metadata, bands).map(Arc::new)
         });
         let _ = self.0.field.set(field);
     }

@@ -58,7 +58,7 @@ pub(super) fn temporal_motion_block<T: ReconSample>(
     mv1: Mv,
     warp_params: [Option<[i32; 6]>; 2],
 ) -> TemporalMotionBlock {
-    TemporalMotionBlock {
+    TemporalMotionBlock::new(
         mi_row,
         mi_col,
         n4w,
@@ -66,15 +66,15 @@ pub(super) fn temporal_motion_block<T: ReconSample>(
         mi_rows,
         mi_cols,
         current_order_hint,
-        ref_order_hints: [
+        [
             temporal_ref_order_hint(reference, ref_frame_idx, ref_frame0),
             ref_frame1.and_then(|ref_frame1| {
                 temporal_ref_order_hint(reference, ref_frame_idx, ref_frame1)
             }),
         ],
-        mvs: [mv0, mv1],
+        [mv0, mv1],
         warp_params,
-    }
+    )
 }
 
 pub(super) fn commit_temporal_motion_blocks(
@@ -315,18 +315,18 @@ mod tests {
     use super::*;
 
     fn block(order_hint: u32, mv: Mv) -> TemporalMotionBlock {
-        TemporalMotionBlock {
-            mi_row: 0,
-            mi_col: 0,
-            n4w: 2,
-            n4h: 2,
-            mi_rows: 2,
-            mi_cols: 2,
-            current_order_hint: 0,
-            ref_order_hints: [Some(order_hint), None],
-            mvs: [mv, Mv::ZERO],
-            warp_params: [None, None],
-        }
+        TemporalMotionBlock::new(
+            0,
+            0,
+            2,
+            2,
+            2,
+            2,
+            0,
+            [Some(order_hint), None],
+            [mv, Mv::ZERO],
+            [None, None],
+        )
     }
 
     #[test]

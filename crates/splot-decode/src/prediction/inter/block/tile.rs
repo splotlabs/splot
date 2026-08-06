@@ -5,6 +5,7 @@
 //!
 //! Feature tracking: `INFRA-DECODE-PARALLEL-STAGES`.
 
+use std::num::NonZeroUsize;
 use std::ops::Range;
 use std::sync::Mutex;
 
@@ -81,7 +82,7 @@ fn append_lr_records(
 #[derive(Default)]
 pub(super) struct TileFilterRecords {
     pub(super) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
-    pub(super) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    pub(super) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(super) tx_skip_records: Vec<crate::filters::wienerns_lr::WienerNsLrTxSkipTransformRecord>,
 }
 
@@ -338,6 +339,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             pending_inter,
             residual_blocks,
             temporal,
+            motion_grids,
             flag_log,
             filter_records,
         } = buffers.unwrap_or_default();
@@ -350,10 +352,12 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             pending_inter,
             residual_blocks,
             temporal,
+            motion_grids,
             flag_log,
             filter_records: TileFilterRecords::default(),
             motion_folded: false,
             motion_derived: false,
+            precompute_error: None,
             terminal: None,
         };
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
@@ -421,7 +425,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 };
             let mut on_published = |publication: DecodedLeafPublication, leaf: ParsedLeaf| {
                 let origin = publication.superblock_origin();
-                let pending_inter = leaf.pending.as_ref().map(|_| recon_row.pending_inter.len());
                 push_recon_entry(
                     &mut recon_row.superblocks,
                     &mut recon_row.entries,
@@ -430,10 +433,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     ReconRowEntry {
                         publication,
                         command: leaf.command,
-                        pending_inter,
                         motion: None,
                         temporal: 0..0,
-                        error: None,
                     },
                 );
                 recon_row.motion_queue.push(leaf.motion);
@@ -662,12 +663,31 @@ fn resolve_parser_step(
 pub(super) struct ReconRowEntry {
     pub(super) publication: DecodedLeafPublication,
     pub(super) command: Option<ReconCommand>,
-    pending_inter: Option<usize>,
     /// The refinement grid the motion pass derived, which is the only grid the
     /// entry's prediction may sample through.
-    pub(super) motion: Option<super::super::mc::CompoundMotionGrid>,
+    motion: Option<NonZeroUsize>,
     pub(super) temporal: Range<usize>,
-    pub(super) error: Option<crate::DecodeError>,
+}
+
+impl ReconRowEntry {
+    fn store_motion(
+        &mut self,
+        grid: Option<super::super::mc::CompoundMotionGrid>,
+        grids: &mut Vec<Option<super::super::mc::CompoundMotionGrid>>,
+    ) {
+        self.motion = grid.and_then(|grid| {
+            grids.push(Some(grid));
+            NonZeroUsize::new(grids.len())
+        });
+    }
+
+    pub(super) fn take_motion(
+        &mut self,
+        grids: &mut [Option<super::super::mc::CompoundMotionGrid>],
+    ) -> Option<super::super::mc::CompoundMotionGrid> {
+        let index = self.motion.take()?.get().checked_sub(1)?;
+        grids.get_mut(index)?.take()
+    }
 }
 
 pub(super) struct ReconSuperblock {
@@ -708,6 +728,7 @@ pub(super) struct ReconRow {
     pub(super) pending_inter: Vec<PendingMotionBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
+    pub(super) motion_grids: Vec<Option<super::super::mc::CompoundMotionGrid>>,
     /// The unit's flag-plane publications, replayed by a resolve pass that runs
     /// on a grid of its own. Empty unless the parser was logging.
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
@@ -718,6 +739,7 @@ pub(super) struct ReconRow {
     /// Whether the motion pass already derived every entry's grid and records,
     /// so no later pass may derive either again.
     pub(super) motion_derived: bool,
+    pub(super) precompute_error: Option<(usize, crate::DecodeError)>,
     pub(super) terminal: Option<crate::DecodeError>,
 }
 
@@ -729,6 +751,7 @@ pub(super) struct ReconRowBuffers {
     pub(super) pending_inter: Vec<PendingMotionBlock>,
     pub(super) residual_blocks: Vec<InterResidualBlock>,
     pub(super) temporal: Vec<TemporalMotionBlock>,
+    pub(super) motion_grids: Vec<Option<super::super::mc::CompoundMotionGrid>>,
     pub(super) flag_log: Vec<NeighbourFlagRecord>,
     pub(super) filter_records: TileFilterRecords,
 }
@@ -737,7 +760,7 @@ struct ReconRowBufferPool {
     available: Mutex<Vec<ReconRowBuffers>>,
 }
 
-const MAX_RETAINED_RECON_ROW_BUFFERS: usize = 128;
+const MAX_RETAINED_RECON_ROW_BUFFERS: usize = 512;
 static RETAINED_RECON_ROW_BUFFERS: Mutex<Vec<ReconRowBuffers>> = Mutex::new(Vec::new());
 
 impl ReconRowBufferPool {
@@ -794,6 +817,15 @@ fn take_retained_recon_row_buffers() -> ReconRowBuffers {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .pop()
         .unwrap_or_default()
+}
+
+fn recycle_retained_recon_row_buffers(buffers: ReconRowBuffers) {
+    let mut retained = RETAINED_RECON_ROW_BUFFERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if retained.len() < MAX_RETAINED_RECON_ROW_BUFFERS {
+        retained.push(buffers);
+    }
 }
 
 impl Drop for ReconRowBufferPool {
@@ -910,17 +942,46 @@ impl<T: ReconSample> Default for InterReconScratchPool<T> {
 pub(in crate::prediction::inter) struct TileDecodeScratch<T: ReconSample> {
     ordered: deferred_recon::InterReconScratch<T>,
     workers: InterReconScratchPool<T>,
+    surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
 }
 
 impl<T: ReconSample> TileDecodeScratch<T> {
     fn from_scheduled(
         ordered: deferred_recon::InterReconScratch<T>,
         workers: &InterReconScratchPool<T>,
+        surfaces: Vec<splot_recon::OwnedFrameRect<T>>,
     ) -> Self {
         Self {
             ordered,
             workers: workers.take_reusable(),
+            surfaces,
         }
+    }
+
+    fn take_surface(
+        &mut self,
+        info: splot_recon::DecodedFrameInfo,
+        rect: splot_recon::PlaneRect,
+    ) -> splot_recon::Result<splot_recon::OwnedFrameRect<T>> {
+        if self
+            .surfaces
+            .last()
+            .is_some_and(|surface| surface.info() == info && surface.luma_rect() == rect)
+            && let Some(mut surface) = self.surfaces.pop()
+        {
+            surface.fill(T::default());
+            return Ok(surface);
+        }
+        if let Some(index) = self
+            .surfaces
+            .iter()
+            .position(|surface| surface.info() == info && surface.luma_rect() == rect)
+        {
+            let mut surface = self.surfaces.swap_remove(index);
+            surface.fill(T::default());
+            return Ok(surface);
+        }
+        splot_recon::OwnedFrameRect::new(info, rect, T::default())
     }
 }
 
@@ -1023,11 +1084,12 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         });
         let _ = row.temporal.try_reserve(temporal_capacity);
     }
-    'superblocks: for superblock in &mut row.superblocks {
+    'superblocks: for superblock in &row.superblocks {
+        let entry_start = superblock.entries.start;
         let Some(entries) = row.entries.get_mut(superblock.entries.clone()) else {
             break;
         };
-        for entry in entries {
+        for (offset, entry) in entries.iter_mut().enumerate() {
             let safe = entry.command.as_ref().is_some_and(|command| {
                 select_prepass_entry(
                     command.dependency(),
@@ -1059,7 +1121,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                     &command,
                     surface,
                     block_decoded,
-                    entry.motion.take(),
+                    entry.take_motion(&mut row.motion_grids),
                     &row.residual_blocks,
                     &deferred_recon::ReconShared {
                         reference,
@@ -1103,7 +1165,7 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
                 }
                 Err(error) => {
                     row.temporal.truncate(start);
-                    entry.error = Some(error);
+                    row.precompute_error = Some((entry_start + offset, error));
                     break 'superblocks;
                 }
             }
@@ -1794,7 +1856,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
             .saturating_sub(1)
             .max(1),
     );
-    let TileDecodeScratch { ordered, workers } = scratch;
+    let TileDecodeScratch {
+        ordered, workers, ..
+    } = scratch;
     let context = params.context(sequence, core, reference, ref_frame_idx);
     let &TileWalkParams {
         mi_rows,

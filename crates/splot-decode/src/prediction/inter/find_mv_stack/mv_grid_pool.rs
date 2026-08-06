@@ -22,7 +22,6 @@ const MAX_RETAINED_NEIGHBOUR_MV_GRIDS: usize = 8;
 /// retained memory follows typical tiles rather than the largest ever seen.
 const MAX_RETAINED_NEIGHBOUR_MV_CELLS: usize = 1 << 17;
 static RETAINED_NEIGHBOUR_MV_GRIDS: Mutex<Vec<GridPlanes>> = Mutex::new(Vec::new());
-
 /// Recycled planes for one tile-sized grid, with the flag plane sized and the
 /// motion plane left empty on its retained allocation: a grid that only ever
 /// publishes flags — the split path's parse pass — never pays the motion fill,

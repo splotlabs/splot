@@ -18,6 +18,11 @@ use super::ready_rows::{
 use super::*;
 
 #[test]
+fn recon_row_entry_stays_compact() {
+    assert_eq!(core::mem::size_of::<ReconRowEntry>(), 392);
+}
+
+#[test]
 fn recon_entries_are_bucketed_by_contiguous_superblock_without_reordering() {
     let mut superblocks = Vec::new();
     let mut entries = Vec::new();
@@ -120,8 +125,11 @@ fn scheduled_tile_context_moves_the_bounded_worker_pool_for_reuse() {
     let mut pool = InterReconScratchPool::<u8>::default();
     pool.ensure_workers(3);
 
-    let reused =
-        TileDecodeScratch::from_scheduled(deferred_recon::InterReconScratch::default(), &pool);
+    let reused = TileDecodeScratch::from_scheduled(
+        deferred_recon::InterReconScratch::default(),
+        &pool,
+        Vec::new(),
+    );
 
     assert_eq!(pool.available_len(), 0);
     assert_eq!(reused.workers.available_len(), 3);

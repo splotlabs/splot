@@ -29,7 +29,7 @@ pub(crate) use self::tx_records::WienerNsLrTxSkipTransformRecord;
 #[derive(Default)]
 pub(crate) struct FrameFilterRecords {
     pub(crate) deblock_blocks: Vec<crate::filters::deblock::DeblockBlock>,
-    pub(crate) chroma_deblock_blocks: [Vec<crate::filters::deblock::DeblockBlock>; 2],
+    pub(crate) chroma_deblock_blocks: crate::filters::deblock::ChromaDeblockRecords,
     pub(crate) tx_skip_records: Vec<WienerNsLrTxSkipTransformRecord>,
     pub(crate) lr_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     pub(crate) lr_unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
@@ -38,11 +38,17 @@ pub(crate) struct FrameFilterRecords {
 impl FrameFilterRecords {
     pub(crate) fn clear(&mut self) {
         self.deblock_blocks.clear();
-        self.chroma_deblock_blocks[0].clear();
-        self.chroma_deblock_blocks[1].clear();
+        self.chroma_deblock_blocks.clear();
         self.tx_skip_records.clear();
         self.lr_source_blocks.clear();
         self.lr_unit_filters.clear();
+        debug_assert!(
+            self.deblock_blocks.is_empty()
+                && self.chroma_deblock_blocks.is_empty()
+                && self.tx_skip_records.is_empty()
+                && self.lr_source_blocks.is_empty()
+                && self.lr_unit_filters.is_empty()
+        );
     }
 }
 

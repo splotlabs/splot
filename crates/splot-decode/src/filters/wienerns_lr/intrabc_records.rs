@@ -388,7 +388,9 @@ pub(crate) struct TileIntrabcPreludeState {
     tile_rows: usize,
     tile_cols: usize,
     sb_size4: usize,
-    values: Vec<Option<IntrabcBlockFacts>>,
+    values: Vec<IntrabcGridCell>,
+    #[cfg(test)]
+    test_values: Vec<Option<IntrabcTestFacts>>,
     #[cfg(test)]
     bank: IntrabcRefMvBank,
     #[cfg(test)]
@@ -408,6 +410,47 @@ struct IntrabcBlockFacts {
     #[cfg(test)]
     block_mv: Option<IntrabcBlockVector>,
     base_col: usize,
+    #[cfg(test)]
+    n4w: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct IntrabcGridCell {
+    base_col: u32,
+    flags: u8,
+}
+
+impl IntrabcGridCell {
+    const CODED: u8 = 1 << 0;
+    const USE_INTRABC: u8 = 1 << 1;
+    const IS_INTER: u8 = 1 << 2;
+    const SKIP: u8 = 1 << 3;
+    const MORPH_PRED: u8 = 1 << 4;
+
+    fn new(facts: IntrabcBlockFacts, tile_offset: ByteOffset) -> Result<Self> {
+        let base_col = u32::try_from(facts.base_col).map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_overflow",
+            )
+        })?;
+        let flags = Self::CODED
+            | (u8::from(facts.use_intrabc) * Self::USE_INTRABC)
+            | (u8::from(facts.is_inter) * Self::IS_INTER)
+            | (u8::from(facts.skip_flag) * Self::SKIP)
+            | (u8::from(facts.morph_pred) * Self::MORPH_PRED);
+        Ok(Self { base_col, flags })
+    }
+
+    const fn contains(self, flag: u8) -> bool {
+        self.flags & flag != 0
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct IntrabcTestFacts {
+    block_mv: Option<IntrabcBlockVector>,
     n4w: usize,
 }
 
@@ -475,7 +518,9 @@ impl TileIntrabcPreludeState {
             tile_rows: rows,
             tile_cols: cols,
             sb_size4,
-            values: vec![None; values_len],
+            values: vec![IntrabcGridCell::default(); values_len],
+            #[cfg(test)]
+            test_values: vec![None; values_len],
             #[cfg(test)]
             bank: IntrabcRefMvBank::new(sb_size4),
             #[cfg(test)]
@@ -509,22 +554,42 @@ impl TileIntrabcPreludeState {
             #[cfg(test)]
             block_mv,
             base_col: col,
+            #[cfg(test)]
+            n4w,
+        };
+        let value = IntrabcGridCell::new(facts, tile_offset)?;
+        #[cfg(test)]
+        let test_value = IntrabcTestFacts {
+            block_mv: facts.block_mv,
             n4w,
         };
         let area = self.clipped_record_area(row, col, n4w, n4h, tile_offset)?;
         if !area.cols.is_empty() {
             for r in area.rows {
                 let start = self.index(r, area.cols.start, tile_offset)?;
-                let row_values = start
-                    .checked_add(area.cols.len())
-                    .and_then(|end| self.values.get_mut(start..end))
+                let end = start.checked_add(area.cols.len()).ok_or_else(|| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
+                    )
+                })?;
+                let row_values = self.values.get_mut(start..end).ok_or_else(|| {
+                    wienerns_lr_selectable_transform_record_error_reason(
+                        tile_offset,
+                        "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
+                    )
+                })?;
+                row_values.fill(value);
+                #[cfg(test)]
+                self.test_values
+                    .get_mut(start..end)
                     .ok_or_else(|| {
                         wienerns_lr_selectable_transform_record_error_reason(
                             tile_offset,
                             "unsupported_wienerns_lr_selectable_transform_records_intrabc_index_bounds",
                         )
-                    })?;
-                row_values.fill(Some(facts));
+                    })?
+                    .fill(Some(test_value));
             }
         }
         #[cfg(test)]
@@ -751,7 +816,7 @@ impl TileIntrabcPreludeState {
         tile_offset: ByteOffset,
     ) -> Result<Option<IntrabcBlockFacts>> {
         let index = self.index(row, col, tile_offset)?;
-        Ok(self.values[index])
+        Ok(self.facts_at_index(index))
     }
 
     fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
@@ -833,14 +898,31 @@ impl TileIntrabcPreludeState {
         {
             return None;
         }
-        self.values
-            .get(
-                row.checked_sub(self.origin_row)?
-                    .checked_mul(self.tile_cols)?
-                    .checked_add(col.checked_sub(self.origin_col)?)?,
-            )
-            .copied()
-            .flatten()
+        self.facts_at_index(
+            row.checked_sub(self.origin_row)?
+                .checked_mul(self.tile_cols)?
+                .checked_add(col.checked_sub(self.origin_col)?)?,
+        )
+    }
+
+    fn facts_at_index(&self, index: usize) -> Option<IntrabcBlockFacts> {
+        let value = *self.values.get(index)?;
+        if !value.contains(IntrabcGridCell::CODED) {
+            return None;
+        }
+        #[cfg(test)]
+        let test = self.test_values.get(index)?.as_ref()?;
+        Some(IntrabcBlockFacts {
+            use_intrabc: value.contains(IntrabcGridCell::USE_INTRABC),
+            is_inter: value.contains(IntrabcGridCell::IS_INTER),
+            skip_flag: value.contains(IntrabcGridCell::SKIP),
+            morph_pred: value.contains(IntrabcGridCell::MORPH_PRED),
+            #[cfg(test)]
+            block_mv: test.block_mv,
+            base_col: value.base_col as usize,
+            #[cfg(test)]
+            n4w: test.n4w,
+        })
     }
 
     #[cfg(test)]

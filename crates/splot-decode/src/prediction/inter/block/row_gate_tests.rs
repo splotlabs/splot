@@ -223,7 +223,9 @@ fn a_tip_batch_waits_for_its_first_candidate_over_the_whole_rectangle() {
     ];
     let gate = RowReferenceGate {
         lists,
-        settle: PixelReferenceGate { slots: Vec::new() },
+        settle: PixelReferenceGate {
+            slots: [None; ReferenceSlot::MAX_SLOTS],
+        },
         frame,
         temporal: &temporal,
         tip: Some(references),

@@ -21,7 +21,7 @@ use super::plan::MAX_DEFERRED_CHROMA_PLANES;
 use super::transform_units::tx_size_log2;
 use super::{DCT_DCT, DeblockRecorder, GeneralIntraResidualPlan, ResidualPlanePlan, chroma_pair};
 
-const MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS: usize = 128 * super::plan::MAX_RESIDUAL_PLANES;
+const MAX_RETAINED_PARSED_RESIDUAL_PLANE_SLOTS: usize = 1_024 * super::plan::MAX_RESIDUAL_PLANES;
 
 pub(crate) struct ParsedGeneralIntraResidual {
     planes: RecycledParsedResidualPlanes,

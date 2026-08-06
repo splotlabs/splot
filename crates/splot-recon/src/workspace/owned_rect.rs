@@ -209,6 +209,17 @@ impl<T: ReconSample> OwnedFrameRect<T> {
         self.y.rect
     }
 
+    /// Resets every sample while retaining the rectangle's allocations.
+    pub fn fill(&mut self, sample: T) {
+        self.y.samples.fill(sample);
+        if let Some(u) = self.u.as_mut() {
+            u.samples.fill(sample);
+        }
+        if let Some(v) = self.v.as_mut() {
+            v.samples.fill(sample);
+        }
+    }
+
     pub(super) fn plane(&self, plane: PlaneId) -> Result<&OwnedFramePlaneRect<T>> {
         select_plane(plane, &self.y, self.u.as_ref(), self.v.as_ref())
     }

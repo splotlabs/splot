@@ -83,7 +83,7 @@ fn derive_row_motion<T: ReconSample>(
         let start = row.temporal.len();
         match scratch.motion(command, sink, &mut row.temporal, shared) {
             Ok(grid) => {
-                entry.motion = grid;
+                entry.store_motion(grid, &mut row.motion_grids);
                 entry.temporal = start..row.temporal.len();
             }
             Err(error) => {
@@ -96,6 +96,7 @@ fn derive_row_motion<T: ReconSample>(
         return true;
     };
     row.temporal.clear();
+    row.motion_grids.clear();
     for entry in &mut row.entries {
         entry.motion = None;
         entry.temporal = 0..0;

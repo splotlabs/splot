@@ -5,7 +5,7 @@
 
 use splot_recon::PlaneId;
 
-use crate::filters::deblock::DeblockBlock;
+use crate::filters::deblock::{ChromaDeblockRecords, DeblockBlock};
 
 const MI_SIZE: usize = 4;
 
@@ -18,6 +18,7 @@ pub(crate) struct LosslessBlockGrid {
 }
 
 impl LosslessBlockGrid {
+    #[cfg(test)]
     pub(crate) fn from_deblock_blocks(
         mi_rows: usize,
         mi_cols: usize,
@@ -27,10 +28,35 @@ impl LosslessBlockGrid {
         Ok(Self {
             mi_rows,
             mi_cols,
-            luma: lossless_cells(mi_rows, mi_cols, luma_blocks)?,
+            luma: lossless_cells(mi_rows, mi_cols, luma_blocks.iter())?,
             chroma: [
-                lossless_cells(mi_rows, mi_cols, chroma_blocks[0])?,
-                lossless_cells(mi_rows, mi_cols, chroma_blocks[1])?,
+                lossless_cells(mi_rows, mi_cols, chroma_blocks[0].iter())?,
+                lossless_cells(mi_rows, mi_cols, chroma_blocks[1].iter())?,
+            ],
+        })
+    }
+
+    pub(crate) fn from_deblock_records(
+        mi_rows: usize,
+        mi_cols: usize,
+        luma_blocks: &[DeblockBlock],
+        chroma_blocks: &ChromaDeblockRecords,
+    ) -> Result<Self, LosslessGridError> {
+        Ok(Self {
+            mi_rows,
+            mi_cols,
+            luma: lossless_cells(mi_rows, mi_cols, luma_blocks.iter())?,
+            chroma: [
+                lossless_cells(
+                    mi_rows,
+                    mi_cols,
+                    chroma_blocks.iter_plane(0).map(|(_, block)| block),
+                )?,
+                lossless_cells(
+                    mi_rows,
+                    mi_cols,
+                    chroma_blocks.iter_plane(1).map(|(_, block)| block),
+                )?,
             ],
         })
     }
@@ -100,10 +126,10 @@ impl LosslessBlockGrid {
     }
 }
 
-fn lossless_cells(
+fn lossless_cells<'a>(
     mi_rows: usize,
     mi_cols: usize,
-    blocks: &[DeblockBlock],
+    blocks: impl IntoIterator<Item = &'a DeblockBlock>,
 ) -> Result<Vec<bool>, LosslessGridError> {
     let count = mi_rows
         .checked_mul(mi_cols)

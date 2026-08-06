@@ -131,7 +131,7 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
 fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
     let tx_8x8 = rect_tx_size_from_log2(3, 3).expect("8x8 transform");
     let mut blocks = Vec::new();
-    let mut chroma_blocks = [Vec::new(), Vec::new()];
+    let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::default();
     let mut tx_skip_records = Vec::new();
     let mut recorder = DeblockRecorder {
         blocks: &mut blocks,
@@ -149,15 +149,23 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
     recorder.record_chroma_unit(PlaneId::U, 8, 8, tx_8x8);
     recorder.record_chroma_unit(PlaneId::V, 0, 8, tx_8x8);
 
-    assert_eq!(chroma_blocks[0].len(), 2);
-    assert_eq!(chroma_blocks[0][0].chroma_base_c, 0);
-    assert_eq!(chroma_blocks[0][1].chroma_base_c, 4);
-    assert_eq!(chroma_blocks[0][1].n4w, 4);
-    assert_eq!(chroma_blocks[0][1].chroma_base_r, 2);
-    assert_eq!(chroma_blocks[0][1].n4h, 2);
-    assert_eq!(chroma_blocks[1].len(), 1);
-    assert_eq!(chroma_blocks[1][0].qindex, 37);
-    assert!(chroma_blocks[1][0].lossless);
+    let u: Vec<_> = chroma_blocks
+        .iter_plane(0)
+        .map(|(_, record)| record)
+        .collect();
+    let v: Vec<_> = chroma_blocks
+        .iter_plane(1)
+        .map(|(_, record)| record)
+        .collect();
+    assert_eq!(u.len(), 2);
+    assert_eq!(u[0].chroma_base_c, 0);
+    assert_eq!(u[1].chroma_base_c, 4);
+    assert_eq!(u[1].n4w, 4);
+    assert_eq!(u[1].chroma_base_r, 2);
+    assert_eq!(u[1].n4h, 2);
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].qindex, 37);
+    assert!(v[0].lossless);
 }
 
 #[test]

@@ -93,6 +93,25 @@ fn record_block_clips_to_the_grid() {
 }
 
 #[test]
+fn luma_palette_grid_stores_one_palette_per_block() {
+    let mut state = TileLumaPaletteState::new(4, 4, SB_N4).unwrap();
+    let palette = LumaPalette::new(3, [7, 11, 19, 0, 0, 0, 0, 0]).unwrap();
+
+    state.record_block(1, 0, 2, 2, Some(palette));
+
+    assert_eq!(state.palettes, [palette]);
+    assert_eq!(state.palette_at(1, 0), Some(palette));
+    assert_eq!(state.palette_at(2, 1), Some(palette));
+    assert_eq!(state.palette_at(0, 0), None);
+}
+
+#[test]
+fn luma_palette_grid_cell_stays_pointer_sized() {
+    assert_eq!(size_of::<Option<NonZeroUsize>>(), size_of::<usize>());
+    assert!(size_of::<Option<NonZeroUsize>>() < size_of::<Option<LumaPalette>>());
+}
+
+#[test]
 fn grid_origin_keeps_only_tile_cells() {
     let mut state = TileSegmentIdState::new_for_tile(16..20, 32..37).unwrap();
     assert_eq!(state.grid.cells.len(), 20);
