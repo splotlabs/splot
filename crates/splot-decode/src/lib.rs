@@ -64,6 +64,7 @@ pub use hash_report::{
     DecodeHashEntry, DecodeHashFrame, DecodeHashPixelFormat, DecodeHashReport, DecodeOutputVariant,
 };
 pub use runtime::DecodeRuntimeConfig;
+pub use splot_recon::Y4mFrameRate;
 pub use stream_plan::{
     DecodeIvfFrameContext, DecodeLayerSelection, DecodeObuSourceKind, DecodePlannedObu,
     DecodePlannedObuRole, DecodeSourceIssue, DecodeSourceIssueKind, DecodeStreamInput,

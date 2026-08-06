@@ -11,6 +11,7 @@ use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_wit
 use crate::{
     DecodeContext, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeLimitThreshold, DecodeLimits, DecodeOptions, DecodeRuntimeConfig, OUTPUT_ERROR_RULE_ID,
+    Y4mFrameRate,
 };
 
 const MONO_FIXTURE: &[u8] =
@@ -66,17 +67,64 @@ fn empty_ivf_y4m_fails_with_typed_empty_frame_set_error() {
 }
 
 #[test]
-fn raw_annex_b_payload_y4m_fails_without_timebase() {
+fn raw_annex_b_payload_y4m_requires_frame_rate() {
+    let mut bytes = Vec::new();
+
     let error = context(ThreadCount::from(1usize))
-        .decode_y4m_bytes(&MINIMAL_FIXTURE[44..], DecodeOptions::default(), Vec::new())
+        .decode_y4m_bytes(&MINIMAL_FIXTURE[44..], DecodeOptions::default(), &mut bytes)
         .unwrap_err();
 
+    assert!(bytes.is_empty());
     assert!(matches!(
         error,
-        DecodeError::UnsupportedFeature {
-            unsupported
-        } if unsupported.reason() == "annex_b_y4m_timebase"
+        DecodeError::Output { ref source }
+            if source.operation() == crate::DecodeOutputOperation::SerializeY4m
+                && source.source_kind() == "frame_set"
+                && source.source_message().contains("caller-provided frame rate")
     ));
+}
+
+#[test]
+fn raw_annex_b_payload_decodes_to_exact_y4m_with_frame_rate() {
+    const FIXTURE: &[u8] = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-2seq-compatible-intra-64x64.obu"
+    );
+    let frame_rate = Y4mFrameRate::new(24_000, 1_001).unwrap();
+    let options = DecodeOptions::default().with_y4m_frame_rate_override(Some(frame_rate));
+    let mut raw = Vec::new();
+    let mut bytes = Vec::new();
+
+    context(ThreadCount::from(1usize))
+        .decode_raw_bytes(FIXTURE, DecodeOptions::default(), &mut raw)
+        .unwrap();
+    context(ThreadCount::from(1usize))
+        .decode_y4m_bytes(FIXTURE, options, &mut bytes)
+        .unwrap();
+
+    assert_eq!(raw.len(), 2 * 6_144);
+    let mut expected = b"YUV4MPEG2 W64 H64 F24000:1001 Ip A0:0 C420\n".to_vec();
+    for frame in raw.chunks_exact(6_144) {
+        expected.extend_from_slice(b"FRAME\n");
+        expected.extend_from_slice(frame);
+    }
+    assert_eq!(bytes, expected);
+}
+
+#[test]
+fn caller_frame_rate_overrides_ivf_timebase() {
+    let frame_rate = Y4mFrameRate::new(24_000, 1_001).unwrap();
+    let options = DecodeOptions::default().with_y4m_frame_rate_override(Some(frame_rate));
+    let mut bytes = Vec::new();
+
+    context(ThreadCount::from(1usize))
+        .decode_y4m_bytes(MINIMAL_FIXTURE, options, &mut bytes)
+        .unwrap();
+
+    let mut expected = b"YUV4MPEG2 W64 H64 F24000:1001 Ip A0:0 C420\nFRAME\n".to_vec();
+    expected.extend_from_slice(include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-minimal.raw"
+    ));
+    assert_eq!(bytes, expected);
 }
 
 #[test]
@@ -130,6 +178,23 @@ fn zero_ivf_timebase_fails_as_y4m_output_diagnostic_before_writer_success() {
         assert_eq!(details.operation, "serialize_y4m");
         assert_eq!(details.source_kind, "y4m");
         assert!(details.source_message.contains("invalid Y4M frame rate"));
+    }
+}
+
+#[test]
+fn caller_frame_rate_rescues_zero_ivf_timebase() {
+    let frame_rate = Y4mFrameRate::new(30, 1).unwrap();
+    let options = DecodeOptions::default().with_y4m_frame_rate_override(Some(frame_rate));
+
+    for input in [
+        minimal_fixture_with_timebase(0, 30),
+        minimal_fixture_with_timebase(1, 0),
+    ] {
+        let mut bytes = Vec::new();
+        context(ThreadCount::from(1usize))
+            .decode_y4m_bytes(&input, options, &mut bytes)
+            .unwrap();
+        assert_eq!(bytes, expected_minimal_y4m());
     }
 }
 

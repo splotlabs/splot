@@ -28,28 +28,24 @@ pub(crate) fn write_y4m_stream_to_writer<W: Write + Send>(
     let mut target = Some(output);
     let mut writer = None;
     let mut sample_bit_depth = None;
+    let frame_rate_override = options.y4m_frame_rate_override();
     crate::pipeline::emit_materialized_frames_from_prepared(
         bytes,
         parsed,
         options,
         plan,
         frame_delay,
-        |header| {
-            let Some(header) = header else {
-                return Err(crate::pipeline::unsupported(
-                    "annex_b_y4m_timebase",
-                    None,
-                    "Y4M output requires IVF timebase metadata",
-                ));
-            };
-            preflight_y4m_header(header)
-        },
+        |header| preflight_y4m_source(header, frame_rate_override),
         |output| {
-            let frame_rate =
-                Y4mFrameRate::new(output.frame_rate_numerator, output.frame_rate_denominator)
-                    .map_err(|source| {
-                        DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
-                    })?;
+            let frame_rate = match frame_rate_override {
+                Some(frame_rate) => frame_rate,
+                None => {
+                    Y4mFrameRate::new(output.frame_rate_numerator, output.frame_rate_denominator)
+                        .map_err(|source| {
+                            DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source)
+                        })?
+                }
+            };
             match &output.ready_frame()? {
                 PipelineDecodedFrame::Eight(frame) => {
                     ensure_y4m_sample_bit_depth(&mut sample_bit_depth, BitDepth::Eight)?;
@@ -126,6 +122,22 @@ fn preflight_y4m_header(header: IvfHeader) -> Result<()> {
     Y4mFrameRate::new(header.timebase_denominator, header.timebase_numerator)
         .map_err(|source| DecodeOutputError::y4m(DecodeOutputOperation::SerializeY4m, source))?;
     Ok(())
+}
+
+fn preflight_y4m_source(
+    header: Option<IvfHeader>,
+    frame_rate_override: Option<Y4mFrameRate>,
+) -> Result<()> {
+    if frame_rate_override.is_some() {
+        return Ok(());
+    }
+    let header = header.ok_or_else(|| {
+        DecodeOutputError::invalid_frame_set(
+            DecodeOutputOperation::SerializeY4m,
+            "Y4M output for raw Annex B requires a caller-provided frame rate",
+        )
+    })?;
+    preflight_y4m_header(header)
 }
 
 #[cfg(test)]

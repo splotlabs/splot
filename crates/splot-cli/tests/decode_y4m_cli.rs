@@ -65,6 +65,16 @@ fn expected_minimal_y4m() -> Vec<u8> {
     bytes
 }
 
+fn expected_y4m_from_raw(raw: &[u8], frame_rate: &str) -> Vec<u8> {
+    assert_eq!(raw.len() % 6_144, 0);
+    let mut bytes = format!("YUV4MPEG2 W64 H64 F{frame_rate} Ip A0:0 C420\n").into_bytes();
+    for frame in raw.chunks_exact(6_144) {
+        bytes.extend_from_slice(b"FRAME\n");
+        bytes.extend_from_slice(frame);
+    }
+    bytes
+}
+
 #[test]
 fn decode_out_of_tier_y4m_text_mode_emits_unsupported_feature_without_touching_output() {
     let input = temp_input("av2", PLANABLE_CLOSED_LOOP_KEY);
@@ -231,6 +241,88 @@ fn decode_explicit_y4m_success_for_minimal_fixture() {
     assert!(out.stdout.is_empty(), "stdout was not empty");
     assert!(out.stderr.is_empty(), "stderr was not empty");
     assert_eq!(std::fs::read(&output).unwrap(), expected_minimal_y4m());
+}
+
+#[test]
+fn decode_annex_b_y4m_uses_explicit_frame_rate_and_exact_oracle_payload() {
+    let input = conformance_vector("syn-2seq-compatible-intra-64x64.obu");
+    let raw_output = temp_output("raw");
+    let y4m_output = temp_output("y4m");
+
+    let raw = splot(&[
+        "decode",
+        "--output-format",
+        "raw",
+        input.to_str().unwrap(),
+        "-o",
+        raw_output.to_str().unwrap(),
+    ]);
+    assert_eq!(raw.status.code(), Some(0));
+    assert!(raw.stdout.is_empty(), "stdout was not empty");
+    assert!(raw.stderr.is_empty(), "stderr was not empty");
+
+    let y4m = splot(&[
+        "decode",
+        "--frame-rate",
+        "24000:1001",
+        input.to_str().unwrap(),
+        "-o",
+        y4m_output.to_str().unwrap(),
+    ]);
+    assert_eq!(y4m.status.code(), Some(0));
+    assert!(y4m.stdout.is_empty(), "stdout was not empty");
+    assert!(y4m.stderr.is_empty(), "stderr was not empty");
+
+    let raw = std::fs::read(&raw_output).unwrap();
+    assert_eq!(raw.len(), 12_288);
+    assert_eq!(
+        std::fs::read(&y4m_output).unwrap(),
+        expected_y4m_from_raw(&raw, "24000:1001")
+    );
+}
+
+#[test]
+fn decode_frame_rate_rejects_invalid_values_before_reading_input() {
+    let missing_input = temp_path("missing-input", "obu");
+    let output = temp_output("y4m");
+
+    for frame_rate in ["30", "30:1:1", "0:1", "1:0", "4294967296:1"] {
+        let out = splot(&[
+            "decode",
+            "--frame-rate",
+            frame_rate,
+            missing_input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ]);
+        assert_eq!(out.status.code(), Some(2), "frame rate {frame_rate}");
+        assert!(out.stdout.is_empty(), "stdout was not empty");
+        assert!(!output.exists(), "invalid rate created output");
+    }
+}
+
+#[test]
+fn decode_frame_rate_rejects_non_y4m_output_before_reading_input() {
+    let missing_input = temp_path("missing-input", "obu");
+    let output = temp_output("raw");
+
+    let out = splot(&[
+        "decode",
+        "--frame-rate",
+        "30:1",
+        "--output-format",
+        "raw",
+        missing_input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "stdout was not empty");
+    assert!(!output.exists(), "invalid mode created output");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("--frame-rate is only valid with Y4M output")
+    );
 }
 
 #[test]
