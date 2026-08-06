@@ -423,16 +423,12 @@ pub(crate) enum TransformToolResidualPolicy {
     Allow,
     AdmitTransformToolSubset {
         luma: Option<LumaTransformTypeContext>,
-        active_intra_ist: ActiveIntraIstResidualPolicy,
-        active_chroma: ActiveChromaResidualPolicy,
     },
 }
 
 impl TransformToolResidualPolicy {
     pub(crate) fn from_sequence_tools(
         sequence: &splot_core::headers::sequence::SequenceHeader,
-        active_intra_ist: ActiveIntraIstResidualPolicy,
-        active_chroma: ActiveChromaResidualPolicy,
     ) -> Self {
         sequence
             .transform_quant_entropy
@@ -445,39 +441,11 @@ impl TransformToolResidualPolicy {
                     || tq.enable_fsc
                     || tq.enable_idtx_intra
                 {
-                    Self::AdmitTransformToolSubset {
-                        luma: None,
-                        active_intra_ist,
-                        active_chroma,
-                    }
+                    Self::AdmitTransformToolSubset { luma: None }
                 } else {
                     Self::Allow
                 }
             })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ActiveIntraIstResidualPolicy {
-    Reject,
-    LrTxSkipRecordHandoff,
-}
-
-impl ActiveIntraIstResidualPolicy {
-    const fn allows_record_handoff(self) -> bool {
-        matches!(self, Self::LrTxSkipRecordHandoff)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ActiveChromaResidualPolicy {
-    Reject,
-    LrTxSkipRecordHandoff,
-}
-
-impl ActiveChromaResidualPolicy {
-    const fn allows_record_handoff(self) -> bool {
-        matches!(self, Self::LrTxSkipRecordHandoff)
     }
 }
 
@@ -1184,11 +1152,8 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         start_y,
         tx_size,
     };
-    if let TransformToolResidualPolicy::AdmitTransformToolSubset {
-        luma,
-        active_intra_ist,
-        active_chroma,
-    } = transform_tool_residual_policy
+    if let TransformToolResidualPolicy::AdmitTransformToolSubset { luma } =
+        transform_tool_residual_policy
     {
         return decode_staged_transform_tool_nonzero_coeffs(
             work_unit,
@@ -1205,8 +1170,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             txb_skip_fsc_mode,
             cctx_allowed,
             luma,
-            active_intra_ist,
-            active_chroma,
         );
     }
 
@@ -1265,8 +1228,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     txb_skip_fsc_mode: bool,
     cctx_allowed: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
-    active_intra_ist_policy: ActiveIntraIstResidualPolicy,
-    active_chroma_policy: ActiveChromaResidualPolicy,
 ) -> Result<LumaCoeffBlock, GeneralIntraResidualError> {
     let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", geometry.tx_size)?;
     let tx_height_log2 = tx_size_table_usize(&TX_HEIGHT_LOG2, "Tx_Height_Log2", geometry.tx_size)?;
@@ -1311,8 +1272,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             eob,
             cctx_allowed,
             luma_transform_type_context,
-            active_intra_ist_policy,
-            active_chroma_policy,
         },
     )?;
     let use_fsc = frame_facts.enable_fsc()
@@ -1476,8 +1435,6 @@ struct TransformToolResidualInput {
     eob: usize,
     cctx_allowed: bool,
     luma_transform_type_context: Option<LumaTransformTypeContext>,
-    active_intra_ist_policy: ActiveIntraIstResidualPolicy,
-    active_chroma_policy: ActiveChromaResidualPolicy,
 }
 
 /// § 5.20.7.27 `is_cctx_allowed` block-geometry clause: cross-chroma transforms
@@ -1512,7 +1469,7 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
-        let cctx_type = read_chroma_cctx_type(cdfs, symbols, input.active_chroma_policy)?;
+        let cctx_type = read_transform_symbol(cdfs, symbols, TileCdfSelector::CctxType)?;
         metadata.cctx_type = Some(cctx_type);
     }
     if lossless {
@@ -1531,7 +1488,7 @@ fn ensure_transform_tool_residual_handoff(
         || (!is_inter && plane == 0 && frame_facts.reduced_tx_set() == 2);
     if !is_inter && plane == 0 && input.fsc_mode {
         metadata.luma_tx_type = IDTX;
-    } else if !(dct_forced || plane > 0 && input.active_chroma_policy.allows_record_handoff()) {
+    } else if !(dct_forced || plane > 0) {
         if !is_inter && plane == 0 {
             let luma_tx_type = read_active_luma_transform_type(
                 cdfs,
@@ -1540,23 +1497,11 @@ fn ensure_transform_tool_residual_handoff(
                 tx_size,
                 tx_set,
             )?;
-            if luma_tx_type != DCT_DCT && !input.active_intra_ist_policy.allows_record_handoff() {
-                return unsupported_transform_tool_residual(
-                    "unsupported_dctonly_residual_luma_tx_type",
-                );
-            }
-            metadata.luma_tx_type = luma_tx_type;
-        } else if is_inter && plane == 0 {
-            let luma_tx_type =
-                read_active_inter_transform_type(cdfs, symbols, tx_size, tx_set, eob)?;
-            if luma_tx_type != DCT_DCT && !input.active_intra_ist_policy.allows_record_handoff() {
-                return unsupported_transform_tool_residual(
-                    "unsupported_dctonly_residual_inter_tx_type",
-                );
-            }
             metadata.luma_tx_type = luma_tx_type;
         } else {
-            return unsupported_transform_tool_residual("unsupported_dctonly_residual_tx_set");
+            let luma_tx_type =
+                read_active_inter_transform_type(cdfs, symbols, tx_size, tx_set, eob)?;
+            metadata.luma_tx_type = luma_tx_type;
         }
     }
     if is_inter
@@ -1595,21 +1540,9 @@ fn ensure_transform_tool_residual_handoff(
             input.luma_transform_type_context,
             tx_size,
             metadata.luma_tx_type,
-            input.active_intra_ist_policy,
         )?;
     }
     Ok(metadata)
-}
-
-fn read_chroma_cctx_type(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    policy: ActiveChromaResidualPolicy,
-) -> Result<usize, GeneralIntraResidualError> {
-    if !policy.allows_record_handoff() {
-        return unsupported_transform_tool_residual("unsupported_dctonly_residual_cctx");
-    }
-    read_transform_symbol(cdfs, symbols, TileCdfSelector::CctxType)
 }
 
 fn read_intra_ist_sec_tx(
@@ -1618,7 +1551,6 @@ fn read_intra_ist_sec_tx(
     luma_context: Option<LumaTransformTypeContext>,
     tx_size: usize,
     luma_tx_type: usize,
-    policy: ActiveIntraIstResidualPolicy,
 ) -> Result<Option<IntraIstSyntax>, GeneralIntraResidualError> {
     let luma_context = require_luma_context(
         luma_context,
@@ -1650,19 +1582,7 @@ fn read_intra_ist_sec_tx(
         sec_tx_type,
         most_probable_stx_set,
     };
-    ensure_supported_intra_ist_sec_tx_type(syntax, policy)?;
     Ok(Some(syntax))
-}
-
-fn ensure_supported_intra_ist_sec_tx_type(
-    syntax: IntraIstSyntax,
-    policy: ActiveIntraIstResidualPolicy,
-) -> Result<(), GeneralIntraResidualError> {
-    if syntax.sec_tx_type == 0 || policy.allows_record_handoff() {
-        Ok(())
-    } else {
-        unsupported_transform_tool_residual("unsupported_dctonly_residual_intra_sec_tx_type")
-    }
 }
 
 fn inter_ist_can_read_sec_tx(
