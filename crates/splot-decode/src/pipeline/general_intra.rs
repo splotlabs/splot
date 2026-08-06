@@ -531,7 +531,7 @@ pub(crate) fn decode_one_general_intra_block(
 
     let chroma_plan = if frontier.has_chroma {
         Some(
-            chroma_plan_for_modes(&modes, block_ctx, cfl_ds_filter_index, sb_mib)
+            chroma_plan_for_modes(&modes, cfl_ds_filter_index, sb_mib)
                 .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?,
         )
     } else {
@@ -632,15 +632,9 @@ fn parse_one_general_intra_chroma_part_block(
             "7.13.2",
         ));
     }
-    let chroma_plan = chroma_plan_for_parts(
-        chroma,
-        y_mode,
-        angle_delta_y,
-        block_ctx,
-        cfl_ds_filter_index,
-        sb_mib,
-    )
-    .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
+    let chroma_plan =
+        chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib)
+            .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
     let command = parse_general_intra_residual_plan(
@@ -697,7 +691,7 @@ fn parse_one_general_intra_rect_block(
         .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
     let chroma_plan = if has_chroma {
         Some(
-            rect_chroma_plan(modes, block_ctx, cfl_ds_filter_index, sb_mib)
+            rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib)
                 .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?,
         )
     } else {
@@ -1239,7 +1233,6 @@ fn directional_p_angle_for_luma(
 
 fn rect_chroma_plan(
     modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
@@ -1255,7 +1248,6 @@ fn rect_chroma_plan(
         "general_intra_non_dc_chroma",
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
-    ensure_supported_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
@@ -1265,7 +1257,6 @@ fn rect_chroma_plan(
 
 fn chroma_plan_for_modes(
     modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
@@ -1281,7 +1272,6 @@ fn chroma_plan_for_modes(
         "general_intra_non_dc_chroma",
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
-    ensure_supported_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
@@ -1320,7 +1310,6 @@ fn chroma_plan_for_parts(
     chroma: GeneralIntraChromaBlockMode,
     y_mode: IntraYMode,
     angle_delta_y: i8,
-    block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
@@ -1338,7 +1327,6 @@ fn chroma_plan_for_parts(
             "general_intra_chroma_part_non_dc_chroma",
             missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
         ))?;
-    ensure_supported_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(chroma.coeff_uv_mode(), y_mode, angle_delta_y),
@@ -1446,62 +1434,6 @@ fn parse_general_intra_residual_plan(
 struct ChromaCapabilityUnsupported {
     reason_id: &'static str,
     message: &'static str,
-}
-
-fn ensure_supported_chroma_capability(
-    mode: SupportedChromaMode,
-    block_ctx: BlockCtx,
-) -> core::result::Result<(), ChromaCapabilityUnsupported> {
-    let n4w = block_ctx.block().width4();
-    let chroma_block = block_ctx.plane_block(PlaneId::U);
-    let full_sb = n4w == FULL_SB_N4_LUMA;
-    let smooth_subblock = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    let paeth_subblock = chroma_block.width4() >= 1 && chroma_block.height4() >= 1;
-    match mode {
-        SupportedChromaMode::Dc
-        | SupportedChromaMode::D135Follow
-        | SupportedChromaMode::D135
-        | SupportedChromaMode::D157Follow
-        | SupportedChromaMode::D157
-        | SupportedChromaMode::D113Follow
-        | SupportedChromaMode::D113
-        | SupportedChromaMode::VerticalFollow
-        | SupportedChromaMode::Vertical
-        | SupportedChromaMode::HorizontalFollow
-        | SupportedChromaMode::Horizontal
-        | SupportedChromaMode::D45Follow
-        | SupportedChromaMode::D45
-        | SupportedChromaMode::D67Follow
-        | SupportedChromaMode::D67
-        | SupportedChromaMode::D203Follow
-        | SupportedChromaMode::D203 => Ok(()),
-        SupportedChromaMode::Smooth
-        | SupportedChromaMode::SmoothVertical
-        | SupportedChromaMode::SmoothHorizontal
-            if full_sb || smooth_subblock =>
-        {
-            Ok(())
-        }
-        SupportedChromaMode::Smooth
-        | SupportedChromaMode::SmoothVertical
-        | SupportedChromaMode::SmoothHorizontal => Err(unsupported_chroma(
-            "general_intra_smooth_chroma_subblock",
-            missing_capability_message!(
-                "intra.chroma.smooth",
-                neighbour = "above_right_below_left",
-                block = "subpartition",
-            ),
-        )),
-        SupportedChromaMode::Paeth if paeth_subblock => Ok(()),
-        SupportedChromaMode::Paeth => Err(unsupported_chroma(
-            "general_intra_paeth_chroma",
-            missing_capability_message!(
-                "intra.chroma.paeth",
-                neighbour = "above_left_synthesized",
-                block = "empty",
-            ),
-        )),
-    }
 }
 
 const fn unsupported_chroma(

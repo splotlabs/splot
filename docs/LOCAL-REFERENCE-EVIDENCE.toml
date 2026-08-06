@@ -640,7 +640,7 @@ id = "lref-avm-dav2d-syn-svsplit-intra-64x64-q140"
 feature_id = "DECODE-GENERAL-INTRA-BLOCK-DECODED"
 decoder_support_rows = ["general-intra-block-decoded"]
 kind = "reference-output-agreement"
-summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 partition-tree intra IVF fixture at base_q_idx 140 (negative decode-boundary companion to syn-shsplit): its 64x64 superblock SPLITs into four 32x32 squares but the encoder codes a SMOOTH chroma sub-block, which the SMOOTH_H luma BlockDecoded brick does NOT lift, so splot still rejects it with a structured decode/unsupported-feature diagnostic (general_intra_smooth_chroma_subblock) while the stream validates clean and both reference decoders agree. Pins the verified-subset boundary: the new above-right path admits only the SMOOTH_H luma sub-block that syn-shsplit proves bit-exact, not chroma sub-blocks."
+summary = "Local AVM and dav2d raw decoder output MD5 digests agreed for the 8-bit 64x64 partition-tree intra IVF fixture at base_q_idx 140: its superblock splits into four 32x32 squares and codes a SMOOTH chroma sub-block. Current splot also decodes the complete frame byte-exactly through the shared BlockDecoded above-right/below-left sentinel path, with raw SHA-256 c2b46d534744db9fc146b460f438a6ae450c711e43e537f80a13886297ddbaa5."
 recorded_at = "2026-06-21"
 
 [[evidence.fixture]]
