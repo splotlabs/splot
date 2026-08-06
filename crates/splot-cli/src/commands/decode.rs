@@ -17,7 +17,7 @@ use serde::Serialize;
 use splot_decode::{
     DecodeContext, DecodeDiagnostic, DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeError,
     DecodeHashEntry, DecodeHashFrame, DecodeHashReport, DecodeLimitError, DecodeLimitName,
-    DecodeOptions, DecodeOutputError, DecodeOutputOperation, DecodeRuntimeConfig,
+    DecodeOptions, DecodeOutputError, DecodeOutputOperation, DecodeRuntimeConfig, Y4mFrameRate,
 };
 use splot_parallel::{FrameDelay, ThreadCount};
 
@@ -83,6 +83,9 @@ pub struct DecodeArgs {
     /// Output path for the selected artifact.
     #[arg(short = 'o', long, required_unless_present = "output_format")]
     pub output: Option<PathBuf>,
+    /// Override the Y4M frame rate as `NUM:DEN`; required for raw Annex B Y4M output.
+    #[arg(long, value_name = "NUM:DEN", value_parser = parse_y4m_frame_rate)]
+    pub frame_rate: Option<Y4mFrameRate>,
     /// Worker-thread policy: `auto` (default), a positive integer, or `0` (alias for auto).
     #[arg(long, default_value_t = ThreadCount::Auto)]
     pub threads: ThreadCount,
@@ -94,6 +97,19 @@ pub struct DecodeArgs {
     /// Stop after emitting this many output frames.
     #[arg(long)]
     pub limit: Option<NonZeroU64>,
+}
+
+fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, String> {
+    let (numerator, denominator) = value
+        .split_once(':')
+        .ok_or_else(|| "frame rate must use NUM:DEN syntax".to_owned())?;
+    let numerator = numerator
+        .parse::<u32>()
+        .map_err(|_| "frame-rate numerator must be a 32-bit unsigned integer".to_owned())?;
+    let denominator = denominator
+        .parse::<u32>()
+        .map_err(|_| "frame-rate denominator must be a 32-bit unsigned integer".to_owned())?;
+    Y4mFrameRate::new(numerator, denominator).map_err(|error| error.to_string())
 }
 
 #[derive(Debug)]
@@ -459,9 +475,14 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
         .output_target()
         .context("decode output target was not resolved")?;
     let output_format = target.format();
+    if args.frame_rate.is_some() && output_format != DecodeOutputFormat::Y4m {
+        anyhow::bail!("--frame-rate is only valid with Y4M output");
+    }
 
     let total_started = timing_start();
-    let options = DecodeOptions::default().with_output_frame_limit(args.limit);
+    let options = DecodeOptions::default()
+        .with_output_frame_limit(args.limit)
+        .with_y4m_frame_rate_override(args.frame_rate);
     let input_read_started = timing_start();
     let input = read_decode_input(&args.input, &options)?;
     timing_report("input_read", input_read_started);

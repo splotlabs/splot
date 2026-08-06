@@ -8,7 +8,10 @@
 //! from § 6.4.1 and § 7.21.2 for visible dimensions, bit depth, and chroma
 //! geometry, but the Y4M container tokens are not AV2 syntax.
 
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    num::NonZeroU32,
+};
 
 use crate::{BitDepth, DecodedFrame, PixelFormat, Plane, PlaneSize, ReconSample};
 
@@ -111,8 +114,8 @@ impl From<io::Error> for Y4mError {
 /// Valid nonzero Y4M frame rate.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Y4mFrameRate {
-    numerator: u32,
-    denominator: u32,
+    numerator: NonZeroU32,
+    denominator: NonZeroU32,
 }
 
 impl Y4mFrameRate {
@@ -121,27 +124,26 @@ impl Y4mFrameRate {
     /// # Errors
     /// Returns [`Y4mError::InvalidFrameRate`] if either component is zero.
     pub fn new(numerator: u32, denominator: u32) -> Y4mResult<Self> {
-        if numerator == 0 || denominator == 0 {
-            return Err(Y4mError::InvalidFrameRate {
+        match (NonZeroU32::new(numerator), NonZeroU32::new(denominator)) {
+            (Some(numerator), Some(denominator)) => Ok(Self {
                 numerator,
                 denominator,
-            });
+            }),
+            _ => Err(Y4mError::InvalidFrameRate {
+                numerator,
+                denominator,
+            }),
         }
-
-        Ok(Self {
-            numerator,
-            denominator,
-        })
     }
 
     /// Returns the frame-rate numerator.
     pub const fn numerator(self) -> u32 {
-        self.numerator
+        self.numerator.get()
     }
 
     /// Returns the frame-rate denominator.
     pub const fn denominator(self) -> u32 {
-        self.denominator
+        self.denominator.get()
     }
 }
 

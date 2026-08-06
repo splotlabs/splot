@@ -84,6 +84,7 @@ fn default_options_and_limits_are_finite_and_pinned() {
 
     assert_eq!(DecodeOptions::default(), DecodeOptions::DEFAULT);
     assert_eq!(DecodeOptions::default().limits(), DecodeLimits::DEFAULT);
+    assert_eq!(DecodeOptions::default().y4m_frame_rate_override(), None);
     assert_eq!(DecodeOptions::new(limits).limits(), limits);
     assert_eq!(
         DecodeOptions::default()

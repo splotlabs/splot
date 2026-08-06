@@ -9887,6 +9887,73 @@ left = "avm-isolated-opfl-refine-all-raw-sha256"
 right = "splot-opfl-refine-all-raw-sha256"
 
 [[evidence]]
+id = "lref-avm-annex-b-y4m-frame-rate"
+feature_id = "DECODE-Y4M-RUNTIME-OUTPUT"
+decoder_support_rows = ["decode-y4m-runtime-output"]
+kind = "reference-output-agreement"
+summary = "A caller-provided frame rate lets Y4M wrap a raw Annex B stream without inventing timing: current AVM and splot agree on the complete two-frame raw payload, and splot emits that payload under an exact F24000:1001 Y4M container."
+recorded_at = "2026-08-06"
+command = '''Decode tests/conformance/vectors/valid/syn-2seq-compatible-intra-64x64.obu with current avmdec --codec=av2 --i420 --rawvideo --output-bit-depth=8 and with splot decode --threads 1 --output-format raw, then compare the complete raw outputs. Decode the same input with splot decode --threads 1 --frame-rate 24000:1001 and record the exact Y4M stream digest.'''
+
+[[evidence.fixture]]
+id = "annex-b-input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2seq-compatible-intra-64x64.obu"
+sha256 = "da5baafd9ce08fedf8ee77b559404b2e8b03e896d1ce4af3511992a18af491f3"
+size_bytes = 52
+format = "annex-b"
+provenance_kind = "structured-derivative-of-avm-generated-project-owned-fixture"
+provenance_summary = "Deterministic concatenation of two unchanged AVMenc-generated 64x64 key-frame units with compatible 8-bit 4:2:0 visible output. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current-raw"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+version_summary = "Current local AVM checkout v1.0.0-63-g3efe9fa8e."
+command_summary = "avmdec --codec=av2 --i420 --rawvideo --output-bit-depth=8 -o avm.raw {fixture:annex-b-input}"
+output_digest_id = "avm-current-annex-b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "a29b83d3b3d8b9dc2336e7b29e8a9f9ea64b3cdf18f5816d82ed64e73a2c964c"
+output_scope = "12,288-byte raw I420 output for two 64x64 frames"
+
+[[evidence.reference_run]]
+id = "splot-raw"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree with caller-provided Y4M frame-rate support."
+command_summary = "splot decode --threads 1 --output-format raw --output splot.raw {fixture:annex-b-input}"
+output_digest_id = "splot-annex-b-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "a29b83d3b3d8b9dc2336e7b29e8a9f9ea64b3cdf18f5816d82ed64e73a2c964c"
+output_scope = "12,288-byte raw I420 output for two 64x64 frames"
+
+[[evidence.reference_run]]
+id = "splot-y4m-explicit-rate"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree with caller-provided Y4M frame-rate support."
+command_summary = "splot decode --threads 1 --frame-rate 24000:1001 --output splot.y4m {fixture:annex-b-input}"
+output_digest_id = "splot-annex-b-y4m-explicit-rate-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "d10d26281103ac02106572bb19f6c8eb58dd3833ba909d2c027ea9ca45ba1111"
+output_scope = "12,343-byte Y4M stream with F24000:1001 and two 64x64 8-bit 4:2:0 frames"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-current-annex-b-raw-sha256"
+right = "splot-annex-b-raw-sha256"
+
+[[evidence]]
 id = "lref-avm-syn-2seq-intra-64x64"
 feature_id = "DECODE-REPEATED-KEY-SEQUENCE-ACTIVATION"
 decoder_support_rows = ["decode-repeated-key-sequence-activation"]

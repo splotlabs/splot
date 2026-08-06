@@ -516,8 +516,9 @@ Runtime-tier `decode/unsupported-feature` includes `detail_kind`,
 Raw output operations use matrix row `decode-minimal-raw-runtime-output` and
 Feature ID `DECODE-MINIMAL-RAW-RUNTIME-OUTPUT`; Y4M output operations use
 matrix row `decode-y4m-runtime-output` and Feature ID
-`DECODE-Y4M-RUNTIME-OUTPUT`, including invalid IVF timebase metadata that cannot
-produce a nonzero Y4M frame rate. The operation is stable; filesystem
+`DECODE-Y4M-RUNTIME-OUTPUT`, including missing external timing for raw Annex B
+or invalid IVF timebase metadata that cannot produce a nonzero Y4M frame rate.
+A valid caller-provided frame rate resolves either condition. The operation is stable; filesystem
 publication code must not include nondeterministic temporary filename suffixes
 in diagnostic details.
 

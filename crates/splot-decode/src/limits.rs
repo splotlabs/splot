@@ -7,6 +7,8 @@
 
 use core::{fmt, num::NonZeroU64};
 
+use splot_recon::Y4mFrameRate;
+
 const DEFAULT_MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 const DEFAULT_MAX_OBUS: u64 = 16_384;
 const DEFAULT_MAX_IVF_FRAME_RECORDS: u64 = 4_096;
@@ -49,6 +51,7 @@ macro_rules! decode_limit_accessors {
 pub struct DecodeOptions {
     limits: DecodeLimits,
     output_frame_limit: Option<NonZeroU64>,
+    y4m_frame_rate_override: Option<Y4mFrameRate>,
 }
 
 impl DecodeOptions {
@@ -56,6 +59,7 @@ impl DecodeOptions {
     pub const DEFAULT: Self = Self {
         limits: DecodeLimits::DEFAULT,
         output_frame_limit: None,
+        y4m_frame_rate_override: None,
     };
 
     /// Creates decoder options from caller-provided resource limits.
@@ -64,6 +68,7 @@ impl DecodeOptions {
         Self {
             limits,
             output_frame_limit: None,
+            y4m_frame_rate_override: None,
         }
     }
 
@@ -89,6 +94,19 @@ impl DecodeOptions {
     #[must_use]
     pub const fn with_output_frame_limit(mut self, limit: Option<NonZeroU64>) -> Self {
         self.output_frame_limit = limit;
+        self
+    }
+
+    /// Returns the optional caller-provided Y4M frame-rate override.
+    #[must_use]
+    pub const fn y4m_frame_rate_override(self) -> Option<Y4mFrameRate> {
+        self.y4m_frame_rate_override
+    }
+
+    /// Returns a copy with an optional caller-provided Y4M frame-rate override.
+    #[must_use]
+    pub const fn with_y4m_frame_rate_override(mut self, frame_rate: Option<Y4mFrameRate>) -> Self {
+        self.y4m_frame_rate_override = frame_rate;
         self
     }
 }
