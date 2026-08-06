@@ -13,16 +13,15 @@ fn invalid_uv_mode_is_malformed_tile_syntax() {
         GeneralIntraBlockModeError::InvalidUvMode { uv_mode: 13 },
         ByteOffset::new(42),
     );
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
-    let DecodeError::MalformedSource { issue } = &error else {
-        return;
-    };
-
-    assert_eq!(issue.kind(), DecodeSourceIssueKind::TilePayloadParseError);
-    assert_eq!(issue.rule_id(), None);
-    assert_eq!(issue.spec_section(), Some(GENERAL_INTRA_MODE_SPEC_SECTION));
-    assert_eq!(issue.offset(), Some(ByteOffset::new(42)));
-    assert!(issue.message().contains("out-of-range uv_mode 13"));
+    assert!(matches!(
+        &error,
+        DecodeError::MalformedSource { issue }
+            if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                && issue.rule_id().is_none()
+                && issue.spec_section() == Some(GENERAL_INTRA_MODE_SPEC_SECTION)
+                && issue.offset() == Some(ByteOffset::new(42))
+                && issue.message().contains("out-of-range uv_mode 13")
+    ));
 
     let report = DecodeDiagnosticReport::from_decode_error(&error)
         .expect("malformed source has a diagnostic report");
