@@ -733,7 +733,6 @@ fn read_inter_residual_plane(
         start_x,
         start_y,
         tx_fills_block,
-        None,
         chroma_eob_ctx,
         INTER_UV_MODE_DC,
         0,
