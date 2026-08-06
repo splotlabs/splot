@@ -860,85 +860,6 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
 }
 
 #[test]
-fn directional_first_partition_handoff_uses_each_transform_units_edges() {
-    let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
-    for mode in [
-        SupportedDirectionalLumaMode::D45,
-        SupportedDirectionalLumaMode::D67,
-        SupportedDirectionalLumaMode::D113,
-        SupportedDirectionalLumaMode::D135,
-        SupportedDirectionalLumaMode::D157,
-        SupportedDirectionalLumaMode::D203,
-    ] {
-        let plan = GeneralIntraResidualPlan::square(
-            block_ctx,
-            IntraLumaPlan::DirectionalFirst { mode },
-            None,
-            false,
-            false,
-            None,
-            false,
-        )
-        .expect("directional square plan");
-        let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
-        let interior = PositionedLumaCoeffBlock {
-            x: 4,
-            y: 4,
-            tx_size: TX_4X4,
-            middle: false,
-            coeffs: empty_luma_coeffs(),
-        };
-        let p_angle = crate::prediction::intra::directional_mode_p_angle(mode);
-        let reconstruction = if p_angle < 90 {
-            ResidualReconstructionPlan::LumaRectOneSidedAbove {
-                p_angle,
-                use_tcq: false,
-            }
-        } else if p_angle > 180 {
-            ResidualReconstructionPlan::LumaRectOneSidedLeft {
-                p_angle,
-                use_tcq: false,
-            }
-        } else {
-            ResidualReconstructionPlan::LumaRectMiddle {
-                p_angle,
-                use_tcq: false,
-            }
-        };
-        assert_eq!(
-            plane
-                .transform_unit_plan(&interior)
-                .expect("partitioned directional transform unit"),
-            ResidualPlanePlan {
-                x: 4,
-                y: 4,
-                tx_size: TX_4X4,
-                tx: TxShape::from_luma_4x4(1, 1).expect("4x4 tx shape"),
-                residual_width4: 1,
-                residual_height4: 1,
-                zero_corners: false,
-                reconstruction,
-                block_ctx: ctx(BlockRect::new(1, 1, 1, 1), BitDepth::Eight),
-                ..plane
-            },
-        );
-
-        let origin = PositionedLumaCoeffBlock {
-            x: 0,
-            y: 0,
-            ..interior
-        };
-        assert_eq!(
-            plane
-                .transform_unit_plan(&origin)
-                .expect("origin transform unit")
-                .reconstruction,
-            reconstruction,
-        );
-    }
-}
-
-#[test]
 fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
     let plan = GeneralIntraResidualPlan::square(
@@ -974,12 +895,12 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
 }
 
 #[test]
-fn directional_first_partition_handoff_rejects_invalid_transform_geometry() {
+fn first_partition_handoff_rejects_invalid_transform_geometry() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
     let plan = GeneralIntraResidualPlan::square(
         block_ctx,
-        IntraLumaPlan::DirectionalFirst {
-            mode: SupportedDirectionalLumaMode::D135,
+        IntraLumaPlan::NonDcFirst {
+            mode: SupportedNonDcLumaMode::Smooth,
         },
         None,
         false,
@@ -987,7 +908,7 @@ fn directional_first_partition_handoff_rejects_invalid_transform_geometry() {
         None,
         false,
     )
-    .expect("directional square plan");
+    .expect("smooth square plan");
     let plane = plan.plane_plan(PlaneId::Y).expect("luma plane");
     let invalid = PositionedLumaCoeffBlock {
         x: 4,

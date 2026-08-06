@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::bitstream::tile_payload::{CflIndex, CflParams, GeneralIntraChromaBlockMode};
-use crate::prediction::intra::IntraLumaPlan;
 
 #[test]
 fn general_intra_recon_command_is_send() {
@@ -151,6 +150,9 @@ fn luma_tx_partition_context_uses_current_block_lossless_flag() {
     );
 }
 
+/// Luma 4x4 units spanning a full AV2 superblock axis.
+const FULL_SB_N4_LUMA: usize = 16;
+
 #[test]
 fn lossless_luma_uses_generic_prediction_planner() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
@@ -168,7 +170,7 @@ fn lossless_luma_uses_generic_prediction_planner() {
         ] {
             let modes = luma_modes(mode);
             assert!(
-                plan_luma_prediction_for_segment(&modes, block_ctx, true, FULL_SB_N4_LUMA).is_ok()
+                plan_luma_prediction(&modes, block_ctx).is_ok()
                     || rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
                 "lossless {bit_depth:?} {mode:?}"
             );
@@ -188,9 +190,7 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
     ] {
         let modes = luma_modes_with_angle(mode, angle_delta_y);
 
-        assert!(
-            plan_luma_prediction_for_segment(&modes, block_ctx, true, FULL_SB_N4_LUMA).is_err()
-        );
+        assert!(plan_luma_prediction(&modes, block_ctx).is_err());
         assert_eq!(
             rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA),
             Ok(RectLumaPlan::Middle {
@@ -203,7 +203,6 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
             block_ctx,
             false,
             FULL_SB_N4_LUMA,
-            true,
         ));
     }
 }
@@ -265,56 +264,43 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
 }
 
 #[test]
-fn cardinal_top_left_guard_admits_only_verified_shapes() {
-    let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-    let vertical = luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 2);
-    let horizontal = luma_modes(IntraYMode::H_PRED_FOR_TEST);
+fn directional_luma_always_plans_through_the_rect_planner() {
+    let shapes = [
+        ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
+        ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Ten),
+        ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
+        ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
+        ctx_with_bit_depth(FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, 4, 4, BitDepth::Ten),
+    ];
+    let modes = [
+        IntraYMode::V_PRED_FOR_TEST,
+        IntraYMode::H_PRED_FOR_TEST,
+        IntraYMode::D45_PRED_FOR_TEST,
+        IntraYMode::D67_PRED_FOR_TEST,
+        IntraYMode::D113_PRED_FOR_TEST,
+        IntraYMode::D135_PRED_FOR_TEST,
+        IntraYMode::D157_PRED_FOR_TEST,
+        IntraYMode::D203_PRED_FOR_TEST,
+    ];
 
-    assert_eq!(
-        plan_luma_prediction_for_segment(&vertical, top_left_8, false, FULL_SB_N4_LUMA)
-            .expect("verified top-left V_PRED angle delta should plan"),
-        crate::prediction::intra::IntraLumaPlan::DirectionalMiddle { p_angle: 96 }
-    );
-    assert_eq!(
-        plan_luma_prediction_for_segment(&horizontal, top_left_8, false, FULL_SB_N4_LUMA)
-            .expect("verified top-left H_PRED cardinal should plan"),
-        crate::prediction::intra::IntraLumaPlan::CardinalNeighbour {
-            direction: IntraCardinalDirection::Horizontal,
+    for block_ctx in shapes {
+        for mode in modes {
+            for angle_delta_y in [-3, 0, 2] {
+                let modes = luma_modes_with_angle(mode, angle_delta_y);
+                assert!(
+                    plan_luma_prediction(&modes, block_ctx).is_err(),
+                    "square planner must defer directional luma {mode:?} {angle_delta_y}"
+                );
+                assert!(
+                    rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
+                    "rect planner must serve directional luma {mode:?} {angle_delta_y}"
+                );
+                assert!(
+                    square_luma_needs_rect_residual_path(&modes, block_ctx, false, FULL_SB_N4_LUMA),
+                    "directional luma {mode:?} {angle_delta_y} must take the rect residual path"
+                );
+            }
         }
-    );
-
-    for (modes, block_ctx, sb_mib) in [
-        (
-            luma_modes(IntraYMode::V_PRED_FOR_TEST),
-            top_left_8,
-            FULL_SB_N4_LUMA,
-        ),
-        (
-            luma_modes_with_angle(IntraYMode::V_PRED_FOR_TEST, 1),
-            top_left_8,
-            FULL_SB_N4_LUMA,
-        ),
-        (
-            vertical,
-            ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
-            FULL_SB_N4_LUMA,
-        ),
-        (vertical, top_left_8, 32),
-        (
-            horizontal,
-            ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
-            FULL_SB_N4_LUMA,
-        ),
-        (
-            vertical,
-            ctx_with_bit_depth(0, 0, 4, 4, BitDepth::Eight),
-            FULL_SB_N4_LUMA,
-        ),
-    ] {
-        assert!(
-            plan_luma_prediction_for_segment(&modes, block_ctx, false, sb_mib).is_err(),
-            "unverified non-lossless cardinal luma shape must fail closed"
-        );
     }
 }
 
@@ -428,7 +414,7 @@ fn active_dip_luma_routes_before_dc() {
     let block = ctx(0, 10, 2, 4);
 
     assert_eq!(
-        plan_luma_prediction(&modes, block, false),
+        plan_luma_prediction(&modes, block),
         Ok(crate::prediction::intra::IntraLumaPlan::Dip {
             mode: 2,
             transpose: true,
@@ -681,55 +667,6 @@ fn admits_right_edge_rect_d45_as_one_sided_above_luma_without_above_right() {
 }
 
 #[test]
-fn admits_top_left_full_sb_lossless_directional_luma_cases() {
-    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-
-    for (label, y_mode, expected) in [
-        (
-            "d67",
-            IntraYMode::D67_PRED_FOR_TEST,
-            IntraLumaPlan::DirectionalOneSidedAbove { p_angle: 67 },
-        ),
-        (
-            "d113",
-            IntraYMode::D113_PRED_FOR_TEST,
-            IntraLumaPlan::DirectionalFirst {
-                mode: SupportedDirectionalLumaMode::D113,
-            },
-        ),
-        (
-            "d157",
-            IntraYMode::D157_PRED_FOR_TEST,
-            IntraLumaPlan::DirectionalFirst {
-                mode: SupportedDirectionalLumaMode::D157,
-            },
-        ),
-        (
-            "d203",
-            IntraYMode::D203_PRED_FOR_TEST,
-            IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 },
-        ),
-    ] {
-        let modes = luma_modes(y_mode);
-
-        assert_eq!(
-            plan_luma_prediction_for_segment(&modes, top_left, true, FULL_SB_N4_LUMA),
-            Ok(expected),
-            "{label}"
-        );
-    }
-}
-
-#[test]
-fn top_left_d113_luma_requires_lossless_admission() {
-    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-    let modes = luma_modes(IntraYMode::D113_PRED_FOR_TEST);
-
-    assert!(plan_luma_prediction(&modes, top_left, false).is_err());
-    assert!(plan_luma_prediction_for_segment(&modes, top_left, false, FULL_SB_N4_LUMA).is_err());
-}
-
-#[test]
 fn admits_rect_cardinal_luma_cases() {
     for (label, p_angle, block, direction) in [
         (
@@ -924,7 +861,7 @@ fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
         },
     );
 
-    assert!(plan_luma_prediction(&modes, first_col_block, false).is_err());
+    assert!(plan_luma_prediction(&modes, first_col_block).is_err());
     assert_eq!(
         rect_luma_plan(&modes, first_col_block, false, 32),
         Ok(RectLumaPlan::OneSidedAbove {
@@ -936,8 +873,7 @@ fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
         &modes,
         first_col_block,
         false,
-        32,
-        false
+        32
     ));
 }
 

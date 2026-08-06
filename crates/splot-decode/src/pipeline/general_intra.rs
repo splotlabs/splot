@@ -11,8 +11,8 @@ use crate::bitstream::tile_payload::{
     ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, CflIndex, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     GeneralIntraLeafMode, IntraYMode, IsCflContext, LumaTransformPartitionContext,
-    LumaTransformTypeContext, SupportedChromaMode, SupportedDirectionalLumaMode,
-    SupportedNonDcLumaMode, TransformToolResidualPolicy, read_lossless_luma_tx_size,
+    LumaTransformTypeContext, SupportedChromaMode, SupportedNonDcLumaMode,
+    TransformToolResidualPolicy, read_lossless_luma_tx_size,
 };
 use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE, plan_luma_prediction};
 use crate::residual::pipeline::{
@@ -22,7 +22,6 @@ use crate::residual::pipeline::{
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
 
-pub(super) const FULL_SB_N4_LUMA: usize = 16;
 const MI_SIZE: usize = 4;
 const ANGLE_STEP: i32 = 3;
 pub(crate) const MRL_INDEX_TO_DELTA: [i32; 4] = [0, 1, -1, 0];
@@ -498,7 +497,7 @@ pub(crate) fn decode_one_general_intra_block(
 
     if n4w != n4h
         || modes.uses_active_mrl()
-        || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib, lossless)
+        || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib)
     {
         let (leaf, command) = parse_one_general_intra_rect_block(
             intra_edge,
@@ -536,7 +535,7 @@ pub(crate) fn decode_one_general_intra_block(
     } else {
         None
     };
-    let luma_plan = plan_luma_prediction_for_segment(&modes, block_ctx, lossless, sb_mib)
+    let luma_plan = plan_luma_prediction(&modes, block_ctx)
         .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
 
     let residual_plan = GeneralIntraResidualPlan::square(
@@ -740,37 +739,6 @@ fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> Gene
     }
 }
 
-fn top_left_no_neighbour_directional_prediction_verified(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-) -> bool {
-    let block = block_ctx.block();
-    let top_left_full_sb = block_ctx.bit_depth() == BitDepth::Eight
-        && sb_mib == FULL_SB_N4_LUMA
-        && block_ctx.is_top_left()
-        && block.width4() == FULL_SB_N4_LUMA
-        && block.height4() == FULL_SB_N4_LUMA;
-    top_left_full_sb
-        && matches!(
-            (modes.y_mode.supported_directional(), modes.angle_delta_y),
-            (Some(SupportedDirectionalLumaMode::Vertical), 2)
-                | (Some(SupportedDirectionalLumaMode::Horizontal), 0)
-        )
-}
-fn plan_luma_prediction_for_segment(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    lossless: bool,
-    sb_mib: usize,
-) -> core::result::Result<crate::prediction::intra::IntraLumaPlan, IntraLumaUnsupported> {
-    plan_luma_prediction(
-        modes,
-        block_ctx,
-        lossless || top_left_no_neighbour_directional_prediction_verified(modes, block_ctx, sb_mib),
-    )
-}
-
 fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformTypeContext {
     LumaTransformTypeContext::with_mrl_indices(
         modes.y_mode,
@@ -804,11 +772,10 @@ fn square_luma_needs_rect_residual_path(
     block_ctx: BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
-    lossless: bool,
 ) -> bool {
     let block = block_ctx.block();
     block.width4() == block.height4()
-        && plan_luma_prediction_for_segment(modes, block_ctx, lossless, sb_mib).is_err()
+        && plan_luma_prediction(modes, block_ctx).is_err()
         && rect_luma_plan(modes, block_ctx, use_tcq, sb_mib).is_ok()
 }
 

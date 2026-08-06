@@ -122,10 +122,6 @@ impl ResidualPlanePlan {
                 use_tcq,
             } => ResidualReconstructionPlan::LumaPalette { palette, use_tcq },
             ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::CardinalNeighbour { direction },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectCardinal { direction, use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::Dc,
                 use_tcq,
             } => ResidualReconstructionPlan::Rect { use_tcq },
@@ -141,33 +137,6 @@ impl ResidualPlanePlan {
                 plan: IntraLumaPlan::PaethNeighbour,
                 use_tcq,
             } => ResidualReconstructionPlan::LumaRectPaeth { use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::DirectionalMiddle { p_angle },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::DirectionalOneSidedAbove { p_angle },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectOneSidedAbove { p_angle, use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan: IntraLumaPlan::DirectionalOneSidedLeft { p_angle },
-                use_tcq,
-            } => ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq },
-            ResidualReconstructionPlan::LumaSquare {
-                plan:
-                    IntraLumaPlan::DirectionalFirst { mode }
-                    | IntraLumaPlan::DirectionalNeighbour { mode },
-                use_tcq,
-            } => {
-                let p_angle = crate::prediction::intra::directional_mode_p_angle(mode);
-                if p_angle < 90 {
-                    ResidualReconstructionPlan::LumaRectOneSidedAbove { p_angle, use_tcq }
-                } else if p_angle > 180 {
-                    ResidualReconstructionPlan::LumaRectOneSidedLeft { p_angle, use_tcq }
-                } else {
-                    ResidualReconstructionPlan::LumaRectMiddle { p_angle, use_tcq }
-                }
-            }
             ResidualReconstructionPlan::LumaSquare {
                 plan: IntraLumaPlan::NonDcFirst { mode } | IntraLumaPlan::NonDcNeighbour { mode },
                 use_tcq,
