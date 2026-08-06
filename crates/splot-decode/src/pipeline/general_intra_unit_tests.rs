@@ -256,7 +256,7 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
 }
 
 #[test]
-fn rect_planner_serves_every_directional_luma_shape() {
+fn directional_luma_always_plans_through_the_rect_planner() {
     let shapes = [
         ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
         ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Ten),
