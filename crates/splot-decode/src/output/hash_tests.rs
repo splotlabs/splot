@@ -5,13 +5,14 @@
 
 use std::num::NonZeroU64;
 
+use splot_core::span::ByteOffset;
 use splot_parallel::{FrameDelay, ThreadCount};
 
 use super::*;
 use crate::test_support::{MINIMAL_FIXTURE, empty_avmenc_ivf, minimal_fixture_with_timebase};
 use crate::{
     DecodeContext, DecodeError, DecodeLimitName, DecodeLimitThreshold, DecodeLimits,
-    DecodeRuntimeConfig,
+    DecodeRuntimeConfig, DecodeSourceIssueKind,
 };
 
 const MONO_FIXTURE: &[u8] =
@@ -559,12 +560,18 @@ fn monochrome_fixture_decodes_to_luma_only_hash_report() {
 }
 
 #[test]
-fn malformed_input_fails_before_hash_report() {
+fn malformed_annex_b_fails_in_planner_before_runtime() {
     let error = context(ThreadCount::from(1usize))
         .decode_hash_report_bytes(&[0x01, 0x14, 0x05, 0x10], DecodeOptions::default())
         .unwrap_err();
 
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
+    assert!(matches!(
+        error,
+        DecodeError::MalformedSource {
+            issue
+        } if issue.kind() == DecodeSourceIssueKind::AnnexBParseError
+            && issue.offset() == Some(ByteOffset::new(3))
+    ));
 }
 
 #[test]
