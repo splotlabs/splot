@@ -94,6 +94,10 @@ fn ccso_reference_slot_checks_num_total_refs() {
         unsupported.reason(),
         "inter_ccso_reference_index_out_of_range"
     );
-    assert_eq!(unsupported.spec_section(), "6.17.10.2");
+    assert_eq!(unsupported.spec_section(), "6.17.7.8");
+    assert_eq!(
+        unsupported.message(),
+        "CCSO reference index is outside NumTotalRefs"
+    );
     assert_eq!(unsupported.byte_offset(), Some(offset));
 }

@@ -1619,11 +1619,11 @@ fn ccso_reference_slot(ref_frame_idx: &[u32], ref_index: u32, offset: ByteOffset
         .get(ref_index as usize)
         .copied()
         .ok_or_else(|| {
-            inter_cap!(
+            inter_diag!(
                 "inter_ccso_reference_index_out_of_range",
                 offset,
-                "inter.ccso.reference_index",
-                "6.17.10.2"
+                "CCSO reference index is outside NumTotalRefs",
+                "6.17.7.8"
             )
         })
 }
