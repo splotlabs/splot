@@ -287,6 +287,7 @@ pub(crate) struct LumaPalette {
 }
 
 impl LumaPalette {
+    #[cfg(test)]
     pub(crate) fn new(size: u8, colors: [u16; PALETTE_MAX_SIZE]) -> Option<Self> {
         let size_usize = usize::from(size);
         if !(2..=PALETTE_MAX_SIZE).contains(&size_usize) {
@@ -295,6 +296,7 @@ impl LumaPalette {
         Some(Self { size, colors })
     }
 
+    /// Builds a 2 through 8 color palette from a `TilePaletteYSizeCdf` symbol.
     pub(crate) fn from_size_symbol(size_symbol: Symbol, colors: [u16; PALETTE_MAX_SIZE]) -> Self {
         Self {
             size: size_symbol.get() + 2,
