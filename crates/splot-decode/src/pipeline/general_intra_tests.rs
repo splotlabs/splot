@@ -58,6 +58,9 @@ const LOSSLESS_DPCM_Y_FIXTURE: &[u8] = include_bytes!(
 const LOSSLESS_CARDINAL_Y_V_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-v-intra-64x64.ivf"
 );
+const LOSSLESS_CARDINAL_Y_V_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-v-intra-64x64-10bit.ivf"
+);
 const LOSSLESS_CARDINAL_Y_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-cardinal-y-h-intra-64x64.ivf"
 );
@@ -96,6 +99,9 @@ const LOSSLESS_NONDC_LUMA_D203_CHROMA_FOLLOW_LEFTEDGE_FIXTURE: &[u8] = include_b
 );
 const LOSSLESS_NONDC_LUMA_PAETH_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64.ivf"
+);
+const LOSSLESS_NONDC_LUMA_PAETH_10BIT_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64-10bit.ivf"
 );
 const LOSSLESS_NONDC_CHROMA_H_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-lossless-nondc-chroma-h-intra-64x64.ivf"
@@ -670,6 +676,29 @@ fn lossless_nondc_luma_paeth_frame_decodes_to_oracle() {
         &frame,
         "9b37c3e091251b52640f7574105d307a638bbefd0042e900249e3f93bc5148ea",
     );
+}
+
+#[test]
+fn lossless_luma_10bit_frames_decode_to_oracle() {
+    for (fixture, expected_len, expected_hash) in [
+        (
+            LOSSLESS_NONDC_LUMA_PAETH_10BIT_FIXTURE,
+            159,
+            "c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b",
+        ),
+        (
+            LOSSLESS_CARDINAL_Y_V_10BIT_FIXTURE,
+            69,
+            "840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6",
+        ),
+    ] {
+        assert_eq!(fixture.len(), expected_len);
+        let frame = decode_ten(fixture);
+
+        assert_yuv420_frame(&frame, BitDepth::Ten, 64, 64);
+        assert_chroma_size(&frame, 32, 32);
+        assert_hash(&frame, expected_hash);
+    }
 }
 
 #[test]
@@ -1251,51 +1280,6 @@ fn lossless_chroma_prediction_guard_admits_proven_non_dpcm_subset() {
     ));
 }
 #[test]
-fn lossless_luma_prediction_guard_rejects_unverified_nondc_with_offset() {
-    let modes = GeneralIntraBlockModes::luma_only(GeneralIntraLumaBlockMode {
-        y_mode: IntraYMode::D45_PRED_FOR_TEST,
-        angle_delta_y: 0,
-        intra_joint_mode: 0,
-        mrl_index: 0,
-        mrl_sec_index: None,
-        fsc_mode: 0,
-        uses_mrls: 0,
-        use_dip: 0,
-        dip_transpose: 0,
-        dip_mode: 0,
-        use_dpcm_y: 0,
-        dpcm_mode_y: 0,
-    });
-    let error = general_intra::ensure_lossless_verified_prediction_subset(
-        true,
-        false,
-        &modes,
-        block_ctx(
-            0,
-            0,
-            general_intra::FULL_SB_N4_LUMA,
-            general_intra::FULL_SB_N4_LUMA,
-            BitDepth::Ten,
-        ),
-        general_intra::FULL_SB_N4_LUMA,
-        splot_core::span::ByteOffset::new(9),
-    )
-    .expect_err("non-DC 10-bit lossless luma must fail closed");
-
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("unexpected error: {error:?}");
-    };
-    assert_eq!(
-        unsupported.reason(),
-        "general_intra_lossless_other_nondc_luma_unverified"
-    );
-    assert_eq!(
-        unsupported.byte_offset(),
-        Some(splot_core::span::ByteOffset::new(9))
-    );
-}
-
-#[test]
 fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
     for (y_mode, uv_mode, offset) in [
         (IntraYMode::D113_PRED_FOR_TEST, 2, 13),
@@ -1318,7 +1302,7 @@ fn lossless_luma_prediction_guard_rejects_unproven_d113_chroma_cross_product() {
             dpcm_mode_y: 0,
         });
         modes.uv_mode = uv_mode;
-        let error = general_intra::ensure_lossless_verified_prediction_subset(
+        let error = general_intra::ensure_lossless_chroma_prediction_subset(
             true,
             true,
             &modes,

@@ -10941,3 +10941,145 @@ right = "avm-lr-switchable-unit-current-raw-sha256"
 kind = "digest-equality"
 left = "avm-lr-switchable-unit-pinned-raw-sha256"
 right = "splot-lr-switchable-unit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-lossless-nondc-luma-paeth-intra-64x64-10bit"
+feature_id = "DECODE-LOSSLESS-LUMA-PREDICTION"
+decoder_support_rows = ["lossless-luma-prediction"]
+kind = "reference-output-agreement"
+summary = "Pinned AVM, current AVM, and splot emit byte-identical raw I420 output for a deterministic AVMenc 10-bit lossless PAETH_PRED luma key frame."
+recorded_at = "2026-08-06"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64-10bit.ivf"
+sha256 = "655eab374e0fc2a06f72fd1e24b749bf360c23c7119113ce21f3392198f213cb"
+size_bytes = 159
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically by AVMenc revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 from a 64x64 yuv420p10le conversion of the project-owned D67 intra source, using lossless mode, fixed 64x64 partitions, DC chroma, and broad unsupported tools disabled. AVM inspection identifies one PAETH_PRED luma block with TX_4X4 lossless residuals; repeated encoding was byte-identical. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned repository decoder oracle revision."
+command_summary = "Pinned avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-paeth-10bit-pinned-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-63-g3efe9fa8e."
+command_summary = "Current avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-paeth-10bit-current-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree without the lossless luma allowlist."
+command_summary = "splot decode --quiet --output-format raw --threads=1 decoded {fixture:input}."
+output_digest_id = "splot-lossless-paeth-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-paeth-10bit-pinned-raw-sha256"
+right = "avm-lossless-paeth-10bit-current-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-paeth-10bit-pinned-raw-sha256"
+right = "splot-lossless-paeth-10bit-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-lossless-cardinal-y-v-intra-64x64-10bit"
+feature_id = "DECODE-LOSSLESS-LUMA-PREDICTION"
+decoder_support_rows = ["lossless-luma-prediction"]
+kind = "reference-output-agreement"
+summary = "Pinned AVM, current AVM, and splot emit byte-identical raw I420 output for a deterministic AVMenc 10-bit lossless top-left V_PRED luma key frame."
+recorded_at = "2026-08-06"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-lossless-cardinal-y-v-intra-64x64-10bit.ivf"
+sha256 = "0c25e6dd5497b7631f682592f21ae497dcba89b98204a85596dea774f722d038"
+size_bytes = 69
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically by AVMenc revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 from a project-owned 64x64 yuv420p10le source with luma 511 in columns 0 through 31, luma 512 in columns 32 through 63, and chroma 512. Lossless mode, fixed 64x64 partitions, DC chroma, and broad unsupported tools were selected; AVM inspection identifies one V_PRED luma block with TX_4X4 lossless residuals, and a repeated encode was byte-identical. AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned repository decoder oracle revision."
+command_summary = "Pinned avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-vpred-10bit-pinned-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-63-g3efe9fa8e."
+command_summary = "Current avmdec decoded {fixture:input} as 10-bit raw I420 output."
+output_digest_id = "avm-lossless-vpred-10bit-current-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree without the lossless luma allowlist."
+command_summary = "splot decode --quiet --output-format raw --threads=1 decoded {fixture:input}."
+output_digest_id = "splot-lossless-vpred-10bit-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-vpred-10bit-pinned-raw-sha256"
+right = "avm-lossless-vpred-10bit-current-raw-sha256"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-lossless-vpred-10bit-pinned-raw-sha256"
+right = "splot-lossless-vpred-10bit-raw-sha256"

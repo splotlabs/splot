@@ -473,20 +473,22 @@ fn plan_directional_luma_angle(
         return Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle });
     }
     match mode {
-        SupportedDirectionalLumaMode::Vertical => {
-            (full_sb_with_edge || supports_small_cardinal_edge || full_sb_no_neighbour_cardinal)
-                .then_some(IntraLumaPlan::CardinalNeighbour {
-                    direction: IntraCardinalDirection::Vertical,
-                })
-                .ok_or(UNSUPPORTED_CARDINAL_VERTICAL)
-        }
-        SupportedDirectionalLumaMode::Horizontal => {
-            (full_sb_with_edge || supports_small_cardinal_edge || full_sb_no_neighbour_cardinal)
-                .then_some(IntraLumaPlan::CardinalNeighbour {
-                    direction: IntraCardinalDirection::Horizontal,
-                })
-                .ok_or(UNSUPPORTED_CARDINAL_HORIZONTAL)
-        }
+        SupportedDirectionalLumaMode::Vertical => (p_angle == directional_mode_p_angle(mode)
+            && (full_sb_with_edge
+                || supports_small_cardinal_edge
+                || full_sb_no_neighbour_cardinal))
+            .then_some(IntraLumaPlan::CardinalNeighbour {
+                direction: IntraCardinalDirection::Vertical,
+            })
+            .ok_or(UNSUPPORTED_CARDINAL_VERTICAL),
+        SupportedDirectionalLumaMode::Horizontal => (p_angle == directional_mode_p_angle(mode)
+            && (full_sb_with_edge
+                || supports_small_cardinal_edge
+                || full_sb_no_neighbour_cardinal))
+            .then_some(IntraLumaPlan::CardinalNeighbour {
+                direction: IntraCardinalDirection::Horizontal,
+            })
+            .ok_or(UNSUPPORTED_CARDINAL_HORIZONTAL),
         SupportedDirectionalLumaMode::D157 => {
             if full_sb_no_neighbour_cardinal
                 && block_ctx.bit_depth() == BitDepth::Eight
@@ -521,9 +523,11 @@ fn plan_directional_luma_angle(
             Ok(IntraLumaPlan::DirectionalOneSidedLeft { p_angle: 203 })
         }
         SupportedDirectionalLumaMode::D135 => {
-            if is_top_left && is_full_sb {
+            if p_angle == directional_mode_p_angle(mode) && is_top_left && is_full_sb {
                 Ok(IntraLumaPlan::DirectionalFirst { mode })
-            } else if full_sb_first_row || full_sb_above_left || (!is_top_left && has_edge) {
+            } else if p_angle == directional_mode_p_angle(mode)
+                && (full_sb_first_row || full_sb_above_left || (!is_top_left && has_edge))
+            {
                 Ok(IntraLumaPlan::DirectionalNeighbour { mode })
             } else if !is_top_left {
                 Err(UNSUPPORTED_MULTIBLOCK_DIRECTIONAL)

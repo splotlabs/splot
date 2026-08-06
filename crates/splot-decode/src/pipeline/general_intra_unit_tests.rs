@@ -127,12 +127,9 @@ fn luma_modes_with_angle(y_mode: IntraYMode, angle_delta_y: i8) -> GeneralIntraB
     luma_modes_with_parts(y_mode, angle_delta_y, 0, 0)
 }
 
-fn luma_modes_with_dpcm(
-    y_mode: IntraYMode,
-    use_dpcm_y: u8,
-    dpcm_mode_y: u8,
-) -> GeneralIntraBlockModes {
-    luma_modes_with_parts(y_mode, 0, use_dpcm_y, dpcm_mode_y)
+fn with_active_fsc(mut modes: GeneralIntraBlockModes) -> GeneralIntraBlockModes {
+    modes.fsc_mode = 1;
+    modes
 }
 
 fn luma_modes_with_parts(
@@ -157,33 +154,6 @@ fn luma_modes_with_parts(
     })
 }
 
-fn luma_mrl_modes(
-    y_mode: IntraYMode,
-    angle_delta_y: i8,
-    mrl_index: u8,
-    mrl_sec_index: Option<u8>,
-) -> GeneralIntraBlockModes {
-    GeneralIntraBlockModes::luma_only(crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-        y_mode,
-        angle_delta_y,
-        intra_joint_mode: 0,
-        mrl_index,
-        mrl_sec_index,
-        fsc_mode: 0,
-        uses_mrls: 1,
-        use_dip: 0,
-        dip_transpose: 0,
-        dip_mode: 0,
-        use_dpcm_y: 0,
-        dpcm_mode_y: 0,
-    })
-}
-
-fn with_active_fsc(mut modes: GeneralIntraBlockModes) -> GeneralIntraBlockModes {
-    modes.fsc_mode = 1;
-    modes
-}
-
 #[test]
 fn luma_tx_partition_context_uses_current_block_lossless_flag() {
     let block_size_index = 6;
@@ -203,235 +173,104 @@ fn luma_tx_partition_context_uses_current_block_lossless_flag() {
 }
 
 #[test]
-fn lossless_prediction_guard_admits_dc_luma_and_dpcm() {
-    let modes = luma_modes(IntraYMode::DC_PRED);
-    let top_left = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
-
-    assert!(
-        ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            &modes,
-            top_left,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(0),
-        )
-        .is_ok()
-    );
-
-    let modes = luma_modes_with_dpcm(IntraYMode::V_PRED_FOR_TEST, 1, 0);
-    assert!(
-        ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            &modes,
-            top_left,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(9),
-        )
-        .is_ok()
-    );
-}
-
-fn assert_lossless_directional_luma_admitted(mode: IntraYMode) {
-    let top_left = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-    let modes = luma_modes(mode);
-
-    assert!(
-        ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            &modes,
-            top_left,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(9),
-        )
-        .is_ok()
-    );
-}
-
-#[test]
-fn lossless_prediction_guard_admits_top_left_cardinal_luma() {
-    for mode in [IntraYMode::V_PRED_FOR_TEST, IntraYMode::H_PRED_FOR_TEST] {
-        assert_lossless_directional_luma_admitted(mode);
+fn lossless_luma_uses_generic_prediction_planner() {
+    for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
+        let block_ctx = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, bit_depth);
+        for mode in [
+            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::D45_PRED_FOR_TEST,
+            IntraYMode::D67_PRED_FOR_TEST,
+            IntraYMode::D113_PRED_FOR_TEST,
+            IntraYMode::D135_PRED_FOR_TEST,
+            IntraYMode::D157_PRED_FOR_TEST,
+            IntraYMode::D203_PRED_FOR_TEST,
+            IntraYMode::SMOOTH_PRED_FOR_TEST,
+        ] {
+            let modes = luma_modes(mode);
+            assert!(
+                plan_luma_prediction_for_segment(&modes, block_ctx, true, FULL_SB_N4_LUMA).is_ok()
+                    || rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA).is_ok(),
+                "lossless {bit_depth:?} {mode:?}"
+            );
+        }
     }
 }
 
 #[test]
-fn lossless_prediction_guard_admits_top_left_d135_luma() {
-    assert_lossless_directional_luma_admitted(IntraYMode::D135_PRED_FOR_TEST);
+fn lossless_fsc_guard_preserves_verified_subset() {
+    for (modes, block_ctx) in [
+        (
+            with_active_fsc(luma_modes(IntraYMode::DC_PRED)),
+            ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
+        ),
+        (
+            with_active_fsc(luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2)),
+            ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight),
+        ),
+    ] {
+        ensure_lossless_fsc_prediction_subset(
+            true,
+            &modes,
+            block_ctx,
+            FULL_SB_N4_LUMA,
+            splot_core::span::ByteOffset::new(12),
+        )
+        .expect("previously verified active-FSC subset must remain admitted");
+    }
 }
 
 #[test]
-fn lossless_prediction_guard_admits_top_left_d157_luma() {
-    assert_lossless_directional_luma_admitted(IntraYMode::D157_PRED_FOR_TEST);
-}
-
-#[test]
-fn lossless_prediction_guard_admits_top_left_d67_luma() {
-    assert_lossless_directional_luma_admitted(IntraYMode::D67_PRED_FOR_TEST);
-}
-
-#[test]
-fn lossless_prediction_guard_admits_top_left_d113_luma() {
-    assert_lossless_directional_luma_admitted(IntraYMode::D113_PRED_FOR_TEST);
-}
-
-#[test]
-fn lossless_prediction_guard_admits_top_left_d203_luma() {
-    assert_lossless_directional_luma_admitted(IntraYMode::D203_PRED_FOR_TEST);
-}
-
-#[test]
-fn lossless_prediction_guard_rejects_unverified_active_fsc_luma() {
+fn lossless_fsc_guard_rejects_unverified_10bit_luma() {
     let modes = with_active_fsc(luma_modes(IntraYMode::D45_PRED_FOR_TEST));
-    let error = ensure_lossless_verified_prediction_subset(
+    let error = ensure_lossless_fsc_prediction_subset(
         true,
-        false,
         &modes,
         ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
         FULL_SB_N4_LUMA,
         splot_core::span::ByteOffset::new(11),
     )
-    .expect_err("unverified active-FSC lossless luma prediction must fail");
+    .expect_err("unverified 10-bit active-FSC lossless luma must fail closed");
 
-    let reason = match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-        _ => "",
+    let (reason, offset) = match error {
+        DecodeError::UnsupportedFeature { unsupported } => {
+            (unsupported.reason(), unsupported.byte_offset())
+        }
+        _ => ("", None),
     };
-    assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+    assert_eq!(reason, "general_intra_lossless_fsc_unverified");
+    assert_eq!(offset, Some(splot_core::span::ByteOffset::new(11)));
 }
 
 #[test]
-fn lossless_prediction_guard_admits_top_left_active_fsc_dc_luma() {
-    let modes = with_active_fsc(luma_modes(IntraYMode::DC_PRED));
+fn lossless_adjusted_directional_luma_uses_rect_planner() {
+    let block_ctx = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
 
-    ensure_lossless_verified_prediction_subset(
-        true,
-        false,
-        &modes,
-        ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight),
-        FULL_SB_N4_LUMA,
-        splot_core::span::ByteOffset::new(12),
-    )
-    .expect("verified DC prediction should not be blocked by active FSC");
-}
-
-#[test]
-fn lossless_prediction_guard_admits_edge_backed_active_fsc_rect_luma() {
-    let modes = with_active_fsc(luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2));
-    let above_only = ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight);
-
-    ensure_lossless_verified_prediction_subset(
-        true,
-        false,
-        &modes,
-        above_only,
-        FULL_SB_N4_LUMA,
-        splot_core::span::ByteOffset::new(12),
-    )
-    .expect("edge-backed active-FSC prediction shape should reach residual decode");
-}
-
-#[test]
-fn lossless_prediction_guard_admits_top_row_active_mrl_rect_luma() {
-    let modes = luma_mrl_modes(IntraYMode::D67_PRED_FOR_TEST, -1, 3, Some(0));
-    let top_row_left_edge = ctx_with_bit_depth(0, 8, 8, 2, BitDepth::Eight);
-
-    assert_eq!(
-        rect_luma_plan(&modes, top_row_left_edge, false, 32),
-        Ok(RectLumaPlan::OneSidedAboveMrl {
-            p_angle: 64,
-            mrl_index: 3,
-            above_mrl_index: 0,
-            secondary_mrl: false,
-            use_tcq: false,
-        })
-    );
-    ensure_lossless_verified_prediction_subset(
-        true,
-        false,
-        &modes,
-        top_row_left_edge,
-        32,
-        splot_core::span::ByteOffset::new(34),
-    )
-    .expect("top-row edge-backed active MRL luma should reach residual decode");
-}
-
-#[test]
-fn lossless_prediction_guard_admits_edge_backed_rect_luma() {
-    let smooth_modes = luma_modes(IntraYMode::SMOOTH_PRED_FOR_TEST);
-    let top_row_left_edge = ctx_with_bit_depth(0, 6, 2, 2, BitDepth::Eight);
-
-    assert_eq!(
-        rect_luma_plan(&smooth_modes, top_row_left_edge, false, FULL_SB_N4_LUMA),
-        Ok(RectLumaPlan::Smooth {
-            mode: SupportedNonDcLumaMode::Smooth,
-            use_tcq: false,
-        })
-    );
-    assert!(
-        ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            &smooth_modes,
-            top_row_left_edge,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(9),
-        )
-        .is_ok()
-    );
-
-    let directional_modes = luma_modes_with_angle(IntraYMode::D67_PRED_FOR_TEST, -2);
-    let above_only = ctx_with_bit_depth(3, 0, 1, 1, BitDepth::Eight);
-
-    assert_eq!(
-        rect_luma_plan(&directional_modes, above_only, false, FULL_SB_N4_LUMA),
-        Ok(RectLumaPlan::OneSidedAbove {
-            p_angle: 61,
-            use_tcq: false,
-        })
-    );
-    assert!(
-        ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            &directional_modes,
-            above_only,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(9),
-        )
-        .is_ok()
-    );
-
-    for (modes, block_ctx) in [
-        (
-            &smooth_modes,
-            ctx_with_bit_depth(0, 0, 2, 2, BitDepth::Eight),
-        ),
-        (&smooth_modes, ctx(0, 6, 2, 2)),
-        (
-            &directional_modes,
-            ctx_with_bit_depth(0, 0, 1, 1, BitDepth::Eight),
-        ),
-        (&directional_modes, ctx(3, 0, 1, 1)),
+    for (mode, angle_delta_y, p_angle) in [
+        (IntraYMode::V_PRED_FOR_TEST, 1, 93),
+        (IntraYMode::H_PRED_FOR_TEST, -1, 177),
+        (IntraYMode::D135_PRED_FOR_TEST, -1, 132),
+        (IntraYMode::D135_PRED_FOR_TEST, 1, 138),
     ] {
-        let error = ensure_lossless_verified_prediction_subset(
-            true,
-            false,
-            modes,
-            block_ctx,
-            FULL_SB_N4_LUMA,
-            splot_core::span::ByteOffset::new(9),
-        )
-        .expect_err("edge-backed 8-bit subset must not admit no-edge or 10-bit blocks");
+        let modes = luma_modes_with_angle(mode, angle_delta_y);
 
-        let reason = match error {
-            DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-            _ => "",
-        };
-        assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
+        assert!(
+            plan_luma_prediction_for_segment(&modes, block_ctx, true, FULL_SB_N4_LUMA).is_err()
+        );
+        assert_eq!(
+            rect_luma_plan(&modes, block_ctx, false, FULL_SB_N4_LUMA),
+            Ok(RectLumaPlan::Middle {
+                p_angle,
+                use_tcq: false,
+            })
+        );
+        assert!(square_luma_needs_rect_residual_path(
+            &modes,
+            block_ctx,
+            false,
+            FULL_SB_N4_LUMA,
+            true,
+        ));
     }
 }
 
@@ -665,42 +504,6 @@ fn cardinal_top_left_guard_admits_only_verified_shapes() {
             plan_luma_prediction_for_segment(&modes, block_ctx, false, sb_mib).is_err(),
             "unverified non-lossless cardinal luma shape must fail closed"
         );
-    }
-}
-
-#[test]
-fn lossless_prediction_guard_rejects_unverified_directional_variants() {
-    let top_left_8 = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
-    let top_left_10 = ctx(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA);
-
-    for mode in [
-        IntraYMode::V_PRED_FOR_TEST,
-        IntraYMode::H_PRED_FOR_TEST,
-        IntraYMode::D45_PRED_FOR_TEST,
-        IntraYMode::D135_PRED_FOR_TEST,
-        IntraYMode::D157_PRED_FOR_TEST,
-    ] {
-        for (modes, block_ctx, sb_mib) in [
-            (luma_modes_with_angle(mode, 1), top_left_8, FULL_SB_N4_LUMA),
-            (luma_modes(mode), top_left_10, FULL_SB_N4_LUMA),
-            (luma_modes(mode), top_left_8, 32),
-        ] {
-            let error = ensure_lossless_verified_prediction_subset(
-                true,
-                false,
-                &modes,
-                block_ctx,
-                sb_mib,
-                splot_core::span::ByteOffset::new(9),
-            )
-            .expect_err("unverified lossless directional luma variant must fail closed");
-
-            let reason = match error {
-                DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-                _ => "",
-            };
-            assert_eq!(reason, "general_intra_lossless_other_nondc_luma_unverified");
-        }
     }
 }
 

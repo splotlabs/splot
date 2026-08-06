@@ -487,7 +487,8 @@ pub(crate) fn decode_one_general_intra_block(
             "7.13.2",
         ));
     }
-    ensure_lossless_verified_prediction_subset(
+    ensure_lossless_fsc_prediction_subset(lossless, &modes, block_ctx, sb_mib, tile_offset)?;
+    ensure_lossless_chroma_prediction_subset(
         lossless,
         frontier.has_chroma,
         &modes,
@@ -763,7 +764,28 @@ fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> Gene
     }
 }
 
-pub(super) fn ensure_lossless_verified_prediction_subset(
+fn ensure_lossless_fsc_prediction_subset(
+    lossless: bool,
+    modes: &GeneralIntraBlockModes,
+    block_ctx: BlockCtx,
+    sb_mib: usize,
+    tile_offset: ByteOffset,
+) -> Result<()> {
+    if !lossless
+        || !modes.uses_active_fsc()
+        || lossless_fsc_luma_prediction_verified(modes, block_ctx, sb_mib)
+    {
+        return Ok(());
+    }
+    Err(general_intra_at!(
+        "general_intra_lossless_fsc_unverified",
+        tile_offset,
+        missing_capability_message!("intra.lossless.fsc", mode = "active"),
+        "5.20.7.29",
+    ))
+}
+
+pub(super) fn ensure_lossless_chroma_prediction_subset(
     lossless: bool,
     has_chroma: bool,
     modes: &GeneralIntraBlockModes,
@@ -773,14 +795,6 @@ pub(super) fn ensure_lossless_verified_prediction_subset(
 ) -> Result<()> {
     if !lossless {
         return Ok(());
-    }
-    if !lossless_luma_prediction_verified(modes, block_ctx, sb_mib) {
-        return Err(general_intra_at!(
-            "general_intra_lossless_other_nondc_luma_unverified",
-            tile_offset,
-            missing_capability_message!("intra.lossless.luma_prediction", mode = "non_dc"),
-            "7.13.2",
-        ));
     }
     if has_chroma && !lossless_chroma_block_prediction_guard_passes(modes, block_ctx, sb_mib) {
         return Err(general_intra_at!(
@@ -793,7 +807,7 @@ pub(super) fn ensure_lossless_verified_prediction_subset(
     Ok(())
 }
 
-fn lossless_luma_prediction_verified(
+fn lossless_fsc_luma_prediction_verified(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
     sb_mib: usize,
@@ -825,7 +839,7 @@ fn lossless_luma_prediction_verified(
         );
     let top_left_paeth = block_ctx.is_top_left() && modes.y_mode.is_paeth();
     let y_neighbours = block_ctx.neighbours(PlaneId::Y);
-    let left_edge_d45_or_d113 = !y_neighbours.has_above()
+    let left_edge_directional = !y_neighbours.has_above()
         && y_neighbours.has_left()
         && (directional == Some(L::D45)
             || (directional == Some(L::D113)
@@ -836,31 +850,18 @@ fn lossless_luma_prediction_verified(
                 && modes.supported_chroma_mode() == Some(SupportedChromaMode::D157Follow))
             || (directional == Some(L::D203)
                 && modes.supported_chroma_mode() == Some(SupportedChromaMode::D203Follow)));
-    let edge_backed_rect =
-        lossless_edge_backed_rect_luma_prediction_verified(modes, block_ctx, sb_mib);
     (full_64_sb_8bit
         && modes.angle_delta_y == 0
-        && (top_left_directional || top_left_paeth || left_edge_d45_or_d113))
-        || edge_backed_rect
+        && (top_left_directional || top_left_paeth || left_edge_directional))
+        || (block_ctx.bit_depth() == BitDepth::Eight
+            && modes.palette_y().is_none()
+            && (modes.y_mode.supported_directional().is_some()
+                || modes.supported_nondc_luma().is_some()
+                || modes.y_mode.is_paeth())
+            && (y_neighbours.has_above() || y_neighbours.has_left())
+            && rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok())
 }
 
-fn lossless_edge_backed_rect_luma_prediction_verified(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-) -> bool {
-    if block_ctx.bit_depth() != BitDepth::Eight
-        || modes.palette_y().is_some()
-        || (modes.y_mode.supported_directional().is_none()
-            && modes.supported_nondc_luma().is_none()
-            && !modes.y_mode.is_paeth())
-    {
-        return false;
-    }
-    let neighbours = block_ctx.neighbours(PlaneId::Y);
-    (neighbours.has_above() || neighbours.has_left())
-        && rect_luma_plan(modes, block_ctx, false, sb_mib).is_ok()
-}
 fn top_left_no_neighbour_directional_prediction_verified(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
@@ -885,14 +886,11 @@ fn plan_luma_prediction_for_segment(
     lossless: bool,
     sb_mib: usize,
 ) -> core::result::Result<crate::prediction::intra::IntraLumaPlan, IntraLumaUnsupported> {
-    if (lossless && lossless_luma_prediction_verified(modes, block_ctx, sb_mib))
-        || (!lossless
-            && top_left_no_neighbour_directional_prediction_verified(modes, block_ctx, sb_mib))
-    {
-        plan_luma_prediction(modes, block_ctx, true)
-    } else {
-        plan_luma_prediction(modes, block_ctx, false)
-    }
+    plan_luma_prediction(
+        modes,
+        block_ctx,
+        lossless || top_left_no_neighbour_directional_prediction_verified(modes, block_ctx, sb_mib),
+    )
 }
 
 pub(super) fn lossless_chroma_prediction_verified(

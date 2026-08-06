@@ -1644,3 +1644,13 @@ expect = "clean"
 path = "vectors/valid/syn-bridge-single-picture-32x32.ivf"
 description = "One-record AV02 IVF wrapper around a 37-byte patched-AVM fixture containing a 64x64 reference key and a 32x32 single-picture bridge. It exercises the internally inconsistent §5.18.2/§5.18.4.2 single-picture bridge corner; splot and the isolated decoder-only AVM repair produce the same 7,680-byte raw I420 SHA-256 908a47be9c1e679265d4a8efbf66702f705b06d5111aca57f7e05dcba23fcc58. Unmodified pinned and current AVM are recorded as oracle xfails because they crash in setup_frame_size; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-nondc-luma-paeth-intra-64x64-10bit.ivf"
+description = "Deterministic AVMenc 10-bit 4:2:0 lossless key frame with one 64x64 PAETH_PRED luma block, DC chroma, TX_4X4 lossless residuals, and broad tools disabled. Pinned AVM, current AVM, and splot produce byte-identical 12,288-byte raw I420 output SHA-256 c48f76e4dee5eee8980bd7da14bebe2eb1e24d566fc972d1fb10aaf87963940b; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-lossless-cardinal-y-v-intra-64x64-10bit.ivf"
+description = "Deterministic AVMenc 10-bit 4:2:0 lossless key frame with one 64x64 V_PRED luma block, DC chroma, TX_4X4 lossless residuals, and broad tools disabled. It pins top-left no-neighbour cardinal synthesis at 10-bit; pinned AVM, current AVM, and splot produce byte-identical 12,288-byte raw I420 output SHA-256 840b2119b3f2459bab99bc2e5814c5e9a35a4969301030d2808ebd8a08da90c6; validates clean."
+expect = "clean"
