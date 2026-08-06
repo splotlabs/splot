@@ -1268,10 +1268,9 @@ path = "vectors/valid/syn-2frame-ccso-reuse-inter-64x64-10bit.ivf"
 description = """
 Two-frame 10-bit 4:2:0 64x64 inter stream (IVF) from a project-owned static \
 synthetic input whose INTER frame signals § 5.18.7.12 CCSO reference reuse \
-(sb_reuse_ccso = 1). Validates clean; committed as the NEGATIVE decode pin for \
-the `inter_ccso_reuse_unimplemented` defer (reference filter-control retention \
-is not implemented), guarding against a silent regression to a desync or a \
-confident-wrong decode."""
+(sb_reuse_ccso = 1). Validates clean and decodes byte-for-byte identically to \
+avmdec --i420 --rawvideo. This is the positive decode pin for retained CCSO \
+filter-control state and reference reuse across frames."""
 expect = "clean"
 
 [[vector]]

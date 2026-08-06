@@ -26,7 +26,7 @@ use super::block::{
 };
 use super::test_support::fixture_sequence_and_key_core;
 use super::{
-    compound_is_joint_context, compound_is_joint_context_from_order_hints,
+    ccso_reference_slot, compound_is_joint_context, compound_is_joint_context_from_order_hints,
     inter_segmentation_supported,
 };
 use crate::bitstream::tile_payload::{

@@ -75,3 +75,25 @@ fn zero_reference_inter_frame_requires_an_empty_reference_map() {
 
     assert_eq!(unsupported_reason(error), "inter_missing_ref_frame_idx");
 }
+
+#[test]
+fn ccso_reference_slot_checks_num_total_refs() {
+    let offset = ByteOffset::new(74);
+    assert_eq!(
+        ccso_reference_slot(&[3], 0, offset)
+            .expect("in-range CCSO reference index resolves its slot"),
+        3
+    );
+
+    let error = ccso_reference_slot(&[3], 1, offset)
+        .expect_err("CCSO reference index must be less than NumTotalRefs");
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("out-of-range CCSO reference index must be an unsupported-feature error");
+    };
+    assert_eq!(
+        unsupported.reason(),
+        "inter_ccso_reference_index_out_of_range"
+    );
+    assert_eq!(unsupported.spec_section(), "6.17.10.2");
+    assert_eq!(unsupported.byte_offset(), Some(offset));
+}

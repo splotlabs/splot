@@ -1592,17 +1592,7 @@ fn resolve_ccso_reference_reuse(
             continue;
         }
         let ref_index = ccso.planes[plane_index].ccso_ref_idx.unwrap_or(0);
-        let slot = ref_frame_idx
-            .get(ref_index as usize)
-            .copied()
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_ccso_reuse_unimplemented",
-                    offset,
-                    "inter.ccso.reference_reuse",
-                    "5.18.7.12"
-                )
-            })?;
+        let slot = ccso_reference_slot(ref_frame_idx, ref_index, offset)?;
         let ref_ccso = reference.ccso_params_for_slot(slot, offset)?;
         let Some(ref_plane) = ref_ccso.planes.get(plane_index) else {
             return Err(inter_missing!(
@@ -1623,6 +1613,21 @@ fn resolve_ccso_reference_reuse(
     }
     Ok(())
 }
+
+fn ccso_reference_slot(ref_frame_idx: &[u32], ref_index: u32, offset: ByteOffset) -> Result<u32> {
+    ref_frame_idx
+        .get(ref_index as usize)
+        .copied()
+        .ok_or_else(|| {
+            inter_cap!(
+                "inter_ccso_reference_index_out_of_range",
+                offset,
+                "inter.ccso.reference_index",
+                "6.17.10.2"
+            )
+        })
+}
+
 fn parse_inter_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
