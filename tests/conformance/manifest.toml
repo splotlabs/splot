@@ -597,7 +597,7 @@ expect = "clean"
 
 [[vector]]
 path = "vectors/valid/syn-svsplit-intra-64x64-q140.ivf"
-description = "Negative decode-boundary companion to syn-shsplit (IVF, 64x64, base_q_idx 140): a project-owned input whose 64x64 superblock SPLITs into four 32x32 squares (--min-partition-size=32 --max-partition-size=32) with a vertical-ramp bottom-left and flat chroma. avmdec and dav2d agree (md5 f64f680fa0eb63eb4f0fc5101afa0da9) and the stream validates clean, but the encoder codes a SMOOTH chroma sub-block, so splot's general-intra decoder still REJECTS it with the structured decode/unsupported-feature diagnostic general_intra_smooth_chroma_subblock -- the SMOOTH CHROMA sub-block above-right / below-left sentinel path (section 7.13.2.1 over section 5.20.2.3 BlockDecoded) is NOT lifted by the SMOOTH_H luma brick and remains deferred. Pins the verified-subset boundary: the new BlockDecoded above-right path admits only what syn-shsplit proves bit-exact, not chroma sub-blocks."
+description = "AVMenc-generated IVF (64x64, base_q_idx 140) whose superblock splits into four 32x32 squares and codes a SMOOTH chroma sub-block. Pinned AVM, current AVM, dav2d, and splot agree on the complete raw output; the stream exercises the shared BlockDecoded above-right/below-left sentinel path for subpartitioned chroma prediction."
 expect = "clean"
 
 [[vector]]
