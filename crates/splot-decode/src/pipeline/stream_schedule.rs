@@ -64,13 +64,6 @@ pub(super) fn require_runtime_stream<'a>(
 ) -> Result<RuntimeStream<'a>> {
     match parsed {
         FlatParsedBitstream::AnnexB(partial) => {
-            if partial.error.is_some() {
-                return Err(unsupported(
-                    "annex_b_runtime_parse_error",
-                    None,
-                    "runtime reparse of the bounded Annex B input must stay complete",
-                ));
-            }
             if partial.obus.is_empty() {
                 return Err(unsupported(
                     "empty_annex_b_input",
