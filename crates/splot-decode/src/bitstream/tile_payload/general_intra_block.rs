@@ -5,9 +5,7 @@
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{
-    NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, SIZE_GROUP, TX_HEIGHT, TX_WIDTH,
-};
+use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, MAX_TX_SIZE_RECT, SIZE_GROUP};
 use splot_recon::{DpcmDirection, dpcm_direction};
 
 use super::cdf::block_context::{
@@ -80,8 +78,6 @@ const CFL_MULTI: u8 = 2;
 const CFL_SIGN_ZERO: u8 = 0;
 const BLOCK_4X4: usize = 0;
 const TX_4X4: usize = 0;
-const MI_SIZE: usize = 4;
-const LOSSLESS_MAX_TX_DIMENSION: usize = 32;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GeneralIntraChromaToolConfig {
@@ -508,16 +504,6 @@ pub(crate) enum GeneralIntraBlockModeError {
     #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
     InvalidUvMode { uv_mode: u8 },
     #[error(
-        "general intra mode-info block-size index {block_size_index} has no lossless tx-size group"
-    )]
-    InvalidLosslessTxSizeGroup { block_size_index: usize },
-    #[error(
-        "general intra mode-info block-size index {block_size_index} has no lossless tx-size dimensions"
-    )]
-    InvalidLosslessTxSizeBlock { block_size_index: usize },
-    #[error("general intra mode-info lossless tx-size dimensions {width}x{height} have no TX_SIZE")]
-    InvalidLosslessTxSize { width: usize, height: usize },
-    #[error(
         "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
     )]
     UnsupportedDirectionalNeighbourReorder { ctx: usize, mode_idx: usize },
@@ -779,14 +765,14 @@ pub(crate) fn read_general_intra_dip_mode_info(
 pub(crate) fn read_lossless_luma_tx_size(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
-    block_size_index: usize,
+    block_size: BlockSize,
     fsc_mode: bool,
     allow_select: bool,
 ) -> Result<usize, GeneralIntraBlockModeError> {
     read_lossless_tx_size(
         work_unit,
         symbols,
-        block_size_index,
+        block_size,
         fsc_mode,
         allow_select,
         false,
@@ -796,16 +782,15 @@ pub(crate) fn read_lossless_luma_tx_size(
 pub(crate) fn read_lossless_tx_size(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
-    block_size_index: usize,
+    block_size: BlockSize,
     fsc_mode: bool,
     allow_select: bool,
     is_inter: bool,
 ) -> Result<usize, GeneralIntraBlockModeError> {
-    if block_size_index == BLOCK_4X4 || (!is_inter && !fsc_mode) || !allow_select {
+    if block_size.index() == BLOCK_4X4 || (!is_inter && !fsc_mode) || !allow_select {
         return Ok(TX_4X4);
     }
-    let size_group = lossless_tx_size_group(block_size_index)
-        .ok_or(GeneralIntraBlockModeError::InvalidLosslessTxSizeGroup { block_size_index })?;
+    let size_group = lossless_tx_size_group(block_size);
     let large = read_symbol(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
@@ -816,7 +801,7 @@ pub(crate) fn read_lossless_tx_size(
         LOSSLESS_TX_SIZE_REASON,
     )?;
     if large != 0 {
-        return lossless_max_tx_size(block_size_index);
+        return Ok(lossless_max_tx_size(block_size));
     }
     Ok(TX_4X4)
 }
@@ -1260,44 +1245,13 @@ fn fsc_bsize_group(block_size: BlockSize) -> usize {
     FSC_BSIZE_GROUPS[block_size.index()]
 }
 
-fn lossless_tx_size_group(block_size_index: usize) -> Option<usize> {
-    SIZE_GROUP
-        .get(block_size_index)
-        .and_then(|value| usize::try_from(*value).ok())
+fn lossless_tx_size_group(block_size: BlockSize) -> usize {
+    SIZE_GROUP[block_size.index()] as usize
 }
 
-fn lossless_max_tx_size(block_size_index: usize) -> Result<usize, GeneralIntraBlockModeError> {
-    let block_width = block_size_dimension(&NUM_4X4_BLOCKS_WIDE, block_size_index)?;
-    let block_height = block_size_dimension(&NUM_4X4_BLOCKS_HIGH, block_size_index)?;
-    tx_size_from_dimensions(
-        block_width.min(LOSSLESS_MAX_TX_DIMENSION),
-        block_height.min(LOSSLESS_MAX_TX_DIMENSION),
-    )
-    .ok_or(GeneralIntraBlockModeError::InvalidLosslessTxSize {
-        width: block_width,
-        height: block_height,
-    })
-}
-
-fn block_size_dimension(
-    table: &[i32],
-    block_size_index: usize,
-) -> Result<usize, GeneralIntraBlockModeError> {
-    table
-        .get(block_size_index)
-        .and_then(|value| usize::try_from(*value).ok())
-        .and_then(|value| value.checked_mul(MI_SIZE))
-        .ok_or(GeneralIntraBlockModeError::InvalidLosslessTxSizeBlock { block_size_index })
-}
-
-fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
-    TX_WIDTH
-        .iter()
-        .zip(TX_HEIGHT.iter())
-        .position(|(&tx_width, &tx_height)| {
-            usize::try_from(tx_width).ok() == Some(width)
-                && usize::try_from(tx_height).ok() == Some(height)
-        })
+fn lossless_max_tx_size(block_size: BlockSize) -> usize {
+    let max_tx_size = MAX_TX_SIZE_RECT[block_size.index()] as usize;
+    ADJUSTED_TX_SIZE[max_tx_size] as usize
 }
 
 fn cfl_mh_dir_size_group(block_size: BlockSize) -> usize {
