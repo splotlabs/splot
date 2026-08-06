@@ -106,11 +106,10 @@ fn omits_chroma_plans_for_luma_only_blocks() {
 fn chroma_dc_uses_generic_rect_reconstruction() {
     let block = BlockRect::new(0, 0, 16, 16);
     let ctx = ctx(block, BitDepth::Ten);
-    let plan = GeneralIntraResidualPlan::square(
+    let plan = GeneralIntraResidualPlan::rect(
         ctx,
-        IntraLumaPlan::Dc,
+        RectLumaPlan::Dc { use_tcq: false },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-        false,
         false,
         None,
         false,
@@ -172,14 +171,13 @@ fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
 fn chroma_dpcm_direction_is_preserved_for_both_planes() {
     let block = BlockRect::new(0, 0, 16, 16);
     let ctx = ctx(block, BitDepth::Eight);
-    let plan = GeneralIntraResidualPlan::square(
+    let plan = GeneralIntraResidualPlan::rect(
         ctx,
-        IntraLumaPlan::Dc,
+        RectLumaPlan::Dc { use_tcq: false },
         Some(RectChromaPlan::Mode(
             SupportedChromaMode::Vertical,
             Some(DpcmDirection::Vertical),
         )),
-        false,
         false,
         None,
         false,
@@ -203,11 +201,10 @@ fn chroma_dpcm_direction_is_preserved_for_both_planes() {
 fn fsc_coefficients_are_luma_only() {
     let block = BlockRect::new(0, 0, 16, 16);
     let ctx = ctx(block, BitDepth::Ten);
-    let plan = GeneralIntraResidualPlan::square(
+    let plan = GeneralIntraResidualPlan::rect(
         ctx,
-        IntraLumaPlan::Dc,
+        RectLumaPlan::Dc { use_tcq: true },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-        true,
         true,
         None,
         false,
@@ -440,11 +437,10 @@ fn lossless_chroma_uses_partition_chroma_ref() {
     let chroma_ref = BlockRect::new(22, 16, 4, 2);
     let chroma_tx = TxShape::from_luma_4x4(4, 2).expect("valid chroma reference transform");
     let ctx = ctx(block, BitDepth::Eight).with_chroma_ref(chroma_ref, chroma_tx);
-    let plan = GeneralIntraResidualPlan::square(
+    let plan = GeneralIntraResidualPlan::rect(
         ctx,
-        IntraLumaPlan::Dc,
+        RectLumaPlan::Dc { use_tcq: false },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-        false,
         true,
         Some(0),
         true,
@@ -660,11 +656,10 @@ fn max_residual_plan_capacity_reuses_storage_after_bound_error() {
 
 #[test]
 fn lossless_v_handoff_uses_final_u_unit_flag() {
-    let plane = GeneralIntraResidualPlan::square(
+    let plane = GeneralIntraResidualPlan::rect(
         ctx(BlockRect::new(0, 0, 4, 4), BitDepth::Eight),
-        IntraLumaPlan::Dc,
+        RectLumaPlan::Dc { use_tcq: false },
         Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-        false,
         false,
         None,
         true,
@@ -698,11 +693,10 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
 
 #[test]
 fn single_luma_chunk_publication_exposes_top_right_to_later_chunk() {
-    let plane = GeneralIntraResidualPlan::square(
+    let plane = GeneralIntraResidualPlan::rect(
         ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight),
-        IntraLumaPlan::Dc,
+        RectLumaPlan::Dc { use_tcq: false },
         None,
-        false,
         false,
         None,
         false,
@@ -862,13 +856,13 @@ fn palette_map_is_sliced_for_each_partitioned_transform_size() {
 #[test]
 fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
-    let plan = GeneralIntraResidualPlan::square(
+    let plan = GeneralIntraResidualPlan::rect(
         block_ctx,
-        IntraLumaPlan::NonDcFirst {
+        RectLumaPlan::Smooth {
             mode: SupportedNonDcLumaMode::Smooth,
+            use_tcq: false,
         },
         None,
-        false,
         false,
         None,
         false,
@@ -897,13 +891,13 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
 #[test]
 fn first_partition_handoff_rejects_invalid_transform_geometry() {
     let block_ctx = ctx(BlockRect::new(0, 0, 16, 16), BitDepth::Eight);
-    let plan = GeneralIntraResidualPlan::square(
+    let plan = GeneralIntraResidualPlan::rect(
         block_ctx,
-        IntraLumaPlan::NonDcFirst {
+        RectLumaPlan::Smooth {
             mode: SupportedNonDcLumaMode::Smooth,
+            use_tcq: false,
         },
         None,
-        false,
         false,
         None,
         false,
@@ -1119,11 +1113,10 @@ fn mrl_directional_plane(
 fn assert_case(case: Case) {
     let ctx = ctx(case.rect, case.bit_depth);
     let plan = if case.rect.width4() == case.rect.height4() {
-        GeneralIntraResidualPlan::square(
+        GeneralIntraResidualPlan::rect(
             ctx,
-            IntraLumaPlan::Dc,
+            RectLumaPlan::Dc { use_tcq: true },
             Some(RectChromaPlan::Mode(SupportedChromaMode::Dc, None)),
-            true,
             false,
             None,
             false,
@@ -1178,4 +1171,112 @@ fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
         use_tcq: false,
         lossless: false,
     }
+}
+
+/// A block whose above neighbour lies outside the tile must reconstruct from the
+/// §7.13.2.1 fallback edge, so the reconstructed samples cannot depend on whatever
+/// the out-of-tile row happens to hold.
+#[test]
+fn rect_luma_reconstruct_masks_tile_unavailable_above_edge() {
+    let plans = [
+        RectLumaPlan::Dc { use_tcq: false },
+        RectLumaPlan::Smooth {
+            mode: SupportedNonDcLumaMode::SmoothVertical,
+            use_tcq: false,
+        },
+    ];
+    for plan in plans {
+        let low_above = tile_top_reconstruction_samples(plan, 7);
+        let high_above = tile_top_reconstruction_samples(plan, 240);
+        assert_eq!(
+            low_above, high_above,
+            "rect luma {plan:?} must ignore the tile-unavailable above edge"
+        );
+    }
+}
+
+fn tile_top_reconstruction_samples(plan: RectLumaPlan, above: u8) -> Vec<u8> {
+    let block_ctx = tile_top_block_ctx();
+    let mut workspace = workspace_with_tile_boundary_edges(above);
+    let block_decoded = TileBlockDecodedState::new(3, 1, 1, 16, 16, 16).expect("block decoded");
+    let plane = GeneralIntraResidualPlan::rect(block_ctx, plan, None, false, None, false)
+        .expect("rect luma plan")
+        .plane_plan(PlaneId::Y)
+        .expect("luma plane");
+
+    plane
+        .reconstruct(
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut workspace,
+            &empty_luma_coeffs(),
+            &block_decoded,
+            None,
+            0,
+            crate::prediction::intra_edge::IntraEdgeCtx {
+                enable_ibp: false,
+                enable_intra_edge_filter: false,
+                above_smooth: false,
+                left_smooth: false,
+                chroma_above_smooth: false,
+                chroma_left_smooth: false,
+            },
+            LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::DC_PRED, 0),
+        )
+        .expect("tile-top luma reconstruction");
+
+    (0..8)
+        .flat_map(|row| (0..8).map(move |col| (row, col)))
+        .map(|(row, col)| {
+            workspace
+                .reconstructed_sample(PlaneId::Y, 8 + col, 8 + row)
+                .expect("reconstructed sample")
+        })
+        .collect()
+}
+
+fn tile_top_block_ctx() -> BlockCtx {
+    BlockCtx::new(
+        BlockRect::new(2, 2, 2, 2),
+        TxShape::from_luma_4x4(2, 2).expect("2x2 tx shape"),
+        16,
+        16,
+        BitDepth::Eight,
+        ChromaSampling::Yuv420,
+    )
+    .with_tile_bounds(2, 16, 0, 16)
+}
+
+fn workspace_with_tile_boundary_edges(above: u8) -> splot_recon::CurrentFrameWorkspace<u8> {
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        64,
+        64,
+        BitDepth::Eight,
+        splot_recon::PixelFormat::Yuv420,
+    )
+    .expect("workspace");
+    workspace
+        .write_rect_block(
+            PlaneId::Y,
+            8,
+            4,
+            splot_recon::IntraRectBlockSize::new(3, 2).expect("above block size"),
+            &[above; 32],
+        )
+        .expect("above block");
+    let mut left_block = vec![0u8; 4 * 8];
+    for (row, sample) in [40u8, 45, 50, 55, 60, 65, 70, 75].into_iter().enumerate() {
+        for col in 0..4 {
+            left_block[row * 4 + col] = sample;
+        }
+    }
+    workspace
+        .write_rect_block(
+            PlaneId::Y,
+            4,
+            8,
+            splot_recon::IntraRectBlockSize::new(2, 3).expect("left block size"),
+            &left_block,
+        )
+        .expect("left block");
+    workspace
 }

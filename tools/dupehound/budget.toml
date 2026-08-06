@@ -62,5 +62,7 @@
 # writable plane, active bit depth) across the five prediction entry points
 # lowered it 2664 -> 2640.
 # Retiring the empirical directional square-intra planner (all directional luma
-# now plans through the generic rectangular planner) lowered it 2619 -> 2577.
-max_deletable_lines = 2577
+# now plans through the generic rectangular planner) lowered it 2619 -> 2577,
+# and collapsing the remaining square general-intra residual path into the same
+# rectangular planner lowered it 2577 -> 2558.
+max_deletable_lines = 2558

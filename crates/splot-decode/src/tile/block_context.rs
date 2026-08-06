@@ -64,18 +64,6 @@ impl BlockRect {
     pub(crate) const fn height4(self) -> usize {
         self.height4
     }
-
-    pub(crate) const fn has_above(self) -> bool {
-        self.row4 != 0
-    }
-
-    pub(crate) const fn has_left(self) -> bool {
-        self.col4 != 0
-    }
-
-    pub(crate) const fn is_top_left(self) -> bool {
-        !self.has_above() && !self.has_left()
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -316,10 +304,6 @@ impl BlockCtx {
 
     pub(crate) const fn chroma_ref(self) -> Option<(BlockRect, TxShape)> {
         self.chroma_ref
-    }
-
-    pub(crate) const fn is_top_left(self) -> bool {
-        self.block.is_top_left()
     }
 
     pub(crate) fn plane_block(self, plane: PlaneId) -> PlaneBlock {

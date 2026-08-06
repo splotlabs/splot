@@ -209,17 +209,6 @@ impl ResidualPlanePlan {
                     block_ctx.bit_depth(),
                 )
             }
-            ResidualReconstructionPlan::LumaSquare { plan, use_tcq } => plan.reconstruct(
-                scratch,
-                workspace,
-                coeffs,
-                block_ctx,
-                block_decoded,
-                qindex,
-                use_tcq,
-                intra_edge.enable_ibp,
-                luma_context,
-            ),
             ResidualReconstructionPlan::LumaRectSmooth { mode, use_tcq } => {
                 let neighbours = self.luma_corner_neighbours(block_ctx, block_decoded);
                 let edges = block_ctx.neighbours(PlaneId::Y);

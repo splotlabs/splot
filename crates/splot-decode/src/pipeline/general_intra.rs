@@ -14,7 +14,7 @@ use crate::bitstream::tile_payload::{
     LumaTransformTypeContext, SupportedChromaMode, SupportedNonDcLumaMode,
     TransformToolResidualPolicy, read_lossless_luma_tx_size,
 };
-use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE, plan_luma_prediction};
+use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
     ResidualPipelineUnsupported,
@@ -495,82 +495,32 @@ pub(crate) fn decode_one_general_intra_block(
         None
     };
 
-    if n4w != n4h
-        || modes.uses_active_mrl()
-        || square_luma_needs_rect_residual_path(&modes, block_ctx, luma_use_tcq, sb_mib)
-    {
-        let (leaf, command) = parse_one_general_intra_rect_block(
-            intra_edge,
-            work_unit,
-            symbols,
-            frontier.has_chroma,
-            &modes,
-            coeff_ctx,
-            deblock_blocks,
-            chroma_deblock_blocks,
-            tx_skip_records,
-            qindex,
-            luma_use_tcq,
-            lossless,
-            luma_lossless_tx_size,
-            transform_tool_residual_policy,
-            luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
-            block_ctx,
-            cfl_ds_filter_index,
-            sb_mib,
-            segment_id,
-            tile_offset,
-        )?;
-        if frontier.has_chroma {
-            record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
-        }
-        return Ok((leaf, command));
-    }
-
-    let chroma_plan = if frontier.has_chroma {
-        Some(
-            chroma_plan_for_modes(&modes, cfl_ds_filter_index, sb_mib)
-                .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?,
-        )
-    } else {
-        None
-    };
-    let luma_plan = plan_luma_prediction(&modes, block_ctx)
-        .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
-
-    let residual_plan = GeneralIntraResidualPlan::square(
-        block_ctx,
-        luma_plan,
-        chroma_plan,
-        luma_use_tcq,
-        modes.uses_active_fsc(),
-        luma_lossless_tx_size,
-        lossless,
-    )
-    .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
-    let command = parse_general_intra_residual_plan(
-        residual_plan,
+    let (leaf, command) = parse_one_general_intra_rect_block(
+        intra_edge,
         work_unit,
         symbols,
+        frontier.has_chroma,
+        &modes,
         coeff_ctx,
-        block_ctx,
         deblock_blocks,
         chroma_deblock_blocks,
         tx_skip_records,
-        modes.coeff_uv_mode(),
-        luma_transform_type_context(&modes),
-        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
-        transform_tool_residual_policy,
         qindex,
+        luma_use_tcq,
         lossless,
-        intra_edge,
+        luma_lossless_tx_size,
+        transform_tool_residual_policy,
+        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
+        block_ctx,
+        cfl_ds_filter_index,
+        sb_mib,
         segment_id,
         tile_offset,
     )?;
     if frontier.has_chroma {
         record_chroma_smooth(chroma_smooth, block_ctx, modes.supported_chroma_mode());
     }
-    Ok((leaf_mode_for_block(&modes, frontier.has_chroma), command))
+    Ok((leaf, command))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -767,18 +717,6 @@ fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
         .or_else(|| core.inter_tail.as_ref().map(|tail| tail.tx_mode))
 }
 
-fn square_luma_needs_rect_residual_path(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    use_tcq: bool,
-    sb_mib: usize,
-) -> bool {
-    let block = block_ctx.block();
-    block.width4() == block.height4()
-        && plan_luma_prediction(modes, block_ctx).is_err()
-        && rect_luma_plan(modes, block_ctx, use_tcq, sb_mib).is_ok()
-}
-
 fn rect_luma_plan(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
@@ -964,30 +902,6 @@ fn rect_chroma_plan(
         return cfl_chroma_plan(
             modes.cfl_params(),
             "general_intra_rect_cfl_missing_params",
-            cfl_ds_filter_index,
-            sb_mib,
-        );
-    }
-    let mode = modes.supported_chroma_mode().ok_or(unsupported_chroma(
-        "general_intra_non_dc_chroma",
-        missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
-    ))?;
-    Ok(rect_chroma_plan_for_mode(
-        mode,
-        inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
-        modes.chroma_dpcm_direction(),
-    ))
-}
-
-fn chroma_plan_for_modes(
-    modes: &GeneralIntraBlockModes,
-    cfl_ds_filter_index: u8,
-    sb_mib: usize,
-) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
-    if modes.is_cfl() {
-        return cfl_chroma_plan(
-            modes.cfl_params(),
-            "general_intra_cfl_missing_params",
             cfl_ds_filter_index,
             sb_mib,
         );
