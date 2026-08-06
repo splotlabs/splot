@@ -488,10 +488,6 @@ impl GeneralIntraBlockModes {
         dpcm_direction(self.use_dpcm_y != 0, self.dpcm_mode_y == 0)
     }
 
-    pub(crate) const fn uses_dpcm_uv(&self) -> bool {
-        self.use_dpcm_uv != 0
-    }
-
     pub(crate) const fn chroma_dpcm_direction(&self) -> Option<DpcmDirection> {
         dpcm_direction(self.use_dpcm_uv != 0, self.dpcm_mode_uv == 0)
     }

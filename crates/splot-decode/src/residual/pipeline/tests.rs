@@ -1007,6 +1007,50 @@ fn directional_first_partition_handoff_rejects_invalid_transform_geometry() {
 }
 
 #[test]
+fn chroma_directional_plan_uses_transform_unit_wide_angle_mapping() {
+    let plan = GeneralIntraResidualPlan::rect(
+        ctx(BlockRect::new(0, 0, 4, 16), BitDepth::Ten),
+        RectLumaPlan::Dc { use_tcq: false },
+        Some(RectChromaPlan::Directional {
+            mode: SupportedChromaMode::D67,
+            angle_delta_uv: 0,
+            dpcm: None,
+        }),
+        false,
+        None,
+        true,
+    )
+    .expect("lossless rectangular plan");
+    let plane = plan.plane_plan(PlaneId::U).expect("chroma plane");
+    let luma_context =
+        LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::DC_PRED, 0);
+
+    assert_eq!(
+        crate::pipeline::general_intra::wide_angle_mapped_p_angle(8, 32, 67),
+        247
+    );
+    assert_eq!(
+        plane.unit_directional_replan(luma_context),
+        ResidualReconstructionPlan::ChromaOneSided(247, None)
+    );
+
+    let unit = plane
+        .transform_unit_plan(&PositionedLumaCoeffBlock {
+            x: plane.x,
+            y: plane.y,
+            tx_size: TX_4X4,
+            middle: false,
+            coeffs: empty_luma_coeffs(),
+        })
+        .expect("4x4 chroma transform-unit plan");
+    assert_eq!((unit.tx.width_log2(), unit.tx.height_log2()), (2, 2));
+    assert_eq!(
+        unit.unit_directional_replan(luma_context),
+        ResidualReconstructionPlan::ChromaOneSided(67, None)
+    );
+}
+
+#[test]
 fn active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping() {
     let luma_context = LumaTransformTypeContext::with_mrl_indices(
         crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST,

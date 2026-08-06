@@ -217,12 +217,15 @@ fn chroma_reconstruction(plan: RectChromaPlan) -> ResidualReconstructionPlan {
             ResidualReconstructionPlan::Rect { use_tcq: false }
         }
         RectChromaPlan::Mode(mode, dpcm) => ResidualReconstructionPlan::Chroma { mode, dpcm },
-        RectChromaPlan::OneSided(p_angle, dpcm) => {
-            ResidualReconstructionPlan::ChromaOneSided(p_angle, dpcm)
-        }
-        RectChromaPlan::Middle(p_angle, dpcm) => {
-            ResidualReconstructionPlan::ChromaMiddle(p_angle, dpcm)
-        }
+        RectChromaPlan::Directional {
+            mode,
+            angle_delta_uv,
+            dpcm,
+        } => ResidualReconstructionPlan::ChromaDirectional {
+            mode,
+            angle_delta_uv,
+            dpcm,
+        },
         RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index,

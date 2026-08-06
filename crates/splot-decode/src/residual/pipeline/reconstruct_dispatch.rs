@@ -28,6 +28,29 @@ impl ResidualPlanePlan {
         &self,
         luma_context: LumaTransformTypeContext,
     ) -> ResidualReconstructionPlan {
+        if let ResidualReconstructionPlan::ChromaDirectional {
+            mode,
+            angle_delta_uv,
+            dpcm,
+        } = self.reconstruction
+        {
+            let Some(base) = mode.directional_base_angle() else {
+                return ResidualReconstructionPlan::Chroma { mode, dpcm };
+            };
+            let nominal = base + i32::from(angle_delta_uv) * 3;
+            let unit_w = 1usize << self.tx.width_log2();
+            let unit_h = 1usize << self.tx.height_log2();
+            let mapped =
+                crate::pipeline::general_intra::wide_angle_mapped_p_angle(unit_w, unit_h, nominal);
+            let Ok(p_angle) = u16::try_from(mapped) else {
+                return ResidualReconstructionPlan::Chroma { mode, dpcm };
+            };
+            return match p_angle {
+                1..=89 | 181..=270 => ResidualReconstructionPlan::ChromaOneSided(p_angle, dpcm),
+                91..=179 => ResidualReconstructionPlan::ChromaMiddle(p_angle, dpcm),
+                _ => ResidualReconstructionPlan::Chroma { mode, dpcm },
+            };
+        }
         let (use_tcq, mrl) = match self.reconstruction {
             ResidualReconstructionPlan::LumaRectOneSidedAbove { use_tcq, .. }
             | ResidualReconstructionPlan::LumaRectOneSidedLeft { use_tcq, .. }
@@ -762,6 +785,9 @@ impl ResidualPlanePlan {
                     EdgeAvail::new(neighbours.has_above(), neighbours.has_left()),
                     block_ctx.bit_depth(),
                 )
+            }
+            ResidualReconstructionPlan::ChromaDirectional { .. } => {
+                Err(GeneralIntraResidualError::UnexpectedBranch)
             }
             ResidualReconstructionPlan::ChromaCfl {
                 params,

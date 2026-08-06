@@ -488,14 +488,6 @@ pub(crate) fn decode_one_general_intra_block(
         ));
     }
     ensure_lossless_fsc_prediction_subset(lossless, &modes, block_ctx, sb_mib, tile_offset)?;
-    ensure_lossless_chroma_prediction_subset(
-        lossless,
-        frontier.has_chroma,
-        &modes,
-        block_ctx,
-        sb_mib,
-        tile_offset,
-    )?;
     let luma_lossless_tx_size = if lossless && modes.uses_active_fsc() {
         Some(
             read_lossless_luma_tx_size(work_unit, symbols, frontier.b_size.index(), true, true)
@@ -539,7 +531,7 @@ pub(crate) fn decode_one_general_intra_block(
 
     let chroma_plan = if frontier.has_chroma {
         Some(
-            chroma_plan_for_modes(&modes, block_ctx, cfl_ds_filter_index, sb_mib, lossless)
+            chroma_plan_for_modes(&modes, block_ctx, cfl_ds_filter_index, sb_mib)
                 .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?,
         )
     } else {
@@ -785,28 +777,6 @@ fn ensure_lossless_fsc_prediction_subset(
     ))
 }
 
-pub(super) fn ensure_lossless_chroma_prediction_subset(
-    lossless: bool,
-    has_chroma: bool,
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-    tile_offset: ByteOffset,
-) -> Result<()> {
-    if !lossless {
-        return Ok(());
-    }
-    if has_chroma && !lossless_chroma_block_prediction_guard_passes(modes, block_ctx, sb_mib) {
-        return Err(general_intra_at!(
-            "general_intra_lossless_other_nondc_chroma_block_unverified",
-            tile_offset,
-            missing_capability_message!("intra.lossless.chroma_prediction", mode = "non_dc"),
-            "7.13.2",
-        ));
-    }
-    Ok(())
-}
-
 fn lossless_fsc_luma_prediction_verified(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
@@ -916,21 +886,6 @@ fn lossless_chroma_part_prediction_guard_passes(
             chroma.supported_chroma_mode(y_mode),
             chroma.uses_dpcm_uv(),
             y_mode,
-            block_ctx,
-            sb_mib,
-        )
-}
-
-fn lossless_chroma_block_prediction_guard_passes(
-    modes: &GeneralIntraBlockModes,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-) -> bool {
-    modes.is_cfl()
-        || lossless_chroma_block_prediction_verified(
-            modes.supported_chroma_mode(),
-            modes.uses_dpcm_uv(),
-            modes.y_mode,
             block_ctx,
             sb_mib,
         )
@@ -1053,90 +1008,6 @@ fn lossless_chroma_part_rect_prediction_verified(
         return false;
     }
     true
-}
-
-pub(super) fn lossless_chroma_block_prediction_verified(
-    mode: Option<SupportedChromaMode>,
-    uses_dpcm_uv: bool,
-    y_mode: IntraYMode,
-    block_ctx: BlockCtx,
-    sb_mib: usize,
-) -> bool {
-    use SupportedChromaMode as M;
-
-    if lossless_chroma_prediction_verified(mode, uses_dpcm_uv) {
-        return true;
-    }
-    if uses_dpcm_uv {
-        return false;
-    }
-    let Some(mode) = mode else {
-        return false;
-    };
-    if lossless_chroma_block_rect_prediction_verified(block_ctx) {
-        return true;
-    }
-    if !lossless_chroma_full_64_block(block_ctx) {
-        return false;
-    }
-    let neighbours = block_ctx.neighbours(PlaneId::U);
-    let top_left = sb_mib == FULL_SB_N4_LUMA && block_ctx.is_top_left();
-    let top_left_smooth =
-        top_left && y_mode == IntraYMode::DC_PRED && matches!(mode, M::Smooth | M::SmoothVertical);
-    let above_only_cardinal = sb_mib == FULL_SB_N4_LUMA
-        && neighbours.has_above()
-        && !neighbours.has_left()
-        && matches!(
-            mode,
-            M::Vertical | M::VerticalFollow | M::Horizontal | M::HorizontalFollow
-        );
-    (top_left
-        && matches!(
-            mode,
-            M::Horizontal
-                | M::Vertical
-                | M::D45
-                | M::D67
-                | M::D113
-                | M::D135
-                | M::D157
-                | M::D203
-                | M::Paeth
-        ))
-        || (top_left
-            && ((y_mode.mode_to_angle() == Some(45) && mode == M::D45Follow)
-                || (y_mode.mode_to_angle() == Some(67) && mode == M::D67Follow)
-                || (y_mode.mode_to_angle() == Some(113) && mode == M::D113Follow)
-                || (y_mode.mode_to_angle() == Some(135) && mode == M::D135Follow)
-                || (y_mode.mode_to_angle() == Some(157) && mode == M::D157Follow)
-                || (y_mode.mode_to_angle() == Some(203) && mode == M::D203Follow)))
-        || top_left_smooth
-        || above_only_cardinal
-        || (!neighbours.has_above()
-            && neighbours.has_left()
-            && (matches!(
-                mode,
-                M::Vertical
-                    | M::VerticalFollow
-                    | M::Horizontal
-                    | M::HorizontalFollow
-                    | M::D45
-                    | M::D45Follow
-                    | M::D67
-                    | M::D67Follow
-                    | M::D113
-                    | M::D113Follow
-                    | M::D135
-                    | M::D135Follow
-            ) || matches!(
-                mode,
-                M::D157 | M::D157Follow | M::D203 | M::D203Follow | M::Paeth
-            )))
-}
-
-fn lossless_chroma_block_rect_prediction_verified(block_ctx: BlockCtx) -> bool {
-    let neighbours = block_ctx.neighbours(PlaneId::U);
-    lossless_chroma_8bit_420(block_ctx) && neighbours.has_above() && neighbours.has_left()
 }
 
 fn lossless_chroma_full_64_block(block_ctx: BlockCtx) -> bool {
@@ -1384,11 +1255,11 @@ fn rect_chroma_plan(
         "general_intra_non_dc_chroma",
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
+    ensure_supported_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
         modes.chroma_dpcm_direction(),
-        block_ctx,
     ))
 }
 
@@ -1397,7 +1268,6 @@ fn chroma_plan_for_modes(
     block_ctx: BlockCtx,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    lossless: bool,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
     if modes.is_cfl() {
         return cfl_chroma_plan(
@@ -1411,23 +1281,11 @@ fn chroma_plan_for_modes(
         "general_intra_non_dc_chroma",
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
-    if let Err(error) = ensure_supported_chroma_capability(mode, block_ctx)
-        && !(lossless
-            && lossless_chroma_block_prediction_verified(
-                Some(mode),
-                modes.uses_dpcm_uv(),
-                modes.y_mode,
-                block_ctx,
-                sb_mib,
-            ))
-    {
-        return Err(error);
-    }
+    ensure_supported_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
         modes.chroma_dpcm_direction(),
-        block_ctx,
     ))
 }
 
@@ -1435,28 +1293,14 @@ fn rect_chroma_plan_for_mode(
     mode: SupportedChromaMode,
     angle_delta_uv: i8,
     dpcm: Option<DpcmDirection>,
-    block_ctx: BlockCtx,
 ) -> RectChromaPlan {
-    let Some(base) = mode.directional_base_angle() else {
+    if mode.directional_base_angle().is_none() {
         return RectChromaPlan::Mode(mode, dpcm);
-    };
-    let Some(angle) = base.checked_add(i32::from(angle_delta_uv) * ANGLE_STEP) else {
-        return RectChromaPlan::Mode(mode, dpcm);
-    };
-    let block = block_ctx.plane_block(PlaneId::U);
-    let Some(width) = block.width4().checked_mul(4) else {
-        return RectChromaPlan::Mode(mode, dpcm);
-    };
-    let Some(height) = block.height4().checked_mul(4) else {
-        return RectChromaPlan::Mode(mode, dpcm);
-    };
-    let Ok(p_angle) = u16::try_from(wide_angle_mapped_p_angle(width, height, angle)) else {
-        return RectChromaPlan::Mode(mode, dpcm);
-    };
-    match p_angle {
-        1..=89 | 181..=270 => RectChromaPlan::OneSided(p_angle, dpcm),
-        91..=179 => RectChromaPlan::Middle(p_angle, dpcm),
-        _ => RectChromaPlan::Mode(mode, dpcm),
+    }
+    RectChromaPlan::Directional {
+        mode,
+        angle_delta_uv,
+        dpcm,
     }
 }
 
@@ -1494,11 +1338,11 @@ fn chroma_plan_for_parts(
             "general_intra_chroma_part_non_dc_chroma",
             missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
         ))?;
+    ensure_supported_chroma_capability(mode, block_ctx)?;
     Ok(rect_chroma_plan_for_mode(
         mode,
         inherited_chroma_angle_delta(chroma.coeff_uv_mode(), y_mode, angle_delta_y),
         chroma.chroma_dpcm_direction(),
-        block_ctx,
     ))
 }
 

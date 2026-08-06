@@ -199,8 +199,11 @@ pub(crate) enum RectLumaPlan {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RectChromaPlan {
     Mode(SupportedChromaMode, Option<DpcmDirection>),
-    OneSided(u16, Option<DpcmDirection>),
-    Middle(u16, Option<DpcmDirection>),
+    Directional {
+        mode: SupportedChromaMode,
+        angle_delta_uv: i8,
+        dpcm: Option<DpcmDirection>,
+    },
     Cfl {
         params: CflParams,
         cfl_ds_filter_index: u8,
@@ -318,6 +321,11 @@ enum ResidualReconstructionPlan {
     },
     Chroma {
         mode: SupportedChromaMode,
+        dpcm: Option<DpcmDirection>,
+    },
+    ChromaDirectional {
+        mode: SupportedChromaMode,
+        angle_delta_uv: i8,
         dpcm: Option<DpcmDirection>,
     },
     ChromaOneSided(u16, Option<DpcmDirection>),
