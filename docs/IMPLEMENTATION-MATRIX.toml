@@ -15249,7 +15249,7 @@ fixtures = [
     "crates/splot-decode/src/pipeline/mod.rs",
     "tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = ["decode/unsupported-feature", "decode/malformed-source"]
 
 [[feature]]
 id = "DECODE-GENERAL-INTRA-LUMA-COEFFS"

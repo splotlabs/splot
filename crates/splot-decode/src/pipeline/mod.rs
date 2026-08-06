@@ -66,8 +66,8 @@ use output_effects::{FrameOutputEffects, OutputEffectState};
 use output_schedule::*;
 use runtime_support::decode_tile_boundary_error;
 pub(crate) use runtime_support::{
-    ensure_runtime_limits, unsupported, unsupported_at, unsupported_feature_at,
-    unsupported_with_spec,
+    ensure_runtime_limits, malformed_tile_payload, unsupported, unsupported_at,
+    unsupported_feature_at, unsupported_with_spec,
 };
 pub(crate) use stream_schedule::following_inter_envelope;
 #[cfg(test)]

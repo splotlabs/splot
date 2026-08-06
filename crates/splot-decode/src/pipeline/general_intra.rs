@@ -1168,12 +1168,9 @@ fn general_intra_block_mode_error(
     match error {
         GeneralIntraBlockModeError::SymbolRead { .. }
         | GeneralIntraBlockModeError::Literal { .. }
-        | GeneralIntraBlockModeError::InvalidUvMode { .. } => general_intra_at!(
-            "general_intra_block_mode_parse",
-            offset,
-            "general intra block mode-info syntax could not be parsed or decoded an undefined value",
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
+        | GeneralIntraBlockModeError::InvalidUvMode { .. } => {
+            malformed_tile_payload(offset, GENERAL_INTRA_MODE_SPEC_SECTION, error)
+        }
         GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_at!(
             "general_intra_unsupported_y_mode",
             offset,

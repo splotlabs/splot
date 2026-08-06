@@ -29,10 +29,10 @@ pub enum DecodeError {
         #[from]
         source: DecodeLimitError,
     },
-    /// The supplied decode source recorded a fatal source/container parse issue.
+    /// The supplied decode source recorded a fatal container or bitstream parse issue.
     #[error("malformed decode source: {issue}")]
     MalformedSource {
-        /// Source issue that prevented transactional planning.
+        /// Source issue that prevented planning or runtime syntax decode.
         issue: DecodeSourceIssue,
     },
     /// The supplied source uses AV2 structures outside the supported planner tier.
