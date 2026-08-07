@@ -1338,15 +1338,6 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| symbol_read_error(tile_offset))?
     };
     let skip = skip.get();
-    if skip != 0 && skip != 1 {
-        return Err(inter_cap!(
-            "inter_block_unexpected_skip",
-            tile_offset,
-            "inter.block.skip out of range",
-            SPEC_MODE_INFO
-        ));
-    }
-
     let segment_id = if frontier.is_chroma_part() {
         segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
     } else {
@@ -1707,17 +1698,6 @@ fn decode_block<T: ReconSample>(
         .map_err(|_| symbol_read_error(tile_offset))?
         .get()
     };
-    if single_mode != SINGLE_MODE_NEARMV
-        && single_mode != SINGLE_MODE_GLOBALMV
-        && single_mode != SINGLE_MODE_NEWMV
-    {
-        return Err(inter_cap!(
-            "inter_block_unsupported_single_mode",
-            tile_offset,
-            "inter.single_mode not in {NEARMV, GLOBALMV, NEWMV}",
-            SPEC_MODE_INFO
-        ));
-    }
     let use_amvd = read_use_amvd_syntax(
         cdfs,
         symbols,
