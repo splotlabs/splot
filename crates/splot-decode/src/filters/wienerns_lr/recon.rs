@@ -954,12 +954,18 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         )
     }
 
-    fn run_planes(
+    /// Runs § 7.5's CDEF-then-CCSO sequence over one luma row range.
+    ///
+    /// GDF reads `CdefFrame`, which § 7.5 orders after CCSO, so the overlap
+    /// rows in [`Self::cdef_overlap_planes`] must come through this same path
+    /// rather than a bare CDEF pass.
+    fn cdef_ccso_range<'d>(
         &self,
-        &(start, end): &(usize, usize),
-        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
-    ) -> Result<final_filters::FilteredStripe> {
-        let chain = self.chain();
+        deblocked: crate::filters::source::DeblockedPlanes<'d, T>,
+        chain: &StripeChain<'_>,
+        start: usize,
+        end: usize,
+    ) -> Result<crate::filters::cdef::CdefFrame<'d, T>> {
         let cdef_timer = crate::timing::start();
         let mut cdef = crate::filters::cdef::cdef_stripe(
             deblocked,
@@ -991,6 +997,71 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
                 })?;
             crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
         }
+        Ok(cdef)
+    }
+
+    /// Builds the post-CCSO rows GDF reads outside this stripe.
+    ///
+    /// § 7.20.1 clips a stripe to its tile row, but § 7.20.2 still sources the
+    /// filter's `GDF_READ_RADIUS` neighbourhood from `CdefFrame`, so a stripe
+    /// abutting a tile row boundary needs rows the stripe itself never covers.
+    /// Ranges are aligned to CDEF's `STEP4 * MI_SIZE` step on both ends; rows
+    /// the stripe already holds are resolved from it first, so any overlap
+    /// between the two is redundant rather than wrong.
+    ///
+    /// `mi_row_starts` carries an end sentinel, so a single tile row is two
+    /// entries. With one tile row § 7.20.1's clip never crosses a tile, the
+    /// stripe already holds every row § 7.20.2 asks for, and rebuilding the
+    /// fringes would be pure waste.
+    fn cdef_overlap_planes(
+        &self,
+        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
+        chain: &StripeChain<'_>,
+        start: usize,
+        end: usize,
+    ) -> Result<Vec<crate::filters::source::StripePlane>> {
+        const CDEF_START_ALIGN: usize = 8;
+        if self
+            .core
+            .tile_info
+            .as_ref()
+            .is_none_or(|tile| tile.mi_row_starts.len() <= 2)
+        {
+            return Ok(Vec::new());
+        }
+        let frame_height = self.ranges.last().map_or(0, |&(_, last_end)| last_end);
+        let mut planes = Vec::new();
+        let back_start = start.saturating_sub(crate::filters::gdf::GDF_READ_RADIUS)
+            / CDEF_START_ALIGN
+            * CDEF_START_ALIGN;
+        if back_start < start {
+            planes.push(
+                self.cdef_ccso_range(deblocked, chain, back_start, start)?
+                    .filtered_y,
+            );
+        }
+        let forward_start = end / CDEF_START_ALIGN * CDEF_START_ALIGN;
+        let forward_end = end
+            .saturating_add(crate::filters::gdf::GDF_READ_RADIUS)
+            .next_multiple_of(CDEF_START_ALIGN)
+            .min(frame_height);
+        if forward_end > end && forward_start < forward_end {
+            planes.push(
+                self.cdef_ccso_range(deblocked, chain, forward_start, forward_end)?
+                    .filtered_y,
+            );
+        }
+        Ok(planes)
+    }
+
+    fn run_planes(
+        &self,
+        &(start, end): &(usize, usize),
+        deblocked: crate::filters::source::DeblockedPlanes<'_, T>,
+    ) -> Result<final_filters::FilteredStripe> {
+        let chain = self.chain();
+        let cdef = self.cdef_ccso_range(deblocked, &chain, start, end)?;
+        let cdef_overlap = self.cdef_overlap_planes(deblocked, &chain, start, end)?;
         let [y_end, u_end] = self.lr_plane_ends;
         let y_runs = &self.lr_source_blocks[..y_end];
         let u_runs = &self.lr_source_blocks[y_end..u_end];
@@ -1014,6 +1085,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             &self.core,
             frame.deblocked_y,
             separate_cdef_luma,
+            &cdef_overlap,
             output_luma,
             chain.gdf_grid,
             chain.lossless_grid,

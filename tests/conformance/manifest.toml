@@ -516,6 +516,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-gdf-tile-rows-intra-256x128.ivf"
+description = "8-bit 4:2:0 2-frame intra stream (IVF, 256x128) encoded with --tile-rows=1, so the frame has two tile rows over 128 luma rows and the guided detail filter reads across the tile row boundary. AV2 section 7.20.1 clips each stripe to its tile row, but section 7.20.2 still sources GDF's read neighbourhood from CdefFrame, so the stripe ending at row 64 needs post-CCSO row 64 and the stripe starting at row 64 needs post-CCSO row 57. Before the fix splot materialised CDEF per stripe and failed closed with unsupported_wienerns_lr_selectable_transform_records_gdf_source at byte 69. avmdec raw SHA-256 is 6dd039c65ea1b2408acaac1ef1dabe9b74d0dff6c6fec003ffa647c5b0b7fb85 and splot now reproduces all 98,304 bytes; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-multi-tile-group-intra-256x128.ivf"
 description = "8-bit 4:2:0 3-frame intra stream (IVF, 256x128) encoded with --tile-columns=1 --num-tile-groups=2, so each frame unit carries a first tile group followed by a section 5.19 continuation tile group with is_first_tile_group equal to 0. Before the fix the stream planner classified the continuation correctly but the frame-unit walk did not treat it as part of the open frame unit, so splot failed closed with unexpected_leading_obu_after_key at byte 600. avmdec raw SHA-256 is 23bdc0d131dcb2e1004723d8a29d560cc5ee21949288eb8a35df9a7e2794a8ff and splot now reproduces all 147,456 bytes; validates clean."
 expect = "clean"
