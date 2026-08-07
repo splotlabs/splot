@@ -1592,12 +1592,11 @@ fn read_active_luma_long_tx_type(
         symbols,
         TileCdfSelector::IntraTxTypeLong { tx_size_sqr },
     )?;
-    long_tx_type_from_index(
+    Ok(long_tx_type_from_index(
         shape,
         is_long_side_dct,
         intra_tx_type,
-        "unsupported_dctonly_residual_invalid_luma_tx_type",
-    )
+    ))
 }
 
 /// Reads the signalled inter transform type for `tx_set`.
@@ -1670,12 +1669,11 @@ fn read_active_inter_long_tx_type(
         symbols,
         TileCdfSelector::InterTxTypeLong { ctx, tx_size_sqr },
     )?;
-    long_tx_type_from_index(
+    Ok(long_tx_type_from_index(
         shape,
         is_long_side_dct,
         inter_tx_type,
-        "unsupported_dctonly_residual_invalid_inter_tx_type",
-    )
+    ))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1708,18 +1706,32 @@ fn read_long_side_dct_symbol(
     }
 }
 
-fn long_tx_type_from_index(
+/// Inverts a long transform set's `(is_long_side_dct, shape, tx_type)` triple.
+///
+/// `is_long_side_dct` and `wide_or_high` are binary, and the `IntraTxTypeLong`
+/// and `InterTxTypeLong` rows are five wide, so `tx_type` is 0..=3. Every index
+/// is therefore a literal and the lookup is total.
+const fn long_tx_type_from_index(
     shape: LongTxSetShape,
     is_long_side_dct: usize,
     tx_type: usize,
-    invalid_reason: &'static str,
-) -> Result<usize, GeneralIntraResidualError> {
-    TX_TYPE_INV_LONG
-        .get(is_long_side_dct)
-        .and_then(|long_side| long_side.get(shape.wide_or_high))
-        .and_then(|row| row.get(tx_type))
-        .copied()
-        .ok_or(unsupported_transform_tool_residual_error(invalid_reason))
+) -> usize {
+    let long_side = if is_long_side_dct == 0 {
+        TX_TYPE_INV_LONG[0]
+    } else {
+        TX_TYPE_INV_LONG[1]
+    };
+    let row = if shape.wide_or_high == 0 {
+        long_side[0]
+    } else {
+        long_side[1]
+    };
+    match tx_type {
+        0 => row[0],
+        1 => row[1],
+        2 => row[2],
+        _ => row[3],
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1805,6 +1817,10 @@ fn read_transform_symbol(
     ))
 }
 
+/// Resolves the § 9 `Md_Idx_To_Type` transform type for a signalled intra index.
+///
+/// Every `Md_Idx_To_Type` entry is a transform type in 0..=14, so widening the
+/// table's `i32` to `usize` is total.
 fn md_idx_luma_tx_type(
     tx_size: usize,
     luma_context: LumaTransformTypeContext,
@@ -1825,11 +1841,7 @@ fn md_idx_luma_tx_type(
             .ok_or(unsupported_transform_tool_residual_error(
                 "unsupported_dctonly_residual_invalid_intra_tx_type",
             ))?;
-    usize::try_from(tx_type).map_err(|_| {
-        unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_invalid_luma_tx_type",
-        )
-    })
+    Ok(tx_type.unsigned_abs() as usize)
 }
 
 fn luma_transform_intra_dir(
