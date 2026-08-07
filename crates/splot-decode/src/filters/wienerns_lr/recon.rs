@@ -522,18 +522,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
                 )
             })?;
-        if disable_loopfilters_across_tiles
-            && ccso_config.is_some()
-            && core
-                .tile_info
-                .as_ref()
-                .is_some_and(|tile| tile.mi_row_starts.len() > 2 || tile.mi_col_starts.len() > 2)
-        {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_ccso_disable_loopfilters_across_tiles",
-            ));
-        }
         let sink = sink_source.open(info, &ranges, offset)?;
         let stripe_count = ranges.len();
         let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
@@ -971,6 +959,17 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     /// GDF reads `CdefFrame`, which § 7.5 orders after CCSO, so the overlap
     /// rows in [`Self::cdef_overlap_planes`] must come through this same path
     /// rather than a bare CDEF pass.
+    /// Tile MI starts when § 7.5's in-loop filters must stay inside their tile.
+    fn tile_starts(&self) -> Option<(&[u32], &[u32])> {
+        if !self.disable_loopfilters_across_tiles {
+            return None;
+        }
+        self.core
+            .tile_info
+            .as_ref()
+            .map(|tile| (tile.mi_row_starts.as_slice(), tile.mi_col_starts.as_slice()))
+    }
+
     fn cdef_ccso_range<'d>(
         &self,
         deblocked: crate::filters::source::DeblockedPlanes<'d, T>,
@@ -988,14 +987,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             (self.mi_rows, self.mi_cols),
             self.subsampling,
             self.bit_depth,
-            self.disable_loopfilters_across_tiles
-                .then(|| {
-                    self.core
-                        .tile_info
-                        .as_ref()
-                        .map(|tile| (tile.mi_row_starts.as_slice(), tile.mi_col_starts.as_slice()))
-                })
-                .flatten(),
+            self.tile_starts(),
             start,
             end,
         )
@@ -1008,13 +1000,19 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         crate::timing::accumulate(crate::timing::Phase::FilterCdefStripe, cdef_timer);
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             let ccso_timer = crate::timing::start();
-            crate::filters::ccso::ccso_stripe(&mut cdef, grid, config, chain.lossless_grid)
-                .map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        self.offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
-                    )
-                })?;
+            crate::filters::ccso::ccso_stripe(
+                &mut cdef,
+                grid,
+                config,
+                chain.lossless_grid,
+                self.tile_starts(),
+            )
+            .map_err(|_| {
+                wienerns_lr_selectable_transform_record_error_reason(
+                    self.offset,
+                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
+                )
+            })?;
             crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
         }
         Ok(cdef)

@@ -1486,12 +1486,11 @@ ivf_sha256 = "b19c8baebcf2bd5eaa0d2f7525a89d400e97358501f640e2ed261401b39e22e8"
 avm_raw_sha256 = "d679eb28950917cd3a2ae230e1a3e1e7aa3cfd720ecbf8656ed8deb1e6d28878"
 
 [[fixture]]
-id = "syn-xtile-filters-off-intra-256x128"
-status = "xfail_splot"
+id = "syn-xtile-noloopfilter-intra-256x128"
+status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "loop.ccso", "loop.cdef", "loop.deblock", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "7f6ff0115bae82363fa96b1eba86dc29496c0e0d2a8958a56bb1c27cfbb80f38"
 avm_raw_sha256 = "c767e34921b964b395558a319588a5b40ba7e34bdd4e9a0dd77e3e18a14fd28b"
-unsupported_reason = "unsupported_ccso_disable_loopfilters_across_tiles"
 
 [[fixture]]
 id = "syn-gdf-2x2-tiles-intra-256x128"
