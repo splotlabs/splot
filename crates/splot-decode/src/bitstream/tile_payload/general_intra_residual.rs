@@ -545,74 +545,6 @@ fn coeff_ctx_err(source: TileCoeffStateError) -> GeneralIntraResidualError {
     GeneralIntraResidualError::CoeffContextState { source }
 }
 
-fn read_luma_transform_partition_prelude(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    context: LumaTransformPartitionContext,
-    tx_size: usize,
-    fsc_mode: bool,
-    is_inter: bool,
-) -> Result<(), GeneralIntraResidualError> {
-    if context.mi_size == BLOCK_4X4 {
-        return Ok(());
-    }
-    let max_tx_size =
-        block_size_table_usize(&MAX_TX_SIZE_RECT, "Max_Tx_Size_Rect", context.mi_size)?;
-    if tx_size != max_tx_size {
-        return Err(unsupported_transform_partition(
-            "unsupported_general_intra_tx_partition_non_max_tx_size",
-        ));
-    }
-    let block_width =
-        block_size_table_usize(&NUM_4X4_BLOCKS_WIDE, "Num_4x4_Blocks_Wide", context.mi_size)?
-            .checked_mul(MI_SIZE)
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Num_4x4_Blocks_Wide",
-                index: context.mi_size,
-            })?;
-    let block_height =
-        block_size_table_usize(&NUM_4X4_BLOCKS_HIGH, "Num_4x4_Blocks_High", context.mi_size)?
-            .checked_mul(MI_SIZE)
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Num_4x4_Blocks_High",
-                index: context.mi_size,
-            })?;
-    if (block_width >> 6) > 1 || (block_height >> 6) > 1 {
-        return Ok(());
-    }
-
-    let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
-    let allow_horz = tx_size_from_dimensions(tx_width, tx_height >> 1).is_some();
-    let allow_vert = tx_size_from_dimensions(tx_width >> 1, tx_height).is_some();
-    if !allow_horz && !allow_vert {
-        return Ok(());
-    }
-
-    let txfm_split_group = block_size_table_usize(
-        &SIZE_TO_TX_PART_GROUP_LOOKUP,
-        "Size_To_Tx_Part_Group_Lookup",
-        context.mi_size,
-    )?;
-    let do_partition = cdfs
-        .read_block_symbol_trace(
-            TileCdfSelector::TxDoPartition {
-                fsc_mode: usize::from(fsc_mode),
-                is_inter: usize::from(is_inter),
-                txfm_split_group,
-            },
-            symbols,
-        )
-        .map_err(|source| GeneralIntraResidualError::TransformPartitionRead { source })?
-        .get()
-        != 0;
-    if do_partition {
-        return Err(unsupported_transform_partition(
-            "unsupported_general_intra_tx_partition_split",
-        ));
-    }
-    Ok(())
-}
-
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 pub(crate) fn decode_general_intra_luma_partition_coeffs(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -664,7 +596,6 @@ pub(crate) fn decode_general_intra_luma_partition_coeffs(
             record.x,
             record.y,
             record_fills_block,
-            None,
             false,
             uv_mode,
             angle_delta_uv,
@@ -1023,7 +954,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     start_x: usize,
     start_y: usize,
     tx_fills_block: bool,
-    luma_tx_partition: Option<LumaTransformPartitionContext>,
     eob_u_nonzero: bool,
     uv_mode: usize,
     angle_delta_uv: i32,
@@ -1049,19 +979,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
     let h4 = usize::try_from(TX_HEIGHT.get(tx_size).copied().unwrap_or(0)).unwrap_or(0) >> 2;
     let coeff_cdf_q_ctx = coeff_cdf_q_ctx_from_base_q_idx(frame_facts.base_q_idx());
     let tx_size_ctx = txb_skip_tx_size_ctx(tx_size);
-
-    if plane == 0
-        && let Some(tx_partition) = luma_tx_partition
-    {
-        read_luma_transform_partition_prelude(
-            work_unit.cdf_mut().tile_cdfs_mut(),
-            symbols,
-            tx_partition,
-            tx_size,
-            fsc_mode,
-            is_inter,
-        )?;
-    }
 
     let local_x4 = context.local_x4(plane, x4).map_err(coeff_ctx_err)?;
     let local_y4 = context.local_y4(plane, y4).map_err(coeff_ctx_err)?;
