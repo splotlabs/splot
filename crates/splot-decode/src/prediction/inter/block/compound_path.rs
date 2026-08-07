@@ -349,8 +349,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     let force_integer_mv = effective_force_integer_mv(core);
     let temporal_allowed = compound.ref_frame0 != compound.ref_frame1;
     let temporal_first = |ref_frame| {
-        temporal_allowed
-            && temporal_first_frame
+        temporal_first_frame
             && super::block_ref_within_temporal_distance(
                 reference,
                 ref_frame_idx,
@@ -1074,7 +1073,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
                 mvd: [Mv::ZERO; 2],
                 joint: None,
                 jmvd_scale_mode: 0,
-                temporal_allowed: ref_frame0 != ref_frame1,
+                temporal_allowed: true,
                 temporal_first: [false; 2],
             },
             blend: mc::CompoundBlend::average_with_implicit_mask(

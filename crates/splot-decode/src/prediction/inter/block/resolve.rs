@@ -617,9 +617,14 @@ pub(super) struct CompoundMotionSyntax {
     pub(super) mvd: [Mv; 2],
     pub(super) joint: Option<CompoundJointMvProjection>,
     pub(super) jmvd_scale_mode: u8,
-    /// § 7.12.2 temporal candidates are gated off when both lists share a
-    /// reference, for the paired stack only.
+    /// Whether the paired stack admits a temporal candidate: § 7.12.2 allows one
+    /// when the two references differ **or** the block is skip mode. Skip mode is
+    /// the reason this is not simply `ref_frame0 != ref_frame1`.
     pub(super) temporal_allowed: bool,
+    /// Per-list temporal-first priority for the second-DRL stacks. Those are two
+    /// independent single-reference stacks, so each takes the single-reference
+    /// condition on its own reference; `temporal_allowed` is a question about a
+    /// compound pair and does not apply here.
     pub(super) temporal_first: [bool; 2],
 }
 

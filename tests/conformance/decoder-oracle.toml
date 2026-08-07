@@ -1514,6 +1514,20 @@ ivf_sha256 = "731c31624250833e19559430836815ee74fb4e607a69957a6853c208ca5e635b"
 avm_raw_sha256 = "23bdc0d131dcb2e1004723d8a29d560cc5ee21949288eb8a35df9a7e2794a8ff"
 
 [[fixture]]
+id = "syn-3frame-inter-nofilters-64x64"
+status = "must_pass"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "inter.warp", "intra.directional", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "a2766644ae1ded0ef6b5f3f1eb28d78529c238c89251228f69c75ca0864cfd0a"
+avm_raw_sha256 = "9171ea36ca181876d8d16752abc6be0ac397ba8f7976e9fc8f17c34dd7e378f6"
+
+[[fixture]]
+id = "syn-3frame-inter-default-64x64"
+status = "must_pass"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "inter.warp", "intra.directional", "loop.cdef", "loop.ccso", "loop.deblock", "loop.gdf", "loop.loop_restoration", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
+ivf_sha256 = "0102c30b096a2b34c5efaabcc43539613237185f1f3c1210517731f6c5b0c7e0"
+avm_raw_sha256 = "4347a1b8b11d1526d84538fe330b1cd04b4928a526d3f929ca0b91e1c681eff0"
+
+[[fixture]]
 id = "syn-mrl-sec-4x4-intra-128x128"
 status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.mrl", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]
