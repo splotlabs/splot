@@ -504,8 +504,7 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
         if logical < 0 {
             return Ok(seed);
         }
-        let logical = usize::try_from(logical)
-            .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+        let logical = logical.unsigned_abs() as usize;
         let row = y.saturating_add(logical.min(height.saturating_sub(1)));
         Ok(workspace.reconstructed_sample(PlaneId::Y, left_col, row)?)
     })
@@ -543,16 +542,14 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
     build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
         let column = if logical < 0 {
             if have_left {
-                let back = usize::try_from(-logical)
-                    .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                let back = logical.unsigned_abs() as usize;
                 x.checked_sub(back)
                     .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
             } else {
                 x
             }
         } else {
-            let logical = usize::try_from(logical)
-                .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            let logical = logical.unsigned_abs() as usize;
             x.saturating_add(logical.min(width.saturating_sub(1)))
         };
         Ok(workspace.reconstructed_sample(PlaneId::Y, column, above_row)?)
@@ -583,14 +580,12 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
                 y.checked_sub(1)
                     .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
             } else {
-                let back = usize::try_from(-logical)
-                    .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+                let back = logical.unsigned_abs() as usize;
                 y.checked_sub(back)
                     .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
             }
         } else {
-            let logical = usize::try_from(logical)
-                .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
+            let logical = logical.unsigned_abs() as usize;
             y.saturating_add(logical.min(height.saturating_sub(1)))
                 .min(max_y)
         };
