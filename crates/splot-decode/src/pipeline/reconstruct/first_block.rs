@@ -124,6 +124,7 @@ fn dip_reference_edges<T: ReconSample>(
 > {
     let above_len = width + (width >> 2);
     let left_len = height + (height >> 2);
+    let (above_row, left_col) = neighbour_origin(availability, x, y)?;
     let above = if availability.above {
         collect_available_dip_edge(
             workspace,
@@ -134,8 +135,9 @@ fn dip_reference_edges<T: ReconSample>(
             above_len,
             num4_above_right,
         )?
-    } else if availability.left {
-        RecycledIntraSamples::filled(above_len, left_seed(workspace, x, y)?)
+    } else if let Some(left_col) = left_col {
+        let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
+        RecycledIntraSamples::filled(above_len, seed)
     } else {
         RecycledIntraSamples::filled(above_len, noneighbour_above::<T>(bit_depth))
     };
@@ -149,24 +151,19 @@ fn dip_reference_edges<T: ReconSample>(
             left_len,
             num4_below_left,
         )?
-    } else if availability.above {
-        RecycledIntraSamples::filled(left_len, above_seed(workspace, x, y)?)
+    } else if let Some(above_row) = above_row {
+        let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
+        RecycledIntraSamples::filled(left_len, seed)
     } else {
         RecycledIntraSamples::filled(left_len, noneighbour_left::<T>(bit_depth))
     };
-    let top_left = match (availability.above, availability.left) {
-        (true, true) => {
-            let corner_x = x
-                .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-            let corner_y = y
-                .checked_sub(1)
-                .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-            workspace.reconstructed_sample(PlaneId::Y, corner_x, corner_y)?
+    let top_left = match (above_row, left_col) {
+        (Some(above_row), Some(left_col)) => {
+            workspace.reconstructed_sample(PlaneId::Y, left_col, above_row)?
         }
-        (true, false) => above_seed(workspace, x, y)?,
-        (false, true) => left_seed(workspace, x, y)?,
-        (false, false) => noneighbour_corner::<T>(bit_depth),
+        (Some(above_row), None) => workspace.reconstructed_sample(PlaneId::Y, x, above_row)?,
+        (None, Some(left_col)) => workspace.reconstructed_sample(PlaneId::Y, left_col, y)?,
+        (None, None) => noneighbour_corner::<T>(bit_depth),
     };
     Ok((left, above, top_left))
 }
@@ -234,26 +231,27 @@ fn extend_edge_with_last<T: ReconSample>(
     Ok(edge)
 }
 
-fn left_seed<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
+/// Resolves the neighbour sample origins an available edge points at.
+///
+/// `BlockCtx::neighbours` derives availability as `row4 > tile_mi_row_start` /
+/// `col4 > tile_mi_col_start`, so an available edge always sits at a non-zero
+/// coordinate and the subtraction is total. Doing it once here lets every use
+/// site read the origin straight out of the `Option` instead of re-deriving it.
+fn neighbour_origin(
+    availability: IntraEdgeAvailability,
     x: usize,
     y: usize,
-) -> core::result::Result<T, GeneralIntraResidualError> {
-    let sample_x = x
-        .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    Ok(workspace.reconstructed_sample(PlaneId::Y, sample_x, y)?)
-}
-
-fn above_seed<T: ReconSample>(
-    workspace: &CurrentFrameWorkspace<T>,
-    x: usize,
-    y: usize,
-) -> core::result::Result<T, GeneralIntraResidualError> {
-    let sample_y = y
-        .checked_sub(1)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    Ok(workspace.reconstructed_sample(PlaneId::Y, x, sample_y)?)
+) -> core::result::Result<(Option<usize>, Option<usize>), GeneralIntraResidualError> {
+    let resolve = |available: bool, coord: usize| {
+        if available {
+            coord.checked_sub(1).map(Some)
+        } else {
+            Some(None)
+        }
+    };
+    resolve(availability.above, y)
+        .zip(resolve(availability.left, x))
+        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)
 }
 
 #[allow(clippy::too_many_arguments)]
