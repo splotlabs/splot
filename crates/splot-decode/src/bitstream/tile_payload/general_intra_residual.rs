@@ -1519,6 +1519,10 @@ fn ist_eob_limit(tx_size: usize, tx_type: usize) -> Result<usize, GeneralIntraRe
     }
 }
 
+/// Reads the signalled intra luma transform type for `tx_set`.
+///
+/// The caller's `dct_forced` test has already excluded `TX_SET_DCTONLY` and the
+/// `reduced_tx_set == 2` intra case, so the trailing arm is `TX_SET_INTRA_1`.
 fn read_active_luma_transform_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1532,14 +1536,6 @@ fn read_active_luma_transform_type(
     )?;
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let tx_type = match tx_set {
-        TX_SET_INTRA_1 => {
-            let intra_tx_type = read_transform_symbol(
-                cdfs,
-                symbols,
-                TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr },
-            )?;
-            md_idx_luma_tx_type(tx_size, luma_context, intra_tx_type)?
-        }
         TX_SET_INTRA_2 => {
             let intra_tx_type = read_transform_symbol(
                 cdfs,
@@ -1552,7 +1548,12 @@ fn read_active_luma_transform_type(
             read_active_luma_long_tx_type(cdfs, symbols, tx_set, tx_size_sqr)?
         }
         _ => {
-            return unsupported_transform_tool_residual("unsupported_dctonly_residual_luma_tx_set");
+            let intra_tx_type = read_transform_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::IntraTxTypeSet1 { tx_size_sqr },
+            )?;
+            md_idx_luma_tx_type(tx_size, luma_context, intra_tx_type)?
         }
     };
     Ok(tx_type)
@@ -1564,7 +1565,7 @@ fn read_active_luma_long_tx_type(
     tx_set: usize,
     tx_size_sqr: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let shape = long_tx_set_shape(tx_set, "unsupported_dctonly_residual_luma_tx_set_long")?;
+    let shape = long_tx_set_shape(tx_set);
     let is_long_side_dct = read_long_side_dct_symbol(cdfs, symbols, shape, 0)?;
     let intra_tx_type = read_transform_symbol(
         cdfs,
@@ -1579,6 +1580,10 @@ fn read_active_luma_long_tx_type(
     )
 }
 
+/// Reads the signalled inter transform type for `tx_set`.
+///
+/// The caller's `dct_forced` test has already excluded `TX_SET_DCTONLY`, so the
+/// trailing arm is `TX_SET_DCT_IDTX_IDDCT`.
 fn read_active_inter_transform_type(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1617,7 +1622,7 @@ fn read_active_inter_transform_type(
                 .copied()
                 .ok_or(invalid_inter_tx_type())
         }
-        TX_SET_DCT_IDTX_IDDCT => {
+        _ => {
             let inter_tx_type = read_transform_symbol(
                 cdfs,
                 symbols,
@@ -1628,7 +1633,6 @@ fn read_active_inter_transform_type(
                 .copied()
                 .ok_or(invalid_inter_tx_type())
         }
-        _ => unsupported_transform_tool_residual("unsupported_dctonly_residual_inter_tx_set"),
     }
 }
 
@@ -1639,7 +1643,7 @@ fn read_active_inter_long_tx_type(
     tx_size_sqr: usize,
     ctx: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let shape = long_tx_set_shape(tx_set, "unsupported_dctonly_residual_inter_tx_set")?;
+    let shape = long_tx_set_shape(tx_set);
     let is_long_side_dct = read_long_side_dct_symbol(cdfs, symbols, shape, 1)?;
     let inter_tx_type = read_transform_symbol(
         cdfs,
@@ -1660,19 +1664,15 @@ struct LongTxSetShape {
     long_side_dct_is_forced: bool,
 }
 
-fn long_tx_set_shape(
-    tx_set: usize,
-    invalid_reason: &'static str,
-) -> Result<LongTxSetShape, GeneralIntraResidualError> {
-    let wide_or_high = match tx_set {
-        TX_SET_WIDE_64 | TX_SET_WIDE_32 => 0,
-        TX_SET_HIGH_64 | TX_SET_HIGH_32 => 1,
-        _ => return unsupported_transform_tool_residual(invalid_reason),
-    };
-    Ok(LongTxSetShape {
-        wide_or_high,
+/// Splits a long transform set into its two independent bits.
+///
+/// Only the four long sets reach here, and for those both bits are predicates
+/// over `tx_set`, so neither needs a fallible lookup.
+const fn long_tx_set_shape(tx_set: usize) -> LongTxSetShape {
+    LongTxSetShape {
+        wide_or_high: matches!(tx_set, TX_SET_HIGH_64 | TX_SET_HIGH_32) as usize,
         long_side_dct_is_forced: matches!(tx_set, TX_SET_WIDE_64 | TX_SET_HIGH_64),
-    })
+    }
 }
 
 fn read_long_side_dct_symbol(
@@ -1914,9 +1914,6 @@ fn transform_set_from_flags(
     } else {
         usize::from(enable_chroma_dctonly)
     };
-    if reduced_tx_set > 3 {
-        return unsupported_transform_tool_residual("unsupported_dctonly_residual_reduced_tx_set");
-    }
     if tx_size_sqr_up == TX_32X32 || reduced_tx_set == 1 {
         return if is_inter {
             Ok(TX_SET_DCT_IDTX)

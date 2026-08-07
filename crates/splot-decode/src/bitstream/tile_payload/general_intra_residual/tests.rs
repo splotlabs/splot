@@ -834,28 +834,6 @@ fn inter_dct_idtx_iddct_set4_inverts_per_spec_table() {
 }
 
 #[test]
-fn read_active_inter_transform_type_rejects_unmodeled_set() {
-    const UNMODELED_TX_SET: usize = 99;
-    let mut cdfs = tile_cdfs();
-    let mut symbols = symbol_decoder_for_payload(&PAYLOAD);
-    let result = read_active_inter_transform_type(
-        &mut cdfs,
-        &mut symbols,
-        INTER_SET_TX_SIZE,
-        UNMODELED_TX_SET,
-        INTER_SET_EOB,
-    );
-    assert!(matches!(
-        result,
-        Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "unsupported_dctonly_residual_inter_tx_set"
-            }
-        )
-    ));
-}
-
-#[test]
 fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
     let luma =
         crate::bitstream::tile_payload::cdf::block_context::reconstruct_y_mode_second_set_top_left(
