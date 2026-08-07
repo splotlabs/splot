@@ -2136,14 +2136,6 @@ fn read_inter_intra_syntax_enabled(
             .read_block_symbol_trace(TileCdfSelector::WedgeInterIntra, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get();
-        if symbol > 1 {
-            return Err(inter_cap!(
-                "inter_simple_interintra_wedge_symbol",
-                tile_offset,
-                "inter.use_wedge_interintra symbol out of range",
-                "5.20.7.15"
-            ));
-        }
         symbol != 0
     } else {
         false

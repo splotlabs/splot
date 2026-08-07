@@ -551,14 +551,6 @@ fn read_warpmv_with_mvd_flag(
         .read_block_symbol_trace(TileCdfSelector::WarpWithMvd, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
         .get();
-    if flag > 1 {
-        return Err(inter_cap!(
-            "inter_warpmv_with_mvd_symbol",
-            tile_offset,
-            "inter.warpmv_with_mvd_flag symbol out of range",
-            SPEC_MODE_INFO
-        ));
-    }
     Ok(flag != 0)
 }
 
@@ -705,14 +697,6 @@ pub(crate) fn read_warp_inter_intra_syntax(
             .read_block_symbol_trace(TileCdfSelector::WedgeInterIntra, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
             .get();
-        if symbol > 1 {
-            return Err(inter_cap!(
-                "inter_warp_interintra_wedge_symbol",
-                tile_offset,
-                "inter.use_wedge_interintra symbol out of range",
-                SPEC_MODE_INFO
-            ));
-        }
         symbol != 0
     } else {
         false

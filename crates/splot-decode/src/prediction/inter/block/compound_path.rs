@@ -1898,15 +1898,7 @@ fn read_compound_blend_syntax(
             .get()
         {
             0 => MaskedCompoundType::Wedge,
-            1 => MaskedCompoundType::DiffWeighted,
-            _ => {
-                return Err(compound_cap!(
-                    "compound_type_out_of_range",
-                    tile_offset,
-                    "inter.compound.compound_type",
-                    SPEC_MODE_INFO
-                ));
-            }
+            _ => MaskedCompoundType::DiffWeighted,
         }
     };
     match compound_type {
