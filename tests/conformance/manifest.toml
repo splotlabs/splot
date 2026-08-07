@@ -536,6 +536,11 @@ description = "8-bit 4:2:0 3-frame intra stream (IVF, 256x128) encoded with --ti
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-4frame-refmvbank-compound-256x128.ivf"
+description = "8-bit 4:2:0 4-frame inter stream (IVF, 256x128) encoded with --enable-mv-traj=0, at base_q_idx 120 with kf-max-dist 30. Display frame 2 contains a skip-mode compound block at MI (24,60) whose DRL index is 3 while the stack holds only three distinct candidates; AVM reaches a fourth because its reference-MV bank spends the MAX_PR_NUM pruning budget on candidates it later rejects for pointing outside the frame, which exhausts the budget and makes the closing global-MV fill append a duplicate. Before the fix splot's compound bank fill tested the frame bounds before the duplicate scan, so out-of-bounds candidates cost no budget, the stack stayed at three, index 3 clamped to the last entry, and the block predicted with (-64,64)/(64,-64) instead of (0,0)/(0,0). The error propagated through the MV stacks of later blocks; splot exited 0 with no diagnostic and 549 luma samples of frame 2 were wrong. avmdec raw SHA-256 is 7d15106138e6331b5ba5a6de5f84ce79fd2b372a895dedf0911d144f77d57b5d and splot now reproduces it byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-4frame-cdef-skip-txfm-256x128.ivf"
 description = "8-bit 4:2:0 4-frame inter stream (IVF, 256x128) encoded with --enable-cdef-on-skip-txfm=0, so cdef_on_skip_txfm_frame_enable is 0 and CDEF must be dropped on 8x8 units whose four luma MIs all carry skip_txfm. Before the fix splot fed CDEF the loop-restoration LrTxSkip predicate (skip_flag || eob == 0) instead of skip_txfm alone, marked 40 extra 8x8 units of 512 as fully skipped, and left those units unfiltered; it exited 0 with no diagnostic and up to 4,496 luma samples per frame differed by 1 to 3. avmdec raw SHA-256 is 1fdd8b8409534e27f1fe5b7954317dcb33e38ba1f2fca4729ec7c5eb51011191 and splot now reproduces it byte-for-byte; validates clean."
 expect = "clean"
