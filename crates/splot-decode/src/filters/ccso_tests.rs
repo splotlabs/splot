@@ -295,6 +295,7 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
             &prepared,
             &grid,
             None,
+            None,
         )
         .unwrap();
         ccso_apply(
@@ -303,6 +304,7 @@ fn stripe_outputs_match_full_frame_across_restoration_boundaries() {
             plane,
             &prepared,
             &grid,
+            None,
             None,
         )
         .unwrap();

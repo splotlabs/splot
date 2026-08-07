@@ -5,6 +5,8 @@ use std::simd::{Select, Simd, cmp::SimdOrd, cmp::SimdPartialOrd, num::SimdInt, n
 
 use splot_core::headers::frame::{CcsoPlaneParams, FrameHeaderCore, ccso_quant_step};
 use splot_recon::{BitDepth, PlaneId, ReconSample};
+
+const MI_SIZE: usize = 4;
 #[cfg(test)]
 use splot_recon::{CurrentFrameWorkspace, PlaneRect};
 
@@ -230,6 +232,7 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
     grid: &CcsoUnitGrid,
     config: &CcsoFrameConfig,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
+    tile_starts: Option<(&[u32], &[u32])>,
 ) -> Result<(), CcsoError> {
     let luma = frame.deblocked(PlaneId::Y).ok_or(CcsoError::Workspace)?;
     let destinations = [
@@ -242,7 +245,15 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
             continue;
         };
         let destination = destination.ok_or(CcsoError::Workspace)?;
-        ccso_apply(destination, luma, plane, prepared, grid, lossless_grid)?;
+        ccso_apply(
+            destination,
+            luma,
+            plane,
+            prepared,
+            grid,
+            lossless_grid,
+            tile_starts,
+        )?;
     }
     Ok(())
 }
@@ -279,6 +290,7 @@ fn ccso_plane<T: ReconSample>(
         &prepared,
         grid,
         lossless_grid,
+        None,
     )?;
     let samples = filtered
         .samples()
@@ -303,6 +315,7 @@ fn ccso_apply<L: ReconSample>(
     config: &CcsoPlaneConfig,
     grid: &CcsoUnitGrid,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
+    tile_starts: Option<(&[u32], &[u32])>,
 ) -> Result<(), CcsoError> {
     let destination_end_y = destination.end_y().ok_or(CcsoError::Geometry)?;
     let luma_len = (curr_luma.end_y() - curr_luma.origin_y())
@@ -323,9 +336,18 @@ fn ccso_apply<L: ReconSample>(
     let timer = crate::timing::start();
     let plane_id = plane_id(plane);
     let first_unit_y = destination.origin_y() / config.blk_h * config.blk_h;
-    let max_luma_x = curr_luma.width() - 1;
+    let frame_max_luma_x = curr_luma.width() - 1;
+    let frame_max_luma_y = curr_luma.frame_height().saturating_sub(1);
+    let (tile_rows, tile_cols) = match tile_starts {
+        Some((rows, cols)) => (Some(rows), Some(cols)),
+        None => (None, None),
+    };
     for y in (first_unit_y..destination_end_y).step_by(config.blk_h) {
         for x in (0..destination.width()).step_by(config.blk_w) {
+            let (min_luma_y, max_luma_y) =
+                luma_tile_clamp(tile_rows, (y << config.sub_y) / MI_SIZE, frame_max_luma_y);
+            let (min_luma_x, max_luma_x) =
+                luma_tile_clamp(tile_cols, (x << config.sub_x) / MI_SIZE, frame_max_luma_x);
             let unit_row = (y << config.sub_y) >> config.ccso_luma_log2;
             let unit_col = (x << config.sub_x) >> config.ccso_luma_log2;
             if grid.block_value(plane, unit_row, unit_col) == 0 {
@@ -336,13 +358,24 @@ fn ccso_apply<L: ReconSample>(
             let x_end = destination.width().min(x.saturating_add(config.blk_w));
             for y3 in y_start..y_end {
                 let y_luma = y3 << config.sub_y;
-                let center_row = clamped_luma_row(curr_luma, y_luma as isize)?;
+                let center_row =
+                    clamped_luma_row(curr_luma, y_luma as isize, min_luma_y, max_luma_y)?;
                 let offset_rows = if config.bo_only {
                     None
                 } else {
                     Some((
-                        clamped_luma_row(curr_luma, y_luma as isize + config.sample_offsets[0].1)?,
-                        clamped_luma_row(curr_luma, y_luma as isize + config.sample_offsets[1].1)?,
+                        clamped_luma_row(
+                            curr_luma,
+                            y_luma as isize + config.sample_offsets[0].1,
+                            min_luma_y,
+                            max_luma_y,
+                        )?,
+                        clamped_luma_row(
+                            curr_luma,
+                            y_luma as isize + config.sample_offsets[1].1,
+                            min_luma_y,
+                            max_luma_y,
+                        )?,
                     ))
                 };
                 let plane_row = destination.row_mut(y3).ok_or(CcsoError::Workspace)?;
@@ -365,16 +398,16 @@ fn ccso_apply<L: ReconSample>(
                         continue;
                     }
                     let x_luma = x3 << config.sub_x;
-                    let center = center_row[x_luma.min(max_luma_x)].to_u16();
+                    let center = center_row[x_luma.clamp(min_luma_x, max_luma_x)].to_u16();
                     let band = usize::from(center >> config.band_shift);
                     let (cls0, cls1) = match offset_rows {
                         None => (0usize, 0usize),
                         Some((row0, row1)) => {
                             let sx0 = (x_luma as isize + config.sample_offsets[0].0)
-                                .clamp(0, max_luma_x as isize)
+                                .clamp(min_luma_x as isize, max_luma_x as isize)
                                 as usize;
                             let sx1 = (x_luma as isize + config.sample_offsets[1].0)
-                                .clamp(0, max_luma_x as isize)
+                                .clamp(min_luma_x as isize, max_luma_x as isize)
                                 as usize;
                             (
                                 ccso_score(
@@ -510,9 +543,25 @@ fn ccso_offset_lut(
 fn clamped_luma_row<T: ReconSample>(
     curr_luma: FramePlane<'_, T>,
     y: isize,
+    min_y: usize,
+    max_y: usize,
 ) -> Result<&'_ [T], CcsoError> {
-    let sy = y.clamp(0, curr_luma.frame_height().saturating_sub(1) as isize) as usize;
+    let sy = y.clamp(min_y as isize, max_y as isize) as usize;
     curr_luma.row(sy).ok_or(CcsoError::Geometry)
+}
+
+/// Luma-sample clamp range for the tile containing `mi`.
+///
+/// § 7.16 keeps CCSO's luma taps inside the current tile when the frame sets
+/// `disable_loopfilters_across_tiles`; without it the range is the picture.
+fn luma_tile_clamp(starts: Option<&[u32]>, mi: usize, frame_max: usize) -> (usize, usize) {
+    let (start_mi, end_mi) = super::cdef::tile_span(starts, mi, usize::MAX);
+    if starts.is_none() {
+        return (0, frame_max);
+    }
+    let min = (start_mi * MI_SIZE).min(frame_max);
+    let max = (end_mi * MI_SIZE).saturating_sub(1).min(frame_max);
+    (min, max.max(min))
 }
 
 fn ccso_score(diff: i32, quant_step: i32, edge_clf: bool) -> usize {

@@ -26,7 +26,7 @@ const CHROMA_PAIR_SPAN: usize = CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH;
 /// `starts` carries an end sentinel, so consecutive pairs bound one tile. It is
 /// `None` unless the frame sets `disable_loopfilters_across_tiles`, in which
 /// case AV2 keeps CDEF inside the frame and the span is the whole picture.
-fn tile_span(starts: Option<&[u32]>, pos: usize, frame_end: usize) -> (usize, usize) {
+pub(crate) fn tile_span(starts: Option<&[u32]>, pos: usize, frame_end: usize) -> (usize, usize) {
     let Some(starts) = starts else {
         return (0, frame_end);
     };
