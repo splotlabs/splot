@@ -267,14 +267,37 @@ const TX_SET_DCT_IDTX: usize = 7;
 const TX_SET_DCT_IDTX_IDDCT: usize = 8;
 const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;
-const TX_PARTITION_NONE: usize = 0;
-const TX_PARTITION_SPLIT: usize = 1;
-const TX_PARTITION_HORZ: usize = 2;
-const TX_PARTITION_VERT: usize = 3;
-const TX_PARTITION_HORZ4: usize = 4;
-const TX_PARTITION_VERT4: usize = 5;
-const TX_PARTITION_HORZ5: usize = 6;
-const TX_PARTITION_VERT5: usize = 7;
+/// AV2 § 6.19.6.3 Table 6.23 `TX_PARTITION_*`, in `txPartition` value order;
+/// read per § 5.20.6.3.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LumaTxPartition {
+    None,
+    Split,
+    Horz,
+    Vert,
+    Horz4,
+    Vert4,
+    Horz5,
+    Vert5,
+}
+
+impl LumaTxPartition {
+    /// Maps the partition-type symbol, which codes every type except `None`.
+    ///
+    /// The `TxPartitionType` rows are `TX_PARTITION_TYPE_ROW_LEN` wide, so the
+    /// symbol decoder cannot return above `Vert5`.
+    const fn from_partition_type_symbol(symbol: u8) -> Self {
+        match symbol {
+            0 => Self::Split,
+            1 => Self::Horz,
+            2 => Self::Vert,
+            3 => Self::Horz4,
+            4 => Self::Vert4,
+            5 => Self::Horz5,
+            _ => Self::Vert5,
+        }
+    }
+}
 const WAIP_WH_RATIO_THRESHOLDS: [(usize, i32); 4] = [(2, 61), (4, 73), (8, 82), (16, 86)];
 const TX_TYPE_INV_LONG: [[[usize; 4]; 2]; 2] = [
     [
@@ -711,7 +734,7 @@ fn read_luma_tx_partition_type(
     allow_horz: bool,
     allow_vert: bool,
     reduced_tx_set: usize,
-) -> Result<usize, GeneralIntraResidualError> {
+) -> Result<LumaTxPartition, GeneralIntraResidualError> {
     let txfm_split_group = block_size_table_usize(
         &SIZE_TO_TX_PART_GROUP_LOOKUP,
         "Size_To_Tx_Part_Group_Lookup",
@@ -732,7 +755,7 @@ fn read_luma_tx_partition_type(
         .get()
         != 0;
     if !do_partition {
-        return Ok(TX_PARTITION_NONE);
+        return Ok(LumaTxPartition::None);
     }
     if allow_horz && allow_vert {
         let ctx = block_size_table_usize(
@@ -752,7 +775,7 @@ fn read_luma_tx_partition_type(
             )
             .map_err(|source| GeneralIntraResidualError::TransformPartitionRead { source })?
             .get();
-        return Ok(usize::from(symbol).saturating_add(1));
+        return Ok(LumaTxPartition::from_partition_type_symbol(symbol));
     }
     let vert_or_horz_group = block_size_table_usize(
         &SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ,
@@ -781,20 +804,20 @@ fn read_luma_tx_partition_type(
         };
         return Ok(if allow_horz {
             if tx_2or3 != 0 {
-                TX_PARTITION_HORZ4
+                LumaTxPartition::Horz4
             } else {
-                TX_PARTITION_HORZ
+                LumaTxPartition::Horz
             }
         } else if tx_2or3 != 0 {
-            TX_PARTITION_VERT4
+            LumaTxPartition::Vert4
         } else {
-            TX_PARTITION_VERT
+            LumaTxPartition::Vert
         });
     }
     Ok(if allow_horz {
-        TX_PARTITION_HORZ
+        LumaTxPartition::Horz
     } else {
-        TX_PARTITION_VERT
+        LumaTxPartition::Vert
     })
 }
 
@@ -802,7 +825,7 @@ fn luma_transform_records_for_partition(
     start_x: usize,
     start_y: usize,
     tx_size: usize,
-    tx_partition: usize,
+    tx_partition: LumaTxPartition,
 ) -> Result<LumaTransformPartitionUnits<LumaTransformPartitionRecord>, GeneralIntraResidualError> {
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     let mut w4 = tx_width / MI_SIZE;
@@ -811,30 +834,32 @@ fn luma_transform_records_for_partition(
     let row4 = start_y / MI_SIZE;
     let mut records = LumaTransformPartitionUnits::new();
     match tx_partition {
-        TX_PARTITION_NONE => push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?,
-        TX_PARTITION_HORZ => {
+        LumaTxPartition::None => {
+            push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
+        }
+        LumaTxPartition::Horz => {
             h4 >>= 1;
             push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
             push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4, false)?;
         }
-        TX_PARTITION_VERT => {
+        LumaTxPartition::Vert => {
             w4 >>= 1;
             push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
             push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4, false)?;
         }
-        TX_PARTITION_HORZ4 => {
+        LumaTxPartition::Horz4 => {
             h4 >>= 2;
             for part in 0..4 {
                 push_luma_transform_record(&mut records, row4 + part * h4, col4, h4, w4, false)?;
             }
         }
-        TX_PARTITION_VERT4 => {
+        LumaTxPartition::Vert4 => {
             w4 >>= 2;
             for part in 0..4 {
                 push_luma_transform_record(&mut records, row4, col4 + part * w4, h4, w4, false)?;
             }
         }
-        TX_PARTITION_HORZ5 => {
+        LumaTxPartition::Horz5 => {
             h4 >>= 2;
             w4 >>= 1;
             push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
@@ -843,7 +868,7 @@ fn luma_transform_records_for_partition(
             push_luma_transform_record(&mut records, row4 + h4 * 3, col4, h4, w4, true)?;
             push_luma_transform_record(&mut records, row4 + h4 * 3, col4 + w4, h4, w4, true)?;
         }
-        TX_PARTITION_VERT5 => {
+        LumaTxPartition::Vert5 => {
             h4 >>= 1;
             w4 >>= 2;
             push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
@@ -852,18 +877,13 @@ fn luma_transform_records_for_partition(
             push_luma_transform_record(&mut records, row4, col4 + w4 * 3, h4, w4, true)?;
             push_luma_transform_record(&mut records, row4 + h4, col4 + w4 * 3, h4, w4, true)?;
         }
-        TX_PARTITION_SPLIT => {
+        LumaTxPartition::Split => {
             w4 >>= 1;
             h4 >>= 1;
             push_luma_transform_record(&mut records, row4, col4, h4, w4, false)?;
             push_luma_transform_record(&mut records, row4, col4 + w4, h4, w4, false)?;
             push_luma_transform_record(&mut records, row4 + h4, col4, h4, w4, false)?;
             push_luma_transform_record(&mut records, row4 + h4, col4 + w4, h4, w4, false)?;
-        }
-        _ => {
-            return Err(unsupported_transform_partition(
-                "unsupported_general_intra_tx_partition_type",
-            ));
         }
     }
     Ok(records)
