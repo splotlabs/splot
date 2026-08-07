@@ -823,13 +823,13 @@ pub(super) fn residual_geometry_error(tile_offset: ByteOffset) -> crate::error::
     )
 }
 
-/// § 7.12.3 skip-block reset of the coefficient contexts.
+/// § 5.20.4 `reset_block_context`.
 ///
-/// The chroma planes are cleared over the block's CHROMA REFERENCE, not over the
-/// luma block itself. For a sub-8x8 luma block the two differ: the chroma
-/// reference is anchored at the group's base and spans the whole group, so
-/// resetting from the luma position leaves the group's leading chroma columns
-/// holding a stale level.
+/// The spec takes `c`/`r`/`w4`/`h4` from `ChromaMiCol`, `ChromaMiRow` and
+/// `ChromaMiSize` for the chroma planes, and from the luma block only for plane
+/// 0. For a sub-8x8 luma block the two differ: the chroma reference is anchored
+/// at the group's base and spans the whole group, so clearing from the luma
+/// position leaves the group's leading chroma columns holding a stale level.
 pub(crate) fn reset_inter_skip_coeff_contexts(
     coeff_ctx: &mut TileCoeffContextState,
     frontier: &DecodeBlockFrontier,
