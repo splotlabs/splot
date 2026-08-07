@@ -41,7 +41,7 @@ pub(super) fn resolve_interp_filter(
             let symbol = cdfs
                 .read_block_symbol_trace(TileCdfSelector::InterpFilter { ctx }, symbols)
                 .map_err(|_| symbol_read_error(tile_offset))?;
-            interp_filter_from_symbol(symbol.get(), tile_offset)
+            Ok(interp_filter_from_symbol(symbol.get()))
         }
         _ => Err(inter_cap!(
             "inter_unsupported_interpolation_filter",
@@ -67,21 +67,11 @@ pub(super) fn interp_filter_symbol(filter: ReconInterpolationFilter) -> u8 {
     }
 }
 
-fn interp_filter_from_symbol(
-    symbol: u8,
-    tile_offset: ByteOffset,
-) -> Result<ReconInterpolationFilter> {
+fn interp_filter_from_symbol(symbol: u8) -> ReconInterpolationFilter {
     match symbol {
-        0 => Ok(ReconInterpolationFilter::EightTap),
-        1 => Ok(ReconInterpolationFilter::EightTapSmooth),
-        2 => Ok(ReconInterpolationFilter::EightTapSharp),
-        3 => Ok(ReconInterpolationFilter::Bilinear),
-        _ => Err(inter_cap!(
-            "inter_invalid_interp_filter_symbol",
-            tile_offset,
-            "inter.interp_filter symbol out of range",
-            SPEC_MODE_INFO
-        )),
+        0 => ReconInterpolationFilter::EightTap,
+        1 => ReconInterpolationFilter::EightTapSmooth,
+        _ => ReconInterpolationFilter::EightTapSharp,
     }
 }
 
