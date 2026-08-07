@@ -536,6 +536,16 @@ description = "8-bit 4:2:0 3-frame intra stream (IVF, 256x128) encoded with --ti
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-inter-nofilters-64x64.ivf"
+description = "8-bit 4:2:0 3-frame inter stream (IVF, 64x64) with every in-loop filter disabled in the encode, at base_q_idx 120 with kf-max-dist 30. KNOWN-BAD REPRODUCER, registered while the defect is open: splot exits 0 and emits no diagnostic, but display frame 2 diverges from avmdec in 868 luma samples (rows 32..63, cols 8..63, maximum delta 172) plus matching chroma, first wrong sample at luma (32, 8). Frames 0 and 1 are byte-exact. avmdec raw SHA-256 is 9171ea36ca181876d8d16752abc6be0ac397ba8f7976e9fc8f17c34dd7e378f6; splot produces 1f430ab6061b944d15ef25d15342609498c85f8b35cc9b92ba7dd96769272531, identically at --threads 1 and --threads 8. With the filters off the fault is in prediction or residual. Validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-3frame-inter-default-64x64.ivf"
+description = "8-bit 4:2:0 3-frame inter stream (IVF, 64x64) encoded with no coding-tool flags at all, at base_q_idx 120 with kf-max-dist 30. KNOWN-BAD REPRODUCER, registered while the defect is open: the same divergence as syn-3frame-inter-nofilters-64x64 on a plain default encode, confined to 162 luma samples of display frame 2 (rows 39..55, cols 4..24). avmdec raw SHA-256 is 4347a1b8b11d1526d84538fe330b1cd04b4928a526d3f929ca0b91e1c681eff0; splot produces 4cd4de8c7e0dd5c26b871ecbc37252dfcb1676b1b768e87a097011c22438997e. This one carries the claim that the defect needs no unusual encoder configuration. Validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mrl-sec-4x4-intra-128x128.ivf"
 description = "8-bit 4:2:0 intra key frame (IVF, 128x128) with multi-reference-line intra as the only enabled coding tool and the in-loop filters disabled, at base_q_idx 90. The frame contains 4x4 luma prediction units inside larger MRL coding blocks; AV2 section 7.13.2 gates the secondary MRL prediction on not4x4 == (w != 4 || h != 4), evaluated per prediction unit. Before the fix splot inherited the coding-block secondary_mrl flag into 4x4 units, applied the (pred + pred2 + 1) >> 1 average that the spec omits there, and silently emitted 24 luma samples one LSB high; it did not fail closed. avmdec raw SHA-256 is e9a6ac7f8cabc11457c1be89250edeb9e142ed91a665943912fb875a76da8f69 and splot now reproduces it byte-for-byte; validates clean."
 expect = "clean"
