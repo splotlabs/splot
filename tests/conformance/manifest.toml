@@ -516,6 +516,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-mrl-sec-4x4-intra-128x128.ivf"
+description = "8-bit 4:2:0 intra key frame (IVF, 128x128) with multi-reference-line intra as the only enabled coding tool and the in-loop filters disabled, at base_q_idx 90. The frame contains 4x4 luma prediction units inside larger MRL coding blocks; AV2 section 7.13.2 gates the secondary MRL prediction on not4x4 == (w != 4 || h != 4), evaluated per prediction unit. Before the fix splot inherited the coding-block secondary_mrl flag into 4x4 units, applied the (pred + pred2 + 1) >> 1 average that the spec omits there, and silently emitted 24 luma samples one LSB high; it did not fail closed. avmdec raw SHA-256 is e9a6ac7f8cabc11457c1be89250edeb9e142ed91a665943912fb875a76da8f69 and splot now reproduces it byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mrl-largest-intra-128x128.ivf"
 description = "8-bit 4:2:0 intra key frame (IVF, 128x128, tx_mode=Largest) with multi-reference-line (MRL) intra enabled and an active MRL directional block; validates clean, and the general-intra decoder reproduces avmdec's raw output byte-for-byte at SHA-256 540a4b340038dbb60fde144372a891681ff330a103ccd60ea2d19a8e64cf69d9."
 expect = "clean"

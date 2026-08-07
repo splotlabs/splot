@@ -15,6 +15,9 @@ use crate::tile::block_context::{BlockCtx, NeighbourAvailability};
 
 use super::{ResidualPlanePlan, ResidualReconstructionPlan};
 
+/// AV2 section 7.13.2 `MI_SIZE`: the 4x4 prediction-unit edge tested by `not4x4`.
+const MI_SIZE: usize = 4;
+
 #[derive(Clone, Copy)]
 struct UnitMrlReplan {
     mrl_index: usize,
@@ -119,12 +122,13 @@ impl ResidualPlanePlan {
             return self.reconstruction;
         }
         if let Some(mrl) = mrl {
+            let secondary_mrl = mrl.secondary_mrl && !(unit_w == MI_SIZE && unit_h == MI_SIZE);
             if p_angle < 90 {
                 return ResidualReconstructionPlan::LumaRectOneSidedAboveMrl {
                     p_angle,
                     mrl_index: mrl.mrl_index,
                     above_mrl_index: mrl.above_mrl_index,
-                    secondary_mrl: mrl.secondary_mrl,
+                    secondary_mrl,
                     use_tcq,
                 };
             }
@@ -134,7 +138,7 @@ impl ResidualPlanePlan {
                     mrl_index: mrl.mrl_index,
                     above_mrl_index: mrl.above_mrl_index,
                     is_sb_boundary: mrl.is_sb_boundary,
-                    secondary_mrl: mrl.secondary_mrl,
+                    secondary_mrl,
                     use_tcq,
                 };
             }
@@ -143,7 +147,7 @@ impl ResidualPlanePlan {
                 mrl_index: mrl.mrl_index,
                 above_mrl_index: mrl.above_mrl_index,
                 is_sb_boundary: mrl.is_sb_boundary,
-                secondary_mrl: mrl.secondary_mrl,
+                secondary_mrl,
                 use_tcq,
             };
         }
