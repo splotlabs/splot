@@ -273,9 +273,29 @@ fn txb_skip_tx_size_ctx_is_total_for_out_of_range_tx_size() {
 }
 
 #[test]
+fn partition_type_symbols_map_to_every_partition_except_none() {
+    let mapped: Vec<LumaTxPartition> = (0..=6)
+        .map(LumaTxPartition::from_partition_type_symbol)
+        .collect();
+
+    assert_eq!(
+        mapped,
+        vec![
+            LumaTxPartition::Split,
+            LumaTxPartition::Horz,
+            LumaTxPartition::Vert,
+            LumaTxPartition::Horz4,
+            LumaTxPartition::Vert4,
+            LumaTxPartition::Horz5,
+            LumaTxPartition::Vert5,
+        ]
+    );
+}
+
+#[test]
 fn split_luma_transform_partition_records_follow_raster_order() {
     let records =
-        luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_SPLIT).unwrap();
+        luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     let coords: Vec<(usize, usize, usize)> = records
         .iter()
         .map(|record| (record.x, record.y, record.tx_size))
@@ -295,7 +315,7 @@ fn split_luma_transform_partition_records_follow_raster_order() {
 #[test]
 fn five_way_luma_transform_partition_fills_bounded_storage() {
     let records =
-        luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_HORZ5).unwrap();
+        luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Horz5).unwrap();
     let geometry: Vec<_> = records
         .iter()
         .map(|record| (record.x, record.y, record.middle))
@@ -333,7 +353,7 @@ fn luma_transform_partition_storage_rejects_a_sixth_unit() {
 #[test]
 fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
     let records =
-        luma_transform_records_for_partition(64, 32, TX_16X16, TX_PARTITION_SPLIT).unwrap();
+        luma_transform_records_for_partition(64, 32, TX_16X16, LumaTxPartition::Split).unwrap();
     assert!(!luma_partition_record_fills_block(
         true,
         records.len(),
@@ -362,7 +382,7 @@ fn partitioned_luma_transform_record_does_not_fill_block_for_txb_skip_ctx() {
 #[test]
 fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
     let records =
-        luma_transform_records_for_partition(320, 64, TX_64X64, TX_PARTITION_SPLIT).unwrap();
+        luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
     let visible: Vec<(usize, usize)> = records
         .iter()
         .filter(|record| luma_transform_record_starts_in_frame(record, 352, 288))
