@@ -21,6 +21,8 @@ pub(super) struct IntrabcReconPrediction {
     luma: IntrabcPredictionGeometry,
     chroma: Option<IntrabcChromaPrediction>,
     morph_mv: Option<Mv>,
+    /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
+    morph_avail: (bool, bool),
     global_fence: bool,
 }
 
@@ -31,9 +33,11 @@ struct IntrabcChromaPrediction {
 }
 
 impl IntrabcReconPrediction {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn derive(
         core: &FrameHeaderCore,
         frontier: &DecodeBlockFrontier,
+        morph_avail: (bool, bool),
         n4w: usize,
         n4h: usize,
         info: IntrabcInfo,
@@ -59,6 +63,7 @@ impl IntrabcReconPrediction {
             luma,
             chroma,
             morph_mv,
+            morph_avail,
             global_fence: global_intrabc_enabled(core.intrabc),
         })
     }
@@ -209,6 +214,7 @@ impl IntrabcReconCommand {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
                 workspace,
                 prediction.luma.target,
+                prediction.morph_avail,
                 mv,
                 self.tile_offset,
             )?;

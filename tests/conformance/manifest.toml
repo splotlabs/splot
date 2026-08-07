@@ -1718,3 +1718,8 @@ expect = "clean"
 path = "vectors/valid/syn-lossless-sdp-nondc-chroma-v-intra-64x64-10bit.ivf"
 description = "Deterministic AVMenc 10-bit 4:2:0 lossless key frame with one 64x64 DC_PRED luma block, SDP/chroma-part explicit non-DPCM V_PRED chroma, TX_4X4 lossless residuals, SDP enabled, and broad tools disabled. It proves lossless SDP/chroma-part prediction no longer depends on a mode, bit-depth, geometry, or neighbour allowlist; pinned AVM, current AVM, and splot produce byte-identical 12,288-byte raw I420 output SHA-256 7ffd0c993409687c97ff25a4f75d407ccda6b73cfd9fdb8d60790b87cf4ffe6f; validates clean."
 expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-4frame-bawp-tile-column-256x128.ivf"
+description = "8-bit 4:2:0 4-frame inter stream (IVF, 256x128) encoded with --tile-columns=1 at base_q_idx 120 with kf-max-dist 30, so the tile boundary falls on luma column 128. Display frame 1 contains a BLOCK_16X16 NEWMV block with use_bawp at MI (4,32), the first block of tile 1's second MI row, whose left neighbour lies in tile 0. AV2 SS 7.13.3.25 derives the block adaptive weighted prediction template from AvailU and AvailL, which is_inside scopes to the current tile, so AVM computes the block's scale and offset from the above arm alone. Before the fix splot tested frame-relative position instead, admitted a left arm reading tile 0's reconstructed column, and produced a different alpha and beta; splot exited 0 with no diagnostic and luma rows 16 to 119 of columns 128 to 159 were wrong across the inter frames. avmdec raw SHA-256 is d4edd1a3183f0bd083c7f8573861ffad8fc7942d1c4f560cc46c8028bbc66772 and splot now reproduces it byte-for-byte; validates clean."
+expect = "clean"

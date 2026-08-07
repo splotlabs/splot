@@ -964,6 +964,8 @@ fn decode_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let _block_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Block);
+    let avail_up = frontier.r > work_unit.mi_row_range().start as usize;
+    let avail_left = frontier.c > work_unit.mi_col_range().start as usize;
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
         inter_diag!(
             "inter_block_geometry",
@@ -1248,6 +1250,8 @@ fn decode_block<T: ReconSample>(
                         residual_use_ddt,
                         bit_depth,
                         subsampling: (u32::from(sub_x), u32::from(sub_y)),
+                        avail_up,
+                        avail_left,
                     },
                     dependency,
                 ),
@@ -1726,6 +1730,8 @@ fn decode_block<T: ReconSample>(
                 n4w,
                 n4h,
                 has_chroma: frontier.has_chroma,
+                avail_up,
+                avail_left,
             },
             tile_offset,
         )?
@@ -2100,6 +2106,8 @@ struct BawpParseInput {
     n4w: usize,
     n4h: usize,
     has_chroma: bool,
+    avail_up: bool,
+    avail_left: bool,
 }
 
 fn read_bawp_syntax(
@@ -2154,6 +2162,8 @@ fn read_bawp_syntax(
         list_index: list_index as u8,
         ref_dist_gt4: false,
         chroma,
+        avail_up: input.avail_up,
+        avail_left: input.avail_left,
     })
 }
 

@@ -46,6 +46,7 @@ fn intrabc_morph_pred_skips_unavailable_top_left_template() -> TestResult {
     apply_intrabc_morph_pred(
         &mut workspace,
         target,
+        (false, false),
         Mv { row: 0, col: 0 },
         splot_core::span::ByteOffset::new(0),
     )?;
@@ -89,6 +90,7 @@ fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
     apply_intrabc_morph_pred(
         &mut workspace,
         PlaneRect::new(16, 16, 128, 128)?,
+        (true, true),
         Mv { row: 64, col: 64 },
         splot_core::span::ByteOffset::new(0),
     )?;
@@ -115,6 +117,8 @@ fn inter_bawp_applies_large_luma_block() -> TestResult {
         &placed_luma_block(16, 16, 128, 128),
         BawpSyntax {
             enabled: true,
+            avail_up: true,
+            avail_left: true,
             ..BawpSyntax::default()
         },
         Mv { row: 0, col: 0 },
@@ -146,6 +150,8 @@ fn inter_bawp_uses_full_resolution_444_chroma_geometry() -> TestResult {
         BawpSyntax {
             enabled: true,
             chroma: true,
+            avail_up: true,
+            avail_left: true,
             ..BawpSyntax::default()
         },
         Mv::ZERO,
@@ -167,6 +173,8 @@ fn inter_bawp_template_read_fails_closed_one_row_under_its_bound() -> TestResult
     let placed = placed_luma_block(16, 16, 128, 128);
     let syntax = BawpSyntax {
         enabled: true,
+        avail_up: true,
+        avail_left: true,
         ..BawpSyntax::default()
     };
     let needed = bawp_reference_luma_rows(16, 128, 0) as usize;
