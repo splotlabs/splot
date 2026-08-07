@@ -823,6 +823,13 @@ pub(super) fn residual_geometry_error(tile_offset: ByteOffset) -> crate::error::
     )
 }
 
+/// § 7.12.3 skip-block reset of the coefficient contexts.
+///
+/// The chroma planes are cleared over the block's CHROMA REFERENCE, not over the
+/// luma block itself. For a sub-8x8 luma block the two differ: the chroma
+/// reference is anchored at the group's base and spans the whole group, so
+/// resetting from the luma position leaves the group's leading chroma columns
+/// holding a stale level.
 pub(crate) fn reset_inter_skip_coeff_contexts(
     coeff_ctx: &mut TileCoeffContextState,
     frontier: &DecodeBlockFrontier,
@@ -831,14 +838,28 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
+    let chroma_ref = frontier.chroma_ref_geometry();
+    let chroma_n4w = chroma_ref
+        .size()
+        .num_4x4_wide()
+        .map_err(|_| residual_geometry_error(tile_offset))?;
+    let chroma_n4h = chroma_ref
+        .size()
+        .num_4x4_high()
+        .map_err(|_| residual_geometry_error(tile_offset))?;
     for &(plane, sub) in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
+        let (r, c, w4, h4) = if plane == 0 {
+            (frontier.r, frontier.c, n4w, n4h)
+        } else {
+            (chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h)
+        };
         coeff_ctx
             .reset_block_context_plane(CoeffContextReset {
                 plane,
-                c: frontier.c,
-                r: frontier.r,
-                w4: n4w,
-                h4: n4h,
+                c,
+                r,
+                w4,
+                h4,
                 sub_x: sub,
                 sub_y: sub,
             })
