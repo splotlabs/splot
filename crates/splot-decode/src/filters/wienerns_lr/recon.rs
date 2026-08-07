@@ -523,7 +523,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 )
             })?;
         if disable_loopfilters_across_tiles
-            && (cdef_strengths.is_some() || ccso_config.is_some())
+            && ccso_config.is_some()
             && core
                 .tile_info
                 .as_ref()
@@ -531,7 +531,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         {
             return Err(wienerns_lr_selectable_transform_record_error_reason(
                 offset,
-                "unsupported_cdef_ccso_disable_loopfilters_across_tiles",
+                "unsupported_ccso_disable_loopfilters_across_tiles",
             ));
         }
         let sink = sink_source.open(info, &ranges, offset)?;
@@ -988,6 +988,14 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             (self.mi_rows, self.mi_cols),
             self.subsampling,
             self.bit_depth,
+            self.disable_loopfilters_across_tiles
+                .then(|| {
+                    self.core
+                        .tile_info
+                        .as_ref()
+                        .map(|tile| (tile.mi_row_starts.as_slice(), tile.mi_col_starts.as_slice()))
+                })
+                .flatten(),
             start,
             end,
         )

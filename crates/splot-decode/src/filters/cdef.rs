@@ -21,6 +21,24 @@ const STEP4: usize = 2;
 const CHROMA_PAIR_SIDE: usize = 4;
 const CHROMA_PAIR_SPAN: usize = CHROMA_PAIR_SIDE + 2 * CDEF_TAP_REACH;
 
+/// Resolves the MI span of the tile containing `pos`.
+///
+/// `starts` carries an end sentinel, so consecutive pairs bound one tile. It is
+/// `None` unless the frame sets `disable_loopfilters_across_tiles`, in which
+/// case AV2 keeps CDEF inside the frame and the span is the whole picture.
+fn tile_span(starts: Option<&[u32]>, pos: usize, frame_end: usize) -> (usize, usize) {
+    let Some(starts) = starts else {
+        return (0, frame_end);
+    };
+    starts
+        .windows(2)
+        .find_map(|w| {
+            let (start, end) = (w[0] as usize, w[1] as usize);
+            (start <= pos && pos < end).then_some((start, end.min(frame_end)))
+        })
+        .unwrap_or((0, frame_end))
+}
+
 const UNAVAILABLE_TAP: CdefTap = CdefTap {
     value: 0,
     available: false,
@@ -158,6 +176,8 @@ impl<'a, T: ReconSample> CdefFrame<'a, T> {
 struct CdefBlockLookup<'a> {
     strengths: &'a [CdefFrameParams],
     grid: &'a CdefUnitGrid,
+    tile_row_starts: Option<&'a [u32]>,
+    tile_col_starts: Option<&'a [u32]>,
     skip_grid: Option<&'a CdefSkipGrid>,
     lossless_grid: Option<&'a crate::filters::lossless::LosslessBlockGrid>,
     mi_rows: usize,
@@ -193,14 +213,18 @@ impl CdefBlockLookup<'_> {
             .strengths
             .get(strength_index)
             .ok_or(CdefError::Geometry)?;
+        let (mi_row_start, mi_rows) = tile_span(self.tile_row_starts, r, self.mi_rows);
+        let (mi_col_start, mi_cols) = tile_span(self.tile_col_starts, c, self.mi_cols);
         Ok(Some(CdefBlockCtx {
             r,
             c,
+            mi_row_start,
+            mi_col_start,
             params,
             coeff_shift: self.coeff_shift,
             max_sample: self.max_sample,
-            mi_rows: self.mi_rows,
-            mi_cols: self.mi_cols,
+            mi_rows,
+            mi_cols,
             sub_x: self.sub_x,
             sub_y: self.sub_y,
             luma_lossless,
@@ -219,6 +243,7 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     mi_size: (usize, usize),
     subsampling: (usize, usize),
     bit_depth: BitDepth,
+    tile_starts: Option<(&[u32], &[u32])>,
     luma_start: usize,
     luma_end: usize,
 ) -> Result<CdefFrame<'a, T>, CdefError> {
@@ -258,6 +283,8 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
         let lookup = CdefBlockLookup {
             strengths,
             grid,
+            tile_row_starts: tile_starts.map(|(rows, _)| rows),
+            tile_col_starts: tile_starts.map(|(_, cols)| cols),
             skip_grid,
             lossless_grid,
             mi_rows,
@@ -300,6 +327,8 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
 struct CdefBlockCtx {
     r: usize,
     c: usize,
+    mi_row_start: usize,
+    mi_col_start: usize,
     params: CdefFrameParams,
     coeff_shift: u32,
     max_sample: i32,
@@ -332,6 +361,8 @@ impl CdefBlockCtx {
             max_sample: self.max_sample,
             mi_rows: self.mi_rows,
             mi_cols: self.mi_cols,
+            mi_row_start: self.mi_row_start,
+            mi_col_start: self.mi_col_start,
             frame_sub_x: self.sub_x,
             frame_sub_y: self.sub_y,
         }
@@ -363,8 +394,10 @@ fn compute_cdef_block<S: ReconSample>(
 
     let luma_inside_x = (ctx.mi_cols * MI_SIZE).min(luma_snap.width());
     let luma_inside_y = (ctx.mi_rows * MI_SIZE).min(luma_snap.frame_height());
-    let luma_interior = x0 >= CDEF_TAP_REACH
-        && y0 >= CDEF_TAP_REACH
+    let luma_start_x = ctx.mi_col_start * MI_SIZE;
+    let luma_start_y = ctx.mi_row_start * MI_SIZE;
+    let luma_interior = x0 >= luma_start_x + CDEF_TAP_REACH
+        && y0 >= luma_start_y + CDEF_TAP_REACH
         && x0 + block_w - 1 + CDEF_TAP_REACH < luma_inside_x
         && y0 + block_h - 1 + CDEF_TAP_REACH < luma_inside_y;
     // Gather the luma pad up front when the luma plane will be filtered: that same
@@ -460,8 +493,10 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
     }
     let inside_x = ((ctx.mi_cols * MI_SIZE) >> ctx.frame_sub_x).min(u_snap.width());
     let inside_y = ((ctx.mi_rows * MI_SIZE) >> ctx.frame_sub_y).min(u_snap.frame_height());
-    if !(x0 >= CDEF_TAP_REACH
-        && y0 >= CDEF_TAP_REACH
+    let start_x = (ctx.mi_col_start * MI_SIZE) >> ctx.frame_sub_x;
+    let start_y = (ctx.mi_row_start * MI_SIZE) >> ctx.frame_sub_y;
+    if !(x0 >= start_x + CDEF_TAP_REACH
+        && y0 >= start_y + CDEF_TAP_REACH
         && x0 + w - 1 + CDEF_TAP_REACH < inside_x
         && y0 + h - 1 + CDEF_TAP_REACH < inside_y
         && y0 >= u_snap.origin_y() + CDEF_TAP_REACH
@@ -531,6 +566,8 @@ fn compute_cdef_chroma_pair<S: ReconSample>(
 struct CdefFilterCtx {
     r: usize,
     c: usize,
+    mi_row_start: usize,
+    mi_col_start: usize,
     pri_str: i32,
     sec_str: i32,
     damping: i32,
@@ -562,8 +599,10 @@ fn compute_cdef_filter_plane<S: ReconSample>(
 
     let inside_x = ((ctx.mi_cols * MI_SIZE) >> sub_x).min(snap.width());
     let inside_y = ((ctx.mi_rows * MI_SIZE) >> sub_y).min(snap.frame_height());
-    let interior = x0 >= CDEF_TAP_REACH
-        && y0 >= CDEF_TAP_REACH
+    let start_x = (ctx.mi_col_start * MI_SIZE) >> sub_x;
+    let start_y = (ctx.mi_row_start * MI_SIZE) >> sub_y;
+    let interior = x0 >= start_x + CDEF_TAP_REACH
+        && y0 >= start_y + CDEF_TAP_REACH
         && x0 + w - 1 + CDEF_TAP_REACH < inside_x
         && y0 + h - 1 + CDEF_TAP_REACH < inside_y;
 
@@ -573,7 +612,9 @@ fn compute_cdef_filter_plane<S: ReconSample>(
     }
 
     if matches!(w, 4 | 8) {
-        gather_boundary_pad(snap, pad, x0, y0, w, h, inside_x, inside_y)?;
+        gather_boundary_pad(
+            snap, pad, x0, y0, w, h, start_x, start_y, inside_x, inside_y,
+        )?;
         return filter_pad_into(filtered, pad, x0, y0, w, h, ctx, true);
     }
     let mut filtered_block = [0u16; 64];
@@ -583,7 +624,17 @@ fn compute_cdef_filter_plane<S: ReconSample>(
             let center = snap
                 .get((x0 + j) as isize, (y0 + i) as isize)
                 .ok_or(CdefError::Geometry)?;
-            let taps = gather_taps(snap, &offsets, x0 + j, y0 + i, inside_x, inside_y, center);
+            let taps = gather_taps(
+                snap,
+                &offsets,
+                x0 + j,
+                y0 + i,
+                start_x,
+                start_y,
+                inside_x,
+                inside_y,
+                center,
+            );
             let filtered = cdef_filter_sample(
                 &taps,
                 ctx.pri_str,
@@ -683,11 +734,13 @@ fn gather_boundary_pad<S: ReconSample>(
     y0: usize,
     w: usize,
     h: usize,
+    start_x: usize,
+    start_y: usize,
     inside_x: usize,
     inside_y: usize,
 ) -> Result<(), CdefError> {
     pad.fill(CDEF_UNAVAILABLE);
-    let source_x_start = x0.saturating_sub(CDEF_TAP_REACH);
+    let source_x_start = x0.saturating_sub(CDEF_TAP_REACH).max(start_x);
     let source_x_end = x0
         .saturating_add(w)
         .saturating_add(CDEF_TAP_REACH)
@@ -695,7 +748,7 @@ fn gather_boundary_pad<S: ReconSample>(
     let destination_x = (source_x_start as isize - x0 as isize + CDEF_TAP_REACH as isize) as usize;
     for pad_row in 0..h + 2 * CDEF_TAP_REACH {
         let source_y = y0 as isize + pad_row as isize - CDEF_TAP_REACH as isize;
-        if !(0..inside_y as isize).contains(&source_y) {
+        if !(start_y as isize..inside_y as isize).contains(&source_y) {
             continue;
         }
         let source = snap
@@ -779,11 +832,14 @@ impl CdefTapOffsets {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn gather_taps<T: ReconSample>(
     snap: FramePlane<'_, T>,
     offsets: &CdefTapOffsets,
     x: usize,
     y: usize,
+    start_x: usize,
+    start_y: usize,
     inside_x: usize,
     inside_y: usize,
     center: i32,
@@ -791,7 +847,11 @@ fn gather_taps<T: ReconSample>(
     let fetch = |(dy, dx): (isize, isize)| -> CdefTap {
         let y = y as isize + dy;
         let x = x as isize + dx;
-        if x >= 0 && y >= 0 && (x as usize) < inside_x && (y as usize) < inside_y {
+        if x >= start_x as isize
+            && y >= start_y as isize
+            && (x as usize) < inside_x
+            && (y as usize) < inside_y
+        {
             match snap.row(y as usize).and_then(|row| row.get(x as usize)) {
                 Some(value) => CdefTap {
                     value: i32::from(value.to_u16()),

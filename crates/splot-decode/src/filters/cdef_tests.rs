@@ -68,6 +68,7 @@ fn cdef_general_intra_frame_indexed<T: ReconSample>(
             usize::from(format.subsampling_y()),
         ),
         bit_depth,
+        None,
         0,
         height,
     )?;
@@ -397,6 +398,8 @@ fn assert_cdef_block_matches_per_sample_reference(
             let ctx = CdefFilterCtx {
                 r,
                 c,
+                mi_row_start: 0,
+                mi_col_start: 0,
                 pri_str,
                 sec_str,
                 damping: 4,
@@ -417,7 +420,7 @@ fn assert_cdef_block_matches_per_sample_reference(
                 for j in 0..8 {
                     let (x, y) = (x0 + j, y0 + i);
                     let center = snap.get(x as isize, y as isize).unwrap();
-                    let taps = gather_taps(snap, &offsets, x, y, 64, 64, center);
+                    let taps = gather_taps(snap, &offsets, x, y, 0, 0, 64, 64, center);
                     let expected = cdef_filter_sample(
                         &taps,
                         ctx.pri_str,
@@ -531,6 +534,7 @@ fn stripe_frames_match_full_frame_across_restoration_boundaries() {
                 (32, 32),
                 (1, 1),
                 BitDepth::Eight,
+                None,
                 start,
                 end,
             )
