@@ -21,7 +21,7 @@ use splot_recon::{
 };
 
 use super::block::{
-    BLOCK_8X8, interp_filter_no_neighbour_ctx, segment_neighbour_availability,
+    BLOCK_8X8, interp_filter_no_neighbour_ctx, tile_neighbour_availability,
     tip_allowed_for_block_indices,
 };
 use super::test_support::fixture_sequence_and_key_core;
@@ -2473,11 +2473,11 @@ fn tip_mode_gate_follows_mi_size_not_has_chroma() {
 }
 
 #[test]
-fn segment_neighbour_availability_is_tile_bounded() {
-    assert_eq!(segment_neighbour_availability(8, 16, 8, 16), (false, false));
-    assert_eq!(segment_neighbour_availability(9, 16, 8, 16), (true, false));
-    assert_eq!(segment_neighbour_availability(8, 17, 8, 16), (false, true));
-    assert_eq!(segment_neighbour_availability(9, 17, 8, 16), (true, true));
+fn tile_neighbour_availability_is_tile_bounded() {
+    assert_eq!(tile_neighbour_availability(8, 16, 8, 16), (false, false));
+    assert_eq!(tile_neighbour_availability(9, 16, 8, 16), (true, false));
+    assert_eq!(tile_neighbour_availability(8, 17, 8, 16), (false, true));
+    assert_eq!(tile_neighbour_availability(9, 17, 8, 16), (true, true));
 }
 
 #[test]

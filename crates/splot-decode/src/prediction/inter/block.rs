@@ -798,7 +798,7 @@ fn read_segment_id(
         return Ok(0);
     };
     let (r, c) = (frontier.r, frontier.c);
-    let (avail_u, avail_l) = segment_neighbour_availability(
+    let (avail_u, avail_l) = tile_neighbour_availability(
         r,
         c,
         work_unit.mi_row_range().start as usize,
@@ -849,7 +849,9 @@ fn validate_segment_id(segment_id: i32, last_active: u8, tile_offset: ByteOffset
         })
 }
 
-pub(super) const fn segment_neighbour_availability(
+/// § 5.11.4 `AvailU` / `AvailL`: `is_inside` bounds the up and left neighbour
+/// to the current tile, and the block's own position keeps the far edges slack.
+pub(super) const fn tile_neighbour_availability(
     r: usize,
     c: usize,
     tile_mi_row_start: usize,
@@ -964,8 +966,12 @@ fn decode_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let _block_phase = crate::timing::PhaseScope::new(crate::timing::Phase::Block);
-    let avail_up = frontier.r > work_unit.mi_row_range().start as usize;
-    let avail_left = frontier.c > work_unit.mi_col_range().start as usize;
+    let (avail_up, avail_left) = tile_neighbour_availability(
+        frontier.r,
+        frontier.c,
+        work_unit.mi_row_range().start as usize,
+        work_unit.mi_col_range().start as usize,
+    );
     let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
         inter_diag!(
             "inter_block_geometry",
