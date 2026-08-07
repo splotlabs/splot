@@ -669,18 +669,10 @@ fn read_luma_transform_partition_records(
     }
     let block_width =
         block_size_table_usize(&NUM_4X4_BLOCKS_WIDE, "Num_4x4_Blocks_Wide", context.mi_size)?
-            .checked_mul(MI_SIZE)
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Num_4x4_Blocks_Wide",
-                index: context.mi_size,
-            })?;
+            * MI_SIZE;
     let block_height =
         block_size_table_usize(&NUM_4X4_BLOCKS_HIGH, "Num_4x4_Blocks_High", context.mi_size)?
-            .checked_mul(MI_SIZE)
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Num_4x4_Blocks_High",
-                index: context.mi_size,
-            })?;
+            * MI_SIZE;
     if (block_width >> 6) > 1 || (block_height >> 6) > 1 {
         let mut records = LumaTransformPartitionUnits::new();
         records.push(luma_transform_record(start_x, start_y, tx_size))?;
@@ -890,18 +882,8 @@ fn push_luma_transform_record(
             "unsupported_general_intra_tx_partition_empty",
         ));
     }
-    let width =
-        w4.checked_mul(MI_SIZE)
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Tx_Width",
-                index: w4,
-            })?;
-    let height =
-        h4.checked_mul(MI_SIZE)
-            .ok_or(GeneralIntraResidualError::TransformPartitionGeometry {
-                table: "Tx_Height",
-                index: h4,
-            })?;
+    let width = w4 * MI_SIZE;
+    let height = h4 * MI_SIZE;
     let tx_size = tx_size_from_dimensions(width, height).ok_or(
         GeneralIntraResidualError::TransformPartitionGeometry {
             table: "Tx_Size",
