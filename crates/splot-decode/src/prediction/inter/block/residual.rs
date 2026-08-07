@@ -746,12 +746,6 @@ fn read_inter_residual_plane(
     .map_err(|_| residual_read_error(tile_offset))
 }
 
-pub(crate) fn transform_tool_residual_policy(
-    sequence: &SequenceHeader,
-) -> TransformToolResidualPolicy {
-    TransformToolResidualPolicy::from_sequence_tools(sequence)
-}
-
 pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
     table_value_usize(
         "Max_Tx_Size_Rect",

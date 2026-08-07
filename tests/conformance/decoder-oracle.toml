@@ -1806,3 +1806,10 @@ status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.mv_prediction_spatial", "inter.single_ref", "inter.subpel_mc", "inter.warp", "loop.cdef", "loop.deblock", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
 ivf_sha256 = "f3cc7916ad1f923ab80489f94cfde349d04952794ebef62141664470b5b2498e"
 avm_raw_sha256 = "d4edd1a3183f0bd083c7f8573861ffad8fc7942d1c4f560cc46c8028bbc66772"
+
+[[fixture]]
+id = "syn-4frame-dct-adst-tools-off-200x104"
+status = "must_pass"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
+ivf_sha256 = "cd633dec894cf0c14ea2e32112208894b3b069dddb17f464cdd10166b74dda81"
+avm_raw_sha256 = "221059f99854e58c027ffd228f7e15d2af4ee969d660e58e51915392340b9b5d"
