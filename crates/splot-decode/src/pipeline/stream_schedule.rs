@@ -405,6 +405,7 @@ fn is_frame_prefix_obu(envelope: &ObuEnvelope<'_>) -> bool {
 
 fn is_frame_suffix_obu(envelope: &ObuEnvelope<'_>) -> bool {
     envelope.header.obu_type == ObuType::Padding
+        || is_tile_group_continuation(envelope)
         || matches!(
             envelope.header.obu_type,
             ObuType::MetadataShort | ObuType::MetadataGroup
@@ -412,6 +413,16 @@ fn is_frame_suffix_obu(envelope: &ObuEnvelope<'_>) -> bool {
             .payload
             .first()
             .is_some_and(|first| first & 0x80 != 0)
+}
+
+/// A § 5.19 tile-group OBU that continues the frame unit already opened by an
+/// earlier tile group, i.e. one whose leading `is_first_tile_group` bit is 0.
+fn is_tile_group_continuation(envelope: &ObuEnvelope<'_>) -> bool {
+    envelope.header.obu_type.is_tile_group()
+        && envelope
+            .payload
+            .first()
+            .is_some_and(|first| first & 0x80 == 0)
 }
 
 pub(super) fn require_inter_obu_order(obus: &[ObuEnvelope<'_>]) -> Result<()> {
