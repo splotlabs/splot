@@ -125,14 +125,11 @@ const WEDGE_USED_BY_BSIZE: [bool; 29] = [
     false, false, false, true, true, true, true, true, true, true, true, true, true, false, false,
     false, false, false, false, false, false, true, true, true, true, false, false, true, true,
 ];
-const INTERINTRA_MODES: u8 = 4;
-const WEDGE_QUADS: u8 = 4;
 const QUAD_WEDGE_ANGLES: u8 = 5;
 const H_WEDGE_ANGLES: u8 = 10;
 const COEFF_CONTEXT_PLANES: [(usize, u32); 3] = [(0, 0), (1, 1), (2, 1)];
 const WEDGE_0: u8 = 0;
 const WEDGE_90: u8 = 5;
-const NUM_WEDGE_DIST: u8 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum WarpInterMode {
@@ -2106,52 +2103,11 @@ fn read_inter_intra_syntax_enabled(
     let inter_intra = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;
-    if inter_intra.get() > 1 {
-        return Err(inter_cap!(
-            "inter_interintra_symbol",
-            tile_offset,
-            "inter.inter_intra symbol out of range",
-            "5.20.7.15"
-        ));
-    }
     if inter_intra.get() == 0 {
         return Ok(WarpInterIntraSyntax::default());
     }
 
-    let mode = cdfs
-        .read_block_symbol_trace(TileCdfSelector::InterIntraMode { bsize_group }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
-        .get();
-    if mode >= INTERINTRA_MODES {
-        return Err(inter_cap!(
-            "inter_interintra_mode_symbol",
-            tile_offset,
-            "inter.interintra_mode symbol out of range",
-            "5.20.7.15"
-        ));
-    }
-
-    let use_wedge = if WEDGE_USED_BY_BSIZE.get(b_size).copied().unwrap_or(false) {
-        let symbol = cdfs
-            .read_block_symbol_trace(TileCdfSelector::WedgeInterIntra, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
-            .get();
-        symbol != 0
-    } else {
-        false
-    };
-    let wedge_index = if use_wedge {
-        Some(read_wedge_mode_syntax(cdfs, symbols, tile_offset)?)
-    } else {
-        None
-    };
-
-    Ok(WarpInterIntraSyntax {
-        enabled: true,
-        mode: Some(mode),
-        use_wedge,
-        wedge_index,
-    })
+    warp::read_active_inter_intra_tail(cdfs, symbols, bsize_group, b_size, tile_offset)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
