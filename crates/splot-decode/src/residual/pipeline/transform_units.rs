@@ -161,30 +161,10 @@ impl ResidualPlanePlan {
         let scale_x = 1usize << sub_x;
         let scale_y = 1usize << sub_y;
         let chroma_ref = BlockRect::new(
-            (block.y >> 2).checked_mul(scale_y).ok_or(
-                GeneralIntraResidualError::TransformPartitionGeometry {
-                    table: "Lossless_Chroma_Row",
-                    index: block.tx_size,
-                },
-            )?,
-            (block.x >> 2).checked_mul(scale_x).ok_or(
-                GeneralIntraResidualError::TransformPartitionGeometry {
-                    table: "Lossless_Chroma_Col",
-                    index: block.tx_size,
-                },
-            )?,
-            width4.checked_mul(scale_x).ok_or(
-                GeneralIntraResidualError::TransformPartitionGeometry {
-                    table: "Lossless_Chroma_Width",
-                    index: block.tx_size,
-                },
-            )?,
-            height4.checked_mul(scale_y).ok_or(
-                GeneralIntraResidualError::TransformPartitionGeometry {
-                    table: "Lossless_Chroma_Height",
-                    index: block.tx_size,
-                },
-            )?,
+            (block.y >> 2) * scale_y,
+            (block.x >> 2) * scale_x,
+            width4 * scale_x,
+            height4 * scale_y,
         );
         let chroma_tx = TxShape::from_luma_4x4(chroma_ref.width4(), chroma_ref.height4()).ok_or(
             GeneralIntraResidualError::TransformPartitionGeometry {
