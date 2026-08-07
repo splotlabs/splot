@@ -516,6 +516,11 @@ description = "AVM lossless 8-bit 4:2:0 intra key frame (IVF, 64x64) from a proj
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-xtile-filters-off-intra-256x128.ivf"
+description = "8-bit 4:2:0 2-frame intra stream (IVF, 256x128) encoded with --tile-rows=1 --disable-loopfilters-across-tiles=1. AV2 requires CDEF and CCSO to treat tile edges as picture edges for sample availability when this flag is set, but splot's cdef_stripe and ccso_stripe take no tile bounds and always filter across tile boundaries. An encoder bisect isolated it: with all in-loop filters disabled splot matches avmdec, and enabling exactly one filter shows deblocking, GDF and loop restoration match while CDEF and CCSO each diverge independently. Before the guard splot emitted wrong samples at exit 0 with no diagnostic; it now fails closed with unsupported_cdef_ccso_disable_loopfilters_across_tiles pending a real implementation. avmdec raw SHA-256 is c767e34921b964b395558a319588a5b40ba7e34bdd4e9a0dd77e3e18a14fd28b."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-gdf-2x2-tiles-intra-256x128.ivf"
 description = "8-bit 4:2:0 2-frame intra stream (IVF, 256x128) encoded with --tile-rows=1 --tile-columns=1, giving a 2x2 tile grid. Companion to syn-gdf-tile-rows-intra-256x128: the original report for unsupported_wienerns_lr_selectable_transform_records_gdf_source named both the two-tile-row and the 2x2 configuration, and this vector covers the second so a regression in either tiling shape is caught. avmdec raw SHA-256 is dcbc84cefddff276f73732bb0c9d96505c36da2725fb66b2de7b6cef1aa4162c and splot reproduces all 98,304 bytes; validates clean."
 expect = "clean"

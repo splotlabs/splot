@@ -522,6 +522,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
                 )
             })?;
+        if disable_loopfilters_across_tiles
+            && (cdef_strengths.is_some() || ccso_config.is_some())
+            && core
+                .tile_info
+                .as_ref()
+                .is_some_and(|tile| tile.mi_row_starts.len() > 2 || tile.mi_col_starts.len() > 2)
+        {
+            return Err(wienerns_lr_selectable_transform_record_error_reason(
+                offset,
+                "unsupported_cdef_ccso_disable_loopfilters_across_tiles",
+            ));
+        }
         let sink = sink_source.open(info, &ranges, offset)?;
         let stripe_count = ranges.len();
         let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
