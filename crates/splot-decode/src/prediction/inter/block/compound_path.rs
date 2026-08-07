@@ -41,13 +41,7 @@ pub(super) fn read_reference_mode(
         .get();
     match mode {
         0 => Ok(false),
-        1 => Ok(true),
-        _ => Err(inter_cap!(
-            "inter_block_reference_mode",
-            tile_offset,
-            "inter.reference_mode out of range",
-            SPEC_MODE_INFO
-        )),
+        _ => Ok(true),
     }
 }
 
