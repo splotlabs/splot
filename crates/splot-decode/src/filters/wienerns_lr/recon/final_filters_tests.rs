@@ -553,6 +553,7 @@ fn apply_luma_lr(
         (4, 4),
         (1, 1),
         splot_recon::BitDepth::Eight,
+        None,
         0,
         16,
     )
@@ -583,6 +584,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
         (4, 4),
         (1, 1),
         splot_recon::BitDepth::Eight,
+        None,
         0,
         16,
     )
