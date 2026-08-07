@@ -438,36 +438,20 @@ fn predict_two_sided_middle_luma_mrl_into<T: ReconSample>(
         (false, false) => {
             let corner = noneighbour_corner::<T>(bit_depth);
             (
-                build_two_sided_middle_mrl_idif_edge(
-                    width,
-                    mrl_index,
-                    i32::try_from(width)
-                        .ok()
-                        .and_then(|width| width.checked_add(1))
-                        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?,
-                    |logical| {
-                        Ok(if logical < 0 {
-                            corner
-                        } else {
-                            noneighbour_above::<T>(bit_depth)
-                        })
-                    },
-                )?,
-                build_two_sided_middle_mrl_idif_edge(
-                    height,
-                    mrl_index,
-                    i32::try_from(height)
-                        .ok()
-                        .and_then(|height| height.checked_add(1))
-                        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?,
-                    |logical| {
-                        Ok(if logical < 0 {
-                            corner
-                        } else {
-                            noneighbour_left::<T>(bit_depth)
-                        })
-                    },
-                )?,
+                build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
+                    Ok(if logical < 0 {
+                        corner
+                    } else {
+                        noneighbour_above::<T>(bit_depth)
+                    })
+                })?,
+                build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
+                    Ok(if logical < 0 {
+                        corner
+                    } else {
+                        noneighbour_left::<T>(bit_depth)
+                    })
+                })?,
             )
         }
     };
@@ -516,10 +500,7 @@ fn build_top_row_left_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, left_col, y)?;
-    let max_logical = i32::try_from(height)
-        .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
-        + 1;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |logical| {
+    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
         if logical < 0 {
             return Ok(seed);
         }
@@ -543,10 +524,7 @@ fn build_above_only_middle_mrl_left_idif_edge<T: ReconSample>(
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let seed = workspace.reconstructed_sample(PlaneId::Y, x, above_row)?;
-    let max_logical = i32::try_from(height)
-        .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
-        + 1;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |_| Ok(seed))
+    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |_| Ok(seed))
 }
 
 fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
@@ -562,10 +540,7 @@ fn build_two_sided_middle_mrl_above_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|row| row.checked_sub(above_mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let max_logical = i32::try_from(width)
-        .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
-        + 1;
-    build_two_sided_middle_mrl_idif_edge(width, mrl_index, max_logical, |logical| {
+    build_two_sided_middle_mrl_idif_edge(width, mrl_index, |logical| {
         let column = if logical < 0 {
             if have_left {
                 let back = usize::try_from(-logical)
@@ -596,16 +571,13 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
         .checked_sub(1)
         .and_then(|col| col.checked_sub(mrl_index))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let max_logical = i32::try_from(height)
-        .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
-        + 1;
     let max_y = workspace
         .plane(PlaneId::Y)?
         .storage_size()
         .height()
         .checked_sub(1)
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    build_two_sided_middle_mrl_idif_edge(height, mrl_index, max_logical, |logical| {
+    build_two_sided_middle_mrl_idif_edge(height, mrl_index, |logical| {
         let row = if logical < 0 {
             if is_sb_boundary {
                 y.checked_sub(1)
@@ -629,7 +601,6 @@ fn build_two_sided_middle_mrl_left_idif_edge<T: ReconSample>(
 fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
     side: usize,
     mrl_index: usize,
-    max_logical: i32,
     sample: impl Fn(i32) -> core::result::Result<T, GeneralIntraResidualError>,
 ) -> core::result::Result<TwoSidedMiddleIdifEdge<T>, GeneralIntraResidualError> {
     let len = side
@@ -638,12 +609,12 @@ fn build_two_sided_middle_mrl_idif_edge<T: ReconSample>(
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let mrl = i32::try_from(mrl_index)
         .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let min_base = -1 - mrl;
+    let max_logical = i32::try_from(side)
+        .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?
+        + 1;
     let mut edge = TwoSidedMiddleIdifEdge::new(len)?;
-    for logical in min_base..=max_logical {
-        let offset = usize::try_from(logical + mrl + 2)
-            .map_err(|_| GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-        edge[offset] = sample(logical)?;
+    for (offset, logical) in (-1 - mrl..=max_logical).enumerate() {
+        edge[offset + 1] = sample(logical)?;
     }
     edge[0] = edge[1];
     Ok(edge)
