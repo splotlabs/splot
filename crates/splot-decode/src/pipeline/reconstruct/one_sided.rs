@@ -517,24 +517,16 @@ fn build_one_sided_idif_edge<T: ReconSample>(
     corner: impl FnOnce() -> core::result::Result<T, splot_recon::ReconError>,
     in_edge: impl Fn(usize) -> core::result::Result<T, splot_recon::ReconError>,
 ) -> core::result::Result<OneSidedIdifEdge<T>, GeneralIntraResidualError> {
-    let mrl_span = mrl_index
-        .checked_mul(2)
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let max_base = width
+    let (max_base, edge_len) = width
         .checked_add(height)
         .and_then(|v| v.checked_sub(1))
-        .and_then(|v| v.checked_add(mrl_span))
-        .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-    let edge_len = max_base
-        .checked_add(5)
+        .and_then(|v| v.checked_add(mrl_index.checked_mul(2)?))
+        .and_then(|max_base| Some((max_base, max_base.checked_add(5)?)))
         .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
     let mut edge = OneSidedIdifEdge::new(edge_len)?;
     edge.samples[1] = corner()?;
     for i in 0..=max_base {
-        let slot = i
-            .checked_add(2)
-            .ok_or(GeneralIntraResidualError::UnsupportedDirectionalAboveEdge)?;
-        edge.samples[slot] = in_edge(i)?;
+        edge.samples[i + 2] = in_edge(i)?;
     }
     finalize_one_sided_idif_edge(&mut edge.samples[..edge.len], max_base, edge_filter)?;
     Ok(edge)
