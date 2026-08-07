@@ -267,7 +267,8 @@ const TX_SET_DCT_IDTX: usize = 7;
 const TX_SET_DCT_IDTX_IDDCT: usize = 8;
 const BLOCK_4X4: usize = 0;
 const MI_SIZE: usize = 4;
-/// AV2 § 5.20.7.5 `TX_PARTITION_*`, in the order the partition-type symbol codes them.
+/// AV2 § 6.19.6.3 Table 6.23 `TX_PARTITION_*`, in `txPartition` value order;
+/// read per § 5.20.6.3.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LumaTxPartition {
     None,
