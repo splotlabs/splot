@@ -70,7 +70,6 @@ pub(super) const BLOCK_8X8: usize = 3;
 const BLOCK_64X64: usize = 12;
 const MAX_WARP_REF_CANDIDATES: usize = 4;
 const WARP_DELTA_NUM_SYMBOLS_LOW: u8 = 8;
-const WARP_DELTA_NUM_SYMBOLS_HIGH: u8 = 8;
 pub(crate) const WARPEDMODEL_PREC_BITS: u32 = 16;
 const MI_SIZE_LOG2: u32 = 2;
 
