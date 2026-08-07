@@ -55,7 +55,7 @@ const GDF_COORDS: [(isize, isize); 18] = [
     (0, 1),
 ];
 
-const GDF_READ_RADIUS: usize = 7;
+pub(crate) const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
 const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
 const GDF_SCRATCH_ALLOCATION_REASON: &str =
@@ -267,6 +267,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     core: &FrameHeaderCore,
     deblocked_luma: FramePlane<'_, T>,
     separate_cdef_luma: Option<&StripePlane>,
+    cdef_overlap: &[StripePlane],
     post_lr_luma: &mut StripePlane,
     block_grid: Option<&GdfBlockGrid>,
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
@@ -357,6 +358,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 &mut scratch.source,
                 deblocked_luma,
                 cdef_luma,
+                cdef_overlap,
                 &bounds,
                 &stripe_block,
                 offset,
@@ -1238,13 +1240,17 @@ impl<'a> GdfSource<'a> {
         samples: &'a mut Vec<u16>,
         deblocked_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
+        cdef_overlap: &[StripePlane],
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
         offset: ByteOffset,
     ) -> Result<Self> {
         Self::materialize_rows::<T, T>(samples, bounds, block, offset, |source, y| match source {
             LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow::Frame),
-            LoopRestorationSource::CdefFrame => cdef_luma.row(y).map(GdfSourceRow::Stripe),
+            LoopRestorationSource::CdefFrame => cdef_luma
+                .row(y)
+                .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(y)))
+                .map(GdfSourceRow::Stripe),
         })
     }
 
