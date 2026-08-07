@@ -1783,12 +1783,14 @@ const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
     unsupported_transform_tool_residual_error("unsupported_dctonly_residual_invalid_inter_tx_type")
 }
 
+/// § 8.3.2 `InterTxTypeLong` context from the last coefficient position.
+///
+/// `eob` is the non-zero-block end of block, which `nonzero_coeff_eob` builds
+/// from an `eob_pt` of 1..=11: below 3 it is the point itself, and above it
+/// starts at `EOB_GROUP_START[3]` = 3. It is never 0, so the last-position
+/// conversion is total.
 fn inter_tx_type_long_ctx(tx_size: usize, eob: usize) -> Result<usize, GeneralIntraResidualError> {
-    let eob = eob
-        .checked_sub(1)
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_inter_tx_type_eob",
-        ))?;
+    let eob = eob.saturating_sub(1);
     let tx_width_log2 = tx_size_table_usize(&TX_WIDTH_LOG2, "Tx_Width_Log2", tx_size)?;
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     let bwl = tx_width_log2.min(5);
