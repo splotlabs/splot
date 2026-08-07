@@ -121,6 +121,9 @@ pub(super) struct PendingIntrabcBlock {
     pub(super) residual_use_ddt: bool,
     pub(super) bit_depth: BitDepth,
     pub(super) subsampling: (u32, u32),
+    /// § 7.13.3.25 `AvailU` / `AvailL`, which `is_inside` scopes to the current tile.
+    pub(super) avail_up: bool,
+    pub(super) avail_left: bool,
 }
 
 pub(super) fn pending_intrabc_leaf(
@@ -339,6 +342,8 @@ fn resolve_pending_intrabc(
         residual_use_ddt,
         bit_depth,
         subsampling,
+        avail_up,
+        avail_left,
     } = pending;
     let spatial = spatial.resolve(|row, col| state.grid.intrabc_mv_at(row, col));
     let block = MvBlockContext {
@@ -397,6 +402,7 @@ fn resolve_pending_intrabc(
     let prediction = intrabc::IntrabcReconPrediction::derive(
         state.core,
         &frontier,
+        (avail_up, avail_left),
         n4w,
         n4h,
         info,

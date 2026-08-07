@@ -136,6 +136,7 @@ pub(crate) fn apply_bawp<T: ReconSample>(
 pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     target: PlaneRect,
+    (avail_up, avail_left): (bool, bool),
     mv: Mv,
     _tile_offset: ByteOffset,
 ) -> Result<()> {
@@ -178,8 +179,6 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
         return Ok(());
     }
 
-    let avail_up = target.y() > 0;
-    let avail_left = target.x() > 0;
     let (width, height, num_up, num_left) =
         bawp_template_counts(target.width(), target.height(), true, avail_up, avail_left);
     let Some(size) = morph_dimensions_size(width, height) else {
@@ -295,8 +294,6 @@ fn apply_bawp_plane<T: ReconSample>(
     if !plane_w.is_power_of_two() || !plane_h.is_power_of_two() {
         return Ok(luma_alpha);
     }
-    let avail_up = plane_y > 0;
-    let avail_left = plane_x > 0;
     let Some(width_for_counts) = usize::try_from(bw).ok() else {
         return Ok(luma_alpha);
     };
@@ -307,8 +304,8 @@ fn apply_bawp_plane<T: ReconSample>(
         width_for_counts,
         height_for_counts,
         plane == PlaneId::Y,
-        avail_up,
-        avail_left,
+        bawp.avail_up,
+        bawp.avail_left,
     );
     let Some(size) = morph_dimensions_size(width, height) else {
         return Ok(luma_alpha);

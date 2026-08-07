@@ -973,6 +973,10 @@ pub(crate) struct BawpSyntax {
     pub(crate) list_index: u8,
     pub(crate) ref_dist_gt4: bool,
     pub(crate) chroma: bool,
+    /// § 7.13.3.25 `AvailU`, which `is_inside` scopes to the current tile.
+    pub(crate) avail_up: bool,
+    /// § 7.13.3.25 `AvailL`, which `is_inside` scopes to the current tile.
+    pub(crate) avail_left: bool,
 }
 
 pub(crate) type InterDecodeOutput<T> = (
