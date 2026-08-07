@@ -1231,9 +1231,23 @@ impl RefMvBank {
             if candidate.key != key {
                 continue;
             }
+            let mvs = [candidate.mv0, candidate.mv1];
+            let mut duplicate = false;
+            if *prune_count < MAX_PR_NUM {
+                for entry in entries.iter() {
+                    *prune_count += 1;
+                    if entry.candidate.mvs == mvs {
+                        duplicate = true;
+                        break;
+                    }
+                }
+            }
+            if duplicate {
+                continue;
+            }
             let bw = block.bw4 as i32 * MI_SIZE;
             let bh = block.bh4 as i32 * MI_SIZE;
-            if [candidate.mv0, candidate.mv1].into_iter().any(|mv| {
+            if mvs.into_iter().any(|mv| {
                 let ref_y = block.mi_row as i32 * MI_SIZE + mv.row / 8;
                 let ref_x = block.mi_col as i32 * MI_SIZE + mv.col / 8;
                 ref_x <= -bw
@@ -1243,15 +1257,15 @@ impl RefMvBank {
             }) {
                 continue;
             }
-            insert_compound_mv_stack_entry(
-                entries,
-                prune_count,
-                CompoundMvCandidate {
-                    mvs: [candidate.mv0, candidate.mv1],
+            if !entries.try_push(CompoundMvStackEntry {
+                candidate: CompoundMvCandidate {
+                    mvs,
                     cwp_weight: candidate.cwp_weight,
                 },
-                0,
-            );
+                weight: 0,
+            }) {
+                return;
+            }
         }
     }
 }
