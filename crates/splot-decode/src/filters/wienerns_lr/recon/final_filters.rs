@@ -648,12 +648,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if cdef.cdef_on_skip_txfm_frame_enable != Some(false) {
             return Ok(None);
         }
-        let Some(tx_skip_grid) = self.tx_skip_grid.as_ref() else {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
+        let tx_skip_grid = crate::filters::wienerns_lr::derive_cdef_skip_grid(
+            mi_rows,
+            mi_cols,
+            &self.filter_records.tx_skip_records,
+        )
+        .map_err(|_| {
+            wienerns_lr_selectable_transform_record_error_reason(
                 offset,
                 "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-            ));
-        };
+            )
+        })?;
+        let tx_skip_grid = &tx_skip_grid;
         if tx_skip_grid.rows() < mi_rows || tx_skip_grid.cols() < mi_cols {
             return Err(wienerns_lr_selectable_transform_record_error_reason(
                 offset,

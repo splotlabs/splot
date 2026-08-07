@@ -133,6 +133,22 @@ fn wienerns_lr_tx_skip_grid_index(row: usize, col: usize, cols: usize) -> ReconR
         })
 }
 
+/// § 7.18.1 CDEF skip grid: the `Skips` array, which is `skip_txfm` alone.
+///
+/// The CDEF block process reads `Skips[r][c] && Skips[r + 1][c] &&
+/// Skips[r][c + 1] && Skips[r + 1][c + 1]` when `cdef_on_skip_txfm_frame_enable`
+/// is 0. That is a different array from loop restoration's `LrTxSkip`, which
+/// additionally treats an empty transform (`eob == 0`) as skipped. Feeding the
+/// loop-restoration predicate to CDEF marks extra 8x8 units as fully skipped and
+/// drops filtering the spec applies.
+pub(crate) fn derive_cdef_skip_grid(
+    rows: usize,
+    cols: usize,
+    records: &[WienerNsLrTxSkipTransformRecord],
+) -> ReconResult<WienerNsLrTxSkipGrid> {
+    derive_wienerns_lr_skip_grid(rows, cols, records, |record| u8::from(record.skip_flag))
+}
+
 pub(crate) fn derive_wienerns_lr_tx_skip_grid_retention(
     rows: usize,
     cols: usize,
