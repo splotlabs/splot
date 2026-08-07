@@ -8,11 +8,10 @@ use splot_recon::{
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, CflIndex, GeneralIntraBlockModes,
-    GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
-    GeneralIntraLeafMode, IntraYMode, IsCflContext, LumaTransformPartitionContext,
-    LumaTransformTypeContext, SupportedChromaMode, SupportedNonDcLumaMode,
-    TransformToolResidualPolicy, read_lossless_luma_tx_size,
+    CflIndex, GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext,
+    GeneralIntraChromaToolConfig, GeneralIntraLeafMode, IntraYMode, IsCflContext,
+    LumaTransformPartitionContext, LumaTransformTypeContext, SupportedChromaMode,
+    SupportedNonDcLumaMode, TransformToolResidualPolicy, read_lossless_luma_tx_size,
 };
 use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE};
 use crate::residual::pipeline::{
@@ -208,11 +207,7 @@ fn general_intra_chroma_tools(
 pub(crate) fn general_intra_transform_tool_residual_policy(
     sequence: &SequenceHeader,
 ) -> TransformToolResidualPolicy {
-    TransformToolResidualPolicy::from_sequence_tools(
-        sequence,
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-    )
+    TransformToolResidualPolicy::from_sequence_tools(sequence)
 }
 
 fn sequence_cfl_ds_filter_index(sequence: &SequenceHeader) -> u8 {

@@ -750,18 +750,9 @@ const fn transform_tool_policy_for_plane(
     luma: LumaTransformTypeContext,
 ) -> TransformToolResidualPolicy {
     match (policy, plane_id) {
-        (
-            TransformToolResidualPolicy::AdmitTransformToolSubset {
-                active_intra_ist,
-                active_chroma,
-                ..
-            },
-            PlaneId::Y,
-        ) => TransformToolResidualPolicy::AdmitTransformToolSubset {
-            luma: Some(luma),
-            active_intra_ist,
-            active_chroma,
-        },
+        (TransformToolResidualPolicy::AdmitTransformToolSubset { .. }, PlaneId::Y) => {
+            TransformToolResidualPolicy::AdmitTransformToolSubset { luma: Some(luma) }
+        }
         _ => policy,
     }
 }

@@ -446,17 +446,7 @@ fn ensure_with_test_state(
     eob: usize,
     luma: Option<LumaTransformTypeContext>,
 ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
-    ensure_with_test_payload_and_policy(
-        facts,
-        plane,
-        tx_size,
-        is_inter,
-        eob,
-        luma,
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::Reject,
-        &PAYLOAD,
-    )
+    ensure_with_test_payload_and_policy(facts, plane, tx_size, is_inter, eob, luma, &PAYLOAD)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -467,21 +457,10 @@ fn ensure_with_test_payload_and_policy(
     is_inter: bool,
     eob: usize,
     luma: Option<LumaTransformTypeContext>,
-    active_intra_ist_policy: ActiveIntraIstResidualPolicy,
-    active_chroma_policy: ActiveChromaResidualPolicy,
     payload: &[u8],
 ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
     ensure_with_test_payload_fsc_and_policy(
-        facts,
-        plane,
-        tx_size,
-        is_inter,
-        false,
-        eob,
-        luma,
-        active_intra_ist_policy,
-        active_chroma_policy,
-        payload,
+        facts, plane, tx_size, is_inter, false, eob, luma, payload,
     )
 }
 
@@ -494,8 +473,6 @@ fn ensure_with_test_payload_fsc_and_policy(
     fsc_mode: bool,
     eob: usize,
     luma: Option<LumaTransformTypeContext>,
-    active_intra_ist_policy: ActiveIntraIstResidualPolicy,
-    active_chroma_policy: ActiveChromaResidualPolicy,
     payload: &[u8],
 ) -> Result<TransformToolResidualMetadata, GeneralIntraResidualError> {
     let mut cdfs = tile_cdfs();
@@ -515,8 +492,6 @@ fn ensure_with_test_payload_fsc_and_policy(
             eob,
             cctx_allowed: true,
             luma_transform_type_context: luma,
-            active_intra_ist_policy,
-            active_chroma_policy,
         },
     )
 }
@@ -546,8 +521,6 @@ fn lossless_intra_transform_handoff_forces_dct_without_tx_type_or_ist_reads() {
             eob: 2,
             cctx_allowed: true,
             luma_transform_type_context: Some(dc_luma_context()),
-            active_intra_ist_policy: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
         },
     )
     .unwrap();
@@ -576,8 +549,6 @@ fn lossless_fsc_luma_transform_handoff_retains_idtx_without_tx_type_read() {
             eob: 2,
             cctx_allowed: true,
             luma_transform_type_context: None,
-            active_intra_ist_policy: ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
         },
     )
     .unwrap();
@@ -605,8 +576,6 @@ fn lossless_fsc_chroma_transform_handoff_follows_luma_idtx() {
             eob: 2,
             cctx_allowed: true,
             luma_transform_type_context: None,
-            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
         },
     )
     .unwrap();
@@ -625,8 +594,6 @@ fn fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context() {
         true,
         2,
         None,
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &PAYLOAD,
     )
     .unwrap();
@@ -645,8 +612,6 @@ fn non_fsc_luma_transform_handoff_still_requires_luma_context() {
         false,
         2,
         None,
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &PAYLOAD,
     );
 
@@ -702,22 +667,6 @@ fn dctonly_residual_rejects_intra_ist_without_luma_context() {
 }
 
 #[test]
-fn dctonly_residual_rejects_active_intra_ist_sec_tx_type() {
-    let result = ensure_supported_intra_ist_sec_tx_type(
-        IntraIstSyntax {
-            sec_tx_type: 1,
-            most_probable_stx_set: Some(2),
-        },
-        ActiveIntraIstResidualPolicy::Reject,
-    );
-
-    assert_eq!(
-        unsupported_reason(&result),
-        Some("unsupported_dctonly_residual_intra_sec_tx_type")
-    );
-}
-
-#[test]
 fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
     let payload = sec_tx_type_payload(TX_32X32, 1, Some(2));
 
@@ -728,8 +677,6 @@ fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
         false,
         2,
         Some(dc_luma_context()),
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &payload,
     )
     .unwrap();
@@ -740,28 +687,6 @@ fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
             sec_tx_type: 1,
             most_probable_stx_set: Some(2),
         })
-    );
-}
-
-#[test]
-fn dctonly_residual_safe_policy_rejects_encoded_active_intra_ist() {
-    let payload = sec_tx_type_payload(TX_32X32, 1, Some(2));
-
-    let result = ensure_with_test_payload_and_policy(
-        frame_facts(true, true, false, false),
-        0,
-        TX_32X32,
-        false,
-        2,
-        Some(dc_luma_context()),
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::Reject,
-        &payload,
-    );
-
-    assert_eq!(
-        unsupported_reason(&result),
-        Some("unsupported_dctonly_residual_intra_sec_tx_type")
     );
 }
 
@@ -967,8 +892,6 @@ fn luma_txtype_residual_lr_handoff_retains_non_dct_luma_tx_type() {
         false,
         2,
         Some(luma),
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &payload,
     )
     .unwrap();
@@ -990,8 +913,6 @@ fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
         false,
         2,
         Some(luma),
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &payload,
     )
     .unwrap();
@@ -1015,8 +936,6 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
         false,
         IST_8X8_HEIGHT_RED + 1,
         Some(luma),
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &payload,
     )
     .unwrap();
@@ -1045,8 +964,6 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_stx_cdf() {
         false,
         5,
         Some(luma),
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::Reject,
         &payload,
     )
     .unwrap();
@@ -1218,41 +1135,6 @@ fn coefficient_block_use_tcq_suppresses_fsc() {
 }
 
 #[test]
-fn luma_txtype_residual_safe_policy_rejects_non_dct_luma_tx_type() {
-    let payload = intra_tx_type_set1_payload(TX_8X8, 1);
-
-    let result = ensure_with_test_payload_and_policy(
-        frame_facts(false, false, false, false),
-        0,
-        TX_8X8,
-        false,
-        2,
-        Some(dc_luma_context()),
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::Reject,
-        &payload,
-    );
-
-    assert_eq!(
-        unsupported_reason(&result),
-        Some("unsupported_dctonly_residual_luma_tx_type")
-    );
-}
-
-#[test]
-fn dctonly_residual_rejects_u_plane_cctx_only_when_eob_requires_cctx_type() {
-    let facts = frame_facts(false, false, false, true);
-    let eob_one = ensure_with_test_state(facts, 1, TX_32X32, false, 1, None);
-    let eob_two = ensure_with_test_state(facts, 1, TX_32X32, false, 2, None);
-
-    assert!(eob_one.is_ok());
-    assert_eq!(
-        unsupported_reason(&eob_two),
-        Some("unsupported_dctonly_residual_cctx")
-    );
-}
-
-#[test]
 fn lossless_chroma_transform_handoff_skips_cctx_read() {
     let mut input = frame_facts_input();
     input.enable_cctx = true;
@@ -1275,8 +1157,6 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
             eob: 2,
             cctx_allowed: true,
             luma_transform_type_context: None,
-            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-            active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
         },
     )
     .unwrap();
@@ -1309,8 +1189,6 @@ fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
                     eob,
                     cctx_allowed,
                     luma_transform_type_context: None,
-                    active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-                    active_chroma_policy: ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
                 },
             )
             .unwrap();
@@ -1353,8 +1231,6 @@ fn lossless_inter_luma_transform_handoff_reads_tx_type_metadata() {
                 eob: 16,
                 cctx_allowed: true,
                 luma_transform_type_context: None,
-                active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-                active_chroma_policy: ActiveChromaResidualPolicy::Reject,
             },
         )
         .unwrap();
@@ -1383,8 +1259,6 @@ fn lossless_inter_luma_transform_handoff_large_tx_implies_idtx_without_symbol() 
             eob: 16,
             cctx_allowed: true,
             luma_transform_type_context: None,
-            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
         },
     )
     .unwrap();
@@ -1413,31 +1287,12 @@ fn lossless_inter_chroma_transform_handoff_skips_tx_type_metadata() {
             eob: 16,
             cctx_allowed: true,
             luma_transform_type_context: None,
-            active_intra_ist_policy: ActiveIntraIstResidualPolicy::Reject,
-            active_chroma_policy: ActiveChromaResidualPolicy::Reject,
         },
     )
     .unwrap();
 
     assert_eq!(metadata.luma_tx_type, DCT_DCT);
     assert_eq!(symbols.symbol_count(), 0);
-}
-
-#[test]
-fn dctonly_residual_safe_policy_rejects_chroma_non_dct_tx_set() {
-    let result = ensure_with_test_state(
-        frame_facts(false, false, false, false),
-        1,
-        TX_8X8,
-        false,
-        1,
-        None,
-    );
-
-    assert_eq!(
-        unsupported_reason(&result),
-        Some("unsupported_dctonly_residual_tx_set")
-    );
 }
 
 #[test]
@@ -1449,8 +1304,6 @@ fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
         false,
         1,
         None,
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
         &PAYLOAD,
     );
 
@@ -1466,8 +1319,6 @@ fn dctonly_residual_lr_handoff_admits_inter_chroma_non_dct_tx_set() {
         true,
         1,
         None,
-        ActiveIntraIstResidualPolicy::Reject,
-        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
         &PAYLOAD,
     );
 
@@ -1486,8 +1337,6 @@ fn dctonly_residual_lr_handoff_reads_cctx_metadata() {
             false,
             2,
             None,
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
             &payload,
         )
         .unwrap();
@@ -1508,8 +1357,6 @@ fn dctonly_residual_lr_handoff_reads_inter_cctx_metadata() {
             true,
             1,
             None,
-            ActiveIntraIstResidualPolicy::Reject,
-            ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
             &payload,
         )
         .unwrap();

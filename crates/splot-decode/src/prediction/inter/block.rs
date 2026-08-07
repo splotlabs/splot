@@ -40,9 +40,8 @@ use super::{
     unsupported_at, unsupported_compound_at,
 };
 use crate::bitstream::tile_payload::{
-    ActiveChromaResidualPolicy, ActiveIntraIstResidualPolicy, BlockSize, CoeffContextReset,
-    DecodeBlockFrontier, DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset,
-    FrameQmSegmentScope, FrameQuantizerSnapshot, GeneralIntraLeafMode,
+    BlockSize, CoeffContextReset, DecodeBlockFrontier, DecodeTileWorkUnit, DecodedLeafPublication,
+    FrameCdfSubset, FrameQmSegmentScope, FrameQuantizerSnapshot, GeneralIntraLeafMode,
     GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraTreeWalkError,
     IsCflContext, LumaCoeffBlock, SavedCdfSubset, TileBlockDecodedState, TileCdfSelector,
     TileCdfSubset, TileCoeffContextState, TileFscModeState, TileIntraJointModeState,

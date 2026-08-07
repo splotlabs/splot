@@ -750,11 +750,7 @@ fn read_inter_residual_plane(
 pub(crate) fn transform_tool_residual_policy(
     sequence: &SequenceHeader,
 ) -> TransformToolResidualPolicy {
-    TransformToolResidualPolicy::from_sequence_tools(
-        sequence,
-        ActiveIntraIstResidualPolicy::LrTxSkipRecordHandoff,
-        ActiveChromaResidualPolicy::LrTxSkipRecordHandoff,
-    )
+    TransformToolResidualPolicy::from_sequence_tools(sequence)
 }
 
 pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
