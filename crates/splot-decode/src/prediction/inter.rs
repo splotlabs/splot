@@ -1679,14 +1679,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    if core.show_existing_frame != Some(false) {
-        return Err(inter_cap!(
-            "inter_unsupported_output_control",
-            offset,
-            "inter.show_existing_frame",
-            SPEC_HEADER
-        ));
-    }
     if core.order_hint.is_none() {
         return Err(inter_missing!(
             "inter_missing_display_order_hint",
