@@ -2317,6 +2317,21 @@ fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
 }
 
 #[test]
+fn missing_inter_control_region_is_typed_header_state_error() {
+    let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
+        core.inter = None;
+    })
+    .expect_err("the inter walk requires its parsed control region");
+
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: crate::error::DecodeHeaderStateError::MissingInterControlRegion,
+        }
+    ));
+}
+
+#[test]
 fn tip_output_disables_saved_cdf_blending() {
     assert!(super::cdf_blending_enabled(true, None));
     assert!(super::cdf_blending_enabled(true, Some(TipFrameMode::AsRef)));

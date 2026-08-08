@@ -82,6 +82,9 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
+    /// An inter frame required its parsed control region, but it was absent.
+    #[error("inter-frame control region is missing")]
+    MissingInterControlRegion,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,
