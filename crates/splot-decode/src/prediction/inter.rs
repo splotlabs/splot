@@ -1638,22 +1638,14 @@ fn parse_inter_frame_core(
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     if envelope.header.obu_type != ObuType::BridgeFrame {
-        let is_first_tile_group = reader.read_bit().map_err(|_| {
+        reader.read_bit().map_err(|_| {
             inter_missing!(
                 "inter_tile_group_prefix_parse",
                 envelope.offset,
                 "inter.tile_group_prefix",
                 SPEC_HEADER
             )
-        })? != 0;
-        if !is_first_tile_group {
-            return Err(inter_cap!(
-                "inter_non_first_tile_group",
-                envelope.offset,
-                "inter.frame_header_not_in_first_tile_group",
-                SPEC_HEADER
-            ));
-        }
+        })?;
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
