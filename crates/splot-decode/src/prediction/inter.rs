@@ -1678,12 +1678,7 @@ fn validate_inter_frame_core(
         ));
     }
     if core.order_hint.is_none() {
-        return Err(inter_missing!(
-            "inter_missing_display_order_hint",
-            offset,
-            "inter.order_hint",
-            SPEC_HEADER
-        ));
+        return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());
     }
     let Some(frame_size) = core.frame_size else {
         return Err(inter_missing!(

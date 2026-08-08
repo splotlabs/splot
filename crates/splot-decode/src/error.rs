@@ -91,6 +91,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its parsed interpolation filter, but it was absent.
     #[error("inter-frame interpolation filter is missing")]
     MissingInterpolationFilter,
+    /// An inter frame required its derived display order hint, but it was absent.
+    #[error("inter-frame display order hint is missing")]
+    MissingDisplayOrderHint,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,
