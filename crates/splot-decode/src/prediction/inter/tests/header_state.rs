@@ -128,6 +128,51 @@ fn missing_tile_group_prefix_is_a_malformed_source_diagnostic() {
 }
 
 #[test]
+fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
+    let (sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);
+    let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
+    let (frame_index, mut envelope) = parsed
+        .frames
+        .iter()
+        .enumerate()
+        .find_map(|(frame_index, frame)| {
+            frame
+                .obus
+                .iter()
+                .find(|envelope| envelope.header.obu_type.is_sef())
+                .copied()
+                .map(|envelope| (frame_index, envelope))
+        })
+        .expect("SEF OBU");
+    envelope.payload = &[];
+    envelope.size = u32::from(envelope.header.header_size_bytes);
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::parse_inter_frame_activation(
+        envelope,
+        &sequence,
+        &reference,
+        true,
+        Some(frame_index),
+    )
+    .expect_err("malformed SEF frame header");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("5.18.2"));
+    assert_eq!(issue.offset(), Some(envelope.offset));
+    assert_eq!(issue.frame_index(), Some(frame_index));
+    assert!(issue.message().contains("unexpected end of input"));
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("malformed SEF frame header must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+#[test]
 fn ras_unlisted_long_term_reference_is_a_malformed_source_diagnostic() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");

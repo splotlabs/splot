@@ -1383,7 +1383,14 @@ pub(crate) fn parse_inter_frame_activation(
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
     if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
-        parse_sef_or_tip_frame_core(envelope, sequence, reference, first_picture_in_tu, None)
+        parse_sef_or_tip_frame_core(
+            envelope,
+            sequence,
+            reference,
+            first_picture_in_tu,
+            None,
+            frame_index,
+        )
     } else {
         parse_inter_frame_core(
             envelope,
@@ -1411,6 +1418,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
             reference,
             first_picture_in_tu,
             mfh_record,
+            frame_index,
         )?
     } else {
         parse_inter_frame_core(
@@ -1457,6 +1465,7 @@ fn parse_sef_or_tip_frame_core(
     reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
+    frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     let input = FrameHeaderParseInput {
@@ -1467,14 +1476,16 @@ fn parse_sef_or_tip_frame_core(
         reference_state: reference.header_view(),
         mode: FrameHeaderParseMode::Core,
     };
-    parse_frame_header_core(&mut reader, &input).map_err(|_| {
+    parse_frame_header_core(&mut reader, &input).map_err(|error| {
         if envelope.header.obu_type.is_sef() {
-            inter_missing!(
-                "sef_frame_header_parse",
-                envelope.offset,
-                "show_existing.frame_header_core",
-                SPEC_HEADER
-            )
+            DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    frame_index,
+                    SPEC_HEADER,
+                    error.to_string(),
+                ),
+            }
         } else {
             inter_missing!(
                 "tip_output_frame_header_parse",
