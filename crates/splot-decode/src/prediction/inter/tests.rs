@@ -45,6 +45,10 @@ mod zero_reference;
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
 
+const SEF_FAMILIES_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-frame-sef-families-64x64.ivf"
+);
+
 #[test]
 fn inter_segmentation_admits_only_current_alt_q_maps() {
     let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];

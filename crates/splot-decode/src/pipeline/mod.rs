@@ -1050,6 +1050,7 @@ where
                         &mut next_unvalidated_following_ivf_record,
                     )?,
                 };
+                let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(sef_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(sef_prefix_obus)?;
                 let first_picture_in_tu = sef_prefix_obus
@@ -1083,7 +1084,7 @@ where
                             &state,
                             &output_effect_state,
                             first_picture_in_tu,
-                            None,
+                            ivf_frame_index,
                         )?
                     }
                     BitDepthIdc::Ten => {
@@ -1095,7 +1096,7 @@ where
                             &state,
                             &output_effect_state,
                             first_picture_in_tu,
-                            None,
+                            ivf_frame_index,
                         )?
                     }
                 };
