@@ -77,7 +77,10 @@ fn invalid_inter_reference_maps_are_typed_header_state_errors() {
     let mutations: [Mutation; 3] = [
         |inter| inter.num_total_refs = None,
         |inter| inter.num_total_refs = Some(8),
-        |inter| inter.num_total_refs = Some(0),
+        |inter| {
+            inter.num_total_refs = Some(0);
+            inter.ref_frame_idx = [0].into_iter().collect();
+        },
     ];
     for mutate in mutations {
         let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
