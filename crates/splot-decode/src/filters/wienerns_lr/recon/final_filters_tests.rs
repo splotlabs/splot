@@ -560,7 +560,14 @@ fn apply_luma_lr(
     .unwrap();
     let filtered = sink
         .stripe_chain()
-        .apply_lr_stripe(core, ByteOffset::new(0), cdef, [blocks, &[], &[]], &[])
+        .apply_lr_stripe(
+            core,
+            ByteOffset::new(0),
+            cdef,
+            &CdefOverlap::default(),
+            [blocks, &[], &[]],
+            &[],
+        )
         .unwrap()
         .into_filtered();
     super::super::publish_filter_stripe_to(
@@ -596,6 +603,7 @@ fn inactive_filter_planes_reuse_cdef_storage() {
             &switchable_core(),
             ByteOffset::new(0),
             cdef,
+            &CdefOverlap::default(),
             [&[], &[], &[]],
             &[],
         )
@@ -811,6 +819,66 @@ fn wiener_ns_luma_worker_scratch_retention_is_bounded() {
 }
 
 #[test]
+fn lr_source_window_resolves_in_stripe_rows_from_overlap_planes() {
+    let bounds = LoopRestorationSourceBounds {
+        luma_start_x: 0,
+        luma_end_x: 7,
+        luma_start_y: 0,
+        luma_end_y: 7,
+        luma_stripe_start_y: 0,
+        luma_stripe_end_y: 7,
+        subsampling_x: 0,
+        subsampling_y: 0,
+    };
+    let curr_workspace = crate::test_support::yuv420_workspace(8, 8, 0);
+    let curr = FramePlane::new(&curr_workspace, PlaneId::Y).unwrap();
+    let mut cdef_workspace = crate::test_support::yuv420_workspace(8, 8, 0);
+    for sample in 0..64 {
+        cdef_workspace
+            .set_reconstructed_sample(PlaneId::Y, sample % 8, sample / 8, sample as u8)
+            .unwrap();
+    }
+    let cdef_source = FramePlane::new(&cdef_workspace, PlaneId::Y).unwrap();
+    let band = StripePlane::copy_from(cdef_source, 0, 4).unwrap();
+    let overlap = [StripePlane::copy_from(cdef_source, 4, 8).unwrap()];
+    let mut storage = Vec::new();
+
+    assert!(
+        LrSourceWindow::<u8>::materialize(
+            &mut storage,
+            PlaneId::Y,
+            curr,
+            &band,
+            &[],
+            &bounds,
+            2,
+            2,
+            4,
+            4,
+            (1, 1),
+        )
+        .is_err()
+    );
+    let window = LrSourceWindow::<u8>::materialize(
+        &mut storage,
+        PlaneId::Y,
+        curr,
+        &band,
+        &overlap,
+        &bounds,
+        2,
+        2,
+        4,
+        4,
+        (1, 1),
+    )
+    .unwrap();
+    assert_eq!(window.get_abs(3, 3), 27);
+    assert_eq!(window.get_abs(3, 5), 43);
+    assert_eq!(window.get_abs(4, 6), 52);
+}
+
+#[test]
 fn lr_source_window_reuses_storage_after_an_error() {
     let bounds = LoopRestorationSourceBounds {
         luma_start_x: 0,
@@ -840,6 +908,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         PlaneId::Y,
         curr,
         &cdef,
+        &[],
         &bounds,
         2,
         2,
@@ -857,6 +926,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
             PlaneId::Y,
             curr,
             &short_cdef,
+            &[],
             &bounds,
             2,
             2,
@@ -871,6 +941,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         PlaneId::Y,
         curr,
         &cdef,
+        &[],
         &bounds,
         2,
         2,

@@ -1018,14 +1018,15 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         Ok(cdef)
     }
 
-    /// Builds the post-CCSO rows GDF reads outside this stripe.
+    /// Builds the post-CCSO rows GDF and § 7.20.2 read outside this stripe.
     ///
     /// § 7.20.1 clips a stripe to its tile row, but § 7.20.2 still sources the
-    /// filter's `GDF_READ_RADIUS` neighbourhood from `CdefFrame`, so a stripe
-    /// abutting a tile row boundary needs rows the stripe itself never covers.
+    /// in-stripe filter neighbourhood from `CdefFrame`, so a stripe abutting a
+    /// tile row boundary needs rows the stripe itself never covers.
     /// Ranges are aligned to CDEF's `STEP4 * MI_SIZE` step on both ends; rows
     /// the stripe already holds are resolved from it first, so any overlap
-    /// between the two is redundant rather than wrong.
+    /// between the two is redundant rather than wrong. `GDF_READ_RADIUS` is the
+    /// widest of the stripe-crossing readers, so one fringe serves them all.
     ///
     /// `mi_row_starts` carries an end sentinel, so a single tile row is two
     /// entries. With one tile row § 7.20.1's clip never crosses a tile, the
@@ -1037,26 +1038,33 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         chain: &StripeChain<'_>,
         start: usize,
         end: usize,
-    ) -> Result<Vec<crate::filters::source::StripePlane>> {
+    ) -> Result<final_filters::CdefOverlap> {
         const CDEF_START_ALIGN: usize = 8;
+        let mut overlap = final_filters::CdefOverlap::default();
         if self
             .core
             .tile_info
             .as_ref()
             .is_none_or(|tile| tile.mi_row_starts.len() <= 2)
         {
-            return Ok(Vec::new());
+            return Ok(overlap);
         }
         let frame_height = self.ranges.last().map_or(0, |&(_, last_end)| last_end);
-        let mut planes = Vec::new();
+        let push_range = |overlap: &mut final_filters::CdefOverlap,
+                          range_start: usize,
+                          range_end: usize|
+         -> Result<()> {
+            let fringe = self.cdef_ccso_range(deblocked, chain, range_start, range_end)?;
+            overlap.y.push(fringe.filtered_y);
+            overlap.u.extend(fringe.filtered_u);
+            overlap.v.extend(fringe.filtered_v);
+            Ok(())
+        };
         let back_start = start.saturating_sub(crate::filters::gdf::GDF_READ_RADIUS)
             / CDEF_START_ALIGN
             * CDEF_START_ALIGN;
         if back_start < start {
-            planes.push(
-                self.cdef_ccso_range(deblocked, chain, back_start, start)?
-                    .filtered_y,
-            );
+            push_range(&mut overlap, back_start, start)?;
         }
         let forward_start = end / CDEF_START_ALIGN * CDEF_START_ALIGN;
         let forward_end = end
@@ -1064,12 +1072,9 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .next_multiple_of(CDEF_START_ALIGN)
             .min(frame_height);
         if forward_end > end && forward_start < forward_end {
-            planes.push(
-                self.cdef_ccso_range(deblocked, chain, forward_start, forward_end)?
-                    .filtered_y,
-            );
+            push_range(&mut overlap, forward_start, forward_end)?;
         }
-        Ok(planes)
+        Ok(overlap)
     }
 
     fn run_planes(
@@ -1089,6 +1094,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             &self.core,
             self.offset,
             cdef,
+            &cdef_overlap,
             [y_runs, u_runs, v_runs],
             &self.lr_unit_filters,
         )?;
@@ -1103,7 +1109,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             &self.core,
             frame.deblocked_y,
             separate_cdef_luma,
-            &cdef_overlap,
+            &cdef_overlap.y,
             output_luma,
             chain.gdf_grid,
             chain.lossless_grid,
