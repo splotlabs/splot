@@ -1686,12 +1686,7 @@ fn validate_inter_frame_core(
     let width = frame_size.width;
     let height = frame_size.height;
     if width == 0 || height == 0 {
-        return Err(inter_cap!(
-            "inter_zero_dimension_frame_size",
-            offset,
-            "inter.frame_size empty",
-            SPEC_HEADER
-        ));
+        return Err(DecodeHeaderStateError::ZeroFrameSize.into());
     }
     let unsupported_tools = core.quantization_params.is_none()
         || core.segmentation_params.as_ref().is_none_or(|seg| {
