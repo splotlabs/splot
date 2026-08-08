@@ -793,8 +793,7 @@ impl ResidualPlanePlan {
                     params,
                     cfl_ds_filter_index,
                     sb_mib,
-                    neighbours.num_above_right(),
-                    neighbours.num_below_left(),
+                    neighbours,
                     block_ctx.bit_depth(),
                 )
             }
