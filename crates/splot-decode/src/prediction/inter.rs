@@ -87,6 +87,7 @@ macro_rules! compound_missing {
 
 const SPEC_HEADER: &str = "5.18.2";
 const SPEC_HEADER_SEMANTICS: &str = "6.17";
+const SPEC_FRAME_HEADER_INFO_SEMANTICS: &str = "6.17.2";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
@@ -1754,7 +1755,7 @@ fn validate_ras_reference_ids(
                 issue: DecodeSourceIssue::frame_header_conformance(
                     offset,
                     frame_index,
-                    "6.17.2",
+                    SPEC_FRAME_HEADER_INFO_SEMANTICS,
                     format!(
                         "RAS reference slot {slot} is outside the active reference map of {} slots",
                         reference.ref_long_term_id.len()
@@ -1771,7 +1772,7 @@ fn validate_ras_reference_ids(
                 issue: DecodeSourceIssue::frame_header_conformance(
                     offset,
                     frame_index,
-                    "6.17.2",
+                    SPEC_FRAME_HEADER_INFO_SEMANTICS,
                     format!(
                         "RAS reference slot {slot} has {description}, which is absent from the \
                          frame's listed long-term IDs {:?}",
