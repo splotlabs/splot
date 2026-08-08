@@ -145,15 +145,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         .work_units()
         .iter()
         .map(crate::bitstream::tile_payload::DecodeTileWorkUnit::tile_size)
-        .max()
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_missing_tile_work_units",
-                offset,
-                "inter.tile_count > 0",
-                "5.20.1"
-            )
-        })?;
+        .fold(0, u64::max);
     ensure_runtime_limits(
         options.limits(),
         frame_width,
