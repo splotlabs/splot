@@ -762,6 +762,13 @@ spec_sections = ["7.20", "5.20.10.4", "5.20.10.5"]
 notes = "AVM RD does not apply this tool to the synthetic corpus content; --enable collapses to a byte-identical baseline, so no distinct fixture."
 
 [[capability]]
+id = "loop.lr_multitile"
+name = "Loop restoration across multiple tile rows"
+category = "loop_filter"
+fixtureable = true
+spec_sections = ["6.4.10", "7.20.1", "7.20.2", "7.20.3"]
+
+[[capability]]
 id = "loop.lr_switchable"
 name = "Switchable loop-restoration units"
 category = "loop_filter"

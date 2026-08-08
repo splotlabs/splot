@@ -425,6 +425,28 @@ fn filter_lr_block_into<T: ReconSample>(
     })
 }
 
+/// Post-CCSO rows adjacent to a stripe band, split per plane.
+///
+/// § 7.20.2 sources every in-stripe sample from `CdefFrame`, and § 7.20.1
+/// stripes restart per tile row, so a band abutting a tile-row boundary needs
+/// deringed rows the band itself never covers.
+#[derive(Default)]
+pub(crate) struct CdefOverlap {
+    pub(crate) y: Vec<StripePlane>,
+    pub(crate) u: Vec<StripePlane>,
+    pub(crate) v: Vec<StripePlane>,
+}
+
+impl CdefOverlap {
+    fn plane(&self, plane_id: PlaneId) -> &[StripePlane] {
+        match plane_id {
+            PlaneId::Y => &self.y,
+            PlaneId::U => &self.u,
+            PlaneId::V => &self.v,
+        }
+    }
+}
+
 struct LrSourceWindow<'a, T> {
     samples: &'a [T],
     stride: usize,
@@ -465,6 +487,7 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         plane: PlaneId,
         curr_plane: FramePlane<'_, T>,
         cdef_plane: &StripePlane,
+        cdef_overlap: &[StripePlane],
         bounds: &LoopRestorationSourceBounds,
         block_x: isize,
         block_y: isize,
@@ -517,14 +540,15 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
                         },
                     )?)
                 }
-                LoopRestorationSource::CdefFrame => {
-                    LrSourceRow::Cdef(cdef_plane.row(left.y).ok_or(
-                        ReconError::BufferLengthMismatch {
+                LoopRestorationSource::CdefFrame => LrSourceRow::Cdef(
+                    cdef_plane
+                        .row(left.y)
+                        .or_else(|| cdef_overlap.iter().find_map(|plane| plane.row(left.y)))
+                        .ok_or(ReconError::BufferLengthMismatch {
                             expected: left.y.saturating_add(1),
                             actual: cdef_plane.end_y().unwrap_or(cdef_plane.origin_y()),
-                        },
-                    )?)
-                }
+                        })?,
+                ),
             };
             let min_x = isize::try_from(left.x).map_err(|_| OVERFLOW_WINDOW)?;
             let max_x = isize::try_from(right.x).map_err(|_| OVERFLOW_WINDOW)?;
@@ -715,6 +739,7 @@ impl StripeChain<'_> {
         core: &FrameHeaderCore,
         offset: ByteOffset,
         cdef: CdefFrame<'a, T>,
+        cdef_overlap: &CdefOverlap,
         plane_blocks: [&[WienerNsLrSourceBlock]; 3],
         lr_unit_filters: &[WienerNsLrUnitFilter],
     ) -> Result<LrFrame<'a, T>> {
@@ -787,6 +812,7 @@ impl StripeChain<'_> {
                         &block,
                         frame.deblocked_y,
                         &frame.cdef_y,
+                        &cdef_overlap.y,
                         qindex,
                         filter_set_index,
                         post_lr_y,
@@ -798,6 +824,7 @@ impl StripeChain<'_> {
                                 &block,
                                 frame.deblocked_y,
                                 &frame.cdef_y,
+                                &cdef_overlap.y,
                                 qindex,
                                 *num_classes,
                                 filter_set_index,
@@ -811,6 +838,7 @@ impl StripeChain<'_> {
                                 &block,
                                 frame.deblocked_y,
                                 &frame.cdef_y,
+                                &cdef_overlap.y,
                                 qindex,
                                 1,
                                 0,
@@ -874,8 +902,10 @@ impl StripeChain<'_> {
                     frame_coeffs.as_ref(),
                     *curr,
                     cdef,
+                    cdef_overlap.plane(plane_id),
                     frame.deblocked_y,
                     &frame.cdef_y,
+                    &cdef_overlap.y,
                     post_lr,
                 )?;
             }
@@ -890,6 +920,7 @@ impl StripeChain<'_> {
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
+        cdef_luma_overlap: &[StripePlane],
         qindex: u32,
         filter_set_index: usize,
         post_lr: &mut StripePlane,
@@ -923,6 +954,7 @@ impl StripeChain<'_> {
                     PlaneId::Y,
                     curr_luma,
                     cdef_luma,
+                    cdef_luma_overlap,
                     &bounds,
                     block_x,
                     block_y,
@@ -999,8 +1031,10 @@ impl StripeChain<'_> {
         frame_coeffs: Option<&[i16; WIENER_NS_CHROMA_COEFFS]>,
         curr_chroma: FramePlane<'_, T>,
         cdef_chroma: &StripePlane,
+        cdef_chroma_overlap: &[StripePlane],
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
+        cdef_luma_overlap: &[StripePlane],
         post_lr: &mut StripePlane,
     ) -> Result<()> {
         let (plane_width, plane_height) = self.plane_dimensions(plane_id);
@@ -1048,6 +1082,7 @@ impl StripeChain<'_> {
                     plane_id,
                     curr_chroma,
                     cdef_chroma,
+                    cdef_chroma_overlap,
                     &bounds,
                     block_x,
                     block_y,
@@ -1069,6 +1104,7 @@ impl StripeChain<'_> {
                     PlaneId::Y,
                     curr_luma,
                     cdef_luma,
+                    cdef_luma_overlap,
                     &bounds,
                     luma_block_x,
                     luma_block_y,
@@ -1134,6 +1170,7 @@ impl StripeChain<'_> {
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
+        cdef_luma_overlap: &[StripePlane],
         qindex: u32,
         num_classes: usize,
         filter_set_index: usize,
@@ -1169,6 +1206,7 @@ impl StripeChain<'_> {
                     PlaneId::Y,
                     curr_luma,
                     cdef_luma,
+                    cdef_luma_overlap,
                     &bounds,
                     block_x,
                     block_y,

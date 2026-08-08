@@ -905,6 +905,13 @@ ivf_sha256 = "285cebb178b7743c6a3f2fdb0636305a0b8c4857ac879e56f267b43998edbc0c"
 avm_raw_sha256 = "bbc00abaf1a3e8bd805efc0b26653f408a6de43d4f02f7cea1f01e1baf6d57d1"
 
 [[fixture]]
+id = "syn-wienerns-tilerows-intra-256x128"
+status = "must_pass"
+features = ["container.ivf", "frame.key_closed_loop", "loop.lr_multitile", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.multiple"]
+ivf_sha256 = "6174adacb834efa3d20d1206af6a4844c6d514104c7f48955e2eebc2a6295bce"
+avm_raw_sha256 = "72822371ae1560a7dd7a27012533ea1e3f6cee0c9cdd45d6c3ae8ac0e5c211b1"
+
+[[fixture]]
 id = "syn-qm-intra-64x64"
 status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "quant.qm", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single"]

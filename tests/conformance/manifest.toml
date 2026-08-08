@@ -1503,6 +1503,11 @@ description = "Tiny AVM 4:2:2 loop.wienerns fixture (decode-oracle coverage): ch
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-wienerns-tilerows-intra-256x128.ivf"
+description = "Tiny AVM two-tile-row loop.wienerns fixture (decode-oracle coverage): a § 7.20.1 stripe restarts per tile row and reaches past the tile-row boundary, so § 7.20.2 in-stripe reads source CdefFrame rows of the adjacent tile row (docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-1). Before the LR source-window overlap fix splot failed closed with unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter; fixed splot reproduces avmdec's 49,152-byte --i420 raw output byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-wienerns-444-intra-128x128.ivf"
 description = "Tiny AVM 4:4:4 loop.wienerns fixture (decode-oracle coverage): chroma Wiener-nonsep loop restoration with no chroma subsampling, so § 7.20.3 get_luma_sample (docs/spec/av2/1.0.0/07-decoding-process.md#s-7-20-3) reads the co-located luma sample unscaled. Before the subsampling-generic chroma LR fix splot failed closed with unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter; fixed splot reproduces avmdec's 49,152-byte native planar raw output byte-for-byte; validates clean."
 expect = "clean"
