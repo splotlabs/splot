@@ -231,7 +231,7 @@ fn parse_key_core_with_effects(
     if activation.cur_mfh_id.is_zero() {
         return Ok(activation);
     }
-    let record = resolve_mfh_record(envelope, sequence, effects, activation.cur_mfh_id)?;
+    let record = effects.resolve_mfh_record(envelope, sequence, activation.cur_mfh_id)?;
     parse_frame_core_with_mfh(envelope, sequence, Some(record))
 }
 
@@ -252,7 +252,7 @@ fn parse_olk_core_with_effects(
     if activation.cur_mfh_id.is_zero() {
         return Ok(activation);
     }
-    let record = resolve_mfh_record(envelope, sequence, effects, activation.cur_mfh_id)?;
+    let record = effects.resolve_mfh_record(envelope, sequence, activation.cur_mfh_id)?;
     parse_frame_core_with_reference(
         envelope,
         sequence,
@@ -370,48 +370,6 @@ impl InBandLongTermPrelude {
     }
 }
 
-fn resolve_mfh_record<'a>(
-    envelope: ObuEnvelope<'_>,
-    sequence: &SequenceHeader,
-    effects: &'a OutputEffectState,
-    mfh_id: splot_core::hls::MfhId,
-) -> Result<&'a splot_core::hls::MultiFrameHeaderRecord> {
-    let record = effects.mfh_record(mfh_id).ok_or_else(|| {
-        unsupported_feature_at(
-            "multi_frame_header_unavailable",
-            envelope.offset,
-            "frame references a multi-frame header that is not available in-band",
-            "7.3.8.7",
-        )
-    })?;
-    if record.mfh_seq_header_id != sequence.general.seq_header_id {
-        return Err(unsupported_feature_at(
-            "multi_frame_header_sequence_mismatch",
-            envelope.offset,
-            "referenced multi-frame header resolves to a different sequence header",
-            "7.3.8.7",
-        ));
-    }
-    if !sequence
-        .general
-        .mlayer_dependency_map
-        .depends_on(envelope.header.embedded_layer_id, record.mfh_mlayer_id)
-        || !sequence.general.tlayer_dependency_map.depends_on(
-            envelope.header.embedded_layer_id,
-            envelope.header.temporal_layer_id,
-            record.mfh_tlayer_id,
-        )
-    {
-        return Err(unsupported_feature_at(
-            "multi_frame_header_layer_dependency",
-            envelope.offset,
-            "referenced multi-frame header violates the active layer dependency maps",
-            "7.3.8.7",
-        ));
-    }
-    Ok(record)
-}
-
 fn parse_inter_core_with_effects(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
@@ -420,17 +378,17 @@ fn parse_inter_core_with_effects(
     first_picture_in_tu: bool,
     frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
-    let activation =
-        inter::parse_inter_frame_activation(envelope, sequence, reference, first_picture_in_tu)?;
+    let activation = inter::parse_inter_frame_activation(
+        envelope,
+        sequence,
+        reference,
+        first_picture_in_tu,
+        frame_index,
+    )?;
     let record = if activation.cur_mfh_id.is_zero() {
         None
     } else {
-        Some(resolve_mfh_record(
-            envelope,
-            sequence,
-            effects,
-            activation.cur_mfh_id,
-        )?)
+        Some(effects.resolve_mfh_record(envelope, sequence, activation.cur_mfh_id)?)
     };
     inter::parse_validated_inter_frame_core_with_mfh(
         envelope,
@@ -805,8 +763,13 @@ where
             BitDepthIdc::Eight => {
                 let (store, meta) = reference.build_store_eight(&frames)?;
                 let state = inter::InterReferenceState::from_metadata(store, meta);
-                let activation =
-                    inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
+                let activation = inter::parse_inter_frame_activation(
+                    key_envelope,
+                    &sequence,
+                    &state,
+                    true,
+                    key_frame_index,
+                )?;
                 in_band_long_term_prelude.validate_required(
                     &activation,
                     &reference,
@@ -824,8 +787,13 @@ where
             BitDepthIdc::Ten => {
                 let (store, meta) = reference.build_store_ten(&frames)?;
                 let state = inter::InterReferenceState::from_metadata(store, meta);
-                let activation =
-                    inter::parse_inter_frame_activation(key_envelope, &sequence, &state, true)?;
+                let activation = inter::parse_inter_frame_activation(
+                    key_envelope,
+                    &sequence,
+                    &state,
+                    true,
+                    key_frame_index,
+                )?;
                 in_band_long_term_prelude.validate_required(
                     &activation,
                     &reference,
@@ -1247,6 +1215,7 @@ where
                         &mut next_unvalidated_following_ivf_record,
                     )?,
                 };
+                let ivf_frame_index = next_candidate.ivf_frame().map(IvfFrameContext::frame_index);
                 output_effect_state.observe_prefix(inter_prefix_obus, &sequence)?;
                 film_grain_slots.update_from_obus(inter_prefix_obus)?;
                 let first_picture_in_tu = inter_prefix_obus
@@ -1283,6 +1252,7 @@ where
                                 &sequence,
                                 &state,
                                 first_picture_in_tu,
+                                ivf_frame_index,
                             )?
                         }
                         BitDepthIdc::Ten => {
@@ -1293,6 +1263,7 @@ where
                                 &sequence,
                                 &state,
                                 first_picture_in_tu,
+                                ivf_frame_index,
                             )?
                         }
                     };
@@ -1339,7 +1310,7 @@ where
                             &inter_state,
                             &output_effect_state,
                             first_picture_in_tu,
-                            next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
+                            ivf_frame_index,
                         )?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
@@ -1562,7 +1533,7 @@ where
                             &inter_state,
                             &output_effect_state,
                             first_picture_in_tu,
-                            next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
+                            ivf_frame_index,
                         )?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,

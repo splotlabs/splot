@@ -257,6 +257,48 @@ impl OutputEffectState {
             .and_then(Option::as_ref)
     }
 
+    pub(crate) fn resolve_mfh_record(
+        &self,
+        envelope: ObuEnvelope<'_>,
+        sequence: &SequenceHeader,
+        mfh_id: MfhId,
+    ) -> Result<&MultiFrameHeaderRecord> {
+        let record = self.mfh_record(mfh_id).ok_or_else(|| {
+            unsupported_feature_at(
+                "multi_frame_header_unavailable",
+                envelope.offset,
+                "frame references a multi-frame header that is not available in-band",
+                "7.3.8.7",
+            )
+        })?;
+        if record.mfh_seq_header_id != sequence.general.seq_header_id {
+            return Err(unsupported_feature_at(
+                "multi_frame_header_sequence_mismatch",
+                envelope.offset,
+                "referenced multi-frame header resolves to a different sequence header",
+                "7.3.8.7",
+            ));
+        }
+        if !sequence
+            .general
+            .mlayer_dependency_map
+            .depends_on(envelope.header.embedded_layer_id, record.mfh_mlayer_id)
+            || !sequence.general.tlayer_dependency_map.depends_on(
+                envelope.header.embedded_layer_id,
+                envelope.header.temporal_layer_id,
+                record.mfh_tlayer_id,
+            )
+        {
+            return Err(unsupported_feature_at(
+                "multi_frame_header_layer_dependency",
+                envelope.offset,
+                "referenced multi-frame header violates the active layer dependency maps",
+                "7.3.8.7",
+            ));
+        }
+        Ok(record)
+    }
+
     pub(crate) fn prepare_frame(
         &mut self,
         envelope: ObuEnvelope<'_>,

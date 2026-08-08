@@ -328,6 +328,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         &inter_state,
         first_picture_in_tu,
         None,
+        None,
     )?;
     mutate(&mut core);
     super::validate_inter_frame_core(&core, &sequence, inter_envelope.offset)?;
@@ -413,6 +414,7 @@ pub(super) fn parse_inter_core_for_validation(
         &sequence,
         &inter_state,
         first_picture_in_tu,
+        None,
         None,
     )?;
     Ok((sequence, core, inter_envelope.offset))

@@ -37,7 +37,7 @@
 use std::sync::Arc;
 
 use crate::bitio::BitReader;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 
@@ -530,6 +530,7 @@ fn parse_lr_params_with_references(
 
     loop_restoration_size[2] = loop_restoration_size[1];
 
+    let mut unsupported_filter = None;
     for (plane, plane_params) in planes.iter_mut().enumerate() {
         if !plane_params.frame_filters_on {
             continue;
@@ -547,15 +548,33 @@ fn parse_lr_params_with_references(
             let ref_taps = reference_filter_taps
                 .get(plane)
                 .map_or(&[][..], Vec::as_slice);
-            plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
+            match parse_frame_wiener_ns_filter(
                 reader,
                 plane,
                 classes,
                 num_ref_filters,
                 ref_taps,
                 view,
-            )?);
+            ) {
+                Ok(bank) => plane_params.frame_filter_bank = Some(bank),
+                Err(Error::Unimplemented { feature }) => {
+                    unsupported_filter = Some(feature);
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
         }
+    }
+
+    if let Some(feature_id) = unsupported_filter {
+        return Ok(LrParseOutcome::StoppedBeforeWienerNsFilter {
+            feature_id,
+            partial: LrPartialParams {
+                uses_lr,
+                planes,
+                loop_restoration_size,
+            },
+        });
     }
 
     Ok(LrParseOutcome::Parsed(LrParams {
@@ -1123,6 +1142,45 @@ mod tests {
                 panic!("expected Parsed, got {other:?}")
             }
         }
+    }
+
+    #[test]
+    fn lr_inter_missing_reference_taps_stops_at_capability_frontier() {
+        let mut bits = Bits::default();
+        bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
+        bits.bit(1); // frame_filters_on[0]
+        bits.bit(0); // temporal_pred_flag[0]
+        bits.f(0, 3); // one local filter class
+        bits.ns(0, 2); // plane 1 -> RESTORE_NONE
+        bits.ns(0, 2); // plane 2 -> RESTORE_NONE
+        bits.bit(1); // lr_luma_use_half_size
+        bits.bit(1); // class 0 selects the retained reference filter
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        let outcome = parse_lr_params_for_inter(
+            &mut r,
+            false,
+            3,
+            restoration_enabled_without_luma_pc(),
+            geom_128_420(),
+            100,
+            1,
+            [1, 0, 0],
+            &[vec![None], Vec::new(), Vec::new()],
+            LrTemporalReferenceView::unknown(&[0]),
+        )
+        .unwrap();
+        let LrParseOutcome::StoppedBeforeWienerNsFilter {
+            feature_id,
+            partial,
+        } = outcome
+        else {
+            panic!("missing reference taps must stop before Wiener-NS parsing");
+        };
+        assert_eq!(feature_id, "lr_temporal_reference_filter_match");
+        assert!(partial.uses_lr);
+        assert_eq!(partial.planes.len(), 3);
+        assert!(partial.planes[0].frame_filter_bank.is_none());
     }
 
     #[test]
