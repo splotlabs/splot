@@ -348,4 +348,28 @@ mod tests {
         commit_temporal_motion_blocks(&mut reversed, &[second, first]);
         assert_ne!(reversed, direct);
     }
+
+    #[test]
+    fn non_inter_clear_record_resets_a_previously_stored_cell() {
+        let clear = TemporalMotionBlock::new(
+            0,
+            0,
+            2,
+            2,
+            2,
+            2,
+            0,
+            [None, None],
+            [Mv::ZERO; 2],
+            [None, None],
+        );
+        let mut cleared = TemporalMotionField::new(2, 2).expect("cleared field");
+        cleared.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
+        cleared.record_block(block(1, Mv { row: 8, col: 16 }));
+        cleared.record_block(clear);
+
+        let mut untouched = TemporalMotionField::new(2, 2).expect("untouched field");
+        untouched.set_reference_metadata(true, (8, 8), &[Some(1), Some(2)]);
+        assert_eq!(cleared, untouched);
+    }
 }

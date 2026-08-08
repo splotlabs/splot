@@ -494,6 +494,13 @@ fixtureable = true
 spec_sections = ["7.11.2", "7.12.2", "5.20.7.8"]
 
 [[capability]]
+id = "inter.mv_prediction_temporal"
+name = "Temporal MV prediction (motion-field projection and storage)"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.9", "7.22"]
+
+[[capability]]
 id = "inter.residual_dct"
 name = "Inter residual (DCT_DCT coded residual)"
 category = "inter"

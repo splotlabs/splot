@@ -229,7 +229,7 @@ impl ReconCommand {
     fn temporal_record_capacity(&self) -> usize {
         match self {
             Self::Inter(command) => command.temporal_record_capacity(),
-            Self::GeneralIntra(_) | Self::Intrabc(_) => 0,
+            Self::GeneralIntra(_) | Self::Intrabc(_) => 1,
         }
     }
 }

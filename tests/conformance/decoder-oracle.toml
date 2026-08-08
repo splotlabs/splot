@@ -1827,3 +1827,10 @@ status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.non420_chroma", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "511b8bcb74e08d909f2fb578bf8378ac32c59d532e46e20f5cd8bb71fd24b657"
 avm_raw_sha256 = "347079511192ea3b3a94c14a6cfd1b6ea81d58ee4aa0cab778f9cf1861b531a1"
+
+[[fixture]]
+id = "syn-4frame-444-intra-clears-tmvp-256x128"
+status = "must_pass"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.mv_prediction_temporal", "inter.non420_chroma", "inter.single_ref", "inter.subpel_mc", "loop.gdf", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.single", "transform.dct_adst"]
+ivf_sha256 = "09406253a979317c1045731be1c4843cc2c52dc24ce9d8981aa5cb5be3977dac"
+avm_raw_sha256 = "1d2416b3bf98649c196dcd5d434fcf5f9f771b976b92043ed62081d89e40ed51"

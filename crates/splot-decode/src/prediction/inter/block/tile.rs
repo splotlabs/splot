@@ -670,6 +670,35 @@ pub(super) struct ReconRowEntry {
 }
 
 impl ReconRowEntry {
+    /// The § 7.22 record a non-inter luma-tree leaf stores: every covered 8x8
+    /// cell is reset to "no reference", clearing earlier inter writes there.
+    pub(super) fn temporal_clear_record(
+        &self,
+        mi_rows: usize,
+        mi_cols: usize,
+        current_order_hint: u32,
+    ) -> Option<TemporalMotionBlock> {
+        if !matches!(
+            self.command,
+            Some(ReconCommand::GeneralIntra(_) | ReconCommand::Intrabc(_))
+        ) {
+            return None;
+        }
+        let (mi_row, mi_col, n4w, n4h) = self.publication.luma_tree_block()?;
+        Some(TemporalMotionBlock::new(
+            mi_row,
+            mi_col,
+            n4w,
+            n4h,
+            mi_rows,
+            mi_cols,
+            current_order_hint,
+            [None, None],
+            [Mv::ZERO; 2],
+            [None, None],
+        ))
+    }
+
     fn store_motion(
         &mut self,
         grid: Option<super::super::mc::CompoundMotionGrid>,
@@ -1179,6 +1208,13 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
         .iter()
         .all(|entry| !matches!(entry.command, Some(ReconCommand::Inter(_))));
     if row.motion_folded {
+        for entry in &mut row.entries {
+            if let Some(clear) = entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint) {
+                let start = row.temporal.len();
+                row.temporal.push(clear);
+                entry.temporal = start..row.temporal.len();
+            }
+        }
         motion.fold_unit(row.ordinal, &row.temporal);
         motion.unit_landed_for(row.ordinal, true);
     }
