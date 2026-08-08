@@ -55,7 +55,7 @@ pub use diagnostic::{
     DecodeOutputErrorDetails, DecodeResourceLimitDetails, DecodeUnsupportedStructureDetails,
     MALFORMED_SOURCE_RULE_ID, OUTPUT_ERROR_RULE_ID, RESOURCE_LIMIT_RULE_ID,
 };
-pub use error::{DecodeError, DecodeReferenceStateError, Result};
+pub use error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError, Result};
 pub use error::{DecodeOutputError, DecodeOutputOperation, DecodeUnsupportedFeature};
 pub use hash_report::{
     DECODE_HASH_REPORT_BYTE_STREAM_ID, DECODE_HASH_REPORT_CONTRACT_ID,

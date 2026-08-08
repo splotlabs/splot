@@ -18,7 +18,7 @@ use splot_core::headers::frame::FrameHeaderCore;
 use splot_core::headers::sequence::SequenceHeader;
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameInfo, OutputIndex, PixelFormat, PlaneSize,
-    ReconSample,
+    QuantizerDeltas, ReconSample,
 };
 
 use super::*;
@@ -200,14 +200,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         )
     })?;
     let qindex = quantization.base_q_idx;
-    let quantizer_deltas = effective_quantizer_deltas(sequence, quantization).ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_quantizer_delta_state",
-            offset,
-            "sequence.transform_quant_entropy",
-            SPEC_HEADER
-        )
-    })?;
+    let quantizer_deltas = required_inter_quantizer_deltas(sequence, quantization)?;
     let setup = FilterSinkSetup {
         luma_width: frame_width as usize,
         luma_height: frame_height as usize,
@@ -256,6 +249,14 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         ref_frame_idx: ref_frame_idx.to_vec(),
         quantizer_deltas,
     })
+}
+
+pub(super) fn required_inter_quantizer_deltas(
+    sequence: &SequenceHeader,
+    quantization: &splot_core::headers::frame::QuantizationParams,
+) -> Result<QuantizerDeltas> {
+    effective_quantizer_deltas(sequence, quantization)
+        .ok_or_else(|| DecodeHeaderStateError::MissingSequenceTransformQuantEntropy.into())
 }
 
 /// Whether one frame's walk can run as an entropy pass now and a deferred

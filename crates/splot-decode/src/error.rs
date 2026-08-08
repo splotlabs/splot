@@ -48,6 +48,13 @@ pub enum DecodeError {
         /// Unsupported runtime feature metadata.
         unsupported: Box<DecodeUnsupportedFeature>,
     },
+    /// Parsed header state was internally inconsistent.
+    #[error("decode header state failed: {source}")]
+    HeaderState {
+        /// Underlying header-state consistency failure.
+        #[from]
+        source: DecodeHeaderStateError,
+    },
     /// Runtime reconstruction model construction failed after tier validation.
     #[error("decode reconstruction failed: {source}")]
     Reconstruction {
@@ -69,6 +76,15 @@ pub enum DecodeError {
         #[from]
         source: DecodeOutputError,
     },
+}
+
+/// Runtime parsed-header state consistency failure.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[non_exhaustive]
+pub enum DecodeHeaderStateError {
+    /// A frame required sequence-level quantizer configuration that was absent.
+    #[error("sequence transform, quantizer, and entropy configuration is missing")]
+    MissingSequenceTransformQuantEntropy,
 }
 
 /// Runtime reference-frame state consistency failure.

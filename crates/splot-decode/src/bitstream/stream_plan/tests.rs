@@ -1034,6 +1034,7 @@ fn error_signature(error: DecodeError) -> String {
             unsupported.reason(),
             unsupported.byte_offset()
         ),
+        DecodeError::HeaderState { source } => format!("header-state:{source}"),
         DecodeError::Reconstruction { source } => format!("reconstruction:{source}"),
         DecodeError::ReferenceState { source } => format!("reference-state:{source}"),
         DecodeError::Output { source } => format!(
