@@ -1750,11 +1750,17 @@ fn validate_ras_reference_ids(
     for &slot in inter.ref_frame_idx.iter().take(count) {
         let slot = slot as usize;
         let Some(id) = reference.ref_long_term_id.get(slot).copied() else {
-            return Err(DecodeReferenceStateError::SlotOutOfRange {
-                slot,
-                slot_count: reference.ref_long_term_id.len(),
-            }
-            .into());
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    offset,
+                    frame_index,
+                    "6.17.2",
+                    format!(
+                        "RAS reference slot {slot} is outside the active reference map of {} slots",
+                        reference.ref_long_term_id.len()
+                    ),
+                ),
+            });
         };
         if id.is_none_or(|id| !core.ref_long_term_ids.contains(&id)) {
             let description = id.map_or_else(

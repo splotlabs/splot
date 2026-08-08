@@ -96,7 +96,7 @@ fn ras_unlisted_long_term_reference_is_a_malformed_source_diagnostic() {
 }
 
 #[test]
-fn ras_out_of_range_reference_slot_is_a_typed_state_error() {
+fn ras_out_of_range_reference_slot_is_a_malformed_source_diagnostic() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
     core.obu_type = splot_core::types::ObuType::RasFrame;
@@ -107,15 +107,23 @@ fn ras_out_of_range_reference_slot_is_a_typed_state_error() {
 
     let error = super::super::validate_ras_reference_ids(&core, &reference, offset, Some(1))
         .expect_err("out-of-range RAS reference slot");
-    assert!(matches!(
-        error,
-        DecodeError::ReferenceState {
-            source: crate::error::DecodeReferenceStateError::SlotOutOfRange {
-                slot: 1,
-                slot_count: 0
-            }
-        }
-    ));
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.offset(), Some(offset));
+    assert_eq!(issue.frame_index(), Some(1));
+    assert_eq!(
+        issue.message(),
+        "RAS reference slot 1 is outside the active reference map of 0 slots"
+    );
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("out-of-range RAS slot must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
 }
 
 #[test]
