@@ -287,6 +287,13 @@ fn shared_chroma_size_disables_compound_prediction() -> TestResult {
 
     assert!(!sub8x8_chroma_disables_compound(block_8x8, block_8x8));
     assert!(sub8x8_chroma_disables_compound(block_8x8, block_16x16));
+
+    let block_4x16 = BlockSize::new(19)?;
+    let block_16x4 = BlockSize::new(20)?;
+    let block_4x8 = BlockSize::new(1)?;
+    assert!(sub8x8_chroma_disables_compound(block_4x16, block_4x16));
+    assert!(sub8x8_chroma_disables_compound(block_16x4, block_16x4));
+    assert!(!sub8x8_chroma_disables_compound(block_4x8, block_4x8));
     Ok(())
 }
 

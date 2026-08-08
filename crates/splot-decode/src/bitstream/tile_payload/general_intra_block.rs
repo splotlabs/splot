@@ -1145,13 +1145,15 @@ fn reconstruct_y_mode_result(
     )
 }
 
-fn cfl_allowed_for_non_lossless_420(
+/// § 5.20.5.6 `cflAllowed`, whose non-lossless arm bounds the chroma plane
+/// residual size at 64 samples per side.
+fn cfl_allowed_for_non_lossless(
     chroma_tools: GeneralIntraChromaToolConfig,
     block_n4w: usize,
     block_n4h: usize,
 ) -> bool {
-    // AV2 §5.20.5.6: 4:2:0 chroma blocks are half luma size.
-    chroma_tools.enable_cfl_intra && block_n4w <= 32 && block_n4h <= 32
+    let (width, height) = chroma_plane_dimensions(chroma_tools, block_n4w, block_n4h);
+    chroma_tools.enable_cfl_intra && width <= 64 && height <= 64
 }
 
 /// § 5.20.5.6 `is_mhccp_allowed`, whose non-lossless arm tests the chroma
@@ -1186,7 +1188,7 @@ fn cfl_allowed_for_chroma_mode(
         return chroma_tools.enable_cfl_intra
             && lossless_chroma_plane_is_4x4(chroma_tools, block_n4w, block_n4h);
     }
-    cfl_allowed_for_non_lossless_420(chroma_tools, block_n4w, block_n4h)
+    cfl_allowed_for_non_lossless(chroma_tools, block_n4w, block_n4h)
 }
 
 fn mhccp_allowed_for_chroma_mode(
