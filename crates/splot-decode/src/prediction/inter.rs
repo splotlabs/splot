@@ -683,7 +683,6 @@ fn compound_is_joint_context(
     ref_order_hint: &[u32],
     pair: (i8, i8),
     current_order_hint: i32,
-    offset: ByteOffset,
 ) -> Result<usize> {
     let order_hint_of = |ref_frame: i8| -> Result<i32> {
         let list_len = ref_frame_idx.len();
@@ -695,8 +694,10 @@ fn compound_is_joint_context(
                 index: ref_frame,
                 list_len,
             })?;
+        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+        let slot_count = ref_order_hint.len();
         ref_order_hint
-            .get(slot as usize)
+            .get(slot_index)
             .copied()
             .map(|hint| {
                 if hint == u32::MAX {
@@ -706,12 +707,11 @@ fn compound_is_joint_context(
                 }
             })
             .ok_or_else(|| {
-                compound_missing!(
-                    "compound_reference_order_hint",
-                    offset,
-                    "inter.compound.reference_order_hint",
-                    SPEC_REFERENCE
-                )
+                DecodeReferenceStateError::SlotOutOfRange {
+                    slot: slot_index,
+                    slot_count,
+                }
+                .into()
             })
     };
     let first_order_hint = order_hint_of(pair.0)?;
@@ -727,11 +727,25 @@ fn compound_is_joint_context(
 #[test]
 fn compound_is_joint_context_keeps_reference_list_bounds_fail_closed() {
     assert!(matches!(
-        compound_is_joint_context(&[0, 1], &[9, 11], (2, 0), 10, ByteOffset::new(0)),
+        compound_is_joint_context(&[0, 1], &[9, 11], (2, 0), 10),
         Err(DecodeError::ReferenceState {
             source: DecodeReferenceStateError::ReferenceListIndexOutOfRange {
                 index: 2,
                 list_len: 2,
+            }
+        })
+    ));
+}
+
+#[cfg(test)]
+#[test]
+fn compound_is_joint_context_keeps_reference_slot_bounds_fail_closed() {
+    assert!(matches!(
+        compound_is_joint_context(&[2], &[9, 11], (0, 0), 10),
+        Err(DecodeError::ReferenceState {
+            source: DecodeReferenceStateError::SlotOutOfRange {
+                slot: 2,
+                slot_count: 2,
             }
         })
     ));

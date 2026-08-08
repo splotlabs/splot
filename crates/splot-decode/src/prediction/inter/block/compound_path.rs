@@ -106,7 +106,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         &reference.ref_order_hint,
         pair,
         compound_current_order_hint(core, tile_offset)?,
-        tile_offset,
     )?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);

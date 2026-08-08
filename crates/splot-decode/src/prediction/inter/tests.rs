@@ -2407,32 +2407,17 @@ fn compound_is_joint_context_uses_selected_ranked_pair() {
     let ref_order_hint = [9, 10, 11];
 
     assert_eq!(
-        compound_is_joint_context(
-            &ref_frame_idx,
-            &ref_order_hint,
-            (0, 1),
-            10,
-            ByteOffset::new(0),
-        )
-        .unwrap(),
+        compound_is_joint_context(&ref_frame_idx, &ref_order_hint, (0, 1), 10,).unwrap(),
         0,
         "selected future/past references have equal distance"
     );
     assert_eq!(
-        compound_is_joint_context(
-            &ref_frame_idx,
-            &ref_order_hint,
-            (1, 2),
-            10,
-            ByteOffset::new(0),
-        )
-        .unwrap(),
+        compound_is_joint_context(&ref_frame_idx, &ref_order_hint, (1, 2), 10,).unwrap(),
         1,
         "selected past/current references have unequal distance"
     );
     assert_eq!(
-        compound_is_joint_context(&[0, 1], &[u32::MAX, 0], (0, 1), 127, ByteOffset::new(0),)
-            .unwrap(),
+        compound_is_joint_context(&[0, 1], &[u32::MAX, 0], (0, 1), 127).unwrap(),
         1,
         "raw restricted order hints retain the restricted-reference term"
     );
