@@ -131,7 +131,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let tail = core
         .inter_tail
         .as_ref()
-        .ok_or_else(|| inter_missing!("inter_missing_tail", offset, "inter.tail", SPEC_HEADER))?;
+        .ok_or(DecodeHeaderStateError::MissingInterTail)?;
     let num_total_refs = inter
         .num_total_refs
         .filter(|count| *count <= 7)
