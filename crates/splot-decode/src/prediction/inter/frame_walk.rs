@@ -145,9 +145,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         return Err(invalid_inter_reference_map(offset));
     }
     let block_reference_select = tail.reference_select;
-    if block_reference_select {
-        validate_compound_tip_subset(core, offset)?;
-    }
     let tile_plan = crate::pipeline::derive_inter_tile_plan(
         plan,
         candidate,
