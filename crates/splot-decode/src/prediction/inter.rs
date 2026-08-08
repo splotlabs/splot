@@ -1705,14 +1705,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    if sequence.partition.is_none() {
-        return Err(inter_cap!(
-            "inter_unsupported_superblock_size",
-            offset,
-            "inter.superblock_size unavailable",
-            SPEC_HEADER
-        ));
-    }
     let unsupported_tools = core.quantization_params.is_none()
         || core.segmentation_params.as_ref().is_none_or(|seg| {
             !inter_segmentation_supported(
