@@ -357,10 +357,10 @@ fn resolve_pending_intrabc(
         mi_rows,
         mi_cols,
     };
-    let bank_candidates = state
-        .ref_mv_bank
-        .as_ref()
-        .map_or_else(Vec::new, |bank| bank.intrabc_candidates(&block));
+    let bank_candidates = state.ref_mv_bank.as_ref().map_or_else(
+        Vec::new,
+        super::super::find_mv_stack::RefMvBank::intrabc_candidates,
+    );
     let drl_reorder = match state.drl_reorder {
         DrlReorder::Always => DrlReorderMode::Always,
         DrlReorder::Constraint => DrlReorderMode::Constraint,

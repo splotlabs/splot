@@ -487,6 +487,13 @@ fixtureable = true
 spec_sections = ["5.18.3.4", "5.20.5.4", "7.13.3.18"]
 
 [[capability]]
+id = "inter.intrabc.ref_bv_budget"
+name = "IntraBC reference-BV list pruning budget (PruneCount)"
+category = "inter"
+fixtureable = true
+spec_sections = ["7.12.2.10", "7.12.2.12", "7.12.2.21"]
+
+[[capability]]
 id = "inter.intrabc.morph_pred"
 name = "IntrABC morphological prediction"
 category = "inter"
