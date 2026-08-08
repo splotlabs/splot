@@ -3,7 +3,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
-use super::super::cdf::FrameCdfSubset;
+use super::super::cdf::{FrameCdfSubset, coeff_cdf_q_ctx_from_base_q_idx};
 use super::fsc_quant_pass::{
     CoeffFscBranch, CoeffFscBranchError, CoeffFscBranchTxSizeInput,
     CoeffFscBranchTxSizeNonZeroInput, apply_coeff_fsc_branch_from_tx_size,
@@ -21,7 +21,6 @@ use super::use_fsc_branch::{
     CoeffUseFscConditionNonZeroInput, CoeffUseFscSharedFacts, CoeffUseFscSharedFactsInput,
     CoeffUseFscSharedFactsNonZeroInput, apply_coeff_use_fsc_branch,
     apply_coeff_use_fsc_branch_from_condition, apply_coeff_use_fsc_branch_from_shared_facts,
-    coeff_cdf_q_ctx_from_base_q_idx,
 };
 use super::*;
 

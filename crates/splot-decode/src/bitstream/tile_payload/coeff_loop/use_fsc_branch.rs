@@ -97,38 +97,6 @@ pub(crate) enum CoeffUseFscBranchError {
     Fsc(#[from] CoeffFscBranchError),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffCdfQContext {
-    Q0,
-    Q1,
-    Q2,
-    Q3,
-}
-
-impl CoeffCdfQContext {
-    pub(crate) const fn from_base_q_idx(base_q_idx: u32) -> Self {
-        match base_q_idx {
-            0..=90 => Self::Q0,
-            91..=140 => Self::Q1,
-            141..=190 => Self::Q2,
-            _ => Self::Q3,
-        }
-    }
-
-    pub(crate) const fn index(self) -> usize {
-        match self {
-            Self::Q0 => 0,
-            Self::Q1 => 1,
-            Self::Q2 => 2,
-            Self::Q3 => 3,
-        }
-    }
-}
-
-pub(crate) const fn coeff_cdf_q_ctx_from_base_q_idx(base_q_idx: u32) -> usize {
-    CoeffCdfQContext::from_base_q_idx(base_q_idx).index()
-}
-
 pub(crate) fn apply_coeff_use_fsc_branch(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,
