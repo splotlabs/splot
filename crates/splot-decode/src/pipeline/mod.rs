@@ -764,6 +764,15 @@ where
     let mut emission_queue = output_schedule::EmissionQueue::default();
     let mut in_band_long_term_prelude = InBandLongTermPrelude::default();
     in_band_long_term_prelude.begin_frame(true);
+    let mut candidates = plan.frame_candidates_all();
+    let key_candidate = candidates.next().ok_or_else(|| {
+        unsupported(
+            "missing_frame_candidate",
+            None,
+            "decode runtime requires one selected key frame candidate",
+        )
+    })?;
+    let key_frame_index = key_candidate.ivf_frame().map(IvfFrameContext::frame_index);
     let key_core = match key_envelope.header.obu_type {
         ObuType::ClosedLoopKey => {
             parse_key_core_with_effects(key_envelope, &sequence, &output_effect_state)?
@@ -809,7 +818,7 @@ where
                     &state,
                     &output_effect_state,
                     true,
-                    stream.ivf_header().map(|_| 0),
+                    key_frame_index,
                 )?
             }
             BitDepthIdc::Ten => {
@@ -828,7 +837,7 @@ where
                     &state,
                     &output_effect_state,
                     true,
-                    stream.ivf_header().map(|_| 0),
+                    key_frame_index,
                 )?
             }
         },
@@ -847,14 +856,6 @@ where
     let key_user_qm =
         output_effect_state.prepare_frame(key_envelope, &key_core, &sequence, true)?;
     let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
-    let mut candidates = plan.frame_candidates_all();
-    let key_candidate = candidates.next().ok_or_else(|| {
-        unsupported(
-            "missing_frame_candidate",
-            None,
-            "decode runtime requires one selected key frame candidate",
-        )
-    })?;
     output_effect_state.observe_suffix(frame_suffix_obus(stream, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
     let mut retained_frame_bytes = 0;
