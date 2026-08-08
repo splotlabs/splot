@@ -18,7 +18,10 @@ use crate::bitstream::tile_payload::{
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
 
-use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
+use super::{
+    gap, intra_capped_seq_sb_size, selectable_missing_quantization_error,
+    selectable_symbol_read_error,
+};
 
 pub(crate) mod ccso;
 pub(crate) mod gdf;
@@ -38,12 +41,6 @@ const TX_PARTITION_VERT5: usize = 7;
 const DELTA_Q_SMALL: usize = 7;
 const DELTA_Q_REM_BITS_WIDTH: u32 = 3;
 const DELTA_Q_SIGN_BIT_WIDTH: u32 = 1;
-
-macro_rules! gap {
-    ($reason:literal, $offset:expr $(,)?) => {
-        wienerns_lr_selectable_transform_record_error_reason($offset, $reason)
-    };
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Block4x4Extent {
@@ -275,12 +272,7 @@ impl DeltaQState {
         let base_q_idx = core
             .quantization_params
             .as_ref()
-            .ok_or_else(|| {
-                gap!(
-                    "unsupported_wienerns_lr_selectable_transform_records_missing_quantization",
-                    tile_offset
-                )
-            })?
+            .ok_or_else(|| selectable_missing_quantization_error(tile_offset))?
             .base_q_idx;
         let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
             .map_err(|_| {
@@ -1191,12 +1183,7 @@ fn read_tx_symbol(
         .tile_cdfs_mut()
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_symbol_read",
-                tile_offset
-            )
-        })?;
+        .map_err(|_| selectable_symbol_read_error(tile_offset))?;
     Ok(value)
 }
 

@@ -751,10 +751,7 @@ impl StripeChain<'_> {
                 .quantization_params
                 .as_ref()
                 .ok_or_else(|| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_missing_quantization",
-                    )
+                    crate::filters::wienerns_lr::selectable_missing_quantization_error(offset)
                 })?
                 .base_q_idx;
             let filter_set_index = pc_wiener_filter_set_index(qindex);
