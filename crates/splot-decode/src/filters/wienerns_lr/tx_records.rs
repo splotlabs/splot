@@ -18,7 +18,10 @@ use crate::bitstream::tile_payload::{
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
 
-use super::{intra_capped_seq_sb_size, wienerns_lr_selectable_transform_record_error_reason};
+use super::{
+    gap, intra_capped_seq_sb_size, selectable_missing_quantization_error,
+    selectable_symbol_read_error,
+};
 
 pub(crate) mod ccso;
 pub(crate) mod gdf;
@@ -38,15 +41,6 @@ const TX_PARTITION_VERT5: usize = 7;
 const DELTA_Q_SMALL: usize = 7;
 const DELTA_Q_REM_BITS_WIDTH: u32 = 3;
 const DELTA_Q_SIGN_BIT_WIDTH: u32 = 1;
-
-macro_rules! selectable_reason {
-    ($suffix:literal) => {
-        concat!(
-            "unsupported_wienerns_lr_selectable_transform_records_",
-            $suffix
-        )
-    };
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Block4x4Extent {
@@ -152,49 +146,118 @@ pub(crate) enum SelectableTransformRecordError {
     Unsupported { reason: &'static str },
 }
 
-impl SelectableTransformRecordError {
-    fn unsupported_reason(&self) -> &'static str {
-        match self {
-            Self::EmptyTransform { .. } => selectable_reason!("empty_transform"),
-            Self::InvalidTxSize { .. } => selectable_reason!("invalid_tx_size"),
-            Self::OutOfBounds { .. } => selectable_reason!("out_of_bounds"),
-            Self::Overlap { .. } => selectable_reason!("overlap"),
-            Self::Incomplete { .. } => selectable_reason!("incomplete_grid"),
-            Self::TableIndex { .. } => selectable_reason!("table_index"),
-            Self::TableValue { .. } => selectable_reason!("table_value"),
-            Self::Unsupported { reason } => selectable_unsupported_reason(reason),
-        }
-    }
-}
-
-fn selectable_unsupported_reason(reason: &'static str) -> &'static str {
-    match reason {
-        "grid-size-overflow" => selectable_reason!("grid_size_overflow"),
-        "tx-width-overflow" => selectable_reason!("tx_width_overflow"),
-        "tx-height-overflow" => selectable_reason!("tx_height_overflow"),
-        "record-allocation" => selectable_reason!("record_allocation"),
-        "region-size-overflow" => selectable_reason!("region_size_overflow"),
-        "grid-index-overflow" => selectable_reason!("grid_index_overflow"),
-        "horz4-loop" => selectable_reason!("horz4_loop"),
-        "vert4-loop" => selectable_reason!("vert4_loop"),
-        "tx-partition-type" => selectable_reason!("tx_partition_type"),
-        _ => selectable_reason!("unsupported_branch"),
-    }
-}
-
-fn selectable_decode_error(
-    tile_offset: ByteOffset,
-    reason: &'static str,
-) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(tile_offset, reason)
-}
-
 #[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
     error: SelectableTransformRecordError,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
-    selectable_decode_error(tile_offset, error.unsupported_reason())
+    match error {
+        SelectableTransformRecordError::EmptyTransform { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_empty_transform",
+            tile_offset
+        ),
+        SelectableTransformRecordError::InvalidTxSize { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_invalid_tx_size",
+            tile_offset
+        ),
+        SelectableTransformRecordError::OutOfBounds { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_out_of_bounds",
+            tile_offset
+        ),
+        SelectableTransformRecordError::Overlap { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_overlap",
+            tile_offset
+        ),
+        SelectableTransformRecordError::Incomplete { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_incomplete_grid",
+            tile_offset
+        ),
+        SelectableTransformRecordError::TableIndex { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_table_index",
+            tile_offset
+        ),
+        SelectableTransformRecordError::TableValue { .. } => gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_table_value",
+            tile_offset
+        ),
+        SelectableTransformRecordError::Unsupported { reason } => match reason {
+            "grid-size-overflow" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_grid_size_overflow",
+                tile_offset
+            ),
+            "tx-width-overflow" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_tx_width_overflow",
+                tile_offset
+            ),
+            "tx-height-overflow" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_tx_height_overflow",
+                tile_offset
+            ),
+            "record-allocation" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_record_allocation",
+                tile_offset
+            ),
+            "region-size-overflow" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_region_size_overflow",
+                tile_offset
+            ),
+            "grid-index-overflow" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_grid_index_overflow",
+                tile_offset
+            ),
+            "horz4-loop" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_horz4_loop",
+                tile_offset
+            ),
+            "vert4-loop" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_vert4_loop",
+                tile_offset
+            ),
+            "tx-partition-type" => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_tx_partition_type",
+                tile_offset
+            ),
+            _ => gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_unsupported_branch",
+                tile_offset
+            ),
+        },
+    }
+}
+
+fn quantizer_width_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    gap!(
+        "unsupported_wienerns_lr_selectable_transform_records_quantizer_width",
+        tile_offset
+    )
+}
+
+fn cdef_grid_overflow_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    gap!(
+        "unsupported_wienerns_lr_selectable_transform_records_cdef_grid_overflow",
+        tile_offset
+    )
+}
+
+fn cdef_index_bounds_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    gap!(
+        "unsupported_wienerns_lr_selectable_transform_records_cdef_index_bounds",
+        tile_offset
+    )
+}
+
+fn cdef_index_overflow_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    gap!(
+        "unsupported_wienerns_lr_selectable_transform_records_cdef_index_overflow",
+        tile_offset
+    )
+}
+
+fn cdef_grid_shape_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    gap!(
+        "unsupported_wienerns_lr_selectable_transform_records_cdef_grid_shape",
+        tile_offset
+    )
 }
 
 impl DeltaQState {
@@ -209,23 +272,24 @@ impl DeltaQState {
         let base_q_idx = core
             .quantization_params
             .as_ref()
-            .ok_or_else(|| {
-                selectable_decode_error(tile_offset, selectable_reason!("missing_quantization"))
-            })?
+            .ok_or_else(|| selectable_missing_quantization_error(tile_offset))?
             .base_q_idx;
         let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
-            .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("bit_depth")))?;
+            .map_err(|_| {
+                gap!(
+                    "unsupported_wienerns_lr_selectable_transform_records_bit_depth",
+                    tile_offset
+                )
+            })?;
         let sb_size4 = intra_delta_q_sb_size4(sequence, tile_offset)?;
         Ok(Self {
             present,
             delta_q_res,
             sb_size4,
-            current_q_index: i32::try_from(base_q_idx).map_err(|_| {
-                selectable_decode_error(tile_offset, selectable_reason!("quantizer_width"))
-            })?,
-            max_q: i32::try_from(max_quantizer_index(bit_depth)).map_err(|_| {
-                selectable_decode_error(tile_offset, selectable_reason!("quantizer_width"))
-            })?,
+            current_q_index: i32::try_from(base_q_idx)
+                .map_err(|_| quantizer_width_error(tile_offset))?,
+            max_q: i32::try_from(max_quantizer_index(bit_depth))
+                .map_err(|_| quantizer_width_error(tile_offset))?,
             current_sb: None,
             read_deltas: present,
         })
@@ -254,10 +318,16 @@ impl DeltaQState {
             let delta_q_abs = read_delta_q_abs(work_unit, symbols, tile_offset)?;
             if delta_q_abs != 0 {
                 let sign_bit = symbols.read_literal(DELTA_Q_SIGN_BIT_WIDTH).map_err(|_| {
-                    selectable_decode_error(tile_offset, selectable_reason!("delta_q_sign_read"))
+                    gap!(
+                        "unsupported_wienerns_lr_selectable_transform_records_delta_q_sign_read",
+                        tile_offset
+                    )
                 })? != 0;
                 let delta_q_abs = i32::try_from(delta_q_abs).map_err(|_| {
-                    selectable_decode_error(tile_offset, selectable_reason!("delta_q_abs_width"))
+                    gap!(
+                        "unsupported_wienerns_lr_selectable_transform_records_delta_q_abs_width",
+                        tile_offset
+                    )
                 })?;
                 let reduced_delta_q_index = if sign_bit { -delta_q_abs } else { delta_q_abs };
                 self.current_q_index = updated_current_q_index(
@@ -301,13 +371,13 @@ impl CdefState {
             .min(self.col_start + self.cols);
         let rows = row_end.saturating_sub(row_start);
         let cols = col_end.saturating_sub(col_start);
-        let len = rows.checked_mul(cols).ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
-        })?;
+        let len = rows
+            .checked_mul(cols)
+            .ok_or_else(|| cdef_grid_overflow_error(tile_offset))?;
         let mut values = Vec::new();
-        values.try_reserve_exact(len).map_err(|_| {
-            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
-        })?;
+        values
+            .try_reserve_exact(len)
+            .map_err(|_| cdef_grid_overflow_error(tile_offset))?;
         values.resize(len, None);
         Ok(Self {
             row_start,
@@ -327,9 +397,9 @@ impl CdefState {
     ) -> Result<Self> {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
         let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
-        let values_len = rows.checked_mul(cols).ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_overflow"))
-        })?;
+        let values_len = rows
+            .checked_mul(cols)
+            .ok_or_else(|| cdef_grid_overflow_error(tile_offset))?;
         Ok(Self {
             row_start: 0,
             col_start: 0,
@@ -356,9 +426,9 @@ impl CdefState {
             return Ok(());
         }
         let Some(cdef) = core.cdef_params.as_ref() else {
-            return Err(selectable_decode_error(
-                tile_offset,
-                selectable_reason!("missing_cdef_params"),
+            return Err(gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_missing_cdef_params",
+                tile_offset
             ));
         };
         if !cdef.cdef_frame_enable {
@@ -368,12 +438,15 @@ impl CdefState {
             return Ok(());
         }
         let strengths = cdef.cdef_strengths.ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("missing_cdef_strengths"))
+            gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_missing_cdef_strengths",
+                tile_offset
+            )
         })? as usize;
         if !(1..=8).contains(&strengths) {
-            return Err(selectable_decode_error(
-                tile_offset,
-                selectable_reason!("cdef_strengths"),
+            return Err(gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_strengths",
+                tile_offset
             ));
         }
 
@@ -384,9 +457,9 @@ impl CdefState {
             || unit_row >= self.row_start + self.rows
             || unit_col >= self.col_start + self.cols
         {
-            return Err(selectable_decode_error(
-                tile_offset,
-                selectable_reason!("cdef_bounds"),
+            return Err(gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_cdef_bounds",
+                tile_offset
             ));
         }
         if self.value(unit_row, unit_col, tile_offset)?.is_some() {
@@ -423,9 +496,7 @@ impl CdefState {
                     tile_offset,
                 )?
                 .checked_add(1)
-                .ok_or_else(|| {
-                    selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
-                })?
+                .ok_or_else(|| cdef_index_overflow_error(tile_offset))?
             }
         };
         self.fill_units(frontier.r, frontier.c, n4w, n4h, strength, tile_offset)
@@ -498,24 +569,19 @@ impl CdefState {
     }
 
     fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
-        let local_row = row.checked_sub(self.row_start).ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("cdef_index_bounds"))
-        })?;
-        let local_col = col.checked_sub(self.col_start).ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("cdef_index_bounds"))
-        })?;
+        let local_row = row
+            .checked_sub(self.row_start)
+            .ok_or_else(|| cdef_index_bounds_error(tile_offset))?;
+        let local_col = col
+            .checked_sub(self.col_start)
+            .ok_or_else(|| cdef_index_bounds_error(tile_offset))?;
         if local_row >= self.rows || local_col >= self.cols {
-            return Err(selectable_decode_error(
-                tile_offset,
-                selectable_reason!("cdef_index_bounds"),
-            ));
+            return Err(cdef_index_bounds_error(tile_offset));
         }
         local_row
             .checked_mul(self.cols)
             .and_then(|start| start.checked_add(local_col))
-            .ok_or_else(|| {
-                selectable_decode_error(tile_offset, selectable_reason!("cdef_index_overflow"))
-            })
+            .ok_or_else(|| cdef_index_overflow_error(tile_offset))
     }
 
     pub(crate) fn merge_tile(
@@ -537,10 +603,7 @@ impl CdefState {
             || tile.rows != row_end.saturating_sub(expected_row_start)
             || tile.cols != col_end.saturating_sub(expected_col_start)
         {
-            return Err(selectable_decode_error(
-                tile_offset,
-                selectable_reason!("cdef_grid_shape"),
-            ));
+            return Err(cdef_grid_shape_error(tile_offset));
         }
         for row in mi_rows.start / CDEF_UNIT_MI..row_end {
             for col in mi_cols.start / CDEF_UNIT_MI..col_end {
@@ -553,14 +616,10 @@ impl CdefState {
 
     pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
         if self.row_start != 0 || self.col_start != 0 {
-            return Err(selectable_decode_error(
-                tile_offset,
-                selectable_reason!("cdef_grid_shape"),
-            ));
+            return Err(cdef_grid_shape_error(tile_offset));
         }
-        CdefUnitGrid::new(self.rows, self.cols, self.values).map_err(|_| {
-            selectable_decode_error(tile_offset, selectable_reason!("cdef_grid_shape"))
-        })
+        CdefUnitGrid::new(self.rows, self.cols, self.values)
+            .map_err(|_| cdef_grid_shape_error(tile_offset))
     }
 }
 
@@ -814,15 +873,30 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
             let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, max_tx_size, tile_offset)? / MI_SIZE;
             let extent = frontier_4x4_extent(
                 frontier,
-                tile_offset,
-                selectable_reason!("inter_block_width"),
-                selectable_reason!("inter_block_height"),
+                || {
+                    gap!(
+                        "unsupported_wienerns_lr_selectable_transform_records_inter_block_width",
+                        tile_offset
+                    )
+                },
+                || {
+                    gap!(
+                        "unsupported_wienerns_lr_selectable_transform_records_inter_block_height",
+                        tile_offset
+                    )
+                },
             )?;
             let row_end = frontier.r.checked_add(extent.rows).ok_or_else(|| {
-                selectable_decode_error(tile_offset, selectable_reason!("inter_row_end_overflow"))
+                gap!(
+                    "unsupported_wienerns_lr_selectable_transform_records_inter_row_end_overflow",
+                    tile_offset
+                )
             })?;
             let col_end = frontier.c.checked_add(extent.cols).ok_or_else(|| {
-                selectable_decode_error(tile_offset, selectable_reason!("inter_col_end_overflow"))
+                gap!(
+                    "unsupported_wienerns_lr_selectable_transform_records_inter_col_end_overflow",
+                    tile_offset
+                )
             })?;
             for row in (frontier.r..row_end).step_by(tx_h4) {
                 for col in (frontier.c..col_end).step_by(tx_w4) {
@@ -848,9 +922,18 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
         }
         let extent = frontier_4x4_extent(
             frontier,
-            tile_offset,
-            selectable_reason!("inter_region_width"),
-            selectable_reason!("inter_region_height"),
+            || {
+                gap!(
+                    "unsupported_wienerns_lr_selectable_transform_records_inter_region_width",
+                    tile_offset
+                )
+            },
+            || {
+                gap!(
+                    "unsupported_wienerns_lr_selectable_transform_records_inter_region_height",
+                    tile_offset
+                )
+            },
         )?;
         grid.records_for_region_into(frontier.r, frontier.c, extent.rows, extent.cols, records)
             .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
@@ -861,18 +944,11 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
 
 fn frontier_4x4_extent(
     frontier: &DecodeBlockFrontier,
-    tile_offset: ByteOffset,
-    width_reason: &'static str,
-    height_reason: &'static str,
+    width_error: impl FnOnce() -> crate::error::DecodeError,
+    height_error: impl FnOnce() -> crate::error::DecodeError,
 ) -> Result<Block4x4Extent> {
-    let n4w = frontier
-        .b_size
-        .num_4x4_wide()
-        .map_err(|_| selectable_decode_error(tile_offset, width_reason))?;
-    let n4h = frontier
-        .b_size
-        .num_4x4_high()
-        .map_err(|_| selectable_decode_error(tile_offset, height_reason))?;
+    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| width_error())?;
+    let n4h = frontier.b_size.num_4x4_high().map_err(|_| height_error())?;
     Ok(Block4x4Extent {
         cols: n4w,
         rows: n4h,
@@ -944,10 +1020,7 @@ fn read_tx_partition_symbols(
                     tile_offset,
                 )?;
                 tx_partition = symbol.checked_add(1).ok_or_else(|| {
-                    selectable_decode_error(
-                        tile_offset,
-                        selectable_reason!("partition_symbol_overflow"),
-                    )
+                    gap!("unsupported_wienerns_lr_selectable_transform_records_partition_symbol_overflow", tile_offset)
                 })?;
             } else {
                 let vert_or_horz_group = table_usize(
@@ -967,10 +1040,7 @@ fn read_tx_partition_symbols(
                                 fsc_mode: tx_fsc_mode,
                                 is_inter: tx_is_inter,
                                 ctx: vert_or_horz_group.checked_sub(1).ok_or_else(|| {
-                                    selectable_decode_error(
-                                        tile_offset,
-                                        selectable_reason!("vert_or_horz_context_underflow"),
-                                    )
+                                    gap!("unsupported_wienerns_lr_selectable_transform_records_vert_or_horz_context_underflow", tile_offset)
                                 })?,
                             },
                             tile_offset,
@@ -1113,7 +1183,7 @@ fn read_tx_symbol(
         .tile_cdfs_mut()
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("symbol_read")))?;
+        .map_err(|_| selectable_symbol_read_error(tile_offset))?;
     Ok(value)
 }
 
@@ -1129,27 +1199,42 @@ fn read_delta_q_abs(
     let delta_q_rem_bits = read_literal_usize(symbols, DELTA_Q_REM_BITS_WIDTH, tile_offset)?
         .checked_add(1)
         .ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("delta_q_rem_bits_overflow"))
+            gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_delta_q_rem_bits_overflow",
+                tile_offset
+            )
         })?;
     let delta_q_abs_bits = read_literal_usize(
         symbols,
         u32::try_from(delta_q_rem_bits).map_err(|_| {
-            selectable_decode_error(tile_offset, selectable_reason!("delta_q_rem_bits_width"))
+            gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_delta_q_rem_bits_width",
+                tile_offset
+            )
         })?,
         tile_offset,
     )?;
     let delta_q_large_base = 1usize
         .checked_shl(u32::try_from(delta_q_rem_bits).map_err(|_| {
-            selectable_decode_error(tile_offset, selectable_reason!("delta_q_shift_width"))
+            gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_delta_q_shift_width",
+                tile_offset
+            )
         })?)
         .ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("delta_q_shift_overflow"))
+            gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_delta_q_shift_overflow",
+                tile_offset
+            )
         })?;
     delta_q_abs_bits
         .checked_add(delta_q_large_base)
         .and_then(|value| value.checked_add(DELTA_Q_SMALL - 2))
         .ok_or_else(|| {
-            selectable_decode_error(tile_offset, selectable_reason!("delta_q_abs_overflow"))
+            gap!(
+                "unsupported_wienerns_lr_selectable_transform_records_delta_q_abs_overflow",
+                tile_offset
+            )
         })
 }
 
@@ -1158,11 +1243,18 @@ fn read_literal_usize(
     width: u32,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let value = symbols
-        .read_literal(width)
-        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("literal_read")))?;
-    usize::try_from(value)
-        .map_err(|_| selectable_decode_error(tile_offset, selectable_reason!("literal_width")))
+    let value = symbols.read_literal(width).map_err(|_| {
+        gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_literal_read",
+            tile_offset
+        )
+    })?;
+    usize::try_from(value).map_err(|_| {
+        gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_literal_width",
+            tile_offset
+        )
+    })
 }
 
 fn updated_current_q_index(
@@ -1207,7 +1299,10 @@ fn block_dimension(
     let dimension = table_usize(table, values, block_size)
         .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
     dimension.checked_mul(MI_SIZE).ok_or_else(|| {
-        selectable_decode_error(tile_offset, selectable_reason!("block_dimension_overflow"))
+        gap!(
+            "unsupported_wienerns_lr_selectable_transform_records_block_dimension_overflow",
+            tile_offset
+        )
     })
 }
 

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "8debb8cba949c24244a557c222c6e416f4c01a2c",
+  "audited_commit": "4916f2127ab31f61e68b791b29a4af0ff634d3fa",
   "outcome": "success",
   "files": [
     {
@@ -61,7 +61,7 @@
     },
     {
       "path": "Cargo.toml",
-      "sha256": "bdc4382b6b4822cf3acaddc7df8093e87a6058472b03e92a2f9b378b36933e36",
+      "sha256": "82152640df7196dc2f673f451f1ffe7a20807193c9695b0e3811784756c2c005",
       "scope_kind": "repository-process",
       "feature_ids": [
         "CONF-INSPECT-SNAPSHOTS"
@@ -2681,7 +2681,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr.rs",
-      "sha256": "97fedc056ea6e26fe9724796d922c96a3bfa34c3a888dd26958eecd6a999efa3",
+      "sha256": "c5f2633699c4f1ae25094aae8fe93015adcf36ab1471373b3281e442fcee95dc",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-LR-LIVE-TRANSFORM-RECORD-HANDOFF",
@@ -2691,14 +2691,14 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/diagnostics.rs",
-      "sha256": "8de4bc587b150caf32b89d227a11a3b7b1aadb45d82fdc4979a1c17930129570",
+      "sha256": "6085ac889f56aba52868cb1153b959003c3d4707a31b3e629cd58232ae066689",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_records.rs",
-      "sha256": "7e2c1686b1a941f43f1c6b8ba1a03e767f67be1d5b53d0accac5b217659f8613",
+      "sha256": "73282a9b8674448d14ebc92257270f8c11768c06e88fcb502a54e8e970370942",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2712,14 +2712,14 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack.rs",
-      "sha256": "dc8201b9bbb2acfb93fd338718e185ab13224eb448c08d17e678c38708f46804",
+      "sha256": "f28ea54629ba7ff03408c5e8bcc412cf086a5a507814806d2d10efaab9d37f0d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack_tests.rs",
-      "sha256": "12fb0f78b1ffb89ec089ed795b55373423fc97a58e20b05e0873b3d75ea0e8c6",
+      "sha256": "f96405b12f2533fa0e69d2406ec40249d62263a448c3a147abe257afdd973d81",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2735,7 +2735,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
-      "sha256": "0cb5968e58fbbb0c624b5e2d816dd3b5ec487dc185492f0992c39430033ab61e",
+      "sha256": "55dd431f888e929cdb2262f8711ecdbc2bf316351f2925b50b4e25a6a7195c88",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FILTER-HOT-PATHS"
@@ -2758,7 +2758,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
-      "sha256": "04df8a728966e1bd084ca374285702c5cd31a02751b3834fc43fba391127db2f",
+      "sha256": "be161b59cd6ce30bcf8ae98a2533f1d93bf5d7ef3358c604ffd1b7b982dd97fa",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTRA-PRELUDE-TX-FRONTIER",
@@ -3327,7 +3327,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "87c2263b9db79b9a1fc15d0c792bf388866fb86143e11b17d74ada11353b4b6a",
+      "sha256": "2a8432f65c4f018cfb0b3b8c3f348af91896ba4d2e64b748bd4003111b4ff0c2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3337,7 +3337,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
-      "sha256": "864bed17a0d261f114e384c67b48e9b093249ce290f15f57a7dc2ab2b60f3814",
+      "sha256": "07a6a77c4676c9c679bc067ecb9bed7ec5b2c8c62f38c7515d73d97affc71a2a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-LOCALWARP"
@@ -3532,14 +3532,14 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/warp.rs",
-      "sha256": "98f7094f1af305cec55a8b28e1c5aa127ac62b0858027eed2133b8c0f504cd28",
+      "sha256": "0ad4fd5120d554c05056d45b6601210c63e907ca4bc66294f4c555d40b9fa010",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block_tests.rs",
-      "sha256": "99ee419f80aa7ec0ae6282fd276927b73dcb34f71d11073a0e7378a15a60b61c",
+      "sha256": "311fdebf383da857c55b1ce492ea42575c77f6bc1b8e5c248f208a4e5505f23a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -6927,7 +6927,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "51b3d13d0ef1c7ff52f608901a1cac273f3731c5cdab5d2cc9ba25b1776e04a8",
+      "sha256": "12a68c375230c18290f340dcf1a7e21dfdce0864d83ce59c2fa5b98c763286d3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -7751,7 +7751,7 @@
     },
     {
       "path": "tests/conformance/decoder-oracle.toml",
-      "sha256": "a6a2f4d6aebd7d6984bd45706ee74ae0443b83ed95ba10486b66c0d1051bd94f",
+      "sha256": "6f0ac1744434eaaae72fa6bb540588bbbd8d1c709b6334ae317bfaf716e528ef",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-DECODE-ORACLE",
@@ -7761,7 +7761,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "a63b4ed4eb16d0e97dd1f06fadc9e162b292407cc0cf8d36c9b7c096bc97cc2c",
+      "sha256": "f1012bcc69cdb79356bd32f4fe70dbaa7f41d4d137f021bbe27436b48d8431c9",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",
@@ -8131,6 +8131,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-3frame-inter-nofilters-64x64.ivf",
       "sha256": "a2766644ae1ded0ef6b5f3f1eb28d78529c238c89251228f69c75ca0864cfd0a",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-3frame-intrabc-bv-10bit-256x128-q120.ivf",
+      "sha256": "bf90f09399e1b216bc8ef00db8bc33a4ed3a3e79486b0ae19ba1acde9bdffd55",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -9939,7 +9946,7 @@
     },
     {
       "path": "xtask/src/gap_markers.rs",
-      "sha256": "26ff10c4fecb852c11de1c6f997cd39fb24384e640e4adacf560fc507e14203f",
+      "sha256": "391ef1c9ab8347755f4994f6c5ab5f7e030193b14389cd4b209f16a834468e29",
       "scope_kind": "workspace:xtask",
       "feature_ids": [],
       "outcome": "success"
