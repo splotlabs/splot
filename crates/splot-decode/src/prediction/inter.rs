@@ -1476,16 +1476,9 @@ fn parse_sef_or_tip_frame_core(
         reference_state: reference.header_view(),
         mode: FrameHeaderParseMode::Core,
     };
-    parse_frame_header_core(&mut reader, &input).map_err(|error| {
+    let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
         if envelope.header.obu_type.is_sef() {
-            DecodeError::MalformedSource {
-                issue: DecodeSourceIssue::frame_header_conformance(
-                    envelope.offset,
-                    frame_index,
-                    SPEC_HEADER,
-                    error.to_string(),
-                ),
-            }
+            malformed_sef_frame_header(envelope.offset, frame_index, error.to_string())
         } else {
             inter_missing!(
                 "tip_output_frame_header_parse",
@@ -1494,7 +1487,32 @@ fn parse_sef_or_tip_frame_core(
                 SPEC_HEADER
             )
         }
-    })
+    })?;
+    if envelope.header.obu_type.is_sef()
+        && core.status == FrameHeaderParseStatus::StoppedInsideShowExistingFrame
+    {
+        return Err(malformed_sef_frame_header(
+            envelope.offset,
+            frame_index,
+            "show-existing frame header ends inside film_grain_config()".to_owned(),
+        ));
+    }
+    Ok(core)
+}
+
+fn malformed_sef_frame_header(
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+    message: String,
+) -> DecodeError {
+    DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::frame_header_conformance(
+            offset,
+            frame_index,
+            SPEC_HEADER,
+            message,
+        ),
+    }
 }
 
 fn validate_sef_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {

@@ -2,6 +2,35 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use splot_core::write::{BitWriter, write_annexb_obu};
+
+fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
+    let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
+    let mut header = parsed.header.expect("SEF fixture has an IVF header");
+    header.frame_count = u32::try_from(parsed.frames.len()).expect("fixture frame count fits u32");
+    let mut bytes = Vec::new();
+    write_repacked_ivf_header(&mut bytes, &header);
+    let mut replaced_frame_index = None;
+    for (frame_index, frame) in parsed.frames.iter().enumerate() {
+        let mut frame_writer = BitWriter::new();
+        for envelope in &frame.obus {
+            let obu_payload = if replaced_frame_index.is_none() && envelope.header.obu_type.is_sef()
+            {
+                replaced_frame_index = Some(frame_index);
+                payload
+            } else {
+                envelope.payload
+            };
+            write_annexb_obu(&mut frame_writer, &envelope.header, obu_payload)
+                .expect("repack fixture OBU");
+        }
+        write_repacked_ivf_frame(&mut bytes, frame.frame.pts, &frame_writer.into_bytes());
+    }
+    (
+        bytes,
+        replaced_frame_index.expect("SEF fixture contains a SEF OBU"),
+    )
+}
 
 #[test]
 fn missing_inter_header_regions_are_typed_header_state_errors() {
@@ -129,7 +158,38 @@ fn missing_tile_group_prefix_is_a_malformed_source_diagnostic() {
 
 #[test]
 fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
-    let (sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);
+    let (bytes, frame_index) = repack_first_sef_payload(&[]);
+    let options = DecodeOptions::default();
+    let context = decode_context();
+    let plan = context
+        .plan_bytes(&bytes, options)
+        .expect("plan malformed SEF");
+
+    let result = context
+        .pool()
+        .install(|| decode_frames_from_plan(&bytes, &options, &plan));
+    let Err(error) = result else {
+        panic!("malformed SEF frame header decoded successfully");
+    };
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("5.18.2"));
+    assert_eq!(issue.frame_index(), Some(frame_index));
+    assert!(issue.message().contains("unexpected end of input"));
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("malformed SEF frame header must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+#[test]
+fn sef_eof_inside_film_grain_is_a_malformed_source_diagnostic() {
+    let (mut sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);
+    sequence.film_grain_params_present = Some(true);
     let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
     let (frame_index, mut envelope) = parsed
         .frames
@@ -144,8 +204,18 @@ fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
                 .map(|envelope| (frame_index, envelope))
         })
         .expect("SEF OBU");
-    envelope.payload = &[];
-    envelope.size = u32::from(envelope.header.header_size_bytes);
+    let mut payload = BitWriter::new();
+    payload.write_uvlc(0).expect("cur_mfh_id");
+    payload.write_uvlc(0).expect("seq_header_id");
+    payload.write_bits(6, 3).expect("frame_to_show_map_idx");
+    payload.write_flag(true).expect("derive_sef_order_hint");
+    payload.write_flag(true).expect("apply_grain");
+    payload.write_bits(2, 3).expect("fgm_id");
+    payload.write_bits(0, 8).expect("partial grain_seed");
+    let payload = payload.into_bytes();
+    envelope.payload = &payload;
+    envelope.size = u32::from(envelope.header.header_size_bytes)
+        + u32::try_from(payload.len()).expect("payload length fits u32");
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
 
     let error = super::super::parse_inter_frame_activation(
@@ -155,7 +225,7 @@ fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
         true,
         Some(frame_index),
     )
-    .expect_err("malformed SEF frame header");
+    .expect_err("SEF truncated inside film grain");
     let DecodeError::MalformedSource { issue } = &error else {
         panic!("expected malformed source, got {error}");
     };
@@ -166,9 +236,12 @@ fn malformed_sef_frame_header_is_a_malformed_source_diagnostic() {
     assert_eq!(issue.spec_section(), Some("5.18.2"));
     assert_eq!(issue.offset(), Some(envelope.offset));
     assert_eq!(issue.frame_index(), Some(frame_index));
-    assert!(issue.message().contains("unexpected end of input"));
+    assert_eq!(
+        issue.message(),
+        "show-existing frame header ends inside film_grain_config()"
+    );
     let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
-        .expect("malformed SEF frame header must remain user-reportable");
+        .expect("truncated SEF frame header must remain user-reportable");
     assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
 }
 
