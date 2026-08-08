@@ -137,8 +137,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             tile_offset,
         )?;
     }
-    let held =
-        super::super::hold_inter_block_references(ref_frame_idx, reference, placed, tile_offset)?;
+    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
     let block_params = held
         .block_params(placed, rect)?
         .with_refinemv(use_refinemv)
@@ -251,8 +250,7 @@ pub(super) fn reconstruct_pure_inter_block<T: ReconSample>(
     bit_depth: BitDepth,
     tile_offset: ByteOffset,
 ) -> Result<()> {
-    let held =
-        super::super::hold_inter_block_references(ref_frame_idx, reference, placed, tile_offset)?;
+    let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
     let block_params = held
         .block_params(placed, placed.motion_compensation_rect())?
         .with_refinemv(use_refinemv)

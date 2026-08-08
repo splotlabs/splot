@@ -149,6 +149,12 @@ pub enum DecodeReferenceStateError {
         /// Zero-based reference slot index.
         slot: usize,
     },
+    /// A selected reference slot had no readable samples.
+    #[error("reference slot {slot} has no readable decoded-frame samples")]
+    ReferenceSamplesUnavailable {
+        /// Zero-based reference slot index.
+        slot: usize,
+    },
     /// A slot pointed past the decoded-frame buffer.
     #[error(
         "reference slot {slot} points to decoded-frame index {frame_index}, but only {frame_count} frames are available"

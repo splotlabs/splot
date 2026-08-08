@@ -71,6 +71,50 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
 }
 
 #[test]
+fn block_reference_sample_failures_are_typed_reference_state_errors() {
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
+        panic!("an empty reference slot must fail closed");
+    };
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::MissingFrame { slot: 0 }
+        }
+    ));
+
+    let Err(error) = super::super::hold_reference_pair(&reference, 1, None) else {
+        panic!("a reference beyond the active store must fail closed");
+    };
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 1,
+                slot_count: 1
+            }
+        }
+    ));
+
+    let frame = crate::test_support::decoded_frame(4, 4);
+    let (slot, _writer) = crate::pipeline::inflight::RefFrameSlot::pending(frame.info())
+        .expect("pending reference slot");
+    reference
+        .store
+        .put(splot_recon::ReferenceSlot::new(0).expect("slot zero"), slot)
+        .expect("store pending reference");
+    let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
+        panic!("an unpublished reference slot must fail closed");
+    };
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ReferenceSamplesUnavailable { slot: 0 }
+        }
+    ));
+}
+
+#[test]
 fn ras_missing_reference_map_is_a_typed_header_state_error() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
