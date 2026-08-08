@@ -9,7 +9,7 @@ use super::state_publication::{DecodedLeafPublication, publish_intra_leaf_state}
 use super::{
     BLOCK_8X32, BlockSize, ChromaRefGeometry, DecodeBlockFrontier, DecodeLimitName, DecodeLimits,
     DecodeTileWorkUnit, GeneralIntraLeafMode, IsCflContext, PartitionAllowedInput,
-    PartitionContextInput, PartitionSubsize, PartitionTreeType, PartitionType,
+    PartitionContextInput, PartitionSubsize, PartitionTreeType, PartitionType, ROOT_HAS_CHROMA,
     ReadPartitionDecision, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
     TileIntraJointModeState, TileIntraYModeFacts, TileIntraYModeState, TileLumaPaletteState,
     TileMiSizeState, TileMiSizeStateError, TilePartitionBounds, TilePartitionBruState,
@@ -280,8 +280,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         if sb_col == self.mi_col_start {
             mi_size_state.clear_left_context();
         }
-        let root =
-            TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, self.frame.has_chroma);
+        let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
         self.stack.clear();
         self.stack.push(TilePartitionStackEntry::Partition(root));
         while let Some(entry) = self.stack.pop() {
@@ -340,7 +339,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
                         if step.using_extended_sdp() {
                             self.stack
                                 .push(TilePartitionStackEntry::ExtendedSdpChromaBlock(
-                                    extended_sdp_chroma_call(self.frame, call),
+                                    extended_sdp_chroma_call(call),
                                 ));
                         }
                         self.stack.extend(
@@ -596,7 +595,6 @@ mod row_cursor_tests {
             super::super::TilePartitionLoopRestorationState::NoSyntax,
             super::super::PartitionFeatureFlags::new(true, true),
             4,
-            true,
             super::super::TilePartitionBruState::Active,
         )
         .unwrap()
@@ -807,17 +805,14 @@ fn intra_region_context(b_size: BlockSize) -> Result<usize, TilePartitionTravers
     })
 }
 
-fn extended_sdp_chroma_call(
-    frame: TilePartitionFrameFacts,
-    call: TilePartitionCall,
-) -> TilePartitionCall {
+fn extended_sdp_chroma_call(call: TilePartitionCall) -> TilePartitionCall {
     TilePartitionCall::child(
         call.r,
         call.c,
         call.b_size,
         call.parent_size,
         false,
-        frame.has_chroma,
+        ROOT_HAS_CHROMA,
         PartitionTreeType::ChromaPart,
         Some(ChromaRefGeometry::new(call.r, call.c, call.b_size)),
         false,
