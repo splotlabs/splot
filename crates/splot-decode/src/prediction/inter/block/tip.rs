@@ -674,19 +674,9 @@ fn tip_block_plan<T: ReconSample>(
         })?;
     let plan = (block_w > 0 && block_h > 0)
         .then(|| {
-            let past = super::super::block_reference_slot(
-                ref_frame_idx,
-                references.past_ref,
-                tile_offset,
-            )?;
+            let past = super::super::block_reference_slot(ref_frame_idx, references.past_ref)?;
             let future = two_references
-                .then(|| {
-                    super::super::block_reference_slot(
-                        ref_frame_idx,
-                        references.future_ref,
-                        tile_offset,
-                    )
-                })
+                .then(|| super::super::block_reference_slot(ref_frame_idx, references.future_ref))
                 .transpose()?;
             Ok::<_, crate::error::DecodeError>(TipReferencePlan {
                 past,

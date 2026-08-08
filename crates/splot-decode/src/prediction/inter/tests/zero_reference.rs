@@ -57,10 +57,18 @@ fn zero_reference_inter_frame_reaches_the_inter_block_boundary() {
     })
     .expect_err("the fixture still codes an inter block without a reference");
 
-    assert_eq!(
-        unsupported_reason(error),
-        "inter_block_ref_frame_out_of_range"
-    );
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("malformed tile syntax must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+    assert!(matches!(
+        &error,
+        DecodeError::MalformedSource {
+            issue
+        } if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+            && issue.spec_section() == Some(super::super::SPEC_MODE_INFO)
+            && issue.message()
+                == "reference-list index 0 is outside the active 0-entry reference map"
+    ));
 }
 
 #[test]

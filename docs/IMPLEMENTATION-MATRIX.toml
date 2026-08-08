@@ -17494,7 +17494,7 @@ change_id = "decode-inter-zero-reference-intra-blocks"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Admits a complete regular-inter header with NumTotalRefs == 0 and an empty ref_frame_idx, as permitted by §§5.18.2 and 6.17.2. Intra-coded blocks continue through the existing general-intra path. If tile syntax selects an inter-coded block, the runtime rejects at inter_block_ref_frame_out_of_range before skip, single-reference, or compound-reference parsing can fabricate reference slot zero; §§6.19.7.10 and 6.19.7.11 require a nonzero reference count for those readers. The positive unit seed is a 115-byte AVMenc-generated two-frame IVF (SHA-256 133166055845472c2362f53dde58328912a1fdf4a376148a4c2227c04dfbe32e) whose second frame is one intra-coded block; mutating its parsed reference count/map to zero still reconstructs successfully. Stock AVMenc cannot encode the exact header because --max-reference-frames is restricted to 1..=7, so the exact zero-reference case uses the requested unit-test fallback."
+notes = "Admits a complete regular-inter header with NumTotalRefs == 0 and an empty ref_frame_idx, as permitted by §§5.18.2 and 6.17.2. Intra-coded blocks continue through the existing general-intra path. If tile syntax selects an inter-coded block, the runtime reports DecodeError::MalformedSource with TilePayloadParseError before skip, single-reference, or compound-reference parsing can fabricate reference slot zero; §§6.19.7.10 and 6.19.7.11 require a nonzero reference count for those readers. The positive unit seed is a 115-byte AVMenc-generated two-frame IVF (SHA-256 133166055845472c2362f53dde58328912a1fdf4a376148a4c2227c04dfbe32e) whose second frame is one intra-coded block; mutating its parsed reference count/map to zero still reconstructs successfully. Stock AVMenc cannot encode the exact header because --max-reference-frames is restricted to 1..=7, so the exact zero-reference case uses the requested unit-test fallback."
 
 [feature.status]
 mapped = "done"
@@ -17522,7 +17522,7 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = ["crates/splot-decode/src/prediction/inter/tests/zero_reference.rs"]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = ["decode/malformed-source"]
 
 [[feature]]
 id = "DECODE-INTER-COMPOUND-AVERAGE"
