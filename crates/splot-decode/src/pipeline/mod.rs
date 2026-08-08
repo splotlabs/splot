@@ -30,6 +30,7 @@ use splot_recon::BitDepth;
 #[cfg(test)]
 use splot_recon::DecodedFrame;
 
+use crate::DecodeIvfFrameContext as IvfFrameContext;
 use crate::bitstream::byte_stream::FlatParsedBitstream;
 #[cfg(test)]
 use crate::bitstream::byte_stream::parse_bounded_bitstream;
@@ -417,6 +418,7 @@ fn parse_inter_core_with_effects(
     reference: &inter::InterReferenceState<impl splot_recon::ReconSample>,
     effects: &OutputEffectState,
     first_picture_in_tu: bool,
+    frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
     let activation =
         inter::parse_inter_frame_activation(envelope, sequence, reference, first_picture_in_tu)?;
@@ -436,6 +438,7 @@ fn parse_inter_core_with_effects(
         reference,
         first_picture_in_tu,
         record,
+        frame_index,
     )
 }
 #[cfg(test)]
@@ -806,6 +809,7 @@ where
                     &state,
                     &output_effect_state,
                     true,
+                    stream.ivf_header().map(|_| 0),
                 )?
             }
             BitDepthIdc::Ten => {
@@ -824,6 +828,7 @@ where
                     &state,
                     &output_effect_state,
                     true,
+                    stream.ivf_header().map(|_| 0),
                 )?
             }
         },
@@ -1109,6 +1114,7 @@ where
                             &state,
                             &output_effect_state,
                             first_picture_in_tu,
+                            None,
                         )?
                     }
                     BitDepthIdc::Ten => {
@@ -1120,6 +1126,7 @@ where
                             &state,
                             &output_effect_state,
                             first_picture_in_tu,
+                            None,
                         )?
                     }
                 };
@@ -1331,6 +1338,7 @@ where
                             &inter_state,
                             &output_effect_state,
                             first_picture_in_tu,
+                            next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
                         )?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
@@ -1553,6 +1561,7 @@ where
                             &inter_state,
                             &output_effect_state,
                             first_picture_in_tu,
+                            next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
                         )?;
                         let user_qm = output_effect_state.prepare_frame(
                             inter_envelope,
