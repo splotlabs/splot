@@ -845,7 +845,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         2,
         4,
         4,
-        1,
+        (1, 1),
     )
     .unwrap();
     assert_eq!(window.get_abs(2, 2), 18);
@@ -862,7 +862,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
             2,
             2,
             2,
-            1,
+            (1, 1),
         )
         .is_err()
     );
@@ -876,7 +876,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         2,
         2,
         2,
-        1,
+        (1, 1),
     )
     .unwrap();
     assert_eq!(window.samples.as_ptr(), allocation);

@@ -189,7 +189,7 @@ pub use warp_prediction::{
 pub use wienerns_chroma_filter::{
     WIENER_NS_CHROMA_COEFFS, WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAPS,
     WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch,
-    wiener_ns_filter_chroma_block, wiener_ns_filter_chroma_block_padded_420_into,
+    wiener_ns_filter_chroma_block, wiener_ns_filter_chroma_block_padded_into,
 };
 pub use wienerns_filter::{
     WIENER_NS_LUMA_COEFFS, WIENER_NS_LUMA_TAP_RADIUS, WIENER_NS_LUMA_TAPS, WienerNsLumaFilter,
