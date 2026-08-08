@@ -94,6 +94,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its derived display order hint, but it was absent.
     #[error("inter-frame display order hint is missing")]
     MissingDisplayOrderHint,
+    /// A successfully parsed show-existing frame was missing a mandatory derived field.
+    #[error("show-existing-frame header state is incomplete")]
+    IncompleteShowExistingFrame,
     /// A frame required its parsed dimensions, but they were absent.
     #[error("frame size is missing")]
     MissingFrameSize,
