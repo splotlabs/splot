@@ -25,7 +25,7 @@ use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
-use crate::error::{DecodeError, DecodeReferenceStateError};
+use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};

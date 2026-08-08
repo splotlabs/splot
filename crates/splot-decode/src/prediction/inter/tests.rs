@@ -2308,7 +2308,12 @@ fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
     );
 
     sequence.transform_quant_entropy = None;
-    assert!(super::effective_quantizer_deltas(&sequence, &quantization).is_none());
+    assert!(matches!(
+        super::frame_walk::required_inter_quantizer_deltas(&sequence, &quantization),
+        Err(DecodeError::HeaderState {
+            source: crate::error::DecodeHeaderStateError::MissingSequenceTransformQuantEntropy,
+        })
+    ));
 }
 
 #[test]
