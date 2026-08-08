@@ -1223,20 +1223,6 @@ fn staged_transform_tool_lossless_base_config(
     }
 }
 
-fn coefficient_block_use_tcq(
-    frame_facts: TileCoeffFrameFacts,
-    plane: usize,
-    plane_tx_type: usize,
-    lossless: bool,
-    use_fsc: bool,
-) -> bool {
-    frame_facts.allow_tcq()
-        && plane == 0
-        && !lossless
-        && CoeffTransformClass::from_plane_tx_type(plane_tx_type) == CoeffTransformClass::TwoD
-        && !use_fsc
-}
-
 fn staged_transform_tool_plane_tx_type(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     is_inter: bool,
