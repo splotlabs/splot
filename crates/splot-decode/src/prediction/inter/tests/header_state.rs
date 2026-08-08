@@ -40,6 +40,24 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
 }
 
 #[test]
+fn ras_missing_reference_map_is_a_typed_header_state_error() {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    core.inter = None;
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::validate_ras_reference_ids(&core, &reference, offset)
+        .expect_err("RAS reference map");
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::MissingInterControlRegion
+        }
+    ));
+}
+
+#[test]
 fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
     let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
         let inter = core.inter.as_mut().unwrap();
