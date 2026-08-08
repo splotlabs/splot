@@ -123,8 +123,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     reference: &InterReferenceState<T>,
     bit_depth: BitDepth,
 ) -> Result<FrameWalk<T>> {
-    let offset = frame_envelope.offset;
-
     if frame_envelope.header.obu_type == ObuType::BridgeFrame {
         reference
             .pixel_reference_gate(named_pixel_reference_slots(&core))
@@ -153,17 +151,6 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             bit_depth,
         )
         .map(completed_walk);
-    }
-    if !matches!(
-        frame_envelope.header.obu_type,
-        ObuType::LeadingTileGroup | ObuType::RegularTileGroup | ObuType::Switch | ObuType::RasFrame
-    ) {
-        return Err(inter_cap!(
-            "inter_unexpected_obu_type",
-            offset,
-            "inter.obu_type not in the inter tile-group family",
-            SPEC_HEADER
-        ));
     }
     if let Some(inter) = core.inter.as_ref() {
         for dependency in reference.motion_dependencies(&inter.ref_frame_idx) {
