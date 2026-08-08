@@ -63,7 +63,6 @@ fn frame(sb_size: usize) -> TilePartitionFrameFacts {
         TilePartitionLoopRestorationState::NoSyntax,
         PartitionFeatureFlags::new(true, true),
         4,
-        true,
         TilePartitionBruState::Active,
     )
     .unwrap()
@@ -399,7 +398,6 @@ fn sdp_chroma_partition_not_forced_when_trees_diverge_or_out_of_scope() {
         TilePartitionLoopRestorationState::NoSyntax,
         PartitionFeatureFlags::new(true, true),
         4,
-        true,
         TilePartitionBruState::Active,
     )
     .unwrap();

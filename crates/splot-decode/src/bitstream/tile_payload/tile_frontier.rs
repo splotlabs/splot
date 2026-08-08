@@ -328,7 +328,6 @@ pub(crate) fn minimal_partition_frame_facts(
             partition.enable_uneven_4way_partitions,
         ),
         partition.max_pb_aspect_ratio as usize,
-        num_planes > 1,
         TilePartitionBruState::Active,
     )?)
 }

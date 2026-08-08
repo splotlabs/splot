@@ -168,7 +168,6 @@ pub(crate) struct TilePartitionFrameFacts {
     loop_restoration: TilePartitionLoopRestorationState,
     features: PartitionFeatureFlags,
     max_pb_aspect_ratio: usize,
-    has_chroma: bool,
     bru_state: TilePartitionBruState,
 }
 
@@ -188,7 +187,6 @@ impl TilePartitionFrameFacts {
         loop_restoration: TilePartitionLoopRestorationState,
         features: PartitionFeatureFlags,
         max_pb_aspect_ratio: usize,
-        has_chroma: bool,
         bru_state: TilePartitionBruState,
     ) -> Result<Self, TilePartitionTraversalError> {
         Ok(Self {
@@ -205,7 +203,6 @@ impl TilePartitionFrameFacts {
             loop_restoration,
             features,
             max_pb_aspect_ratio,
-            has_chroma,
             bru_state,
         })
     }
@@ -783,6 +780,11 @@ fn symbol_decoder_for_work_unit<'payload>(
     .map_err(TilePartitionTraversalError::from)
 }
 
+/// § 5.20.4 seeds `decode_partition`'s propagated `hasChroma` with 1. The
+/// `NumPlanes > 1` term belongs to `HasChroma` alone, so a monochrome sequence
+/// still derives `ChromaMiRow` / `ChromaMiCol` / `ChromaMiSize`.
+pub(super) const ROOT_HAS_CHROMA: bool = true;
+
 fn root_partition_call(
     work_unit: &DecodeTileWorkUnit<'_>,
     frame: TilePartitionFrameFacts,
@@ -791,7 +793,7 @@ fn root_partition_call(
         work_unit.mi_row_range().start as usize,
         work_unit.mi_col_range().start as usize,
         frame.sb_size,
-        frame.has_chroma,
+        ROOT_HAS_CHROMA,
     )
 }
 

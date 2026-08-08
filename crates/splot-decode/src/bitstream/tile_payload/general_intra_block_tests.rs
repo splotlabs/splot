@@ -58,7 +58,6 @@ fn symbols_at_block_start<'payload>(
         TilePartitionLoopRestorationState::NoSyntax,
         PartitionFeatureFlags::new(true, true),
         4,
-        true,
         TilePartitionBruState::Active,
     )
     .unwrap();

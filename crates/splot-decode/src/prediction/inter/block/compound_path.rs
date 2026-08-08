@@ -666,7 +666,14 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
             tile_offset,
         )?)
     } else {
-        reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
+        reset_inter_skip_coeff_contexts(
+            coeff_ctx,
+            frontier,
+            n4w,
+            n4h,
+            super::block_chroma_subsampling(sequence.general.chroma_format_idc),
+            tile_offset,
+        )?;
         None
     };
     let sub_pu_size = compound_deblock_sub_pu_size(

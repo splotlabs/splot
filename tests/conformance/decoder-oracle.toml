@@ -1813,3 +1813,10 @@ status = "must_pass"
 features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]
 ivf_sha256 = "cd633dec894cf0c14ea2e32112208894b3b069dddb17f464cdd10166b74dda81"
 avm_raw_sha256 = "221059f99854e58c027ffd228f7e15d2af4ee969d660e58e51915392340b9b5d"
+
+[[fixture]]
+id = "syn-4frame-mono-inter-256x128"
+status = "must_pass"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.single_ref", "inter.subpel_mc", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single", "transform.dct_adst"]
+ivf_sha256 = "f13ad6ac89b27c3b0de426dcd03b0a766fd4c9feeb606e3eb2757e8e82ad24e5"
+avm_raw_sha256 = "b2471976fdcadc460888cb335184a605062a18c04ea461a9a6bdfd155392b9ae"
