@@ -22,11 +22,24 @@ pub(super) const fn leaf_predicts_chroma(chroma_planes: bool, luma_part: bool) -
     chroma_planes && !luma_part
 }
 
-pub(super) const fn sub8x8_chroma_disables_compound(
+/// § 7.11.3.1 disables compound chroma prediction in two cases: the § 5.20.4
+/// `sub8x8Inter` mismatch between the block and its chroma reference, and any
+/// thin 4xN / Nx4 block. TIP is excluded by its own caller.
+pub(super) fn sub8x8_chroma_disables_compound(
     luma_size: BlockSize,
     chroma_size: BlockSize,
 ) -> bool {
-    luma_size.index() != chroma_size.index()
+    luma_size.index() != chroma_size.index() || is_thin_4xn_nx4_block(luma_size)
+}
+
+/// § 7.11.3.1 `is_thin_4xn_nx4_block`: a block with a four-sample side whose
+/// long side reaches 16.
+fn is_thin_4xn_nx4_block(size: BlockSize) -> bool {
+    let (Ok(n4w), Ok(n4h)) = (size.num_4x4_wide(), size.num_4x4_high()) else {
+        return false;
+    };
+    let (width, height) = (n4w * 4, n4h * 4);
+    width.min(height) == 4 && width.max(height) >= 16
 }
 
 pub(super) fn placed_inter_geometry(

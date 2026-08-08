@@ -180,17 +180,25 @@ fn decode_general_intra_block_modes(
 }
 
 #[test]
-fn cfl_allowed_420_uses_chroma_plane_64_sample_limit() {
+fn cfl_allowed_uses_the_chroma_plane_64_sample_limit() {
     let tools = GeneralIntraChromaToolConfig::new(true, false);
 
-    assert!(cfl_allowed_for_non_lossless_420(tools, 16, 16));
-    assert!(cfl_allowed_for_non_lossless_420(tools, 32, 16));
-    assert!(cfl_allowed_for_non_lossless_420(tools, 32, 32));
-    assert!(!cfl_allowed_for_non_lossless_420(tools, 33, 32));
-    assert!(!cfl_allowed_for_non_lossless_420(tools, 32, 33));
-    assert!(!cfl_allowed_for_non_lossless_420(tools, 64, 32));
-    assert!(!cfl_allowed_for_non_lossless_420(tools, 32, 64));
-    assert!(!cfl_allowed_for_non_lossless_420(
+    assert!(cfl_allowed_for_non_lossless(tools, 16, 16));
+    assert!(cfl_allowed_for_non_lossless(tools, 32, 16));
+    assert!(cfl_allowed_for_non_lossless(tools, 32, 32));
+    assert!(!cfl_allowed_for_non_lossless(tools, 33, 32));
+    assert!(!cfl_allowed_for_non_lossless(tools, 32, 33));
+    assert!(!cfl_allowed_for_non_lossless(tools, 64, 32));
+    assert!(!cfl_allowed_for_non_lossless(tools, 32, 64));
+    let tools444 = tools.with_chroma_subsampling(0, 0);
+    assert!(cfl_allowed_for_non_lossless(tools444, 16, 16));
+    assert!(!cfl_allowed_for_non_lossless(tools444, 17, 16));
+    assert!(!cfl_allowed_for_non_lossless(tools444, 32, 32));
+    let tools422 = tools.with_chroma_subsampling(1, 0);
+    assert!(cfl_allowed_for_non_lossless(tools422, 32, 16));
+    assert!(!cfl_allowed_for_non_lossless(tools422, 32, 17));
+
+    assert!(!cfl_allowed_for_non_lossless(
         GeneralIntraChromaToolConfig::new(false, false),
         16,
         16,
@@ -647,17 +655,27 @@ fn mrl_symbols_use_retained_neighbour_contexts() {
 }
 
 #[test]
-fn mhccp_allowed_follows_current_non_lossless_420_bounds() {
+fn mhccp_allowed_follows_the_chroma_plane_bounds() {
     let mhccp = GeneralIntraChromaToolConfig::new(false, true);
-    assert!(mhccp_allowed_for_non_lossless_420(mhccp, 4, 4));
-    assert!(mhccp_allowed_for_non_lossless_420(mhccp, 16, 16));
-    assert!(!mhccp_allowed_for_non_lossless_420(mhccp, 2, 2));
-    assert!(!mhccp_allowed_for_non_lossless_420(mhccp, 17, 16));
-    assert!(!mhccp_allowed_for_non_lossless_420(
+    assert!(mhccp_allowed_for_non_lossless(mhccp, 4, 4));
+    assert!(mhccp_allowed_for_non_lossless(mhccp, 16, 16));
+    assert!(!mhccp_allowed_for_non_lossless(mhccp, 2, 2));
+    assert!(!mhccp_allowed_for_non_lossless(mhccp, 17, 16));
+    assert!(!mhccp_allowed_for_non_lossless(
         GeneralIntraChromaToolConfig::disabled(),
         4,
         4
     ));
+
+    let mhccp444 = mhccp.with_chroma_subsampling(0, 0);
+    assert!(mhccp_allowed_for_non_lossless(mhccp444, 2, 2));
+    assert!(!mhccp_allowed_for_non_lossless(mhccp444, 1, 1));
+    assert!(mhccp_allowed_for_non_lossless(mhccp444, 8, 8));
+    assert!(!mhccp_allowed_for_non_lossless(mhccp444, 9, 8));
+    let mhccp422 = mhccp.with_chroma_subsampling(1, 0);
+    assert!(mhccp_allowed_for_non_lossless(mhccp422, 2, 2));
+    assert!(mhccp_allowed_for_non_lossless(mhccp422, 16, 8));
+    assert!(!mhccp_allowed_for_non_lossless(mhccp422, 16, 9));
 }
 
 #[test]
