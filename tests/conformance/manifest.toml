@@ -1498,6 +1498,16 @@ description = "Tiny AVM loop.wienerns fixture (decode-oracle coverage; the tool 
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-wienerns-422-intra-128x128.ivf"
+description = "Tiny AVM 4:2:2 loop.wienerns fixture (decode-oracle coverage): chroma Wiener-nonsep loop restoration at SubsamplingY 0, where AV2 section 7.20.3 get_luma_sample reads the direct scaled luma sample instead of applying Wiener_Filters_420. Before the subsampling-generic chroma LR fix splot failed closed with unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter; fixed splot reproduces avmdec's 32,768-byte native planar raw output byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
+path = "vectors/valid/syn-wienerns-444-intra-128x128.ivf"
+description = "Tiny AVM 4:4:4 loop.wienerns fixture (decode-oracle coverage): chroma Wiener-nonsep loop restoration with no chroma subsampling, so section 7.20.3 get_luma_sample reads the co-located luma sample unscaled. Before the subsampling-generic chroma LR fix splot failed closed with unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter; fixed splot reproduces avmdec's 49,152-byte native planar raw output byte-for-byte; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-pcwiener-intra-128x128.ivf"
 description = "Tiny AVM loop.pc_wiener fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"
