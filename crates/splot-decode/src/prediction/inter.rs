@@ -682,19 +682,7 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     }
 }
 
-fn validate_compound_sequence_subset(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    offset: ByteOffset,
-) -> Result<()> {
-    if sequence.inter.is_none() {
-        return Err(compound_missing!(
-            "compound_missing_sequence_inter",
-            offset,
-            "inter.sequence_tools",
-            SPEC_MODE_INFO
-        ));
-    }
+fn validate_compound_tip_subset(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
     let tip_frame_mode = core.inter.as_ref().and_then(|inter| inter.tip_frame_mode);
     if !matches!(
         tip_frame_mode,
