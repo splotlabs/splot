@@ -537,11 +537,11 @@ pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSamp
     placed: &PlacedInterBlock,
     offset: ByteOffset,
 ) -> Result<HeldInterBlockReferences<'a, T>> {
-    let slot0 = block_reference_slot(ref_frame_idx, placed.block.ref_frame0, offset)?;
+    let slot0 = block_reference_slot(ref_frame_idx, placed.block.ref_frame0)?;
     let slot1 = placed
         .block
         .ref_frame1
-        .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1, offset))
+        .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1))
         .transpose()?;
     let (reference0, reference1) = hold_reference_pair(reference, slot0, slot1, offset)?;
     Ok(HeldInterBlockReferences {
@@ -595,20 +595,17 @@ impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
     }
 }
 
-fn block_reference_slot(ref_frame_idx: &[u32], ref_frame: i8, offset: ByteOffset) -> Result<u32> {
-    ref_frame_idx
-        .get(ref_frame as usize)
+fn block_reference_slot(ref_frame_idx: &[u32], ref_frame: i8) -> Result<u32> {
+    let list_len = ref_frame_idx.len();
+    usize::try_from(ref_frame)
+        .ok()
+        .and_then(|index| ref_frame_idx.get(index))
         .copied()
-        .ok_or_else(|| block_reference_out_of_range(offset))
+        .ok_or_else(|| block_reference_out_of_range(ref_frame, list_len))
 }
 
-fn block_reference_out_of_range(offset: ByteOffset) -> DecodeError {
-    inter_cap!(
-        "inter_block_ref_frame_out_of_range",
-        offset,
-        "inter.block.ref_frame out of range",
-        SPEC_MODE_INFO
-    )
+fn block_reference_out_of_range(index: i8, list_len: usize) -> DecodeError {
+    DecodeReferenceStateError::ReferenceListIndexOutOfRange { index, list_len }.into()
 }
 
 fn hold_reference_slot<T: ReconSample>(

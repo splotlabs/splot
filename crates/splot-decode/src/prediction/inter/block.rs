@@ -59,7 +59,7 @@ use crate::filters::wienerns_lr::tx_records::{
     derive_inter_luma_tx_records_for_block, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
-use crate::{DecodeOptions, Result};
+use crate::{DecodeOptions, DecodeReferenceStateError, Result};
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
 const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
@@ -1344,7 +1344,14 @@ fn decode_block<T: ReconSample>(
         ));
     }
     if num_total_refs == 0 {
-        return Err(super::block_reference_out_of_range(tile_offset));
+        return Err(crate::pipeline::malformed_tile_payload(
+            tile_offset,
+            SPEC_MODE_INFO,
+            DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: 0,
+                list_len: 0,
+            },
+        ));
     }
     let skip = {
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();

@@ -91,7 +91,7 @@ pub enum DecodeHeaderStateError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeReferenceStateError {
-    /// A compound block selected an entry outside its frame-header reference map.
+    /// An inter block selected an entry outside its frame-header reference map.
     #[error("reference-list index {index} is outside the active {list_len}-entry reference map")]
     ReferenceListIndexOutOfRange {
         /// Zero-based reference-list index selected by block syntax.
