@@ -432,6 +432,30 @@ fn tip_output_core_for_validation() -> (FrameHeaderCore, ByteOffset) {
 }
 
 #[test]
+fn tip_output_quantization_missing_control_is_a_typed_header_state_error() {
+    let (mut sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    sequence
+        .inter
+        .as_mut()
+        .expect("fixture has inter sequence config")
+        .enable_tip_explicit_qp = false;
+    core.quantization_params = None;
+    core.inter = None;
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error =
+        super::super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset)
+            .expect_err("missing TIP inter control");
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::MissingInterControlRegion,
+        }
+    ));
+}
+
+#[test]
 fn truncated_tip_output_header_is_a_malformed_source_diagnostic() {
     let (mut core, offset) = tip_output_core_for_validation();
     core.status = FrameHeaderParseStatus::StoppedInsideInterControl;

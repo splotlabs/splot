@@ -1572,14 +1572,10 @@ fn infer_tip_output_quantization(
     {
         return Ok(());
     }
-    let inter = core.inter.as_ref().ok_or_else(|| {
-        inter_missing!(
-            "tip_output_missing_control",
-            offset,
-            "inter.tip_output.control",
-            SPEC_HEADER
-        )
-    })?;
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let hints = find_mv_stack::reference_order_hints(
         &inter.ref_frame_idx,
         &reference.ref_valid,
