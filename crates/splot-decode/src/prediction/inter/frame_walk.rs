@@ -36,15 +36,6 @@ pub(super) struct InterWalkPrologue<'payload, T: ReconSample> {
     pub(super) quantizer_deltas: splot_recon::QuantizerDeltas,
 }
 
-fn invalid_inter_reference_map(offset: splot_core::span::ByteOffset) -> DecodeError {
-    inter_missing!(
-        "inter_missing_ref_frame_idx",
-        offset,
-        "inter.num_total_refs in 0..=7 with matching inter.ref_frame_idx",
-        SPEC_HEADER
-    )
-}
-
 /// Derives the pending slot's header-known geometry without parsing tile syntax.
 pub(crate) fn inter_frame_info(
     core: &FrameHeaderCore,
@@ -135,10 +126,10 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     let num_total_refs = inter
         .num_total_refs
         .filter(|count| *count <= 7)
-        .ok_or_else(|| invalid_inter_reference_map(offset))?;
+        .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
     let ref_frame_idx = &inter.ref_frame_idx;
     if ref_frame_idx.len() != num_total_refs as usize {
-        return Err(invalid_inter_reference_map(offset));
+        return Err(DecodeHeaderStateError::InvalidInterReferenceMap.into());
     }
     let block_reference_select = tail.reference_select;
     let tile_plan = crate::pipeline::derive_inter_tile_plan(
