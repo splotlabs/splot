@@ -124,14 +124,10 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     })?;
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
-    let inter = core.inter.as_ref().ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_control_region",
-            offset,
-            "inter.control_region",
-            SPEC_HEADER
-        )
-    })?;
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let tail = core
         .inter_tail
         .as_ref()
