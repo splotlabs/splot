@@ -356,12 +356,14 @@ fn resolve_initial_frame_cdfs(
     );
     match cdf_load {
         ResolvedCdfLoad::Default => default_cdfs(),
-        ResolvedCdfLoad::OutOfRangePrimary => Err(inter_cap!(
-            "inter_primary_ref_out_of_range",
-            offset,
-            "inter.primary_ref_frame out of range",
-            SPEC_HEADER
-        )),
+        ResolvedCdfLoad::OutOfRangePrimary {
+            index,
+            reference_count,
+        } => Err(DecodeHeaderStateError::PrimaryReferenceIndexOutOfRange {
+            index,
+            reference_count,
+        }
+        .into()),
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: None,

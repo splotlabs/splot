@@ -2225,7 +2225,13 @@ fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
         1,
     );
     assert!(
-        matches!(load, ResolvedCdfLoad::OutOfRangePrimary),
+        matches!(
+            load,
+            ResolvedCdfLoad::OutOfRangePrimary {
+                index: 6,
+                reference_count: 1
+            }
+        ),
         "a signalled primary >= NumTotalRefs is OutOfRangePrimary (rejected, not Default)"
     );
 }
