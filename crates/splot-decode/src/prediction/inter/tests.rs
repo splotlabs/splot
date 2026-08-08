@@ -48,6 +48,9 @@ const TWO_FRAME_INTER_FIXTURE: &[u8] =
 const SEF_FAMILIES_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-frame-sef-families-64x64.ivf"
 );
+const SINGLE_PICTURE_BRIDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-bridge-single-picture-32x32.ivf"
+);
 
 #[test]
 fn inter_segmentation_admits_only_current_alt_q_maps() {

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
@@ -425,6 +426,54 @@ fn non_output_tip_mode_is_a_malformed_source_diagnostic() {
     };
     assert_eq!(issue.spec_section(), Some("6.17.2"));
     assert_eq!(issue.frame_index(), Some(4));
+}
+
+#[test]
+fn single_picture_tip_obu_is_a_malformed_source_diagnostic() {
+    let (sequence, _) = fixture_sequence_and_key_core(SINGLE_PICTURE_BRIDGE_FIXTURE);
+    assert!(sequence.general.single_picture_header_flag);
+    let parsed = parse_ivf_fixture(SINGLE_PICTURE_BRIDGE_FIXTURE, "single-picture bridge");
+    let (frame_index, mut envelope) = parsed
+        .frames
+        .iter()
+        .enumerate()
+        .find_map(|(frame_index, frame)| {
+            frame
+                .obus
+                .iter()
+                .find(|envelope| {
+                    envelope.header.obu_type == splot_core::types::ObuType::ClosedLoopKey
+                })
+                .copied()
+                .map(|envelope| (frame_index, envelope))
+        })
+        .expect("closed-loop-key OBU");
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    reader.read_bit().expect("is_first_tile_group");
+    let mut payload = BitWriter::new();
+    while reader.remaining_bits() != 0 {
+        payload
+            .write_bit(reader.read_bit().expect("key payload bit"))
+            .expect("TIP payload bit");
+    }
+    let payload = payload.into_bytes();
+    envelope.header.obu_type = splot_core::types::ObuType::RegularTip;
+    envelope.payload = &payload;
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    let error = super::super::parse_validated_inter_frame_core_with_mfh(
+        envelope,
+        &sequence,
+        &reference,
+        true,
+        None,
+        Some(frame_index),
+    )
+    .expect_err("TIP OBU under a single-picture sequence");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.frame_index(), Some(frame_index));
 }
 
 #[test]

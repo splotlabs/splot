@@ -1667,12 +1667,17 @@ fn validate_tip_output_frame_parse(
             ),
         });
     }
+    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
+        return Err(unsupported_at(
+            feature_id,
+            offset,
+            "TIP-output frame header requires unsupported parser coverage",
+            SPEC_HEADER,
+        ));
+    }
     if core.obu_type.is_tip_frame()
-        && core
-            .inter
-            .as_ref()
-            .and_then(|inter| inter.tip_frame_mode)
-            .is_some_and(|mode| mode != TipFrameMode::AsOutput)
+        && core.inter.as_ref().and_then(|inter| inter.tip_frame_mode)
+            != Some(TipFrameMode::AsOutput)
     {
         return Err(DecodeError::MalformedSource {
             issue: DecodeSourceIssue::frame_header_conformance(
@@ -1682,14 +1687,6 @@ fn validate_tip_output_frame_parse(
                 "TIP-frame OBU did not compute TipFrameMode == TIP_FRAME_AS_OUTPUT".to_owned(),
             ),
         });
-    }
-    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
-        return Err(unsupported_at(
-            feature_id,
-            offset,
-            "TIP-output frame header requires unsupported parser coverage",
-            SPEC_HEADER,
-        ));
     }
     Ok(())
 }
