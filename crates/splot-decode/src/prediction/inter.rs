@@ -1463,6 +1463,7 @@ fn validate_and_resolve_inter_frame_core(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
+    validate_inter_frame_parse(core, offset, frame_index)?;
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset)?;
     validate_inter_frame_core(core, sequence, offset)
@@ -1798,6 +1799,34 @@ fn parse_inter_frame_core(
         ),
     })
 }
+
+fn validate_inter_frame_parse(
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    if core.status.is_truncated_in_modeled_region() {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                frame_index,
+                "6.2.1",
+                "inter-frame OBU payload ends inside mandatory frame_header_info() syntax"
+                    .to_owned(),
+            ),
+        });
+    }
+    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
+        return Err(unsupported_at(
+            feature_id,
+            offset,
+            "inter-frame header requires unsupported parser coverage",
+            SPEC_HEADER,
+        ));
+    }
+    Ok(())
+}
+
 fn validate_inter_frame_core(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
@@ -1807,12 +1836,7 @@ fn validate_inter_frame_core(
         return validate_bridge_frame_core(core, offset);
     }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
-        return Err(inter_missing!(
-            "inter_incomplete_frame_header",
-            offset,
-            "inter.frame_header_complete",
-            SPEC_HEADER
-        ));
+        return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
     }
     if core.order_hint.is_none() {
         return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());
