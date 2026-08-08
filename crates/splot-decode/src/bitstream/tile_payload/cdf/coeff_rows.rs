@@ -540,6 +540,7 @@ macro_rules! coeff_cdf_lifecycle_families {
 }
 
 impl CoeffCdfRows {
+    #[cfg(test)]
     pub(crate) fn row(&self, selector: CoeffCdfSelector) -> Result<&[u16], TileCdfError> {
         coeff_cdf_row!(self, selector, as_slice)
     }

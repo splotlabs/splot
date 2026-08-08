@@ -125,7 +125,7 @@ fn base_cdf_facts() -> FrameCandidateCdfFacts {
 }
 
 fn base_coeff_facts() -> FrameCandidateCoeffFacts {
-    FrameCandidateCoeffFacts::new(false, false, false, false, false, false)
+    FrameCandidateCoeffFacts::new(false, false, false, false, false)
 }
 
 fn derive_tile_payload_plan<'a>(
@@ -261,7 +261,7 @@ fn assert_boundary_limit_error(
 }
 
 #[test]
-fn derived_annex_b_tile_payload_preserves_source_offsets_and_boundary() {
+fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
     let bytes = annex_b_tile_group_obu();
     let ctx = single_thread_context();
     let plan = derive_annex_b_tile_payload_plan(
@@ -272,23 +272,13 @@ fn derived_annex_b_tile_payload_preserves_source_offsets_and_boundary() {
     )
     .unwrap();
 
-    assert_eq!(plan.source().source_kind(), DecodeObuSourceKind::AnnexB);
-    assert_eq!(plan.source().ivf_frame(), None);
-    assert_eq!(plan.source().obu_index(), 0);
-    assert_eq!(plan.source().obu_offset(), ByteOffset::new(1));
-    assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
     assert_eq!(plan.work_units().len(), 1);
     let unit = &plan.work_units()[0];
     assert_eq!(unit.tile_bytes(), &[0x80, 0x00]);
     assert_eq!(unit.tile_byte_span(), ByteSpan::new(ByteOffset::new(3), 2));
     assert_eq!(unit.mi_row_range(), 0..8);
     assert_eq!(unit.mi_col_range(), 0..16);
-    assert_eq!(unit.current_q_index_at_entry(), 42);
     assert_first_work_unit_cdf_update(&plan, CdfUpdateMode::Enabled);
-    assert_eq!(
-        plan.unsupported().reason(),
-        TilePayloadUnsupportedReason::DecodeTileSyntax
-    );
     assert!(plan.frame_end().reaches_last_tile_group());
 }
 
@@ -329,7 +319,7 @@ fn derived_annex_b_multi_tile_payload_retains_tile_work_units() {
 }
 
 #[test]
-fn derived_ivf_tile_payload_preserves_frame_context_and_offsets() {
+fn derived_ivf_tile_payload_preserves_tile_offsets() {
     let frame_payload = annex_b_tile_group_obu();
     let bytes = ivf_with_payload(&frame_payload);
     let ctx = single_thread_context();
@@ -344,14 +334,6 @@ fn derived_ivf_tile_payload_preserves_frame_context_and_offsets() {
     )
     .unwrap();
 
-    assert_eq!(plan.source().source_kind(), DecodeObuSourceKind::Ivf);
-    assert_eq!(plan.source().obu_index(), 0);
-    assert_eq!(plan.source().obu_offset(), ByteOffset::new(45));
-    let frame = plan.source().ivf_frame().unwrap();
-    assert_eq!(frame.frame_index(), 0);
-    assert_eq!(frame.frame_header_offset(), ByteOffset::new(32));
-    assert_eq!(frame.frame_payload_offset(), ByteOffset::new(44));
-    assert_eq!(frame.frame_payload_size(), frame_payload.len() as u32);
     assert_eq!(
         plan.work_units()[0].tile_byte_span(),
         ByteSpan::new(ByteOffset::new(47), 2)
@@ -413,7 +395,6 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
     let quant = fixture.core.quantization_params.unwrap();
 
     assert_eq!(coeff_facts.enable_fsc(), tq.enable_fsc);
-    assert_eq!(coeff_facts.enable_idtx_intra(), tq.enable_idtx_intra);
     assert_eq!(coeff_facts.enable_intra_ist(), tq.enable_intra_ist);
     assert_eq!(coeff_facts.enable_inter_ist(), tq.enable_inter_ist);
     assert_eq!(

@@ -205,11 +205,6 @@ impl MinimalClosedLoopReconstruction {
         self.quantized_block.quantized()
     }
 
-    /// Returns row-major dequantized coefficients from `splot-recon`.
-    pub(crate) const fn dequantized(&self) -> &[i32; DCT_DCT_4X4_COEFF_COUNT] {
-        self.quantized_block.dequantized()
-    }
-
     /// Returns the decoder-visible reconstructed samples.
     pub(crate) const fn reconstructed(&self) -> &[u8; DCT_DCT_4X4_COEFF_COUNT] {
         &self.reconstructed

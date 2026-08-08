@@ -407,9 +407,9 @@ impl Context {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::config::{BitDepth, ChromaSubsampling};
+    use crate::config::{BitDepth, ChromaSubsampling, DEFAULT_QP};
     use splot_parallel::ThreadCount;
-    use splot_recon::{PlaneId, PlaneRect, PlaneSize};
+    use splot_recon::{PlaneRect, PlaneSize};
 
     fn size(width: usize, height: usize) -> PlaneSize {
         PlaneSize::new(width, height).unwrap()
@@ -460,7 +460,7 @@ mod tests {
             matches!(&status, ReceivePacketStatus::Packet(packet)
                 if !packet.data.is_empty()
                     && packet.data
-                        == crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit()
+                        == crate::general_intra_trace::emit_minimal_intra_skip_temporal_unit_with_base_q_idx(DEFAULT_QP)
                             .unwrap()),
             "expected the minimal skip access unit, got {status:?}"
         );
@@ -621,62 +621,6 @@ mod tests {
         );
         assert_eq!(ctx.state(), EncoderState::Accepting);
         assert_eq!(ctx.queued_input_frames(), 0);
-        assert_eq!(ctx.queued_output_packets(), 0);
-    }
-
-    #[test]
-    fn syntax_and_header_planning_do_not_enable_packet_output() {
-        let mut ctx = Context::new(
-            EncoderConfig::new(2, 2),
-            EncoderRuntimeConfig::default()
-                .with_speed_preset(SpeedPreset::try_from_u8(10).unwrap()),
-        )
-        .unwrap();
-        let y = [0_u8; 4];
-        let u = [0_u8; 1];
-        let v = [0_u8; 1];
-        let input = frame(&y, &u, &v);
-
-        assert!(crate::header_plan::MinimalHeaderPlan::new(ctx.config(), input.info()).is_ok());
-        let residual = crate::residual::ResidualBlock::from_plane_prediction(
-            PlaneId::Y,
-            input.y(),
-            rect(2, 2),
-            &[0; 4],
-            2,
-        )
-        .unwrap();
-        assert_eq!(residual.samples(), &[0, 0, 0, 0]);
-        let transformed = crate::forward_transform::ForwardTransformBlock::dct_dct_4x4_dc_only(
-            PlaneId::Y,
-            rect(4, 4),
-            &[0; 16],
-        )
-        .unwrap();
-        assert_eq!(transformed.coefficients(), &[0; 16]);
-        let quantized = crate::quantization::QuantizedTransformBlock::dct_dct_4x4_dc_only(
-            &transformed,
-            crate::quantization::FixedQuantizationParams::new(splot_recon::BitDepth::Eight, 0)
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(quantized.quantized(), &[0; 16]);
-        assert_eq!(quantized.dequantized(), &[0; 16]);
-        let tokenized =
-            crate::coefficient_tokenization::tokenize_quantized_4x4_dct_dct_dc_only(&quantized)
-                .unwrap();
-        assert_eq!(tokenized.eob(), 0);
-        assert_eq!(tokenized.tokens().len(), 1);
-
-        assert!(matches!(
-            ctx.send_frame(&input).unwrap(),
-            SendFrameStatus::Accepted { .. }
-        ));
-        assert_eq!(ctx.queued_output_packets(), 0);
-        assert_eq!(
-            ctx.receive_packet().unwrap(),
-            ReceivePacketStatus::NeedMoreData
-        );
         assert_eq!(ctx.queued_output_packets(), 0);
     }
 

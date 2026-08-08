@@ -219,7 +219,6 @@ fn arbitrary_seq_view() -> impl Strategy<Value = CoreSeqView> {
                         enable_tip_refinemv: flags[0] && (scc.1 != 0 || flags[2]),
                         seq_max_drl_bits_minus_1: u32::from(scc.0),
                         allow_frame_max_drl_bits: scc.2,
-                        enable_flex_mvres: flags[1],
                         seq_frame_motion_modes_present_flag: flags[2],
                         seq_enabled_motion_modes: [false, flags[0], flags[1], flags[2], false],
                         enable_opfl_refine: scc.1,

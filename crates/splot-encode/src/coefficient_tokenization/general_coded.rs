@@ -208,11 +208,6 @@ pub(crate) fn general_intra_32x32_chroma_u_dc_coded_tokens(
     Ok(tokens)
 }
 
-/// The § 8.3.2 neutral V `txb_skip` context: `0`. For a V-only-coded block the chroma block
-/// equals its transform and the U plane is skipped (`EobU == 0`), so neither the
-/// chroma-larger-than-tx (`+3`) nor the `EobU != 0` (`+6`) term applies.
-const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
-
 /// Returns the three AV2 § 5.20.7.27 coded chroma V DC CDF tokens for the **general** intra
 /// decode path's `TX_32X32` chroma transform: a single nonzero DC of unsigned `magnitude`
 /// (`1..=MAX_BASE_EOB_MAGNITUDE`, the base tier — no `coeff_br`/golomb).

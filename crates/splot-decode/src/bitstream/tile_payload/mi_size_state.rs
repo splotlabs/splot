@@ -73,6 +73,7 @@ impl TileMiSizeState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         mi_rows: usize,
         mi_cols: usize,
@@ -286,11 +287,13 @@ pub(crate) struct TileMiSizeStateAllocation {
 
 impl TileMiSizeStateAllocation {
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn padded_rows(self) -> usize {
         self.padded_rows
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn padded_cols(self) -> usize {
         self.padded_cols
     }

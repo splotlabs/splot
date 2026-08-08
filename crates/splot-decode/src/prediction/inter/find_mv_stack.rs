@@ -102,7 +102,6 @@ pub(crate) use warp_bank::{WarpParamBank, WarpParamStack};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
 pub(crate) enum MotionMode {
     Simple,
-    #[allow(dead_code)]
     InterIntra,
     LocalWarp,
     DeltaWarp,
@@ -373,7 +372,6 @@ pub(crate) struct BlockNeighbourContext {
     pub(crate) is_inter_ctx: usize,
     pub(crate) skip_mode_ctx: usize,
     pub(crate) skip_ctx: usize,
-    pub(crate) has_neighbour: bool,
     ref_counts: [u8; BlockNeighbourContext::MAX_NEIGHBOUR_REFS],
     cells: [NeighbourFlags; 2],
     cell_count: usize,
@@ -640,7 +638,6 @@ pub(crate) fn block_neighbour_ctx(
         is_inter_ctx,
         skip_mode_ctx,
         skip_ctx,
-        has_neighbour: num_buf >= 1,
         ref_counts,
         cells: buf,
         cell_count: num_buf,

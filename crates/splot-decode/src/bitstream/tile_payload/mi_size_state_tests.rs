@@ -260,11 +260,13 @@ fn context_state_view_is_available_after_mutation() {
     state.update_luma_block(0, 0, block(BLOCK_64X64)).unwrap();
     state.update_chroma_block(4, 4, block(BLOCK_8X8)).unwrap();
 
-    let expected = TilePartitionContextState::new(
+    let expected = TilePartitionContextState::new_at(
         state.mi_sizes_plane(0),
         state.mi_size_stride,
         [state.left_plane(0), state.left_plane(1)],
         [state.above_plane(0), state.above_plane(1)],
+        0,
+        0,
     );
 
     assert_eq!(state.context_state(), expected);

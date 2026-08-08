@@ -443,7 +443,6 @@ mod tests {
         let fixture = [0x10, 0x20, 0x30];
         std::fs::create_dir_all(root.join("tests/fixtures")).unwrap();
         std::fs::write(root.join("tests/fixtures/sample.av2"), fixture).unwrap();
-        let vector = [0u8; 44]; // 32-byte header + one zero-length frame header
         std::fs::create_dir_all(root.join("tests/conformance/vectors/valid")).unwrap();
         let mut ivf = Vec::new();
         ivf.extend_from_slice(b"DKIF");
@@ -455,8 +454,6 @@ mod tests {
         ivf.extend_from_slice(&0u64.to_le_bytes());
         ivf.extend_from_slice(&[0x77, 0x88, 0x99]);
         std::fs::write(root.join("tests/conformance/vectors/valid/v.ivf"), &ivf).unwrap();
-        let _ = vector;
-
         let targets = vec!["parse_ivf".to_string(), "validate_bytes".to_string()];
         let summary = seed_corpus(&root, &targets).unwrap();
         assert_eq!(summary.fixtures, 1);

@@ -29,9 +29,6 @@ use crate::quantization_shared::{
     dequantize_coefficients, quantize_coefficients, validate_quantization_shape, zero_deltas,
 };
 
-#[allow(unused_imports)]
-pub(crate) use crate::quantization_16x16::QuantizedTransformBlock16x16;
-
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;

@@ -1050,10 +1050,6 @@ fn block0_has_no_inter_neighbours_so_context_is_zero() {
     assert_eq!(nctx.is_inter_ctx, 0, "no-neighbour is_inter ctx");
     assert_eq!(nctx.skip_mode_ctx, 0, "no-neighbour skip_mode ctx");
     assert_eq!(nctx.skip_ctx, 0, "no-neighbour skip ctx");
-    assert!(
-        !nctx.has_neighbour,
-        "top-left block has no decoded neighbour"
-    );
 
     let stack = find_mv_stack(
         &grid,
@@ -1181,10 +1177,6 @@ fn interp_filter_context_suppresses_above_neighbours_at_sb_top() {
     let block = sb_block_at(N4_64, 0);
 
     let nctx = block_neighbour_ctx(&grid, &block);
-    assert!(
-        nctx.has_neighbour,
-        "the NPosBuf list keeps the above-superblock neighbour"
-    );
     assert_eq!(
         nctx.interp_filter_ctx(0, false),
         SWITCHABLE_FILTERS as usize,
@@ -1252,7 +1244,6 @@ fn block1_predicts_block0_mv_via_left_neighbour() {
         nctx.skip_mode_ctx, 0,
         "regular skip neighbours do not affect skip_mode ctx"
     );
-    assert!(nctx.has_neighbour, "block 1 has a decoded left neighbour");
 
     let stack = find_mv_stack(
         &grid,
@@ -1625,10 +1616,6 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
     assert_eq!(ctx.new_mv_context, 3, "above-SB NewMvContext");
 
     let nctx = block_neighbour_ctx(&grid, &sb2);
-    assert!(
-        nctx.has_neighbour,
-        "the NPosBuf list keeps the decoded above SB across the SB-row boundary"
-    );
     assert_eq!(
         nctx.skip_ctx, 2,
         "skip context counts both above-SB NPosBuf neighbours"
@@ -1655,12 +1642,6 @@ fn second_sb_row_block_predicts_above_sb_mv_across_sb_row_boundary() {
 fn undecoded_later_sb_column_yields_no_candidate() {
     let grid = empty_sb_grid();
     let sb1 = sb_block_at(0, N4_64);
-
-    let nctx = block_neighbour_ctx(&grid, &sb1);
-    assert!(
-        !nctx.has_neighbour,
-        "an SB whose neighbours are all undecoded has no neighbour"
-    );
 
     let stack = find_mv_stack(
         &grid,
@@ -1692,12 +1673,6 @@ fn bottom_right_sb_predicts_from_decoded_above_and_left() {
     record_sb(&mut grid, N4_64, 0, false, BLOCK0_MV, true);
     let sb3 = sb_block_at(N4_64, N4_64);
 
-    let nctx = block_neighbour_ctx(&grid, &sb3);
-    assert!(
-        nctx.has_neighbour,
-        "SB3 has decoded above + left neighbours"
-    );
-
     let stack = find_mv_stack(
         &grid,
         &sb3,
@@ -1720,10 +1695,6 @@ fn single_ref_ctx_no_neighbour_is_one() {
     let grid = empty_grid();
     let block0 = block_at(0, 0);
     let nctx = block_neighbour_ctx(&grid, &block0);
-    assert!(
-        !nctx.has_neighbour,
-        "top-left block has no decoded neighbour"
-    );
     assert_eq!(
         nctx.single_ref_ctx(0, 2),
         Some(1),
@@ -1736,7 +1707,6 @@ fn single_ref_ctx_counts_a_ref0_neighbour() {
     let grid = grid_with_block0();
     let block1 = block_at(0, N4_32);
     let nctx = block_neighbour_ctx(&grid, &block1);
-    assert!(nctx.has_neighbour, "block 1 has a decoded neighbour");
     assert_eq!(
         nctx.single_ref_ctx(0, 2),
         Some(2),

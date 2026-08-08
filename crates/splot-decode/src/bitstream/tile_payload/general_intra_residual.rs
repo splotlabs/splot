@@ -30,7 +30,7 @@ use super::coeff_loop::fsc_quant_pass::{
 use super::coeff_loop::max_level::CoeffTransformClass;
 use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
-    CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchModeToTxfmBaseConfig,
+    CoeffOrdinaryBranchModeToTxfmBaseConfig, CoeffOrdinaryBranchTxSetBaseConfig,
     CoeffOrdinaryStagedLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
     apply_staged_nonzero_coeff_ordinary_branch_from_lossless, lossless_plane_tx_type,
     read_lossless_inter_plane_tx_type, resolve_mode_to_txfm_plane_tx_type,
@@ -65,11 +65,15 @@ pub(crate) use reconstruct::{
 };
 
 const TX_4X4: usize = 0;
+#[cfg(test)]
 const TX_64X64: usize = 4;
 const TX_8X8: usize = 1;
+#[cfg(test)]
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
+#[cfg(test)]
 const TX_8X4: usize = 6;
+#[cfg(test)]
 const TX_8X16: usize = 7;
 const IST_4X4_HEIGHT: usize = 8;
 const IST_8X8_HEIGHT_RED: usize = 20;
@@ -395,15 +399,6 @@ impl LumaTransformTypeContext {
     }
 
     #[must_use]
-    pub(crate) const fn with_mrl_index(
-        y_mode: IntraYMode,
-        angle_delta_y: i8,
-        mrl_index: u8,
-    ) -> Self {
-        Self::with_mrl_indices(y_mode, angle_delta_y, mrl_index, None, None)
-    }
-
-    #[must_use]
     pub(crate) const fn with_mrl_indices(
         y_mode: IntraYMode,
         angle_delta_y: i8,
@@ -524,10 +519,6 @@ pub(crate) enum GeneralIntraResidualError {
         "general intra directional prediction over a real above-neighbour edge is missing its §7.13.2.1 corner sample"
     )]
     UnsupportedDirectionalAboveEdge,
-    #[error(
-        "general intra cardinal (V_PRED/H_PRED) mode reached the middle-angle path; it must be dispatched to the cardinal copy reconstruction"
-    )]
-    CardinalModeInMiddleAnglePath,
 }
 
 fn or_u8(line: &[u8], start: usize, len: usize) -> u8 {
@@ -1141,7 +1132,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     let plane_tx_type =
         staged_transform_tool_plane_tx_type(geometry, is_inter, lossless, base_config)?;
     if use_fsc {
-        let pass = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
+        let block = apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
             context,
             work_unit.cdf_mut().tile_cdfs_mut(),
             symbols,
@@ -1156,8 +1147,8 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
         return Ok(LumaCoeffBlock {
             all_zero: false,
-            eob: pass.eob_read().eob().eob(),
-            quant: pass.into_block().into_quant(),
+            eob,
+            quant: block.into_quant(),
             intra_ist: metadata.intra_ist,
             cctx_type: metadata.cctx_type,
             plane_tx_type,
@@ -1165,7 +1156,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
             lossless,
         });
     }
-    let pass = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
+    let block = apply_staged_nonzero_coeff_ordinary_branch_from_lossless(
         context,
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
@@ -1182,7 +1173,7 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     Ok(LumaCoeffBlock {
         all_zero: false,
         eob,
-        quant: pass.into_block().into_quant(),
+        quant: block.into_quant(),
         intra_ist: metadata.intra_ist,
         cctx_type: metadata.cctx_type,
         plane_tx_type,
@@ -1199,7 +1190,7 @@ fn staged_transform_tool_lossless_base_config(
     chroma_inter_tx_type: usize,
     lossless: bool,
     metadata: TransformToolResidualMetadata,
-) -> CoeffOrdinaryBranchLosslessBaseConfig {
+) -> CoeffOrdinaryBranchTxSetBaseConfig {
     let luma_tx_class = CoeffTransformClass::from_plane_tx_type(metadata.luma_tx_type);
     let luma_transform_block = plane == 0;
     let parity_hiding = frame_facts.allow_parity_hiding()
@@ -1210,7 +1201,7 @@ fn staged_transform_tool_lossless_base_config(
         && !lossless
         && luma_transform_block
         && luma_tx_class == CoeffTransformClass::TwoD;
-    CoeffOrdinaryBranchLosslessBaseConfig {
+    CoeffOrdinaryBranchTxSetBaseConfig {
         reduced_tx_set: frame_facts.reduced_tx_set(),
         enable_chroma_dctonly: frame_facts.enable_chroma_dctonly(),
         uv_mode,
@@ -1226,7 +1217,7 @@ fn staged_transform_tool_plane_tx_type(
     geometry: CoeffOrdinaryTxSizeGeometryConfig,
     is_inter: bool,
     lossless: bool,
-    base_config: CoeffOrdinaryBranchLosslessBaseConfig,
+    base_config: CoeffOrdinaryBranchTxSetBaseConfig,
 ) -> Result<usize, GeneralIntraResidualError> {
     if lossless {
         return Ok(lossless_plane_tx_type(geometry, is_inter, base_config));
@@ -1945,65 +1936,6 @@ fn unsupported_transform_tool_residual<T>(
     reason: &'static str,
 ) -> Result<T, GeneralIntraResidualError> {
     Err(unsupported_transform_tool_residual_error(reason))
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect_with_prediction<T: ReconSample>(
-    quant: &[i32],
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
-    plane_tx_type: usize,
-    use_tcq: bool,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    reconstruct_general_intra_block_rect_with_prediction_and_ddt(
-        quant,
-        prediction,
-        qindex,
-        plane_id,
-        log2_width,
-        log2_height,
-        plane_tx_type,
-        use_tcq,
-        false,
-        bit_depth,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn reconstruct_general_intra_block_rect_with_prediction_and_ddt<T: ReconSample>(
-    quant: &[i32],
-    prediction: &[T],
-    qindex: u32,
-    plane_id: PlaneId,
-    log2_width: u32,
-    log2_height: u32,
-    plane_tx_type: usize,
-    use_tcq: bool,
-    use_ddt: bool,
-    bit_depth: BitDepth,
-) -> Result<Vec<T>, GeneralIntraResidualError> {
-    let mut out = Vec::new();
-    reconstruct_general_intra_block_rect_with_prediction_core(
-        quant,
-        prediction,
-        &mut out,
-        qindex,
-        plane_id,
-        log2_width,
-        log2_height,
-        plane_tx_type,
-        use_tcq,
-        use_ddt,
-        false,
-        None,
-        None,
-        bit_depth,
-    )?;
-    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]

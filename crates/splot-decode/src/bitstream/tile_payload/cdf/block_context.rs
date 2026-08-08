@@ -8,26 +8,6 @@ pub(crate) const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
 const DC_PRED: usize = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct YModeIndexContext {
-    left_joint_mode: usize,
-    above_joint_mode: usize,
-}
-
-impl YModeIndexContext {
-    pub(crate) const fn tile_origin_block() -> Self {
-        Self {
-            left_joint_mode: DC_PRED,
-            above_joint_mode: DC_PRED,
-        }
-    }
-
-    pub(crate) const fn ctx(self) -> usize {
-        (self.left_joint_mode >= NON_DIRECTIONAL_MODES_COUNT) as usize
-            + (self.above_joint_mode >= NON_DIRECTIONAL_MODES_COUNT) as usize
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntraYMode(u8);
 
 impl IntraYMode {
@@ -35,19 +15,13 @@ impl IntraYMode {
 
     const V_PRED: u8 = 1;
     const H_PRED: u8 = 2;
-    const D45_PRED: u8 = 3;
-    const D67_PRED: u8 = 8;
-    const D203_PRED: u8 = 7;
-    const D113_PRED: u8 = 5;
-    const D135_PRED: u8 = 4;
-    const D157_PRED: u8 = 6;
     const SMOOTH_PRED: u8 = 9;
     const SMOOTH_V_PRED: u8 = 10;
     const SMOOTH_H_PRED: u8 = 11;
     const PAETH_PRED: u8 = 12;
 
     pub(crate) const fn is_directional(self) -> bool {
-        self.0 >= Self::V_PRED && self.0 <= Self::D67_PRED
+        self.0 >= Self::V_PRED && self.0 <= 8
     }
 
     pub(crate) fn mode_to_angle(self) -> Option<u16> {
@@ -84,35 +58,28 @@ impl IntraYMode {
     pub(crate) const H_PRED_FOR_TEST: Self = Self(Self::H_PRED);
 
     #[cfg(test)]
-    pub(crate) const D45_PRED_FOR_TEST: Self = Self(Self::D45_PRED);
+    pub(crate) const D45_PRED_FOR_TEST: Self = Self(3);
 
     #[cfg(test)]
-    pub(crate) const D67_PRED_FOR_TEST: Self = Self(Self::D67_PRED);
+    pub(crate) const D67_PRED_FOR_TEST: Self = Self(8);
 
     #[cfg(test)]
     pub(crate) const SMOOTH_PRED_FOR_TEST: Self = Self(Self::SMOOTH_PRED);
 
     #[cfg(test)]
-    pub(crate) const D203_PRED_FOR_TEST: Self = Self(Self::D203_PRED);
+    pub(crate) const D203_PRED_FOR_TEST: Self = Self(7);
 
     #[cfg(test)]
-    pub(crate) const D135_PRED_FOR_TEST: Self = Self(Self::D135_PRED);
+    pub(crate) const D135_PRED_FOR_TEST: Self = Self(4);
 
     #[cfg(test)]
-    pub(crate) const D113_PRED_FOR_TEST: Self = Self(Self::D113_PRED);
+    pub(crate) const D113_PRED_FOR_TEST: Self = Self(5);
 
     #[cfg(test)]
-    pub(crate) const D157_PRED_FOR_TEST: Self = Self(Self::D157_PRED);
+    pub(crate) const D157_PRED_FOR_TEST: Self = Self(6);
 
     pub(crate) fn supported_nondc(self) -> Option<SupportedNonDcLumaMode> {
         SUPPORTED_NONDC_LUMA_BY_MODE
-            .get(self.value())
-            .copied()
-            .flatten()
-    }
-
-    pub(crate) fn supported_directional(self) -> Option<SupportedDirectionalLumaMode> {
-        SUPPORTED_DIRECTIONAL_LUMA_BY_MODE
             .get(self.value())
             .copied()
             .flatten()
@@ -143,29 +110,10 @@ const SUPPORTED_NONDC_LUMA_BY_MODE: [Option<SupportedNonDcLumaMode>; 13] = [
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedDirectionalLumaMode {
-    Vertical,
-    Horizontal,
     D113,
     D135,
     D157,
-    D45,
-    D203,
-    D67,
 }
-
-#[rustfmt::skip]
-const SUPPORTED_DIRECTIONAL_LUMA_BY_MODE: [Option<SupportedDirectionalLumaMode>; 13] = [
-    None,
-    Some(SupportedDirectionalLumaMode::Vertical),
-    Some(SupportedDirectionalLumaMode::Horizontal),
-    Some(SupportedDirectionalLumaMode::D45),
-    Some(SupportedDirectionalLumaMode::D135),
-    Some(SupportedDirectionalLumaMode::D113),
-    Some(SupportedDirectionalLumaMode::D157),
-    Some(SupportedDirectionalLumaMode::D203),
-    Some(SupportedDirectionalLumaMode::D67),
-    None, None, None, None,
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedChromaMode {

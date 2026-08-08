@@ -39,9 +39,6 @@ use crate::forward_transform_shared::{
     forward_dct_dct_square, validate_forward_input_length, validate_forward_shape,
 };
 
-#[allow(unused_imports)]
-pub(crate) use crate::forward_transform_16x16::ForwardTransformBlock16x16;
-
 const DCT_DCT_4X4_WIDTH: usize = 4;
 const DCT_DCT_4X4_HEIGHT: usize = 4;
 const DCT_DCT_4X4_COEFF_COUNT: usize = DCT_DCT_4X4_WIDTH * DCT_DCT_4X4_HEIGHT;

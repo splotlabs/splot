@@ -55,18 +55,8 @@ impl CoeffBaseFirstPassSummary {
     }
 
     #[must_use]
-    pub(crate) const fn num_nonzero(self) -> usize {
-        self.num_nonzero
-    }
-
-    #[must_use]
     pub(crate) const fn is_hidden(self) -> bool {
         self.is_hidden
-    }
-
-    #[must_use]
-    pub(crate) const fn tcq_state(self) -> usize {
-        self.tcq_state
     }
 
     fn update_after_level(
@@ -97,25 +87,14 @@ impl CoeffBaseFirstPassSummary {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffBaseDerivedLevelPass {
-    eob_read: NonZeroCoeffEobSymbolRead,
     first_pass: CoeffBaseFirstPassSummary,
     block: TransformCoeffBlockState,
 }
 
 impl NonZeroCoeffBaseDerivedLevelPass {
     #[must_use]
-    pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
-        self.eob_read
-    }
-
-    #[must_use]
     pub(crate) const fn first_pass(&self) -> CoeffBaseFirstPassSummary {
         self.first_pass
-    }
-
-    #[must_use]
-    pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
-        &self.block
     }
 
     #[must_use]
@@ -170,16 +149,12 @@ pub(crate) fn apply_nonzero_coeff_base_derived_level_pass(
     let mut first_pass = CoeffBaseFirstPassSummary::default();
     for (index, entry) in walk.entries().enumerate() {
         let input = derive_base_symbol_input(index, entry, &block, first_pass, config);
-        let read = read_coeff_base_symbol(cdfs, symbols, input)?;
-        first_pass.update_after_level(entry, read.level(), config)?;
-        block.set_level(entry.row(), entry.col(), read.level())?;
+        let level = read_coeff_base_symbol(cdfs, symbols, input)?;
+        first_pass.update_after_level(entry, level, config)?;
+        block.set_level(entry.row(), entry.col(), level)?;
     }
 
-    Ok(NonZeroCoeffBaseDerivedLevelPass {
-        eob_read,
-        first_pass,
-        block,
-    })
+    Ok(NonZeroCoeffBaseDerivedLevelPass { first_pass, block })
 }
 
 fn preflight_pass(
@@ -247,7 +222,6 @@ fn derive_base_symbol_input(
     };
 
     CoeffBaseSymbolReadInput {
-        entry,
         base,
         base_levels,
         base_range,

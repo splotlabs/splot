@@ -368,8 +368,6 @@ pub(crate) struct InterSeqView {
     pub seq_max_drl_bits_minus_1: u32,
     /// `allow_frame_max_drl_bits` (§ 5.4.6).
     pub allow_frame_max_drl_bits: bool,
-    /// `enable_flex_mvres` (§ 5.4.6) — derives `UsePerBlockMvPrecision` (no bits).
-    pub enable_flex_mvres: bool,
     /// `seq_frame_motion_modes_present_flag` (§ 5.4.6).
     pub seq_frame_motion_modes_present_flag: bool,
     /// `seq_enabled_motion_modes[INTERINTRA..MOTION_MODES]` (§ 5.4.6).
@@ -914,7 +912,6 @@ fn parse_inter_reference_region(
     };
     control.mv_precision = Some(mv_precision);
     control.force_integer_mv = Some(scc.force_integer_mv);
-    let _ = seq.enable_flex_mvres;
 
     control.interpolation_filter = Some(read_interpolation_filter(reader)?);
 
@@ -1130,7 +1127,6 @@ mod tests {
             enable_tip_refinemv: false,
             seq_max_drl_bits_minus_1: 0,
             allow_frame_max_drl_bits: false,
-            enable_flex_mvres: false,
             seq_frame_motion_modes_present_flag: false,
             seq_enabled_motion_modes: [false; MOTION_MODES],
             enable_opfl_refine: 0,

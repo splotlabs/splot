@@ -11,10 +11,7 @@ use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::idtx_sign_ctx;
 use super::super::cdf::{CoeffCdfSelector, TileCdfSelector, TileCdfSubset};
 use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
-use super::NonZeroCoeffEobSymbolRead;
-use super::fsc_level_pass::{
-    CoeffFscLevelPassConfig, CoeffFscLevelRead, NonZeroCoeffFscLevelPass, expected_fsc_entry_pos,
-};
+use super::fsc_level_pass::{CoeffFscLevelPassConfig, expected_fsc_entry_pos};
 use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffFscSignReadSource {
@@ -24,80 +21,18 @@ pub(crate) enum CoeffFscSignReadSource {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffFscSignReadInput {
-    pub(crate) entry: CoeffScanEntry,
     pub(crate) level: u32,
     pub(crate) source: CoeffFscSignReadSource,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffFscSignReadSymbol {
-    None,
-    IdtxSign { symbol: u8 },
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffFscSignRead {
-    entry: CoeffScanEntry,
-    level: u32,
-    symbol: CoeffFscSignReadSymbol,
     sign: bool,
 }
 
 impl CoeffFscSignRead {
     #[must_use]
-    pub(crate) const fn entry(self) -> CoeffScanEntry {
-        self.entry
-    }
-    #[must_use]
-    pub(crate) const fn level(self) -> u32 {
-        self.level
-    }
-    #[must_use]
-    pub(crate) const fn symbol(self) -> CoeffFscSignReadSymbol {
-        self.symbol
-    }
-    #[must_use]
     pub(crate) const fn sign(self) -> bool {
         self.sign
-    }
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct NonZeroCoeffFscSignPass {
-    eob_read: NonZeroCoeffEobSymbolRead,
-    level_walk: FscCoeffScanWalk,
-    level_reads: Vec<CoeffFscLevelRead>,
-    sign_entries: Vec<CoeffScanEntry>,
-    sign_inputs: Vec<CoeffFscSignReadInput>,
-    sign_reads: Vec<CoeffFscSignRead>,
-    block: TransformCoeffBlockState,
-}
-
-impl NonZeroCoeffFscSignPass {
-    #[must_use]
-    pub(crate) const fn eob_read(&self) -> NonZeroCoeffEobSymbolRead {
-        self.eob_read
-    }
-    #[must_use]
-    pub(crate) const fn level_walk(&self) -> &FscCoeffScanWalk {
-        &self.level_walk
-    }
-    #[must_use]
-    pub(crate) fn level_reads(&self) -> &[CoeffFscLevelRead] {
-        &self.level_reads
-    }
-    #[must_use]
-    pub(crate) fn sign_entries(&self) -> &[CoeffScanEntry] {
-        &self.sign_entries
-    }
-    #[must_use]
-    pub(crate) fn sign_inputs(&self) -> &[CoeffFscSignReadInput] {
-        &self.sign_inputs
-    }
-    #[must_use]
-    pub(crate) fn sign_reads(&self) -> &[CoeffFscSignRead] {
-        &self.sign_reads
-    }
-    #[must_use]
-    pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
-        &self.block
     }
 }
 #[derive(Debug, thiserror::Error)]
@@ -135,41 +70,6 @@ pub(crate) enum CoeffFscSignPassError {
     SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient FSC sign state error: {0}")]
     State(#[from] TileCoeffStateError),
-}
-
-pub(crate) fn apply_nonzero_coeff_fsc_sign_pass(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    level_pass: NonZeroCoeffFscLevelPass,
-    scan: &[u16],
-    config: CoeffFscLevelPassConfig,
-) -> Result<NonZeroCoeffFscSignPass, CoeffFscSignPassError> {
-    let (eob_read, level_walk, _level_inputs, level_reads, mut block) = level_pass.into_parts();
-    let sign_entries = checked_fsc_sign_entries(&block, &level_walk, scan, config)?;
-    let mut sign_inputs = Vec::new();
-    let mut sign_reads = Vec::new();
-    sign_inputs.try_reserve(sign_entries.len())?;
-    sign_reads.try_reserve(sign_entries.len())?;
-
-    for entry in sign_entries.iter().copied() {
-        let input = derive_fsc_sign_input(entry, &block, config)?;
-        let read = read_fsc_sign_symbol(cdfs, symbols, input)?;
-        if input.level != 0 {
-            block.set_quant_sign(entry.row(), entry.col(), quant_sign_value(read.sign()))?;
-        }
-        sign_inputs.push(input);
-        sign_reads.push(read);
-    }
-
-    Ok(NonZeroCoeffFscSignPass {
-        eob_read,
-        level_walk,
-        level_reads,
-        sign_entries,
-        sign_inputs,
-        sign_reads,
-        block,
-    })
 }
 
 pub(crate) fn checked_fsc_sign_entries(
@@ -269,11 +169,7 @@ pub(crate) fn derive_fsc_sign_input(
             },
         }
     };
-    Ok(CoeffFscSignReadInput {
-        entry,
-        level,
-        source,
-    })
+    Ok(CoeffFscSignReadInput { level, source })
 }
 
 pub(crate) fn read_fsc_sign_symbol(
@@ -281,21 +177,16 @@ pub(crate) fn read_fsc_sign_symbol(
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffFscSignReadInput,
 ) -> Result<CoeffFscSignRead, CoeffFscSignPassError> {
-    let (symbol, sign) = match input.source {
+    let sign = match input.source {
         CoeffFscSignReadSource::IdtxSign { selector } => {
             let symbol = cdfs
                 .read_block_symbol_trace(TileCdfSelector::Coeff(selector), symbols)?
                 .get();
-            (CoeffFscSignReadSymbol::IdtxSign { symbol }, symbol != 0)
+            symbol != 0
         }
-        CoeffFscSignReadSource::None => (CoeffFscSignReadSymbol::None, false),
+        CoeffFscSignReadSource::None => false,
     };
-    Ok(CoeffFscSignRead {
-        entry: input.entry,
-        level: input.level,
-        symbol,
-        sign,
-    })
+    Ok(CoeffFscSignRead { sign })
 }
 
 pub(crate) const fn quant_sign_value(sign: bool) -> i8 {

@@ -15,10 +15,9 @@ use splot_core::symbol::CdfUpdateMode;
 use splot_core::types::ObuType;
 
 use crate::bitstream::tile_payload::{
-    TileFrameFacts, TileGridFacts, TilePayloadBoundaryInput, TilePayloadSource,
-    plan_tile_payload_boundary,
+    TileFrameFacts, TileGridFacts, TilePayloadBoundaryInput, plan_tile_payload_boundary,
 };
-use crate::{DecodeLayerSelection, DecodeLimitThreshold, DecodeLimits, DecodeObuSourceKind};
+use crate::{DecodeLimitThreshold, DecodeLimits};
 
 const MI_COL_STARTS: [u32; 2] = [0, 16];
 const MI_ROW_STARTS: [u32; 2] = [0, 16];
@@ -58,16 +57,6 @@ pub struct TilePayloadBoundaryFuzzOutcome {
     pub symbol_cdf_update_enabled: bool,
     /// Whether the attached tile CDF boundary enables CDF updates.
     pub cdf_update_enabled: bool,
-    /// Stable unsupported rule ID at the planned `decode_tile()` stop.
-    pub unsupported_rule_id: &'static str,
-    /// Decoder support matrix row at the planned `decode_tile()` stop.
-    pub unsupported_matrix_row: &'static str,
-    /// Feature ID at the planned `decode_tile()` stop.
-    pub unsupported_feature_id: &'static str,
-    /// AV2 spec section at the planned `decode_tile()` stop.
-    pub unsupported_spec_section: &'static str,
-    /// Stable unsupported reason at the planned `decode_tile()` stop.
-    pub unsupported_reason: &'static str,
 }
 
 /// Typed-error stage reached by the fuzzing harness.
@@ -124,16 +113,8 @@ pub fn run_tile_payload_decode_fuzz_case(data: &[u8]) -> TilePayloadFuzzOutcome 
     );
     let frame = frame_facts(flags, detail_seed);
     let grid = TileGridFacts::new(1, 1, &MI_COL_STARTS, &MI_ROW_STARTS);
-    let input = TilePayloadBoundaryInput::new(
-        payload,
-        ByteOffset::new(128),
-        &framing,
-        TilePayloadSource::new(DecodeObuSourceKind::AnnexB, None, 0, ByteOffset::new(0)),
-        DecodeLayerSelection::base(),
-        grid,
-        frame,
-        limits,
-    );
+    let input =
+        TilePayloadBoundaryInput::new(payload, ByteOffset::new(128), &framing, grid, frame, limits);
 
     let plan = match plan_tile_payload_boundary(&input) {
         Ok(plan) => plan,
@@ -200,7 +181,6 @@ fn boundary_outcome(
     let [unit] = plan.work_units() else {
         return None;
     };
-    let unsupported = plan.unsupported();
     Some(TilePayloadBoundaryFuzzOutcome {
         work_units_len: plan.work_units().len(),
         tile_num: unit.tile_num(),
@@ -212,10 +192,5 @@ fn boundary_outcome(
         symbol_max_bits: unit.symbol().symbol_max_bits(),
         symbol_cdf_update_enabled: unit.symbol().cdf_update_mode() == CdfUpdateMode::Enabled,
         cdf_update_enabled: unit.cdf().update_mode() == CdfUpdateMode::Enabled,
-        unsupported_rule_id: unsupported.rule_id(),
-        unsupported_matrix_row: unsupported.matrix_row(),
-        unsupported_feature_id: unsupported.feature_id(),
-        unsupported_spec_section: unsupported.spec_section(),
-        unsupported_reason: unsupported.reason().as_str(),
     })
 }

@@ -25,6 +25,9 @@
 //! Licensed under PolyForm Noncommercial 1.0.0; commercial use requires a
 //! separate written license from Bartosz Tomczyk.
 
+/// Stable rule id for the current unsupported decode diagnostic.
+pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
+
 mod bitstream;
 pub mod context;
 pub mod diagnostic;
@@ -79,9 +82,6 @@ pub use limits::{
     DecodeLimitCheck, DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimitResult,
     DecodeLimitThreshold, DecodeLimitUnit, DecodeLimits, DecodeOptions,
 };
-
-/// Stable rule id for the current unsupported decode diagnostic.
-pub const UNSUPPORTED_FEATURE_RULE_ID: &str = "decode/unsupported-feature";
 
 /// Severity for a [`DecodeDiagnostic`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

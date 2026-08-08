@@ -239,18 +239,12 @@ impl CvsTracker {
     /// already established `cvs_started(xlayer) == false`; `xlayer` must be a concrete
     /// extended layer (global keys keep the documented cross-CMVS under-report and are not
     /// deferred here).
-    pub(super) fn defer_pre_cvs(
-        &mut self,
-        xlayer: ExtendedLayerId,
-        diagnostic: Diagnostic,
-        report: &mut ValidationReport,
-    ) {
+    pub(super) fn defer_pre_cvs(&mut self, xlayer: ExtendedLayerId, diagnostic: Diagnostic) {
         debug_assert!(
             !xlayer.is_global(),
             "PreCvs deferral is for concrete extended layers only",
         );
         if xlayer.is_global() {
-            let _ = report;
             return;
         }
         self.pending_cross_tu.push(PendingCrossTu {

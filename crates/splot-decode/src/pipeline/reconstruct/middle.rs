@@ -125,7 +125,7 @@ pub(crate) fn reconstruct_general_intra_directional_neighbour_block_into<T: Reco
         side,
         bit_depth,
     )?;
-    let angle = middle_directional_angle(mode)?;
+    let angle = middle_directional_angle(mode);
     let mut prediction = workspace.take_intra_prediction_buffer(
         IntraPredictionScratchBuffer::Primary,
         plane_id,
@@ -846,18 +846,11 @@ fn sample_or_last<T: ReconSample>(samples: &[T], index: usize, fallback: T) -> T
 
 pub(super) fn middle_directional_angle(
     mode: SupportedDirectionalLumaMode,
-) -> core::result::Result<IntraMiddleDirectionalAngle, GeneralIntraResidualError> {
+) -> IntraMiddleDirectionalAngle {
     match mode {
-        SupportedDirectionalLumaMode::D113 => Ok(IntraMiddleDirectionalAngle::D113),
-        SupportedDirectionalLumaMode::D135 => Ok(IntraMiddleDirectionalAngle::D135),
-        SupportedDirectionalLumaMode::D157 => Ok(IntraMiddleDirectionalAngle::D157),
-        SupportedDirectionalLumaMode::Vertical
-        | SupportedDirectionalLumaMode::Horizontal
-        | SupportedDirectionalLumaMode::D45
-        | SupportedDirectionalLumaMode::D67
-        | SupportedDirectionalLumaMode::D203 => {
-            Err(GeneralIntraResidualError::CardinalModeInMiddleAnglePath)
-        }
+        SupportedDirectionalLumaMode::D113 => IntraMiddleDirectionalAngle::D113,
+        SupportedDirectionalLumaMode::D135 => IntraMiddleDirectionalAngle::D135,
+        SupportedDirectionalLumaMode::D157 => IntraMiddleDirectionalAngle::D157,
     }
 }
 

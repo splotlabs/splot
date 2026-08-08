@@ -6,6 +6,7 @@
 //! 1000-line source budget.
 
 use super::*;
+use super::{coder::roundtrip_block_symbol_trace, compose::*, golomb::*};
 use crate::intra_mode_emission::{
     IntraModeCdfRowSelector, IntraModeSyntax, roundtrip_intra_mode_tokens,
 };

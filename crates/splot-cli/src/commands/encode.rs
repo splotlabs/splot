@@ -40,7 +40,6 @@ pub struct EncodeArgs {
 /// Returns an error if the encoder context or its temporary input probe cannot
 /// be created.
 pub fn run(args: &EncodeArgs) -> Result<ExitCode> {
-    let _ = (&args.input, &args.output, &args.qp);
     let speed_preset = args.speed.map(SpeedPreset::try_from_u8).transpose()?;
     let mut runtime = EncoderRuntimeConfig::new(args.threads);
     if let Some(speed_preset) = speed_preset {

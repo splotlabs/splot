@@ -274,6 +274,7 @@ impl GeneralIntraChromaBlockMode {
         Self::cfl(cfl_params)
     }
 
+    #[cfg(test)]
     pub(crate) const fn uv_mode(self) -> u8 {
         self.uv_mode
     }
@@ -618,7 +619,6 @@ pub(crate) fn decode_general_intra_block_modes_with_fsc_context(
     block_c: usize,
     block_n4w: usize,
     block_n4h: usize,
-    _chroma_block_size_index: usize,
     chroma_n4w: usize,
     chroma_n4h: usize,
     bit_depth_bits: u32,

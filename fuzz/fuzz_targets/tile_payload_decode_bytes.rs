@@ -5,12 +5,6 @@
 use libfuzzer_sys::fuzz_target;
 use splot_decode::fuzzing::run_tile_payload_decode_fuzz_case;
 
-const EXPECTED_UNSUPPORTED_RULE_ID: &str = "decode/unsupported-feature";
-const EXPECTED_UNSUPPORTED_MATRIX_ROW: &str = "tile-payload-decode";
-const EXPECTED_UNSUPPORTED_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";
-const EXPECTED_UNSUPPORTED_SPEC_SECTION: &str = "5.20.2.1";
-const EXPECTED_UNSUPPORTED_REASON: &str = "decode_tile_syntax";
-
 fuzz_target!(|data: &[u8]| {
     let outcome = run_tile_payload_decode_fuzz_case(data);
 
@@ -29,20 +23,6 @@ fuzz_target!(|data: &[u8]| {
             boundary.symbol_cdf_update_enabled,
             boundary.cdf_update_enabled
         );
-        assert_eq!(boundary.unsupported_rule_id, EXPECTED_UNSUPPORTED_RULE_ID);
-        assert_eq!(
-            boundary.unsupported_matrix_row,
-            EXPECTED_UNSUPPORTED_MATRIX_ROW
-        );
-        assert_eq!(
-            boundary.unsupported_feature_id,
-            EXPECTED_UNSUPPORTED_FEATURE_ID
-        );
-        assert_eq!(
-            boundary.unsupported_spec_section,
-            EXPECTED_UNSUPPORTED_SPEC_SECTION
-        );
-        assert_eq!(boundary.unsupported_reason, EXPECTED_UNSUPPORTED_REASON);
     } else {
         assert!(outcome.typed_error_stage.is_some());
     }

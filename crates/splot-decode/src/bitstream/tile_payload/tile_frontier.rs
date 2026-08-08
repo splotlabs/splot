@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-use core::mem::size_of;
-
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrParams};
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader, SuperblockSize};
 use splot_core::symbol::SymbolDecoder;
@@ -15,19 +13,15 @@ use super::intra_joint_modes::{
     TileUvCflStateError,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
-use super::partition::PartitionType;
 use super::partition_allowed::PartitionFeatureFlags;
-use super::partition_size::BlockSize;
 pub(crate) use super::partition_traversal::GeneralIntraPartitionTreeOutput as GeneralIntraMultiblockOutput;
 use super::partition_traversal::{
     DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode,
-    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, TileLoopRestorationRootFrontier,
-    TilePartitionBruState, TilePartitionFrameFacts, TilePartitionLoopRestorationFrameState,
-    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
-    TilePartitionTraversalError, TilePartitionTraversalInput, TilePartitionTraversalPlan,
-    consume_tile_loop_restoration_root_frontier, plan_tile_partition_traversal_cursor,
+    GeneralIntraPartitionTreeCursor, GeneralIntraTreeWalkError, TilePartitionFrameFacts,
+    TilePartitionLoopRestorationFrameState, TilePartitionLoopRestorationPlaneTool,
+    TilePartitionLoopRestorationState, TilePartitionTraversalError,
 };
-use crate::{DecodeLimitError, DecodeLimitName, DecodeLimits};
+use crate::DecodeLimits;
 
 const BLOCK_64X64_INDEX: usize = 12;
 const BLOCK_128X128_INDEX: usize = 15;
@@ -37,8 +31,6 @@ const BLOCK_256X256_INDEX: usize = 18;
 pub(crate) enum TilePartitionFrontierError {
     #[error("partition frontier missing fact: {fact}")]
     MissingFact { fact: &'static str },
-    #[error("partition frontier limit failed: {0}")]
-    Limit(#[from] DecodeLimitError),
     #[error("partition traversal failed: {0}")]
     Traversal(#[from] TilePartitionTraversalError),
     #[error("MI-size state failed: {0}")]
@@ -57,34 +49,6 @@ pub(crate) enum TilePartitionFrontierError {
     UvCflState(#[from] TileUvCflStateError),
     #[error("partition frontier mismatch: {reason}")]
     UnexpectedFrontier { reason: &'static str },
-}
-
-pub(crate) fn consume_tile_lr_unit_frontier(
-    work_unit: &mut DecodeTileWorkUnit<'_>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: DecodeLimits,
-) -> Result<TileLoopRestorationRootFrontier, TilePartitionFrontierError> {
-    let frame = minimal_partition_frame_facts(sequence, core)?;
-    let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    let tile_rows = work_unit.mi_row_range().start as usize
-        ..(work_unit.mi_row_range().end as usize).min(mi_rows);
-    let tile_cols = work_unit.mi_col_range().start as usize
-        ..(work_unit.mi_col_range().end as usize).min(mi_cols);
-    ensure_mi_size_allocation_within_limits(
-        tile_rows.end.saturating_sub(tile_rows.start),
-        tile_cols.end.saturating_sub(tile_cols.start),
-        frame.sb_size(),
-        limits,
-    )?;
-    let mi_size_state = TileMiSizeState::new_for_tile(tile_rows, tile_cols, frame.sb_size())?;
-    let root = consume_tile_loop_restoration_root_frontier(TilePartitionTraversalInput::new(
-        work_unit,
-        frame,
-        mi_size_state.context_state(),
-        limits,
-    ))?;
-    Ok(root)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -168,7 +132,6 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
             &TileFscModeState,
             &TileLumaPaletteState,
             IsCflContext,
-            DecodedLeafPublication,
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
@@ -216,68 +179,6 @@ impl<'payload> GeneralIntraMultiblockCursor<'payload> {
         uv_cfls.recycle();
         tree.into_output()
     }
-}
-
-fn plan_tile_partition_frontier<'payload>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    limits: DecodeLimits,
-) -> Result<
-    (
-        SymbolDecoder<'payload>,
-        TileMiSizeState,
-        DecodeBlockFrontier,
-    ),
-    TilePartitionFrontierError,
-> {
-    let frame = minimal_partition_frame_facts(sequence, core)?;
-    let (mi_rows, mi_cols) = frame_mi_dimensions(core)?;
-    let tile_rows = work_unit.mi_row_range().start as usize
-        ..(work_unit.mi_row_range().end as usize).min(mi_rows);
-    let tile_cols = work_unit.mi_col_range().start as usize
-        ..(work_unit.mi_col_range().end as usize).min(mi_cols);
-    ensure_mi_size_allocation_within_limits(
-        tile_rows.end.saturating_sub(tile_rows.start),
-        tile_cols.end.saturating_sub(tile_cols.start),
-        frame.sb_size(),
-        limits,
-    )?;
-
-    let mi_size_state = TileMiSizeState::new_for_tile(tile_rows, tile_cols, frame.sb_size())?;
-    let cursor = plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
-        work_unit,
-        frame,
-        mi_size_state.context_state(),
-        limits,
-    ))?;
-    let (plan, symbols) = cursor.into_parts();
-    ensure_minimal_root_frontier(&plan, &symbols)?;
-    let frontier = plan.frontier();
-
-    Ok((symbols, mi_size_state, frontier))
-}
-
-fn ensure_mi_size_allocation_within_limits(
-    mi_rows: usize,
-    mi_cols: usize,
-    sb_size: BlockSize,
-    limits: DecodeLimits,
-) -> Result<(), TilePartitionFrontierError> {
-    let allocation = TileMiSizeState::allocation(mi_rows, mi_cols, sb_size)?;
-    limits.ensure_allocation_len(
-        DecodeLimitName::MaxLumaSamplesPerFrame,
-        allocation.padded_grid_cells() as u64,
-    )?;
-    let allocation_bytes = limits
-        .ensure_mul(
-            DecodeLimitName::MaxDecodedFrameBytes,
-            allocation.entry_count() as u64,
-            size_of::<u8>() as u64,
-        )?
-        .actual();
-    limits.ensure_allocation_len(DecodeLimitName::MaxDecodedFrameBytes, allocation_bytes)?;
-    Ok(())
 }
 
 pub(crate) fn minimal_partition_frame_facts(
@@ -328,7 +229,6 @@ pub(crate) fn minimal_partition_frame_facts(
             partition.enable_uneven_4way_partitions,
         ),
         partition.max_pb_aspect_ratio as usize,
-        TilePartitionBruState::Active,
     )?)
 }
 
@@ -405,48 +305,6 @@ pub(crate) fn frame_mi_dimensions(
         });
     }
     Ok((mi_rows, mi_cols))
-}
-
-fn ensure_minimal_root_frontier(
-    plan: &TilePartitionTraversalPlan,
-    symbols: &SymbolDecoder<'_>,
-) -> Result<(), TilePartitionFrontierError> {
-    let steps = plan.steps();
-    let [step] = steps else {
-        return unexpected("unexpected_partition_step_count");
-    };
-    if step.call.r != 0 || step.call.c != 0 {
-        return unexpected("non_root_partition_call");
-    }
-    if step.decision.partition != PartitionType::None
-        || step.decision.trace.do_split != Some(false)
-        || step.symbol_count_before != 0
-        || step.symbol_count_after != 1
-    {
-        return unexpected("unexpected_root_partition_decision");
-    }
-    let frontier = plan.frontier();
-    if frontier.r != 0
-        || frontier.c != 0
-        || frontier.b_size.index() != BLOCK_64X64_INDEX
-        || frontier.symbol_count_before_block != 1
-        || !plan.pending_children().is_empty()
-        || plan.symbol_count_after() != 1
-    {
-        return unexpected("unexpected_decode_block_frontier");
-    }
-    let checkpoint = frontier.symbol_checkpoint_before_block;
-    if checkpoint.symbol_count != symbols.symbol_count()
-        || checkpoint.consumed_bits != symbols.consumed_bits()
-        || checkpoint != symbols.checkpoint()
-    {
-        return unexpected("frontier_symbol_checkpoint_mismatch");
-    }
-    Ok(())
-}
-
-fn unexpected<T>(reason: &'static str) -> Result<T, TilePartitionFrontierError> {
-    Err(TilePartitionFrontierError::UnexpectedFrontier { reason })
 }
 
 fn frame_sb_size_index(seq_sb_size: SuperblockSize, frame_is_intra: bool) -> usize {

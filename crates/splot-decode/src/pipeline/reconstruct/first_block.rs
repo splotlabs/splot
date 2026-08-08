@@ -95,7 +95,7 @@ pub(crate) fn predict_directional_noneighbour_into<T: ReconSample>(
     bit_depth: BitDepth,
     prediction: &mut [T],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let angle = middle_directional_angle(mode)?;
+    let angle = middle_directional_angle(mode);
     let mut above = [noneighbour_above::<T>(bit_depth); 65];
     let mut left = [noneighbour_left::<T>(bit_depth); 65];
     above[0] = noneighbour_corner::<T>(bit_depth);

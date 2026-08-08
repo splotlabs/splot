@@ -129,16 +129,6 @@ impl ChromaDeblockRecords {
         self.blocks.is_empty()
     }
 
-    fn from_planes(planes: [&[DeblockBlock]; 2]) -> Self {
-        let mut records = Self::default();
-        for (plane, blocks) in planes.into_iter().enumerate() {
-            for &block in blocks {
-                records.push(plane, block);
-            }
-        }
-        records
-    }
-
     fn get(&self, index: usize) -> Option<&DeblockBlock> {
         self.blocks.get(index).map(|record| &record.block)
     }
@@ -228,7 +218,6 @@ impl EdgeBlock<'_> {
 pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     blocks: &[DeblockBlock],
-    chroma_blocks: [&[DeblockBlock]; 2],
     mi_rows: usize,
     mi_cols: usize,
     filter: DeblockingFilterParams,
@@ -237,7 +226,7 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
     quant_deltas: DeblockQuantDeltas,
     bit_depth: BitDepth,
 ) -> Result<(), DeblockError> {
-    let chroma_records = ChromaDeblockRecords::from_planes(chroma_blocks);
+    let chroma_records = ChromaDeblockRecords::new();
     let Some(mut sections) = FrameDeblock::prepare(
         blocks,
         &chroma_records,
@@ -252,111 +241,6 @@ pub(crate) fn deblock_general_intra_frame<T: ReconSample>(
         return Ok(());
     };
     let result = sections.advance(workspace, mi_rows, bit_depth);
-    sections.finish();
-    result
-}
-
-/// Runs one deblock pass over a complete one-row frame.
-///
-/// The scheduled row path transfers ownership between the vertical and
-/// horizontal continuations, so the borrowed grid is rebuilt at that boundary
-/// instead of being stored beside the records it borrows.
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code, reason = "SCALE-011 row scheduler seam")]
-pub(crate) fn deblock_one_row_columns<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    blocks: &[DeblockBlock],
-    chroma_blocks: [&[DeblockBlock]; 2],
-    mi_rows: usize,
-    mi_cols: usize,
-    filter: DeblockingFilterParams,
-    tile_info: Option<&TileInfo>,
-    disable_loopfilters_across_tiles: bool,
-    quant_deltas: DeblockQuantDeltas,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    deblock_one_row_pass(
-        workspace,
-        blocks,
-        chroma_blocks,
-        mi_rows,
-        mi_cols,
-        filter,
-        tile_info,
-        disable_loopfilters_across_tiles,
-        quant_deltas,
-        bit_depth,
-        0,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code, reason = "SCALE-011 row scheduler seam")]
-pub(crate) fn deblock_one_row_rows<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    blocks: &[DeblockBlock],
-    chroma_blocks: [&[DeblockBlock]; 2],
-    mi_rows: usize,
-    mi_cols: usize,
-    filter: DeblockingFilterParams,
-    tile_info: Option<&TileInfo>,
-    disable_loopfilters_across_tiles: bool,
-    quant_deltas: DeblockQuantDeltas,
-    bit_depth: BitDepth,
-) -> Result<(), DeblockError> {
-    deblock_one_row_pass(
-        workspace,
-        blocks,
-        chroma_blocks,
-        mi_rows,
-        mi_cols,
-        filter,
-        tile_info,
-        disable_loopfilters_across_tiles,
-        quant_deltas,
-        bit_depth,
-        1,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn deblock_one_row_pass<T: ReconSample>(
-    workspace: &mut CurrentFrameWorkspace<T>,
-    blocks: &[DeblockBlock],
-    chroma_blocks: [&[DeblockBlock]; 2],
-    mi_rows: usize,
-    mi_cols: usize,
-    filter: DeblockingFilterParams,
-    tile_info: Option<&TileInfo>,
-    disable_loopfilters_across_tiles: bool,
-    quant_deltas: DeblockQuantDeltas,
-    bit_depth: BitDepth,
-    pass: usize,
-) -> Result<(), DeblockError> {
-    if mi_rows > SB_SIZE / MI_SIZE {
-        return Err(DeblockError::Workspace);
-    }
-    let chroma_records = ChromaDeblockRecords::from_planes(chroma_blocks);
-    let Some(sections) = FrameDeblock::prepare(
-        blocks,
-        &chroma_records,
-        mi_rows,
-        mi_cols,
-        filter,
-        tile_info,
-        disable_loopfilters_across_tiles,
-        quant_deltas,
-    )?
-    else {
-        return Ok(());
-    };
-    let mut ranges = [0..0, 0..0];
-    let Some(range) = ranges.get_mut(pass) else {
-        sections.finish();
-        return Err(DeblockError::Workspace);
-    };
-    *range = 0..mi_rows;
-    let result = sections.run_ranges(workspace, &ranges, bit_depth);
     sections.finish();
     result
 }
@@ -730,59 +614,8 @@ impl<'a> FrameDeblock<'a> {
         self.next_pass_1_mi_row = pass_1_end;
     }
 
-    /// Runs the vertical pass through `mi_row_end`.
-    ///
-    /// Completed reconstruction records stay borrowed by this prepared plan;
-    /// only the sample workspace is mutated. The caller can therefore transfer
-    /// the plan between row continuations without rebuilding its mode-info
-    /// grids.
-    #[allow(dead_code, reason = "SCALE-011 production scheduler seam")]
-    pub(crate) fn advance_vertical<T: ReconSample>(
-        &mut self,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        mi_row_end: usize,
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        let pass_0_end = mi_row_end.min(self.mi_rows).max(self.next_pass_0_mi_row);
-        self.run_ranges(
-            workspace,
-            &[self.next_pass_0_mi_row..pass_0_end, 0..0],
-            bit_depth,
-        )?;
-        self.next_pass_0_mi_row = pass_0_end;
-        Ok(())
-    }
-
-    /// Runs the serialized horizontal pass through `mi_row_end`.
-    ///
-    /// The vertical frontier must already include the four mode-info rows whose
-    /// samples the widest horizontal filter can read below this frontier.
-    #[allow(dead_code, reason = "SCALE-011 production scheduler seam")]
-    pub(crate) fn advance_horizontal<T: ReconSample>(
-        &mut self,
-        workspace: &mut CurrentFrameWorkspace<T>,
-        mi_row_end: usize,
-        bit_depth: BitDepth,
-    ) -> Result<(), DeblockError> {
-        let pass_1_end = mi_row_end.min(self.mi_rows).max(self.next_pass_1_mi_row);
-        let required_pass_0 = pass_1_end
-            .saturating_add(PASS_0_LEAD_MI_ROWS)
-            .min(self.mi_rows);
-        if self.next_pass_0_mi_row < required_pass_0 {
-            return Err(DeblockError::Workspace);
-        }
-        self.run_ranges(
-            workspace,
-            &[0..0, self.next_pass_1_mi_row..pass_1_end],
-            bit_depth,
-        )?;
-        self.next_pass_1_mi_row = pass_1_end;
-        Ok(())
-    }
-
     /// Copies a final deblocked row window for an independently owned filter
     /// continuation.
-    #[allow(dead_code, reason = "SCALE-011 production scheduler seam")]
     pub(crate) fn extract_window<T: ReconSample>(
         &self,
         workspace: &CurrentFrameWorkspace<T>,

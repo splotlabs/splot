@@ -93,19 +93,13 @@ pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
 
 /// Emits the minimal intra skip frame as a single coded **access unit** — the AV2 Annex B
 /// temporal unit (`OBU_TEMPORAL_DELIMITER` + `OBU_SEQUENCE_HEADER` + the `OBU_CLOSED_LOOP_KEY`
-/// frame OBU), without the IVF file wrapper. This is the access-unit form
-/// `Context::receive_packet` returns in a `Packet`: it is self-delimiting (the decoder
-/// auto-detects it as Annex B) and concatenating packets yields a valid stream, unlike emitting a
-/// full IVF *file* per packet.
-pub(crate) fn emit_minimal_intra_skip_temporal_unit() -> Result<Vec<u8>> {
-    emit_minimal_intra_skip_temporal_unit_with_base_q_idx(SKIP_FRAME_BASE_Q_IDX)
-}
-
-/// Emits the minimal intra skip frame access unit (see [`emit_minimal_intra_skip_temporal_unit`])
-/// muxed at a caller-chosen `base_q_idx` (AV2 § 5.18.6.1;
+/// frame OBU), without the IVF file wrapper, muxed at a caller-chosen `base_q_idx` (AV2 § 5.18.6.1;
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1`). The DC skip block has an all-zero
 /// residual, so its flat reconstruction is independent of `base_q_idx`; only the frame-header
-/// quantizer field changes. The tile's coefficient CDF q-context stays
+/// quantizer field changes. This is the access-unit form `Context::receive_packet` returns in a
+/// `Packet`: it is self-delimiting (the decoder auto-detects it as Annex B) and concatenating
+/// packets yields a valid stream, unlike emitting a full IVF file per packet. The tile's
+/// coefficient CDF q-context stays
 /// [`SKIP_FRAME_COEFF_CDF_Q_CTX`] (`0`), which matches the decoder's current q-context for the
 /// supported `base_q_idx` range; callers (`Context`) restrict `base_q_idx` to that range.
 // TODO(spec: ENC-CONFIG-QP-FIELD): derive the coefficient CDF q-context from `base_q_idx`
@@ -128,7 +122,8 @@ mod tests {
 
     #[test]
     fn skip_temporal_unit_is_the_skip_ivf_frame_payload() {
-        let temporal_unit = emit_minimal_intra_skip_temporal_unit().unwrap();
+        let temporal_unit =
+            emit_minimal_intra_skip_temporal_unit_with_base_q_idx(SKIP_FRAME_BASE_Q_IDX).unwrap();
         let mut ivf = Vec::new();
         splot_core::ivf::write_ivf_header(
             &mut ivf,

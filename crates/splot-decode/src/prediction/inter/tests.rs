@@ -8,7 +8,7 @@ use splot_parallel::ThreadCount;
 use splot_core::headers::frame::{
     FrameHeaderCore, FrameHeaderParseStatus, QuantizationParams, RefIdxBuf, TipFrameMode,
 };
-use splot_core::headers::sequence::{BitDepthIdc, ChromaFormatIdc, SequenceHeader};
+use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
 use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
@@ -1574,18 +1574,6 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
 }
 
 #[test]
-fn ten_bit_sequence_passes_runtime_storage_gate() {
-    let (mut sequence, _) = fixture_sequence_and_quantization(TWO_FRAME_INTER_FIXTURE);
-    sequence.general.bit_depth_idc = BitDepthIdc::Ten;
-    crate::pipeline::ensure_runtime_storage_bit_depth(&sequence, ByteOffset::new(47))
-        .expect("10-bit sequence passes the runtime storage bit-depth gate");
-
-    sequence.general.bit_depth_idc = BitDepthIdc::Eight;
-    crate::pipeline::ensure_runtime_storage_bit_depth(&sequence, ByteOffset::new(47))
-        .expect("8-bit sequence passes the runtime storage bit-depth gate");
-}
-
-#[test]
 fn wienerns_header_status_reports_precise_tile_frontier() {
     let error = crate::pipeline::incomplete_intra_header_error(
         FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
@@ -2118,7 +2106,7 @@ fn resolve_cdf_load_signal_primary_overrides_ranking_even_with_no_inter_candidat
     );
     assert!(
         matches!(load, ResolvedCdfLoad::LoadSlot { primary: 0, .. }),
-        "a signalled primary overrides the (NONE) ranking -> LoadSlot(0), so an adapted slot 0 is rejected, not silently decoded from defaults"
+        "a signalled primary overrides the (NONE) ranking and loads slot 0"
     );
 }
 

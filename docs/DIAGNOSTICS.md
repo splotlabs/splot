@@ -525,6 +525,5 @@ in diagnostic details.
 
 Tile-payload-boundary `decode/unsupported-feature` metadata is crate-private
 until a later runtime decode path surfaces it through CLI diagnostics. The
-boundary records the stable unsupported reason, matrix row
-`tile-payload-decode`, Feature ID `DECODE-TILE-PAYLOAD-BOUNDARY`, optional tile
-number, and byte offset.
+boundary retains the stable unsupported reason, optional tile number, byte
+offset, and message needed by its internal error path.

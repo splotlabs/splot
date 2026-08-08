@@ -22,7 +22,6 @@ fn key_update() -> FrameRefUpdate {
         delta_q_v_ac: 3,
         is_key_or_switch: true,
         is_inter: false,
-        adapted: false,
         num_total_refs: 0,
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
@@ -39,7 +38,7 @@ fn key_update() -> FrameRefUpdate {
     }
 }
 
-fn inter_update(adapted: bool) -> FrameRefUpdate {
+fn inter_update() -> FrameRefUpdate {
     FrameRefUpdate {
         refresh_frame_flags: 1 << 1,
         order_hint: 1,
@@ -53,7 +52,6 @@ fn inter_update(adapted: bool) -> FrameRefUpdate {
         delta_q_v_ac: -1,
         is_key_or_switch: false,
         is_inter: true,
-        adapted,
         num_total_refs: 1,
         saved_order_hints: [0; 7],
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
@@ -125,7 +123,7 @@ fn key_refresh_marks_only_first_slot_valid() {
 fn inter_refresh_adds_a_second_valid_slot() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update());
-    buf.update(1, &inter_update(false));
+    buf.update(1, &inter_update());
     assert_eq!(valid_count(&buf), 2);
     assert!(buf.slots[0].valid);
     assert!(buf.slots[1].valid);
@@ -139,7 +137,6 @@ fn inter_refresh_adds_a_second_valid_slot() {
     assert_eq!(buf.slots[1].delta_q_v_ac, -1);
     assert_eq!(buf.slots[1].frame_index, Some(1));
     assert!(buf.slots[1].is_inter);
-    assert!(!buf.slots[1].adapted);
 }
 
 #[test]
@@ -159,7 +156,7 @@ fn first_regular_frame_after_olk_keeps_only_olk_and_listed_long_term_slots() {
     buf.update(2, &olk);
     buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[7]);
 
-    let mut leading = inter_update(false);
+    let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
     buf.update(3, &leading);
     buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
@@ -180,12 +177,12 @@ fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
     buf.update(0, &olk);
     buf.note_frame(ObuType::OpenLoopKey, true, &olk, &[]);
 
-    let mut co_vcl = inter_update(false);
+    let mut co_vcl = inter_update();
     co_vcl.refresh_frame_flags = 1 << 4;
     buf.update(1, &co_vcl);
     buf.note_frame(ObuType::RegularTileGroup, false, &co_vcl, &[]);
 
-    let mut leading = inter_update(false);
+    let mut leading = inter_update();
     leading.refresh_frame_flags = 1 << 2;
     buf.update(2, &leading);
     buf.note_frame(ObuType::LeadingTileGroup, false, &leading, &[]);
@@ -199,7 +196,7 @@ fn olk_co_vcl_refresh_in_same_tu_survives_first_regular_tu() {
 
 #[test]
 fn reference_refresh_preserves_full_and_lsb_order_hints() {
-    let mut update = inter_update(false);
+    let mut update = inter_update();
     update.order_hint = 136;
     update.order_hint_lsb = 8;
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
@@ -217,7 +214,7 @@ fn reference_refresh_preserves_full_and_lsb_order_hints() {
 
 #[test]
 fn reference_refresh_preserves_global_motion_predictor_state() {
-    let mut update = inter_update(false);
+    let mut update = inter_update();
     update.num_total_refs = 2;
     update.saved_order_hints[..2].copy_from_slice(&[7, 11]);
     update.saved_gm_params[0] = [131_072, 65_536, 65_600, 256, -128, 65_728];
@@ -236,21 +233,10 @@ fn reference_refresh_preserves_global_motion_predictor_state() {
 }
 
 #[test]
-fn per_slot_adaptation_is_tracked_independently() {
-    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
-    buf.update(0, &key_update());
-    buf.update(1, &inter_update(true));
-    assert!(!buf.slots[0].adapted);
-    assert!(buf.slots[1].adapted);
-    assert!(!buf.slots[0].is_inter);
-    assert!(buf.slots[1].is_inter);
-}
-
-#[test]
 fn frame_index_is_retained_until_last_slot_is_overwritten() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update());
-    let mut update = inter_update(false);
+    let mut update = inter_update();
     update.refresh_frame_flags = (1 << 1) | (1 << 2);
     buf.update(1, &update);
 
@@ -358,7 +344,7 @@ fn sef_derive_requires_a_hidden_not_previously_shown_reference() {
         })
     ));
 
-    let mut hidden = inter_update(false);
+    let mut hidden = inter_update();
     hidden.refresh_frame_flags = 1 << 1;
     hidden.implicit_output_frame = false;
     hidden.immediate_output_frame = false;
@@ -377,7 +363,7 @@ fn show_existing_advances_the_reference_frame_counter() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update());
     buf.note_show_existing();
-    let update = inter_update(false);
+    let update = inter_update();
     buf.update(1, &update);
     assert_eq!(buf.slots[1].counter, 2);
 }

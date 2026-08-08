@@ -568,7 +568,7 @@ impl ValidatorContext {
             }
             CeluRole::Frame(facts)
         } else {
-            self.celu_role_for(obu)
+            Self::celu_role_for(obu)
         };
         self.celu.observe(obu, celu_role, report);
 

@@ -181,6 +181,7 @@ impl MvCdfRows {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn row(&self, selector: MvCdfSelector) -> Result<&[u16], TileCdfError> {
         match selector {
             MvCdfSelector::JointShellSet { mv_ctx } => checked_cdf_row(
@@ -353,6 +354,7 @@ impl MvCdfRows {
         visit_mv_cdf_rows!(scale_rows);
     }
 
+    #[cfg(test)]
     fn joint_shell_class_row(
         &self,
         precision: usize,
@@ -402,6 +404,7 @@ fn checked_shell_class_axes(
     }
 }
 
+#[cfg(test)]
 fn checked_row<'a, T, const N: usize>(
     rows: &'a [T; N],
     index: usize,
@@ -416,6 +419,7 @@ fn checked_row<'a, T, const N: usize>(
     })
 }
 
+#[cfg(test)]
 fn checked_cdf_row<'a, const ROW_LEN: usize, const N: usize>(
     rows: &'a [[u16; ROW_LEN]; N],
     index: usize,
@@ -425,6 +429,7 @@ fn checked_cdf_row<'a, const ROW_LEN: usize, const N: usize>(
     Ok(checked_row(rows, index, index_name, array)?.as_slice())
 }
 
+#[cfg(test)]
 fn checked_cdf_bank_row<'a, const ROW_LEN: usize, const OUTER: usize, const INNER: usize>(
     rows: &'a [[[u16; ROW_LEN]; INNER]; OUTER],
     outer: usize,

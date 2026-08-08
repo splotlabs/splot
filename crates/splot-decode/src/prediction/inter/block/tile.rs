@@ -371,8 +371,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                  use_dip: &crate::bitstream::tile_payload::TileUseDipState,
                  fsc_modes: &TileFscModeState,
                  palette_state: &crate::bitstream::tile_payload::TileLumaPaletteState,
-                 is_cfl_ctx: IsCflContext,
-                 _decoded_leaf: DecodedLeafPublication| {
+                 is_cfl_ctx: IsCflContext| {
                     decode_block(
                         work_unit,
                         symbols,

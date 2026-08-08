@@ -16,7 +16,7 @@ use splot_core::headers::frame::{
     GlobalMotionRef, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
-    BitDepthIdc, ChromaFormatIdc, CroppingWindow, SequenceHeader, parse_sequence_header,
+    ChromaFormatIdc, CroppingWindow, SequenceHeader, parse_sequence_header,
 };
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::ivf::IvfHeader;
@@ -375,16 +375,6 @@ fn supported_profile_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
     }
 }
 
-#[allow(clippy::unnecessary_wraps)]
-pub(crate) fn ensure_runtime_storage_bit_depth(
-    sequence: &SequenceHeader,
-    _offset: ByteOffset,
-) -> Result<()> {
-    match sequence.general.bit_depth_idc {
-        BitDepthIdc::Eight | BitDepthIdc::Ten => Ok(()),
-    }
-}
-
 pub(crate) fn parse_frame_core(
     envelope: ObuEnvelope<'_>,
     sequence: &SequenceHeader,
@@ -475,9 +465,6 @@ pub(crate) fn frame_ref_update_from_core(
         )
     })?;
     let is_inter = core.frame_type == Some(FrameType::Inter);
-    let adapted = !core.obu_type.is_tip_frame()
-        && core.obu_type != ObuType::BridgeFrame
-        && core.disable_cdf_update != Some(true);
     let order_hint = core.display_order_hint().ok_or_else(|| {
         unsupported_at(
             "missing_order_hint_for_ref_update",
@@ -526,7 +513,6 @@ pub(crate) fn frame_ref_update_from_core(
         is_key_or_switch: (core.is_key_frame && !core.is_bridge)
             || core.frame_type == Some(FrameType::Switch),
         is_inter,
-        adapted,
         num_total_refs,
         saved_order_hints,
         saved_gm_params,

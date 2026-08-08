@@ -6,17 +6,14 @@
 //! Feature tracking: `DECODE-COEFF-SIGN-SYMBOL-READ`,
 //! `DECODE-COEFF-SIGN-SOURCE-DERIVE`.
 
-use std::collections::TryReserveError;
-
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
 use super::super::cdf::coeff_context::dc_sign_ctx;
 use super::super::cdf::{TileCdfSelector, TileCdfSubset};
-use super::super::coeff_state::{TileCoeffStateError, TransformCoeffBlockState};
 use super::max_level::CoeffTransformClass;
-use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
+use super::scan_walk::CoeffScanEntry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffSignCdfSyntax {
@@ -55,7 +52,6 @@ pub(crate) enum CoeffSignReadSource {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffSignReadInput {
-    pub(crate) entry: CoeffScanEntry,
     pub(crate) source: CoeffSignReadSource,
 }
 
@@ -100,38 +96,11 @@ pub(crate) enum CoeffSignReadSymbol {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffSignRead {
-    entry: CoeffScanEntry,
-    level: u32,
     symbol: CoeffSignReadSymbol,
     sign: bool,
 }
 
 impl CoeffSignRead {
-    #[cfg(test)]
-    pub(crate) const fn for_test(
-        entry: CoeffScanEntry,
-        level: u32,
-        symbol: CoeffSignReadSymbol,
-        sign: bool,
-    ) -> Self {
-        Self {
-            entry,
-            level,
-            symbol,
-            sign,
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn entry(self) -> CoeffScanEntry {
-        self.entry
-    }
-
-    #[must_use]
-    pub(crate) const fn level(self) -> u32 {
-        self.level
-    }
-
     #[must_use]
     pub(crate) const fn symbol(self) -> CoeffSignReadSymbol {
         self.symbol
@@ -145,26 +114,6 @@ impl CoeffSignRead {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffSignReadError {
-    #[error("coefficient sign input count {inputs} does not match scan entries {entries}")]
-    InputCountMismatch { inputs: usize, entries: usize },
-    #[error(
-        "coefficient sign input {index} targets {actual:?}, expected checked scan entry {expected:?}"
-    )]
-    ScanEntryMismatch {
-        index: usize,
-        expected: CoeffScanEntry,
-        actual: CoeffScanEntry,
-    },
-    #[error("coefficient sign input {index} disabled sign read for nonzero level {level}")]
-    MissingRequiredSign {
-        index: usize,
-        entry: CoeffScanEntry,
-        level: u32,
-    },
-    #[error("coefficient sign read state error: {0}")]
-    State(#[from] TileCoeffStateError),
-    #[error("coefficient sign read allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
     #[error("coefficient sign symbol read failed: {0}")]
     SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient sign literal read failed: {source}")]
@@ -174,35 +123,12 @@ pub(crate) enum CoeffSignReadError {
     },
 }
 
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum CoeffSignSourceDeriveError {
-    #[error("coefficient sign-source derivation state error: {0}")]
-    State(#[from] TileCoeffStateError),
-    #[error("coefficient sign-source derivation allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
-}
-
-pub(crate) fn derive_nonzero_coeff_sign_inputs(
-    block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk<'_>,
-    config: CoeffSignSourceDeriveConfig<'_>,
-) -> Result<Vec<CoeffSignReadInput>, CoeffSignSourceDeriveError> {
-    let mut inputs = Vec::new();
-    inputs.try_reserve(walk.len())?;
-    for entry in walk.entries() {
-        let level = block.level_at(entry.row(), entry.col())?;
-        inputs.push(derive_nonzero_coeff_sign_input(entry, level, config));
-    }
-    Ok(inputs)
-}
-
 pub(crate) fn derive_nonzero_coeff_sign_input(
     entry: CoeffScanEntry,
     level: u32,
     config: CoeffSignSourceDeriveConfig<'_>,
 ) -> CoeffSignReadInput {
     CoeffSignReadInput {
-        entry,
         source: derive_coeff_sign_source(entry, level, config),
     }
 }
@@ -247,62 +173,10 @@ fn derive_coeff_sign_source(
     CoeffSignReadSource::SignBit
 }
 
-pub(crate) fn read_nonzero_coeff_signs(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk<'_>,
-    inputs: &[CoeffSignReadInput],
-) -> Result<Vec<CoeffSignRead>, CoeffSignReadError> {
-    preflight_nonzero_coeff_signs(block, walk, inputs)?;
-    let mut reads = Vec::new();
-    reads.try_reserve(walk.len())?;
-    for (entry, input) in walk.entries().zip(inputs.iter().copied()) {
-        let level = block.level_at(entry.row(), entry.col())?;
-        reads.push(read_preflighted_nonzero_coeff_sign(
-            cdfs, symbols, input, level,
-        )?);
-    }
-    Ok(reads)
-}
-
-pub(crate) fn preflight_nonzero_coeff_signs(
-    block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk<'_>,
-    inputs: &[CoeffSignReadInput],
-) -> Result<(), CoeffSignReadError> {
-    if inputs.len() != walk.len() {
-        return Err(CoeffSignReadError::InputCountMismatch {
-            inputs: inputs.len(),
-            entries: walk.len(),
-        });
-    }
-
-    for (index, (entry, input)) in walk.entries().zip(inputs.iter().copied()).enumerate() {
-        if input.entry != entry {
-            return Err(CoeffSignReadError::ScanEntryMismatch {
-                index,
-                expected: entry,
-                actual: input.entry,
-            });
-        }
-        let level = block.level_at(entry.row(), entry.col())?;
-        if level != 0 && input.source == CoeffSignReadSource::None {
-            return Err(CoeffSignReadError::MissingRequiredSign {
-                index,
-                entry,
-                level,
-            });
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn read_preflighted_nonzero_coeff_sign(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     input: CoeffSignReadInput,
-    level: u32,
 ) -> Result<CoeffSignRead, CoeffSignReadError> {
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
@@ -320,12 +194,7 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
             (CoeffSignReadSymbol::SignBit { bit }, bit)
         }
     };
-    Ok(CoeffSignRead {
-        entry: input.entry,
-        level,
-        symbol,
-        sign,
-    })
+    Ok(CoeffSignRead { symbol, sign })
 }
 
 #[cfg(test)]

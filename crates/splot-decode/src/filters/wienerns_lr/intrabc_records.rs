@@ -58,13 +58,6 @@ pub(crate) struct IntrabcBlockPrelude {
     pub(crate) is_inter: bool,
     pub(crate) skip_flag: bool,
     pub(crate) morph_pred: bool,
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "retained IntrABC mode-info facts are part of the parse/prediction handoff"
-        )
-    )]
     pub(crate) intrabc: Option<IntrabcInfo>,
 }
 
@@ -163,13 +156,6 @@ impl IntrabcBlockGeometry {
     }
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "retained IntrABC mode-info facts are part of the parse/prediction handoff"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcInfo {
     pub(crate) intrabc_mode: u8,
@@ -179,26 +165,12 @@ pub(crate) struct IntrabcInfo {
     pub(crate) block_mv: IntrabcBlockVector,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "retained IntrABC block-vector facts are part of the parse/prediction handoff"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcBlockVector {
     pub(crate) row: i32,
     pub(crate) col: i32,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "retained prediction geometry is part of the IntrABC reconstruction handoff"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcPredictionGeometry {
     pub(crate) scaling: PlaneScaling,

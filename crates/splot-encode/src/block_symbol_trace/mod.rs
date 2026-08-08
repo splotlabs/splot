@@ -102,12 +102,6 @@ const CHROMA_V_TXB_SKIP_CTX_EOBU: usize = 6;
 const EOB_CTX_LUMA_INTRA: usize = 0;
 const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
-const COEFF_BR_LF_CTX_DC: usize = 0;
-const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
-const COEFF_BR_LF_CTX_DC_BR_AC_LOW: usize = 1;
-const COEFF_BR_LF_CTX_DC_BR_AC_MID: usize = 2;
-const COEFF_BR_LF_CTX_DC_BR_AC_HIGH: usize = 3;
-const COEFF_BASE_LF_CTX_4X4_DC_BR_AC: usize = 3;
 const EOB_PT_16_SYMBOL_EOB2: u8 = 1;
 const INTRA_TX_TYPE_SET1_TX_SIZE_SQR_4X4: usize = 0;
 const INTRA_TX_TYPE_DCT_DCT_SYMBOL: u8 = 0;
@@ -119,7 +113,6 @@ const SEC_TX_TYPE_IST_OFF_SYMBOL: u8 = 0;
 const SEC_TX_TYPE_INTRA_CDF_ROW_LEN: usize = 5;
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
-const COEFF_BASE_LF_CTX_4X4_DC_MAG3: usize = 2;
 const COEFF_BASE_LF_CTX_VISIBLE_AC_DC: usize = 2;
 const COEFF_BASE_LF_CTX_AC_BAND_BASE: usize = 9;
 const COEFF_BASE_LF_CTX_2D_DC: usize = 4;
@@ -167,27 +160,10 @@ mod golomb;
 
 use cdf_rows::BlockSymbolTraceCdfRows;
 
-#[allow(unused_imports)]
-pub(crate) use coder::{
-    BlockSymbolToken, BlockSymbolTraceRoundtrip, encode_block_symbol_trace,
-    roundtrip_block_symbol_trace,
-};
-#[allow(unused_imports)]
-pub(crate) use compose::{
-    compose_minimal_intra_dc_all_zero_block_trace, compose_minimal_intra_dc_block_mode_trace,
-    compose_minimal_intra_dc_br_block_trace, compose_minimal_intra_dc_coded_block_trace,
-    compose_minimal_intra_dc_coded_chroma_block_trace,
-    compose_minimal_intra_dc_complete_all_zero_block_trace,
-    compose_minimal_intra_two_coeff_block_trace,
-    compose_minimal_intra_two_coeff_block_trace_with_ist,
-    compose_minimal_intra_two_coeff_block_trace_with_tx_type,
-};
-#[allow(unused_imports)]
-pub(crate) use golomb::{
-    compose_intra_dc_golomb_block_trace, compose_intra_dc_golomb_prefix_block_trace,
-    compose_minimal_intra_dc_golomb_block_trace,
-    compose_minimal_intra_dc_golomb_prefix_block_trace,
-};
+#[cfg(test)]
+pub(crate) use coder::roundtrip_block_symbol_trace;
+pub(crate) use coder::{BlockSymbolToken, encode_block_symbol_trace};
+pub(crate) use compose::compose_minimal_intra_dc_block_mode_trace;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]

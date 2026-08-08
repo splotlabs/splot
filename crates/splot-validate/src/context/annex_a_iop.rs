@@ -406,7 +406,7 @@ impl ValidatorContext {
         if matches!(options.external_hls, ExternalHlsMode::Provided(_)) {
             return;
         }
-        self.evaluate_annex_a_iop_window(&window, report);
+        Self::evaluate_annex_a_iop_window(&window, report);
     }
 
     /// Emits the Annex A Table A.4 MSDO/LCR interoperability-point presence diagnostics for
@@ -437,7 +437,6 @@ impl ValidatorContext {
     /// via the association chain) satisfies the global-LCR arms (lesson 10); an
     /// observed-but-unactivated global LCR does not.
     pub(super) fn evaluate_annex_a_iop_window(
-        &self,
         window: &AnnexAIopWindow,
         report: &mut ValidationReport,
     ) {
@@ -456,7 +455,7 @@ impl ValidatorContext {
         let m = window.max_embedded_layers.max(1) > 1;
         let offset = window.anchor_offset;
         let global_lcr = window.activated_global_count.is_some();
-        self.emit_iop_layer_budget(
+        Self::emit_iop_layer_budget(
             iop,
             extended_layers,
             window.max_embedded_layers.max(1),
@@ -467,18 +466,18 @@ impl ValidatorContext {
         );
         match iop {
             InteroperabilityPoint::Iop0 => {
-                self.emit_iop_msdo_presence(e, window, extended_layers, offset, report);
+                Self::emit_iop_msdo_presence(e, window, extended_layers, offset, report);
             }
             InteroperabilityPoint::Iop1 => {
                 if !m {
-                    self.emit_iop_msdo_presence(e, window, extended_layers, offset, report);
+                    Self::emit_iop_msdo_presence(e, window, extended_layers, offset, report);
                 } else if !e {
-                    self.emit_msdo_prohibited(window, offset, report);
-                    self.emit_iop1_local_lcr_required(window, offset, report);
+                    Self::emit_msdo_prohibited(window, offset, report);
+                    Self::emit_iop1_local_lcr_required(window, offset, report);
                 }
             }
             InteroperabilityPoint::Iop2 => {
-                self.evaluate_iop2(e, m, window, global_lcr, extended_layers, offset, report);
+                Self::evaluate_iop2(e, m, window, global_lcr, extended_layers, offset, report);
             }
         }
     }
@@ -500,9 +499,7 @@ impl ValidatorContext {
     /// disagreeing profile). The Table A.3 "Number of Layers" (sum of embedded counts across
     /// singlestreams) bound is not tracked and stays a named residual.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::unused_self)]
     pub(super) fn emit_iop_layer_budget(
-        &self,
         iop: InteroperabilityPoint,
         extended_layers: u32,
         embedded_layers: u32,
@@ -549,7 +546,6 @@ impl ValidatorContext {
 
     /// Table A.4 IOP0 rows and IOP1 `!M` rows: MSDO required when `E`, prohibited when `!E`.
     pub(super) fn emit_iop_msdo_presence(
-        &self,
         e: bool,
         window: &AnnexAIopWindow,
         extended_layers: u32,
@@ -569,7 +565,7 @@ impl ValidatorContext {
                 ));
             }
         } else {
-            self.emit_msdo_prohibited(window, offset, report);
+            Self::emit_msdo_prohibited(window, offset, report);
         }
     }
 
@@ -578,7 +574,6 @@ impl ValidatorContext {
     /// arms).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn evaluate_iop2(
-        &self,
         e: bool,
         m: bool,
         window: &AnnexAIopWindow,
@@ -588,7 +583,7 @@ impl ValidatorContext {
         report: &mut ValidationReport,
     ) {
         match (e, m) {
-            (false, false) => self.emit_msdo_prohibited(window, offset, report),
+            (false, false) => Self::emit_msdo_prohibited(window, offset, report),
             (true, false) => {
                 if !window.msdo_present && !global_lcr {
                     report.push(annex_a_iop_error(
@@ -604,7 +599,7 @@ impl ValidatorContext {
                 }
             }
             (false, true) => {
-                self.emit_msdo_prohibited(window, offset, report);
+                Self::emit_msdo_prohibited(window, offset, report);
                 if !global_lcr && !window.local_lcr_present {
                     report.push(annex_a_iop_error(
                         "annex-a/lcr-required-for-iop",
@@ -648,9 +643,7 @@ impl ValidatorContext {
     /// materialize as distinct extended layers — is the declared-vs-observed reconciliation
     /// owned by the § 6.6 sub-stream change, not this presence window. The id stays emitted
     /// (and registered) so a future declared-vs-observed model can reach it.
-    #[allow(clippy::unused_self)]
     pub(super) fn emit_msdo_prohibited(
-        &self,
         window: &AnnexAIopWindow,
         offset: ByteOffset,
         report: &mut ValidationReport,
@@ -669,9 +662,7 @@ impl ValidatorContext {
 
     /// Emits `annex-a/lcr-required-for-iop` for the IOP1 `!E && M` "Required (Local)" row
     /// (mirror line 191) when no local LCR is present in the window.
-    #[allow(clippy::unused_self)]
     pub(super) fn emit_iop1_local_lcr_required(
-        &self,
         window: &AnnexAIopWindow,
         offset: ByteOffset,
         report: &mut ValidationReport,

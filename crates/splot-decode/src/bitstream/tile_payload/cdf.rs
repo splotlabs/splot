@@ -248,14 +248,17 @@ pub(crate) struct TileCdfSavePolicy {
 }
 
 impl TileCdfSavePolicy {
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn num_log2(self) -> u8 {
         self.num_log2
     }
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn copy_cdf(self) -> bool {
         self.copy_cdf
     }
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn avg_cdf(self) -> bool {
         self.avg_cdf
@@ -308,6 +311,7 @@ pub(crate) struct TileCdfSubset {
 }
 
 impl TileCdfSubset {
+    #[cfg(test)]
     #[inline]
     pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         self.rows.row(selector)
@@ -716,7 +720,6 @@ pub(crate) enum TileCdfSelector {
 
 macro_rules! tile_cdf_arrays {
     ($($variant:ident => $label:literal),+ $(,)?) => {
-        #[allow(dead_code)]
         #[derive(Clone, Copy, Debug, Eq, PartialEq)]
         pub(crate) enum TileCdfArray {
             $($variant),+
@@ -739,8 +742,6 @@ tile_cdf_arrays! {
     TxPartitionType => "TileTxPartitionTypeCdf",
     TxPartitionTypeReduced => "TileTxPartitionTypeReducedCdf",
     LosslessTxSize => "TileLosslessTxSizeCdf",
-    LosslessInterTxType => "TileLosslessInterTxTypeCdf",
-    UseGdf => "TileUseGdfCdf",
     CdefIndex0 => "TileCdefIndex0Cdf",
     CcsoBlk => "TileCcsoBlkCdf",
     CdefIndexMinus1 => "TileCdefIndexMinus1Cdf",
@@ -751,12 +752,7 @@ tile_cdf_arrays! {
     MrlSecIndex => "TileMrlSecIndexCdf",
     SegIdExtFlag => "TileSegIdExtFlagCdf",
     SegmentId => "TileSegmentIdCdf",
-    SegmentIdExt => "TileSegmentIdExtCdf",
     RegionType => "TileRegionTypeCdf",
-    UseDpcmY => "TileUseDpcmYCdf",
-    DpcmModeY => "TileDpcmModeYCdf",
-    UseDpcmUv => "TileUseDpcmUvCdf",
-    DpcmModeUv => "TileDpcmModeUvCdf",
     YModeIndex => "TileYModeIndexCdf",
     YModeOffset => "TileYModeOffsetCdf",
     TxbSkip => "TileTxbSkipCdf",
@@ -779,7 +775,6 @@ tile_cdf_arrays! {
     CflAlpha => "TileCflAlphaCdf",
     CflMhDir => "TileCflMhDirCdf",
     UseDip => "TileUseDipCdf",
-    DipMode => "TileDipModeCdf",
     VTxbSkip => "TileVTxbSkipCdf",
     EobExtra => "TileEobExtraCdf",
     EobPt => "TileEobPtCdf",
@@ -805,34 +800,23 @@ tile_cdf_arrays! {
     Skip => "TileSkipCdf",
     SingleMode => "TileSingleModeCdf",
     IsWarp => "TileIsWarpCdf",
-    WarpMv => "TileWarpMvCdf",
     WarpIdx => "TileWarpIdxCdf",
-    WarpWithMvd => "TileWarpWithMvdCdf",
     WarpPrecision => "TileWarpPrecisionCdf",
     WarpDeltaParamLow => "TileWarpDeltaParamLowCdf",
     WarpDeltaParamHigh => "TileWarpDeltaParamHighCdf",
-    WarpDeltaParamSign => "TileWarpDeltaParamSignCdf",
     WarpInterIntra => "TileWarpInterIntraCdf",
     InterIntra => "TileInterIntraCdf",
     InterIntraMode => "TileInterIntraModeCdf",
-    WedgeInterIntra => "TileWedgeInterIntraCdf",
-    WedgeQuad => "TileWedgeQuadCdf",
     WedgeAngle => "TileWedgeAngleCdf",
-    WedgeDist1 => "TileWedgeDist1Cdf",
-    WedgeDist2 => "TileWedgeDist2Cdf",
     DrlMode => "TileDrlModeCdf",
     SkipDrlMode => "TileSkipDrlModeCdf",
     TipMode => "TileTipModeCdf",
-    TipPredMode => "TileTipPredModeCdf",
     TipDrlMode => "TileTipDrlModeCdf",
     SingleRef => "TileSingleRefCdf",
     CompMode => "TileCompModeCdf",
     IsJoint => "TileIsJointCdf",
-    JmvdScaleMode => "TileJmvdScaleModeCdf",
-    JmvdAdaptiveScaleMode => "TileJmvdAdaptiveScaleModeCdf",
     CompoundModeNonJoint => "TileCompoundModeNonJointCdf",
     CompoundModeSameRefs => "TileCompoundModeSameRefsCdf",
-    CompoundType => "TileCompoundTypeCdf",
     CompGroupIdx => "TileCompGroupIdxCdf",
     CwpIdx => "TileCwpIdxCdf",
     CompRef0 => "TileCompRef0Cdf",
@@ -845,7 +829,6 @@ tile_cdf_arrays! {
     UseMostProbablePrecision => "TileUseMostProbablePrecisionCdf",
     PbMvPrecision => "TilePbMvPrecisionCdf",
     ExplicitBawp => "TileExplicitBawpCdf",
-    AmvdJoint => "TileAmvdJointCdf",
     AmvdIndex => "TileAmvdIndexCdf",
     JointShell6Class => "TileJointShell6ClassCdf",
     ShellOffsetLowClass => "TileShellOffsetLowClassCdf",
@@ -855,7 +838,6 @@ tile_cdf_arrays! {
     InterpFilter => "TileInterpFilterCdf",
     FlexRestorationType => "TileFlexRestorationTypeCdf",
     WienerNsLength => "TileWienerNsLengthCdf",
-    PaletteYSize => "TilePaletteYSizeCdf",
     IdentityRowY => "TileIdentityRowYCdf",
     PaletteYColorIndex => "TilePaletteYColorIndexCdf",
 }
@@ -891,17 +873,6 @@ pub(crate) enum TileCdfError {
         plane_start: usize,
         index: usize,
         len: usize,
-    },
-    #[error(
-        "{array}[{plane_start}][{index}] block size {block_size} is outside 0..{max_exclusive}"
-    )]
-    #[allow(dead_code)]
-    PartitionNeighborBlockSizeOutOfRange {
-        array: &'static str,
-        plane_start: usize,
-        index: usize,
-        block_size: usize,
-        max_exclusive: usize,
     },
     #[error(
         "{array}[{plane_start}][{index}] partition context {context} is outside 0..{max_exclusive}"
@@ -1339,6 +1310,7 @@ macro_rules! tile_cdf_row {
     };
 }
 
+#[cfg(test)]
 fn tx_partition_rows(rows: &TileCdfRows, reduced: bool) -> &TxPartitionTypeCdfRows {
     if reduced {
         &rows.tx_partition_type_reduced
@@ -1394,6 +1366,7 @@ impl TileCdfRows {
         }
     }
 
+    #[cfg(test)]
     fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         tile_cdf_row!(
             self,
@@ -1479,6 +1452,7 @@ macro_rules! select_cdef_index_minus1_row {
     };
 }
 
+#[cfg(test)]
 fn cdef_index_minus1_row(rows: &TileCdfRows, strengths: usize) -> Result<&[u16], TileCdfError> {
     select_cdef_index_minus1_row!(rows, strengths, as_slice)
 }

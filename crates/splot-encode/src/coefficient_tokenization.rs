@@ -36,33 +36,27 @@ use crate::quantization::QuantizedTransformBlock;
 mod general_walk_geom;
 
 mod coeff_base_lf;
-#[allow(unused_imports)]
 pub(crate) use coeff_base_lf::{
     coeff_base_hf_luma_context, coeff_base_lf_luma_context, coeff_base_lf_token,
     coeff_base_lf_token_sized, coeff_br_lf_luma_context,
 };
 
 mod multi_coeff;
-#[allow(unused_imports)]
 pub(crate) use multi_coeff::{
-    coded_luma_all_zero_token, coeff_base_hf_eob_token, coeff_base_hf_eob_token_sized,
-    coeff_base_hf_token, coeff_base_hf_token_sized, coeff_base_lf_eob_token,
-    coeff_base_lf_eob_token_sized, coeff_br_hf_token, coeff_br_lf_token, eob_extra_token,
-    eob_pt_16_token, eob_pt_token,
+    coded_luma_all_zero_token, coeff_base_hf_eob_token_sized, coeff_base_hf_token_sized,
+    coeff_base_lf_eob_token, coeff_base_lf_eob_token_sized, coeff_br_hf_token, coeff_br_lf_token,
+    eob_extra_token, eob_pt_16_token, eob_pt_token,
 };
 
 mod transform_type;
-#[allow(unused_imports)]
 pub(crate) use transform_type::{intra_tx_type_set1_token, sec_tx_type_intra_token};
 
 mod general_coded;
-#[allow(unused_imports)]
 pub(crate) use general_coded::{
-    general_intra_16x16_luma_dc_coded_tokens, general_intra_32x32_chroma_u_dc_coded_tokens,
-    general_intra_32x32_chroma_v_dc_coded_tokens, general_intra_64x64_luma_2d_base_tokens,
-    general_intra_64x64_luma_dc_coded_tokens, general_intra_64x64_luma_eob3_base_tokens,
-    general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
-    general_intra_64x64_luma_visible_ac_tokens,
+    general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
+    general_intra_64x64_luma_2d_base_tokens, general_intra_64x64_luma_dc_coded_tokens,
+    general_intra_64x64_luma_eob3_base_tokens, general_intra_64x64_luma_two_coeff_tokens,
+    general_intra_64x64_luma_two_nonzero_base_tokens, general_intra_64x64_luma_visible_ac_tokens,
 };
 
 const DCT_DCT_4X4_WIDTH: usize = 4;
@@ -82,12 +76,7 @@ const EOB_CTX_CHROMA: usize = 2;
 const COEFF_BASE_LF_EOB_CTX_DC: usize = 0;
 const COEFF_BASE_LF_EOB_CTX_EOB2_AC: usize = 1;
 const COEFF_BR_LF_CTX_DC: usize = 0;
-const COEFF_BR_LF_CTX_EOB_AC: usize = 7;
-const COEFF_BR_LF_CTX_DC_BR_AC_LOW: usize = 1;
-const COEFF_BR_LF_CTX_DC_BR_AC_MID: usize = 2;
-const COEFF_BR_LF_CTX_DC_BR_AC_HIGH: usize = 3;
 const COEFF_BASE_LF_CTX_EOB2_DC: usize = 1;
-const COEFF_BASE_LF_CTX_EOB2_DC_BR: usize = 3;
 const COEFF_BASE_LF_TCQ_CTX_NEUTRAL: usize = 0;
 const COEFF_BASE_LF_CDF_ROW_LEN: usize = 7;
 const COEFF_BASE_LF_CTX_COUNT: usize = 33;
@@ -516,38 +505,6 @@ pub(crate) struct CoefficientSignMagnitude {
     negative: bool,
 }
 
-impl CoefficientSignMagnitude {
-    /// Returns the coefficient scan index.
-    pub(crate) const fn scan_index(self) -> usize {
-        self.scan_index
-    }
-
-    /// Returns the row-major coefficient index.
-    pub(crate) const fn coefficient_index(self) -> usize {
-        self.coefficient_index
-    }
-
-    /// Returns the coefficient row.
-    pub(crate) const fn row(self) -> usize {
-        self.row
-    }
-
-    /// Returns the coefficient column.
-    pub(crate) const fn col(self) -> usize {
-        self.col
-    }
-
-    /// Returns the absolute coefficient magnitude.
-    pub(crate) const fn magnitude(self) -> u32 {
-        self.magnitude
-    }
-
-    /// Returns whether the coefficient is negative.
-    pub(crate) const fn negative(self) -> bool {
-        self.negative
-    }
-}
-
 /// AV2 entropy-token syntax covered by the current private subset.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoefficientTokenSyntax {
@@ -924,24 +881,23 @@ const fn coeff_cdf_q_context(qindex: u32) -> usize {
 mod cdf_rows;
 
 mod entropy_proof;
-#[allow(unused_imports)]
+#[cfg(test)]
 pub(crate) use entropy_proof::roundtrip_entropy_tokens;
 
 mod general_walk;
-#[allow(unused_imports)]
-pub(crate) use general_walk::tokenize_general_lf_luma_block;
 
 mod general_walk_16x16;
-#[allow(unused_imports)]
-pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block;
-#[allow(unused_imports)]
-pub(crate) use general_walk_16x16::tokenize_general_16x16_luma_block_full;
 
 mod general_walk_golomb;
 
 mod general_walk_recover;
-#[allow(unused_imports)]
-pub(crate) use general_walk_recover::{recover_quant_from_tokens, recover_quant_from_tokens_geom};
+#[cfg(test)]
+pub(crate) use general_walk_recover::recover_quant_from_tokens_geom;
+
+#[cfg(test)]
+pub(crate) use general_coded::general_intra_16x16_luma_dc_coded_tokens;
+#[cfg(test)]
+pub(crate) use multi_coeff::{coeff_base_hf_eob_token, coeff_base_hf_token};
 
 #[cfg(test)]
 #[path = "coefficient_tokenization_tests.rs"]

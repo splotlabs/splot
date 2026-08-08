@@ -253,11 +253,9 @@ fn inter_non_mixed_region_does_not_code_intrabc_use() {
 /// Runs the live `read_intrabc_use_and_skip` → `read_intrabc_info` sequence over
 /// `steps` on the large-frame fixture, returning the decoded `use_skip`, the
 /// `read_intrabc_info` result (`Ok(info)` for a `skip` leaf that advances, `Err`
-/// for a fail-closed leaf), and the symbol count consumed. `skip_flag` is the
-/// leaf's §5.20.5.3 `skip` carried into `read_intrabc_info`.
+/// for a fail-closed leaf), and the symbol count consumed.
 fn run_intrabc_prelude(
     steps: &[(Option<TileCdfSelector>, u32)],
-    _skip_flag: bool,
 ) -> (IntrabcUseSkip, Result<IntrabcInfo>, u64) {
     let (sequence, core) = selectable_large_frame_fixture();
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
@@ -290,15 +288,12 @@ fn run_intrabc_prelude(
 
 #[test]
 fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
-    let (use_skip, info, symbol_count) = run_intrabc_prelude(
-        &[
-            (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
-            (Some(TileCdfSelector::Skip { ctx: 0 }), 1),
-            (Some(TileCdfSelector::IntrabcMode), 1),
-            (None, 0),
-        ],
-        true,
-    );
+    let (use_skip, info, symbol_count) = run_intrabc_prelude(&[
+        (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
+        (Some(TileCdfSelector::Skip { ctx: 0 }), 1),
+        (Some(TileCdfSelector::IntrabcMode), 1),
+        (None, 0),
+    ]);
 
     assert_eq!(
         use_skip,
@@ -313,39 +308,36 @@ fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
 
 #[test]
 fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual() {
-    let (use_skip, info, symbol_count) = run_intrabc_prelude(
-        &[
-            (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
-            (Some(TileCdfSelector::Skip { ctx: 0 }), 0),
-            (Some(TileCdfSelector::IntrabcMode), 0),
-            (None, 0),
-            (Some(TileCdfSelector::IntrabcPrecision), 1),
-            (
-                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
+    let (use_skip, info, symbol_count) = run_intrabc_prelude(&[
+        (Some(TileCdfSelector::Intrabc { ctx: 0 }), 1),
+        (Some(TileCdfSelector::Skip { ctx: 0 }), 0),
+        (Some(TileCdfSelector::IntrabcMode), 0),
+        (None, 0),
+        (Some(TileCdfSelector::IntrabcPrecision), 1),
+        (
+            Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
+                mv_ctx: 1,
+            })),
+            0,
+        ),
+        (
+            Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
+                precision: usize::from(MV_PRECISION_QUARTER_PEL),
+                shell_set: 0,
+                mv_ctx: 1,
+            })),
+            0,
+        ),
+        (
+            Some(TileCdfSelector::ReadMv(
+                MvCdfSelector::ShellOffsetLowClass {
                     mv_ctx: 1,
-                })),
-                0,
-            ),
-            (
-                Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellClass {
-                    precision: usize::from(MV_PRECISION_QUARTER_PEL),
-                    shell_set: 0,
-                    mv_ctx: 1,
-                })),
-                0,
-            ),
-            (
-                Some(TileCdfSelector::ReadMv(
-                    MvCdfSelector::ShellOffsetLowClass {
-                        mv_ctx: 1,
-                        shell_class: 0,
-                    },
-                )),
-                0,
-            ),
-        ],
-        false,
-    );
+                    shell_class: 0,
+                },
+            )),
+            0,
+        ),
+    ]);
 
     assert_eq!(
         use_skip,

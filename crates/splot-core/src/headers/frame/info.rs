@@ -1156,7 +1156,6 @@ fn build_inter_seq_view(seq: &CoreSeqView) -> crate::headers::frame::inter::Inte
         enable_tip_refinemv: seq.inter.enable_tip_refinemv,
         seq_max_drl_bits_minus_1: seq.inter.seq_max_drl_bits_minus_1,
         allow_frame_max_drl_bits: seq.inter.allow_frame_max_drl_bits,
-        enable_flex_mvres: seq.inter.enable_flex_mvres,
         seq_frame_motion_modes_present_flag: seq.inter.seq_frame_motion_modes_present_flag,
         seq_enabled_motion_modes: seq.inter.seq_enabled_motion_modes,
         enable_opfl_refine: seq.inter.enable_opfl_refine,

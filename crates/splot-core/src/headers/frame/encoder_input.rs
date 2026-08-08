@@ -58,7 +58,6 @@ impl CoreSeqInterView {
             enable_tip_refinemv: false,
             seq_max_drl_bits_minus_1: 0,
             allow_frame_max_drl_bits: false,
-            enable_flex_mvres: false,
             seq_frame_motion_modes_present_flag: false,
             seq_enabled_motion_modes: [false; 5],
             enable_opfl_refine: 0,
@@ -709,7 +708,6 @@ mod tests {
         assert!(!v.enable_tip);
         assert_eq!(v.seq_max_drl_bits_minus_1, 0);
         assert!(!v.allow_frame_max_drl_bits);
-        assert!(!v.enable_flex_mvres);
         assert!(!v.seq_frame_motion_modes_present_flag);
         assert_eq!(v.seq_enabled_motion_modes, [false; 5]);
         assert_eq!(v.enable_opfl_refine, 0);

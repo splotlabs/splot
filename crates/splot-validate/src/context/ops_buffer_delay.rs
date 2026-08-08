@@ -200,7 +200,7 @@ impl ValidatorContext {
                         report,
                     );
                 } else if previous.tu_index == tu_index && !ops.xlayer_id.is_global() {
-                    self.cvs.defer_pre_cvs(ops.xlayer_id, diagnostic, report);
+                    self.cvs.defer_pre_cvs(ops.xlayer_id, diagnostic);
                 }
             }
 

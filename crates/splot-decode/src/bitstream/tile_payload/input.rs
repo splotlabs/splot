@@ -24,8 +24,7 @@ use splot_core::types::ObuType;
 use super::cdf::{FrameCdfSubset, TileCdfPolicyInput};
 use super::{
     DecodeTilePayloadPlan, TileCoeffFrameFacts, TileCoeffFrameFactsInput, TileFrameFacts,
-    TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput, TilePayloadSource,
-    plan_tile_payload_boundary,
+    TileGridFacts, TilePayloadBoundaryError, TilePayloadBoundaryInput, plan_tile_payload_boundary,
 };
 use crate::{
     DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits, DecodeObuSourceKind,
@@ -51,7 +50,6 @@ impl FrameCandidateCdfFacts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameCandidateCoeffFacts {
     enable_fsc: bool,
-    enable_idtx_intra: bool,
     enable_intra_ist: bool,
     enable_inter_ist: bool,
     enable_chroma_dctonly: bool,
@@ -63,7 +61,6 @@ impl FrameCandidateCoeffFacts {
     #[must_use]
     pub(crate) const fn new(
         enable_fsc: bool,
-        enable_idtx_intra: bool,
         enable_intra_ist: bool,
         enable_inter_ist: bool,
         enable_chroma_dctonly: bool,
@@ -71,7 +68,6 @@ impl FrameCandidateCoeffFacts {
     ) -> Self {
         Self {
             enable_fsc,
-            enable_idtx_intra,
             enable_intra_ist,
             enable_inter_ist,
             enable_chroma_dctonly,
@@ -83,7 +79,6 @@ impl FrameCandidateCoeffFacts {
     pub(crate) const fn from_tq(tq: &SequenceTqEntropyConfig) -> Self {
         Self::new(
             tq.enable_fsc,
-            tq.enable_idtx_intra,
             tq.enable_intra_ist,
             tq.enable_inter_ist,
             tq.enable_chroma_dctonly,
@@ -168,7 +163,6 @@ impl<'a> FrameCandidateTileFacts<'a> {
         let reduced_tx_set = path.reduced_tx_set(core)?;
         let coeff_frame_facts = TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
             enable_fsc: coeff.enable_fsc,
-            enable_idtx_intra: coeff.enable_idtx_intra,
             enable_intra_ist: coeff.enable_intra_ist,
             enable_inter_ist: coeff.enable_inter_ist,
             enable_chroma_dctonly: coeff.enable_chroma_dctonly,
@@ -527,13 +521,6 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         payload,
         payload_base,
         &framing,
-        TilePayloadSource::new(
-            input.candidate.source_kind(),
-            input.candidate.ivf_frame(),
-            input.candidate.index(),
-            input.candidate.offset(),
-        ),
-        input.plan.selected_layer(),
         TileGridFacts::new(
             input.facts.tile_cols,
             input.facts.tile_rows,

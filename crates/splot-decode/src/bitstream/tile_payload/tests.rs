@@ -11,14 +11,6 @@ use splot_core::symbol::{SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
 
 const MAX: fn(u64) -> DecodeLimitThreshold = DecodeLimitThreshold::Max;
-fn base_source() -> TilePayloadSource {
-    TilePayloadSource::new(DecodeObuSourceKind::AnnexB, None, 7, ByteOffset::new(100))
-}
-
-fn base_layer() -> DecodeLayerSelection {
-    DecodeLayerSelection::base()
-}
-
 fn one_tile_grid() -> TileGridFacts<'static> {
     TileGridFacts::new(1, 1, &[0, 16], &[0, 8])
 }
@@ -49,8 +41,6 @@ fn input_with_frame<'a>(
         payload,
         ByteOffset::new(256),
         framing,
-        base_source(),
-        base_layer(),
         one_tile_grid(),
         frame,
         limits,
@@ -67,8 +57,6 @@ fn input_with_grid<'a>(
         payload,
         ByteOffset::new(256),
         framing,
-        base_source(),
-        base_layer(),
         grid,
         base_frame(),
         limits,
@@ -99,22 +87,14 @@ fn limit_error(error: &TilePayloadBoundaryError) -> DecodeLimitError {
 }
 
 #[test]
-fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary() {
+fn single_tile_payload_yields_deterministic_work_unit() {
     let payload = [0x80, 0x00];
     let framing = one_tile_framing(&payload);
     let mut plan =
         plan_tile_payload_boundary(&input(&payload, &framing, DecodeLimits::unlimited())).unwrap();
 
-    assert_eq!(plan.source(), base_source());
-    assert_eq!(plan.source().source_kind(), DecodeObuSourceKind::AnnexB);
-    assert_eq!(plan.source().ivf_frame(), None);
-    assert_eq!(plan.source().obu_index(), 7);
-    assert_eq!(plan.source().obu_offset(), ByteOffset::new(100));
-    assert_eq!(plan.selected_layer(), DecodeLayerSelection::base());
     assert_eq!(plan.work_units().len(), 1);
     let unit = &plan.work_units()[0];
-    assert_eq!(unit.source(), base_source());
-    assert_eq!(unit.selected_layer(), DecodeLayerSelection::base());
     assert_eq!(unit.tile_num(), 0);
     assert_eq!(unit.tile_row(), 0);
     assert_eq!(unit.tile_col(), 0);
@@ -126,7 +106,6 @@ fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary()
         ByteSpan::new(ByteOffset::new(256), 2)
     );
     assert_eq!(unit.tile_size(), 2);
-    assert_eq!(unit.current_q_index_at_entry(), 42);
     assert_eq!(unit.symbol().consumed_bits(), 15);
     assert_eq!(unit.symbol().symbol_max_bits(), 1);
     assert_eq!(unit.symbol().cdf_update_mode(), CdfUpdateMode::Enabled);
@@ -163,21 +142,7 @@ fn single_tile_payload_yields_deterministic_work_unit_and_unsupported_boundary()
         cdf_before.as_slice()
     );
 
-    let unsupported = plan.unsupported();
-    assert_eq!(unsupported.rule_id(), UNSUPPORTED_FEATURE_RULE_ID);
-    assert_eq!(unsupported.matrix_row(), TILE_PAYLOAD_DECODE_MATRIX_ROW);
-    assert_eq!(unsupported.feature_id(), TILE_PAYLOAD_DECODE_FEATURE_ID);
-    assert_eq!(unsupported.spec_section(), "5.20.2.1");
-    assert_eq!(
-        unsupported.reason(),
-        TilePayloadUnsupportedReason::DecodeTileSyntax
-    );
-    assert_eq!(unsupported.tile_num(), Some(0));
-    assert_eq!(unsupported.byte_offset(), ByteOffset::new(256));
-    assert!(unsupported.message().contains("decode_tile()"));
     assert!(plan.frame_end().reaches_last_tile_group());
-    assert!(plan.frame_end().frame_end_update_cdf_deferred());
-    assert!(plan.frame_end().decode_frame_wrapup_deferred());
 }
 
 #[test]
@@ -198,10 +163,6 @@ fn cdf_update_disable_is_recorded_without_symbol_finish() {
         CdfUpdateMode::Disabled
     );
     assert_eq!(plan.work_units()[0].symbol().symbol_max_bits(), -7);
-    assert_eq!(
-        plan.unsupported().reason(),
-        TilePayloadUnsupportedReason::DecodeTileSyntax
-    );
 }
 
 #[test]
@@ -427,39 +388,30 @@ fn minimal_tier_admission_and_rejections_are_structured_inner() {
     let open_loop_key = TileFrameFacts::new(ObuType::OpenLoopKey, true, true, 0, false);
     let input = input_with_frame(&payload, &framing, open_loop_key, DecodeLimits::unlimited());
     let plan = plan_tile_payload_boundary(&input).unwrap();
-    assert_eq!(plan.source(), base_source());
     assert_eq!(plan.work_units().len(), 1);
     assert_eq!(plan.work_units()[0].tile_num(), 0);
     assert_eq!(plan.work_units()[0].tile_bytes(), &payload);
-    assert_eq!(plan.work_units()[0].current_q_index_at_entry(), 0);
-    assert_eq!(
-        plan.unsupported().reason(),
-        TilePayloadUnsupportedReason::DecodeTileSyntax
-    );
     assert!(plan.frame_end().reaches_last_tile_group());
 
     let cases = vec![
         (
             TileFrameFacts::new(ObuType::Padding, true, true, 0, false),
             TilePayloadUnsupportedReason::NonClosedLoopKey,
-            "7.1",
         ),
         (
             TileFrameFacts::new(ObuType::ClosedLoopKey, false, true, 0, false),
             TilePayloadUnsupportedReason::NonIntraFrame,
-            "7.1",
         ),
     ];
 
-    for (frame, reason, spec_section) in cases {
+    for (frame, reason) in cases {
         let input = input_with_frame(&payload, &framing, frame, DecodeLimits::unlimited());
         let error = plan_tile_payload_boundary(&input).unwrap_err();
         let unsupported = unsupported(&error);
         assert_eq!(unsupported.reason(), reason);
-        assert_eq!(unsupported.rule_id(), "decode/unsupported-feature");
-        assert_eq!(unsupported.matrix_row(), "tile-payload-decode");
-        assert_eq!(unsupported.feature_id(), "DECODE-TILE-PAYLOAD-BOUNDARY");
-        assert_eq!(unsupported.spec_section(), spec_section);
+        assert_eq!(unsupported.tile_num(), None);
+        assert_eq!(unsupported.byte_offset(), ByteOffset::new(256));
+        assert!(!unsupported.message().is_empty());
     }
 }
 
