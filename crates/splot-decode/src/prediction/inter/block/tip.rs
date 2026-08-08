@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::DecodeHeaderStateError;
 use crate::prediction::inter::InterResidualReconScratch;
 use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_parallel::prelude::*;
@@ -1164,35 +1165,33 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     bit_depth: BitDepth,
     offset: ByteOffset,
 ) -> Result<(DecodedFrame<T>, TemporalMotionField)> {
-    let missing = |message| unsupported_at("tip_output_state", offset, message, "7.10.6");
     let frame_size = core
         .frame_size
-        .ok_or_else(|| missing("missing required input: inter.tip_output.frame_size"))?;
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
     let inter = core
         .inter
         .as_ref()
-        .ok_or_else(|| missing("missing required input: inter.tip_output.control"))?;
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let ref_frame_idx = &inter.ref_frame_idx;
-    let width = usize::try_from(frame_size.width)
-        .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
-    let height = usize::try_from(frame_size.height)
-        .map_err(|_| missing("unsupported capability: inter.tip_output.frame_dimensions"))?;
+    let width = frame_size.width as usize;
+    let height = frame_size.height as usize;
     let (mi_rows, mi_cols) = (height.div_ceil(4), width.div_ceil(4));
-    let sb_h4 = super::superblock_h4(sequence, core)
-        .ok_or_else(|| missing("missing required input: inter.tip_output.superblock_size"))?;
+    let sb_h4 =
+        super::superblock_h4(sequence, core).ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
     let projection_step = tmvp_projection_step(core);
     let ref_motion_fields = reference
         .resolve_motion_fields(ref_frame_idx)
-        .ok_or_else(|| {
-            missing("missing required input: inter.tip_output.reference_motion_field")
-        })?;
+        .ok_or(DecodeReferenceStateError::MissingMotionFieldPublication)?;
+    let current_order_hint = core
+        .display_order_hint()
+        .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
     let temporal = decode_scratch
         .temporal_context
         .get_or_insert_with(TemporalMvContext::empty);
     temporal
         .refresh_from_references(
             (mi_rows, mi_cols),
-            core.display_order_hint().unwrap_or(0),
+            current_order_hint,
             TemporalProjectionConfig {
                 frame_size: (width, height),
                 step: projection_step,
@@ -1215,11 +1214,11 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             &reference.ref_order_hint,
             &ref_motion_fields,
         )
-        .ok_or_else(|| missing("missing required input: inter.tip_output.temporal_context"))?;
+        .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
     prepare_motion_field(temporal, core, sb_h4);
     let global_mv = inter
         .tip_global_mv
-        .ok_or_else(|| missing("missing required input: inter.tip_output.global_mv"))?;
+        .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
     let visible_luma_rect =
         crate::pipeline::derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let mut workspace =
@@ -1230,11 +1229,13 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?,
             visible_luma_rect,
         )?;
-    let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
-        .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field"))?;
+    let mut motion_field =
+        TemporalMotionField::new(mi_rows, mi_cols).ok_or(ReconError::ArithmeticOverflow {
+            context: "TIP-output motion field",
+        })?;
     motion_field
         .set_band_rows8(sb_h4 / 2)
-        .ok_or_else(|| missing("unsupported capability: inter.tip_output.motion_field_band"))?;
+        .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
     motion_field.set_reference_metadata(true, (width, height), temporal.reference_order_hints());
     let placed = PlacedInterBlock {
         luma_x: 0,
@@ -1291,10 +1292,11 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
     if inter.apply_deblocking_filter_tip == Some(true) {
         let quant = core
             .quantization_params
-            .ok_or_else(|| missing("missing required input: inter.tip_output.quantizer"))?;
-        let tq = sequence.transform_quant_entropy.as_ref().ok_or_else(|| {
-            missing("missing required input: inter.tip_output.sequence_quantizer")
-        })?;
+            .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
+        let tq = sequence
+            .transform_quant_entropy
+            .as_ref()
+            .ok_or(DecodeHeaderStateError::MissingSequenceTransformQuantEntropy)?;
         let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
         let interpolation_filter = output_interpolation_filter(inter, offset)?;
         let enable_tip_refinemv = sequence
@@ -1314,7 +1316,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
                 .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
             bit_depth,
         )
-        .map_err(|_| missing("unsupported capability: inter.tip_output.deblocking"))?;
+        .map_err(|_| DecodeHeaderStateError::IncompleteTipOutput)?;
     }
     Ok((workspace.freeze()?, motion_field))
 }
