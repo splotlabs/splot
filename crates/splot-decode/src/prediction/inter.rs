@@ -1431,7 +1431,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
         )?
     };
     if envelope.header.obu_type.is_sef() {
-        validate_sef_frame_core(&core, envelope.offset)?;
+        validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
     } else if envelope.header.obu_type.is_tip_frame() {
         infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
         validate_tip_output_frame_core(&core, envelope.offset)?;
@@ -1478,7 +1478,7 @@ fn parse_sef_or_tip_frame_core(
     };
     let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
         if envelope.header.obu_type.is_sef() {
-            malformed_sef_frame_header(envelope.offset, frame_index, error.to_string())
+            malformed_sef_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
         } else {
             inter_missing!(
                 "tip_output_frame_header_parse",
@@ -1494,6 +1494,7 @@ fn parse_sef_or_tip_frame_core(
         return Err(malformed_sef_frame_header(
             envelope.offset,
             frame_index,
+            SPEC_HEADER,
             "show-existing frame header ends inside film_grain_config()".to_owned(),
         ));
     }
@@ -1503,19 +1504,49 @@ fn parse_sef_or_tip_frame_core(
 fn malformed_sef_frame_header(
     offset: ByteOffset,
     frame_index: Option<usize>,
+    spec_section: &'static str,
     message: String,
 ) -> DecodeError {
     DecodeError::MalformedSource {
         issue: DecodeSourceIssue::frame_header_conformance(
             offset,
             frame_index,
-            SPEC_HEADER,
+            spec_section,
             message,
         ),
     }
 }
 
-fn validate_sef_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+fn validate_sef_frame_core(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<impl ReconSample>,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    if let Some(trailing_bits) = core.sef_trailing_bits
+        && let Some(message) = trailing_bits.violation_message()
+    {
+        return Err(malformed_sef_frame_header(
+            offset,
+            frame_index,
+            "6.2.3",
+            format!("show-existing-frame trailing_bits() are malformed: {message}"),
+        ));
+    }
+    if core.derive_sef_order_hint == Some(true)
+        && let Some(slot) = core.frame_to_show_map_idx
+        && usize::try_from(slot).map_or(true, |slot| slot >= reference.ref_valid.len())
+    {
+        return Err(malformed_sef_frame_header(
+            offset,
+            frame_index,
+            "6.17.2",
+            format!(
+                "show-existing-frame reference slot {slot} is outside the active {}-slot buffer",
+                reference.ref_valid.len()
+            ),
+        ));
+    }
     let complete = core.status == FrameHeaderParseStatus::ShowExistingFrameComplete
         && core.show_existing_frame == Some(true)
         && core.frame_to_show_map_idx.is_some()
@@ -1526,12 +1557,7 @@ fn validate_sef_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result
         && core.sef_film_grain.is_some()
         && core.sef_trailing_bits == Some(SefTrailingBits::Valid);
     if !complete {
-        return Err(inter_cap!(
-            "sef_incomplete_state",
-            offset,
-            "inter.show_existing.complete_state",
-            SPEC_HEADER
-        ));
+        return Err(DecodeHeaderStateError::IncompleteShowExistingFrame.into());
     }
     Ok(())
 }
