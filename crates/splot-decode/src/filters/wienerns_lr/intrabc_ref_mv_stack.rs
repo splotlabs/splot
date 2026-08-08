@@ -13,12 +13,14 @@
 //! 1. The spatial SMVP scan (§ 7.12.2.6 Scan point / § 7.12.2.5 Scan col,
 //!    `scan_blk_mbmi` -> `add_ref_mv_candidate`, `mvref_common.c:1491` /
 //!    `:820`). For `is_intrabc == 1` only neighbours that are themselves IntrABC
-//!    blocks contribute, with dedup-by-value.
+//!    blocks contribute, with dedup-by-value while the block's § 7.12.2
+//!    `PruneCount` stays below `MAX_PR_NUM`; every comparison spends the budget
+//!    and once it is exhausted candidates append without the duplicate scan.
 //! 2. The ref-MV-bank fill (§ 7.12.2.21, `add_ref_mv_bank_candidates` ->
 //!    `check_rmb_cand`, `mvref_common.c:1943` / `:1806`): the bank is iterated in
-//!    reverse (LIFO), each candidate deduped against the stack and rejected if its
-//!    displaced reference leaves the frame boundary
-//!    (`mvref_common.c:1828`-`1832`).
+//!    reverse (LIFO), each candidate deduped under the same `PruneCount` budget
+//!    and rejected — after the budget-gated scan — if its displaced reference
+//!    leaves the frame boundary (`mvref_common.c:1828`-`1832`).
 //! 3. The default-BVP extra search (§ 7.12.2.20, the `use_intrabc` `add_to_ref_bv`
 //!    tail, `mvref_common.c:2711`-`2732`): the four default block vectors fill the
 //!    remaining slots with NO dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
