@@ -213,14 +213,9 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
-    let frame_size = core.frame_size.ok_or_else(|| {
-        inter_missing!(
-            "tip_output_state",
-            offset,
-            "inter.tip_output.state",
-            SPEC_HEADER
-        )
-    })?;
+    let frame_size = core
+        .frame_size
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,

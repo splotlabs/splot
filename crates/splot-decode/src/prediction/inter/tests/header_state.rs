@@ -627,6 +627,76 @@ fn impossible_tip_output_state_is_a_typed_header_state_error() {
 }
 
 #[test]
+fn impossible_tip_output_runtime_inputs_are_typed_state_errors() {
+    type MutationCase = (
+        fn(&mut SequenceHeader, &mut FrameHeaderCore),
+        DecodeHeaderStateError,
+    );
+    let (sequence, core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    let cases: [MutationCase; 4] = [
+        (
+            |_, core| core.frame_size = None,
+            DecodeHeaderStateError::MissingFrameSize,
+        ),
+        (
+            |_, core| core.inter = None,
+            DecodeHeaderStateError::MissingInterControlRegion,
+        ),
+        (
+            |sequence, _| sequence.partition = None,
+            DecodeHeaderStateError::IncompleteTipOutput,
+        ),
+        (
+            |_, core| core.order_hint = None,
+            DecodeHeaderStateError::MissingDisplayOrderHint,
+        ),
+    ];
+
+    for (mutate, expected) in cases {
+        let mut sequence = sequence.clone();
+        let mut core = core.clone();
+        mutate(&mut sequence, &mut core);
+        let error = super::super::block::tip::reconstruct_output(
+            &mut super::super::InterDecodeScratch::default(),
+            &sequence,
+            &core,
+            &reference,
+            splot_recon::BitDepth::Eight,
+            offset,
+        )
+        .expect_err("TIP-output runtime state");
+        assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
+    }
+}
+
+#[test]
+fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
+    let (sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.inter.as_mut().expect("inter control").ref_frame_idx = [0].into_iter().collect();
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_motion_fields = vec![Some(super::super::MotionFieldHandle::pending())];
+
+    let error = super::super::block::tip::reconstruct_output(
+        &mut super::super::InterDecodeScratch::default(),
+        &sequence,
+        &core,
+        &reference,
+        splot_recon::BitDepth::Eight,
+        offset,
+    )
+    .expect_err("unpublished TIP-output motion field");
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::error::DecodeReferenceStateError::MissingMotionFieldPublication,
+        }
+    ));
+}
+
+#[test]
 fn impossible_sef_state_is_a_typed_header_state_error() {
     let (sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);
     let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
