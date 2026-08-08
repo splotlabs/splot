@@ -117,16 +117,17 @@ if_not_else = "allow"
 # and `test` trap integer overflow so the test suite, fuzzers, and CI catch codec
 # arithmetic bugs, while `release` disables the checks for decode throughput
 # (measured ~5% first-frame latency on the 1080p10 reference stream; decoded
-# output is byte-identical either way). `release` also takes fat cross-crate LTO
-# with one codegen unit: SCALE-066 measured it byte-exact and 1.2-1.9% faster at
-# every width from 1 to 10 workers, which flipped the three- and four-worker
-# comparisons against dav2d. It costs local `cargo build --release` 26s -> 78s
-# and does not touch `cargo xtask ci`, which builds only `dev`/`test`/`doc`.
+# output is byte-identical either way). Fat cross-crate LTO with one codegen unit
+# is temporarily disabled below: SCALE-066 measured it byte-exact and 1.2-1.9%
+# faster at every width from 1 to 10 workers, but it raises a local
+# `cargo build --release` from 26s to 78s. Re-enable it only if a fresh
+# measurement shows that the runtime gain still justifies the build-time cost.
+# It does not touch `cargo xtask ci`, which builds only `dev`/`test`/`doc`.
 # `panic = "abort"` stays at its default.
 [profile.release]
 overflow-checks = false
-lto = "fat"
-codegen-units = 1
+# lto = "fat"
+# codegen-units = 1
 
 [profile.dev]
 overflow-checks = true
