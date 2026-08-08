@@ -85,6 +85,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its parsed control region, but it was absent.
     #[error("inter-frame control region is missing")]
     MissingInterControlRegion,
+    /// An inter frame required its parsed coding-mode tail, but it was absent.
+    #[error("inter-frame coding-mode tail is missing")]
+    MissingInterTail,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,

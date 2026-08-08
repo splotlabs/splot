@@ -32,7 +32,7 @@ use super::{
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
 };
-use crate::error::{DecodeError, Result};
+use crate::error::{DecodeError, DecodeHeaderStateError, Result};
 use crate::pipeline::{PipelineDecodedFrame, PipelineFrame, decode_frames_from_plan};
 use crate::{
     DecodeContext, DecodeLimitName, DecodeLimitThreshold, DecodeLimits, DecodeOptions,
@@ -2317,18 +2317,18 @@ fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
 }
 
 #[test]
-fn missing_inter_control_region_is_typed_header_state_error() {
-    let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
-        core.inter = None;
-    })
-    .expect_err("the inter walk requires its parsed control region");
-
-    assert!(matches!(
-        error,
-        DecodeError::HeaderState {
-            source: crate::error::DecodeHeaderStateError::MissingInterControlRegion,
-        }
-    ));
+fn missing_inter_header_regions_are_typed_header_state_errors() {
+    use DecodeHeaderStateError::{MissingInterControlRegion, MissingInterTail};
+    type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
+    let cases: [MutationCase; 2] = [
+        (|core| core.inter = None, MissingInterControlRegion),
+        (|core| core.inter_tail = None, MissingInterTail),
+    ];
+    for (mutate, expected) in cases {
+        let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, mutate)
+            .expect_err("header state");
+        assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
+    }
 }
 
 #[test]
