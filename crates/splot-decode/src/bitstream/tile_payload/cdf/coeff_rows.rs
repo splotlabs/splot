@@ -16,7 +16,9 @@ use splot_core::tables::cdf::{
     DEFAULT_IDTX_SIGN_CDF,
 };
 
-use super::{TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows};
+use super::{
+    CoeffCdfQContext, TileCdfArray, TileCdfError, avg_cdf_rows, blend_cdf_rows, scale_cdf_rows,
+};
 
 fn replicate_q_context_rows<T: Copy, const N: usize>(rows: &mut [T; N], q: usize) {
     let row = rows[q];
@@ -204,11 +206,8 @@ impl CoeffCdfRows {
         }
     }
 
-    pub(crate) fn replicate_q_context(
-        &mut self,
-        coeff_cdf_q_ctx: usize,
-    ) -> Result<(), TileCdfError> {
-        let q = checked_coeff_cdf_q_context(TileCdfArray::CoeffBase, coeff_cdf_q_ctx)?;
+    pub(crate) fn replicate_q_context(&mut self, coeff_cdf_q_ctx: CoeffCdfQContext) {
+        let q = coeff_cdf_q_ctx.index();
         replicate_q_context_rows(&mut self.coeff_base, q);
         replicate_q_context_rows(&mut self.coeff_base_ph, q);
         replicate_q_context_rows(&mut self.coeff_base_uv, q);
@@ -225,7 +224,6 @@ impl CoeffCdfRows {
         replicate_q_context_rows(&mut self.coeff_br_lf, q);
         replicate_q_context_rows(&mut self.coeff_br_idtx, q);
         replicate_q_context_rows(&mut self.idtx_sign, q);
-        Ok(())
     }
 }
 

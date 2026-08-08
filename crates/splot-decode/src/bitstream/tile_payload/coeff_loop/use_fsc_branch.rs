@@ -97,15 +97,6 @@ pub(crate) enum CoeffUseFscBranchError {
     Fsc(#[from] CoeffFscBranchError),
 }
 
-pub(crate) const fn coeff_cdf_q_ctx_from_base_q_idx(base_q_idx: u32) -> usize {
-    match base_q_idx {
-        0..=90 => 0,
-        91..=140 => 1,
-        141..=190 => 2,
-        _ => 3,
-    }
-}
-
 pub(crate) fn apply_coeff_use_fsc_branch(
     state: &mut TileCoeffContextState,
     cdfs: &mut TileCdfSubset,

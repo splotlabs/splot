@@ -341,16 +341,9 @@ fn resolve_initial_frame_cdfs(
     let current_order_hint =
         i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
     let default_cdfs = || {
-        FrameCdfSubset::default_for_base_q(current_base_q_idx)
-            .map(Arc::new)
-            .map_err(|_| {
-                inter_cap!(
-                    "inter_cdf_default_init",
-                    offset,
-                    "inter.cdf.default_init",
-                    SPEC_HEADER
-                )
-            })
+        Ok(Arc::new(FrameCdfSubset::default_for_base_q(
+            current_base_q_idx,
+        )))
     };
     let Some(inter_ctrl) = core.inter.as_ref() else {
         return default_cdfs();

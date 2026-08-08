@@ -96,8 +96,6 @@ pub(in crate::bitstream::tile_payload::cdf) use self::util::{
 use self::util::{
     checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
 };
-use super::coeff_loop::use_fsc_branch::coeff_cdf_q_ctx_from_base_q_idx;
-
 pub(crate) const CDF_PROB_SCALE: u32 = 1 << 15;
 pub(crate) const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
 pub(crate) const DO_SQUARE_SPLIT_VALID_PLANE_CONTEXTS: usize = 1;
@@ -136,6 +134,38 @@ const SEGMENT_ID_CONTEXTS: usize = 3;
 const SEGMENT_ID_ROW_LEN: usize = 9;
 const SEG_ID_EXT_FLAG_ROW_LEN: usize = 3;
 const INTER_SDP_BSIZE_GROUPS: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CoeffCdfQContext {
+    Q0,
+    Q1,
+    Q2,
+    Q3,
+}
+
+impl CoeffCdfQContext {
+    pub(crate) const fn from_base_q_idx(base_q_idx: u32) -> Self {
+        match base_q_idx {
+            0..=90 => Self::Q0,
+            91..=140 => Self::Q1,
+            141..=190 => Self::Q2,
+            _ => Self::Q3,
+        }
+    }
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Q0 => 0,
+            Self::Q1 => 1,
+            Self::Q2 => 2,
+            Self::Q3 => 3,
+        }
+    }
+}
+
+pub(crate) const fn coeff_cdf_q_ctx_from_base_q_idx(base_q_idx: u32) -> usize {
+    CoeffCdfQContext::from_base_q_idx(base_q_idx).index()
+}
 
 type DoSplitCdfRows = [[[u16; CDF_ROW_LEN]; DO_SPLIT_CONTEXTS]; DO_SPLIT_PLANE_CONTEXTS];
 type DoExtPartitionCdfRows =
@@ -244,10 +274,12 @@ impl FrameCdfSubset {
         }
     }
 
-    pub(crate) fn default_for_base_q(base_q_idx: u32) -> Result<Self, TileCdfError> {
+    pub(crate) fn default_for_base_q(base_q_idx: u32) -> Self {
         let mut cdfs = Self::from_defaults();
-        cdfs.replicate_coeff_q_context_for_base_q(base_q_idx)?;
-        Ok(cdfs)
+        cdfs.rows
+            .block
+            .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
+        cdfs
     }
 
     pub(crate) fn replicate_coeff_q_context_for_base_q(

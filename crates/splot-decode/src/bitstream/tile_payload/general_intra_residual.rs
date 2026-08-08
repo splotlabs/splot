@@ -19,10 +19,10 @@ use splot_recon::{
     reconstruct_transform_block_residual_with_secondary, tx_size_index,
 };
 
-use super::cdf::TileCdfSelector;
 use super::cdf::block_context::IntraYMode;
 use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
+use super::cdf::{TileCdfSelector, coeff_cdf_q_ctx_from_base_q_idx};
 use super::coeff_loop::fsc_quant_pass::{
     CoeffFscBranchError, CoeffFscStagedTxSizeNonZeroInput,
     apply_staged_nonzero_coeff_fsc_branch_from_tx_size,
@@ -35,7 +35,6 @@ use super::coeff_loop::ordinary_pass::geometry::{
     apply_staged_nonzero_coeff_ordinary_branch_from_lossless, lossless_plane_tx_type,
     read_lossless_inter_plane_tx_type, resolve_mode_to_txfm_plane_tx_type,
 };
-use super::coeff_loop::use_fsc_branch::coeff_cdf_q_ctx_from_base_q_idx;
 use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
