@@ -78,6 +78,15 @@ fn derive_row_motion<T: ReconSample>(
     let mut failure = None;
     for entry in &mut row.entries {
         let Some(ReconCommand::Inter(command)) = entry.command.as_ref() else {
+            if let Some(clear) = entry.temporal_clear_record(
+                shared.mi_rows,
+                shared.mi_cols,
+                shared.current_order_hint,
+            ) {
+                let start = row.temporal.len();
+                row.temporal.push(clear);
+                entry.temporal = start..row.temporal.len();
+            }
             continue;
         };
         let start = row.temporal.len();

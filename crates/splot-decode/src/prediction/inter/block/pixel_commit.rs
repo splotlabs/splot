@@ -134,6 +134,14 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             {
                 return Err(error);
             }
+            let temporal_clear = if motion_owed {
+                entry.temporal_clear_record(mi_rows, mi_cols, current_order_hint)
+            } else {
+                None
+            };
+            if let Some(clear) = temporal_clear {
+                motion.fold_unit(ordinal, core::slice::from_ref(&clear));
+            }
             if let Some(command) = entry.command.take() {
                 match command {
                     ReconCommand::GeneralIntra(command) => {
