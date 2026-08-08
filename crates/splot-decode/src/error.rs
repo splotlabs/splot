@@ -88,6 +88,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its parsed coding-mode tail, but it was absent.
     #[error("inter-frame coding-mode tail is missing")]
     MissingInterTail,
+    /// An inter frame required its parsed interpolation filter, but it was absent.
+    #[error("inter-frame interpolation filter is missing")]
+    MissingInterpolationFilter,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,

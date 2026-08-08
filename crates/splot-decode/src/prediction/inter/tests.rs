@@ -2320,9 +2320,13 @@ fn effective_quantizer_deltas_include_frame_and_sequence_offsets() {
 fn missing_inter_header_regions_are_typed_header_state_errors() {
     use DecodeHeaderStateError::{MissingInterControlRegion, MissingInterTail};
     type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
-    let cases: [MutationCase; 2] = [
+    let cases: [MutationCase; 3] = [
         (|core| core.inter = None, MissingInterControlRegion),
         (|core| core.inter_tail = None, MissingInterTail),
+        (
+            |core| core.inter.as_mut().unwrap().interpolation_filter = None,
+            DecodeHeaderStateError::MissingInterpolationFilter,
+        ),
     ];
     for (mutate, expected) in cases {
         let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, mutate)

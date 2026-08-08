@@ -171,14 +171,9 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let interpolation_filter = inter.interpolation_filter.ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_interpolation_filter",
-            offset,
-            "inter.interpolation_filter",
-            SPEC_MC
-        )
-    })?;
+    let interpolation_filter = inter
+        .interpolation_filter
+        .ok_or(DecodeHeaderStateError::MissingInterpolationFilter)?;
     let visible_luma_rect = derive_visible_luma_rect(sequence, frame_width, frame_height)?;
     let workspace = crate::pipeline::reconstruct::new_general_intra_workspace_with_visible_rect::<T>(
         frame_width as usize,
