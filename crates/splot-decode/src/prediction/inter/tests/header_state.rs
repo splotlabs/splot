@@ -38,3 +38,35 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
         assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
     }
 }
+
+#[test]
+fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
+    let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
+        let inter = core.inter.as_mut().unwrap();
+        inter.signal_primary_ref_frame = Some(true);
+        inter.primary_ref_frame = Some(6);
+        inter.disable_cross_frame_cdf_init = Some(true);
+        inter.ref_frame_idx = [0].into_iter().collect();
+        inter.num_total_refs = Some(1);
+    })
+    .expect_err("primary reference must be inside the active map");
+
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("6.17"));
+    assert!(issue.offset().is_some());
+    assert_eq!(issue.frame_index(), Some(1));
+    assert_eq!(
+        issue.message(),
+        "primary reference index 6 is outside the active 1-entry map"
+    );
+
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("malformed frame-header input must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}

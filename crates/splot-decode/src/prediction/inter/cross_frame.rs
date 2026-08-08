@@ -9,7 +9,7 @@ const INITIAL_QP_DIFF: u32 = 512;
 pub(crate) enum ResolvedCdfLoad {
     Default,
     LoadSlot { primary: u32, blend: Option<u32> },
-    OutOfRangePrimary,
+    OutOfRangePrimary { index: u8, reference_count: usize },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -28,6 +28,15 @@ pub(crate) fn resolve_cdf_load(
     enable_avg_cdf: bool,
     avg_cdf_type: u8,
 ) -> ResolvedCdfLoad {
+    if let (Some(true), Some(primary)) = (signal_primary_ref_frame, primary_ref_frame)
+        && primary != PRIMARY_REF_NONE
+        && usize::from(primary) >= ref_frame_idx.len()
+    {
+        return ResolvedCdfLoad::OutOfRangePrimary {
+            index: primary,
+            reference_count: ref_frame_idx.len(),
+        };
+    }
     let (derived, derived_secondary) = choose_primary_secondary_ref_frame(
         signal_primary_ref_frame,
         primary_ref_frame,
@@ -54,7 +63,10 @@ pub(crate) fn resolve_cdf_load(
         return ResolvedCdfLoad::Default;
     }
     let Some(&primary_slot) = ref_frame_idx.get(primary as usize) else {
-        return ResolvedCdfLoad::OutOfRangePrimary;
+        return ResolvedCdfLoad::OutOfRangePrimary {
+            index: primary,
+            reference_count: ref_frame_idx.len(),
+        };
     };
     let blend = if enable_avg_cdf && avg_cdf_type == 0 {
         let blend_frame = if primary == derived {

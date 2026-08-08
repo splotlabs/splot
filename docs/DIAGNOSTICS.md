@@ -491,6 +491,7 @@ known. Annex B wrapper errors and IVF container errors leave `spec_section`
 unset unless the underlying parser exposes one AV2 section precisely enough to
 cite. Runtime tile syntax errors use `source_issue_kind: tile_payload_parse_error`
 and preserve the tile syntax section and byte offset.
+Runtime frame-header conformance errors use `source_issue_kind: frame_header_conformance_error`; the primary-reference relationship check preserves its AV2 § 6.17 attribution, IVF frame index, and frame-header byte offset.
 
 An IVF FourCC other than `AV02` is reported through `decode/malformed-source`
 with `source_issue_kind: ivf_unsupported_codec` and

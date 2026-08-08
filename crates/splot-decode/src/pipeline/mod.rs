@@ -1485,6 +1485,7 @@ where
                                 move |scratch| {
                                     inter::decode_tip_output_frame(
                                         scratch,
+                                        next_candidate,
                                         inter_envelope,
                                         task_core,
                                         &shared,
@@ -1706,6 +1707,7 @@ where
                                 move |scratch| {
                                     inter::decode_tip_output_frame(
                                         scratch,
+                                        next_candidate,
                                         inter_envelope,
                                         task_core,
                                         &shared,
