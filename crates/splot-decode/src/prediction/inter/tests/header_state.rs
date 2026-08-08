@@ -102,23 +102,25 @@ fn inter_parser_coverage_preserves_feature_id() {
                 feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
             },
             "AV2-5.18.7-SEGMENTATION-TILING",
+            "5.18.2",
         ),
         (
             FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
                 feature_id: "lr_temporal_reference_filter_match",
             },
             "lr_temporal_reference_filter_match",
+            "5.18.7.11",
         ),
     ];
-    for (status, expected) in cases {
+    for (status, expected_reason, expected_section) in cases {
         core.status = status;
         let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
             .expect_err("inter parser coverage stop");
         let DecodeError::UnsupportedFeature { unsupported } = error else {
             panic!("expected unsupported feature, got {error}");
         };
-        assert_eq!(unsupported.reason(), expected);
-        assert_eq!(unsupported.spec_section(), "5.18.2");
+        assert_eq!(unsupported.reason(), expected_reason);
+        assert_eq!(unsupported.spec_section(), expected_section);
     }
 }
 

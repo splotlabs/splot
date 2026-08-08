@@ -1819,17 +1819,21 @@ fn validate_frame_header_parse_status(
             ),
         });
     }
-    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id }
-    | FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id } = core.status
-    {
-        return Err(unsupported_at(
+    match core.status {
+        FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } => Err(unsupported_at(
             feature_id,
             offset,
             unsupported_message,
             SPEC_HEADER,
-        ));
+        )),
+        FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id } => Err(unsupported_at(
+            feature_id,
+            offset,
+            "frame header requires unsupported Wiener-NS reference filter coverage",
+            "5.18.7.11",
+        )),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn validate_inter_frame_core(
