@@ -94,6 +94,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its derived display order hint, but it was absent.
     #[error("inter-frame display order hint is missing")]
     MissingDisplayOrderHint,
+    /// An inter frame's reference count was invalid or did not match its map length.
+    #[error("inter-frame reference count and map are inconsistent")]
+    InvalidInterReferenceMap,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,

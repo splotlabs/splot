@@ -72,16 +72,30 @@ fn zero_reference_inter_frame_reaches_the_inter_block_boundary() {
 }
 
 #[test]
-fn zero_reference_inter_frame_requires_an_empty_reference_map() {
-    let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
-        core.inter
-            .as_mut()
-            .expect("fixture inter core has a control region")
-            .num_total_refs = Some(0);
-    })
-    .expect_err("zero references and a non-empty map must be rejected");
+fn invalid_inter_reference_maps_are_typed_header_state_errors() {
+    type Mutation = fn(&mut splot_core::headers::frame::InterControl);
+    let mutations: [Mutation; 3] = [
+        |inter| inter.num_total_refs = None,
+        |inter| inter.num_total_refs = Some(8),
+        |inter| inter.num_total_refs = Some(0),
+    ];
+    for mutate in mutations {
+        let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
+            mutate(
+                core.inter
+                    .as_mut()
+                    .expect("fixture inter core has a control region"),
+            );
+        })
+        .expect_err("an invalid reference map must be rejected");
 
-    assert_eq!(unsupported_reason(error), "inter_missing_ref_frame_idx");
+        assert!(matches!(
+            error,
+            DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidInterReferenceMap,
+            }
+        ));
+    }
 }
 
 #[test]
