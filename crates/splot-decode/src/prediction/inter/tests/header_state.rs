@@ -445,12 +445,73 @@ fn tip_output_quantization_missing_control_is_a_typed_header_state_error() {
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
 
     let error =
-        super::super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset)
+        super::super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
             .expect_err("missing TIP inter control");
     assert!(matches!(
         error,
         DecodeError::HeaderState {
             source: DecodeHeaderStateError::MissingInterControlRegion,
+        }
+    ));
+}
+
+#[test]
+fn tip_output_without_reference_pair_is_a_malformed_source_diagnostic() {
+    let (mut sequence, _) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    let (mut core, offset) = tip_output_core_for_validation();
+    sequence
+        .inter
+        .as_mut()
+        .expect("fixture has inter sequence config")
+        .enable_tip_explicit_qp = false;
+    core.order_hint_lsb = Some(10);
+    core.order_hint = Some(10);
+    core.quantization_params = None;
+    core.inter.as_mut().expect("inter control").ref_frame_idx = [0, 1].into_iter().collect();
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_valid = vec![true; 2];
+    reference.ref_order_hint = vec![10; 2];
+
+    let error = super::super::infer_tip_output_quantization(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(6),
+    )
+    .expect_err("TIP reference pair");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("7.10.1"));
+    assert_eq!(issue.frame_index(), Some(6));
+    assert!(issue.message().contains("past/future reference pair"));
+}
+
+#[test]
+fn tip_output_missing_reference_quantizer_is_a_typed_reference_state_error() {
+    let (mut sequence, _) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    let (mut core, offset) = tip_output_core_for_validation();
+    sequence
+        .inter
+        .as_mut()
+        .expect("fixture has inter sequence config")
+        .enable_tip_explicit_qp = false;
+    core.order_hint_lsb = Some(10);
+    core.order_hint = Some(10);
+    core.quantization_params = None;
+    core.inter.as_mut().expect("inter control").ref_frame_idx = [0, 1].into_iter().collect();
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_valid = vec![true; 2];
+    reference.ref_order_hint = vec![9, 12];
+
+    let error =
+        super::super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
+            .expect_err("TIP reference quantizer metadata");
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::error::DecodeReferenceStateError::MissingQuantizerMetadata { slot: 0 },
         }
     ));
 }

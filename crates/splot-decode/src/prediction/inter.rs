@@ -93,6 +93,7 @@ const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
 const SPEC_REFERENCE: &str = "7.23";
+const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
 const SINGLE_MODE_NEARMV: u8 = 0;
 const SINGLE_MODE_GLOBALMV: u8 = 1;
 const SINGLE_MODE_NEWMV: u8 = 2;
@@ -1434,7 +1435,13 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
         validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
     } else if envelope.header.obu_type.is_tip_frame() {
         validate_tip_output_frame_parse(&core, envelope.offset, frame_index)?;
-        infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
+        infer_tip_output_quantization(
+            &mut core,
+            sequence,
+            reference,
+            envelope.offset,
+            frame_index,
+        )?;
         validate_tip_output_frame_core(&core)?;
     } else {
         validate_and_resolve_inter_frame_core(
@@ -1563,6 +1570,7 @@ fn infer_tip_output_quantization(
     sequence: &SequenceHeader,
     reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
+    frame_index: Option<usize>,
 ) -> Result<()> {
     if core.quantization_params.is_some()
         || sequence
@@ -1581,36 +1589,36 @@ fn infer_tip_output_quantization(
         &reference.ref_valid,
         &reference.ref_order_hint,
     );
-    let pair = find_mv_stack::tip_reference_pair_from_hints(
-        core.display_order_hint().unwrap_or(0),
-        &hints,
-    );
-    let list_slot = |list_ref: i8| {
-        usize::try_from(list_ref)
-            .ok()
-            .and_then(|index| inter.ref_frame_idx.get(index))
-            .and_then(|&slot| usize::try_from(slot).ok())
+    let current_order_hint = core
+        .display_order_hint()
+        .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
+    let pair = find_mv_stack::tip_reference_pair_from_hints(current_order_hint, &hints)
+        .ok_or_else(|| DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                frame_index,
+                SPEC_TIP_TEMPORAL_SCALE,
+                "TIP output has no usable past/future reference pair".to_owned(),
+            ),
+        })?;
+    let past = block_reference_slot(&inter.ref_frame_idx, pair.past_ref)? as usize;
+    let future = block_reference_slot(&inter.ref_frame_idx, pair.future_ref)? as usize;
+    let quantizer = |slot| -> Result<(u32, i32, i32)> {
+        let Some((&base_q_idx, &delta_q_u_ac, &delta_q_v_ac)) = reference
+            .ref_base_q_idx
+            .get(slot)
+            .zip(reference.ref_delta_q_u_ac.get(slot))
+            .zip(reference.ref_delta_q_v_ac.get(slot))
+            .map(|((base_q_idx, delta_q_u_ac), delta_q_v_ac)| {
+                (base_q_idx, delta_q_u_ac, delta_q_v_ac)
+            })
+        else {
+            return Err(DecodeReferenceStateError::MissingQuantizerMetadata { slot }.into());
+        };
+        Ok((base_q_idx, delta_q_u_ac, delta_q_v_ac))
     };
-    let slots = pair.map(|pair| [list_slot(pair.past_ref), list_slot(pair.future_ref)]);
-    let values = slots.and_then(|[past, future]| {
-        let (past, future) = (past?, future?);
-        Some((
-            *reference.ref_base_q_idx.get(past)?,
-            *reference.ref_base_q_idx.get(future)?,
-            *reference.ref_delta_q_u_ac.get(past)?,
-            *reference.ref_delta_q_u_ac.get(future)?,
-            *reference.ref_delta_q_v_ac.get(past)?,
-            *reference.ref_delta_q_v_ac.get(future)?,
-        ))
-    });
-    let Some((past_q, future_q, past_u, future_u, past_v, future_v)) = values else {
-        return Err(inter_missing!(
-            "tip_output_reference_quantizer",
-            offset,
-            "inter.tip_output.reference_quantizer",
-            SPEC_HEADER
-        ));
-    };
+    let (past_q, past_u, past_v) = quantizer(past)?;
+    let (future_q, future_u, future_v) = quantizer(future)?;
     let average_delta = |a: i32, b: i32| a / 2 + b / 2 + ((a % 2 + b % 2 + 1) >> 1);
     core.quantization_params = Some(QuantizationParams::inferred_tip(
         (past_q + future_q + 1) >> 1,

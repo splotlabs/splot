@@ -2383,7 +2383,8 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
         reference.ref_delta_q_u_ac = vec![20, -3, 4, 40];
         reference.ref_delta_q_v_ac = vec![20, -5, -2, 40];
 
-        super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset).unwrap();
+        super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
+            .unwrap();
 
         assert_eq!(
             core.quantization_params,
