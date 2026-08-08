@@ -24,7 +24,7 @@ use splot_recon::{
     WienerNsChromaFilter, WienerNsChromaPaddedSource, WienerNsChromaScratch, WienerNsLumaFilter,
     WienerNsLumaPaddedSource, WienerNsLumaScratch, loop_restoration_source_sample,
     pc_wiener_classify_grid_padded_classes_into, pc_wiener_filter_block_padded,
-    pc_wiener_filter_set_index, pc_wiener_subclass_table,
+    pc_wiener_filter_set_index, pc_wiener_subclass_table, wiener_ns_filter_chroma_block,
     wiener_ns_filter_chroma_block_padded_420_into, wiener_ns_filter_luma_block_padded_cells_into,
     wiener_ns_filter_luma_block_padded_into,
 };
@@ -597,21 +597,15 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         self.samples.get(start..).map(|tail| (tail, self.stride))
     }
 
-    #[cfg(test)]
-    fn get_abs(&self, x: isize, y: isize) -> T {
-        let col = x.saturating_sub(self.origin_x);
-        let row = y.saturating_sub(self.origin_y);
-        if col < 0 || row < 0 || col as usize >= self.stride {
-            return T::default();
+    fn get_abs(&self, x: isize, y: isize) -> Option<T> {
+        let col = usize::try_from(x.checked_sub(self.origin_x)?).ok()?;
+        let row = usize::try_from(y.checked_sub(self.origin_y)?).ok()?;
+        if col >= self.stride {
+            return None;
         }
         self.samples
-            .get(
-                (row as usize)
-                    .saturating_mul(self.stride)
-                    .saturating_add(col as usize),
-            )
+            .get(row.checked_mul(self.stride)?.checked_add(col)?)
             .copied()
-            .unwrap_or_default()
     }
 }
 
@@ -736,7 +730,6 @@ impl StripeChain<'_> {
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
-
         if let Some(plane) = lr_params.planes.first()
             && matches!(
                 plane.restoration_type,
@@ -979,13 +972,6 @@ impl StripeChain<'_> {
         })
     }
 
-    fn plane_dimensions(&self, plane_id: PlaneId) -> (usize, usize) {
-        match plane_id {
-            PlaneId::Y => (self.luma_width, self.luma_height),
-            PlaneId::U | PlaneId::V => (self.luma_width.div_ceil(2), self.luma_height.div_ceil(2)),
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     fn compute_chroma_lr_block<T: ReconSample>(
         &self,
@@ -1000,11 +986,12 @@ impl StripeChain<'_> {
         cdef_luma: &StripePlane,
         post_lr: &mut StripePlane,
     ) -> Result<()> {
-        let (plane_width, plane_height) = self.plane_dimensions(plane_id);
+        let plane_size =
+            self.plane_sizes[plane_id.index()].ok_or_else(|| luma_lr_filter_error(offset))?;
         let block = clipped_lr_source_block(
             block,
-            plane_width,
-            plane_height,
+            plane_size.width(),
+            plane_size.height(),
             self.luma_width,
             self.luma_height,
             offset,
@@ -1013,13 +1000,36 @@ impl StripeChain<'_> {
             Some(coeffs) => *coeffs,
             None => chroma_lr_unit_coeffs(lr_unit_filters, &block, offset)?,
         };
-        let chroma_bounds =
-            crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 1, 1);
-        let luma_bounds =
-            crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 1, 1);
+        // § 7.20.1-.3 scale chroma geometry on each axis independently.
+        let (sub_x, sub_y) = self.plane_subsampling(plane_id);
+        let source_bounds =
+            crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, sub_x, sub_y);
         let block_x = usize_to_isize_recon(block.x, "chroma LR block x")
             .map_err(|_| luma_lr_filter_error(offset))?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let luma_x = block
+            .x
+            .checked_shl(u32::from(sub_x))
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let luma_y = block
+            .y
+            .checked_shl(u32::from(sub_y))
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let luma_width = block
+            .width
+            .checked_shl(u32::from(sub_x))
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let luma_height = block
+            .height
+            .checked_shl(u32::from(sub_y))
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let luma_radius = WIENER_NS_CHROMA_TAP_RADIUS
+            .checked_shl(u32::from(sub_x.max(sub_y)))
+            .ok_or_else(|| luma_lr_filter_error(offset))?;
+        let luma_x = usize_to_isize_recon(luma_x, "chroma LR luma block x")
+            .map_err(|_| luma_lr_filter_error(offset))?;
+        let luma_y = usize_to_isize_recon(luma_y, "chroma LR luma block y")
             .map_err(|_| luma_lr_filter_error(offset))?;
         filter_lr_block_into(post_lr, &block, offset, |output, output_stride| {
             let params = WienerNsChromaFilter {
@@ -1030,8 +1040,8 @@ impl StripeChain<'_> {
                 output_stride,
                 bit_depth: self.bit_depth,
                 coeffs: &coeffs,
-                subsampling_x: 1,
-                subsampling_y: 1,
+                subsampling_x: sub_x,
+                subsampling_y: sub_y,
                 luma_start_x: block.luma_start_x,
                 luma_end_x: block.luma_end_x,
                 mi_rows: self.luma_height.div_ceil(MI_SIZE),
@@ -1043,7 +1053,7 @@ impl StripeChain<'_> {
                     plane_id,
                     curr_chroma,
                     cdef_chroma,
-                    &chroma_bounds,
+                    &source_bounds,
                     block_x,
                     block_y,
                     block.width,
@@ -1056,14 +1066,72 @@ impl StripeChain<'_> {
                     PlaneId::Y,
                     curr_luma,
                     cdef_luma,
-                    &luma_bounds,
-                    block_x.saturating_mul(2),
-                    block_y.saturating_mul(2),
-                    block.width.saturating_mul(2),
-                    block.height.saturating_mul(2),
-                    WIENER_NS_CHROMA_TAP_RADIUS * 2,
+                    &source_bounds,
+                    luma_x,
+                    luma_y,
+                    luma_width,
+                    luma_height,
+                    luma_radius,
                 )
                 .map_err(|_| luma_lr_filter_error(offset))?;
+                if (sub_x, sub_y) != (1, 1) {
+                    let sample_count = block
+                        .width
+                        .checked_mul(block.height)
+                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    let mut filtered = Vec::new();
+                    filtered
+                        .try_reserve_exact(sample_count)
+                        .map_err(|_| luma_lr_filter_error(offset))?;
+                    filtered.resize(sample_count, T::default());
+                    let mut params = params;
+                    params.output_stride = block.width;
+                    let invalid_source = std::cell::Cell::new(false);
+                    wiener_ns_filter_chroma_block(
+                        &mut filtered,
+                        &params,
+                        |x, y| {
+                            chroma_window.get_abs(x, y).unwrap_or_else(|| {
+                                invalid_source.set(true);
+                                T::default()
+                            })
+                        },
+                        |x, y| {
+                            luma_window.get_abs(x, y).unwrap_or_else(|| {
+                                invalid_source.set(true);
+                                T::default()
+                            })
+                        },
+                    )
+                    .map_err(|_| luma_lr_filter_error(offset))?;
+                    if invalid_source.get() {
+                        return Err(luma_lr_filter_error(offset));
+                    }
+                    for row in 0..block.height {
+                        let src_start = row
+                            .checked_mul(block.width)
+                            .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        let src_end = src_start
+                            .checked_add(block.width)
+                            .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        let dst_start = row
+                            .checked_mul(output_stride)
+                            .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        let dst_end = dst_start
+                            .checked_add(block.width)
+                            .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        let src = filtered
+                            .get(src_start..src_end)
+                            .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        let dst = output
+                            .get_mut(dst_start..dst_end)
+                            .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        for (slot, &sample) in dst.iter_mut().zip(src) {
+                            *slot = sample;
+                        }
+                    }
+                    return Ok(());
+                }
                 let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
                 let (chroma_padded, chroma_stride) = chroma_window
                     .tail_from(
@@ -1071,11 +1139,12 @@ impl StripeChain<'_> {
                         block_y.saturating_sub(radius),
                     )
                     .ok_or_else(|| luma_lr_filter_error(offset))?;
-                let luma_radius = 2 * radius;
+                let luma_radius =
+                    isize::try_from(luma_radius).map_err(|_| luma_lr_filter_error(offset))?;
                 let (luma_padded, luma_stride) = luma_window
                     .tail_from(
-                        block_x.saturating_mul(2).saturating_sub(luma_radius),
-                        block_y.saturating_mul(2).saturating_sub(luma_radius),
+                        luma_x.saturating_sub(luma_radius),
+                        luma_y.saturating_sub(luma_radius),
                     )
                     .ok_or_else(|| luma_lr_filter_error(offset))?;
                 let padded_source = WienerNsChromaPaddedSource::new(
@@ -1249,7 +1318,13 @@ impl StripeChain<'_> {
                     .y
                     .checked_add(row)
                     .ok_or_else(|| luma_lr_filter_error(offset))?;
-                if !lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
+                if !lossless_grid.plane_sample_lossless(
+                    plane_id,
+                    x,
+                    y,
+                    usize::from(sub_x),
+                    usize::from(sub_y),
+                ) {
                     continue;
                 }
                 let output_index = row
@@ -1269,12 +1344,12 @@ impl StripeChain<'_> {
         Ok(())
     }
 
-    fn plane_subsampling(&self, plane_id: PlaneId) -> (usize, usize) {
+    fn plane_subsampling(&self, plane_id: PlaneId) -> (u8, u8) {
         match plane_id {
             PlaneId::Y => (0, 0),
             PlaneId::U | PlaneId::V => (
-                usize::from(self.pixel_format.subsampling_x()),
-                usize::from(self.pixel_format.subsampling_y()),
+                self.pixel_format.subsampling_x(),
+                self.pixel_format.subsampling_y(),
             ),
         }
     }

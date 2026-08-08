@@ -121,6 +121,13 @@ ivf_sha256 = "b63c74a9258784ab66288b1b677e26e5891540c95cb9d680f9b61d18f170bf1f"
 avm_raw_sha256 = "956a9b73f17edbcdb396706662153bd38a16b606f17453a86be065069b842bf0"
 
 [[fixture]]
+id = "syn-3frame-lrtxskip-wienerns-422-168x128-q120"
+status = "must_pass"
+features = ["coeff.all_zero", "coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "inter.compound", "inter.intrabc", "inter.mv_prediction_spatial", "inter.non420_chroma", "inter.single_ref", "inter.subpel_mc", "loop.ccso", "loop.cdef", "loop.deblock", "loop.wienerns", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i422", "partition.rectangular", "partition.recursive", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.422", "seq.layers.single", "tile.single", "transform.dct_adst"]
+ivf_sha256 = "3b8c90187c4532447b7e9ee9056af2502d0c5fc8624510258defebcd7c5e6285"
+avm_raw_sha256 = "d09df2b7b536392a8ccbcd9d6611ba0aed2520a4da391b55fbdbe7840d2f88d1"
+
+[[fixture]]
 id = "syn-2frame-inter-residual-64x64"
 status = "must_pass"
 features = ["coeff.nonzero_ordinary", "container.ivf", "frame.inter", "frame.key_closed_loop", "frame.reference_refresh", "frame.show_existing", "inter.residual_dct", "inter.single_ref", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.10", "seq.chroma.420", "seq.layers.single", "tile.single", "transform.dct_adst"]

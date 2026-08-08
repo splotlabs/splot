@@ -1513,6 +1513,11 @@ description = "Minimal deterministic AVMenc luma RESTORE_SWITCHABLE fixture with
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-lrtxskip-wienerns-422-168x128-q120.ivf"
+description = "Reduced deterministic AVMenc 8-bit 4:2:2 three-frame fixture with selectable luma LrTxSkip records and active Wiener NS loop restoration. Untouched main failed closed at byte 8,078 with unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter; fixed splot, pinned avmdec, and current avmdec emit byte-identical complete 129,024-byte raw I422 output at SHA-256 d09df2b7b536392a8ccbcd9d6611ba0aed2520a4da391b55fbdbe7840d2f88d1; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-gdf-intra-128x128.ivf"
 description = "Tiny AVM loop.gdf fixture (decode-oracle coverage; the tool is byte-distinct from baseline; splot fails closed at its op-local general-intra gap); validates clean."
 expect = "clean"

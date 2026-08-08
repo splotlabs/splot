@@ -848,7 +848,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
         1,
     )
     .unwrap();
-    assert_eq!(window.get_abs(2, 2), 18);
+    assert_eq!(window.get_abs(2, 2), Some(18));
     let allocation = window.samples.as_ptr();
 
     assert!(
@@ -880,7 +880,7 @@ fn lr_source_window_reuses_storage_after_an_error() {
     )
     .unwrap();
     assert_eq!(window.samples.as_ptr(), allocation);
-    assert_eq!(window.get_abs(3, 3), 27);
+    assert_eq!(window.get_abs(3, 3), Some(27));
 }
 
 #[test]
