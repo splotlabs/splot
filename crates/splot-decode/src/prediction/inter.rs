@@ -1680,14 +1680,9 @@ fn validate_inter_frame_core(
     if core.order_hint.is_none() {
         return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());
     }
-    let Some(frame_size) = core.frame_size else {
-        return Err(inter_missing!(
-            "inter_unsupported_frame_size",
-            offset,
-            "inter.frame_size",
-            SPEC_HEADER
-        ));
-    };
+    let frame_size = core
+        .frame_size
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
     let width = frame_size.width;
     let height = frame_size.height;
     if width == 0 || height == 0 {
