@@ -166,14 +166,8 @@ fn reconstruct_cfl_pair<T: ReconSample>(
         u_params,
         u_filter,
         u_sb_mib,
-        (
-            u_neighbours.num_above_right(),
-            u_neighbours.num_below_left(),
-        ),
-        (
-            v_neighbours.num_above_right(),
-            v_neighbours.num_below_left(),
-        ),
+        u_neighbours,
+        v_neighbours,
         u_plane.block_ctx.bit_depth(),
     )?;
     Ok(true)

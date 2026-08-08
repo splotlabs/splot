@@ -7,6 +7,10 @@ use splot_recon::{DecodedFrameInfo, OutputIndex, PlaneRect, PlaneSize};
 
 use super::*;
 
+fn interior() -> NeighbourAvailability {
+    NeighbourAvailability::new(true, true, 0, 0)
+}
+
 fn workspace_sized(
     pixel_format: PixelFormat,
     width: usize,
@@ -159,11 +163,51 @@ fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
         833
     );
 
-    let average = cfl_luma_average_q3(&frame, 32, 33, 64, 32, 1, 32, BitDepth::Ten).unwrap();
+    let average =
+        cfl_luma_average_q3(&frame, 32, 33, 64, 32, 1, 32, interior(), BitDepth::Ten).unwrap();
     assert_eq!(average, 801);
 
+    let tile_start = cfl_luma_average_q3(
+        &frame,
+        32,
+        33,
+        64,
+        32,
+        1,
+        32,
+        NeighbourAvailability::new(false, false, 0, 0),
+        BitDepth::Ten,
+    )
+    .unwrap();
+    assert_eq!(tile_start, i32::from(8u16 << (BitDepth::Ten.bits() - 1)));
+    let left_only = cfl_luma_average_q3(
+        &frame,
+        32,
+        33,
+        64,
+        32,
+        1,
+        32,
+        NeighbourAvailability::new(false, true, 0, 0),
+        BitDepth::Ten,
+    )
+    .unwrap();
+    assert_ne!(left_only, average);
+
     let mut luma_ac = Vec::new();
-    prepare_cfl_luma_ac_into(&frame, 32, 33, 64, 32, 1, 32, BitDepth::Ten, &mut luma_ac).unwrap();
+    prepare_cfl_luma_ac_into(
+        &frame,
+        32,
+        33,
+        64,
+        32,
+        1,
+        32,
+        interior(),
+        BitDepth::Ten,
+        &mut luma_ac,
+    )
+    .unwrap();
     assert_eq!(luma_ac[65], 31);
 
     let params = CflParams {
@@ -183,6 +227,7 @@ fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
         params,
         1,
         32,
+        interior(),
         BitDepth::Ten,
         508,
         &luma_ac,
@@ -214,14 +259,27 @@ fn cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries() {
     assert_eq!(cfl_luma_q3(&frame, 32, 28, false, true, 2).unwrap(), 800);
     assert_eq!(cfl_luma_q3(&frame, 32, 32, false, false, 2).unwrap(), 1_600);
 
-    let average = cfl_luma_average_q3(&frame, 33, 28, 16, 64, 2, 32, BitDepth::Ten).unwrap();
+    let average =
+        cfl_luma_average_q3(&frame, 33, 28, 16, 64, 2, 32, interior(), BitDepth::Ten).unwrap();
     assert_eq!(average, 816);
 
     let mut luma_ac = Vec::new();
-    prepare_cfl_luma_ac_into(&frame, 33, 28, 16, 64, 2, 32, BitDepth::Ten, &mut luma_ac).unwrap();
+    prepare_cfl_luma_ac_into(
+        &frame,
+        33,
+        28,
+        16,
+        64,
+        2,
+        32,
+        interior(),
+        BitDepth::Ten,
+        &mut luma_ac,
+    )
+    .unwrap();
     assert_eq!(luma_ac[4 * 16], -16);
     assert_eq!(
-        derive_cfl_alpha_q3(&frame, PlaneId::U, 33, 28, 16, 64, 2, 32).unwrap(),
+        derive_cfl_alpha_q3(&frame, PlaneId::U, 33, 28, 16, 64, 2, 32, interior()).unwrap(),
         255
     );
 
@@ -242,6 +300,7 @@ fn cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries() {
         params,
         2,
         32,
+        interior(),
         BitDepth::Ten,
         508,
         &luma_ac,
@@ -280,7 +339,7 @@ fn cfl_derived_alpha_above_uses_transform_local_boundary() {
         900
     );
     assert_eq!(
-        derive_cfl_alpha_q3(&frame, PlaneId::U, 28, 33, 64, 16, 1, 32).unwrap(),
+        derive_cfl_alpha_q3(&frame, PlaneId::U, 28, 33, 64, 16, 1, 32, interior()).unwrap(),
         255
     );
 }
@@ -305,8 +364,7 @@ fn cfl_reconstruction_supports_non_420_chroma_geometry() {
             derived_alpha(),
             0,
             16,
-            0,
-            0,
+            NeighbourAvailability::new(false, false, 0, 0),
             BitDepth::Eight,
         )
         .unwrap();
@@ -358,8 +416,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         4,
         0,
         16,
-        0,
-        1,
+        NeighbourAvailability::new(false, true, 0, 1),
         &mut Default::default(),
     )
     .unwrap();
@@ -382,8 +439,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         16,
         0,
         16,
-        1,
-        0,
+        NeighbourAvailability::new(true, false, 1, 0),
         &mut Default::default(),
     )
     .unwrap();
@@ -406,8 +462,7 @@ fn mhccp_reference_extensions_use_luma_pixel_threshold_for_420() {
         2,
         0,
         16,
-        0,
-        1,
+        NeighbourAvailability::new(false, true, 0, 1),
         &mut Default::default(),
     )
     .unwrap();
@@ -427,8 +482,7 @@ fn mhccp_reference_extensions_use_non_420_subsampling() {
             8,
             0,
             16,
-            0,
-            1,
+            NeighbourAvailability::new(false, true, 0, 1),
             &mut Default::default(),
         )
         .unwrap();
@@ -461,8 +515,7 @@ fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
         },
         0,
         32,
-        0,
-        0,
+        NeighbourAvailability::new(true, true, 0, 0),
         BitDepth::Eight,
         &mut prediction,
         &mut references,
@@ -485,8 +538,7 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         16,
         0,
         32,
-        0,
-        0,
+        NeighbourAvailability::new(false, true, 0, 0),
         &mut Default::default(),
     );
 

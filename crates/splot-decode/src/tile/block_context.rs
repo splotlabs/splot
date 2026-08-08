@@ -181,7 +181,7 @@ impl NeighbourAvailability {
         }
     }
 
-    const fn new(
+    pub(crate) const fn new(
         has_above: bool,
         has_left: bool,
         num_above_right: usize,

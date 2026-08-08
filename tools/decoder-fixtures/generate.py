@@ -84,6 +84,7 @@ COVERAGE = [
     ("syn-wienerns-422-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv422p", "--i422", BASE + ["--enable-intrabc=0", "--enable-restoration=1", "--enable-wiener-nonsep=1"], "2", "90"),
     ("syn-wienerns-444-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv444p", "--i444", BASE + ["--enable-restoration=1", "--enable-wiener-nonsep=1"], "2", "90"),
     ("syn-wienerns-tilerows-intra-256x128", "testsrc2=size=256x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-restoration=1", "--enable-wiener-nonsep=1", "--tile-rows=1"], "2", "120"),
+    ("syn-cfl-444-tilerows-intra-256x128", "testsrc2=size=256x128:rate=1:duration=1", "yuv444p", "--i444", ["--i444", "--tile-rows=1"], "2", "180"),
     ("syn-pcwiener-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-restoration=1", "--enable-pc-wiener=1"], "2", "90"),
     ("syn-gdf-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-gdf=1"], "2", "90"),
     ("syn-warp-inter-128x128", "testsrc2=size=128x128:rate=1:duration=4", "yuv420p", "--i420", BASE + ["--enable-warped-motion=1", "--enable-global-motion=1"], "2", "90"),

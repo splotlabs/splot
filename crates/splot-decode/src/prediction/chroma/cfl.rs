@@ -17,14 +17,16 @@ use splot_recon::mhccp::{
     MHCCP_BITS, MHCCP_PARAM_COUNT, MhccpRefs, derive_mhccp_params, mul_fixed32_adapt,
 };
 use splot_recon::{
-    BitDepth, CurrentFrameWorkspace, IntraPredictionScratchBuffer, IntraRectBlockSize, PixelFormat,
-    PlaneId, ReconSample, predict_intra_dc_rect_value, predict_intra_dc_subsampled_rect_value,
+    BitDepth, CurrentFrameWorkspace, IntraDcEdges, IntraPredictionScratchBuffer,
+    IntraRectBlockSize, PixelFormat, PlaneId, ReconSample, predict_intra_dc_rect_value,
+    predict_intra_dc_subsampled_rect_value,
 };
 
 use crate::bitstream::tile_payload::{
     CflIndex, CflParams, GeneralIntraResidualError, LumaCoeffBlock,
 };
 use crate::pipeline::reconstruct::commit_intra_prediction;
+use crate::tile::block_context::NeighbourAvailability;
 
 const MI_SIZE: usize = 4;
 const CFL_FILTERS_420: [[[i32; 3]; 3]; 3] = [
@@ -52,8 +54,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    num4_above_right: usize,
-    num4_below_left: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let crate::pipeline::general_intra::GeneralIntraReconScratch {
@@ -79,6 +80,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
             height,
             cfl_ds_filter_index,
             sb_mib,
+            neighbours,
             bit_depth,
             cfl_luma_ac,
         )?;
@@ -96,8 +98,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
         cfl_params,
         cfl_ds_filter_index,
         sb_mib,
-        num4_above_right,
-        num4_below_left,
+        neighbours,
         bit_depth,
         luma_ac,
     )?;
@@ -131,8 +132,8 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    u_neighbours: (usize, usize),
-    v_neighbours: (usize, usize),
+    u_neighbours: NeighbourAvailability,
+    v_neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let crate::pipeline::general_intra::GeneralIntraReconScratch {
@@ -154,6 +155,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             height,
             cfl_ds_filter_index,
             sb_mib,
+            u_neighbours,
             bit_depth,
             cfl_luma_ac,
         )?;
@@ -169,7 +171,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
         0,
         T::default(),
     )?;
-    let mut predict = |plane_id, (num4_above_right, num4_below_left), prediction: &mut Vec<T>| {
+    let mut predict = |plane_id, neighbours, prediction: &mut Vec<T>| {
         chroma_cfl_prediction_into(
             workspace,
             prediction,
@@ -182,8 +184,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
             cfl_params,
             cfl_ds_filter_index,
             sb_mib,
-            num4_above_right,
-            num4_below_left,
+            neighbours,
             bit_depth,
             luma_ac,
         )
@@ -241,8 +242,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    num4_above_right: usize,
-    num4_below_left: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
     luma_ac: Option<&[i32]>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -257,8 +257,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
             cfl_params,
             cfl_ds_filter_index,
             sb_mib,
-            num4_above_right,
-            num4_below_left,
+            neighbours,
             bit_depth,
             prediction,
             reference_scratch,
@@ -274,6 +273,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
             cfl_params,
             cfl_ds_filter_index,
             sb_mib,
+            neighbours,
             bit_depth,
             luma_ac,
             prediction,
@@ -292,6 +292,7 @@ fn cfl_prediction_into<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
     luma_ac: Option<&[i32]>,
     prediction: &mut Vec<T>,
@@ -310,10 +311,20 @@ fn cfl_prediction_into<T: ReconSample>(
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
     let edges = workspace.intra_dc_edges_for_rect(plane_id, x, y, block_size)?;
+    let dc_edges = IntraDcEdges::new(
+        neighbours
+            .has_left()
+            .then(|| edges.left_samples())
+            .flatten(),
+        neighbours
+            .has_above()
+            .then(|| edges.above_samples())
+            .flatten(),
+    );
     let dc = if width > 32 || height > 32 {
-        predict_intra_dc_subsampled_rect_value(bit_depth, block_size, edges.as_dc_edges())?
+        predict_intra_dc_subsampled_rect_value(bit_depth, block_size, dc_edges)?
     } else {
-        predict_intra_dc_rect_value(bit_depth, block_size, edges.as_dc_edges())?
+        predict_intra_dc_rect_value(bit_depth, block_size, dc_edges)?
     };
     let luma_ac = luma_ac.ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
     apply_cfl_prediction(
@@ -326,6 +337,7 @@ fn cfl_prediction_into<T: ReconSample>(
         cfl_params,
         cfl_ds_filter_index,
         sb_mib,
+        neighbours,
         bit_depth,
         dc,
         luma_ac,
@@ -345,6 +357,7 @@ fn apply_cfl_prediction<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
     dc: T,
     luma_ac: &[i32],
@@ -360,6 +373,7 @@ fn apply_cfl_prediction<T: ReconSample>(
         cfl_params,
         cfl_ds_filter_index,
         sb_mib,
+        neighbours,
     )?;
     let max = i32::from(bit_depth.max_sample());
     let dc = i32::from(dc.to_u16());
@@ -385,6 +399,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
     height: usize,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
     samples_q3: &mut Vec<i32>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
@@ -407,6 +422,7 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
         height,
         cfl_ds_filter_index,
         sb_mib,
+        neighbours,
         bit_depth,
     )?;
     let luma_plane = workspace.plane(PlaneId::Y)?;
@@ -565,8 +581,7 @@ fn mhccp_prediction_into<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    num4_above_right: usize,
-    num4_below_left: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
     prediction: &mut Vec<T>,
     reference_scratch: &mut [Vec<u16>; 2],
@@ -594,8 +609,7 @@ fn mhccp_prediction_into<T: ReconSample>(
         height,
         cfl_ds_filter_index,
         sb_mib,
-        num4_above_right,
-        num4_below_left,
+        neighbours,
         reference_scratch,
     )?;
     let result = (|| {
@@ -651,6 +665,7 @@ fn cfl_alpha_q3<T: ReconSample>(
     cfl_params: CflParams,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    neighbours: NeighbourAvailability,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
     let alpha_q3 = match cfl_params.index {
         CflIndex::Explicit => {
@@ -670,6 +685,7 @@ fn cfl_alpha_q3<T: ReconSample>(
             height,
             cfl_ds_filter_index,
             sb_mib,
+            neighbours,
         )?,
         CflIndex::Multi => 0,
     };
@@ -686,10 +702,11 @@ fn derive_cfl_alpha_q3<T: ReconSample>(
     height: usize,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    neighbours: NeighbourAvailability,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
-    let have_above = y > 0;
-    let have_left = x > 0;
+    let have_above = neighbours.has_above();
+    let have_left = neighbours.has_left();
     let (mut num_above, mut num_left) = if have_above && have_left {
         if width > height.saturating_mul(2) {
             (NUM_REF_SAM_CFL, 0)
@@ -782,6 +799,7 @@ fn cfl_luma_average_q3<T: ReconSample>(
     height: usize,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
+    neighbours: NeighbourAvailability,
     bit_depth: BitDepth,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
@@ -789,7 +807,7 @@ fn cfl_luma_average_q3<T: ReconSample>(
     let step_h = if height > 32 { 2 } else { 1 };
     let mut sum = 0u32;
     let mut count = 0u32;
-    if let Some(above_y) = y.checked_sub(1) {
+    if let Some(above_y) = neighbours.has_above().then(|| y.checked_sub(1)).flatten() {
         let min_luma_ref_y = cfl_above_min_luma_ref_y(y, sb_mib, pixel_format);
         for col in (0..width).step_by(step_w) {
             let chroma_x = x.saturating_add(col);
@@ -805,7 +823,7 @@ fn cfl_luma_average_q3<T: ReconSample>(
             count = count.saturating_add(1);
         }
     }
-    if let Some(left_x) = x.checked_sub(1) {
+    if let Some(left_x) = neighbours.has_left().then(|| x.checked_sub(1)).flatten() {
         for row in (0..height).step_by(step_h) {
             let chroma_y = y.saturating_add(row);
             sum = sum.saturating_add(cfl_luma_q3(
@@ -875,15 +893,16 @@ fn mhccp_references<T: ReconSample>(
     height: usize,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-    num4_above_right: usize,
-    num4_below_left: usize,
+    neighbours: NeighbourAvailability,
     reference_scratch: &mut [Vec<u16>; 2],
 ) -> core::result::Result<MhccpRefs, GeneralIntraResidualError> {
     let pixel_format = workspace.info().pixel_format();
     let sub_x = usize::from(pixel_format.subsampling_x());
     let sub_y = usize::from(pixel_format.subsampling_y());
-    let have_above = y > 0;
-    let have_left = x > 0;
+    let have_above = neighbours.has_above();
+    let have_left = neighbours.has_left();
+    let (num4_above_right, num4_below_left) =
+        (neighbours.num_above_right(), neighbours.num_below_left());
     let above = if have_above { y.min(2) } else { 0 };
     let left = if have_left { x.min(2) } else { 0 };
     let luma_mi_row = (y << sub_y) / MI_SIZE;
