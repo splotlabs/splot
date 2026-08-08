@@ -3,9 +3,7 @@
 
 //! AV2 § 5.20.3.1 partition traversal.
 
-use splot_core::symbol::{
-    CdfValidationMode, SymbolDecoder, SymbolDecoderCheckpoint, SymbolDecoderConfig,
-};
+use splot_core::symbol::{CdfValidationMode, SymbolDecoder, SymbolDecoderConfig};
 
 use super::DecodeTileWorkUnit;
 use super::cdf::block_context::IntraYMode;
@@ -35,26 +33,19 @@ mod state_publication;
 mod tree_walk;
 
 pub(crate) use lr_records::LrUnitRestorationType;
-#[cfg(test)]
-use lr_records::WienerNsLrUnitSelection;
-pub(crate) use lr_records::{
-    TileLoopRestorationRootFrontier, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
-};
-pub(crate) use lr_syntax::consume_tile_loop_restoration_root_frontier;
+pub(crate) use lr_records::{WienerNsLrSourceBlock, WienerNsLrUnitFilter};
 #[cfg(test)]
 use lr_syntax::{WienerNsUnitFilterState, read_wiener_ns_unit_filter};
 use partition_children::child_calls;
 pub(crate) use state_publication::DecodedLeafPublication;
 pub(crate) use tree_walk::{
     GeneralIntraPartitionTreeCursor, GeneralIntraPartitionTreeOutput, GeneralIntraTreeWalkError,
-    plan_tile_partition_traversal_cursor,
 };
 #[cfg(test)]
 use tree_walk::{
     MIXED_REGION, SdpPartitionState, decode_block_frontier, is_cfl_context_for_chroma_ref,
-    is_intra_sdp_shared_root, partition_cdf_plane, plan_tile_partition_traversal_frontier,
-    read_extended_sdp_region_type, read_frontier_partition_decision,
-    should_read_extended_sdp_region_type,
+    is_intra_sdp_shared_root, partition_cdf_plane, read_extended_sdp_region_type,
+    read_frontier_partition_decision, should_read_extended_sdp_region_type,
 };
 use tree_walk::{extended_sdp_allowed_for_child, valid_subsize};
 
@@ -74,23 +65,6 @@ pub(crate) struct TilePartitionContextState<'a> {
 
 impl<'a> TilePartitionContextState<'a> {
     #[must_use]
-    pub(crate) const fn new(
-        mi_sizes: &'a [u8],
-        mi_size_stride: usize,
-        left_mi_sizes: [&'a [u8]; 2],
-        above_mi_sizes: [&'a [u8]; 2],
-    ) -> Self {
-        Self::new_at(
-            mi_sizes,
-            mi_size_stride,
-            left_mi_sizes,
-            above_mi_sizes,
-            0,
-            0,
-        )
-    }
-
-    #[must_use]
     pub(crate) const fn new_at(
         mi_sizes: &'a [u8],
         mi_size_stride: usize,
@@ -108,12 +82,6 @@ impl<'a> TilePartitionContextState<'a> {
             origin_col,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TilePartitionBruState {
-    Active,
-    Unsupported,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -168,7 +136,6 @@ pub(crate) struct TilePartitionFrameFacts {
     loop_restoration: TilePartitionLoopRestorationState,
     features: PartitionFeatureFlags,
     max_pb_aspect_ratio: usize,
-    bru_state: TilePartitionBruState,
 }
 
 impl TilePartitionFrameFacts {
@@ -187,7 +154,6 @@ impl TilePartitionFrameFacts {
         loop_restoration: TilePartitionLoopRestorationState,
         features: PartitionFeatureFlags,
         max_pb_aspect_ratio: usize,
-        bru_state: TilePartitionBruState,
     ) -> Result<Self, TilePartitionTraversalError> {
         Ok(Self {
             mi_rows,
@@ -203,38 +169,12 @@ impl TilePartitionFrameFacts {
             loop_restoration,
             features,
             max_pb_aspect_ratio,
-            bru_state,
         })
     }
 
     #[must_use]
     pub(crate) const fn sb_size(&self) -> BlockSize {
         self.sb_size
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct TilePartitionTraversalInput<'work, 'payload, 'ctx> {
-    work_unit: &'work mut DecodeTileWorkUnit<'payload>,
-    frame: TilePartitionFrameFacts,
-    context: TilePartitionContextState<'ctx>,
-    limits: DecodeLimits,
-}
-
-impl<'work, 'payload, 'ctx> TilePartitionTraversalInput<'work, 'payload, 'ctx> {
-    #[must_use]
-    pub(crate) const fn new(
-        work_unit: &'work mut DecodeTileWorkUnit<'payload>,
-        frame: TilePartitionFrameFacts,
-        context: TilePartitionContextState<'ctx>,
-        limits: DecodeLimits,
-    ) -> Self {
-        Self {
-            work_unit,
-            frame,
-            context,
-            limits,
-        }
     }
 }
 
@@ -250,17 +190,14 @@ impl ChromaRefGeometry {
         Self { row, col, size }
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn row(self) -> usize {
         self.row
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn col(self) -> usize {
         self.col
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn size(self) -> BlockSize {
         self.size
     }
@@ -364,14 +301,6 @@ impl TilePartitionCall {
         }
     }
 
-    #[allow(dead_code)]
-    const fn with_extended_sdp_allowed(self, extended_sdp_allowed: bool) -> Self {
-        Self {
-            extended_sdp_allowed,
-            ..self
-        }
-    }
-
     const fn with_intra_region(self, intra_region: bool) -> Self {
         Self {
             intra_region,
@@ -428,25 +357,6 @@ impl TilePartitionBounds {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TilePartitionFrontierStep {
-    pub(crate) call: TilePartitionCall,
-    pub(crate) decision: ReadPartitionDecision,
-    pub(crate) symbol_count_before: u64,
-    pub(crate) symbol_count_after: u64,
-    using_extended_sdp: bool,
-}
-
-impl TilePartitionFrontierStep {
-    const fn partition(self) -> PartitionType {
-        self.decision.partition
-    }
-
-    const fn using_extended_sdp(self) -> bool {
-        self.using_extended_sdp
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeBlockFrontier {
     pub(crate) r: usize,
     pub(crate) c: usize,
@@ -458,8 +368,6 @@ pub(crate) struct DecodeBlockFrontier {
     intra_region: bool,
     stored_luma_y_mode: Option<TileIntraYModeFacts>,
     cfl_allowed_in_sdp: bool,
-    pub(crate) symbol_count_before_block: u64,
-    pub(crate) symbol_checkpoint_before_block: SymbolDecoderCheckpoint,
 }
 
 impl DecodeBlockFrontier {
@@ -500,55 +408,8 @@ impl DecodeBlockFrontier {
         self.cfl_allowed_in_sdp
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn chroma_ref_geometry(&self) -> ChromaRefGeometry {
         self.chroma_ref
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TilePartitionTraversalPlan {
-    pub(crate) tile_num: u32,
-    steps: Vec<TilePartitionFrontierStep>,
-    skipped_out_of_frame: Vec<TilePartitionCall>,
-    pending_children: Vec<TilePartitionCall>,
-    frontier: DecodeBlockFrontier,
-    pub(crate) consumed_bits_before: u64,
-    pub(crate) consumed_bits_after: u64,
-    symbol_count_after: u64,
-}
-
-impl TilePartitionTraversalPlan {
-    #[must_use]
-    pub(crate) fn steps(&self) -> &[TilePartitionFrontierStep] {
-        &self.steps
-    }
-
-    #[must_use]
-    pub(crate) fn pending_children(&self) -> &[TilePartitionCall] {
-        &self.pending_children
-    }
-
-    #[must_use]
-    pub(crate) const fn frontier(&self) -> DecodeBlockFrontier {
-        self.frontier
-    }
-
-    #[must_use]
-    pub(crate) const fn symbol_count_after(&self) -> u64 {
-        self.symbol_count_after
-    }
-}
-
-pub(crate) struct TilePartitionTraversalCursor<'payload> {
-    plan: TilePartitionTraversalPlan,
-    symbols: SymbolDecoder<'payload>,
-}
-
-impl<'payload> TilePartitionTraversalCursor<'payload> {
-    #[must_use]
-    pub(crate) fn into_parts(self) -> (TilePartitionTraversalPlan, SymbolDecoder<'payload>) {
-        (self.plan, self.symbols)
     }
 }
 
@@ -649,12 +510,6 @@ impl GeneralIntraLeafMode {
         self.uv_cfl = Some(uv_cfl);
         self
     }
-
-    #[allow(dead_code)]
-    #[must_use]
-    pub(crate) const fn luma_y_mode(self) -> Option<IntraYMode> {
-        self.y_mode
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -714,8 +569,6 @@ pub(crate) enum TilePartitionTraversalError {
     InvalidRegionType { value: u8 },
     #[error("partition traversal produced more than four child calls")]
     TooManyChildCalls,
-    #[error("partition traversal reached no in-frame decode_block frontier")]
-    NoBlockFrontier,
     #[error("partition traversal missing intra luma mode state at ({r}, {c})")]
     MissingIntraLumaModeState { r: usize, c: usize },
     #[error("partition traversal missing intra UsesMrls state at ({r}, {c})")]
@@ -728,20 +581,12 @@ pub(crate) enum TilePartitionTraversalError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePartitionTraversalUnsupported {
-    ExtendedSdp,
     ReadLoopRestoration,
-    BruOrBridge,
 }
 
 fn ensure_supported_traversal_frame(
     frame: TilePartitionFrameFacts,
-    reject_extended_sdp: bool,
 ) -> Result<(), TilePartitionTraversalError> {
-    if reject_extended_sdp && frame.enable_extended_sdp && !frame.frame_is_intra {
-        return Err(TilePartitionTraversalError::Unsupported(
-            TilePartitionTraversalUnsupported::ExtendedSdp,
-        ));
-    }
     if frame.loop_restoration == TilePartitionLoopRestorationState::UnsupportedReadLrSyntax {
         return Err(TilePartitionTraversalError::Unsupported(
             TilePartitionTraversalUnsupported::ReadLoopRestoration,
@@ -757,11 +602,6 @@ fn ensure_supported_traversal_frame(
                 ));
             }
         }
-    }
-    if frame.bru_state != TilePartitionBruState::Active {
-        return Err(TilePartitionTraversalError::Unsupported(
-            TilePartitionTraversalUnsupported::BruOrBridge,
-        ));
     }
     Ok(())
 }
@@ -784,18 +624,6 @@ fn symbol_decoder_for_work_unit<'payload>(
 /// `NumPlanes > 1` term belongs to `HasChroma` alone, so a monochrome sequence
 /// still derives `ChromaMiRow` / `ChromaMiCol` / `ChromaMiSize`.
 pub(super) const ROOT_HAS_CHROMA: bool = true;
-
-fn root_partition_call(
-    work_unit: &DecodeTileWorkUnit<'_>,
-    frame: TilePartitionFrameFacts,
-) -> TilePartitionCall {
-    TilePartitionCall::root(
-        work_unit.mi_row_range().start as usize,
-        work_unit.mi_col_range().start as usize,
-        frame.sb_size,
-        ROOT_HAS_CHROMA,
-    )
-}
 
 const fn call_in_frame(frame: TilePartitionFrameFacts, call: TilePartitionCall) -> bool {
     call.r < frame.mi_rows && call.c < frame.mi_cols

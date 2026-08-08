@@ -157,41 +157,13 @@ impl PartitionAllowedInput {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct InitializedAllowedPartitions {
-    num_allowed: usize,
-    allowed: AllowedPartitions,
-}
-
-impl InitializedAllowedPartitions {
-    #[must_use]
-    pub(crate) const fn num_allowed(self) -> usize {
-        self.num_allowed
-    }
-
-    #[must_use]
-    pub(crate) const fn allowed(self) -> AllowedPartitions {
-        self.allowed
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PartitionDecisionFacts {
     implied_partition: Option<PartitionType>,
-    initialized: InitializedAllowedPartitions,
+    allowed: AllowedPartitions,
     rect_type: Option<RectPartitionType>,
 }
 
 impl PartitionDecisionFacts {
-    #[must_use]
-    pub(crate) const fn implied_partition(self) -> Option<PartitionType> {
-        self.implied_partition
-    }
-
-    #[must_use]
-    pub(crate) const fn initialized(self) -> InitializedAllowedPartitions {
-        self.initialized
-    }
-
     pub(crate) fn read_partition_decision_input<'a>(
         self,
         bru_active: bool,
@@ -199,7 +171,7 @@ impl PartitionDecisionFacts {
         square_split_context: SquareSplitContextInput<'a>,
     ) -> ReadPartitionDecisionInput<'a> {
         ReadPartitionDecisionInput::new(
-            self.initialized.allowed(),
+            self.allowed,
             self.implied_partition,
             bru_active,
             self.rect_type,
@@ -232,7 +204,7 @@ pub(crate) fn partition_decision_facts(
 ) -> Result<PartitionDecisionFacts, PartitionAllowedError> {
     Ok(PartitionDecisionFacts {
         implied_partition: partition_implied(input)?,
-        initialized: init_allowed_partitions(input)?,
+        allowed: init_allowed_partitions(input)?,
         rect_type: rect_type_implied_by_bsize(input.b_size, input.tree_type),
     })
 }
@@ -399,24 +371,18 @@ pub(crate) fn is_partition_allowed(
 
 pub(crate) fn init_allowed_partitions(
     input: PartitionAllowedInput,
-) -> Result<InitializedAllowedPartitions, PartitionAllowedError> {
+) -> Result<AllowedPartitions, PartitionAllowedError> {
     let mut flags = [false; PartitionType::ALL.len()];
-    let mut num_allowed = 0;
+    let mut any_allowed = false;
     for partition in PartitionType::ALL {
         let good = is_partition_allowed(input, partition)?;
         flags[partition.index()] = good;
-        if good {
-            num_allowed += 1;
-        }
+        any_allowed |= good;
     }
-    if num_allowed == 0 {
+    if !any_allowed {
         flags[PartitionType::None.index()] = true;
-        num_allowed = 1;
     }
-    Ok(InitializedAllowedPartitions {
-        num_allowed,
-        allowed: AllowedPartitions::new(flags),
-    })
+    Ok(AllowedPartitions::new(flags))
 }
 
 fn partition_feature_allowed(

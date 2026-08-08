@@ -5,14 +5,6 @@
 //!
 //! Feature tracking: `DECODE-TILE-PAYLOAD-BOUNDARY`.
 
-#![cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "crate-private tile boundary is tested before runtime decode derives tile facts"
-    )
-)]
-
 mod block_decoded_state;
 mod cdf;
 mod coeff_loop;
@@ -41,10 +33,7 @@ use splot_core::span::{ByteOffset, ByteSpan};
 use splot_core::symbol::{CdfUpdateMode, CdfValidationMode, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::types::ObuType;
 
-use crate::{
-    DecodeIvfFrameContext, DecodeLayerSelection, DecodeLimitError, DecodeLimitName, DecodeLimitOp,
-    DecodeLimits, DecodeObuSourceKind, UNSUPPORTED_FEATURE_RULE_ID,
-};
+use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
 pub(crate) use block_decoded_state::TileBlockDecodedState;
 pub(crate) use cdf::block_context::{
@@ -104,16 +93,11 @@ pub(crate) use tile_frontier::{
     chroma_subsampling, frame_mi_dimensions,
 };
 
-pub(crate) const TILE_PAYLOAD_DECODE_MATRIX_ROW: &str = "tile-payload-decode";
-pub(crate) const TILE_PAYLOAD_DECODE_FEATURE_ID: &str = "DECODE-TILE-PAYLOAD-BOUNDARY";
-
 #[derive(Clone, Debug)]
 pub(crate) struct TilePayloadBoundaryInput<'payload, 'facts> {
     payload: &'payload [u8],
     payload_base: ByteOffset,
     framing: &'facts TileGroupFraming,
-    source: TilePayloadSource,
-    selected_layer: DecodeLayerSelection,
     grid: TileGridFacts<'facts>,
     frame: TileFrameFacts,
     limits: DecodeLimits,
@@ -126,8 +110,6 @@ impl<'payload, 'facts> TilePayloadBoundaryInput<'payload, 'facts> {
         payload: &'payload [u8],
         payload_base: ByteOffset,
         framing: &'facts TileGroupFraming,
-        source: TilePayloadSource,
-        selected_layer: DecodeLayerSelection,
         grid: TileGridFacts<'facts>,
         frame: TileFrameFacts,
         limits: DecodeLimits,
@@ -136,57 +118,10 @@ impl<'payload, 'facts> TilePayloadBoundaryInput<'payload, 'facts> {
             payload,
             payload_base,
             framing,
-            source,
-            selected_layer,
             grid,
             frame,
             limits,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TilePayloadSource {
-    source_kind: DecodeObuSourceKind,
-    ivf_frame: Option<DecodeIvfFrameContext>,
-    obu_index: u64,
-    obu_offset: ByteOffset,
-}
-
-impl TilePayloadSource {
-    #[must_use]
-    pub(crate) const fn new(
-        source_kind: DecodeObuSourceKind,
-        ivf_frame: Option<DecodeIvfFrameContext>,
-        obu_index: u64,
-        obu_offset: ByteOffset,
-    ) -> Self {
-        Self {
-            source_kind,
-            ivf_frame,
-            obu_index,
-            obu_offset,
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn source_kind(self) -> DecodeObuSourceKind {
-        self.source_kind
-    }
-
-    #[must_use]
-    pub(crate) const fn ivf_frame(self) -> Option<DecodeIvfFrameContext> {
-        self.ivf_frame
-    }
-
-    #[must_use]
-    pub(crate) const fn obu_index(self) -> u64 {
-        self.obu_index
-    }
-
-    #[must_use]
-    pub(crate) const fn obu_offset(self) -> ByteOffset {
-        self.obu_offset
     }
 }
 
@@ -273,7 +208,6 @@ impl TileFrameFacts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFacts {
     enable_fsc: bool,
-    enable_idtx_intra: bool,
     enable_intra_ist: bool,
     enable_inter_ist: bool,
     enable_chroma_dctonly: bool,
@@ -288,7 +222,6 @@ pub(crate) struct TileCoeffFrameFacts {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffFrameFactsInput {
     pub(crate) enable_fsc: bool,
-    pub(crate) enable_idtx_intra: bool,
     pub(crate) enable_intra_ist: bool,
     pub(crate) enable_inter_ist: bool,
     pub(crate) enable_chroma_dctonly: bool,
@@ -305,7 +238,6 @@ impl TileCoeffFrameFacts {
     pub(crate) const fn new(input: TileCoeffFrameFactsInput) -> Self {
         Self {
             enable_fsc: input.enable_fsc,
-            enable_idtx_intra: input.enable_idtx_intra,
             enable_intra_ist: input.enable_intra_ist,
             enable_inter_ist: input.enable_inter_ist,
             enable_chroma_dctonly: input.enable_chroma_dctonly,
@@ -321,7 +253,6 @@ impl TileCoeffFrameFacts {
     const fn default_for_base_q(base_q_idx: u32) -> Self {
         Self {
             enable_fsc: false,
-            enable_idtx_intra: false,
             enable_intra_ist: false,
             enable_inter_ist: false,
             enable_chroma_dctonly: false,
@@ -337,11 +268,6 @@ impl TileCoeffFrameFacts {
     #[must_use]
     pub(crate) const fn enable_fsc(self) -> bool {
         self.enable_fsc
-    }
-
-    #[must_use]
-    pub(crate) const fn enable_idtx_intra(self) -> bool {
-        self.enable_idtx_intra
     }
 
     #[must_use]
@@ -396,24 +322,11 @@ impl TileCoeffFrameFacts {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTilePayloadPlan<'a> {
-    source: TilePayloadSource,
-    selected_layer: DecodeLayerSelection,
     work_units: Vec<DecodeTileWorkUnit<'a>>,
-    unsupported: TilePayloadUnsupported,
     frame_end: FrameEndBoundary,
 }
 
 impl<'a> DecodeTilePayloadPlan<'a> {
-    #[must_use]
-    pub(crate) const fn source(&self) -> TilePayloadSource {
-        self.source
-    }
-
-    #[must_use]
-    pub(crate) const fn selected_layer(&self) -> DecodeLayerSelection {
-        self.selected_layer
-    }
-
     #[must_use]
     pub(crate) fn work_units(&self) -> &[DecodeTileWorkUnit<'a>] {
         &self.work_units
@@ -424,11 +337,7 @@ impl<'a> DecodeTilePayloadPlan<'a> {
     }
 
     #[must_use]
-    pub(crate) const fn unsupported(&self) -> TilePayloadUnsupported {
-        self.unsupported
-    }
-
-    #[must_use]
+    #[cfg(test)]
     pub(crate) const fn frame_end(&self) -> FrameEndBoundary {
         self.frame_end
     }
@@ -455,8 +364,6 @@ impl<'a> DecodeTilePayloadPlan<'a> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DecodeTileWorkUnit<'a> {
-    source: TilePayloadSource,
-    selected_layer: DecodeLayerSelection,
     tile_num: u32,
     tile_row: u32,
     tile_col: u32,
@@ -465,7 +372,6 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
     tile_bytes: &'a [u8],
     tile_byte_span: ByteSpan,
     tile_size: u64,
-    current_q_index_at_entry: u32,
     coeff_frame_facts: TileCoeffFrameFacts,
     symbol: SymbolInitBoundary,
     cdf: TileCdfWorkUnitBoundary,
@@ -473,26 +379,18 @@ pub(crate) struct DecodeTileWorkUnit<'a> {
 
 impl<'a> DecodeTileWorkUnit<'a> {
     #[must_use]
-    pub(crate) const fn source(&self) -> TilePayloadSource {
-        self.source
-    }
-
-    #[must_use]
-    pub(crate) const fn selected_layer(&self) -> DecodeLayerSelection {
-        self.selected_layer
-    }
-
-    #[must_use]
     pub(crate) const fn tile_num(&self) -> u32 {
         self.tile_num
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn tile_row(&self) -> u32 {
         self.tile_row
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn tile_col(&self) -> u32 {
         self.tile_col
     }
@@ -523,16 +421,12 @@ impl<'a> DecodeTileWorkUnit<'a> {
     }
 
     #[must_use]
-    pub(crate) const fn current_q_index_at_entry(&self) -> u32 {
-        self.current_q_index_at_entry
-    }
-
-    #[must_use]
     pub(crate) const fn coeff_frame_facts(&self) -> TileCoeffFrameFacts {
         self.coeff_frame_facts
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn symbol(&self) -> SymbolInitBoundary {
         self.symbol
     }
@@ -560,16 +454,19 @@ pub(crate) struct SymbolInitBoundary {
 
 impl SymbolInitBoundary {
     #[must_use]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn consumed_bits(self) -> u64 {
         self.consumed_bits
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn symbol_max_bits(self) -> i64 {
         self.symbol_max_bits
     }
 
     #[must_use]
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) const fn cdf_update_mode(self) -> CdfUpdateMode {
         self.cdf_update_mode
     }
@@ -578,69 +475,40 @@ impl SymbolInitBoundary {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameEndBoundary {
     reaches_last_tile_group: bool,
-    frame_end_update_cdf_deferred: bool,
-    decode_frame_wrapup_deferred: bool,
 }
 
 impl FrameEndBoundary {
     const fn deferred(reaches_last_tile_group: bool) -> Self {
         Self {
             reaches_last_tile_group,
-            frame_end_update_cdf_deferred: reaches_last_tile_group,
-            decode_frame_wrapup_deferred: reaches_last_tile_group,
         }
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn reaches_last_tile_group(self) -> bool {
         self.reaches_last_tile_group
-    }
-
-    #[must_use]
-    pub(crate) const fn frame_end_update_cdf_deferred(self) -> bool {
-        self.frame_end_update_cdf_deferred
-    }
-
-    #[must_use]
-    pub(crate) const fn decode_frame_wrapup_deferred(self) -> bool {
-        self.decode_frame_wrapup_deferred
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TilePayloadUnsupportedReason {
-    DecodeTileSyntax,
     MissingTileFramingRecords,
     NonClosedLoopKey,
     NonIntraFrame,
 }
 
 crate::impl_reason_labels!(pub(crate) TilePayloadUnsupportedReason {
-    DecodeTileSyntax => "decode_tile_syntax",
     MissingTileFramingRecords => "missing_tile_framing_records",
     NonClosedLoopKey => "non_closed_loop_key",
     NonIntraFrame => "non_intra_frame",
 });
-
-impl TilePayloadUnsupportedReason {
-    #[must_use]
-    pub(crate) const fn spec_section(self) -> &'static str {
-        match self {
-            Self::DecodeTileSyntax => "5.20.2.1",
-            Self::MissingTileFramingRecords => "5.20.1",
-            Self::NonClosedLoopKey | Self::NonIntraFrame => "7.1",
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TilePayloadUnsupported {
     reason: TilePayloadUnsupportedReason,
     tile_num: Option<u32>,
     byte_offset: ByteOffset,
-    spec_section: &'static str,
-    matrix_row: &'static str,
-    feature_id: &'static str,
     message: &'static str,
 }
 
@@ -655,50 +523,30 @@ impl TilePayloadUnsupported {
             reason,
             tile_num,
             byte_offset,
-            spec_section: reason.spec_section(),
-            matrix_row: TILE_PAYLOAD_DECODE_MATRIX_ROW,
-            feature_id: TILE_PAYLOAD_DECODE_FEATURE_ID,
             message,
         }
     }
 
-    #[allow(clippy::unused_self)]
     #[must_use]
-    pub(crate) const fn rule_id(self) -> &'static str {
-        UNSUPPORTED_FEATURE_RULE_ID
-    }
-
-    #[must_use]
-    pub(crate) const fn matrix_row(self) -> &'static str {
-        self.matrix_row
-    }
-
-    #[must_use]
-    pub(crate) const fn feature_id(self) -> &'static str {
-        self.feature_id
-    }
-
-    #[must_use]
-    pub(crate) const fn spec_section(self) -> &'static str {
-        self.spec_section
-    }
-
-    #[must_use]
+    #[cfg(test)]
     pub(crate) const fn reason(self) -> TilePayloadUnsupportedReason {
         self.reason
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn tile_num(self) -> Option<u32> {
         self.tile_num
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn byte_offset(self) -> ByteOffset {
         self.byte_offset
     }
 
     #[must_use]
+    #[cfg(test)]
     pub(crate) const fn message(self) -> &'static str {
         self.message
     }
@@ -880,8 +728,6 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         let cdf =
             TileCdfWorkUnitBoundary::new(cdf_update_mode, save_policy, Arc::clone(&frame_cdfs));
         work_units.push(DecodeTileWorkUnit {
-            source: input.source,
-            selected_layer: input.selected_layer,
             tile_num: tile.tile_num,
             tile_row,
             tile_col,
@@ -890,24 +736,13 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             tile_bytes,
             tile_byte_span,
             tile_size: tile.tile_size,
-            current_q_index_at_entry: input.frame.base_q_idx,
             coeff_frame_facts: input.frame.coeff_frame_facts,
             symbol,
             cdf,
         });
     }
-    let unsupported = TilePayloadUnsupported::new(
-        TilePayloadUnsupportedReason::DecodeTileSyntax,
-        Some(work_units[0].tile_num),
-        work_units[0].tile_byte_span.start,
-        "tile bytes are framed, symbol initialization is bounded, and the first partition CDF subset is selectable, but §5.20.2.1 decode_tile() block syntax is not implemented yet.",
-    );
-
     Ok(DecodeTilePayloadPlan {
-        source: input.source,
-        selected_layer: input.selected_layer,
         work_units,
-        unsupported,
         frame_end: FrameEndBoundary::deferred(input.frame.is_last_tile_group),
     })
 }
@@ -999,15 +834,12 @@ fn unsupported_boundary_without_tile(
     byte_offset: ByteOffset,
     message: &'static str,
 ) -> TilePayloadBoundaryError {
-    TilePayloadBoundaryError::Unsupported(unsupported_without_tile(reason, byte_offset, message))
-}
-
-fn unsupported_without_tile(
-    reason: TilePayloadUnsupportedReason,
-    byte_offset: ByteOffset,
-    message: &'static str,
-) -> TilePayloadUnsupported {
-    TilePayloadUnsupported::new(reason, None, byte_offset, message)
+    TilePayloadBoundaryError::Unsupported(TilePayloadUnsupported::new(
+        reason,
+        None,
+        byte_offset,
+        message,
+    ))
 }
 
 fn checked_tile_byte_offset(base: ByteOffset, delta: u64) -> Result<ByteOffset, DecodeLimitError> {

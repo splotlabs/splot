@@ -3,10 +3,7 @@
 
 //! Shared helpers for the `splot-cli` integration tests.
 //!
-//! Each integration-test binary that needs these declares `mod common;`. Only a
-//! subset of the helpers is used per binary, so unused-code warnings are allowed.
-
-#![allow(dead_code)]
+//! Each integration-test binary that needs these declares `mod common;`.
 
 use std::path::Path;
 

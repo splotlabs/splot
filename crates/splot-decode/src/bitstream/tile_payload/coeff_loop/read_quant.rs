@@ -5,13 +5,11 @@
 //!
 //! Feature tracking: `DECODE-COEFF-READ-QUANT-SYNTAX`.
 
-use std::collections::TryReserveError;
-
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
 
 use super::quant_state::CoeffQuantReadInput;
-use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
+use super::scan_walk::CoeffScanEntry;
 
 const MIN_M: u32 = 1;
 const MAX_M: u32 = 6;
@@ -32,51 +30,8 @@ pub(crate) struct CoeffReadQuantInput {
     pub(crate) max_level: u32,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffReadQuantPath {
-    BelowThreshold,
-    Extended {
-        m: u32,
-        k: u32,
-        c_max: u32,
-        q: u32,
-        length: u32,
-        x_base: u32,
-        coeff_rem: u32,
-        x: u32,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffReadQuant {
-    quant: CoeffQuantReadInput,
-    path: CoeffReadQuantPath,
-}
-
-impl CoeffReadQuant {
-    #[must_use]
-    pub(crate) const fn quant_input(self) -> CoeffQuantReadInput {
-        self.quant
-    }
-
-    #[must_use]
-    pub(crate) const fn path(self) -> CoeffReadQuantPath {
-        self.path
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffReadQuantError {
-    #[error("coefficient read_quant input count {inputs} does not match scan entries {entries}")]
-    InputCountMismatch { inputs: usize, entries: usize },
-    #[error(
-        "coefficient read_quant input {index} targets {actual:?}, expected checked scan entry {expected:?}"
-    )]
-    ScanEntryMismatch {
-        index: usize,
-        expected: CoeffScanEntry,
-        actual: CoeffScanEntry,
-    },
     #[error("coefficient read_quant input {index} has invalid maxLevel {max_level}")]
     InvalidMaxLevel {
         index: usize,
@@ -95,40 +50,6 @@ pub(crate) enum CoeffReadQuantError {
         index: usize,
         operation: &'static str,
     },
-    #[error("coefficient read_quant allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
-}
-
-pub(crate) fn read_nonzero_coeff_quants(
-    symbols: &mut SymbolDecoder<'_>,
-    walk: &NonZeroCoeffScanWalk<'_>,
-    inputs: &[CoeffReadQuantInput],
-    config: CoeffReadQuantConfig,
-) -> Result<Vec<CoeffReadQuant>, CoeffReadQuantError> {
-    if inputs.len() != walk.len() {
-        return Err(CoeffReadQuantError::InputCountMismatch {
-            inputs: inputs.len(),
-            entries: walk.len(),
-        });
-    }
-    for (index, (entry, input)) in walk.entries().zip(inputs.iter().copied()).enumerate() {
-        if input.entry != entry {
-            return Err(CoeffReadQuantError::ScanEntryMismatch {
-                index,
-                expected: entry,
-                actual: input.entry,
-            });
-        }
-        quant_threshold(index, input.max_level, config.allow_tcq)?;
-    }
-
-    let mut state = CoeffReadQuantState::new(config);
-    let mut reads = Vec::new();
-    reads.try_reserve(walk.len())?;
-    for (index, input) in inputs.iter().copied().enumerate() {
-        reads.push(state.read_one(symbols, index, input)?);
-    }
-    Ok(reads)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,17 +73,10 @@ impl CoeffReadQuantState {
         symbols: &mut SymbolDecoder<'_>,
         index: usize,
         input: CoeffReadQuantInput,
-    ) -> Result<CoeffReadQuant, CoeffReadQuantError> {
+    ) -> Result<CoeffQuantReadInput, CoeffReadQuantError> {
         let threshold = quant_threshold(index, input.max_level, self.allow_tcq)?;
         if input.level < threshold {
-            return Ok(CoeffReadQuant {
-                quant: CoeffQuantReadInput {
-                    entry: input.entry,
-                    quant: input.level,
-                    hr_level_avg: self.hr_level_avg,
-                },
-                path: CoeffReadQuantPath::BelowThreshold,
-            });
+            return Ok(CoeffQuantReadInput { quant: input.level });
         }
 
         let lvl_shift = u32::from(input.entry.pos() == 0 && self.is_hidden);
@@ -225,23 +139,7 @@ impl CoeffReadQuantState {
             .ok_or(quant_overflow(index, "quant + x << allowTcq"))?;
         self.hr_level_avg = next_hr;
 
-        Ok(CoeffReadQuant {
-            quant: CoeffQuantReadInput {
-                entry: input.entry,
-                quant,
-                hr_level_avg: next_hr,
-            },
-            path: CoeffReadQuantPath::Extended {
-                m,
-                k,
-                c_max,
-                q,
-                length,
-                x_base,
-                coeff_rem,
-                x,
-            },
-        })
+        Ok(CoeffQuantReadInput { quant })
     }
 }
 

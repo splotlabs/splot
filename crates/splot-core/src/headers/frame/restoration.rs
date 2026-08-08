@@ -476,7 +476,9 @@ fn parse_lr_params_with_references(
                     let n = ceil_log2(num_ref_frames);
                     temporal_ref_index = reader.read_f(n)? as usize;
                 }
-                if !temporal_pred_flag && max_num_filter_classes(plane) > 1 {
+                if !temporal_pred_flag
+                    && DECODE_NUM_FILTER_CLASSES[DECODE_NUM_FILTER_CLASSES.len() - 1] > 1
+                {
                     let idx = reader.read_bits_u8(3)?;
                     let classes = DECODE_NUM_FILTER_CLASSES
                         .get(usize::from(idx))
@@ -670,10 +672,6 @@ pub(crate) fn lr_plane_tool_table(
     let allow_switchable = tools_count > 2;
     let n = tools_count as u32 + u32::from(allow_switchable);
     (index_to_tool, tools_count, n)
-}
-
-const fn max_num_filter_classes(_plane: usize) -> u8 {
-    DECODE_NUM_FILTER_CLASSES[DECODE_NUM_FILTER_CLASSES.len() - 1]
 }
 
 /// `LoopRestorationSize` when restoration is disabled or before any signalling

@@ -86,7 +86,6 @@ fn run_deblock(
     deblock_general_intra_frame(
         ws,
         blocks,
-        [&[], &[]],
         mi_rows,
         mi_cols,
         filter,
@@ -99,7 +98,7 @@ fn run_deblock(
 }
 
 #[test]
-fn one_row_pass_adapters_match_the_combined_deblock() {
+fn one_row_advance_matches_the_whole_frame_deblock() {
     let mi_rows = 8;
     let mi_cols = 16;
     let blocks = deblock_blocks(mi_rows, mi_cols);
@@ -116,7 +115,6 @@ fn one_row_pass_adapters_match_the_combined_deblock() {
     deblock_general_intra_frame(
         &mut combined,
         &blocks,
-        [&[], &[]],
         mi_rows,
         mi_cols,
         params,
@@ -126,32 +124,20 @@ fn one_row_pass_adapters_match_the_combined_deblock() {
         BitDepth::Eight,
     )
     .unwrap();
-    deblock_one_row_columns(
-        &mut staged,
+    let mut plan = FrameDeblock::prepare(
         &blocks,
-        [&[], &[]],
+        &EMPTY_CHROMA_RECORDS,
         mi_rows,
         mi_cols,
         params,
         None,
         false,
         DeblockQuantDeltas::ZERO,
-        BitDepth::Eight,
     )
+    .unwrap()
     .unwrap();
-    deblock_one_row_rows(
-        &mut staged,
-        &blocks,
-        [&[], &[]],
-        mi_rows,
-        mi_cols,
-        params,
-        None,
-        false,
-        DeblockQuantDeltas::ZERO,
-        BitDepth::Eight,
-    )
-    .unwrap();
+    plan.advance(&mut staged, mi_rows, BitDepth::Eight).unwrap();
+    assert!(plan.finish().is_none());
 
     let combined =
         splot_recon::DecodedFrameHashInput::new(&combined.freeze().unwrap()).compute_hash();
@@ -267,7 +253,6 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
     deblock_general_intra_frame(
         &mut expected,
         &blocks,
-        [&[], &[]],
         mi_rows,
         mi_cols,
         params,
@@ -290,13 +275,7 @@ fn incremental_deblock_matches_whole_frame_across_superblock_rows_and_chroma() {
     .unwrap()
     .unwrap();
     for mi_row_end in [16, 32] {
-        plan.advance_vertical(
-            &mut actual,
-            mi_row_end + PASS_0_LEAD_MI_ROWS,
-            BitDepth::Eight,
-        )
-        .unwrap();
-        plan.advance_horizontal(&mut actual, mi_row_end, BitDepth::Eight)
+        plan.advance(&mut actual, mi_row_end, BitDepth::Eight)
             .unwrap();
     }
 
@@ -386,15 +365,8 @@ fn incremental_deblock_enforces_frontiers_and_extracts_exact_owned_window() {
     .unwrap()
     .unwrap();
 
-    assert!(matches!(
-        plan.advance_horizontal(&mut workspace, 16, BitDepth::Eight),
-        Err(DeblockError::Workspace)
-    ));
     assert_eq!(plan.final_luma_rows(1), 0);
-    plan.advance_vertical(&mut workspace, 20, BitDepth::Eight)
-        .unwrap();
-    plan.advance_horizontal(&mut workspace, 16, BitDepth::Eight)
-        .unwrap();
+    plan.advance(&mut workspace, 16, BitDepth::Eight).unwrap();
     assert_eq!(plan.final_luma_rows(0), 56);
     assert_eq!(plan.final_luma_rows(1), 48);
 
@@ -424,7 +396,6 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
     deblock_general_intra_frame(
         &mut expected,
         &blocks,
-        [&[], &[]],
         mi_rows,
         mi_cols,
         params,
@@ -446,10 +417,7 @@ fn incremental_deblock_clamps_completed_window_to_clipped_frame_height() {
     )
     .unwrap()
     .unwrap();
-    plan.advance_vertical(&mut actual, mi_rows, BitDepth::Eight)
-        .unwrap();
-    plan.advance_horizontal(&mut actual, mi_rows, BitDepth::Eight)
-        .unwrap();
+    plan.advance(&mut actual, mi_rows, BitDepth::Eight).unwrap();
 
     assert_eq!(plan.final_luma_rows(1), 72);
     let window = plan.extract_window(&actual, 0, 70, 16).unwrap();
@@ -483,7 +451,6 @@ fn incremental_deblock_matches_tile_boundary_rules() {
         deblock_general_intra_frame(
             &mut expected,
             &blocks,
-            [&[], &[]],
             mi_rows,
             mi_cols,
             params,
@@ -505,10 +472,7 @@ fn incremental_deblock_matches_tile_boundary_rules() {
         )
         .unwrap()
         .unwrap();
-        plan.advance_vertical(&mut actual, mi_rows, BitDepth::Eight)
-            .unwrap();
-        plan.advance_horizontal(&mut actual, mi_rows, BitDepth::Eight)
-            .unwrap();
+        plan.advance(&mut actual, mi_rows, BitDepth::Eight).unwrap();
         assert!(plan.finish().is_none());
         assert_workspace_samples_eq(&actual, &expected);
 
@@ -1161,7 +1125,6 @@ fn empty_apply_pattern_is_a_no_op() {
     deblock_general_intra_frame(
         &mut workspace,
         &[],
-        [&[], &[]],
         16,
         16,
         filter([false; 4]),
@@ -1694,7 +1657,6 @@ fn banded_parallel_pass_matches_serial_output() {
         deblock_general_intra_frame(
             ws,
             &blocks,
-            [&[], &[]],
             mi_rows,
             mi_cols,
             filter([true, true, true, true]),

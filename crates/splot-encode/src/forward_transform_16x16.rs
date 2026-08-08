@@ -27,9 +27,9 @@ use splot_recon::{PlaneId, PlaneRect};
 use splot_tables::tables::transform_1d::DCT_KERNEL16;
 
 use crate::error::Result;
+use crate::forward_transform_shared::forward_dct_dct_square;
 #[cfg(test)]
 use crate::forward_transform_shared::forward_round2;
-use crate::forward_transform_shared::{forward_dct_dct_square, validate_forward_shape};
 
 pub(crate) const DCT_DCT_16X16_WIDTH: usize = 16;
 pub(crate) const DCT_DCT_16X16_HEIGHT: usize = 16;
@@ -120,10 +120,6 @@ impl ForwardTransformBlock16x16 {
     pub(crate) const fn coefficients(&self) -> &[i32; DCT_DCT_16X16_COEFF_COUNT] {
         &self.coefficients
     }
-}
-
-fn validate_16x16_shape(plane: PlaneId, block: PlaneRect) -> Result<()> {
-    validate_forward_shape(plane, block, DCT_DCT_16X16_WIDTH, DCT_DCT_16X16_HEIGHT)
 }
 
 #[cfg(test)]

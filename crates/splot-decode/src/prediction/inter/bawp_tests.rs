@@ -48,7 +48,6 @@ fn intrabc_morph_pred_skips_unavailable_top_left_template() -> TestResult {
         target,
         (false, false),
         Mv { row: 0, col: 0 },
-        splot_core::span::ByteOffset::new(0),
     )?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 0, 0)?, 77);
@@ -92,7 +91,6 @@ fn intrabc_morph_pred_applies_large_luma_block() -> TestResult {
         PlaneRect::new(16, 16, 128, 128)?,
         (true, true),
         Mv { row: 64, col: 64 },
-        splot_core::span::ByteOffset::new(0),
     )?;
 
     assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 16, 16)?, 60);

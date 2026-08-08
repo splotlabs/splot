@@ -6,34 +6,6 @@
 use super::*;
 
 #[test]
-fn tile_origin_block_is_dc_pred_context_zero() {
-    assert_eq!(YModeIndexContext::tile_origin_block().ctx(), 0);
-}
-
-#[test]
-fn directional_neighbours_raise_the_context() {
-    let one = YModeIndexContext {
-        left_joint_mode: NON_DIRECTIONAL_MODES_COUNT,
-        above_joint_mode: DC_PRED,
-    };
-    assert_eq!(one.ctx(), 1);
-    let both = YModeIndexContext {
-        left_joint_mode: NON_DIRECTIONAL_MODES_COUNT,
-        above_joint_mode: NON_DIRECTIONAL_MODES_COUNT + 7,
-    };
-    assert_eq!(both.ctx(), 2);
-}
-
-#[test]
-fn last_non_directional_mode_does_not_raise_the_context() {
-    let ctx = YModeIndexContext {
-        left_joint_mode: NON_DIRECTIONAL_MODES_COUNT - 1,
-        above_joint_mode: NON_DIRECTIONAL_MODES_COUNT - 1,
-    };
-    assert_eq!(ctx.ctx(), 0);
-}
-
-#[test]
 fn minimal_y_mode_reconstruction_maps_set0_index0_to_dc_pred() {
     assert_eq!(reconstruct_minimal_y_mode(0, 0), Some(IntraYMode::DC_PRED));
 }
@@ -63,7 +35,7 @@ fn minimal_y_mode_reconstruction_rejects_unsupported_inputs() {
 fn uv_mode_ctx_is_zero_for_dc_pred_and_one_for_directional() {
     assert_eq!(uv_mode_ctx(IntraYMode::DC_PRED), 0);
     assert_eq!(uv_mode_ctx(IntraYMode(IntraYMode::V_PRED)), 1);
-    assert_eq!(uv_mode_ctx(IntraYMode(IntraYMode::D67_PRED)), 1);
+    assert_eq!(uv_mode_ctx(IntraYMode::D67_PRED_FOR_TEST), 1);
     assert_eq!(uv_mode_ctx(IntraYMode(12)), 0);
 }
 
@@ -107,15 +79,9 @@ fn y_mode_offset_escape_reconstructs_d135() {
         (
             escape.y_mode,
             escape.angle_delta_y,
-            escape.y_mode.supported_directional(),
             escape.y_mode.is_directional()
         ),
-        (
-            IntraYMode(IntraYMode::D135_PRED),
-            0,
-            Some(SupportedDirectionalLumaMode::D135),
-            true
-        )
+        (IntraYMode::D135_PRED_FOR_TEST, 0, true)
     );
 }
 
@@ -137,8 +103,11 @@ fn y_mode_offset_escape_is_total_over_the_legal_offset_range() {
 
 #[test]
 fn get_intra_uv_mode_set_directional_luma_returns_y_mode_for_index_zero() {
-    let d135 = IntraYMode(IntraYMode::D135_PRED);
-    assert_eq!(get_intra_uv_mode_set(d135, 0), Some(IntraYMode::D135_PRED));
+    let d135 = IntraYMode::D135_PRED_FOR_TEST;
+    assert_eq!(
+        get_intra_uv_mode_set(d135, 0),
+        Some(IntraYMode::D135_PRED_FOR_TEST.0)
+    );
 }
 
 fn assert_supported_chroma_mode(
@@ -158,39 +127,11 @@ fn assert_supported_chroma_mode(
 }
 
 #[test]
-fn supported_directional_admits_all_av2_directional_luma_modes() {
-    assert_eq!(
-        IntraYMode(IntraYMode::D45_PRED).supported_directional(),
-        Some(SupportedDirectionalLumaMode::D45)
-    );
-    assert_eq!(
-        IntraYMode(IntraYMode::D203_PRED).supported_directional(),
-        Some(SupportedDirectionalLumaMode::D203)
-    );
-    assert_eq!(
-        IntraYMode(IntraYMode::D113_PRED).supported_directional(),
-        Some(SupportedDirectionalLumaMode::D113)
-    );
-    assert_eq!(
-        IntraYMode(IntraYMode::D135_PRED).supported_directional(),
-        Some(SupportedDirectionalLumaMode::D135)
-    );
-    assert_eq!(
-        IntraYMode(IntraYMode::D157_PRED).supported_directional(),
-        Some(SupportedDirectionalLumaMode::D157)
-    );
-    assert_eq!(
-        IntraYMode(IntraYMode::D67_PRED).supported_directional(),
-        Some(SupportedDirectionalLumaMode::D67)
-    );
-}
-
-#[test]
 fn supported_chroma_mode_directional_follow_resolves_d113_for_uv_mode_zero() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D113_PRED),
+        IntraYMode::D113_PRED_FOR_TEST,
         0,
-        IntraYMode::D113_PRED,
+        IntraYMode::D113_PRED_FOR_TEST.0,
         SupportedChromaMode::D113Follow,
     );
 }
@@ -199,21 +140,17 @@ fn supported_chroma_mode_directional_follow_resolves_d113_for_uv_mode_zero() {
 fn y_mode_offset_escape_reconstructs_d113() {
     let escape =
         reconstruct_y_mode_offset_escape_top_left(2).expect("y_mode_offset 2 reconstructs a mode");
-    assert_eq!(escape.y_mode, IntraYMode(IntraYMode::D113_PRED));
+    assert_eq!(escape.y_mode, IntraYMode::D113_PRED_FOR_TEST);
     assert_eq!(escape.angle_delta_y, 0);
     assert_eq!(escape.intra_joint_mode, 29);
-    assert_eq!(
-        escape.y_mode.supported_directional(),
-        Some(SupportedDirectionalLumaMode::D113)
-    );
 }
 
 #[test]
 fn supported_chroma_mode_directional_follow_resolves_d157_for_uv_mode_zero() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D157_PRED),
+        IntraYMode::D157_PRED_FOR_TEST,
         0,
-        IntraYMode::D157_PRED,
+        IntraYMode::D157_PRED_FOR_TEST.0,
         SupportedChromaMode::D157Follow,
     );
 }
@@ -221,9 +158,9 @@ fn supported_chroma_mode_directional_follow_resolves_d157_for_uv_mode_zero() {
 #[test]
 fn supported_chroma_mode_directional_follow_resolves_d203_for_uv_mode_zero() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D203_PRED),
+        IntraYMode::D203_PRED_FOR_TEST,
         0,
-        IntraYMode::D203_PRED,
+        IntraYMode::D203_PRED_FOR_TEST.0,
         SupportedChromaMode::D203Follow,
     );
 }
@@ -231,9 +168,9 @@ fn supported_chroma_mode_directional_follow_resolves_d203_for_uv_mode_zero() {
 #[test]
 fn supported_chroma_mode_directional_follow_resolves_d67_for_uv_mode_zero() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D67_PRED),
+        IntraYMode::D67_PRED_FOR_TEST,
         0,
-        IntraYMode::D67_PRED,
+        IntraYMode::D67_PRED_FOR_TEST.0,
         SupportedChromaMode::D67Follow,
     );
 }
@@ -243,14 +180,14 @@ fn supported_chroma_mode_h_luma_can_select_explicit_d67() {
     assert_supported_chroma_mode(
         IntraYMode(IntraYMode::H_PRED),
         9,
-        IntraYMode::D67_PRED,
+        IntraYMode::D67_PRED_FOR_TEST.0,
         SupportedChromaMode::D67,
     );
 }
 
 #[test]
 fn supported_chroma_mode_directional_luma_resolves_dc_for_uv_mode_one() {
-    let d135 = IntraYMode(IntraYMode::D135_PRED);
+    let d135 = IntraYMode::D135_PRED_FOR_TEST;
     assert_eq!(
         supported_chroma_mode(d135, 1),
         Some(SupportedChromaMode::Dc)
@@ -260,9 +197,9 @@ fn supported_chroma_mode_directional_luma_resolves_dc_for_uv_mode_one() {
 #[test]
 fn supported_chroma_mode_directional_follow_resolves_d135_for_uv_mode_zero() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D135_PRED),
+        IntraYMode::D135_PRED_FOR_TEST,
         0,
-        IntraYMode::D135_PRED,
+        IntraYMode::D135_PRED_FOR_TEST.0,
         SupportedChromaMode::D135Follow,
     );
 }
@@ -272,7 +209,7 @@ fn supported_chroma_mode_explicit_d135_uses_non_follow_mode() {
     assert_supported_chroma_mode(
         IntraYMode::DC_PRED,
         8,
-        IntraYMode::D135_PRED,
+        IntraYMode::D135_PRED_FOR_TEST.0,
         SupportedChromaMode::D135,
     );
 }
@@ -282,7 +219,7 @@ fn supported_chroma_mode_explicit_d203_uses_non_follow_mode() {
     assert_supported_chroma_mode(
         IntraYMode::DC_PRED,
         12,
-        IntraYMode::D203_PRED,
+        IntraYMode::D203_PRED_FOR_TEST.0,
         SupportedChromaMode::D203,
     );
 }
@@ -290,9 +227,9 @@ fn supported_chroma_mode_explicit_d203_uses_non_follow_mode() {
 #[test]
 fn supported_chroma_mode_d67_luma_can_select_explicit_d203() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D67_PRED),
+        IntraYMode::D67_PRED_FOR_TEST,
         12,
-        IntraYMode::D203_PRED,
+        IntraYMode::D203_PRED_FOR_TEST.0,
         SupportedChromaMode::D203,
     );
 }
@@ -302,7 +239,7 @@ fn supported_chroma_mode_explicit_d157_uses_non_follow_mode() {
     assert_supported_chroma_mode(
         IntraYMode::DC_PRED,
         11,
-        IntraYMode::D157_PRED,
+        IntraYMode::D157_PRED_FOR_TEST.0,
         SupportedChromaMode::D157,
     );
 }
@@ -320,7 +257,7 @@ fn supported_chroma_mode_explicit_paeth_uses_non_follow_mode() {
 #[test]
 fn supported_chroma_mode_directional_luma_can_select_explicit_paeth() {
     assert_supported_chroma_mode(
-        IntraYMode(IntraYMode::D45_PRED),
+        IntraYMode::D45_PRED_FOR_TEST,
         5,
         IntraYMode::PAETH_PRED,
         SupportedChromaMode::Paeth,
@@ -348,10 +285,6 @@ fn first_set_directional_reconstructs_v_pred_for_index_five() {
     assert_eq!(result.y_mode, IntraYMode(IntraYMode::V_PRED));
     assert_eq!(result.angle_delta_y, 0);
     assert_eq!(result.intra_joint_mode, 22);
-    assert_eq!(
-        result.y_mode.supported_directional(),
-        Some(SupportedDirectionalLumaMode::Vertical)
-    );
 }
 
 #[test]
@@ -361,10 +294,6 @@ fn first_set_directional_reconstructs_h_pred_for_index_six() {
     assert_eq!(result.y_mode, IntraYMode(IntraYMode::H_PRED));
     assert_eq!(result.angle_delta_y, 0);
     assert_eq!(result.intra_joint_mode, 50);
-    assert_eq!(
-        result.y_mode.supported_directional(),
-        Some(SupportedDirectionalLumaMode::Horizontal)
-    );
 }
 
 #[test]
@@ -389,7 +318,7 @@ fn second_set_reconstructs_y_mode_from_y_second_mode() {
 fn second_set_reconstructs_later_mode_sets() {
     let result = reconstruct_y_mode_second_set_top_left(2, 15)
         .expect("later legal second-mode branch reconstructs");
-    assert_eq!(result.y_mode, IntraYMode(IntraYMode::D203_PRED));
+    assert_eq!(result.y_mode, IntraYMode::D203_PRED_FOR_TEST);
     assert_eq!(result.angle_delta_y, 1);
     assert_eq!(result.intra_joint_mode, 58);
 }
@@ -406,7 +335,7 @@ fn neighbour_reorder_selects_directional_joint_mode_before_default_list() {
     let result = reconstruct_y_mode_with_neighbours(5, [36, 0], 16, 16)
         .expect("directional neighbour reconstructs");
     assert_eq!(result.intra_joint_mode, 36);
-    assert_eq!(result.y_mode, IntraYMode(IntraYMode::D135_PRED));
+    assert_eq!(result.y_mode, IntraYMode::D135_PRED_FOR_TEST);
     assert_eq!(result.angle_delta_y, 0);
 }
 
@@ -433,7 +362,7 @@ fn neighbour_reorder_runs_for_wide_tall_sub_8x8_blocks() {
         assert_eq!(result.intra_joint_mode, 18, "{n4w}x{n4h} stored joint mode");
         assert_eq!(
             result.y_mode,
-            IntraYMode(IntraYMode::D67_PRED),
+            IntraYMode::D67_PRED_FOR_TEST,
             "{n4w}x{n4h} reconstructed YMode"
         );
     }

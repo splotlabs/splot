@@ -2107,7 +2107,7 @@ fn rect_paeth_8x16_top_edge_synthesizes_above_from_left() {
 /// `Clip1(paethPred + inverse-transform(residual))` — proven by independently
 /// computing the Paeth prediction (the verbatim `ref_paeth` over the laid edges)
 /// and reconstructing the SAME residual onto it through the shared
-/// `reconstruct_general_intra_block_rect_with_prediction` (the §7.14.3 helper every
+/// `reconstruct_general_intra_coeff_block_rect_with_prediction_into` (the §7.14.3 helper every
 /// residual path uses). A path that dropped the residual (writing the bare
 /// prediction) or added it onto the wrong predictor would diverge from this
 /// reference; the asymmetric coeffs + non-flat prediction make any such mix-up

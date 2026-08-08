@@ -160,13 +160,11 @@ pub(super) struct RapPendingReference {
     /// temporal unit may be a random access point for some extended layers but not for
     /// others" and "the decoder shall not decode coded extended layer units for an
     /// extended layer until a random access point for that extended layer is
-    /// encountered"), so a reference answers to *its own* layer's most recent random
-    /// access point. [`GLOBAL_XLAYER_ID`] references (e.g. a global-layer
-    /// buffer-removal-timing OBU) are governed by the global anchor — the most recent
-    /// random access point across *any* extended layer — since a global-layer HLS OBU is
-    /// decoded by whichever layer first random-accesses at that temporal unit, so the
-    /// referenced object must be available at any random access point a decoder might
-    /// start from.
+    /// encountered"), so a reference answers to every prior random access point in its
+    /// own layer. [`GLOBAL_XLAYER_ID`] references (e.g. a global-layer buffer-removal-
+    /// timing OBU) answer to every prior random access point across *any* extended layer,
+    /// since a global-layer HLS OBU is decoded by whichever layer first random-accesses at
+    /// that temporal unit.
     pub(super) governing_xlayer: ExtendedLayerId,
     /// The object's (re)send events recorded in the *completed* prior temporal units
     /// (object-keyed, cross-extended-layer — § 7.3.8.6 models the sequence-header memory as
@@ -227,19 +225,6 @@ pub(super) struct RapReplayTracker {
     /// random access, so their resends do not qualify — unless the unit is itself that
     /// layer's random access point).
     pub(super) current_tu_leading_xlayers: BTreeSet<ExtendedLayerId>,
-    /// Per extended layer, the temporal-unit index of its most recent random access point
-    /// completed so far. Tracked for diagnostics/pruning context; § 7.3.8.1 satisfaction is
-    /// resolved against *every* governing anchor (see [`Self::governing_rap_tus`] and
-    /// [`Self::complete_temporal_unit`]), not just the most recent one, so this scalar is no
-    /// longer the satisfaction anchor.
-    pub(super) most_recent_rap_tu: BTreeMap<ExtendedLayerId, u64>,
-    /// The temporal-unit index of the most recent random access point across *any*
-    /// extended layer, or `None` before any random access point. Retained as the most-recent
-    /// global anchor for context; like [`Self::most_recent_rap_tu`] it is not the sole
-    /// satisfaction anchor — [`GLOBAL_XLAYER_ID`] references must be satisfied at *every*
-    /// random access point a decoder might start from (every entry of [`Self::rap_history_any`]
-    /// at or before the reference), per § 7.3.8.1's "any random access point".
-    pub(super) most_recent_rap_tu_any: Option<u64>,
     /// Per extended layer, the set of temporal units at which that layer had a § 7.4.1
     /// random access point. Two roles. (1) The *governing anchors* of a layer reference:
     /// § 7.3.8.1 requires availability "if decoding process starts at **any** random access
@@ -459,8 +444,8 @@ impl RapReplayTracker {
     /// per-kind external-HLS suppression policy — see `complete_rap_replay_tu`).
     ///
     /// Order matters and is sound regardless of intra-unit OBU order: append this unit's
-    /// (re)send events, advance the per-extended-layer / global random-access-point anchors
-    /// and per-layer / any-layer random-access-point histories, then replay this unit's
+    /// (re)send events, advance the per-layer / any-layer random-access-point histories,
+    /// then replay this unit's
     /// buffered references against *every* governing random access point (§ 7.3.8.1 "any
     /// random access point", finding 2) under the anchor-relative visibility predicate (which
     /// now sees this unit when it is itself a random access point), and finally prune state
@@ -478,10 +463,8 @@ impl RapReplayTracker {
             }
         }
         if !self.current_tu_rap_xlayers.is_empty() {
-            self.most_recent_rap_tu_any = Some(tu_index);
             self.rap_history_any.insert(tu_index, tu_has_any_leading);
             for &xlayer in &self.current_tu_rap_xlayers {
-                self.most_recent_rap_tu.insert(xlayer, tu_index);
                 self.rap_history
                     .entry(xlayer)
                     .or_default()
@@ -605,11 +588,11 @@ impl ValidatorContext {
     /// Buffers a linearly-resolved § 7.3.8.1 HLS reference for the random-access-point
     /// availability replay, governed by the referencing OBU's extended layer `xlayer`
     /// (resolved at temporal-unit completion; see [`RapReplayTracker`]). § 7.4 random
-    /// access initiates per extended layer (§ 7.4.6), so a reference answers to its own
-    /// layer's most recent random access point (a [`GLOBAL_XLAYER_ID`] reference answers
-    /// to the global anchor). The caller buffers only references whose object was available
-    /// in-band at reference time and not suppressed by external HLS, keeping the replay
-    /// predicate disjoint from the linear `hls/unavailable-*` checks.
+    /// access initiates per extended layer (§ 7.4.6), so a reference answers to every prior
+    /// random access point in its own layer (a [`GLOBAL_XLAYER_ID`] reference answers to
+    /// every prior random access point across all layers). The caller buffers only references
+    /// whose object was available in-band at reference time and not suppressed by external
+    /// HLS, keeping the replay predicate disjoint from the linear `hls/unavailable-*` checks.
     pub(super) fn note_rap_reference(
         &mut self,
         key: RapHlsKey,

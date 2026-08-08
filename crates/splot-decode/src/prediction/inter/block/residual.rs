@@ -99,8 +99,8 @@ impl InterLumaTxTypeMap {
         tx_type: usize,
         tile_offset: ByteOffset,
     ) -> Result<()> {
-        let tx_w4 = tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-        let tx_h4 = tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+        let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
+        let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
         for dy in (0..tx_h4).step_by(TX_TYPE_MAP_UNIT_4X4) {
             for dx in (0..tx_w4).step_by(TX_TYPE_MAP_UNIT_4X4) {
                 let map_row = row
@@ -368,8 +368,8 @@ fn read_inter_residual_luma_chunk(
             tile_offset,
         );
     }
-    let tx_w4 = tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
+    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
     let mut y4 = luma_chunk_y4;
     while y4 < chunk_end_y4 {
         let mut x4 = luma_chunk_x4;
@@ -546,8 +546,8 @@ fn read_inter_residual_chroma_group(
     if subsampling_y && chunk_y + 1 < block_height_chunks && !lossless {
         num4x4_h <<= 1;
     }
-    let tx_w4 = tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
-    let tx_h4 = tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
+    let tx_w4 = tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
+    let tx_h4 = tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
     let x_offset4 = (chunk_x << 4) >> usize::from(subsampling_x);
     let y_offset4 = (chunk_y << 4) >> usize::from(subsampling_y);
     let base_x4 = chroma_ref.col() >> usize::from(subsampling_x);
@@ -681,8 +681,8 @@ fn push_inter_residual_block(
     coeffs: LumaCoeffBlock,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let log2_width = tx_size_dimension("Tx_Width_Log2", &TX_WIDTH_LOG2, tx_size, tile_offset)?;
-    let log2_height = tx_size_dimension("Tx_Height_Log2", &TX_HEIGHT_LOG2, tx_size, tile_offset)?;
+    let log2_width = tx_size_dimension(&TX_WIDTH_LOG2, tx_size, tile_offset)?;
+    let log2_height = tx_size_dimension(&TX_HEIGHT_LOG2, tx_size, tile_offset)?;
     let log2_width = u32::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
     let log2_height =
         u32::try_from(log2_height).map_err(|_| residual_geometry_error(tile_offset))?;
@@ -747,12 +747,7 @@ fn read_inter_residual_plane(
 }
 
 pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
-    table_value_usize(
-        "Max_Tx_Size_Rect",
-        &MAX_TX_SIZE_RECT,
-        block_size,
-        tile_offset,
-    )
+    table_value_usize(&MAX_TX_SIZE_RECT, block_size, tile_offset)
 }
 
 fn inter_residual_tx_size(
@@ -787,20 +782,14 @@ fn fixed_inter_residual_tx_size(
 }
 
 pub(crate) fn tx_size_dimension(
-    table: &'static str,
     values: &[i32],
     tx_size: usize,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    table_value_usize(table, values, tx_size, tile_offset)
+    table_value_usize(values, tx_size, tile_offset)
 }
 
-fn table_value_usize(
-    _table: &'static str,
-    values: &[i32],
-    index: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
+fn table_value_usize(values: &[i32], index: usize, tile_offset: ByteOffset) -> Result<usize> {
     let value = values
         .get(index)
         .copied()

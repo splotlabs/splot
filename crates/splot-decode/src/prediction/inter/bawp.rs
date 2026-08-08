@@ -138,7 +138,6 @@ pub(crate) fn apply_intrabc_morph_pred<T: ReconSample>(
     target: PlaneRect,
     (avail_up, avail_left): (bool, bool),
     mv: Mv,
-    _tile_offset: ByteOffset,
 ) -> Result<()> {
     if !target.width().is_power_of_two() || !target.height().is_power_of_two() {
         return Ok(());

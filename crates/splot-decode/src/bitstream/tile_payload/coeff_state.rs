@@ -216,14 +216,10 @@ pub(crate) struct TransformCoeffBlockState {
 }
 
 impl TransformCoeffBlockState {
-    pub(crate) fn allocation(
-        width: usize,
-        height: usize,
-    ) -> Result<TransformCoeffBlockAllocation, TileCoeffStateError> {
+    pub(crate) fn allocation(width: usize, height: usize) -> Result<usize, TileCoeffStateError> {
         validate_adjusted_extent("width", width)?;
         validate_adjusted_extent("height", height)?;
-        let coeff_count = checked_mul_usize("width * height", width, height)?;
-        Ok(TransformCoeffBlockAllocation { coeff_count })
+        checked_mul_usize("width * height", width, height)
     }
 
     pub(crate) fn new(width: usize, height: usize) -> Result<Self, TileCoeffStateError> {
@@ -233,7 +229,7 @@ impl TransformCoeffBlockState {
         let level = with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
             take_zeroed_buffer(&mut buffers.levels, level_len)
         })?;
-        let quant = match take_zeroed_quant_buffer(allocation.coeff_count) {
+        let quant = match take_zeroed_quant_buffer(allocation) {
             Ok(quant) => quant,
             Err(error) => {
                 with_reusable_scratch(&TRANSFORM_COEFF_BUFFERS, |buffers| {
@@ -295,11 +291,6 @@ impl TransformCoeffBlockState {
         } else {
             &self.quant_sign
         }
-    }
-
-    #[must_use]
-    pub(crate) fn quant(&self) -> &[i32] {
-        &self.quant
     }
 
     #[must_use]
@@ -405,22 +396,8 @@ fn transform_coeff_buffer_counts() -> (usize, usize) {
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TransformCoeffBlockAllocation {
-    coeff_count: usize,
-}
-
-impl TransformCoeffBlockAllocation {
-    #[must_use]
-    pub(crate) const fn coeff_count(self) -> usize {
-        self.coeff_count
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileCoeffContextState {
-    mi_rows: usize,
-    mi_cols: usize,
     plane_row_origins: [usize; PLANE_COUNT],
     plane_col_origins: [usize; PLANE_COUNT],
     plane_rows: [usize; PLANE_COUNT],
@@ -432,10 +409,7 @@ pub(crate) struct TileCoeffContextState {
 }
 
 impl TileCoeffContextState {
-    pub(crate) fn allocation(
-        mi_rows: usize,
-        mi_cols: usize,
-    ) -> Result<TileCoeffContextAllocation, TileCoeffStateError> {
+    pub(crate) fn allocation(mi_rows: usize, mi_cols: usize) -> Result<(), TileCoeffStateError> {
         if mi_rows == 0 || mi_cols == 0 {
             return Err(TileCoeffStateError::EmptyTileDimensions { mi_rows, mi_cols });
         }
@@ -443,25 +417,8 @@ impl TileCoeffContextState {
         let plane_entries = checked_mul_usize("line_entries * planes", line_entries, PLANE_COUNT)?;
         let level_entries = plane_entries;
         let dc_entries = plane_entries;
-        let total_entries =
-            checked_add_usize("level_entries + dc_entries", level_entries, dc_entries)?;
-        Ok(TileCoeffContextAllocation {
-            above_len: mi_cols,
-            left_len: mi_rows,
-            total_entries,
-        })
-    }
-
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileCoeffStateError> {
-        Self::new_with_chroma_sampling(mi_rows, mi_cols, ChromaSampling::Yuv444)
-    }
-
-    pub(crate) fn new_with_chroma_sampling(
-        mi_rows: usize,
-        mi_cols: usize,
-        chroma: ChromaSampling,
-    ) -> Result<Self, TileCoeffStateError> {
-        Self::new_for_tile_with_chroma_sampling(0..mi_rows, 0..mi_cols, chroma)
+        checked_add_usize("level_entries + dc_entries", level_entries, dc_entries)?;
+        Ok(())
     }
 
     pub(crate) fn new_for_tile_chroma(
@@ -498,8 +455,6 @@ impl TileCoeffContextState {
                 .saturating_sub(plane_col_origins[index]);
         }
         Ok(Self {
-            mi_rows: rows,
-            mi_cols: cols,
             plane_row_origins,
             plane_col_origins,
             plane_rows,
@@ -509,16 +464,6 @@ impl TileCoeffContextState {
             above_dc: zeroed_plane_lines(plane_cols)?,
             left_dc: zeroed_plane_lines(plane_rows)?,
         })
-    }
-
-    #[must_use]
-    pub(crate) const fn mi_rows(&self) -> usize {
-        self.mi_rows
-    }
-
-    #[must_use]
-    pub(crate) const fn mi_cols(&self) -> usize {
-        self.mi_cols
     }
 
     pub(crate) fn above_level(&self, plane: usize) -> Result<&[u8], TileCoeffStateError> {
@@ -654,30 +599,6 @@ impl TileCoeffContextState {
             0,
         );
         Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct TileCoeffContextAllocation {
-    above_len: usize,
-    left_len: usize,
-    total_entries: usize,
-}
-
-impl TileCoeffContextAllocation {
-    #[must_use]
-    pub(crate) const fn above_len(self) -> usize {
-        self.above_len
-    }
-
-    #[must_use]
-    pub(crate) const fn left_len(self) -> usize {
-        self.left_len
-    }
-
-    #[must_use]
-    pub(crate) const fn total_entries(self) -> usize {
-        self.total_entries
     }
 }
 

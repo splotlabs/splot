@@ -38,6 +38,18 @@ use splot_core::tables::cdf::{
 
 use super::block_rows::*;
 
+#[test]
+fn coeff_cdf_q_context_boundaries_select_expected_contexts() {
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(0), 0);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(90), 0);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(91), 1);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(140), 1);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(141), 2);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(190), 2);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(191), 3);
+    assert_eq!(coeff_cdf_q_ctx_from_base_q_idx(u32::MAX), 3);
+}
+
 impl FrameCdfSubset {
     pub(crate) fn rows(&self) -> &TileCdfRows {
         &self.rows
@@ -113,11 +125,6 @@ impl TileCdfRows {
 
     pub(crate) const fn mrl_sec_index(&self) -> &MrlSecIndexCdfRows {
         &self.mrl_sec_index
-    }
-
-    #[allow(dead_code)]
-    pub(crate) const fn region_type(&self) -> &RegionTypeCdfRows {
-        &self.region_type
     }
 
     pub(crate) const fn y_mode_set(&self) -> &block_rows::YModeSetCdfRow {

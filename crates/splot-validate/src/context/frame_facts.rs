@@ -158,7 +158,7 @@ impl ValidatorContext {
                 output: self.frame_output_class(obu, first_picture_in_tu),
             },
             _ if obu_type.is_tile_group() => SegRole::TileFrame {
-                is_first_tile_group: self.frame_is_first_tile_group(obu),
+                is_first_tile_group: Self::frame_is_first_tile_group(obu),
                 output: self.frame_output_class(obu, first_picture_in_tu),
             },
             _ => SegRole::Padding,
@@ -178,8 +178,7 @@ impl ValidatorContext {
 
     /// Reads `is_first_tile_group` from a tile-group OBU's prefix (AV2 § 5.19),
     /// `None` if the first bit cannot be read.
-    #[allow(clippy::unused_self)]
-    pub(super) fn frame_is_first_tile_group(&self, obu: &ObuEnvelope<'_>) -> Option<bool> {
+    pub(super) fn frame_is_first_tile_group(obu: &ObuEnvelope<'_>) -> Option<bool> {
         if !obu.header.obu_type.is_tile_group() {
             return None;
         }
@@ -290,9 +289,8 @@ impl ValidatorContext {
     /// padding is position-free. Frame-bearing OBUs are dispatched by the caller (see
     /// [`Self::observe_frame_bearing_obu`]) so their facts and OrderHintBits come from a single
     /// shared parse + resolution; if one reaches here it is treated as transparent padding.
-    #[allow(clippy::unused_self)]
     #[allow(clippy::match_same_arms)]
-    pub(super) fn celu_role_for(&self, obu: &ObuEnvelope<'_>) -> CeluRole {
+    pub(super) fn celu_role_for(obu: &ObuEnvelope<'_>) -> CeluRole {
         match obu.header.obu_type {
             ObuType::Padding => CeluRole::Padding,
             ObuType::LayerConfigurationRecord => CeluRole::LayerConfigurationRecord,

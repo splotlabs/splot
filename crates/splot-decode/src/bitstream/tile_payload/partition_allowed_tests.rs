@@ -160,9 +160,8 @@ fn partition_subsize_sentinels_and_mixed_4x4_are_rejected() {
         ..input(BLOCK_4X8)
     };
     assert!(!is_partition_allowed(mixed, PartitionType::Horz).unwrap());
-    let initialized = init_allowed_partitions(mixed).unwrap();
-    assert_eq!(initialized.num_allowed(), 1);
-    assert!(initialized.allowed().contains(PartitionType::None));
+    let allowed = init_allowed_partitions(mixed).unwrap();
+    assert!(allowed.contains(PartitionType::None));
 }
 
 #[test]
@@ -195,9 +194,8 @@ fn frame_edge_none_rejection_and_empty_fallback_are_derived() {
         max_pb_aspect_ratio: 0,
         ..input(BLOCK_4X4)
     };
-    let initialized = init_allowed_partitions(fallback).unwrap();
-    assert_eq!(initialized.num_allowed(), 1);
-    assert!(initialized.allowed().contains(PartitionType::None));
+    let allowed = init_allowed_partitions(fallback).unwrap();
+    assert!(allowed.contains(PartitionType::None));
 }
 
 #[test]
@@ -260,26 +258,6 @@ fn coordinate_arithmetic_overflow_is_typed() {
             ..
         }
     ));
-}
-
-#[test]
-fn partition_decision_facts_collect_implied_allowed_and_rect_type() {
-    const BLOCK_4X4_U8: u8 = 0;
-    static LEFT: [u8; 4] = [BLOCK_4X4_U8; 4];
-    static ABOVE: [u8; 4] = [BLOCK_4X4_U8; 4];
-    let grid = vec![BLOCK_4X4_U8; 16];
-
-    let facts = partition_decision_facts(input(BLOCK_4X8)).unwrap();
-    assert_eq!(facts.implied_partition(), None);
-    assert!(facts.initialized().allowed().count() > 0);
-
-    let decision_input = facts.read_partition_decision_input(
-        true,
-        PartitionContextInput::new(BLOCK_4X8, 0, 0, 0, [&LEFT, &LEFT], [&ABOVE, &ABOVE]).unwrap(),
-        SquareSplitContextInput::new(BLOCK_4X8, 0, 0, 0, false, false, &grid, 4).unwrap(),
-    );
-
-    assert_eq!(decision_input, decision_input);
 }
 
 #[test]

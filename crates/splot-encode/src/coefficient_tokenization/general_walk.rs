@@ -117,7 +117,6 @@
 use splot_recon::{PlaneId, PlaneRect, TransformClass, coefficient_scan_order};
 
 #[cfg(test)]
-#[allow(unused_imports)]
 use super::eob_pt_16_token;
 pub(super) use super::general_walk_geom::TxGeom;
 use super::general_walk_golomb::{
@@ -135,8 +134,8 @@ use super::{
 use crate::block_symbol_trace::BlockSymbolToken;
 use crate::error::{Error, Result};
 
-#[allow(unused_imports)]
-pub(super) use super::general_walk_recover::recover_quant_from_tokens;
+#[cfg(test)]
+use super::general_walk_recover::recover_quant_from_tokens;
 
 /// The luma plane identity for general-walk diagnostics.
 const PLANE_Y: PlaneId = PlaneId::Y;

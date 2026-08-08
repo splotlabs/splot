@@ -567,7 +567,7 @@ pub fn predict_intra_directional_angle_rect_into<T: ReconSample>(
     stride_samples: usize,
 ) -> Result<()> {
     let context = validate_inputs(bit_depth, size, angle, edges, output.len(), stride_samples)?;
-    write_prediction(bit_depth, size, angle, context.edge, output, stride_samples)
+    write_prediction(size, angle, context.edge, output, stride_samples)
 }
 
 /// Writes a supported one-sided directional prediction from a raw AV2 pAngle.
@@ -955,7 +955,7 @@ fn validate_inputs<T: ReconSample>(
         "intra prediction output buffer length",
     )?;
     let expected_len = required_edge_len(size)?;
-    validate_index_bounds(size, angle, expected_len)?;
+    validate_index_bounds(size, angle)?;
 
     let edge_kind = angle.required_edge();
     let edge = match edge_kind {
@@ -1235,11 +1235,7 @@ fn required_middle_above_len(size: IntraRectBlockSize) -> Result<usize> {
         })
 }
 
-fn validate_index_bounds(
-    size: IntraRectBlockSize,
-    angle: IntraDirectionalAngle,
-    _edge_len: usize,
-) -> Result<()> {
+fn validate_index_bounds(size: IntraRectBlockSize, angle: IntraDirectionalAngle) -> Result<()> {
     let branch = angle.branch();
     let (outer, inner) = match branch {
         DirectionalAngleBranch::Above { .. } => (size.height(), size.width()),
@@ -1375,7 +1371,6 @@ where
 }
 
 fn write_prediction<T: ReconSample>(
-    _bit_depth: BitDepth,
     size: IntraRectBlockSize,
     angle: IntraDirectionalAngle,
     edge: &[T],

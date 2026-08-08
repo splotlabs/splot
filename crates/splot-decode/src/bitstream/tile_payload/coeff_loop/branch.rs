@@ -48,27 +48,6 @@ pub(crate) fn read_nonzero_coeff_block_start(
     let width = adjusted_coeff_extent(input.block.w4);
     let height = adjusted_coeff_extent(input.block.h4);
     let block = TransformCoeffBlockState::new(width, height)?;
-    finish_nonzero_coeff_block_start(cdfs, symbols, input, block)
-}
-
-pub(crate) fn read_nonzero_fsc_coeff_block_start(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: NonZeroCoeffBlockStartInput,
-) -> Result<NonZeroCoeffBlockStart, CoeffLoopContextError> {
-    let width = adjusted_coeff_extent(input.block.w4);
-    let height = adjusted_coeff_extent(input.block.h4);
-    let mut block = TransformCoeffBlockState::new(width, height)?;
-    block.ensure_quant_sign()?;
-    finish_nonzero_coeff_block_start(cdfs, symbols, input, block)
-}
-
-fn finish_nonzero_coeff_block_start(
-    cdfs: &mut TileCdfSubset,
-    symbols: &mut SymbolDecoder<'_>,
-    input: NonZeroCoeffBlockStartInput,
-    block: TransformCoeffBlockState,
-) -> Result<NonZeroCoeffBlockStart, CoeffLoopContextError> {
     let eob_read = read_nonzero_coeff_eob_from_context(cdfs, symbols, input.eob)?;
 
     Ok(NonZeroCoeffBlockStart { eob_read, block })

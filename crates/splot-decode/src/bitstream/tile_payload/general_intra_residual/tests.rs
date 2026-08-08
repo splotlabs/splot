@@ -102,17 +102,29 @@ fn dc_luma_context() -> LumaTransformTypeContext {
 
 #[test]
 fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
-    let quant = vec![0i32; 16];
+    let block = LumaCoeffBlock {
+        all_zero: false,
+        eob: 0,
+        quant: vec![0i32; 16],
+        intra_ist: None,
+        cctx_type: None,
+        plane_tx_type: DCT_DCT,
+        use_tcq: false,
+        lossless: false,
+    };
     let prediction = vec![128u8; 8];
-    let result = reconstruct_general_intra_block_rect_with_prediction(
-        &quant,
+    let mut output = Vec::new();
+    let result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+        &block,
         &prediction,
+        &mut output,
         64,
         PlaneId::Y,
         2,
         2,
-        0,
         false,
+        None,
+        None,
         BitDepth::Eight,
     );
     assert!(matches!(
@@ -394,13 +406,11 @@ fn partitioned_luma_transform_records_skip_units_starting_outside_frame() {
 
 #[allow(clippy::fn_params_excessive_bools)]
 fn frame_facts(
-    enable_idtx_intra: bool,
     enable_intra_ist: bool,
     enable_chroma_dctonly: bool,
     enable_cctx: bool,
 ) -> TileCoeffFrameFacts {
     TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-        enable_idtx_intra,
         enable_intra_ist,
         enable_chroma_dctonly,
         enable_cctx,
@@ -410,7 +420,6 @@ fn frame_facts(
 
 fn frame_facts_with_coeff_tools(allow_tcq: bool, allow_parity_hiding: bool) -> TileCoeffFrameFacts {
     TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
-        enable_idtx_intra: true,
         allow_tcq,
         allow_parity_hiding,
         ..frame_facts_input()
@@ -420,14 +429,12 @@ fn frame_facts_with_coeff_tools(allow_tcq: bool, allow_parity_hiding: bool) -> T
 fn frame_facts_with_fsc() -> TileCoeffFrameFacts {
     TileCoeffFrameFacts::new(TileCoeffFrameFactsInput {
         enable_fsc: true,
-        enable_idtx_intra: true,
         ..frame_facts_input()
     })
 }
 
 fn lossless_frame_facts() -> TileCoeffFrameFacts {
     let mut input = frame_facts_input();
-    input.enable_idtx_intra = true;
     input.enable_intra_ist = true;
     input.lossless_array[0] = true;
     TileCoeffFrameFacts::new(input)
@@ -436,7 +443,6 @@ fn lossless_frame_facts() -> TileCoeffFrameFacts {
 fn frame_facts_input() -> TileCoeffFrameFactsInput {
     TileCoeffFrameFactsInput {
         enable_fsc: false,
-        enable_idtx_intra: false,
         enable_intra_ist: false,
         enable_inter_ist: false,
         enable_chroma_dctonly: false,
@@ -644,7 +650,7 @@ fn non_fsc_luma_transform_handoff_still_requires_luma_context() {
 #[test]
 fn dctonly_residual_admits_luma_when_ist_cannot_read_after_eob_limit() {
     let result = ensure_with_test_state(
-        frame_facts(true, true, false, false),
+        frame_facts(true, false, false),
         0,
         TX_32X32,
         false,
@@ -658,7 +664,7 @@ fn dctonly_residual_admits_luma_when_ist_cannot_read_after_eob_limit() {
 #[test]
 fn dctonly_residual_admits_luma_when_intra_ist_reads_zero_sec_tx_type() {
     let result = ensure_with_test_state(
-        frame_facts(true, true, false, false),
+        frame_facts(true, false, false),
         0,
         TX_32X32,
         false,
@@ -671,14 +677,8 @@ fn dctonly_residual_admits_luma_when_intra_ist_reads_zero_sec_tx_type() {
 
 #[test]
 fn dctonly_residual_rejects_intra_ist_without_luma_context() {
-    let result = ensure_with_test_state(
-        frame_facts(true, true, false, false),
-        0,
-        TX_32X32,
-        false,
-        2,
-        None,
-    );
+    let result =
+        ensure_with_test_state(frame_facts(true, false, false), 0, TX_32X32, false, 2, None);
 
     assert_eq!(
         unsupported_reason(&result),
@@ -691,7 +691,7 @@ fn dctonly_residual_lr_handoff_admits_active_intra_ist_metadata() {
     let payload = sec_tx_type_payload(TX_32X32, 1, Some(2));
 
     let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(true, true, false, false),
+        frame_facts(true, false, false),
         0,
         TX_32X32,
         false,
@@ -867,7 +867,7 @@ fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
         md_idx_luma_tx_type(TX_8X16, LumaTransformTypeContext::new(luma.y_mode, -2), 4).unwrap();
     let active_mrl = md_idx_luma_tx_type(
         TX_8X16,
-        LumaTransformTypeContext::with_mrl_index(luma.y_mode, -2, 2),
+        LumaTransformTypeContext::with_mrl_indices(luma.y_mode, -2, 2, None, None),
         4,
     )
     .unwrap();
@@ -884,7 +884,7 @@ fn luma_txtype_residual_lr_handoff_retains_non_dct_luma_tx_type() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(false, false, false, false),
+        frame_facts(false, false, false),
         0,
         TX_8X8,
         false,
@@ -905,7 +905,7 @@ fn luma_txtype_residual_lr_handoff_skips_intra_ist_for_non_sec_tx_type() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 2).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(false, true, false, false),
+        frame_facts(true, false, false),
         0,
         TX_8X8,
         false,
@@ -928,7 +928,7 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_eob_limit() {
     let expected = md_idx_luma_tx_type(TX_16X16, luma, 1).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(false, true, false, false),
+        frame_facts(true, false, false),
         0,
         TX_16X16,
         false,
@@ -956,7 +956,7 @@ fn luma_txtype_residual_adst_adst_uses_reduced_ist_stx_cdf() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let metadata = ensure_with_test_payload_and_policy(
-        frame_facts(false, true, false, false),
+        frame_facts(true, false, false),
         0,
         TX_8X8,
         false,
@@ -1005,7 +1005,7 @@ fn luma_txtype_residual_staged_base_config_uses_retained_luma_tx_type() {
     let expected = md_idx_luma_tx_type(TX_8X8, luma, 1).unwrap();
 
     let config = staged_transform_tool_lossless_base_config(
-        frame_facts(false, false, false, false),
+        frame_facts(false, false, false),
         0,
         0,
         0,
@@ -1157,7 +1157,7 @@ fn lossless_chroma_transform_handoff_skips_cctx_read() {
 
 #[test]
 fn chroma_transform_handoff_skips_cctx_read_when_geometry_disallows() {
-    let facts = frame_facts(false, false, false, true);
+    let facts = frame_facts(false, false, true);
     let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, 1)]);
     for (is_inter, eob) in [(false, 2), (true, 1)] {
         for (cctx_allowed, expected_cctx_type, expected_symbols) in
@@ -1288,7 +1288,7 @@ fn lossless_inter_chroma_transform_handoff_skips_tx_type_metadata() {
 #[test]
 fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
     let result = ensure_with_test_payload_and_policy(
-        frame_facts(false, false, false, false),
+        frame_facts(false, false, false),
         1,
         TX_8X8,
         false,
@@ -1303,7 +1303,7 @@ fn dctonly_residual_lr_handoff_admits_chroma_non_dct_tx_set() {
 #[test]
 fn dctonly_residual_lr_handoff_admits_inter_chroma_non_dct_tx_set() {
     let result = ensure_with_test_payload_and_policy(
-        frame_facts(false, false, false, false),
+        frame_facts(false, false, false),
         2,
         TX_8X8,
         true,
@@ -1321,7 +1321,7 @@ fn dctonly_residual_lr_handoff_reads_cctx_metadata() {
         let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, cctx_type)]);
 
         let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, true),
+            frame_facts(false, false, true),
             1,
             TX_8X8,
             false,
@@ -1341,7 +1341,7 @@ fn dctonly_residual_lr_handoff_reads_inter_cctx_metadata() {
         let payload = encode_transform_symbols(&[(TileCdfSelector::CctxType, cctx_type)]);
 
         let metadata = ensure_with_test_payload_and_policy(
-            frame_facts(false, false, false, true),
+            frame_facts(false, false, true),
             1,
             TX_8X8,
             true,
@@ -1510,37 +1510,65 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[0] = 37;
         quant[1] = -21;
         quant[5] = 9;
+        let block = LumaCoeffBlock {
+            all_zero: false,
+            eob: 6,
+            quant,
+            intra_ist: None,
+            cctx_type: None,
+            plane_tx_type: DCT_DCT,
+            use_tcq: false,
+            lossless: false,
+        };
         let prediction = vec![301u16; 16];
-        reconstruct_general_intra_block_rect_with_prediction(
-            &quant,
+        let mut output = Vec::new();
+        reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+            &block,
             &prediction,
+            &mut output,
             80,
             PlaneId::Y,
             2,
             2,
-            0,
             false,
+            None,
+            None,
             BitDepth::Ten,
         )
-        .unwrap()
+        .unwrap();
+        output
     };
     let reconstruct_b = || {
         let mut quant = vec![0i32; 64];
         quant[0] = -5;
         quant[9] = 61;
+        let block = LumaCoeffBlock {
+            all_zero: false,
+            eob: 10,
+            quant,
+            intra_ist: None,
+            cctx_type: None,
+            plane_tx_type: DCT_DCT,
+            use_tcq: false,
+            lossless: false,
+        };
         let prediction = vec![144u16; 64];
-        reconstruct_general_intra_block_rect_with_prediction(
-            &quant,
+        let mut output = Vec::new();
+        reconstruct_general_intra_coeff_block_rect_with_prediction_into(
+            &block,
             &prediction,
+            &mut output,
             96,
             PlaneId::U,
             3,
             3,
-            0,
             false,
+            None,
+            None,
             BitDepth::Ten,
         )
-        .unwrap()
+        .unwrap();
+        output
     };
 
     let first_a = reconstruct_a();

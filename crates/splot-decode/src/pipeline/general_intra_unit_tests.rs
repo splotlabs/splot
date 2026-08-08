@@ -76,15 +76,14 @@ fn assert_rect_chroma_plan(
     );
 }
 
-fn assert_rect_luma_plan(
+fn assert_rect_luma_plan_for_parts(
     mode: Option<crate::bitstream::tile_payload::SupportedNonDcLumaMode>,
     directional_p_angle: Option<u16>,
-    block: BlockCtx,
     expected: RectLumaPlan,
     label: &str,
 ) {
     assert_eq!(
-        rect_luma_plan_for_parts(mode, directional_p_angle, false, block, false),
+        rect_luma_plan_for_parts(mode, directional_p_angle, false, false),
         Ok(expected),
         "{label}"
     );
@@ -94,17 +93,9 @@ fn rect_luma_plan_for_parts(
     nondc: Option<SupportedNonDcLumaMode>,
     directional_p_angle: Option<u16>,
     luma_is_dc: bool,
-    block_ctx: BlockCtx,
     use_tcq: bool,
 ) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
-    rect_luma_plan_for_parts_ext(
-        false,
-        nondc,
-        directional_p_angle,
-        luma_is_dc,
-        block_ctx,
-        use_tcq,
-    )
+    rect_luma_plan_for_parts_ext(false, nondc, directional_p_angle, luma_is_dc, use_tcq)
 }
 
 fn assert_rect_luma_mrl_plan(
@@ -355,37 +346,19 @@ fn plans_every_chroma_mode() {
     }
 }
 #[test]
-fn admits_rect_smooth_luma_cases() {
+fn classifies_smooth_luma_plans() {
     use crate::bitstream::tile_payload::SupportedNonDcLumaMode::{
         Smooth, SmoothHorizontal, SmoothVertical,
     };
 
-    for (label, mode, block) in [
-        (
-            "large vertical rect with left-only edge",
-            SmoothVertical,
-            ctx(0, 256, 32, FULL_SB_N4_LUMA),
-        ),
-        (
-            "small rect with above-left edges",
-            Smooth,
-            ctx(24, 200, 2, 4),
-        ),
-        (
-            "thin rect with above-left edges",
-            Smooth,
-            ctx(48, 150, 1, 4),
-        ),
-        (
-            "small horizontal rect with left edge",
-            SmoothHorizontal,
-            ctx(17, 220, 4, 1),
-        ),
+    for (label, mode) in [
+        ("smooth vertical", SmoothVertical),
+        ("smooth", Smooth),
+        ("smooth horizontal", SmoothHorizontal),
     ] {
-        assert_rect_luma_plan(
+        assert_rect_luma_plan_for_parts(
             Some(mode),
             None,
-            block,
             RectLumaPlan::Smooth {
                 mode,
                 use_tcq: false,
@@ -396,14 +369,11 @@ fn admits_rect_smooth_luma_cases() {
 }
 
 #[test]
-fn admits_small_rect_paeth_luma_regardless_of_neighbour_edges() {
-    let want = Ok(RectLumaPlan::Paeth { use_tcq: false });
-    for block in [ctx(18, 220, 4, 2), ctx(0, 0, 4, 2)] {
-        assert_eq!(
-            rect_luma_plan_for_parts_ext(true, None, None, false, block, false),
-            want
-        );
-    }
+fn classifies_paeth_luma_plan() {
+    assert_eq!(
+        rect_luma_plan_for_parts_ext(true, None, None, false, false),
+        Ok(RectLumaPlan::Paeth { use_tcq: false })
+    );
 }
 
 #[test]
@@ -655,82 +625,76 @@ fn admits_rect_luma_mrl_cases() {
 }
 
 #[test]
-fn admits_right_edge_rect_d45_as_one_sided_above_luma_without_above_right() {
-    let right_edge_block = ctx(8, 479, 1, 2);
+fn maps_4x8_d45_to_one_sided_left_luma() {
+    let modes = luma_modes(IntraYMode::D45_PRED_FOR_TEST);
 
-    let neighbours = right_edge_block.neighbours(PlaneId::Y);
-    assert!(neighbours.has_above());
-    assert_eq!(neighbours.num_above_right(), 0);
-
-    let plan = rect_luma_plan_for_parts(None, Some(45), false, right_edge_block, false);
-    assert!(matches!(
-        plan,
-        Ok(RectLumaPlan::OneSidedAbove {
-            p_angle: 45,
+    assert_eq!(
+        rect_luma_plan(&modes, ctx(8, 479, 1, 2), false, FULL_SB_N4_LUMA),
+        Ok(RectLumaPlan::OneSidedLeft {
+            p_angle: 225,
             use_tcq: false,
         })
-    ));
+    );
 }
 
 #[test]
-fn admits_rect_cardinal_luma_cases() {
-    for (label, p_angle, block, direction) in [
+fn plans_rect_cardinal_luma_from_modes_and_geometry() {
+    for (label, mode, block, direction) in [
         (
-            "large vertical with above edge",
-            90,
+            "128x64 vertical",
+            IntraYMode::V_PRED_FOR_TEST,
             ctx(FULL_SB_N4_LUMA, 256, 32, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Vertical,
         ),
         (
-            "vertical with left-only edge",
-            90,
+            "64x64 vertical",
+            IntraYMode::V_PRED_FOR_TEST,
             ctx(0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Vertical,
         ),
         (
-            "horizontal with above-only edge",
-            180,
+            "64x64 horizontal",
+            IntraYMode::H_PRED_FOR_TEST,
             ctx(80, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Horizontal,
         ),
         (
-            "small vertical with above edge",
-            90,
+            "4x8 vertical",
+            IntraYMode::V_PRED_FOR_TEST,
             ctx(24, 204, 1, 2),
             IntraCardinalDirection::Vertical,
         ),
         (
-            "top-left vertical without neighbours",
-            90,
+            "16x64 vertical",
+            IntraYMode::V_PRED_FOR_TEST,
             ctx(0, 0, 4, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Vertical,
         ),
         (
-            "top-left horizontal without neighbours",
-            180,
+            "64x16 horizontal",
+            IntraYMode::H_PRED_FOR_TEST,
             ctx(0, 0, FULL_SB_N4_LUMA, 4),
             IntraCardinalDirection::Horizontal,
         ),
     ] {
-        assert_rect_luma_plan(
-            None,
-            Some(p_angle),
-            block,
-            RectLumaPlan::Cardinal {
+        assert_eq!(
+            rect_luma_plan(&luma_modes(mode), block, false, FULL_SB_N4_LUMA),
+            Ok(RectLumaPlan::Cardinal {
                 direction,
                 use_tcq: false,
-            },
-            label,
+            }),
+            "{label}"
         );
     }
 }
 
 #[test]
-fn admits_rect_angle_luma_cases() {
-    for (label, p_angle, block, expected) in [
+fn plans_rect_directional_luma_from_modes_and_geometry() {
+    for (label, mode, angle_delta, block, expected) in [
         (
-            "small rect d67 one-sided above",
-            76,
+            "8x16 d67 +3",
+            IntraYMode::D67_PRED_FOR_TEST,
+            3,
             ctx(28, 216, 2, 4),
             RectLumaPlan::OneSidedAbove {
                 p_angle: 76,
@@ -738,8 +702,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "small first-row hpred one-sided left",
-            186,
+            "32x16 horizontal +2",
+            IntraYMode::H_PRED_FOR_TEST,
+            2,
             ctx(0, 264, 8, 4),
             RectLumaPlan::OneSidedLeft {
                 p_angle: 186,
@@ -747,8 +712,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "horizontal angle delta with above-only edge",
-            183,
+            "64x16 horizontal +1",
+            IntraYMode::H_PRED_FOR_TEST,
+            1,
             ctx(80, 0, FULL_SB_N4_LUMA, 4),
             RectLumaPlan::OneSidedLeft {
                 p_angle: 183,
@@ -756,8 +722,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "first-column d203 uses its above edge",
-            203,
+            "16x8 d203",
+            IntraYMode::D203_PRED_FOR_TEST,
+            0,
             ctx(46, 0, 4, 2),
             RectLumaPlan::OneSidedLeft {
                 p_angle: 203,
@@ -765,8 +732,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "small rect middle",
-            151,
+            "4x8 d157 -2",
+            IntraYMode::D157_PRED_FOR_TEST,
+            -2,
             ctx(26, 204, 1, 2),
             RectLumaPlan::Middle {
                 p_angle: 151,
@@ -774,8 +742,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "rect d67 one-sided above",
-            61,
+            "64x32 d67 -2",
+            IntraYMode::D67_PRED_FOR_TEST,
+            -2,
             ctx(8, 336, FULL_SB_N4_LUMA, 8),
             RectLumaPlan::OneSidedAbove {
                 p_angle: 61,
@@ -783,8 +752,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "rect d135 middle",
-            126,
+            "32x64 d135 -3",
+            IntraYMode::D135_PRED_FOR_TEST,
+            -3,
             ctx(FULL_SB_N4_LUMA, 320, 8, FULL_SB_N4_LUMA),
             RectLumaPlan::Middle {
                 p_angle: 126,
@@ -792,8 +762,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "first-column vpred angle-delta middle uses above edge",
-            93,
+            "32x16 vertical +1",
+            IntraYMode::V_PRED_FOR_TEST,
+            1,
             ctx(4, 0, 8, 4),
             RectLumaPlan::Middle {
                 p_angle: 93,
@@ -801,8 +772,9 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
         (
-            "top-row d157 middle uses left edge",
-            157,
+            "8x4 d157",
+            IntraYMode::D157_PRED_FOR_TEST,
+            0,
             ctx(0, 4, 2, 1),
             RectLumaPlan::Middle {
                 p_angle: 157,
@@ -810,13 +782,21 @@ fn admits_rect_angle_luma_cases() {
             },
         ),
     ] {
-        assert_rect_luma_plan(None, Some(p_angle), block, expected, label);
+        assert_eq!(
+            rect_luma_plan(
+                &luma_modes_with_angle(mode, angle_delta),
+                block,
+                false,
+                FULL_SB_N4_LUMA,
+            ),
+            Ok(expected),
+            "{label}"
+        );
     }
 }
 
 #[test]
-fn admits_rect_directional_luma_without_real_edges() {
-    let block = ctx(0, 0, 2, 1);
+fn classifies_rect_directional_luma_angles() {
     for (p_angle, expected) in [
         (
             45,
@@ -841,7 +821,7 @@ fn admits_rect_directional_luma_without_real_edges() {
         ),
     ] {
         assert_eq!(
-            rect_luma_plan_for_parts(None, Some(p_angle), false, block, false),
+            rect_luma_plan_for_parts(None, Some(p_angle), false, false),
             Ok(expected),
         );
     }

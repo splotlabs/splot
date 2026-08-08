@@ -216,7 +216,6 @@ impl IntrabcReconCommand {
                 prediction.luma.target,
                 prediction.morph_avail,
                 mv,
-                self.tile_offset,
             )?;
         }
         if let Some(chroma) = prediction.chroma {

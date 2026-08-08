@@ -78,12 +78,8 @@ pub(crate) fn record_inter_deblock_geometry(
     }
     let Some(residual) = residual else {
         let tx_size = super::residual::max_tx_size(frontier.b_size.index(), tile_offset)?;
-        let tx_w4 =
-            super::residual::tx_size_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)?
-                / MI_SIZE;
-        let tx_h4 =
-            super::residual::tx_size_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)?
-                / MI_SIZE;
+        let tx_w4 = super::residual::tx_size_dimension(&TX_WIDTH, tx_size, tile_offset)? / MI_SIZE;
+        let tx_h4 = super::residual::tx_size_dimension(&TX_HEIGHT, tx_size, tile_offset)? / MI_SIZE;
         for row4 in (0..n4h).step_by(tx_h4.max(1)) {
             for col4 in (0..n4w).step_by(tx_w4.max(1)) {
                 deblock_blocks.push(crate::filters::deblock::DeblockBlock {
@@ -228,10 +224,8 @@ fn record_skipped_chroma_deblock_geometry(
     let height = plane_size
         .height_samples()
         .map_err(|_| super::residual::residual_geometry_error(tile_offset))?;
-    let tx_width =
-        super::residual::tx_size_dimension("Tx_Width", &TX_WIDTH, chroma_tx, tile_offset)?;
-    let tx_height =
-        super::residual::tx_size_dimension("Tx_Height", &TX_HEIGHT, chroma_tx, tile_offset)?;
+    let tx_width = super::residual::tx_size_dimension(&TX_WIDTH, chroma_tx, tile_offset)?;
+    let tx_height = super::residual::tx_size_dimension(&TX_HEIGHT, chroma_tx, tile_offset)?;
     let base_x = (chroma_ref_col >> usize::from(sub_x)) * MI_SIZE;
     let base_y = (chroma_ref_row >> usize::from(sub_y)) * MI_SIZE;
     let subsampling = (u32::from(sub_x), u32::from(sub_y));

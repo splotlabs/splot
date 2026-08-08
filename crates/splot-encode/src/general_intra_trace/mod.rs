@@ -10,18 +10,12 @@
 //! transform contexts. The composed traces are driven through the shared § 8.2
 //! coder by `block_symbol_trace::roundtrip_block_symbol_trace`.
 
-#![allow(dead_code)]
-
 mod chroma;
 mod coded_dc;
 mod multi_coeff;
 mod skip;
 
-#[allow(unused_imports)]
-pub(crate) use skip::{
-    compose_general_intra_dc_skip_block_trace, emit_minimal_intra_skip_temporal_unit,
-    emit_minimal_intra_skip_temporal_unit_with_base_q_idx, encode_general_intra_dc_skip_tile_data,
-};
+pub(crate) use skip::emit_minimal_intra_skip_temporal_unit_with_base_q_idx;
 
 pub use chroma::{
     emit_minimal_intra_all_planes_coded_ivf, emit_minimal_intra_coded_chroma_ivf,

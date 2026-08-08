@@ -370,9 +370,9 @@ impl FrameUnitSegmenter {
         if Self::starts_new_unit(&state.unit, role, obu.header.obu_type) {
             return true;
         }
-        let Some(frame) = state.unit.coded_frame else {
+        if state.unit.coded_frame.is_none() {
             return true;
-        };
+        }
         match role {
             SegRole::TileFrame {
                 is_first_tile_group,
@@ -380,7 +380,6 @@ impl FrameUnitSegmenter {
             } => is_first_tile_group.is_none(), // unreadable delimiter -> Ambiguous
             SegRole::TipFrame { .. } | SegRole::BridgeFrame { .. } => {
                 debug_assert!(is_no_delimiter_frame_role(role));
-                let _ = frame;
                 true
             }
             _ => false,

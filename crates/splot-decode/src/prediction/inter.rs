@@ -1030,8 +1030,6 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     ref_chroma_ac_deltas: Vec<[i32; 2]>,
     pub(crate) ref_is_inter: Vec<bool>,
     pub(crate) ref_long_term_id: Vec<Option<u32>>,
-    #[allow(dead_code)]
-    pub(crate) ref_adapted: Vec<bool>,
     pub(crate) ref_num_total_refs: Vec<u32>,
     pub(crate) saved_global_motion_order_hints:
         Vec<splot_core::headers::frame::SavedGlobalMotionOrderHints>,
@@ -1067,7 +1065,6 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_chroma_ac_deltas: Vec::new(),
             ref_is_inter: Vec::new(),
             ref_long_term_id: Vec::new(),
-            ref_adapted: Vec::new(),
             ref_num_total_refs: Vec::new(),
             saved_global_motion_order_hints: Vec::new(),
             saved_global_motion_params: Vec::new(),
@@ -1133,7 +1130,6 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_chroma_ac_deltas,
             ref_is_inter: metadata.ref_is_inter,
             ref_long_term_id: metadata.ref_long_term_id,
-            ref_adapted: metadata.ref_adapted,
             ref_num_total_refs: metadata.ref_num_total_refs,
             saved_global_motion_order_hints: metadata.saved_global_motion_order_hints,
             saved_global_motion_params: metadata.saved_global_motion_params,
@@ -1163,7 +1159,6 @@ impl<T: ReconSample> Drop for InterReferenceState<T> {
             ref_delta_q_v_ac: std::mem::take(&mut self.ref_delta_q_v_ac),
             ref_is_inter: std::mem::take(&mut self.ref_is_inter),
             ref_long_term_id: std::mem::take(&mut self.ref_long_term_id),
-            ref_adapted: std::mem::take(&mut self.ref_adapted),
             ref_num_total_refs: std::mem::take(&mut self.ref_num_total_refs),
             saved_global_motion_order_hints: std::mem::take(
                 &mut self.saved_global_motion_order_hints,

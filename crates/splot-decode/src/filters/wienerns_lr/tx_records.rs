@@ -48,13 +48,6 @@ struct Block4x4Extent {
     rows: usize,
 }
 
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "crate-visible handoff record crosses transform-record module boundary"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrTxSkipTransformRecord {
     pub(crate) row: usize,

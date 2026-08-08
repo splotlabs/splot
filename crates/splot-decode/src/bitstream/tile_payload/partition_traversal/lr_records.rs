@@ -9,16 +9,6 @@ use super::{
     TilePartitionTraversalError, checked_add, checked_mul, checked_mul_shifted, checked_sub,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct TileLoopRestorationRootFrontier {
-    pub(super) symbol_count_after: u64,
-    pub(super) consumed_bits_after: u64,
-    pub(super) lr_units_consumed: usize,
-    pub(super) active_wiener_ns_units: usize,
-    pub(super) selections: Vec<WienerNsLrUnitSelection>,
-    pub(super) active_source_blocks: Vec<WienerNsLrSourceBlock>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LrUnitRestorationType {
     None,
@@ -30,14 +20,6 @@ impl LrUnitRestorationType {
     pub(super) const fn is_active(self) -> bool {
         !matches!(self, Self::None)
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct WienerNsLrUnitSelection {
-    pub(crate) plane: usize,
-    pub(crate) unit_row: usize,
-    pub(crate) unit_col: usize,
-    pub(crate) restoration_type: LrUnitRestorationType,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,90 +100,19 @@ pub(crate) struct WienerNsLrUnitFilter {
     pub(crate) coeffs: [i16; WIENER_NS_CHROMA_COEFFS],
 }
 
-impl TileLoopRestorationRootFrontier {
-    #[must_use]
-    pub(crate) const fn symbol_count_after(&self) -> u64 {
-        self.symbol_count_after
-    }
-
-    #[must_use]
-    pub(crate) const fn consumed_bits_after(&self) -> u64 {
-        self.consumed_bits_after
-    }
-
-    #[must_use]
-    pub(crate) const fn lr_units_consumed(&self) -> usize {
-        self.lr_units_consumed
-    }
-
-    #[must_use]
-    pub(crate) const fn active_wiener_ns_units(&self) -> usize {
-        self.active_wiener_ns_units
-    }
-
-    #[must_use]
-    pub(crate) fn selections(&self) -> &[WienerNsLrUnitSelection] {
-        &self.selections
-    }
-
-    #[must_use]
-    pub(crate) fn active_source_blocks(&self) -> &[WienerNsLrSourceBlock] {
-        &self.active_source_blocks
-    }
-
-    #[must_use]
-    pub(crate) const fn all_lr_units_inactive(&self) -> bool {
-        self.active_wiener_ns_units == 0
-    }
-}
-
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(super) struct WienerNsLrUnitActivity {
-    pub(super) units_consumed: usize,
-    pub(super) active_units: usize,
-    pub(super) selections: Vec<WienerNsLrUnitSelection>,
     pub(super) active_source_blocks: Vec<WienerNsLrSourceBlock>,
     pub(super) unit_filters: Vec<WienerNsLrUnitFilter>,
     pub(super) unit_filter_state: WienerNsUnitFilterState,
-    retain_source_blocks: bool,
 }
 
 impl WienerNsLrUnitActivity {
-    pub(super) fn retaining_source_blocks() -> Self {
-        Self {
-            retain_source_blocks: true,
-            ..Self::default()
-        }
-    }
-
-    pub(super) fn record(
-        &mut self,
-        plane: usize,
-        unit_row: usize,
-        unit_col: usize,
-        restoration_type: LrUnitRestorationType,
-    ) -> Result<(), TilePartitionTraversalError> {
-        self.units_consumed = checked_add("lr_units_consumed", self.units_consumed, 1)?;
-        if restoration_type.is_active() {
-            self.active_units = checked_add("lr_active_wiener_ns_units", self.active_units, 1)?;
-        }
-        self.selections.push(WienerNsLrUnitSelection {
-            plane,
-            unit_row,
-            unit_col,
-            restoration_type,
-        });
-        Ok(())
-    }
-
     fn record_source_block(
         &mut self,
         block: WienerNsLrSourceBlock,
         limits: DecodeLimits,
     ) -> Result<(), TilePartitionTraversalError> {
-        if !self.retain_source_blocks {
-            return Ok(());
-        }
         if let Some(last) = self.active_source_blocks.last_mut()
             && let Some(width) = last.merged_width_with(&block)
         {
@@ -223,9 +134,6 @@ impl WienerNsLrUnitActivity {
         filter: WienerNsLrUnitFilter,
         limits: DecodeLimits,
     ) -> Result<(), TilePartitionTraversalError> {
-        if !self.retain_source_blocks {
-            return Ok(());
-        }
         let next_len = checked_add("lr_unit_filters", self.unit_filters.len(), 1)?;
         limits.ensure_allocation_len(DecodeLimitName::MaxLumaSamplesPerFrame, next_len as u64)?;
         self.unit_filters.push(filter);
@@ -252,9 +160,6 @@ pub(super) fn record_active_wiener_ns_source_blocks_for_unit(
     limits: DecodeLimits,
     lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<(), TilePartitionTraversalError> {
-    if !lr_activity.retain_source_blocks {
-        return Ok(());
-    }
     let geometry = lr_unit_geometry(input)?;
     let mut row_start = None;
     let mut row_end = input.tile_bounds.mi_row_start;

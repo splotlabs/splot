@@ -37,14 +37,6 @@ pub(crate) const FIRST_RESERVED_LEVEL_IDX: u8 = 22;
 /// Last reserved `seq_level_idx` value (Annex A.4 Table A.7, mirror line 321:
 /// "22-30 Reserved").
 pub(crate) const LAST_RESERVED_LEVEL_IDX: u8 = 30;
-/// The "Maximum parameters" `seq_level_idx` (Annex A.4 Table A.7, mirror line 323:
-/// "31 Maximum parameters"). When `seq_level_idx == 31` there are no level-based
-/// constraints (Annex A.4, mirror lines 659-660), so all level-limit checks skip
-/// (enforced by [`level_limits`] returning `None`). Used by the table test; named for
-/// the spec value it documents.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) const MAX_PARAMETERS_LEVEL_IDX: u8 = 31;
-
 /// The minimum conformant `FrameWidth` / `FrameHeight` (Annex A.4 static
 /// conformance block, mirror lines 628-629: "FrameWidth is greater than or equal to
 /// 16" and "FrameHeight is greater than or equal to 16").
@@ -410,7 +402,11 @@ mod tests {
                 "reserved level {idx} must map to None"
             );
         }
-        assert_eq!(level_limits(MAX_PARAMETERS_LEVEL_IDX), None);
+        assert_eq!(
+            level_limits(LAST_RESERVED_LEVEL_IDX + 1),
+            None,
+            "maximum-parameters level must map to None"
+        );
         assert_eq!(level_limits(u8::MAX), None);
     }
 

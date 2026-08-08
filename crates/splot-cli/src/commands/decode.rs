@@ -116,7 +116,7 @@ fn parse_y4m_frame_rate(value: &str) -> core::result::Result<Y4mFrameRate, Strin
 enum DecodeOutputTarget<'a> {
     Y4m { path: &'a Path },
     Raw { path: &'a Path },
-    Hash { path: Option<&'a Path> },
+    Hash,
     Null,
 }
 
@@ -125,7 +125,7 @@ impl DecodeOutputTarget<'_> {
         match self {
             Self::Y4m { .. } => DecodeOutputFormat::Y4m,
             Self::Raw { .. } => DecodeOutputFormat::Raw,
-            Self::Hash { .. } => DecodeOutputFormat::Hash,
+            Self::Hash => DecodeOutputFormat::Hash,
             Self::Null => DecodeOutputFormat::Null,
         }
     }
@@ -140,7 +140,7 @@ impl DecodeArgs {
             (DecodeOutputFormat::Y4m, Some(path)) => Some(DecodeOutputTarget::Y4m { path }),
             (DecodeOutputFormat::Raw, Some(path)) => Some(DecodeOutputTarget::Raw { path }),
             (DecodeOutputFormat::Y4m | DecodeOutputFormat::Raw, None) => None,
-            (DecodeOutputFormat::Hash, path) => Some(DecodeOutputTarget::Hash { path }),
+            (DecodeOutputFormat::Hash, _) => Some(DecodeOutputTarget::Hash),
             (DecodeOutputFormat::Null, _) => Some(DecodeOutputTarget::Null),
         }
     }
@@ -508,8 +508,7 @@ pub fn run(args: &DecodeArgs) -> Result<ExitCode> {
                         Err(error) => decode_report_from_error(&error)?,
                     }
                 }
-                DecodeOutputTarget::Hash { path } => {
-                    let _ = path;
+                DecodeOutputTarget::Hash => {
                     let repeats = decode_profile_repeats();
                     let mut decoded = context.decode_hash_report_bytes(&bytes, options);
                     for _ in 1..repeats {

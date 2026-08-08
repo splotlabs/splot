@@ -121,7 +121,7 @@ fn deblock_workspace() -> CurrentFrameWorkspace<u8> {
 }
 
 #[test]
-fn predeblocked_one_row_filter_tail_matches_the_combined_path() {
+fn predeblocked_filter_tail_matches_the_combined_path() {
     let mut core = switchable_core();
     let params =
         splot_core::headers::frame::DeblockingFilterParams::new([true; 4], [false; 4], [0; 4]);
@@ -150,32 +150,23 @@ fn predeblocked_one_row_filter_tail_matches_the_combined_path() {
         .unwrap();
 
     let mut staged_workspace = deblock_workspace();
-    crate::filters::deblock::deblock_one_row_columns(
-        &mut staged_workspace,
+    let chroma_records = crate::filters::deblock::ChromaDeblockRecords::new();
+    let mut deblock = crate::filters::deblock::FrameDeblock::prepare(
         &records,
-        [&[], &[]],
+        &chroma_records,
         8,
         16,
         params,
         None,
         false,
         crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        BitDepth::Eight,
     )
+    .unwrap()
     .unwrap();
-    crate::filters::deblock::deblock_one_row_rows(
-        &mut staged_workspace,
-        &records,
-        [&[], &[]],
-        8,
-        16,
-        params,
-        None,
-        false,
-        crate::filters::deblock::DeblockQuantDeltas::ZERO,
-        BitDepth::Eight,
-    )
-    .unwrap();
+    deblock
+        .advance(&mut staged_workspace, 8, BitDepth::Eight)
+        .unwrap();
+    assert!(deblock.finish().is_none());
     let mut staged =
         WienerNsLrReconSink::for_final_filtering(staged_workspace, 64, 32, BitDepth::Eight);
     staged.filter_records.deblock_blocks = records;

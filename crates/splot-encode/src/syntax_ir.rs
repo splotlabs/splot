@@ -182,10 +182,6 @@ impl PlanSymbolId {
     pub(crate) const fn new(symbol_id: u16) -> Self {
         Self(symbol_id)
     }
-
-    pub(crate) const fn get(self) -> u16 {
-        self.0
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -386,10 +382,6 @@ impl SuperBlockPlan {
         Ok(Self { index, blocks })
     }
 
-    pub(crate) const fn index(&self) -> SuperBlockIndex {
-        self.index
-    }
-
     pub(crate) fn blocks(&self) -> &[BlockDecision] {
         &self.blocks
     }
@@ -438,14 +430,6 @@ impl BlockDecision {
         self.index
     }
 
-    pub(crate) const fn prediction(&self) -> PredictionDecision {
-        self.prediction
-    }
-
-    pub(crate) const fn transform(&self) -> TransformDecision {
-        self.transform
-    }
-
     pub(crate) const fn coefficients(&self) -> &QuantizedCoefficients {
         &self.coefficients
     }
@@ -478,10 +462,6 @@ impl TransformDecision {
 
     pub(crate) const fn block_size(self) -> PlaneSize {
         self.block_size
-    }
-
-    pub(crate) const fn transform(self) -> PlanSymbolId {
-        self.transform
     }
 }
 
@@ -552,16 +532,6 @@ impl QuantizedCoefficients {
 pub(crate) struct QuantizedCoefficient {
     index: CoefficientIndex,
     value: i32,
-}
-
-impl QuantizedCoefficient {
-    pub(crate) const fn index(self) -> CoefficientIndex {
-        self.index
-    }
-
-    pub(crate) const fn value(self) -> i32 {
-        self.value
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

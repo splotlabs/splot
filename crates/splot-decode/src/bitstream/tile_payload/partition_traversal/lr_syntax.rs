@@ -4,17 +4,14 @@
 //! Loop-restoration unit symbol reads for the partition walk.
 
 use super::lr_records::{
-    LrSourceBlockDerivation, LrUnitRestorationType, TileLoopRestorationRootFrontier,
-    WienerNsLrUnitActivity, WienerNsLrUnitFilter, ceil_unit_index, count_units_in_frame,
-    record_active_wiener_ns_source_blocks_for_unit,
+    LrSourceBlockDerivation, LrUnitRestorationType, WienerNsLrUnitActivity, WienerNsLrUnitFilter,
+    ceil_unit_index, count_units_in_frame, record_active_wiener_ns_source_blocks_for_unit,
 };
 use super::{
-    DecodeLimitName, DecodeLimits, SymbolDecoder, TilePartitionBounds, TilePartitionCall,
-    TilePartitionFrameFacts, TilePartitionLoopRestorationPlaneTool,
-    TilePartitionLoopRestorationState, TilePartitionTraversalError, TilePartitionTraversalInput,
-    call_in_frame, checked_add, checked_mul, checked_mul_shifted, checked_shl, checked_sub,
-    ensure_supported_traversal_frame, plane_range_for_tree_type, plane_subsampling,
-    root_partition_call, symbol_decoder_for_work_unit,
+    DecodeLimits, SymbolDecoder, TilePartitionBounds, TilePartitionCall, TilePartitionFrameFacts,
+    TilePartitionLoopRestorationPlaneTool, TilePartitionLoopRestorationState,
+    TilePartitionTraversalError, checked_add, checked_mul, checked_mul_shifted, checked_shl,
+    checked_sub, plane_range_for_tree_type, plane_subsampling,
 };
 
 pub(super) const MI_SIZE: usize = 4;
@@ -96,45 +93,6 @@ impl Default for WienerNsUnitFilterState {
             bank,
         }
     }
-}
-
-pub(crate) fn consume_tile_loop_restoration_root_frontier(
-    input: TilePartitionTraversalInput<'_, '_, '_>,
-) -> Result<TileLoopRestorationRootFrontier, TilePartitionTraversalError> {
-    let TilePartitionTraversalInput {
-        work_unit,
-        frame,
-        context: _,
-        limits,
-    } = input;
-    ensure_supported_traversal_frame(frame, true)?;
-
-    let mut cdfs = work_unit.cdf().tile_cdfs().clone();
-    let mut lr_activity = WienerNsLrUnitActivity::retaining_source_blocks();
-    let mut symbols = symbol_decoder_for_work_unit(work_unit)?;
-    let tile_bounds = TilePartitionBounds::from_work_unit(work_unit);
-    let root = root_partition_call(work_unit, frame);
-    limits.ensure(DecodeLimitName::MaxTilePartitionSteps, 1)?;
-    if call_in_frame(frame, root) {
-        read_loop_restoration_for_call(
-            frame,
-            root,
-            tile_bounds,
-            &mut cdfs,
-            &mut symbols,
-            &mut lr_activity,
-            limits,
-        )?;
-    }
-    *work_unit.cdf_mut().tile_cdfs_mut() = cdfs;
-    Ok(TileLoopRestorationRootFrontier {
-        symbol_count_after: symbols.symbol_count(),
-        consumed_bits_after: symbols.consumed_bits().get(),
-        lr_units_consumed: lr_activity.units_consumed,
-        active_wiener_ns_units: lr_activity.active_units,
-        selections: lr_activity.selections,
-        active_source_blocks: lr_activity.active_source_blocks,
-    })
 }
 
 pub(super) fn read_loop_restoration_for_call(
@@ -267,10 +225,10 @@ fn read_lr_units_for_plane(
                     limits,
                 )?,
                 TilePartitionLoopRestorationPlaneTool::PcWiener => {
-                    read_pc_wiener_lr_unit(plane, unit_row, unit_col, cdfs, symbols, lr_activity)?
+                    read_pc_wiener_lr_unit(cdfs, symbols)?
                 }
                 TilePartitionLoopRestorationPlaneTool::Switchable => {
-                    read_switchable_lr_unit(plane, unit_row, unit_col, cdfs, symbols, lr_activity)?
+                    read_switchable_lr_unit(plane, cdfs, symbols)?
                 }
             };
             if tool == TilePartitionLoopRestorationPlaneTool::Switchable
@@ -320,12 +278,8 @@ fn read_lr_units_for_plane(
 }
 
 fn read_pc_wiener_lr_unit(
-    plane: usize,
-    unit_row: usize,
-    unit_col: usize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<LrUnitRestorationType, TilePartitionTraversalError> {
     let use_pc_wiener = cdfs
         .with_row_mut(super::cdf::TileCdfSelector::UsePcWiener, |row| {
@@ -338,17 +292,13 @@ fn read_pc_wiener_lr_unit(
     } else {
         LrUnitRestorationType::None
     };
-    lr_activity.record(plane, unit_row, unit_col, restoration_type)?;
     Ok(restoration_type)
 }
 
 fn read_switchable_lr_unit(
     plane: usize,
-    unit_row: usize,
-    unit_col: usize,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    lr_activity: &mut WienerNsLrUnitActivity,
 ) -> Result<LrUnitRestorationType, TilePartitionTraversalError> {
     for (tool, restoration_type) in [LrUnitRestorationType::None, LrUnitRestorationType::PcWiener]
         .into_iter()
@@ -362,13 +312,10 @@ fn read_switchable_lr_unit(
             .get()
             != 0;
         if found {
-            lr_activity.record(plane, unit_row, unit_col, restoration_type)?;
             return Ok(restoration_type);
         }
     }
-    let restoration_type = LrUnitRestorationType::WienerNonsep;
-    lr_activity.record(plane, unit_row, unit_col, restoration_type)?;
-    Ok(restoration_type)
+    Ok(LrUnitRestorationType::WienerNonsep)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -393,7 +340,6 @@ fn read_wiener_ns_lr_unit(
     } else {
         LrUnitRestorationType::None
     };
-    lr_activity.record(plane, unit_row, unit_col, restoration_type)?;
     if use_wiener_ns && !frame_filters_on {
         read_wiener_ns_unit_filter_for_unit(
             plane,

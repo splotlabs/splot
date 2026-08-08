@@ -7,20 +7,11 @@ use std::collections::TryReserveError;
 
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
-use splot_core::tables::conversion::{
-    ADJUSTED_TX_SIZE, TX_HEIGHT, TX_HEIGHT_LOG2, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
-    TX_WIDTH_LOG2,
-};
 
-use super::cdf::block_context::{txb_skip_ctx_luma, v_txb_skip_ctx};
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{EobPtSize, TileCdfSelector, TileCdfSubset};
-use super::coeff_state::{
-    CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError, TransformCoeffBlockState,
-};
+use super::coeff_state::{CoeffContextUpdate, TileCoeffContextState, TileCoeffStateError};
 
-const LUMA_PLANE: usize = 0;
-const V_PLANE: usize = 2;
 const COEFFS_PER_4X4: usize = 4;
 const MAX_ADJUSTED_COEFF_EXTENT: usize = 32;
 const MIN_EOB_TX_LOG2: usize = 2;
@@ -31,31 +22,13 @@ const MAX_NONZERO_EOB_PT: usize = 11;
 const EOB_GROUP_START: [usize; MAX_NONZERO_EOB_PT + 1] =
     [0, 1, 2, 3, 5, 9, 17, 33, 65, 129, 257, 513];
 const EOB_OFFSET_BITS: [usize; MAX_NONZERO_EOB_PT + 1] = [0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-macro_rules! coeff_branch_map_adapter {
-    ($vis:vis fn $name:ident($input_ty:ty) -> $result_ty:ty, $nonzero:ident, $mapped:expr, $callee:path,) => {
-        $vis fn $name(
-            state: &mut TileCoeffContextState,
-            cdfs: &mut TileCdfSubset,
-            symbols: &mut SymbolDecoder<'_>,
-            input: $input_ty,
-        ) -> $result_ty {
-            let input = input.map_nonzero(|$nonzero| $mapped);
-            $callee(state, cdfs, symbols, input)
-        }
-    };
-}
 pub(crate) mod base_level_pass;
 pub(crate) mod base_symbol;
 mod branch;
 pub(crate) use branch::{NonZeroCoeffBlockStartInput, read_nonzero_coeff_block_start};
 pub(crate) mod fsc_level_pass;
 pub(crate) mod fsc_quant_pass;
-#[cfg(test)]
-mod fsc_quant_pass_tests;
 pub(crate) mod fsc_sign_pass;
-#[cfg(test)]
-mod fsc_sign_pass_tests;
-pub(crate) mod level_state;
 pub(crate) mod max_level;
 pub(crate) mod ordinary_pass;
 pub(crate) mod quant_pass;
@@ -63,27 +36,6 @@ pub(crate) mod quant_state;
 pub(crate) mod read_quant;
 mod scan_walk;
 pub(crate) mod sign_symbol;
-pub(crate) mod use_fsc_branch;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct LumaAllZeroContextInput {
-    pub(crate) x4: usize,
-    pub(crate) y4: usize,
-    pub(crate) w4: usize,
-    pub(crate) h4: usize,
-    pub(crate) tx_fills_block: bool,
-    pub(crate) fsc_active: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct VAllZeroContextInput {
-    pub(crate) x4: usize,
-    pub(crate) y4: usize,
-    pub(crate) w4: usize,
-    pub(crate) h4: usize,
-    pub(crate) chroma_block_larger_than_tx: bool,
-    pub(crate) eob_u_nonzero: bool,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllZeroCoeffBlockInput {
@@ -93,54 +45,6 @@ pub(crate) struct AllZeroCoeffBlockInput {
     pub(crate) w4: usize,
     pub(crate) h4: usize,
 }
-
-pub(crate) enum CoeffBranchInput<AllZero, NonZero> {
-    AllZero(AllZero),
-    NonZero(NonZero),
-}
-
-impl<AllZero, NonZero> CoeffBranchInput<AllZero, NonZero> {
-    pub(crate) fn map_nonzero<NextNonZero>(
-        self,
-        map: impl FnOnce(NonZero) -> NextNonZero,
-    ) -> CoeffBranchInput<AllZero, NextNonZero> {
-        match self {
-            Self::AllZero(input) => CoeffBranchInput::AllZero(input),
-            Self::NonZero(input) => CoeffBranchInput::NonZero(map(input)),
-        }
-    }
-
-    pub(crate) fn try_map_nonzero<NextNonZero, E>(
-        self,
-        map: impl FnOnce(NonZero) -> Result<NextNonZero, E>,
-    ) -> Result<CoeffBranchInput<AllZero, NextNonZero>, E> {
-        match self {
-            Self::AllZero(input) => Ok(CoeffBranchInput::AllZero(input)),
-            Self::NonZero(input) => map(input).map(CoeffBranchInput::NonZero),
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct CoeffTxSizeTables<'a> {
-    pub(crate) adjusted_tx_size: &'a [i32],
-    pub(crate) tx_size_sqr: &'a [i32],
-    pub(crate) tx_size_sqr_up: &'a [i32],
-    pub(crate) tx_width: &'a [i32],
-    pub(crate) tx_height: &'a [i32],
-    pub(crate) tx_width_log2: &'a [i32],
-    pub(crate) tx_height_log2: &'a [i32],
-}
-
-pub(crate) const DEFAULT_TX_SIZE_TABLES: CoeffTxSizeTables<'static> = CoeffTxSizeTables {
-    adjusted_tx_size: &ADJUSTED_TX_SIZE,
-    tx_size_sqr: &TX_SIZE_SQR,
-    tx_size_sqr_up: &TX_SIZE_SQR_UP,
-    tx_width: &TX_WIDTH,
-    tx_height: &TX_HEIGHT,
-    tx_width_log2: &TX_WIDTH_LOG2,
-    tx_height_log2: &TX_HEIGHT_LOG2,
-};
 
 pub(crate) fn commit_nonzero_coeff_context(
     state: &mut TileCoeffContextState,
@@ -182,44 +86,12 @@ pub(crate) struct NonZeroCoeffEobContextInput {
     pub(crate) coeff_cdf_q_ctx: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct AllZeroCoeffBlock {
-    eob: usize,
-    cul_level: u8,
-    dc_category: u8,
-    block: TransformCoeffBlockState,
-}
-
-impl AllZeroCoeffBlock {
-    #[must_use]
-    pub(crate) const fn eob(&self) -> usize {
-        self.eob
-    }
-    #[must_use]
-    pub(crate) const fn cul_level(&self) -> u8 {
-        self.cul_level
-    }
-    #[must_use]
-    pub(crate) const fn dc_category(&self) -> u8 {
-        self.dc_category
-    }
-    #[must_use]
-    pub(crate) const fn block(&self) -> &TransformCoeffBlockState {
-        &self.block
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEob {
-    eob_pt: usize,
     eob: usize,
 }
 
 impl NonZeroCoeffEob {
-    #[must_use]
-    pub(crate) const fn eob_pt(self) -> usize {
-        self.eob_pt
-    }
     #[must_use]
     pub(crate) const fn eob(self) -> usize {
         self.eob
@@ -229,33 +101,12 @@ impl NonZeroCoeffEob {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct NonZeroCoeffEobSymbolRead {
     eob: NonZeroCoeffEob,
-    eob_pt_symbol: u8,
-    eob_pt_extra: u32,
-    eob_extra: bool,
-    eob_extra_bits: u32,
 }
 
 impl NonZeroCoeffEobSymbolRead {
     #[must_use]
     pub(crate) const fn eob(self) -> NonZeroCoeffEob {
         self.eob
-    }
-    #[must_use]
-    pub(crate) const fn eob_pt_symbol(self) -> u8 {
-        self.eob_pt_symbol
-    }
-    #[must_use]
-    pub(crate) const fn eob_pt_extra(self) -> u32 {
-        self.eob_pt_extra
-    }
-    #[must_use]
-    pub(crate) const fn eob_extra(self) -> bool {
-        self.eob_extra
-    }
-
-    #[must_use]
-    pub(crate) const fn eob_extra_bits(self) -> u32 {
-        self.eob_extra_bits
     }
 }
 
@@ -317,78 +168,6 @@ pub(crate) enum CoeffLoopContextError {
     ScanWalkAllocation(#[from] TryReserveError),
 }
 
-pub(crate) fn luma_all_zero_context(
-    state: &TileCoeffContextState,
-    input: LumaAllZeroContextInput,
-) -> Result<usize, CoeffLoopContextError> {
-    let above = bounded_or(
-        state.above_level(LUMA_PLANE)?,
-        state.local_x4(LUMA_PLANE, input.x4)?,
-        input.w4,
-    );
-    let left = bounded_or(
-        state.left_level(LUMA_PLANE)?,
-        state.local_y4(LUMA_PLANE, input.y4)?,
-        input.h4,
-    );
-    Ok(txb_skip_ctx_luma(
-        above,
-        left,
-        input.tx_fills_block,
-        input.fsc_active,
-    ))
-}
-
-pub(crate) fn v_all_zero_context(
-    state: &TileCoeffContextState,
-    input: VAllZeroContextInput,
-) -> Result<usize, CoeffLoopContextError> {
-    let above = bounded_or_level_dc(
-        state.above_level(V_PLANE)?,
-        state.above_dc(V_PLANE)?,
-        state.local_x4(V_PLANE, input.x4)?,
-        input.w4,
-    );
-    let left = bounded_or_level_dc(
-        state.left_level(V_PLANE)?,
-        state.left_dc(V_PLANE)?,
-        state.local_y4(V_PLANE, input.y4)?,
-        input.h4,
-    );
-    Ok(v_txb_skip_ctx(
-        above != 0,
-        left != 0,
-        input.chroma_block_larger_than_tx,
-        input.eob_u_nonzero,
-    ))
-}
-
-pub(crate) fn apply_all_zero_coeff_block(
-    state: &mut TileCoeffContextState,
-    input: AllZeroCoeffBlockInput,
-) -> Result<AllZeroCoeffBlock, CoeffLoopContextError> {
-    let width = adjusted_coeff_extent(input.w4);
-    let height = adjusted_coeff_extent(input.h4);
-    let block = TransformCoeffBlockState::new(width, height)?;
-    let cul_level = 0;
-    let dc_category = 0;
-    state.update_after_coeffs(CoeffContextUpdate {
-        plane: input.plane,
-        x4: input.x4,
-        y4: input.y4,
-        w4: input.w4,
-        h4: input.h4,
-        cul_level,
-        dc_category,
-    })?;
-    Ok(AllZeroCoeffBlock {
-        eob: 0,
-        cul_level,
-        dc_category,
-        block,
-    })
-}
-
 pub(crate) fn nonzero_coeff_eob(
     input: NonZeroCoeffEobInput,
 ) -> Result<NonZeroCoeffEob, CoeffLoopContextError> {
@@ -404,10 +183,7 @@ pub(crate) fn nonzero_coeff_eob(
                 eob_extra_bits: input.eob_extra_bits,
             });
         }
-        return Ok(NonZeroCoeffEob {
-            eob_pt,
-            eob: eob_pt,
-        });
+        return Ok(NonZeroCoeffEob { eob: eob_pt });
     }
 
     let extra_bits_width = eob_extra_bits_width(eob_pt)?;
@@ -427,7 +203,6 @@ pub(crate) fn nonzero_coeff_eob(
         0
     };
     Ok(NonZeroCoeffEob {
-        eob_pt,
         eob: base + extra + input.eob_extra_bits,
     })
 }
@@ -476,13 +251,7 @@ pub(crate) fn read_nonzero_coeff_eob(
         eob_extra,
         eob_extra_bits: eob_extra_bits as usize,
     })?;
-    Ok(NonZeroCoeffEobSymbolRead {
-        eob,
-        eob_pt_symbol,
-        eob_pt_extra,
-        eob_extra,
-        eob_extra_bits,
-    })
+    Ok(NonZeroCoeffEobSymbolRead { eob })
 }
 
 pub(crate) fn read_nonzero_coeff_eob_from_context(
@@ -594,50 +363,11 @@ fn read_eob_literal(
     Ok(value)
 }
 
-fn bounded_or<T: Copy + Into<u32>>(values: &[T], start: usize, count: usize) -> u32 {
-    values.get(start..).map_or(0, |tail| {
-        tail.iter()
-            .take(count)
-            .fold(0, |value, entry| value | (*entry).into())
-    })
-}
-
-fn bounded_or_level_dc(level: &[u8], dc: &[u8], start: usize, count: usize) -> u32 {
-    bounded_or(level, start, count) | bounded_or(dc, start, count)
-}
-
 fn adjusted_coeff_extent(size4: usize) -> usize {
     size4
         .saturating_mul(COEFFS_PER_4X4)
         .min(MAX_ADJUSTED_COEFF_EXTENT)
 }
 #[cfg(test)]
-mod base_level_pass_tests;
-#[cfg(test)]
-mod base_symbol_tests;
-#[cfg(test)]
-mod eob_symbol_tests;
-#[cfg(test)]
-mod fsc_level_pass_tests;
-#[cfg(test)]
-mod level_state_tests;
-#[cfg(test)]
-mod ordinary_branch_coeffs_geometry_tests;
-#[cfg(test)]
-mod ordinary_branch_lossless_tests;
-#[cfg(test)]
-mod ordinary_branch_mode_to_txfm_tests;
-#[cfg(test)]
-mod ordinary_branch_tx_set_tests;
-#[cfg(test)]
-mod ordinary_pass_tests;
-#[cfg(test)]
-mod ordinary_state_context_tests;
-#[cfg(test)]
-#[path = "coeff_loop/test_support_tests.rs"]
-mod test_support;
-#[cfg(test)]
 #[path = "coeff_loop_tests.rs"]
 mod tests;
-#[cfg(test)]
-mod use_fsc_branch_tests;

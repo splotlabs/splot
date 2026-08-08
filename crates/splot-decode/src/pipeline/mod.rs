@@ -58,9 +58,8 @@ pub(crate) use frame_lifecycle::incomplete_intra_header_error;
 use frame_lifecycle::*;
 pub(crate) use frame_lifecycle::{
     ActiveFilmGrain, PipelineDecodedFrame, PipelineFrame, PipelineFrameRate, deblock_quant_deltas,
-    derive_visible_luma_rect, effective_allow_screen_content_tools,
-    ensure_runtime_storage_bit_depth, frame_ref_update_from_core, parse_frame_core,
-    parse_frame_core_with_reference, parse_sequence,
+    derive_visible_luma_rect, effective_allow_screen_content_tools, frame_ref_update_from_core,
+    parse_frame_core, parse_frame_core_with_reference, parse_sequence,
 };
 use output_effects::{FrameOutputEffects, OutputEffectState};
 use output_schedule::*;
@@ -748,7 +747,6 @@ where
     let mut recon_lane = frame_pipeline::ReconAdmissionLane::new(ring.capacity().min(4));
     output_effect_state.observe_prefix(leading_prefix, &sequence)?;
 
-    ensure_runtime_storage_bit_depth(&sequence, sequence_envelope.offset)?;
     let sequence_inter = sequence.inter.as_ref().ok_or_else(|| {
         unsupported(
             "missing_sequence_inter_config",
@@ -1915,7 +1913,6 @@ where
                     } else {
                         (sequence.clone(), key_envelope.offset)
                     };
-                ensure_runtime_storage_bit_depth(&key_sequence, key_sequence_offset)?;
                 let key_num_ref_frames = usize::from(
                     key_sequence
                         .inter

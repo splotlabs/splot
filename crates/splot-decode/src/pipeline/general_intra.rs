@@ -307,7 +307,7 @@ pub(crate) fn decode_one_general_intra_block(
             BlockRect::new(chroma_ref.row(), chroma_ref.col(), chroma_n4w, chroma_n4h),
             chroma_tx_shape,
         );
-        Some((chroma_ref.size().index(), chroma_n4w, chroma_n4h))
+        Some((chroma_n4w, chroma_n4h))
     } else {
         None
     };
@@ -417,8 +417,7 @@ pub(crate) fn decode_one_general_intra_block(
         GeneralIntraBlockModes::luma_only(luma.with_dip(use_dip_value, dip_transpose, dip_mode))
             .with_palette_y(palette_y)
     } else {
-        let (chroma_block_size_index, chroma_n4w, chroma_n4h) =
-            chroma_mode_geometry.unwrap_or((frontier.b_size.index(), n4w, n4h));
+        let (chroma_n4w, chroma_n4h) = chroma_mode_geometry.unwrap_or((n4w, n4h));
         crate::bitstream::tile_payload::decode_general_intra_block_modes_with_fsc_context(
             work_unit,
             symbols,
@@ -435,7 +434,6 @@ pub(crate) fn decode_one_general_intra_block(
             frontier.c,
             n4w,
             n4h,
-            chroma_block_size_index,
             chroma_n4w,
             chroma_n4h,
             u32::from(bit_depth.bits()),
@@ -698,7 +696,6 @@ fn rect_luma_plan(
         modes.supported_nondc_luma(),
         directional_p_angle,
         modes.luma_is_dc(),
-        block_ctx,
         use_tcq,
     )
 }
@@ -790,7 +787,6 @@ fn rect_luma_plan_for_parts_ext(
     nondc: Option<SupportedNonDcLumaMode>,
     directional_p_angle: Option<u16>,
     luma_is_dc: bool,
-    _block_ctx: BlockCtx,
     use_tcq: bool,
 ) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
     if luma_is_dc {
@@ -1137,12 +1133,6 @@ fn general_intra_residual_error(
             "general_intra_directional_above_edge",
             offset,
             missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
-        GeneralIntraResidualError::CardinalModeInMiddleAnglePath => general_intra_at!(
-            "general_intra_cardinal_in_middle_angle_path",
-            offset,
-            missing_capability_message!("intra.luma.dispatch", path = "cardinal_in_middle_angle"),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
     }

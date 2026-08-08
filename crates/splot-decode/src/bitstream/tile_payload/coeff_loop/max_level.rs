@@ -5,12 +5,9 @@
 //!
 //! Feature tracking: `DECODE-COEFF-MAX-LEVEL-DERIVE`.
 
-use std::collections::TryReserveError;
-
 pub(crate) use splot_core::coefficient::{COEFF_BASE_RANGE, LF_NUM_BASE_LEVELS, NUM_BASE_LEVELS};
 
-use super::quant_pass::CoeffQuantPassInput;
-use super::scan_walk::{CoeffScanEntry, NonZeroCoeffScanWalk};
+use super::scan_walk::CoeffScanEntry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffTransformClass {
@@ -37,81 +34,9 @@ pub(crate) struct CoeffMaxLevelConfig {
     pub(crate) is_hidden: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffMaxLevelPlaneTxTypeConfig {
-    pub(crate) plane: usize,
-    pub(crate) plane_tx_type: usize,
-    pub(crate) is_hidden: bool,
-}
-
-impl CoeffMaxLevelPlaneTxTypeConfig {
-    const fn max_level_config(self) -> CoeffMaxLevelConfig {
-        CoeffMaxLevelConfig {
-            plane: self.plane,
-            tx_class: CoeffTransformClass::from_plane_tx_type(self.plane_tx_type),
-            is_hidden: self.is_hidden,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CoeffMaxLevel {
-    pub(crate) entry: CoeffScanEntry,
-    pub(crate) is_low_frequency: bool,
-    pub(crate) max_level: u32,
-}
-
-impl CoeffMaxLevel {
-    #[must_use]
-    pub(crate) const fn quant_pass_input(self) -> CoeffQuantPassInput {
-        CoeffQuantPassInput {
-            entry: self.entry,
-            max_level: self.max_level,
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum CoeffMaxLevelError {
-    #[error("coefficient maxLevel allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
-}
-
-pub(crate) fn derive_nonzero_coeff_max_levels(
-    walk: &NonZeroCoeffScanWalk<'_>,
-    config: CoeffMaxLevelConfig,
-) -> Result<Vec<CoeffMaxLevel>, CoeffMaxLevelError> {
-    let mut levels = Vec::new();
-    levels.try_reserve(walk.len())?;
-    levels.extend(
-        walk.entries()
-            .map(|entry| derive_coeff_max_level(entry, config)),
-    );
-    Ok(levels)
-}
-
-pub(crate) fn derive_nonzero_coeff_max_levels_from_plane_tx_type(
-    walk: &NonZeroCoeffScanWalk<'_>,
-    config: CoeffMaxLevelPlaneTxTypeConfig,
-) -> Result<Vec<CoeffMaxLevel>, CoeffMaxLevelError> {
-    derive_nonzero_coeff_max_levels(walk, config.max_level_config())
-}
-
-pub(crate) fn max_levels_to_quant_pass_inputs(
-    levels: &[CoeffMaxLevel],
-) -> Result<Vec<CoeffQuantPassInput>, CoeffMaxLevelError> {
-    let mut inputs = Vec::new();
-    inputs.try_reserve(levels.len())?;
-    inputs.extend(levels.iter().copied().map(CoeffMaxLevel::quant_pass_input));
-    Ok(inputs)
-}
-
-pub(crate) fn derive_coeff_max_level(
-    entry: CoeffScanEntry,
-    config: CoeffMaxLevelConfig,
-) -> CoeffMaxLevel {
+pub(crate) fn derive_coeff_max_level(entry: CoeffScanEntry, config: CoeffMaxLevelConfig) -> u32 {
     let is_low_frequency = get_lf_limits(entry, config);
-    let max_level = if config.is_hidden && entry.scan_index() == 0 {
+    if config.is_hidden && entry.scan_index() == 0 {
         NUM_BASE_LEVELS + 1
     } else {
         match (is_low_frequency, config.plane == 0) {
@@ -119,12 +44,6 @@ pub(crate) fn derive_coeff_max_level(
             (true, false) => LF_NUM_BASE_LEVELS + 1,
             (false, _) => NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1,
         }
-    };
-
-    CoeffMaxLevel {
-        entry,
-        is_low_frequency,
-        max_level,
     }
 }
 

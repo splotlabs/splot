@@ -1381,6 +1381,7 @@ impl BlockCdfRows {
         self.coeff.replicate_q_context(coeff_cdf_q_ctx);
     }
 
+    #[cfg(test)]
     pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {
         block_cdf_row!(self, selector, get, as_slice, row)
     }

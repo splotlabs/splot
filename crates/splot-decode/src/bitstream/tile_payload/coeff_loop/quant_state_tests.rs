@@ -1,265 +1,73 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-#![allow(clippy::unwrap_used, clippy::panic)]
+#![allow(clippy::unwrap_used)]
 
-use splot_core::span::ByteOffset;
-use splot_core::symbol::{CdfUpdateMode, SymbolDecoder, SymbolDecoderConfig};
-
-use super::super::super::cdf::FrameCdfSubset;
-use super::super::super::coeff_state::TransformCoeffBlockState;
-use super::super::scan_walk::NonZeroCoeffScanWalk;
-use super::super::sign_symbol::{
-    CoeffSignRead, CoeffSignReadInput, CoeffSignReadSource, read_nonzero_coeff_signs,
-};
-use super::super::test_support::setup_luma_8x8_walk as setup_walk;
 use super::*;
 
-const EOB_SCAN: [u16; 4] = [0, 8, 1, 9];
-const ALT_SCAN: [u16; 4] = [0, 8, 9, 1];
-const PAYLOAD_SUFFIXES: [[u8; 3]; 4] = [
-    [0x00, 0x00, 0x80],
-    [0xff, 0x00, 0x80],
-    [0x55, 0xaa, 0x80],
-    [0xff, 0xff, 0x80],
-];
-
-fn symbol_decoder(payload: &[u8], mode: CdfUpdateMode) -> SymbolDecoder<'_> {
-    SymbolDecoder::with_base_and_config(
-        payload,
-        ByteOffset::new(0),
-        SymbolDecoderConfig::new().with_cdf_update_mode(mode),
-    )
-    .unwrap()
+fn entry(scan_index: usize, pos: usize) -> CoeffScanEntry {
+    CoeffScanEntry::new(scan_index, pos, pos / 8, pos % 8)
 }
 
-fn find_eob_payload() -> [u8; 5] {
-    for first in u8::MIN..=u8::MAX {
-        for second in u8::MIN..=u8::MAX {
-            for suffix in PAYLOAD_SUFFIXES {
-                let payload = [first, second, suffix[0], suffix[1], suffix[2]];
-                if setup_walk(&payload, &EOB_SCAN).is_some() {
-                    return payload;
-                }
-            }
-        }
-    }
-    panic!("no coefficient quant EOB payload found");
+const fn input(quant: u32) -> CoeffQuantReadInput {
+    CoeffQuantReadInput { quant }
 }
 
-fn block_for(walk: &NonZeroCoeffScanWalk<'_>) -> TransformCoeffBlockState {
-    let mut block = TransformCoeffBlockState::new(8, 8).unwrap();
-    for (index, entry) in walk.entries().enumerate() {
-        let level = match index {
-            0 => 3,
-            1 => 2,
-            2 => 0,
-            _ => 1,
-        };
-        block.set_level(entry.row(), entry.col(), level).unwrap();
-        block
-            .set_quant_sign(
-                entry.row(),
-                entry.col(),
-                if index % 2 == 0 { 7 } else { -7 },
-            )
-            .unwrap();
-    }
-    block
-}
-
-fn signs_for(
-    block: &TransformCoeffBlockState,
-    walk: &NonZeroCoeffScanWalk<'_>,
-) -> Vec<CoeffSignRead> {
-    let inputs: Vec<_> = walk
-        .entries()
-        .map(|entry| CoeffSignReadInput {
-            entry,
-            source: if block.level_at(entry.row(), entry.col()).unwrap() == 0 {
-                CoeffSignReadSource::None
-            } else {
-                CoeffSignReadSource::SignBit
-            },
-        })
-        .collect();
-    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
-    let mut symbols = symbol_decoder(&[0xff, 0xff, 0x80], CdfUpdateMode::Enabled);
-    read_nonzero_coeff_signs(&mut tile, &mut symbols, block, walk, &inputs).unwrap()
-}
-
-fn quant_inputs_for(walk: &NonZeroCoeffScanWalk<'_>, quants: &[u32]) -> Vec<CoeffQuantReadInput> {
-    walk.entries()
-        .zip(quants.iter().copied())
-        .enumerate()
-        .map(|(index, (entry, quant))| CoeffQuantReadInput {
-            entry,
-            quant,
-            hr_level_avg: (index as u32 + 1) * 10,
-        })
-        .collect()
-}
-
-fn config() -> CoeffQuantStateConfig {
-    CoeffQuantStateConfig {
+#[test]
+fn accumulator_applies_sign_and_updates_context_summary() {
+    let dc = entry(0, 0);
+    let mut state = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
         is_hidden: false,
         sum_abs1: 0,
         use_tcq: false,
         lossless: false,
-    }
+    });
+    let write = state.apply_entry(0, dc, true, input(3)).unwrap();
+    let summary = NonZeroCoeffQuantState::from_accumulator(state);
+
+    assert_eq!(write.entry(), dc);
+    assert_eq!(write.quant(), -3);
+    assert_eq!(summary.cul_level(), 3);
+    assert_eq!(summary.dc_category(), 1);
 }
 
 #[test]
-fn coefficient_quant_state_writes_signed_quant_and_summary_state() {
-    let payload = find_eob_payload();
-    let walk = setup_walk(&payload, &EOB_SCAN).unwrap();
-    let mut block = block_for(&walk);
-    let quant_sign_before = block.quant_sign().to_vec();
-    let signs = signs_for(&block, &walk);
-    let inputs = quant_inputs_for(&walk, &[2, 1, 0, 3]);
-
-    let state =
-        apply_nonzero_coeff_quant_state(&mut block, &walk, &signs, &inputs, config()).unwrap();
-
-    assert_eq!(state.writes().len(), walk.entries().len());
-    for ((write, sign), input) in state.writes().iter().zip(&signs).zip(&inputs) {
-        let expected = if sign.sign() {
-            -(input.quant as i32)
-        } else {
-            input.quant as i32
-        };
-        assert_eq!(write.entry(), input.entry);
-        assert_eq!(write.level(), sign.level());
-        assert_eq!(write.sign(), sign.sign());
-        assert_eq!(write.read_quant(), input.quant);
-        assert_eq!(write.quant(), expected);
-        assert!(write.cul_level() <= 4);
-        assert!(write.dc_category() <= 2);
-        assert_eq!(write.tcq_state(), 0);
-        assert_eq!(write.hr_level_avg(), input.hr_level_avg);
-        assert_eq!(block.quant_at(input.entry.pos()).unwrap(), expected);
-    }
-    let dc_entry_index = walk.entries().position(|entry| entry.pos() == 0).unwrap();
-    let expected_dc = if signs[dc_entry_index].sign() { 1 } else { 2 };
-    assert_eq!(state.cul_level(), 4);
-    assert_eq!(state.dc_category(), expected_dc);
-    assert_eq!(state.hr_level_avg(), 40);
-    assert_eq!(block.quant_sign(), quant_sign_before);
-}
-
-#[test]
-fn coefficient_quant_state_applies_hidden_parity_and_tcq() {
-    let payload = find_eob_payload();
-    let walk = setup_walk(&payload, &EOB_SCAN).unwrap();
-    let mut block = block_for(&walk);
-    let signs = signs_for(&block, &walk);
-    let inputs = quant_inputs_for(&walk, &[0, 0, 0, 1]);
-    let hidden_tcq = CoeffQuantStateConfig {
-        is_hidden: true,
-        sum_abs1: 1,
-        use_tcq: true,
-        lossless: false,
-    };
-
-    let state =
-        apply_nonzero_coeff_quant_state(&mut block, &walk, &signs, &inputs, hidden_tcq).unwrap();
-
-    let dc_write = state
-        .writes()
-        .iter()
-        .find(|write| write.entry().scan_index() == 0)
-        .unwrap();
-    assert_eq!(dc_write.read_quant(), 1);
-    assert_eq!(dc_write.quant().unsigned_abs(), 6);
-    assert_eq!(
-        block.quant_at(dc_write.entry().pos()).unwrap(),
-        dc_write.quant()
-    );
-    assert_eq!(state.cul_level(), 3);
-    assert_eq!(state.tcq_state(), 4);
-    assert_eq!(state.hr_level_avg(), 40);
-}
-
-#[test]
-fn coefficient_quant_state_preserves_quant_sign() {
-    let payload = find_eob_payload();
-    let walk = setup_walk(&payload, &EOB_SCAN).unwrap();
-    let mut block = block_for(&walk);
-    let quant_sign_before = block.quant_sign().to_vec();
-    let signs = signs_for(&block, &walk);
-    let inputs = quant_inputs_for(&walk, &[5, 4, 0, 2]);
-
-    apply_nonzero_coeff_quant_state(&mut block, &walk, &signs, &inputs, config()).unwrap();
-
-    assert_eq!(block.quant_sign(), quant_sign_before);
-}
-
-#[test]
-fn coefficient_quant_state_rejects_mismatches_before_mutation() {
-    let payload = find_eob_payload();
-    let walk = setup_walk(&payload, &EOB_SCAN).unwrap();
-    let alt_walk = setup_walk(&payload, &ALT_SCAN).unwrap();
-    let block = block_for(&walk);
-    let signs = signs_for(&block, &walk);
-    let inputs = quant_inputs_for(&walk, &[2, 1, 0, 3]);
-
-    let mut count_block = block.clone();
-    let count_before = count_block.clone();
-    let mut short_inputs = inputs.clone();
-    short_inputs.pop();
-    let err =
-        apply_nonzero_coeff_quant_state(&mut count_block, &walk, &signs, &short_inputs, config())
-            .unwrap_err();
-    assert!(matches!(
-        err,
-        CoeffQuantStateWriteError::InputCountMismatch {
-            inputs: 3,
-            entries: 4
-        }
-    ));
-    assert_eq!(count_block, count_before);
-
-    let mut sign_block = block.clone();
-    let sign_before = sign_block.clone();
-    let err =
-        apply_nonzero_coeff_quant_state(&mut sign_block, &alt_walk, &signs, &inputs, config())
-            .unwrap_err();
-    assert!(matches!(
-        err,
-        CoeffQuantStateWriteError::SignEntryMismatch { index: 0, .. }
-    ));
-    assert_eq!(sign_block, sign_before);
-}
-
-#[test]
-fn coefficient_quant_state_requires_hidden_parity_sign() {
-    let payload = find_eob_payload();
-    let walk = setup_walk(&payload, &EOB_SCAN).unwrap();
-    let mut block = block_for(&walk);
-    let hidden_entry = walk
-        .entries()
-        .find(|entry| entry.scan_index() == 0)
-        .unwrap();
-    block
-        .set_level(hidden_entry.row(), hidden_entry.col(), 0)
-        .unwrap();
-    let before = block.clone();
-    let signs = signs_for(&block, &walk);
-    let inputs = quant_inputs_for(&walk, &[0, 0, 0, 1]);
-    let hidden = CoeffQuantStateConfig {
+fn hidden_parity_and_tcq_adjust_quant() {
+    let dc = entry(0, 0);
+    let mut hidden = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
         is_hidden: true,
         sum_abs1: 1,
         use_tcq: false,
         lossless: false,
-    };
+    });
+    assert_eq!(
+        hidden.apply_entry(0, dc, false, input(2)).unwrap().quant(),
+        5
+    );
 
-    let err =
-        apply_nonzero_coeff_quant_state(&mut block, &walk, &signs, &inputs, hidden).unwrap_err();
+    let mut tcq = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+        is_hidden: false,
+        sum_abs1: 0,
+        use_tcq: true,
+        lossless: false,
+    });
+    assert_eq!(tcq.apply_entry(0, dc, false, input(1)).unwrap().quant(), 2);
+}
 
+#[test]
+fn hidden_parity_overflow_is_reported() {
+    let dc = entry(0, 0);
+    let mut state = CoeffQuantStateAccumulator::new(CoeffQuantStateConfig {
+        is_hidden: true,
+        sum_abs1: 1,
+        use_tcq: false,
+        lossless: false,
+    });
     assert!(matches!(
-        err,
-        CoeffQuantStateWriteError::HiddenParityMissingSign { entry, .. }
-            if entry == hidden_entry
+        state.apply_entry(0, dc, false, input(u32::MAX)),
+        Err(CoeffQuantStateWriteError::QuantOverflow {
+            operation: "2 * quant + sumAbs1",
+            ..
+        })
     ));
-    assert_eq!(block, before);
 }

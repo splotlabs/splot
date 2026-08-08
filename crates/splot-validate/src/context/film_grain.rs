@@ -239,7 +239,7 @@ impl ValidatorContext {
             return;
         }
         self.emit_film_grain_diagnostics(obu, &fg, report);
-        self.emit_film_grain_model_diagnostics(obu, &fg, report);
+        Self::emit_film_grain_model_diagnostics(obu, &fg, report);
         self.record_film_grain(obu, &fg);
     }
 
@@ -248,9 +248,7 @@ impl ValidatorContext {
     /// strictly-increasing-and-`< 256` scaling-point values, and the 4:2:0 chroma
     /// pairing rule (when `subX == 1 && subY == 1`, `num_cb_points` and `num_cr_points`
     /// must be both zero or both non-zero).
-    #[allow(clippy::unused_self)]
     pub(super) fn emit_film_grain_model_diagnostics(
-        &self,
         obu: &ObuEnvelope<'_>,
         fg: &FilmGrainObu,
         report: &mut ValidationReport,

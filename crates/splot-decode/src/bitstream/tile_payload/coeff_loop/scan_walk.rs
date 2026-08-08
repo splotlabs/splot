@@ -53,18 +53,9 @@ impl CoeffScanEntry {
 }
 
 #[derive(Debug)]
-enum NonZeroCoeffScanSource<'a> {
-    Scan {
-        scan: &'a [u16],
-        width: usize,
-    },
-    #[cfg(test)]
-    Entries(Vec<CoeffScanEntry>),
-}
-
-#[derive(Debug)]
 pub(crate) struct NonZeroCoeffScanWalk<'a> {
-    source: NonZeroCoeffScanSource<'a>,
+    scan: &'a [u16],
+    width: usize,
 }
 
 impl NonZeroCoeffScanWalk<'_> {
@@ -75,32 +66,13 @@ impl NonZeroCoeffScanWalk<'_> {
 
     #[must_use]
     pub(crate) fn len(&self) -> usize {
-        match &self.source {
-            NonZeroCoeffScanSource::Scan { scan, .. } => scan.len(),
-            #[cfg(test)]
-            NonZeroCoeffScanSource::Entries(entries) => entries.len(),
-        }
+        self.scan.len()
     }
 
     fn entry(&self, index: usize) -> CoeffScanEntry {
-        match &self.source {
-            NonZeroCoeffScanSource::Scan { scan, width } => {
-                let scan_index = scan.len() - index - 1;
-                let pos = usize::from(scan[scan_index]);
-                CoeffScanEntry::new(scan_index, pos, pos / width, pos % width)
-            }
-            #[cfg(test)]
-            NonZeroCoeffScanSource::Entries(entries) => entries[index],
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_entries_for_test(
-        entries: Vec<CoeffScanEntry>,
-    ) -> NonZeroCoeffScanWalk<'static> {
-        NonZeroCoeffScanWalk {
-            source: NonZeroCoeffScanSource::Entries(entries),
-        }
+        let scan_index = self.scan.len() - index - 1;
+        let pos = usize::from(self.scan[scan_index]);
+        CoeffScanEntry::new(scan_index, pos, pos / self.width, pos % self.width)
     }
 }
 
@@ -248,10 +220,8 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
     }
 
     Ok(NonZeroCoeffScanWalk {
-        source: NonZeroCoeffScanSource::Scan {
-            scan: &scan[..eob],
-            width,
-        },
+        scan: &scan[..eob],
+        width,
     })
 }
 

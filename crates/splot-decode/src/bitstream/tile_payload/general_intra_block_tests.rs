@@ -10,28 +10,19 @@ use splot_core::tables::conversion::{
     NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT, TX_WIDTH,
 };
 
-use super::super::cdf::FrameCdfSubset;
+use super::super::cdf::{FrameCdfSubset, TileCdfSelector};
 use super::super::encode_symbol_sequence;
-use super::super::partition_allowed::PartitionFeatureFlags;
 use super::super::partition_traversal::tests::make_work_unit as make_test_work_unit;
-use super::super::partition_traversal::{
-    TilePartitionBruState, TilePartitionContextState, TilePartitionFrameFacts,
-    TilePartitionLoopRestorationState, TilePartitionTraversalInput,
-    plan_tile_partition_traversal_cursor,
-};
 use super::*;
-use crate::DecodeLimits;
 
 const BLOCK_16X16: usize = 6;
 const BLOCK_8X8: usize = 3;
 const BLOCK_32X16: usize = 8;
 const BLOCK_64X64: usize = 12;
-const BLOCK_256X256: u8 = 18;
 const BLOCK_4X16: usize = 19;
 const TX_4X4: usize = 0;
 const TX_16X16: usize = 2;
 const TX_32X32: usize = 3;
-const CLEAR_PARTITION_CONTEXT: u8 = 0;
 const PAYLOAD: [u8; 2] = [0x12, 0xFB];
 
 fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
@@ -41,34 +32,17 @@ fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
 fn symbols_at_block_start<'payload>(
     work_unit: &mut DecodeTileWorkUnit<'payload>,
 ) -> SymbolDecoder<'payload> {
-    let rows = vec![BLOCK_256X256; 16 * 16];
-    let edge = [CLEAR_PARTITION_CONTEXT; 16];
-    let context = TilePartitionContextState::new(&rows, 16, [&edge, &edge], [&edge, &edge]);
-    let frame = TilePartitionFrameFacts::new(
-        16,
-        16,
-        BLOCK_64X64,
-        3,
-        true,
-        true,
-        true,
-        true,
-        false,
-        false,
-        TilePartitionLoopRestorationState::NoSyntax,
-        PartitionFeatureFlags::new(true, true),
-        4,
-        TilePartitionBruState::Active,
+    let mut symbols = symbol_decoder(work_unit.tile_bytes());
+    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
+    cdfs.with_row_mut(
+        TileCdfSelector::DoSplit {
+            plane_start: 0,
+            ctx: 15,
+        },
+        |row| symbols.read_symbol_u16(row),
     )
+    .unwrap()
     .unwrap();
-    let cursor = plan_tile_partition_traversal_cursor(TilePartitionTraversalInput::new(
-        work_unit,
-        frame,
-        context,
-        DecodeLimits::DEFAULT,
-    ))
-    .unwrap();
-    let (_plan, symbols) = cursor.into_parts();
     symbols
 }
 
@@ -172,7 +146,6 @@ fn decode_general_intra_block_modes(
         block_c,
         block_n4w,
         block_n4h,
-        block_size_index,
         block_n4w,
         block_n4h,
         bit_depth_bits,
@@ -603,7 +576,6 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
         8,
         4,
         4,
-        BLOCK_16X16,
         4,
         4,
         8,
@@ -789,7 +761,6 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
         15,
         1,
         4,
-        BLOCK_32X16,
         8,
         4,
         8,
