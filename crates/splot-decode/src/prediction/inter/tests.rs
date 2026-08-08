@@ -48,6 +48,9 @@ const TWO_FRAME_INTER_FIXTURE: &[u8] =
 const SEF_FAMILIES_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-frame-sef-families-64x64.ivf"
 );
+const SINGLE_PICTURE_BRIDGE_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../tests/conformance/vectors/valid/syn-bridge-single-picture-32x32.ivf"
+);
 
 #[test]
 fn inter_segmentation_admits_only_current_alt_q_maps() {
@@ -2336,7 +2339,7 @@ fn tip_output_disables_saved_cdf_blending() {
 #[test]
 fn tip_output_validation_accepts_leading_and_regular_obus() {
     decode_context().pool().install(|| {
-        let (_sequence, mut core, offset) =
+        let (_sequence, mut core, _offset) =
             parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
         core.status = FrameHeaderParseStatus::InterHeaderComplete;
         core.frame_is_intra = Some(false);
@@ -2350,7 +2353,7 @@ fn tip_output_validation_accepts_leading_and_regular_obus() {
             splot_core::types::ObuType::RegularTip,
         ] {
             core.obu_type = obu_type;
-            super::validate_tip_output_frame_core(&core, offset).unwrap();
+            super::validate_tip_output_frame_core(&core).unwrap();
         }
     });
 }

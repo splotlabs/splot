@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
@@ -384,6 +385,126 @@ fn empty_sef_trailing_bits_use_payload_conformance_section() {
         panic!("expected malformed source, got {error}");
     };
     assert_eq!(issue.spec_section(), Some("6.2.1"));
+}
+
+fn tip_output_core_for_validation() -> (FrameHeaderCore, ByteOffset) {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.status = FrameHeaderParseStatus::InterHeaderComplete;
+    core.obu_type = splot_core::types::ObuType::RegularTip;
+    core.frame_is_intra = Some(false);
+    core.inter.as_mut().expect("inter control").tip_frame_mode = Some(TipFrameMode::AsOutput);
+    (core, offset)
+}
+
+#[test]
+fn truncated_tip_output_header_is_a_malformed_source_diagnostic() {
+    let (mut core, offset) = tip_output_core_for_validation();
+    core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
+
+    let error = super::super::validate_tip_output_frame_parse(&core, offset, Some(3))
+        .expect_err("truncated TIP-output header");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.2.1"));
+    assert_eq!(issue.frame_index(), Some(3));
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("truncated TIP-output header must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+#[test]
+fn non_output_tip_mode_is_a_malformed_source_diagnostic() {
+    let (mut core, offset) = tip_output_core_for_validation();
+    core.inter.as_mut().expect("inter control").tip_frame_mode = Some(TipFrameMode::Disabled);
+
+    let error = super::super::validate_tip_output_frame_parse(&core, offset, Some(4))
+        .expect_err("non-output TIP mode");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.frame_index(), Some(4));
+}
+
+#[test]
+fn single_picture_tip_obu_is_a_malformed_source_diagnostic() {
+    let (sequence, _) = fixture_sequence_and_key_core(SINGLE_PICTURE_BRIDGE_FIXTURE);
+    assert!(sequence.general.single_picture_header_flag);
+    let parsed = parse_ivf_fixture(SINGLE_PICTURE_BRIDGE_FIXTURE, "single-picture bridge");
+    let (frame_index, mut envelope) = parsed
+        .frames
+        .iter()
+        .enumerate()
+        .find_map(|(frame_index, frame)| {
+            frame
+                .obus
+                .iter()
+                .find(|envelope| {
+                    envelope.header.obu_type == splot_core::types::ObuType::ClosedLoopKey
+                })
+                .copied()
+                .map(|envelope| (frame_index, envelope))
+        })
+        .expect("closed-loop-key OBU");
+    let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
+    reader.read_bit().expect("is_first_tile_group");
+    let mut payload = BitWriter::new();
+    while reader.remaining_bits() != 0 {
+        payload
+            .write_bit(reader.read_bit().expect("key payload bit"))
+            .expect("TIP payload bit");
+    }
+    let payload = payload.into_bytes();
+    envelope.header.obu_type = splot_core::types::ObuType::RegularTip;
+    envelope.payload = &payload;
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    let error = super::super::parse_validated_inter_frame_core_with_mfh(
+        envelope,
+        &sequence,
+        &reference,
+        true,
+        None,
+        Some(frame_index),
+    )
+    .expect_err("TIP OBU under a single-picture sequence");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.frame_index(), Some(frame_index));
+}
+
+#[test]
+fn tip_output_parser_coverage_preserves_feature_id() {
+    let (mut core, offset) = tip_output_core_for_validation();
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+    };
+
+    let error = super::super::validate_tip_output_frame_parse(&core, offset, Some(5))
+        .expect_err("TIP-output parser coverage stop");
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("expected unsupported feature, got {error}");
+    };
+    assert_eq!(unsupported.reason(), "AV2-5.18.7-SEGMENTATION-TILING");
+    assert_eq!(unsupported.spec_section(), "5.18.2");
+}
+
+#[test]
+fn impossible_tip_output_state_is_a_typed_header_state_error() {
+    let (mut core, _offset) = tip_output_core_for_validation();
+    core.frame_is_intra = Some(true);
+
+    let error = super::super::validate_tip_output_frame_core(&core)
+        .expect_err("incomplete TIP-output state");
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::IncompleteTipOutput
+        }
+    ));
 }
 
 #[test]
