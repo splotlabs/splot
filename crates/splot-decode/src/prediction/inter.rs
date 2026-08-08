@@ -662,22 +662,6 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     }
 }
 
-fn validate_compound_tip_subset(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
-    let tip_frame_mode = core.inter.as_ref().and_then(|inter| inter.tip_frame_mode);
-    if !matches!(
-        tip_frame_mode,
-        Some(TipFrameMode::Disabled | TipFrameMode::AsRef)
-    ) {
-        return Err(compound_cap!(
-            "compound_active_tip_frame_mode",
-            offset,
-            "inter.tip.active_frame_mode",
-            SPEC_MODE_INFO
-        ));
-    }
-    Ok(())
-}
-
 fn compound_is_joint_context(
     ref_frame_idx: &[u32],
     ref_order_hint: &[u32],
