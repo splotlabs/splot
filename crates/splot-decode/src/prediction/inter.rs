@@ -1601,10 +1601,8 @@ fn infer_tip_output_quantization(
                 "TIP output has no usable past/future reference pair".to_owned(),
             ),
         })?;
-    let past = usize::try_from(block_reference_slot(&inter.ref_frame_idx, pair.past_ref)?)
-        .unwrap_or(usize::MAX);
-    let future = usize::try_from(block_reference_slot(&inter.ref_frame_idx, pair.future_ref)?)
-        .unwrap_or(usize::MAX);
+    let past = block_reference_slot(&inter.ref_frame_idx, pair.past_ref)? as usize;
+    let future = block_reference_slot(&inter.ref_frame_idx, pair.future_ref)? as usize;
     let quantizer = |slot| -> Result<(u32, i32, i32)> {
         let Some((&base_q_idx, &delta_q_u_ac, &delta_q_v_ac)) = reference
             .ref_base_q_idx
