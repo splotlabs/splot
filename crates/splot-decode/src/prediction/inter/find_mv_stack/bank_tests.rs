@@ -84,21 +84,7 @@ fn shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate() {
     {
         bank.update(8, None, mv, None, CWP_EQUAL, false);
         let expected = usize::from(index < 3);
-        assert_eq!(
-            bank.intrabc_candidates(&MvBlockContext {
-                ref_frame0: INTRABC_REF_FRAME,
-                ref_frame1: None,
-                mi_row: 52,
-                mi_col: 256,
-                bw4: 8,
-                bh4: 4,
-                sb_h4: 32,
-                mi_rows: 270,
-                mi_cols: 480,
-            })
-            .len(),
-            expected
-        );
+        assert_eq!(bank.intrabc_candidates().len(), expected);
     }
 }
 

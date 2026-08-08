@@ -1765,6 +1765,11 @@ description = "8-bit 4:4:4 4-frame inter stream (IVF, 256x128) encoded at base_q
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-intrabc-drl-budget-640x384-q120.ivf"
+description = "Three-key-frame 640x384 AVM stream whose dense IntraBC coding spends the § 7.12.2 PruneCount budget mid-stack: § 7.12.2.21 check_rmb_cand skips its duplicate scan once PruneCount reaches MAX_PR_NUM and § 7.12.2.10's spatial adds spend the same counter, so deep intrabc_drl_idx values select bank duplicates the pruned path would have collapsed. Before the budget fix splot pre-filtered bank candidates and always deduplicated, silently selecting the wrong block vector from row 80 of frame 1 onward; fixed splot reproduces avmdec's --i420 raw output byte-for-byte (provenance: 2026-08-07 probe-sweep generator, avmenc --cpu-used=2 --end-usage=q --qp=120 --kf-max-dist=0 --limit=3); validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-3frame-intrabc-bv-10bit-256x128-q120.ivf"
 description = "Minimal three-frame 10-bit 4:2:0 AVMenc stream (IVF, 256x128, 8,605 bytes) that reaches both halves of the IntraBC block-vector gap. At MI (16,9), AV2 § 7.12.2.6 (`docs/spec/av2/1.0.0/07-decoding-process.md`) aligns scan step 8 from nominal deltaCol 0 to actual deltaCol -1 before assigning weight 0; the former weight-1 candidate selected an out-of-bounds block vector and failed closed at byte 6829. After that path opens, an INTERINTRA block exercises AV2 § 5.20.7.13 (`docs/spec/av2/1.0.0/05-syntax-structures.md`), where derived MVD signs are forbidden unless motion_mode is SIMPLE, skip_mode is 0, and a compound block uses RefMvIdx 0. Fixed splot and current avmdec emit the same complete 294,912-byte raw I420 SHA-256 76196877855754843f9d45abb7d9ae33764ca65c6bd88fcc4e868d462d952ee7; validates clean."
 expect = "clean"

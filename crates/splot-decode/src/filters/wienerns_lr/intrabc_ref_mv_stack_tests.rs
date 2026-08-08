@@ -115,6 +115,7 @@ fn check_rmb_cand_rejects_frame_boundary_top_edge() {
         Mv { row: -512, col: 0 },
         &[],
         bounds(0, 112),
+        &mut 0,
     ));
 }
 
@@ -124,13 +125,41 @@ fn check_rmb_cand_admits_in_bounds_candidate() {
         Mv { row: 0, col: -256 },
         &[],
         bounds(0, 232),
+        &mut 0,
     ));
 }
 
 #[test]
 fn check_rmb_cand_rejects_duplicate() {
     let cand = Mv { row: 0, col: -256 };
-    assert!(!check_rmb_cand(cand, &[cand], bounds(0, 232)));
+    assert!(!check_rmb_cand(cand, &[cand], bounds(0, 232), &mut 0));
+}
+
+#[test]
+fn check_rmb_cand_appends_duplicate_once_pruning_budget_is_spent() {
+    let cand = Mv { row: 0, col: -256 };
+    let mut spent = MAX_PR_NUM;
+    assert!(check_rmb_cand(cand, &[cand], bounds(0, 232), &mut spent));
+}
+
+#[test]
+fn check_rmb_cand_bounds_rejection_still_spends_the_budget() {
+    let out_of_frame = Mv { row: -512, col: 0 };
+    let in_stack = Mv { row: 0, col: -256 };
+    let mut spent = MAX_PR_NUM - 1;
+    assert!(!check_rmb_cand(
+        out_of_frame,
+        &[in_stack],
+        bounds(0, 112),
+        &mut spent,
+    ));
+    assert_eq!(spent, MAX_PR_NUM);
+    assert!(check_rmb_cand(
+        in_stack,
+        &[in_stack],
+        bounds(0, 232),
+        &mut spent
+    ));
 }
 
 #[test]
@@ -166,6 +195,7 @@ fn no_spatial() -> SpatialIntrabcScan {
     SpatialIntrabcScan {
         candidates: Vec::new(),
         nearest_len: 0,
+        comparisons: 0,
     }
 }
 
@@ -226,6 +256,7 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
     let spatial = SpatialIntrabcScan {
         candidates: vec![adj(Mv { row: 0, col: -3072 })],
         nearest_len: 1,
+        comparisons: 0,
     };
     let stack = build_intrabc_ref_mv_stack(
         &bank,
@@ -266,6 +297,7 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 2,
+        comparisons: 0,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -305,6 +337,7 @@ fn admission_no_op_swap_when_slot0_already_max() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 2,
+        comparisons: 0,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -326,6 +359,7 @@ fn admission_no_op_swap_when_slot0_already_max() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 2,
+        comparisons: 0,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -353,6 +387,7 @@ fn admission_sort_respects_drl_reorder_mode() {
     let scan = SpatialIntrabcScan {
         candidates: candidates.clone(),
         nearest_len: 2,
+        comparisons: 0,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -407,6 +442,7 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
             wbv(Mv { row: -512, col: 0 }, 1),
         ],
         nearest_len: 1,
+        comparisons: 0,
     };
     assert_eq!(
         intrabc_ref_stack_admission(
@@ -430,6 +466,7 @@ fn admission_admits_single_spatial_candidate() {
     let one = SpatialIntrabcScan {
         candidates: vec![adj(Mv { row: 0, col: -64 })],
         nearest_len: 1,
+        comparisons: 0,
     };
     assert!(matches!(
         intrabc_ref_stack_admission(

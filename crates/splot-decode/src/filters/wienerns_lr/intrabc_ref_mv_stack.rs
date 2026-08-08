@@ -13,12 +13,14 @@
 //! 1. The spatial SMVP scan (§ 7.12.2.6 Scan point / § 7.12.2.5 Scan col,
 //!    `scan_blk_mbmi` -> `add_ref_mv_candidate`, `mvref_common.c:1491` /
 //!    `:820`). For `is_intrabc == 1` only neighbours that are themselves IntrABC
-//!    blocks contribute, with dedup-by-value.
+//!    blocks contribute, with dedup-by-value while the block's § 7.12.2
+//!    `PruneCount` stays below `MAX_PR_NUM`; every comparison spends the budget
+//!    and once it is exhausted candidates append without the duplicate scan.
 //! 2. The ref-MV-bank fill (§ 7.12.2.21, `add_ref_mv_bank_candidates` ->
 //!    `check_rmb_cand`, `mvref_common.c:1943` / `:1806`): the bank is iterated in
-//!    reverse (LIFO), each candidate deduped against the stack and rejected if its
-//!    displaced reference leaves the frame boundary
-//!    (`mvref_common.c:1828`-`1832`).
+//!    reverse (LIFO), each candidate deduped under the same `PruneCount` budget
+//!    and rejected — after the budget-gated scan — if its displaced reference
+//!    leaves the frame boundary (`mvref_common.c:1828`-`1832`).
 //! 3. The default-BVP extra search (§ 7.12.2.20, the `use_intrabc` `add_to_ref_bv`
 //!    tail, `mvref_common.c:2711`-`2732`): the four default block vectors fill the
 //!    remaining slots with NO dedup, up to `max_bvp_drl_bits_minus_1 + 2`.
@@ -207,8 +209,45 @@ struct RmbCandBounds {
     frame_h: i32,
 }
 
-fn check_rmb_cand(cand: Mv, stack: &[Mv], bounds: RmbCandBounds) -> bool {
-    if stack.contains(&cand) {
+const MAX_PR_NUM: u32 = 16;
+
+fn merge_or_push_weighted(
+    candidates: &mut Vec<WeightedBv>,
+    mv: Mv,
+    weight: u16,
+    comparisons: &mut u32,
+) {
+    let matched = (*comparisons < MAX_PR_NUM).then(|| {
+        let found = candidates.iter().position(|entry| entry.mv == mv);
+        *comparisons = comparisons.saturating_add(match found {
+            Some(at) => at as u32 + 1,
+            None => candidates.len() as u32,
+        });
+        found
+    });
+    if let Some(Some(at)) = matched {
+        candidates[at].weight = candidates[at].weight.saturating_add(weight);
+    } else {
+        candidates.push(WeightedBv { mv, weight });
+    }
+}
+
+fn budgeted_dedup_finds(stack: &[Mv], cand: Mv, comparisons: &mut u32) -> bool {
+    if *comparisons >= MAX_PR_NUM {
+        return false;
+    }
+    for (visited, entry) in stack.iter().enumerate() {
+        if *entry == cand {
+            *comparisons = comparisons.saturating_add(visited as u32 + 1);
+            return true;
+        }
+    }
+    *comparisons = comparisons.saturating_add(stack.len() as u32);
+    false
+}
+
+fn check_rmb_cand(cand: Mv, stack: &[Mv], bounds: RmbCandBounds, comparisons: &mut u32) -> bool {
+    if budgeted_dedup_finds(stack, cand, comparisons) {
         return false;
     }
     let ref_x = bounds.mi_col * MI_SIZE + cand.col / 8;
@@ -259,6 +298,10 @@ pub(crate) struct WeightedBv {
 pub(crate) struct SpatialIntrabcScan {
     pub(crate) candidates: Vec<WeightedBv>,
     pub(crate) nearest_len: usize,
+    /// § 7.12.2 `PruneCount` after the spatial scan: every duplicate-check
+    /// comparison spends this budget, and once `MAX_PR_NUM` is spent later
+    /// stages append without checking for duplicates.
+    pub(crate) comparisons: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -281,6 +324,7 @@ impl SpatialIntrabcProbes {
     ) -> SpatialIntrabcScan {
         let mut candidates: Vec<WeightedBv> = Vec::new();
         let mut nearest_len = 0;
+        let mut comparisons = 0u32;
         for (index, probe) in self.probes.iter().enumerate() {
             if index == self.nearest_len {
                 nearest_len = candidates.len();
@@ -288,14 +332,7 @@ impl SpatialIntrabcProbes {
             let Some(mv) = lookup(probe.row, probe.col) else {
                 continue;
             };
-            if let Some(existing) = candidates.iter_mut().find(|entry| entry.mv == mv) {
-                existing.weight = existing.weight.saturating_add(probe.weight);
-            } else {
-                candidates.push(WeightedBv {
-                    mv,
-                    weight: probe.weight,
-                });
-            }
+            merge_or_push_weighted(&mut candidates, mv, probe.weight, &mut comparisons);
         }
         if self.nearest_len == self.probes.len() {
             nearest_len = candidates.len();
@@ -303,9 +340,13 @@ impl SpatialIntrabcProbes {
         SpatialIntrabcScan {
             candidates,
             nearest_len,
+            comparisons,
         }
     }
 }
+
+const PROBE_SERIAL_SHIFT: u32 = 16;
+const PROBE_COL_MASK: i32 = (1 << PROBE_SERIAL_SHIFT) - 1;
 
 pub(crate) fn capture_spatial_intrabc_probes(
     geometry: SpatialScanGeometry,
@@ -313,15 +354,21 @@ pub(crate) fn capture_spatial_intrabc_probes(
     block_base_col: impl Fn(usize, usize) -> Option<usize>,
 ) -> SpatialIntrabcProbes {
     let is_coded = &is_coded;
+    let serial = core::cell::Cell::new(0i32);
     let encoded = spatial_intrabc_scan_with_base_col(
         geometry,
         |row, col| {
             if !is_coded(row, col) {
                 return None;
             }
+            let tag = serial.get();
+            serial.set(tag.wrapping_add(1));
             Some(Mv {
                 row: i32::try_from(row).ok()?,
-                col: i32::try_from(col).ok()?,
+                col: i32::try_from(col)
+                    .ok()
+                    .filter(|&col| col <= PROBE_COL_MASK)?
+                    | (tag << PROBE_SERIAL_SHIFT),
             })
         },
         is_coded,
@@ -335,7 +382,7 @@ pub(crate) fn capture_spatial_intrabc_probes(
             .filter_map(|candidate| {
                 Some(WeightedIntrabcProbe {
                     row: usize::try_from(candidate.mv.row).ok()?,
-                    col: usize::try_from(candidate.mv.col).ok()?,
+                    col: usize::try_from(candidate.mv.col & PROBE_COL_MASK).ok()?,
                     weight: candidate.weight,
                 })
             })
@@ -354,6 +401,7 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
     let bh4 = geometry.n4h;
 
     let mut candidates: Vec<WeightedBv> = Vec::new();
+    let mut comparisons = 0u32;
     let above = AboveRowScan::resolve(&geometry, &is_coded);
 
     if let Some(left_col) = col.checked_sub(1)
@@ -366,9 +414,16 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
             r,
             left_col,
             ADJACENT_SMVP_WEIGHT,
+            &mut comparisons,
         );
     }
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step8);
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step8,
+        &mut comparisons,
+    );
     if bh4 >= 2
         && let Some(left_col) = col.checked_sub(1)
     {
@@ -379,9 +434,16 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
             row,
             left_col,
             ADJACENT_SMVP_WEIGHT,
+            &mut comparisons,
         );
     }
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step10);
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step10,
+        &mut comparisons,
+    );
     if bh4 <= MAX_SMVP_AXIS_MI
         && let Some(left_col) = col.checked_sub(1)
         && let Some(r) = row.checked_add(bh4)
@@ -393,16 +455,36 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
             r,
             left_col,
             ADJACENT_SMVP_WEIGHT,
+            &mut comparisons,
         );
     }
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step12);
-    push_above_probe(&geometry, &lookup, &mut candidates, above.step14);
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step12,
+        &mut comparisons,
+    );
+    push_above_probe(
+        &geometry,
+        &lookup,
+        &mut candidates,
+        above.step14,
+        &mut comparisons,
+    );
     let nearest_len = candidates.len();
-    push_scan_col(&geometry, &lookup, &block_base_col, &mut candidates);
+    push_scan_col(
+        &geometry,
+        &lookup,
+        &block_base_col,
+        &mut candidates,
+        &mut comparisons,
+    );
 
     SpatialIntrabcScan {
         candidates,
         nearest_len,
+        comparisons,
     }
 }
 
@@ -529,6 +611,7 @@ fn push_above_probe(
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
     candidates: &mut Vec<WeightedBv>,
     col: Option<usize>,
+    comparisons: &mut u32,
 ) {
     if let (Some(above), Some(c)) = (geometry.mi_row.checked_sub(1), col) {
         // AV2 § 7.12.2.6 assigns weight from the post-alignment deltaCol.
@@ -537,7 +620,7 @@ fn push_above_probe(
         } else {
             ADJACENT_SMVP_WEIGHT
         };
-        push_deduped(geometry, lookup, candidates, above, c, weight);
+        push_deduped(geometry, lookup, candidates, above, c, weight, comparisons);
     }
 }
 
@@ -560,13 +643,10 @@ fn push_deduped(
     row_offset: usize,
     left_col: usize,
     weight: u16,
+    comparisons: &mut u32,
 ) {
     if let Some(mv) = lookup_in_grid(geometry, lookup, row_offset, left_col) {
-        if let Some(existing) = candidates.iter_mut().find(|entry| entry.mv == mv) {
-            existing.weight = existing.weight.saturating_add(weight);
-        } else {
-            candidates.push(WeightedBv { mv, weight });
-        }
+        merge_or_push_weighted(candidates, mv, weight, comparisons);
     }
 }
 
@@ -575,6 +655,7 @@ fn push_scan_col(
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
     block_base_col: &impl Fn(usize, usize) -> Option<usize>,
     candidates: &mut Vec<WeightedBv>,
+    comparisons: &mut u32,
 ) {
     let mut delta_col = -3i32;
     if geometry.n4w == 1 {
@@ -588,6 +669,7 @@ fn push_scan_col(
             candidates,
             bottom_row,
             delta_col,
+            comparisons,
         );
     }
     if geometry.n4h > 1 {
@@ -598,10 +680,12 @@ fn push_scan_col(
             candidates,
             geometry.mi_row,
             delta_col,
+            comparisons,
         );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_scan_col_point(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
@@ -609,6 +693,7 @@ fn push_scan_col_point(
     candidates: &mut Vec<WeightedBv>,
     mv_row: usize,
     delta_col: i32,
+    comparisons: &mut u32,
 ) {
     let Some(mv_other_col) = geometry.mi_col.checked_sub(1) else {
         return;
@@ -641,6 +726,7 @@ fn push_scan_col_point(
         mv_row,
         mv_col,
         OTHER_SMVP_WEIGHT,
+        comparisons,
     );
 }
 
@@ -657,18 +743,23 @@ fn lookup_in_grid(
 }
 
 #[cfg(test)]
+fn reversed_bank_candidates(bank: &IntrabcRefMvBank) -> Vec<Mv> {
+    bank.entries().iter().rev().copied().collect()
+}
+
+#[cfg(test)]
 pub(crate) fn build_intrabc_ref_mv_stack(
     bank: &IntrabcRefMvBank,
     geometry: IntrabcStackGeometry,
     enable_refmvbank: bool,
     spatial: &[Mv],
 ) -> Vec<Mv> {
-    let bank_candidates: Vec<Mv> = bank.entries().iter().rev().copied().collect();
     build_intrabc_ref_mv_stack_from_candidates(
-        &bank_candidates,
+        &reversed_bank_candidates(bank),
         geometry,
         enable_refmvbank,
         spatial,
+        0,
     )
 }
 
@@ -677,6 +768,7 @@ pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
     geometry: IntrabcStackGeometry,
     enable_refmvbank: bool,
     spatial: &[Mv],
+    spatial_comparisons: u32,
 ) -> Vec<Mv> {
     let max_count = usize::try_from(geometry.max_bvp_drl_bits_minus_1)
         .ok()
@@ -704,12 +796,13 @@ pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
         stack.push(cand);
     }
 
+    let mut comparisons = spatial_comparisons;
     if enable_refmvbank {
         for &cand in bank_candidates {
             if stack.len() >= max_count {
                 break;
             }
-            if check_rmb_cand(cand, &stack, bounds) {
+            if check_rmb_cand(cand, &stack, bounds, &mut comparisons) {
                 stack.push(cand);
             }
         }
@@ -782,9 +875,8 @@ pub(crate) fn intrabc_ref_stack_admission(
     drl_reorder: DrlReorderMode,
     ref_mv_idx: usize,
 ) -> IntrabcStackAdmission {
-    let bank_candidates: Vec<Mv> = bank.entries().iter().rev().copied().collect();
     intrabc_ref_stack_admission_from_candidates(
-        &bank_candidates,
+        &reversed_bank_candidates(bank),
         geometry,
         spatial,
         enable_refmvbank,
@@ -812,6 +904,7 @@ pub(crate) fn intrabc_ref_stack_admission_from_candidates(
         geometry,
         enable_refmvbank,
         &sorted,
+        spatial.comparisons,
     );
     match real_stack.get(ref_mv_idx).copied() {
         Some(selected) => IntrabcStackAdmission::Admit { selected },

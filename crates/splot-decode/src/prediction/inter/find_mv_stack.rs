@@ -1182,26 +1182,15 @@ impl RefMvBank {
         }
     }
 
-    pub(crate) fn intrabc_candidates(&self, block: &MvBlockContext) -> Vec<Mv> {
+    pub(crate) fn intrabc_candidates(&self) -> Vec<Mv> {
         let list = Self::list_index(INTRABC_REF_FRAME, None);
         let key = Self::bank_key(INTRABC_REF_FRAME, None);
         let count = self.sizes[list];
         let start = self.starts[list];
-        let bw = block.bw4 as i32 * MI_SIZE;
-        let bh = block.bh4 as i32 * MI_SIZE;
         let mut candidates = Vec::with_capacity(count);
         for i in (0..count).rev() {
             let candidate = self.entries[list][(start + i) % REF_MV_BANK_SIZE];
             if candidate.key != key {
-                continue;
-            }
-            let ref_y = block.mi_row as i32 * MI_SIZE + candidate.mv0.row / 8;
-            let ref_x = block.mi_col as i32 * MI_SIZE + candidate.mv0.col / 8;
-            if ref_x <= -bw
-                || ref_y <= -bh
-                || ref_x >= block.mi_cols as i32 * MI_SIZE
-                || ref_y >= block.mi_rows as i32 * MI_SIZE
-            {
                 continue;
             }
             candidates.push(candidate.mv0);

@@ -198,34 +198,10 @@ fn intra_frame_intrabc_uses_128_sample_shared_bank_geometry() -> TestResult {
         4,
         sb_h4,
     );
-    assert_eq!(
-        bank.intrabc_candidates(&MvBlockContext {
-            mi_row: 0,
-            mi_col: 4,
-            bw4: 4,
-            bh4: 4,
-            sb_h4,
-            ref_frame0: INTRABC_REF_FRAME,
-            ref_frame1: None,
-            mi_rows: 64,
-            mi_cols: 64,
-        }),
-        vec![Mv { row: 0, col: -128 }]
-    );
+    assert_eq!(bank.intrabc_candidates(), vec![Mv { row: 0, col: -128 }]);
     bank.reset_for_leaf(&grid, 32, 0, sb_h4, false);
     assert!(
-        bank.intrabc_candidates(&MvBlockContext {
-            mi_row: 32,
-            mi_col: 4,
-            bw4: 4,
-            bh4: 4,
-            sb_h4,
-            ref_frame0: INTRABC_REF_FRAME,
-            ref_frame1: None,
-            mi_rows: 64,
-            mi_cols: 64,
-        })
-        .is_empty(),
+        bank.intrabc_candidates().is_empty(),
         "the shared bank clears at the effective 128-pixel SB-row boundary"
     );
     Ok(())
