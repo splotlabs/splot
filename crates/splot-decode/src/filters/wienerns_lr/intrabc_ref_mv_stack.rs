@@ -296,7 +296,7 @@ pub(crate) struct WeightedBv {
 pub(crate) struct SpatialIntrabcScan {
     pub(crate) candidates: Vec<WeightedBv>,
     pub(crate) nearest_len: usize,
-    /// § 7.10.2 `DrlPrCount` after the spatial scan: every duplicate-check
+    /// § 7.12.2 `PruneCount` after the spatial scan: every duplicate-check
     /// comparison spends this budget, and once `MAX_PR_NUM` is spent later
     /// stages append without checking for duplicates.
     pub(crate) comparisons: u32,
@@ -740,7 +740,6 @@ fn lookup_in_grid(
     lookup(row, col)
 }
 
-#[cfg(test)]
 #[cfg(test)]
 fn reversed_bank_candidates(bank: &IntrabcRefMvBank) -> Vec<Mv> {
     bank.entries().iter().rev().copied().collect()
