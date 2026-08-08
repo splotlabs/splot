@@ -134,6 +134,12 @@ pub enum DecodeReferenceStateError {
         /// Active reference-slot count.
         slot_count: usize,
     },
+    /// A valid reference slot was missing quantizer metadata needed by TIP output.
+    #[error("reference slot {slot} has no stored quantizer metadata")]
+    MissingQuantizerMetadata {
+        /// Zero-based reference slot selected for TIP output.
+        slot: usize,
+    },
     /// A slot marked valid had no decoded-frame index attached.
     #[error("valid reference slot {slot} has no stored decoded-frame index")]
     MissingFrame {
