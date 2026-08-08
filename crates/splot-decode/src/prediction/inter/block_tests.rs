@@ -14,11 +14,35 @@ use splot_recon::{
 use super::interintra::InterIntraScratch;
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::resolve::effective_intrabc_sb_h4;
-use super::warp::extend_warp_base_position;
+use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
     chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
     predict_interintra_planes, read_inter_intra_syntax_enabled, validate_segment_id,
 };
+
+#[test]
+fn mvd_sign_derivation_requires_the_full_block_scope() {
+    assert!(mvd_sign_derivation_block_scope_allowed(
+        crate::prediction::inter::find_mv_stack::MotionMode::Simple,
+        false,
+        None,
+    ));
+    assert!(!mvd_sign_derivation_block_scope_allowed(
+        crate::prediction::inter::find_mv_stack::MotionMode::InterIntra,
+        false,
+        None,
+    ));
+    assert!(!mvd_sign_derivation_block_scope_allowed(
+        crate::prediction::inter::find_mv_stack::MotionMode::Simple,
+        true,
+        None,
+    ));
+    assert!(!mvd_sign_derivation_block_scope_allowed(
+        crate::prediction::inter::find_mv_stack::MotionMode::Simple,
+        false,
+        Some(1),
+    ));
+}
 use crate::bitstream::tile_payload::{
     BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
 };
@@ -89,6 +113,30 @@ fn intrabc_spatial_probe_waits_for_ordered_motion_publication() -> TestResult {
         bv
     );
     Ok(())
+}
+
+#[test]
+fn intrabc_spatial_probe_excludes_future_block_geometry() {
+    let geometry = SpatialScanGeometry {
+        mi_row: 16,
+        mi_col: 9,
+        n4w: 1,
+        n4h: 2,
+        mi_rows: 32,
+        mi_cols: 64,
+        sb_size4: 16,
+    };
+    let future = (18, 8);
+    let probes =
+        capture_spatial_intrabc_probes(geometry, |row, col| (row, col) != future, |_, _| None);
+    let future_mv = Mv { row: -64, col: 64 };
+    assert!(
+        probes
+            .resolve(|row, col| ((row, col) == future).then_some(future_mv))
+            .candidates
+            .is_empty(),
+        "§ 7.12.2.6 excludes a future below-left block even if it is resolved later"
+    );
 }
 
 #[test]

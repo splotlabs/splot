@@ -312,9 +312,13 @@ pub(crate) fn capture_spatial_intrabc_probes(
     is_coded: impl Fn(usize, usize) -> bool,
     block_base_col: impl Fn(usize, usize) -> Option<usize>,
 ) -> SpatialIntrabcProbes {
+    let is_coded = &is_coded;
     let encoded = spatial_intrabc_scan_with_base_col(
         geometry,
         |row, col| {
+            if !is_coded(row, col) {
+                return None;
+            }
             Some(Mv {
                 row: i32::try_from(row).ok()?,
                 col: i32::try_from(col).ok()?,
@@ -364,13 +368,7 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
             ADJACENT_SMVP_WEIGHT,
         );
     }
-    push_above_probe(
-        &geometry,
-        &lookup,
-        &mut candidates,
-        above.step8,
-        ADJACENT_SMVP_WEIGHT,
-    );
+    push_above_probe(&geometry, &lookup, &mut candidates, above.step8);
     if bh4 >= 2
         && let Some(left_col) = col.checked_sub(1)
     {
@@ -383,13 +381,7 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
             ADJACENT_SMVP_WEIGHT,
         );
     }
-    push_above_probe(
-        &geometry,
-        &lookup,
-        &mut candidates,
-        above.step10,
-        ADJACENT_SMVP_WEIGHT,
-    );
+    push_above_probe(&geometry, &lookup, &mut candidates, above.step10);
     if bh4 <= MAX_SMVP_AXIS_MI
         && let Some(left_col) = col.checked_sub(1)
         && let Some(r) = row.checked_add(bh4)
@@ -403,20 +395,8 @@ pub(crate) fn spatial_intrabc_scan_with_base_col(
             ADJACENT_SMVP_WEIGHT,
         );
     }
-    push_above_probe(
-        &geometry,
-        &lookup,
-        &mut candidates,
-        above.step12,
-        ADJACENT_SMVP_WEIGHT,
-    );
-    push_above_probe(
-        &geometry,
-        &lookup,
-        &mut candidates,
-        above.step14,
-        OTHER_SMVP_WEIGHT,
-    );
+    push_above_probe(&geometry, &lookup, &mut candidates, above.step12);
+    push_above_probe(&geometry, &lookup, &mut candidates, above.step14);
     let nearest_len = candidates.len();
     push_scan_col(&geometry, &lookup, &block_base_col, &mut candidates);
 
@@ -549,9 +529,14 @@ fn push_above_probe(
     lookup: &impl Fn(usize, usize) -> Option<Mv>,
     candidates: &mut Vec<WeightedBv>,
     col: Option<usize>,
-    weight: u16,
 ) {
     if let (Some(above), Some(c)) = (geometry.mi_row.checked_sub(1), col) {
+        // AV2 § 7.12.2.6 assigns weight from the post-alignment deltaCol.
+        let weight = if c < geometry.mi_col {
+            OTHER_SMVP_WEIGHT
+        } else {
+            ADJACENT_SMVP_WEIGHT
+        };
         push_deduped(geometry, lookup, candidates, above, c, weight);
     }
 }

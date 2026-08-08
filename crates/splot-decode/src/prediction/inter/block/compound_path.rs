@@ -12,6 +12,7 @@ use super::super::find_mv_stack::TemporalMotionBlock;
 use super::super::read_mv::apply_inter_mvd_sign_pair;
 use super::prediction::PlacedInterGeometry;
 use super::temporal::temporal_motion_block;
+use super::warp::mvd_sign_derivation_block_scope_allowed;
 use super::*;
 use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 
@@ -239,6 +240,11 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             ref_mv_idx,
             precision,
             frame_mv_config,
+            motion_mode: if local_warp {
+                MotionMode::LocalWarp
+            } else {
+                MotionMode::Simple
+            },
         },
         tile_offset,
     )?;
@@ -781,6 +787,7 @@ struct CompoundMvdInput {
     ref_mv_idx: usize,
     precision: BlockPrecisionRecord,
     frame_mv_config: MvReadConfig,
+    motion_mode: MotionMode,
 }
 
 /// AV2 § 5.20.7.7 compound motion-vector differences: one per NEWMV list, with
@@ -798,15 +805,16 @@ fn read_compound_mvd_syntax(
     }
     let config = MvReadConfig::inter(input.precision.mv_precision);
     let threshold = input.y_mode.mvd_sign_derivation_threshold();
-    let derive_sign = input.ref_mv_idx == 0
-        && inter_mvd_sign_derivation_allowed(
-            sequence,
-            core,
-            SINGLE_MODE_NEWMV,
-            input.use_amvd,
-            input.frame_mv_config,
-            config,
-        );
+    let derive_sign =
+        mvd_sign_derivation_block_scope_allowed(input.motion_mode, false, Some(input.ref_mv_idx))
+            && inter_mvd_sign_derivation_allowed(
+                sequence,
+                core,
+                SINGLE_MODE_NEWMV,
+                input.use_amvd,
+                input.frame_mv_config,
+                config,
+            );
     match input.y_mode {
         CompoundYMode::NearNew | CompoundYMode::NewNear => {
             let magnitude =
