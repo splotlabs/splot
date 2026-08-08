@@ -419,29 +419,46 @@ fn update_after_coeffs_clamps_right_edge_overhang_to_on_tile_cols() {
     assert_eq!(state.left_level(0).unwrap()[16], 0);
 }
 
+/// § 5.20.4 `reset_block_context` clears the block's plane extent, so a reset
+/// shifts only the axes the chroma format subsamples: 4:2:0 halves both, while
+/// 4:2:2 halves columns alone and must still clear every row the block covers.
 #[test]
-fn reset_block_context_plane_zeros_subsampled_ranges() {
-    let mut state = TileCoeffContextState::new(6, 8).unwrap();
-    state
-        .update_after_coeffs(CoeffContextUpdate {
-            plane: 1,
-            x4: 0,
-            y4: 0,
-            w4: 8,
-            h4: 6,
-            cul_level: 4,
-            dc_category: 2,
-        })
-        .unwrap();
+fn reset_block_context_plane_shifts_only_the_subsampled_axes() {
+    for (sub_x, sub_y, left_level, left_dc) in [
+        (1, 1, [4, 0, 0, 4, 4, 4], [2, 0, 0, 2, 2, 2]),
+        (1, 0, [4, 4, 0, 0, 0, 0], [2, 2, 0, 0, 0, 0]),
+    ] {
+        let mut state = TileCoeffContextState::new(6, 8).unwrap();
+        state
+            .update_after_coeffs(CoeffContextUpdate {
+                plane: 1,
+                x4: 0,
+                y4: 0,
+                w4: 8,
+                h4: 6,
+                cul_level: 4,
+                dc_category: 2,
+            })
+            .unwrap();
 
-    state
-        .reset_block_context_plane(reset(1, 2, 2, 4, 4, 1, 1))
-        .unwrap();
+        state
+            .reset_block_context_plane(reset(1, 2, 2, 4, 4, sub_x, sub_y))
+            .unwrap();
 
-    assert_eq!(state.above_level(1).unwrap(), &[4, 0, 0, 4, 4, 4, 4, 4]);
-    assert_eq!(state.above_dc(1).unwrap(), &[2, 0, 0, 2, 2, 2, 2, 2]);
-    assert_eq!(state.left_level(1).unwrap(), &[4, 0, 0, 4, 4, 4]);
-    assert_eq!(state.left_dc(1).unwrap(), &[2, 0, 0, 2, 2, 2]);
+        let axes = format!("sub=({sub_x},{sub_y})");
+        assert_eq!(
+            state.above_level(1).unwrap(),
+            &[4, 0, 0, 4, 4, 4, 4, 4],
+            "{axes}"
+        );
+        assert_eq!(
+            state.above_dc(1).unwrap(),
+            &[2, 0, 0, 2, 2, 2, 2, 2],
+            "{axes}"
+        );
+        assert_eq!(state.left_level(1).unwrap(), &left_level, "{axes}");
+        assert_eq!(state.left_dc(1).unwrap(), &left_dc, "{axes}");
+    }
 }
 
 #[test]

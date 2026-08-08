@@ -829,6 +829,7 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
     frontier: &DecodeBlockFrontier,
     n4w: usize,
     n4h: usize,
+    subsampling: (u32, u32),
     tile_offset: ByteOffset,
 ) -> Result<()> {
     let plane_count = 1 + usize::from(frontier.has_chroma) * (COEFF_CONTEXT_PLANES.len() - 1);
@@ -841,7 +842,8 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
         .size()
         .num_4x4_high()
         .map_err(|_| residual_geometry_error(tile_offset))?;
-    for &(plane, sub) in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
+    let (sub_x, sub_y) = subsampling;
+    for &plane in COEFF_CONTEXT_PLANES.iter().take(plane_count) {
         let (r, c, w4, h4) = if plane == 0 {
             (frontier.r, frontier.c, n4w, n4h)
         } else {
@@ -854,8 +856,8 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
                 r,
                 w4,
                 h4,
-                sub_x: sub,
-                sub_y: sub,
+                sub_x: if plane == 0 { 0 } else { sub_x },
+                sub_y: if plane == 0 { 0 } else { sub_y },
             })
             .map_err(|_| residual_geometry_error(tile_offset))?;
     }

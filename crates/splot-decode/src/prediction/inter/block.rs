@@ -127,7 +127,13 @@ const WEDGE_USED_BY_BSIZE: [bool; 29] = [
 ];
 const QUAD_WEDGE_ANGLES: u8 = 5;
 const H_WEDGE_ANGLES: u8 = 10;
-const COEFF_CONTEXT_PLANES: [(usize, u32); 3] = [(0, 0), (1, 1), (2, 1)];
+const COEFF_CONTEXT_PLANES: [usize; 3] = [0, 1, 2];
+
+/// § 5.20.4 chroma subsampling as `(subsamplingX, subsamplingY)` in MI shifts.
+pub(super) fn block_chroma_subsampling(chroma: ChromaFormatIdc) -> (u32, u32) {
+    let (sub_x, sub_y) = chroma_subsampling(chroma);
+    (u32::from(sub_x), u32::from(sub_y))
+}
 const WEDGE_0: u8 = 0;
 const WEDGE_90: u8 = 5;
 
@@ -1175,7 +1181,14 @@ fn decode_block<T: ReconSample>(
                 .lossless_for_segment(usize::from(segment_id))
                 .unwrap_or(false);
             let residual = if prelude.skip_flag {
-                reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
+                reset_inter_skip_coeff_contexts(
+                    coeff_ctx,
+                    frontier,
+                    n4w,
+                    n4h,
+                    block_chroma_subsampling(sequence.general.chroma_format_idc),
+                    tile_offset,
+                )?;
                 None
             } else {
                 let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
@@ -1616,7 +1629,14 @@ fn decode_block<T: ReconSample>(
                 tile_offset,
             )?)
         } else {
-            reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
+            reset_inter_skip_coeff_contexts(
+                coeff_ctx,
+                frontier,
+                n4w,
+                n4h,
+                block_chroma_subsampling(sequence.general.chroma_format_idc),
+                tile_offset,
+            )?;
             None
         };
         record_inter_deblock_geometry(
@@ -1867,7 +1887,14 @@ fn decode_block<T: ReconSample>(
             tile_offset,
         )?)
     } else {
-        reset_inter_skip_coeff_contexts(coeff_ctx, frontier, n4w, n4h, tile_offset)?;
+        reset_inter_skip_coeff_contexts(
+            coeff_ctx,
+            frontier,
+            n4w,
+            n4h,
+            block_chroma_subsampling(sequence.general.chroma_format_idc),
+            tile_offset,
+        )?;
         None
     };
     let tip_uses_16x16_units = tip_ref

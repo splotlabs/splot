@@ -7,7 +7,10 @@ use super::*;
 
 use crate::bitstream::tile_payload::{encode_symbol_sequence, make_test_work_unit};
 
+use splot_core::headers::sequence::ChromaFormatIdc;
 use splot_core::symbol::{CdfUpdateMode, SymbolDecoderConfig};
+
+use super::super::block_chroma_subsampling;
 
 const BLOCK_16X8: usize = 5;
 
@@ -184,4 +187,18 @@ fn lossless_inter_residual_tx_size_reads_selector() {
         tx_size_for(16, 8)
     );
     assert_eq!(symbols.symbol_count(), 1);
+}
+
+/// A skipped block resets its chroma coefficient context over the plane extent,
+/// so only 4:2:0 shifts both axes.
+#[test]
+fn block_chroma_subsampling_follows_the_chroma_format() {
+    for (format, expected) in [
+        (ChromaFormatIdc::Yuv420, (1, 1)),
+        (ChromaFormatIdc::Yuv422, (1, 0)),
+        (ChromaFormatIdc::Yuv444, (0, 0)),
+        (ChromaFormatIdc::Monochrome, (1, 1)),
+    ] {
+        assert_eq!(block_chroma_subsampling(format), expected, "{format:?}");
+    }
 }
