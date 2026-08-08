@@ -1753,14 +1753,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    if core.tile_info.is_none() {
-        return Err(inter_missing!(
-            "inter_missing_tile_info",
-            offset,
-            "inter.tile_info",
-            SPEC_HEADER
-        ));
-    }
     let unsupported_tools = core.quantization_params.is_none()
         || core.segmentation_params.as_ref().is_none_or(|seg| {
             !inter_segmentation_supported(
