@@ -30,7 +30,7 @@ use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStag
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
-use crate::{DecodeOptions, DecodePlannedObu, DecodeStreamPlan, Result};
+use crate::{DecodeOptions, DecodePlannedObu, DecodeSourceIssue, DecodeStreamPlan, Result};
 
 macro_rules! inter_cap {
     ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
@@ -83,6 +83,7 @@ macro_rules! compound_missing {
 }
 
 const SPEC_HEADER: &str = "5.18.2";
+const SPEC_HEADER_SEMANTICS: &str = "6";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
@@ -359,11 +360,16 @@ fn resolve_initial_frame_cdfs(
         ResolvedCdfLoad::OutOfRangePrimary {
             index,
             reference_count,
-        } => Err(DecodeHeaderStateError::PrimaryReferenceIndexOutOfRange {
-            index,
-            reference_count,
-        }
-        .into()),
+        } => Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                SPEC_HEADER_SEMANTICS,
+                format!(
+                    "primary reference index {index} is outside the active \
+                     {reference_count}-entry map"
+                ),
+            ),
+        }),
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: None,

@@ -340,6 +340,8 @@ pub enum DecodeSourceIssueKind {
     IvfWarning,
     /// IVF codec metadata selects a codec outside the AV2 decoder input domain.
     IvfUnsupportedCodec,
+    /// Fatal AV2 frame-header conformance error.
+    FrameHeaderConformanceError,
     /// Fatal AV2 tile-payload syntax decode error.
     TilePayloadParseError,
 }
@@ -362,6 +364,21 @@ pub struct DecodeSourceIssue {
 }
 
 impl DecodeSourceIssue {
+    pub(crate) fn frame_header_conformance(
+        offset: ByteOffset,
+        spec_section: &'static str,
+        message: String,
+    ) -> Self {
+        Self {
+            kind: DecodeSourceIssueKind::FrameHeaderConformanceError,
+            rule_id: None,
+            spec_section: Some(spec_section),
+            offset: Some(offset),
+            frame_index: None,
+            message,
+        }
+    }
+
     pub(crate) fn tile_payload(
         offset: ByteOffset,
         spec_section: &'static str,
@@ -489,6 +506,7 @@ impl_reason_labels!(pub DecodeSourceIssueKind {
     IvfFramePayloadError => "ivf_frame_payload_error",
     IvfWarning => "ivf_warning",
     IvfUnsupportedCodec => "ivf_unsupported_codec",
+    FrameHeaderConformanceError => "frame_header_conformance_error",
     TilePayloadParseError => "tile_payload_parse_error",
 });
 
