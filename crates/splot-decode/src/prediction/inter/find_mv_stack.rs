@@ -1389,7 +1389,7 @@ pub(crate) fn find_mv_stack_with_temporal(
         }
     }
     if use_temporal_first {
-        scan_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
+        scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
     }
 
     let probes = mv_stack_spatial_probes(block);
@@ -1405,7 +1405,7 @@ pub(crate) fn find_mv_stack_with_temporal(
         );
     }
     if !use_temporal_first {
-        scan_temporal_mv_stack(block, temporal, &mut entries, &mut prune_count);
+        scan_temporal_mv_stack(grid, block, temporal, &mut entries, &mut prune_count);
     }
     if let Some(probe) = probes[6] {
         scan_mv_stack_probe(
@@ -1485,7 +1485,7 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
     for probe in probes.iter().take(6).copied().flatten() {
         scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
-    scan_compound_temporal_mv_stack(block, temporal, &mut state);
+    scan_compound_temporal_mv_stack(grid, block, temporal, &mut state);
     if let Some(probe) = probes[6] {
         scan_compound_mv_stack_probe(grid, block, probe, temporal, &mut state);
     }
@@ -1638,6 +1638,7 @@ fn scan_compound_mv_stack_probe(
 }
 
 fn scan_compound_temporal_mv_stack(
+    grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     temporal: Option<&TemporalMvContext>,
     state: &mut CompoundScanState,
@@ -1656,7 +1657,7 @@ fn scan_compound_temporal_mv_stack(
     for (delta_row, delta_col) in samples.into_iter().flatten() {
         let mv_row = block.mi_row.saturating_add(delta_row);
         let mv_col = block.mi_col.saturating_add(delta_col);
-        if mv_row >= block.mi_rows || mv_col >= block.mi_cols {
+        if !grid.is_inside(mv_row, mv_col) {
             continue;
         }
         let Some(mv0) = temporal.motion_field_mv(block.ref_frame0, mv_row >> 1, mv_col >> 1) else {
@@ -1840,6 +1841,7 @@ fn insert_mv_stack_entry(
 }
 
 fn scan_temporal_mv_stack(
+    grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     temporal: Option<&TemporalMvContext>,
     entries: &mut FixedStack<MvStackEntry, MAX_REF_MV_STACK_SIZE>,
@@ -1856,6 +1858,7 @@ fn scan_temporal_mv_stack(
     let mut inserted = false;
     if row_end >= step_h4 && col_end >= step_w4 {
         inserted = add_temporal_mv_sample(
+            grid,
             block,
             temporal,
             row_end - step_h4,
@@ -1866,6 +1869,7 @@ fn scan_temporal_mv_stack(
     }
     if !inserted && (row_end >= 3 * step_h4 || col_end >= 3 * step_w4) {
         add_temporal_mv_sample(
+            grid,
             block,
             temporal,
             row_end >> 1,
@@ -1876,7 +1880,9 @@ fn scan_temporal_mv_stack(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn add_temporal_mv_sample(
+    grid: &NeighbourMvGrid,
     block: &MvBlockContext,
     temporal: &TemporalMvContext,
     delta_row: usize,
@@ -1886,7 +1892,7 @@ fn add_temporal_mv_sample(
 ) -> StackInsert {
     let mv_row = block.mi_row.saturating_add(delta_row);
     let mv_col = block.mi_col.saturating_add(delta_col);
-    if mv_row >= block.mi_rows || mv_col >= block.mi_cols {
+    if !grid.is_inside(mv_row, mv_col) {
         return StackInsert::Skipped;
     }
     let Some(candidate_mv) = temporal.motion_field_mv(block.ref_frame0, mv_row >> 1, mv_col >> 1)

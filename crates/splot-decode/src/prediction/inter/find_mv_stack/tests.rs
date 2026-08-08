@@ -693,6 +693,61 @@ fn compound_temporal_scan_skips_small_block_sample_without_underflow() {
     assert_eq!(candidate.mvs, global_mvs);
 }
 
+fn beyond_tile_end_setup() -> (TemporalMvContext, NeighbourMvGrid, MvBlockContext) {
+    let references = temporal::TipReferencePair {
+        past_ref: 0,
+        future_ref: 1,
+        past_offset: -1,
+        future_offset: 1,
+        ref_offset: 1,
+    };
+    let mut context = TemporalMvContext::with_tip_sample(
+        MI_DIM,
+        MI_DIM,
+        references,
+        5,
+        5,
+        Mv { row: 16, col: 32 },
+    )
+    .unwrap();
+    context.set_order_hint_context(6, vec![Some(8), Some(4), None, Some(2)]);
+    let grid = NeighbourMvGrid::new_for_tile(0..8, 0..8).unwrap();
+    (context, grid, block_at(4, 4))
+}
+
+#[test]
+fn temporal_sample_scans_reject_positions_beyond_the_tile_end() {
+    let (context, grid, block) = beyond_tile_end_setup();
+    let rejected = context.motion_field_mv(0, 5, 5).unwrap();
+    let stack = find_mv_stack_with_temporal(
+        &grid,
+        &block,
+        Mv::ZERO,
+        DEFAULT_WARP_PARAMS,
+        None,
+        &WarpParamBank::new(),
+        false,
+        DrlReorder::Disabled,
+        Some(&context),
+        Some(context.order_hint_mv_context()),
+        false,
+    );
+    assert!((0..stack.num_mv_found()).all(|idx| stack.candidate(idx) != rejected));
+
+    let mut block = block;
+    block.ref_frame1 = Some(1);
+    let rejected = [rejected, context.motion_field_mv(1, 5, 5).unwrap()];
+    let compound = find_compound_mv_stack_with_temporal(
+        &grid,
+        &block,
+        [Mv::ZERO; 2],
+        None,
+        DrlReorder::Disabled,
+        Some(&context),
+    );
+    assert!((0..MAX_REF_MV_STACK_SIZE).all(|idx| compound.candidate(idx).mvs != rejected));
+}
+
 #[test]
 fn compound_mv_stack_keeps_paired_vectors_cwp_and_precision_state() {
     let mut grid = empty_grid();

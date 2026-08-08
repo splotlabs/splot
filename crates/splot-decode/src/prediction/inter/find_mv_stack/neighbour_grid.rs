@@ -738,6 +738,14 @@ impl NeighbourMvGrid {
         r.checked_mul(self.mi_cols)?.checked_add(c)
     }
 
+    /// § 5.20.9.1 is_inside: whether the mi position lies inside this tile.
+    pub(super) fn is_inside(&self, r: usize, c: usize) -> bool {
+        r >= self.origin_row
+            && r < self.origin_row.saturating_add(self.mi_rows)
+            && c >= self.origin_col
+            && c < self.origin_col.saturating_add(self.mi_cols)
+    }
+
     /// Reads the flag half only; motion memory is not touched.
     pub(super) fn flags_at(&self, r: i32, c: i32) -> Option<NeighbourFlags> {
         *self.planes.flags.get(self.index(r, c)?)?
