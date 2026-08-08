@@ -1173,8 +1173,11 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         .as_ref()
         .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let ref_frame_idx = &inter.ref_frame_idx;
-    let width = frame_size.width as usize;
-    let height = frame_size.height as usize;
+    let dimension_overflow = || ReconError::ArithmeticOverflow {
+        context: "TIP-output frame dimensions",
+    };
+    let width = usize::try_from(frame_size.width).map_err(|_| dimension_overflow())?;
+    let height = usize::try_from(frame_size.height).map_err(|_| dimension_overflow())?;
     let (mi_rows, mi_cols) = (height.div_ceil(4), width.div_ceil(4));
     let sb_h4 =
         super::superblock_h4(sequence, core).ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
