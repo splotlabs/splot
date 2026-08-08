@@ -49,8 +49,8 @@ use self::mv::MvCdfRows;
 pub(crate) use self::mv::MvCdfSelector;
 use super::coeff_rows::CoeffCdfRows;
 use super::{
-    CDF_ROW_LEN, TileCdfArray, TileCdfError, TileCdfSelector, avg_cdf_row, avg_cdf_rows,
-    blend_cdf_row, blend_cdf_rows, checked_context, scale_cdf_count, scale_cdf_rows,
+    CDF_ROW_LEN, CoeffCdfQContext, TileCdfArray, TileCdfError, TileCdfSelector, avg_cdf_row,
+    avg_cdf_rows, blend_cdf_row, blend_cdf_rows, checked_context, scale_cdf_count, scale_cdf_rows,
 };
 
 const Y_MODE_SET_CDF_ROW_LEN: usize = 5;
@@ -1355,6 +1355,18 @@ impl BlockCdfRows {
         coeff_cdf_q_ctx: usize,
     ) -> Result<(), TileCdfError> {
         let q = checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
+        let bounded = [
+            CoeffCdfQContext::Q0,
+            CoeffCdfQContext::Q1,
+            CoeffCdfQContext::Q2,
+            CoeffCdfQContext::Q3,
+        ][q];
+        self.replicate_bounded_coeff_q_context(bounded);
+        Ok(())
+    }
+
+    pub(super) fn replicate_bounded_coeff_q_context(&mut self, coeff_cdf_q_ctx: CoeffCdfQContext) {
+        let q = coeff_cdf_q_ctx.index();
         self.txb_skip = [self.txb_skip[q]; COEFF_CDF_Q_CONTEXTS];
         self.v_txb_skip = [self.v_txb_skip[q]; COEFF_CDF_Q_CONTEXTS];
         self.eob_extra = [self.eob_extra[q]; COEFF_CDF_Q_CONTEXTS];
@@ -1366,7 +1378,7 @@ impl BlockCdfRows {
         self.eob_pt_512 = [self.eob_pt_512[q]; COEFF_CDF_Q_CONTEXTS];
         self.eob_pt_1024 = [self.eob_pt_1024[q]; COEFF_CDF_Q_CONTEXTS];
         self.dc_sign = [self.dc_sign[q]; COEFF_CDF_Q_CONTEXTS];
-        self.coeff.replicate_q_context(q)
+        self.coeff.replicate_q_context(coeff_cdf_q_ctx);
     }
 
     pub(crate) fn row(&self, selector: TileCdfSelector) -> Result<&[u16], TileCdfError> {

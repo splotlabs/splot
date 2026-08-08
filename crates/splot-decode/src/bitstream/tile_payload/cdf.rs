@@ -96,7 +96,7 @@ pub(in crate::bitstream::tile_payload::cdf) use self::util::{
 use self::util::{
     checked_context, checked_plane, checked_square_split_plane, floor_log2, tx_partition_type_array,
 };
-use super::coeff_loop::use_fsc_branch::coeff_cdf_q_ctx_from_base_q_idx;
+use super::coeff_loop::use_fsc_branch::{CoeffCdfQContext, coeff_cdf_q_ctx_from_base_q_idx};
 
 pub(crate) const CDF_PROB_SCALE: u32 = 1 << 15;
 pub(crate) const DO_SPLIT_PLANE_CONTEXTS: usize = 2;
@@ -244,10 +244,12 @@ impl FrameCdfSubset {
         }
     }
 
-    pub(crate) fn default_for_base_q(base_q_idx: u32) -> Result<Self, TileCdfError> {
+    pub(crate) fn default_for_base_q(base_q_idx: u32) -> Self {
         let mut cdfs = Self::from_defaults();
-        cdfs.replicate_coeff_q_context_for_base_q(base_q_idx)?;
-        Ok(cdfs)
+        cdfs.rows
+            .block
+            .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
+        cdfs
     }
 
     pub(crate) fn replicate_coeff_q_context_for_base_q(

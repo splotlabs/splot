@@ -848,7 +848,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
     };
     let frame_cdfs = match &input.frame.initial_cdfs {
         Some(cdfs) => Arc::clone(cdfs),
-        None => Arc::new(FrameCdfSubset::default_for_base_q(input.frame.base_q_idx)?),
+        None => Arc::new(FrameCdfSubset::default_for_base_q(input.frame.base_q_idx)),
     };
     let cdf_policy = input
         .frame
