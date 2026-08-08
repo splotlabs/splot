@@ -1653,25 +1653,13 @@ fn validate_tip_output_frame_parse(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
-    if core.status.is_truncated_in_modeled_region() {
-        return Err(DecodeError::MalformedSource {
-            issue: DecodeSourceIssue::frame_header_conformance(
-                offset,
-                frame_index,
-                "6.2.1",
-                "TIP-output OBU payload ends inside mandatory frame_header_info() syntax"
-                    .to_owned(),
-            ),
-        });
-    }
-    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
-        return Err(unsupported_at(
-            feature_id,
-            offset,
-            "TIP-output frame header requires unsupported parser coverage",
-            SPEC_HEADER,
-        ));
-    }
+    validate_frame_header_parse_status(
+        core,
+        offset,
+        frame_index,
+        "TIP-output OBU payload ends inside mandatory frame_header_info() syntax",
+        "TIP-output frame header requires unsupported parser coverage",
+    )?;
     if core.obu_type.is_tip_frame()
         && core.inter.as_ref().and_then(|inter| inter.tip_frame_mode)
             != Some(TipFrameMode::AsOutput)
@@ -1805,14 +1793,29 @@ fn validate_inter_frame_parse(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
+    validate_frame_header_parse_status(
+        core,
+        offset,
+        frame_index,
+        "inter-frame OBU payload ends inside mandatory frame_header_info() syntax",
+        "inter-frame header requires unsupported parser coverage",
+    )
+}
+
+fn validate_frame_header_parse_status(
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+    truncated_message: &'static str,
+    unsupported_message: &'static str,
+) -> Result<()> {
     if core.status.is_truncated_in_modeled_region() {
         return Err(DecodeError::MalformedSource {
             issue: DecodeSourceIssue::frame_header_conformance(
                 offset,
                 frame_index,
                 "6.2.1",
-                "inter-frame OBU payload ends inside mandatory frame_header_info() syntax"
-                    .to_owned(),
+                truncated_message.to_owned(),
             ),
         });
     }
@@ -1820,7 +1823,7 @@ fn validate_inter_frame_parse(
         return Err(unsupported_at(
             feature_id,
             offset,
-            "inter-frame header requires unsupported parser coverage",
+            unsupported_message,
             SPEC_HEADER,
         ));
     }
