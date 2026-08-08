@@ -75,6 +75,14 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeReferenceStateError {
+    /// A compound block selected an entry outside its frame-header reference map.
+    #[error("reference-list index {index} is outside the active {list_len}-entry reference map")]
+    ReferenceListIndexOutOfRange {
+        /// Zero-based reference-list index selected by block syntax.
+        index: i8,
+        /// Number of entries in the frame-header reference map.
+        list_len: usize,
+    },
     /// A frame header named a slot outside the active reference buffer.
     #[error("reference slot {slot} is outside the active {slot_count}-slot buffer")]
     SlotOutOfRange {

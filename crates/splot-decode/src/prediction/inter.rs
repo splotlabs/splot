@@ -25,7 +25,7 @@ use crate::bitstream::tile_payload::{
     FrameCdfSubset, FrameQuantizerDeltasScope, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
-use crate::error::DecodeError;
+use crate::error::{DecodeError, DecodeReferenceStateError};
 use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStage};
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
@@ -686,17 +686,14 @@ fn compound_is_joint_context(
     offset: ByteOffset,
 ) -> Result<usize> {
     let order_hint_of = |ref_frame: i8| -> Result<i32> {
+        let list_len = ref_frame_idx.len();
         let slot = usize::try_from(ref_frame)
             .ok()
             .and_then(|ref_idx| ref_frame_idx.get(ref_idx))
             .copied()
-            .ok_or_else(|| {
-                compound_cap!(
-                    "compound_ref_frame_idx_out_of_range",
-                    offset,
-                    "inter.compound.ref_frame out of range",
-                    SPEC_MODE_INFO
-                )
+            .ok_or(DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: ref_frame,
+                list_len,
             })?;
         ref_order_hint
             .get(slot as usize)
@@ -724,6 +721,20 @@ fn compound_is_joint_context(
         second_order_hint,
         current_order_hint,
     ))
+}
+
+#[cfg(test)]
+#[test]
+fn compound_is_joint_context_keeps_reference_list_bounds_fail_closed() {
+    assert!(matches!(
+        compound_is_joint_context(&[0, 1], &[9, 11], (2, 0), 10, ByteOffset::new(0)),
+        Err(DecodeError::ReferenceState {
+            source: DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: 2,
+                list_len: 2,
+            }
+        })
+    ));
 }
 
 fn compound_is_joint_context_from_order_hints(
