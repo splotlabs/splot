@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "462d0619b6aa7bbffef25baab947d41d09f9e589",
+  "audited_commit": "4916f2127ab31f61e68b791b29a4af0ff634d3fa",
   "outcome": "success",
   "files": [
     {
@@ -61,7 +61,7 @@
     },
     {
       "path": "Cargo.toml",
-      "sha256": "bdc4382b6b4822cf3acaddc7df8093e87a6058472b03e92a2f9b378b36933e36",
+      "sha256": "82152640df7196dc2f673f451f1ffe7a20807193c9695b0e3811784756c2c005",
       "scope_kind": "repository-process",
       "feature_ids": [
         "CONF-INSPECT-SNAPSHOTS"
@@ -2712,14 +2712,14 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack.rs",
-      "sha256": "dc8201b9bbb2acfb93fd338718e185ab13224eb448c08d17e678c38708f46804",
+      "sha256": "f28ea54629ba7ff03408c5e8bcc412cf086a5a507814806d2d10efaab9d37f0d",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack_tests.rs",
-      "sha256": "12fb0f78b1ffb89ec089ed795b55373423fc97a58e20b05e0873b3d75ea0e8c6",
+      "sha256": "f96405b12f2533fa0e69d2406ec40249d62263a448c3a147abe257afdd973d81",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2735,7 +2735,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
-      "sha256": "db45509f3a775c819c00a7c78c13881b69c720254f8cbbd54f5f11f07853528b",
+      "sha256": "55dd431f888e929cdb2262f8711ecdbc2bf316351f2925b50b4e25a6a7195c88",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FILTER-HOT-PATHS"
@@ -2744,7 +2744,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters_tests.rs",
-      "sha256": "a9dea8f6d9842ba6660711942883b45d90f0cbf444aee936e81fbf62c6c41fda",
+      "sha256": "0a8e621e24ae540e76c04f91752ca300fa996ab715c6077f81dbc5ab97898e15",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -3327,7 +3327,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block.rs",
-      "sha256": "87c2263b9db79b9a1fc15d0c792bf388866fb86143e11b17d74ada11353b4b6a",
+      "sha256": "2a8432f65c4f018cfb0b3b8c3f348af91896ba4d2e64b748bd4003111b4ff0c2",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-RESIDUAL-DCT",
@@ -3337,7 +3337,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/compound_path.rs",
-      "sha256": "864bed17a0d261f114e384c67b48e9b093249ce290f15f57a7dc2ab2b60f3814",
+      "sha256": "07a6a77c4676c9c679bc067ecb9bed7ec5b2c8c62f38c7515d73d97affc71a2a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTER-COMPOUND-LOCALWARP"
@@ -3532,14 +3532,14 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/warp.rs",
-      "sha256": "98f7094f1af305cec55a8b28e1c5aa127ac62b0858027eed2133b8c0f504cd28",
+      "sha256": "0ad4fd5120d554c05056d45b6601210c63e907ca4bc66294f4c555d40b9fa010",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block_tests.rs",
-      "sha256": "99ee419f80aa7ec0ae6282fd276927b73dcb34f71d11073a0e7378a15a60b61c",
+      "sha256": "311fdebf383da857c55b1ce492ea42575c77f6bc1b8e5c248f208a4e5505f23a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -5127,7 +5127,7 @@
     },
     {
       "path": "crates/splot-recon/src/lib.rs",
-      "sha256": "7525b3cb3827ae6b8f09c16c811aadcbc2f7892ed8e05768081d8c12b66972b6",
+      "sha256": "5e33afb64a92cc98d19d1d232c9847ff31b0418d5d3950ba337eecb43ba465b4",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "INFRA-RECON-FRAME-PLANE-TYPES",
@@ -5324,7 +5324,7 @@
     },
     {
       "path": "crates/splot-recon/src/wienerns_chroma_filter.rs",
-      "sha256": "0a2a874e6452f8a3fe372dd01ad5c4d6523042a79b2e94f1456dfbf96bff2b30",
+      "sha256": "2338b46a73c651aaa89fe180e2421edfde2f1184d3a9dead5f7f3258c60128b3",
       "scope_kind": "workspace:splot-recon",
       "feature_ids": [
         "RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE"
@@ -6927,7 +6927,7 @@
     },
     {
       "path": "docs/IMPLEMENTATION-MATRIX.toml",
-      "sha256": "51b3d13d0ef1c7ff52f608901a1cac273f3731c5cdab5d2cc9ba25b1776e04a8",
+      "sha256": "12a68c375230c18290f340dcf1a7e21dfdce0864d83ce59c2fa5b98c763286d3",
       "scope_kind": "docs",
       "feature_ids": [
         "AV2-4.11.10-RG",
@@ -7751,7 +7751,7 @@
     },
     {
       "path": "tests/conformance/decoder-oracle.toml",
-      "sha256": "f9cb098f5fe449b019ce2033bf8d23714f6f236f7aa9c545b7fa777a9fc1964a",
+      "sha256": "6f0ac1744434eaaae72fa6bb540588bbbd8d1c709b6334ae317bfaf716e528ef",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-DECODE-ORACLE",
@@ -7761,7 +7761,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "de5a10a0ac54482d5e801eac85029768e0b05152384d80c6ff7737e1389c3015",
+      "sha256": "f1012bcc69cdb79356bd32f4fe70dbaa7f41d4d137f021bbe27436b48d8431c9",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",
@@ -8131,6 +8131,13 @@
     {
       "path": "tests/conformance/vectors/valid/syn-3frame-inter-nofilters-64x64.ivf",
       "sha256": "a2766644ae1ded0ef6b5f3f1eb28d78529c238c89251228f69c75ca0864cfd0a",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-3frame-intrabc-bv-10bit-256x128-q120.ivf",
+      "sha256": "bf90f09399e1b216bc8ef00db8bc33a4ed3a3e79486b0ae19ba1acde9bdffd55",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
@@ -9629,6 +9636,20 @@
     {
       "path": "tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf",
       "sha256": "8d49b2525746fd87ee0605d123703a8b04db57f2dce613297c471b00b496e066",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-wienerns-422-intra-128x128.ivf",
+      "sha256": "67b29dad3e1b3ce6834043b331f4452f582c07d69ff14e619d5deea775817c02",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-wienerns-444-intra-128x128.ivf",
+      "sha256": "285cebb178b7743c6a3f2fdb0636305a0b8c4857ac879e56f267b43998edbc0c",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
