@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
 fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
@@ -279,15 +280,22 @@ fn malformed_sef_trailing_bits_are_a_malformed_source_diagnostic() {
 }
 
 #[test]
-fn derive_sef_reference_slot_out_of_range_is_a_malformed_source_diagnostic() {
+fn sef_reference_slot_out_of_range_is_a_malformed_source_diagnostic() {
     let (mut sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);
     sequence
         .inter
         .as_mut()
         .expect("sequence inter config")
         .num_ref_frames = 3;
+    let order_hint_bits = u32::from(
+        sequence
+            .inter
+            .as_ref()
+            .expect("sequence inter config")
+            .order_hint_bits,
+    );
     let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
-    let (frame_index, mut envelope) = parsed
+    let (frame_index, sef_envelope) = parsed
         .frames
         .iter()
         .enumerate()
@@ -300,38 +308,82 @@ fn derive_sef_reference_slot_out_of_range_is_a_malformed_source_diagnostic() {
                 .map(|envelope| (frame_index, envelope))
         })
         .expect("SEF OBU");
-    let mut payload = BitWriter::new();
-    payload.write_uvlc(0).expect("cur_mfh_id");
-    payload.write_uvlc(0).expect("seq_header_id");
-    payload.write_bits(3, 2).expect("frame_to_show_map_idx");
-    payload.write_flag(true).expect("derive_sef_order_hint");
-    payload.write_bit(1).expect("trailing_one_bit");
-    let payload = payload.into_bytes();
-    envelope.payload = &payload;
-    envelope.size = u32::from(envelope.header.header_size_bytes)
-        + u32::try_from(payload.len()).expect("payload length fits u32");
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
     reference.ref_valid = vec![false; 3];
     reference.ref_order_hint = vec![0; 3];
+    for derive_sef_order_hint in [false, true] {
+        let mut envelope = sef_envelope;
+        let mut payload = BitWriter::new();
+        payload.write_uvlc(0).expect("cur_mfh_id");
+        payload.write_uvlc(0).expect("seq_header_id");
+        payload.write_bits(3, 2).expect("frame_to_show_map_idx");
+        payload
+            .write_flag(derive_sef_order_hint)
+            .expect("derive_sef_order_hint");
+        if !derive_sef_order_hint {
+            payload
+                .write_bits(0, order_hint_bits)
+                .expect("display_order_hint");
+        }
+        payload.write_bit(1).expect("trailing_one_bit");
+        let payload = payload.into_bytes();
+        envelope.payload = &payload;
+        envelope.size = u32::from(envelope.header.header_size_bytes)
+            + u32::try_from(payload.len()).expect("payload length fits u32");
 
-    let error = super::super::parse_validated_inter_frame_core_with_mfh(
-        envelope,
-        &sequence,
-        &reference,
-        true,
-        None,
-        Some(frame_index),
-    )
-    .expect_err("out-of-range derive-SEF reference slot");
+        let error = super::super::parse_validated_inter_frame_core_with_mfh(
+            envelope,
+            &sequence,
+            &reference,
+            true,
+            None,
+            Some(frame_index),
+        )
+        .expect_err("out-of-range SEF reference slot");
+        let DecodeError::MalformedSource { issue } = &error else {
+            panic!("expected malformed source, got {error}");
+        };
+        assert_eq!(issue.spec_section(), Some("6.17.2"));
+        assert_eq!(issue.frame_index(), Some(frame_index));
+        assert_eq!(
+            issue.message(),
+            "show-existing-frame reference slot 3 is outside the active 3-slot buffer"
+        );
+    }
+}
+
+#[test]
+fn empty_sef_trailing_bits_use_payload_conformance_section() {
+    let (sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);
+    let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
+    let envelope = parsed
+        .frames
+        .iter()
+        .flat_map(|frame| &frame.obus)
+        .find(|envelope| envelope.header.obu_type.is_sef())
+        .copied()
+        .expect("SEF OBU");
+    let num_ref_frames = usize::from(
+        sequence
+            .inter
+            .as_ref()
+            .expect("sequence inter config")
+            .num_ref_frames,
+    );
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_valid = vec![false; num_ref_frames];
+    reference.ref_order_hint = vec![0; num_ref_frames];
+    let mut core =
+        super::super::parse_inter_frame_activation(envelope, &sequence, &reference, true, Some(2))
+            .expect("complete SEF state");
+    core.sef_trailing_bits = Some(SefTrailingBits::Empty);
+
+    let error = super::super::validate_sef_frame_core(&core, &reference, envelope.offset, Some(2))
+        .expect_err("empty SEF trailing bits");
     let DecodeError::MalformedSource { issue } = &error else {
         panic!("expected malformed source, got {error}");
     };
-    assert_eq!(issue.spec_section(), Some("6.17.2"));
-    assert_eq!(issue.frame_index(), Some(frame_index));
-    assert_eq!(
-        issue.message(),
-        "show-existing-frame reference slot 3 is outside the active 3-slot buffer"
-    );
+    assert_eq!(issue.spec_section(), Some("6.2.1"));
 }
 
 #[test]

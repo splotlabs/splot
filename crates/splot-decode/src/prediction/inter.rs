@@ -1526,15 +1526,19 @@ fn validate_sef_frame_core(
     if let Some(trailing_bits) = core.sef_trailing_bits
         && let Some(message) = trailing_bits.violation_message()
     {
+        let spec_section = if trailing_bits == SefTrailingBits::Empty {
+            "6.2.1"
+        } else {
+            "6.2.3"
+        };
         return Err(malformed_sef_frame_header(
             offset,
             frame_index,
-            "6.2.3",
+            spec_section,
             format!("show-existing-frame trailing_bits() are malformed: {message}"),
         ));
     }
-    if core.derive_sef_order_hint == Some(true)
-        && let Some(slot) = core.frame_to_show_map_idx
+    if let Some(slot) = core.frame_to_show_map_idx
         && usize::try_from(slot).map_or(true, |slot| slot >= reference.ref_valid.len())
     {
         return Err(malformed_sef_frame_header(
