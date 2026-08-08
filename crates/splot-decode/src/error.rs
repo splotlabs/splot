@@ -97,6 +97,9 @@ pub enum DecodeHeaderStateError {
     /// A frame required its parsed dimensions, but they were absent.
     #[error("frame size is missing")]
     MissingFrameSize,
+    /// A frame's parsed width or height was zero.
+    #[error("frame dimensions must be nonzero")]
+    ZeroFrameSize,
     /// An inter frame's reference count was invalid or did not match its map length.
     #[error("inter-frame reference count and map are inconsistent")]
     InvalidInterReferenceMap,
