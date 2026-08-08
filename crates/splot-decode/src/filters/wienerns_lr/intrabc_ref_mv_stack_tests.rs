@@ -853,22 +853,27 @@ fn spatial_scan_admits_sb_border_even_mi_col_step14() {
 }
 
 #[test]
-fn spatial_scan_aligns_sb_border_odd_mi_col_above_neighbour() {
+fn spatial_scan_uses_aligned_sb_border_offset_for_weight() {
     let geom = SpatialScanGeometry {
-        mi_row: 32,
-        mi_col: 321,
-        n4w: 8,
-        n4h: 16,
-        mi_rows: 270,
-        mi_cols: 480,
-        sb_size4: 32,
+        mi_row: 16,
+        mi_col: 9,
+        n4w: 1,
+        n4h: 2,
+        mi_rows: 32,
+        mi_cols: 64,
+        sb_size4: 16,
     };
+    let bv = Mv { row: -64, col: 64 };
     let scan = spatial_intrabc_scan(
         geom,
-        |row, col| (row == 31 && col == 320).then_some(Mv { row: 0, col: -256 }),
-        |_, _| false,
+        |row, col| (row == 15 && (col == 8 || col == 10)).then_some(bv),
+        |row, col| row == 15 && col == 10,
     );
-    assert_eq!(scan.candidates, vec![adj(Mv { row: 0, col: -256 })]);
+    assert_eq!(
+        scan.candidates,
+        vec![wbv(bv, 1)],
+        "the aligned step-8 (-1,-1) probe has weight 0; top-right contributes weight 1"
+    );
 }
 
 /// A synthetic geometry at an even MiCol (so the SB-border 8x8 alignment is a

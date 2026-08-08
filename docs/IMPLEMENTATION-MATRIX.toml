@@ -258,11 +258,12 @@ id = "DECODE-INTRABC-REF-MV-BANK-SB-LIFETIME"
 name = "Ordered IntrABC reference-MV bank lifetime"
 category = "conformance"
 kind = "bitstream-syntax"
-spec_sections = ["5.18.2", "5.20.2.2", "5.20.4.1", "6.19.2.2", "7.12.2.5", "7.12.2.6", "7.12.2.21"]
+spec_sections = ["5.18.2", "5.20.2.2", "5.20.4.1", "5.20.7.13", "6.19.2.2", "7.12.2.5", "7.12.2.6", "7.12.2.21"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-2-2",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-4-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-13",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-5",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2-6",
@@ -274,7 +275,7 @@ change_id = "decode-intrabc-ref-mv-bank-sb-lifetime"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Reads IntrABC DRL, precision, MVD, morph and residual syntax in the entropy pass, but resolves the BVP in the existing ordered §7.12 motion pass. IntrABC and ordinary inter leaves therefore share the same tagged nine-list RefMvBank, global hit budget, size-four list-8 ring, duplicate refresh and superblock-row lifetime. Parse time captures only the ordered IntrABC spatial probe coordinates and availability; resolve time reads their values after earlier leaves publish motion and before later leaves do. The ordered IntrABC leaf resets or seeds the bank, selects the spatial/list-8/default BVP, constructs checked prediction geometry, publishes its BV, then updates tagged list 8. Intra-only frames clear per superblock row without seeding. For an intra-only frame whose sequence superblock is 256 samples, `effective_intrabc_sb_h4` caps the shared bank, spatial scan, default-BVP validation, and reset boundary to 32 four-pixel units (128 samples); inter frames retain the sequence superblock geometry. The entropy-pass `TileIntrabcPreludeState` uses the same frame-aware geometry, so a sequence-256 row at 128 samples is a superblock boundary only in an intra frame; the paired regressions pin both NPos context filtering and the distinct spatial SMVP probe. The focused shared-bank regression proves the 128-sample default BVP and bank clear at the effective row boundary. The external mission stream's output frame 749 is byte-identical to AVM in both one-thread and ten-thread prefix checks; AVMenc cannot practically force its carried list-8 eviction topology, so the external stream remains the differential oracle."
+notes = "Reads IntrABC DRL, precision, MVD, morph and residual syntax in the entropy pass, but resolves the BVP in the existing ordered §7.12 motion pass. IntrABC and ordinary inter leaves therefore share the same tagged nine-list RefMvBank, global hit budget, size-four list-8 ring, duplicate refresh and superblock-row lifetime. Parse time captures only the ordered IntrABC spatial probe coordinates and availability; resolve time reads their values after earlier leaves publish motion and before later leaves do. The ordered IntrABC leaf resets or seeds the bank, selects the spatial/list-8/default BVP, constructs checked prediction geometry, publishes its BV, then updates tagged list 8. Intra-only frames clear per superblock row without seeding. For an intra-only frame whose sequence superblock is 256 samples, `effective_intrabc_sb_h4` caps the shared bank, spatial scan, default-BVP validation, and reset boundary to 32 four-pixel units (128 samples); inter frames retain the sequence superblock geometry. The entropy-pass `TileIntrabcPreludeState` uses the same frame-aware geometry, so a sequence-256 row at 128 samples is a superblock boundary only in an intra frame; the paired regressions pin both NPos context filtering and the distinct spatial SMVP probe. The focused shared-bank regression proves the 128-sample default BVP and bank clear at the effective row boundary. The external mission stream's output frame 749 is byte-identical to AVM in both one-thread and ten-thread prefix checks; AVMenc cannot practically force its carried list-8 eviction topology, so the external stream remains the differential oracle. The 10-bit IntraBC fixture additionally pins §7.12.2.6 scan weights after superblock-border alignment and freezes the decoded-location availability test at parse time. Its subsequently reachable INTERINTRA block requires the coupled §5.20.7.13 MVD-sign scope guards, preventing the geometry fix from turning the former fail-closed path into a later entropy desynchronization."
 
 [feature.status]
 mapped = "done"
@@ -292,18 +293,27 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate",
     "crates/splot-decode/src/prediction/inter/block_tests.rs::intrabc_spatial_probe_waits_for_ordered_motion_publication",
+    "crates/splot-decode/src/prediction/inter/block_tests.rs::intrabc_spatial_probe_excludes_future_block_geometry",
+    "crates/splot-decode/src/prediction/inter/block_tests.rs::mvd_sign_derivation_requires_the_full_block_scope",
     "crates/splot-decode/src/prediction/inter/block_tests.rs::intra_frame_intrabc_uses_128_sample_shared_bank_geometry",
+    "crates/splot-decode/src/filters/wienerns_lr/intrabc_ref_mv_stack_tests.rs::spatial_scan_uses_aligned_sb_border_offset_for_weight",
     "crates/splot-decode/src/filters/wienerns_lr/intrabc_records_tests.rs::sequence_256_intrabc_context_uses_the_frame_superblock_size",
     "crates/splot-decode/src/filters/wienerns_lr/intrabc_records_tests.rs::sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size",
 ]
 commands = [
     "cargo test -p splot-decode --lib shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate --locked",
     "cargo test -p splot-decode --lib intrabc_spatial_probe_waits_for_ordered_motion_publication --locked",
+    "cargo test -p splot-decode --lib intrabc_spatial_probe_excludes_future_block_geometry --locked",
+    "cargo test -p splot-decode --lib mvd_sign_derivation_requires_the_full_block_scope --locked",
+    "cargo test -p splot-decode --lib spatial_scan_uses_aligned_sb_border_offset_for_weight --locked",
     "cargo test -p splot-decode --lib intra_frame_intrabc_uses_128_sample_shared_bank_geometry --locked",
     "cargo test -p splot-decode --lib sequence_256_intrabc_ --locked",
     "cargo xtask check-feature-status",
 ]
-fixtures = []
+fixtures = [
+    "tests/conformance/vectors/valid/syn-3frame-intrabc-bv-10bit-256x128-q120.ivf",
+    "tests/conformance/decoder-oracle.toml",
+]
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]

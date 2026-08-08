@@ -1840,7 +1840,15 @@ fn decode_block<T: ReconSample>(
                 symbols,
                 tile_offset,
                 config,
-                inter_mvd_sign_derivation_allowed(
+                mvd_sign_derivation_block_scope_allowed(
+                    if interintra.is_some() {
+                        MotionMode::InterIntra
+                    } else {
+                        MotionMode::Simple
+                    },
+                    false,
+                    None,
+                ) && inter_mvd_sign_derivation_allowed(
                     sequence,
                     core,
                     single_mode,
@@ -2060,9 +2068,10 @@ use self::temporal::block_ref_within_temporal_distance;
 pub(super) use self::tip::tip_allowed_for_block_indices;
 use self::warp::{
     WarpInterIntraSyntax, inter_mv_read_config, inter_mvd_sign_derivation_allowed,
-    interintra_prediction_mode, local_warp_estimation, read_warp_extend_syntax,
-    read_warp_inter_intra_syntax, read_warp_inter_mode_syntax, read_warp_newmv_delta_syntax,
-    read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax, read_wedge_mode_syntax,
+    interintra_prediction_mode, local_warp_estimation, mvd_sign_derivation_block_scope_allowed,
+    read_warp_extend_syntax, read_warp_inter_intra_syntax, read_warp_inter_mode_syntax,
+    read_warp_newmv_delta_syntax, read_warp_newmv_motion_mode_syntax, read_warpmv_delta_syntax,
+    read_wedge_mode_syntax,
 };
 
 use self::residual::{

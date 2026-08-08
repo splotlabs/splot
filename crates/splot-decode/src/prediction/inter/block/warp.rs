@@ -436,6 +436,20 @@ pub(crate) fn inter_mvd_sign_derivation_allowed(
         && config.precision() < MV_PRECISION_QUARTER_PEL
 }
 
+/// AV2 § 5.20.7.13 block-scope guards for `is_mvd_sign_derive_allowed`.
+pub(crate) fn mvd_sign_derivation_block_scope_allowed(
+    motion_mode: MotionMode,
+    skip_mode: bool,
+    compound_ref_mv_idx: Option<usize>,
+) -> bool {
+    motion_mode == MotionMode::Simple
+        && !skip_mode
+        && match compound_ref_mv_idx {
+            Some(ref_mv_idx) => ref_mv_idx == 0,
+            None => true,
+        }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn read_warp_extend_syntax(
     cdfs: &mut TileCdfSubset,
