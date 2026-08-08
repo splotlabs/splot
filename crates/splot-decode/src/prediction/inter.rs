@@ -1740,14 +1740,10 @@ fn validate_ras_reference_ids(
     if core.obu_type != ObuType::RasFrame {
         return Ok(());
     }
-    let inter = core.inter.as_ref().ok_or_else(|| {
-        inter_missing!(
-            "ras_missing_reference_map",
-            offset,
-            "inter.ras.reference_map",
-            "6.17.2"
-        )
-    })?;
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let count = usize::try_from(inter.num_total_refs.unwrap_or(0)).unwrap_or(usize::MAX);
     for &slot in inter.ref_frame_idx.iter().take(count) {
         let id = reference
