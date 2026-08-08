@@ -1478,21 +1478,12 @@ fn parse_sef_or_tip_frame_core(
         mode: FrameHeaderParseMode::Core,
     };
     let core = parse_frame_header_core(&mut reader, &input).map_err(|error| {
-        if envelope.header.obu_type.is_sef() {
-            malformed_sef_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
-        } else {
-            inter_missing!(
-                "tip_output_frame_header_parse",
-                envelope.offset,
-                "inter.tip_output.frame_header_core",
-                SPEC_HEADER
-            )
-        }
+        malformed_frame_header(envelope.offset, frame_index, SPEC_HEADER, error.to_string())
     })?;
     if envelope.header.obu_type.is_sef()
         && core.status == FrameHeaderParseStatus::StoppedInsideShowExistingFrame
     {
-        return Err(malformed_sef_frame_header(
+        return Err(malformed_frame_header(
             envelope.offset,
             frame_index,
             SPEC_HEADER,
@@ -1502,7 +1493,7 @@ fn parse_sef_or_tip_frame_core(
     Ok(core)
 }
 
-fn malformed_sef_frame_header(
+fn malformed_frame_header(
     offset: ByteOffset,
     frame_index: Option<usize>,
     spec_section: &'static str,
@@ -1532,7 +1523,7 @@ fn validate_sef_frame_core(
         } else {
             "6.2.3"
         };
-        return Err(malformed_sef_frame_header(
+        return Err(malformed_frame_header(
             offset,
             frame_index,
             spec_section,
@@ -1542,7 +1533,7 @@ fn validate_sef_frame_core(
     if let Some(slot) = core.frame_to_show_map_idx
         && usize::try_from(slot).map_or(true, |slot| slot >= reference.ref_valid.len())
     {
-        return Err(malformed_sef_frame_header(
+        return Err(malformed_frame_header(
             offset,
             frame_index,
             "6.17.2",
