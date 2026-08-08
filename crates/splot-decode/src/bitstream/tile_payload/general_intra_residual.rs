@@ -28,18 +28,14 @@ use super::coeff_loop::fsc_quant_pass::{
     apply_staged_nonzero_coeff_fsc_branch_from_tx_size,
 };
 use super::coeff_loop::max_level::CoeffTransformClass;
+use super::coeff_loop::ordinary_pass::CoeffOrdinaryBranchError;
 use super::coeff_loop::ordinary_pass::geometry::{
     CoeffOrdinaryBranchLosslessBaseConfig, CoeffOrdinaryBranchModeToTxfmBaseConfig,
     CoeffOrdinaryStagedLosslessNonZeroInput, CoeffOrdinaryTxSizeGeometryConfig,
     apply_staged_nonzero_coeff_ordinary_branch_from_lossless, lossless_plane_tx_type,
     read_lossless_inter_plane_tx_type, resolve_mode_to_txfm_plane_tx_type,
 };
-use super::coeff_loop::ordinary_pass::{CoeffOrdinaryBranch, CoeffOrdinaryBranchError};
-use super::coeff_loop::use_fsc_branch::{
-    CoeffUseFscBranch, CoeffUseFscBranchError, CoeffUseFscFrameBlockFacts,
-    CoeffUseFscFrameFactsInput, CoeffUseFscFrameFactsNonZeroInput, CoeffUseFscFrameOrdinaryFacts,
-    apply_coeff_use_fsc_branch_from_frame_facts, coeff_cdf_q_ctx_from_base_q_idx,
-};
+use super::coeff_loop::use_fsc_branch::coeff_cdf_q_ctx_from_base_q_idx;
 use super::coeff_loop::{
     AllZeroCoeffBlockInput, CoeffLoopContextError, NonZeroCoeffBlockStartInput,
     NonZeroCoeffEobContextInput, read_nonzero_coeff_block_start,
@@ -441,35 +437,12 @@ impl LumaTransformTypeContext {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TransformToolResidualPolicy {
-    Allow,
-    AdmitTransformToolSubset {
-        luma: Option<LumaTransformTypeContext>,
-    },
-}
-
-impl TransformToolResidualPolicy {
-    pub(crate) fn from_sequence_tools(
-        sequence: &splot_core::headers::sequence::SequenceHeader,
-    ) -> Self {
-        sequence
-            .transform_quant_entropy
-            .as_ref()
-            .map_or(Self::Allow, |tq| {
-                if tq.enable_inter_ist
-                    || tq.enable_intra_ist
-                    || tq.enable_inter_ddt
-                    || tq.enable_cctx
-                    || tq.enable_fsc
-                    || tq.enable_idtx_intra
-                {
-                    Self::AdmitTransformToolSubset { luma: None }
-                } else {
-                    Self::Allow
-                }
-            })
-    }
+/// The § 5.20.6.1 luma transform-type context a residual read hands to the
+/// transform-tool path, which every sequence takes: the intra transform set has
+/// more than one type whatever the § 5.4.8 tool flags say.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TransformToolResidualPolicy {
+    pub(crate) luma: Option<LumaTransformTypeContext>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -505,8 +478,6 @@ pub(crate) enum GeneralIntraResidualError {
     AllZeroRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma coefficient context state failed: {source}")]
     CoeffContextState { source: TileCoeffStateError },
-    #[error("general intra luma nonzero coefficient pass failed: {source}")]
-    NonZeroPass { source: CoeffUseFscBranchError },
     #[error("general intra luma staged nonzero EOB read failed: {source}")]
     NonZeroStart { source: CoeffLoopContextError },
     #[error("general intra luma staged nonzero coefficient pass failed: {source}")]
@@ -1071,64 +1042,23 @@ pub(crate) fn decode_general_intra_plane_coeffs(
         start_y,
         tx_size,
     };
-    if let TransformToolResidualPolicy::AdmitTransformToolSubset { luma } =
-        transform_tool_residual_policy
-    {
-        return decode_staged_transform_tool_nonzero_coeffs(
-            work_unit,
-            symbols,
-            context,
-            frame_facts,
-            geometry,
-            coeff_cdf_q_ctx,
-            uv_mode,
-            angle_delta_uv,
-            chroma_inter_tx_type,
-            is_inter,
-            fsc_mode,
-            txb_skip_fsc_mode,
-            cctx_allowed,
-            luma,
-        );
-    }
-
-    let segment_id = current_frame_qm_segment_id();
-    let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
-        unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
-    )?;
-    let use_tcq = coefficient_block_use_tcq(frame_facts, plane, DCT_DCT, lossless, false);
-    let input = CoeffUseFscFrameFactsInput::NonZero(CoeffUseFscFrameFactsNonZeroInput {
-        frame: frame_facts,
-        block: CoeffUseFscFrameBlockFacts {
-            geometry,
-            plane_tx_type: DCT_DCT,
-            fsc_mode,
-            is_inter,
-            segment_id,
-        },
-        ordinary: CoeffUseFscFrameOrdinaryFacts {
-            uv_mode,
-            angle_delta_uv,
-            luma_tx_type: DCT_DCT,
-            chroma_inter_tx_type,
-        },
-    });
-    let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let branch = apply_coeff_use_fsc_branch_from_frame_facts(context, cdfs, symbols, input)
-        .map_err(|source| GeneralIntraResidualError::NonZeroPass { source })?;
-    let CoeffUseFscBranch::Ordinary(CoeffOrdinaryBranch::NonZero(pass)) = branch else {
-        return Err(GeneralIntraResidualError::UnexpectedBranch);
-    };
-    Ok(LumaCoeffBlock {
-        all_zero: false,
-        eob: pass.eob_read().eob().eob(),
-        quant: pass.into_block().into_quant(),
-        intra_ist: None,
-        cctx_type: None,
-        plane_tx_type: DCT_DCT,
-        use_tcq,
-        lossless,
-    })
+    let TransformToolResidualPolicy { luma } = transform_tool_residual_policy;
+    decode_staged_transform_tool_nonzero_coeffs(
+        work_unit,
+        symbols,
+        context,
+        frame_facts,
+        geometry,
+        coeff_cdf_q_ctx,
+        uv_mode,
+        angle_delta_uv,
+        chroma_inter_tx_type,
+        is_inter,
+        fsc_mode,
+        txb_skip_fsc_mode,
+        cctx_allowed,
+        luma,
+    )
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]

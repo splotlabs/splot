@@ -747,10 +747,8 @@ const fn transform_tool_policy_for_plane(
     plane_id: PlaneId,
     luma: LumaTransformTypeContext,
 ) -> TransformToolResidualPolicy {
-    match (policy, plane_id) {
-        (TransformToolResidualPolicy::AdmitTransformToolSubset { .. }, PlaneId::Y) => {
-            TransformToolResidualPolicy::AdmitTransformToolSubset { luma: Some(luma) }
-        }
+    match plane_id {
+        PlaneId::Y => TransformToolResidualPolicy { luma: Some(luma) },
         _ => policy,
     }
 }

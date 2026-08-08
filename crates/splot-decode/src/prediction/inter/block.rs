@@ -396,11 +396,7 @@ fn derive_inter_block_setup<T: ReconSample>(
         &ref_ccso_unit_grids,
         first_tile_offset,
     )?;
-    let residual_tool_policy = if frame_is_intra {
-        crate::pipeline::general_intra::general_intra_transform_tool_residual_policy(sequence)
-    } else {
-        transform_tool_residual_policy(sequence)
-    };
+    let residual_tool_policy = TransformToolResidualPolicy::default();
     let enable_adaptive_mvd = sequence
         .inter
         .as_ref()
@@ -2044,7 +2040,7 @@ use self::warp::{
 
 use self::residual::{
     InterResidualLumaTxSizeMode, InterResidualParseScratch, read_inter_residual,
-    reset_inter_skip_coeff_contexts, transform_tool_residual_policy,
+    reset_inter_skip_coeff_contexts,
 };
 
 fn read_inter_intra_syntax(
