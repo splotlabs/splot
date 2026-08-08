@@ -1711,14 +1711,6 @@ fn validate_inter_frame_core(
             SPEC_HEADER
         ));
     }
-    if core.frame_is_intra != Some(false) || core.is_key_frame {
-        return Err(inter_cap!(
-            "inter_not_inter_frame",
-            offset,
-            "inter.frame_type",
-            SPEC_HEADER
-        ));
-    }
     if core.show_existing_frame != Some(false) {
         return Err(inter_cap!(
             "inter_unsupported_output_control",
