@@ -88,6 +88,7 @@ macro_rules! compound_missing {
 const SPEC_HEADER: &str = "5.18.2";
 const SPEC_HEADER_SEMANTICS: &str = "6.17";
 const SPEC_FRAME_HEADER_INFO_SEMANTICS: &str = "6.17.2";
+const SPEC_TILE_GROUP: &str = "5.19";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
@@ -1678,14 +1679,16 @@ fn parse_inter_frame_core(
 ) -> Result<FrameHeaderCore> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
     if envelope.header.obu_type != ObuType::BridgeFrame {
-        reader.read_bit().map_err(|_| {
-            inter_missing!(
-                "inter_tile_group_prefix_parse",
-                envelope.offset,
-                "inter.tile_group_prefix",
-                SPEC_HEADER
-            )
-        })?;
+        reader
+            .read_bit()
+            .map_err(|_| DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    envelope.offset,
+                    frame_index,
+                    SPEC_TILE_GROUP,
+                    "tile group payload ends before is_first_tile_group".to_owned(),
+                ),
+            })?;
     }
     let input = FrameHeaderParseInput {
         obu_type: envelope.header.obu_type,
