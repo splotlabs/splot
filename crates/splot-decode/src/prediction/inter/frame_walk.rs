@@ -104,7 +104,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<InterWalkPrologue<'payload, T>> {
     let offset = frame_envelope.offset;
-    let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, offset)?;
+    let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
     let frame_size = core.frame_size.ok_or_else(|| {
         inter_missing!(
             "inter_walk_missing_frame_size",

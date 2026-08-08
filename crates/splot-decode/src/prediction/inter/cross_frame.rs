@@ -28,6 +28,15 @@ pub(crate) fn resolve_cdf_load(
     enable_avg_cdf: bool,
     avg_cdf_type: u8,
 ) -> ResolvedCdfLoad {
+    if let (Some(true), Some(primary)) = (signal_primary_ref_frame, primary_ref_frame)
+        && primary != PRIMARY_REF_NONE
+        && usize::from(primary) >= ref_frame_idx.len()
+    {
+        return ResolvedCdfLoad::OutOfRangePrimary {
+            index: primary,
+            reference_count: ref_frame_idx.len(),
+        };
+    }
     let (derived, derived_secondary) = choose_primary_secondary_ref_frame(
         signal_primary_ref_frame,
         primary_ref_frame,

@@ -30,7 +30,10 @@ use crate::pipeline::frame_engine::finish::{FilterSinkSetup, FrameWalk, WalkStag
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::pipeline::{derive_visible_luma_rect, ensure_runtime_limits};
 use crate::reference::buffer::ReferenceMetadata;
-use crate::{DecodeOptions, DecodePlannedObu, DecodeSourceIssue, DecodeStreamPlan, Result};
+use crate::{
+    DecodeIvfFrameContext, DecodeOptions, DecodePlannedObu, DecodeSourceIssue, DecodeStreamPlan,
+    Result,
+};
 
 macro_rules! inter_cap {
     ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
@@ -83,7 +86,7 @@ macro_rules! compound_missing {
 }
 
 const SPEC_HEADER: &str = "5.18.2";
-const SPEC_HEADER_SEMANTICS: &str = "6";
+const SPEC_HEADER_SEMANTICS: &str = "6.17";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
@@ -129,6 +132,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             .pixel_reference_gate(named_pixel_reference_slots(&core))
             .wait("arm=bridge")?;
         return decode_bridge_frame(
+            candidate,
             frame_envelope,
             core,
             sequence,
@@ -144,6 +148,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
             .wait("arm=tip")?;
         return decode_tip_output_frame(
             scratch,
+            candidate,
             frame_envelope,
             core,
             sequence,
@@ -193,8 +198,10 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
     Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, true))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_tip_output_frame<T: ReconSample>(
     scratch: &mut InterDecodeScratch<T>,
+    candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
@@ -219,7 +226,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
+    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let (frame, motion_field) =
         block::tip::reconstruct_output(scratch, sequence, &core, reference, bit_depth, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
@@ -237,6 +244,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
 }
 
 fn decode_bridge_frame<T: ReconSample>(
+    candidate: &DecodePlannedObu,
     frame_envelope: ObuEnvelope<'_>,
     core: FrameHeaderCore,
     sequence: &SequenceHeader,
@@ -302,7 +310,7 @@ fn decode_bridge_frame<T: ReconSample>(
             SPEC_REFERENCE
         )
     })?;
-    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, offset)?;
+    let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
@@ -323,6 +331,7 @@ fn resolve_initial_frame_cdfs(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     reference: &InterReferenceState<impl ReconSample>,
+    candidate: &DecodePlannedObu,
     offset: ByteOffset,
 ) -> Result<Arc<FrameCdfSubset>> {
     let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
@@ -363,6 +372,9 @@ fn resolve_initial_frame_cdfs(
         } => Err(DecodeError::MalformedSource {
             issue: DecodeSourceIssue::frame_header_conformance(
                 offset,
+                candidate
+                    .ivf_frame()
+                    .map(DecodeIvfFrameContext::frame_index),
                 SPEC_HEADER_SEMANTICS,
                 format!(
                     "primary reference index {index} is outside the active \

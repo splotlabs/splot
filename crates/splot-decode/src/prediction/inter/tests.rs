@@ -2209,31 +2209,37 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
 #[test]
 fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
     use super::cross_frame::{ResolvedCdfLoad, resolve_cdf_load as resolve};
-    let load = resolve(
-        Some(true),
-        Some(6),
-        Some(false),
-        &[0u32], // one reference: index 6 is out of bounds
-        &[true],
-        &[70u32],
-        &[0u32],
-        &[64u32],
-        &[64u32],
-        70,
-        2,
-        false,
-        1,
-    );
-    assert!(
-        matches!(
-            load,
-            ResolvedCdfLoad::OutOfRangePrimary {
-                index: 6,
-                reference_count: 1
-            }
-        ),
-        "a signalled primary >= NumTotalRefs is OutOfRangePrimary (rejected, not Default)"
-    );
+    for (disable_cross_frame_cdf_init, reference_is_inter) in [
+        (Some(false), true),
+        (Some(true), true),
+        (Some(false), false),
+    ] {
+        let load = resolve(
+            Some(true),
+            Some(6),
+            disable_cross_frame_cdf_init,
+            &[0u32], // one reference: index 6 is out of bounds
+            &[reference_is_inter],
+            &[70u32],
+            &[0u32],
+            &[64u32],
+            &[64u32],
+            70,
+            2,
+            false,
+            1,
+        );
+        assert!(
+            matches!(
+                load,
+                ResolvedCdfLoad::OutOfRangePrimary {
+                    index: 6,
+                    reference_count: 1
+                }
+            ),
+            "a signalled primary >= NumTotalRefs is rejected before default CDF selection"
+        );
+    }
 }
 
 #[test]

@@ -366,6 +366,7 @@ pub struct DecodeSourceIssue {
 impl DecodeSourceIssue {
     pub(crate) fn frame_header_conformance(
         offset: ByteOffset,
+        frame_index: Option<usize>,
         spec_section: &'static str,
         message: String,
     ) -> Self {
@@ -374,7 +375,7 @@ impl DecodeSourceIssue {
             rule_id: None,
             spec_section: Some(spec_section),
             offset: Some(offset),
-            frame_index: None,
+            frame_index,
             message,
         }
     }

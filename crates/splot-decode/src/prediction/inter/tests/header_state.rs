@@ -45,7 +45,7 @@ fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
         let inter = core.inter.as_mut().unwrap();
         inter.signal_primary_ref_frame = Some(true);
         inter.primary_ref_frame = Some(6);
-        inter.disable_cross_frame_cdf_init = Some(false);
+        inter.disable_cross_frame_cdf_init = Some(true);
         inter.ref_frame_idx = [0].into_iter().collect();
         inter.num_total_refs = Some(1);
     })
@@ -58,8 +58,9 @@ fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
         issue.kind(),
         crate::DecodeSourceIssueKind::FrameHeaderConformanceError
     );
-    assert_eq!(issue.spec_section(), Some("6"));
+    assert_eq!(issue.spec_section(), Some("6.17"));
     assert!(issue.offset().is_some());
+    assert_eq!(issue.frame_index(), Some(1));
     assert_eq!(
         issue.message(),
         "primary reference index 6 is outside the active 1-entry map"
