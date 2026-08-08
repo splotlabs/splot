@@ -97,10 +97,8 @@ impl TipReferencePlan {
     fn hold<'a, T: ReconSample>(
         &self,
         reference: &'a InterReferenceState<T>,
-        tile_offset: ByteOffset,
     ) -> Result<TipHeldReferences<'a, T>> {
-        let (past, future) =
-            super::super::hold_reference_pair(reference, self.past, self.future, tile_offset)?;
+        let (past, future) = super::super::hold_reference_pair(reference, self.past, self.future)?;
         Ok(TipHeldReferences {
             past,
             future,
@@ -535,7 +533,7 @@ impl TipBlockPlan {
         self.plan
             .as_ref()
             .ok_or_else(|| tip_reference_pair_error(tile_offset))?
-            .hold(reference, tile_offset)
+            .hold(reference)
     }
 
     /// One unit's § 7.22 temporal motion record.
@@ -1059,7 +1057,7 @@ pub(super) fn predict<T: ReconSample>(
         None
     };
     if parallel_output && let Some(reference_plan) = plan.plan.as_ref() {
-        let held = reference_plan.hold(reference, tile_offset)?;
+        let held = reference_plan.hold(reference)?;
         compute_parallel_outputs(
             sink,
             &mut scratch.units,

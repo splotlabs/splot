@@ -245,7 +245,6 @@ impl InterReconCommand {
                     shared.ref_frame_idx,
                     shared.reference,
                     &self.placed,
-                    self.tile_offset,
                 )?;
                 let grid = mc::inter_block_motion_grid(
                     sink,

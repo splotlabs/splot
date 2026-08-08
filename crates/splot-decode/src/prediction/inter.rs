@@ -548,12 +548,12 @@ pub(in crate::prediction::inter) struct HeldInterBlockReferences<'a, T: ReconSam
 ///
 /// # Errors
 ///
-/// Returns a missing-reference diagnostic when a named slot holds no frame.
+/// Returns a typed reference-state diagnostic when a named slot has no readable
+/// frame samples.
 pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &'a InterReferenceState<T>,
     placed: &PlacedInterBlock,
-    offset: ByteOffset,
 ) -> Result<HeldInterBlockReferences<'a, T>> {
     let slot0 = block_reference_slot(ref_frame_idx, placed.block.ref_frame0)?;
     let slot1 = placed
@@ -561,7 +561,7 @@ pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSamp
         .ref_frame1
         .map(|ref_frame1| block_reference_slot(ref_frame_idx, ref_frame1))
         .transpose()?;
-    let (reference0, reference1) = hold_reference_pair(reference, slot0, slot1, offset)?;
+    let (reference0, reference1) = hold_reference_pair(reference, slot0, slot1)?;
     Ok(HeldInterBlockReferences {
         reference0,
         reference1,
@@ -629,16 +629,23 @@ fn block_reference_out_of_range(index: i8, list_len: usize) -> DecodeError {
 fn hold_reference_slot<T: ReconSample>(
     reference: &InterReferenceState<T>,
     slot: u32,
-    offset: ByteOffset,
 ) -> Result<reference::HeldFrameSamples<'_, T>> {
-    reference.hold_slot(slot).ok_or_else(|| {
-        inter_missing!(
-            "inter_missing_block_reference_frame",
-            offset,
-            "inter.block.reference_frame",
-            SPEC_REFERENCE
-        )
-    })
+    let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
+    let slot_count = reference.store.capacity();
+    let frame = reference.slot(slot).ok_or({
+        if slot_index < slot_count {
+            DecodeReferenceStateError::MissingFrame { slot: slot_index }
+        } else {
+            DecodeReferenceStateError::SlotOutOfRange {
+                slot: slot_index,
+                slot_count,
+            }
+        }
+    })?;
+    frame
+        .hold_samples()
+        .ok_or(DecodeReferenceStateError::ReferenceSamplesUnavailable { slot: slot_index })
+        .map_err(Into::into)
 }
 
 /// Borrows two named references in a stable lock order while returning them in
@@ -648,13 +655,12 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     reference: &InterReferenceState<T>,
     first: u32,
     second: Option<u32>,
-    offset: ByteOffset,
 ) -> Result<(
     reference::HeldFrameSamples<'_, T>,
     Option<reference::HeldFrameSamples<'_, T>>,
 )> {
     let Some(second) = second.filter(|second| *second != first) else {
-        return Ok((hold_reference_slot(reference, first, offset)?, None));
+        return Ok((hold_reference_slot(reference, first)?, None));
     };
     let first_progress = reference.slot(first).and_then(RefFrameSlot::progress);
     let second_progress = reference.slot(second).and_then(RefFrameSlot::progress);
@@ -662,17 +668,17 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
         .zip(second_progress)
         .is_some_and(|(first, second)| core::ptr::eq(first, second))
     {
-        return Ok((hold_reference_slot(reference, first, offset)?, None));
+        return Ok((hold_reference_slot(reference, first)?, None));
     }
     let first_key = first_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
     let second_key = second_progress.map_or(0, |progress| core::ptr::from_ref(progress).addr());
     if first_key <= second_key {
-        let first = hold_reference_slot(reference, first, offset)?;
-        let second = hold_reference_slot(reference, second, offset)?;
+        let first = hold_reference_slot(reference, first)?;
+        let second = hold_reference_slot(reference, second)?;
         Ok((first, Some(second)))
     } else {
-        let second = hold_reference_slot(reference, second, offset)?;
-        let first = hold_reference_slot(reference, first, offset)?;
+        let second = hold_reference_slot(reference, second)?;
+        let first = hold_reference_slot(reference, first)?;
         Ok((first, Some(second)))
     }
 }
