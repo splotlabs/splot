@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "6ff631b38ebedd5255c63a378f64808ab10db027",
+  "audited_commit": "8debb8cba949c24244a557c222c6e416f4c01a2c",
   "outcome": "success",
   "files": [
     {
@@ -7751,7 +7751,7 @@
     },
     {
       "path": "tests/conformance/decoder-oracle.toml",
-      "sha256": "91099aba3c4b2102fbfc10f1faf854f0ed2ccdb65e036d6b85a222a96876f5be",
+      "sha256": "a6a2f4d6aebd7d6984bd45706ee74ae0443b83ed95ba10486b66c0d1051bd94f",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-DECODE-ORACLE",
@@ -7761,7 +7761,7 @@
     },
     {
       "path": "tests/conformance/manifest.toml",
-      "sha256": "544781029c73ab39ab2ddccb1a854218a28c6fd5500f2477fe44df6f31ce5091",
+      "sha256": "a63b4ed4eb16d0e97dd1f06fadc9e162b292407cc0cf8d36c9b7c096bc97cc2c",
       "scope_kind": "conformance-corpus",
       "feature_ids": [
         "CONF-AVM-VALID-STREAMS",
@@ -9629,6 +9629,20 @@
     {
       "path": "tests/conformance/vectors/valid/syn-warp-inter-128x128.ivf",
       "sha256": "8d49b2525746fd87ee0605d123703a8b04db57f2dce613297c471b00b496e066",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-wienerns-422-intra-128x128.ivf",
+      "sha256": "67b29dad3e1b3ce6834043b331f4452f582c07d69ff14e619d5deea775817c02",
+      "scope_kind": "conformance-corpus",
+      "feature_ids": [],
+      "outcome": "success"
+    },
+    {
+      "path": "tests/conformance/vectors/valid/syn-wienerns-444-intra-128x128.ivf",
+      "sha256": "285cebb178b7743c6a3f2fdb0636305a0b8c4857ac879e56f267b43998edbc0c",
       "scope_kind": "conformance-corpus",
       "feature_ids": [],
       "outcome": "success"
