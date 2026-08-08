@@ -87,6 +87,7 @@ macro_rules! compound_missing {
 
 const SPEC_HEADER: &str = "5.18.2";
 const SPEC_HEADER_SEMANTICS: &str = "6.17";
+const SPEC_FRAME_HEADER_INFO_SEMANTICS: &str = "6.17.2";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
@@ -1392,6 +1393,7 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     reference: &InterReferenceState<impl ReconSample>,
     first_picture_in_tu: bool,
     mfh_record: Option<&MultiFrameHeaderRecord>,
+    frame_index: Option<usize>,
 ) -> Result<FrameHeaderCore> {
     let mut core = if envelope.header.obu_type.is_sef() || envelope.header.obu_type.is_tip_frame() {
         parse_sef_or_tip_frame_core(
@@ -1416,11 +1418,27 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
         infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
         validate_tip_output_frame_core(&core, envelope.offset)?;
     } else {
-        resolve_ccso_reference_reuse(&mut core, reference, envelope.offset)?;
-        validate_inter_frame_core(&core, sequence, envelope.offset)?;
-        validate_ras_reference_ids(&core, reference, envelope.offset)?;
+        validate_and_resolve_inter_frame_core(
+            &mut core,
+            sequence,
+            reference,
+            envelope.offset,
+            frame_index,
+        )?;
     }
     Ok(core)
+}
+
+fn validate_and_resolve_inter_frame_core(
+    core: &mut FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    validate_ras_reference_ids(core, reference, offset, frame_index)?;
+    resolve_ccso_reference_reuse(core, reference, offset)?;
+    validate_inter_frame_core(core, sequence, offset)
 }
 
 fn parse_sef_or_tip_frame_core(
@@ -1736,6 +1754,7 @@ fn validate_ras_reference_ids(
     core: &FrameHeaderCore,
     reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
+    frame_index: Option<usize>,
 ) -> Result<()> {
     if core.obu_type != ObuType::RasFrame {
         return Ok(());
@@ -1746,18 +1765,37 @@ fn validate_ras_reference_ids(
         .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let count = usize::try_from(inter.num_total_refs.unwrap_or(0)).unwrap_or(usize::MAX);
     for &slot in inter.ref_frame_idx.iter().take(count) {
-        let id = reference
-            .ref_long_term_id
-            .get(slot as usize)
-            .copied()
-            .flatten();
+        let slot = slot as usize;
+        let Some(id) = reference.ref_long_term_id.get(slot).copied() else {
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    offset,
+                    frame_index,
+                    SPEC_FRAME_HEADER_INFO_SEMANTICS,
+                    format!(
+                        "RAS reference slot {slot} is outside the active reference map of {} slots",
+                        reference.ref_long_term_id.len()
+                    ),
+                ),
+            });
+        };
         if id.is_none_or(|id| !core.ref_long_term_ids.contains(&id)) {
-            return Err(inter_cap!(
-                "ras_reference_long_term_id_not_listed",
-                offset,
-                "inter.ras.reference_long_term_id",
-                "6.17.2"
-            ));
+            let description = id.map_or_else(
+                || "no long-term ID".to_owned(),
+                |id| format!("RefLongTermId {id}"),
+            );
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_header_conformance(
+                    offset,
+                    frame_index,
+                    SPEC_FRAME_HEADER_INFO_SEMANTICS,
+                    format!(
+                        "RAS reference slot {slot} has {description}, which is absent from the \
+                         frame's listed long-term IDs {:?}",
+                        core.ref_long_term_ids
+                    ),
+                ),
+            });
         }
     }
     Ok(())

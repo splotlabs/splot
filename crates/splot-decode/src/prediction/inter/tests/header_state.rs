@@ -47,7 +47,7 @@ fn ras_missing_reference_map_is_a_typed_header_state_error() {
     core.inter = None;
     let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
 
-    let error = super::super::validate_ras_reference_ids(&core, &reference, offset)
+    let error = super::super::validate_ras_reference_ids(&core, &reference, offset, None)
         .expect_err("RAS reference map");
     assert!(matches!(
         error,
@@ -55,6 +55,111 @@ fn ras_missing_reference_map_is_a_typed_header_state_error() {
             source: DecodeHeaderStateError::MissingInterControlRegion
         }
     ));
+}
+
+#[test]
+fn ras_unlisted_long_term_reference_is_a_malformed_source_diagnostic() {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    core.ref_long_term_ids = vec![3];
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [0].into_iter().collect();
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_long_term_id = vec![Some(5)];
+
+    let error = super::super::validate_ras_reference_ids(&core, &reference, offset, Some(1))
+        .expect_err("unlisted RAS reference");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.offset(), Some(offset));
+    assert_eq!(issue.frame_index(), Some(1));
+    assert_eq!(
+        issue.message(),
+        "RAS reference slot 0 has RefLongTermId 5, which is absent from the frame's listed \
+         long-term IDs [3]"
+    );
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("malformed RAS input must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+
+    core.ref_long_term_ids = vec![5];
+    super::super::validate_ras_reference_ids(&core, &reference, offset, Some(1))
+        .expect("listed RAS reference");
+}
+
+#[test]
+fn ras_out_of_range_reference_slot_is_a_malformed_source_diagnostic() {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [1].into_iter().collect();
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::validate_ras_reference_ids(&core, &reference, offset, Some(1))
+        .expect_err("out-of-range RAS reference slot");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+    );
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.offset(), Some(offset));
+    assert_eq!(issue.frame_index(), Some(1));
+    assert_eq!(
+        issue.message(),
+        "RAS reference slot 1 is outside the active reference map of 0 slots"
+    );
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("out-of-range RAS slot must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+#[test]
+fn ras_slot_conformance_precedes_ccso_reference_reuse() {
+    let (sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [1].into_iter().collect();
+    let ccso = core.ccso_params.as_mut().expect("CCSO state");
+    ccso.planes
+        .push(splot_core::headers::frame::CcsoPlaneParams {
+            ccso_planes: true,
+            reuse_ccso: true,
+            sb_reuse_ccso: false,
+            ccso_ref_idx: Some(0),
+            ccso_bo_only: None,
+            ccso_scale_idx: None,
+            ccso_quant_idx: None,
+            ccso_ext_filter: None,
+            ccso_edge_clf: None,
+            ccso_max_band_log2: None,
+            ccso_offset_idx: Vec::new(),
+        });
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::validate_and_resolve_inter_frame_core(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(1),
+    )
+    .expect_err("RAS conformance must precede CCSO reuse");
+    assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 
 #[test]
