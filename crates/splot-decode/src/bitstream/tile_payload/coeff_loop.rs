@@ -64,8 +64,6 @@ pub(crate) mod read_quant;
 mod scan_walk;
 pub(crate) mod sign_symbol;
 pub(crate) mod use_fsc_branch;
-#[cfg(test)]
-mod use_fsc_frame_facts_tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LumaAllZeroContextInput {

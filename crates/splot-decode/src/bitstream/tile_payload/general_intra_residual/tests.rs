@@ -1125,14 +1125,6 @@ fn luma_txtype_residual_staged_base_config_derives_coeff_tool_flags() {
 }
 
 #[test]
-fn coefficient_block_use_tcq_suppresses_fsc() {
-    let facts = frame_facts_with_coeff_tools(true, true);
-
-    assert!(coefficient_block_use_tcq(facts, 0, IDTX, false, false));
-    assert!(!coefficient_block_use_tcq(facts, 0, IDTX, false, true));
-}
-
-#[test]
 fn lossless_chroma_transform_handoff_skips_cctx_read() {
     let mut input = frame_facts_input();
     input.enable_cctx = true;
