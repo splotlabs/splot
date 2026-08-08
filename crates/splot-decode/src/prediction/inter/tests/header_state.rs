@@ -127,6 +127,42 @@ fn ras_out_of_range_reference_slot_is_a_malformed_source_diagnostic() {
 }
 
 #[test]
+fn ras_slot_conformance_precedes_ccso_reference_reuse() {
+    let (sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [1].into_iter().collect();
+    let ccso = core.ccso_params.as_mut().expect("CCSO state");
+    ccso.planes
+        .push(splot_core::headers::frame::CcsoPlaneParams {
+            ccso_planes: true,
+            reuse_ccso: true,
+            sb_reuse_ccso: false,
+            ccso_ref_idx: Some(0),
+            ccso_bo_only: None,
+            ccso_scale_idx: None,
+            ccso_quant_idx: None,
+            ccso_ext_filter: None,
+            ccso_edge_clf: None,
+            ccso_max_band_log2: None,
+            ccso_offset_idx: Vec::new(),
+        });
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::validate_and_resolve_inter_frame_core(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(1),
+    )
+    .expect_err("RAS conformance must precede CCSO reuse");
+    assert!(matches!(error, DecodeError::MalformedSource { .. }));
+}
+
+#[test]
 fn out_of_range_primary_reference_is_a_malformed_source_diagnostic() {
     let error = decode_inter_frame_after_core_mutation(TWO_FRAME_INTER_FIXTURE, |core| {
         let inter = core.inter.as_mut().unwrap();

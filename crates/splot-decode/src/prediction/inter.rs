@@ -1418,11 +1418,27 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
         infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
         validate_tip_output_frame_core(&core, envelope.offset)?;
     } else {
-        resolve_ccso_reference_reuse(&mut core, reference, envelope.offset)?;
-        validate_inter_frame_core(&core, sequence, envelope.offset)?;
-        validate_ras_reference_ids(&core, reference, envelope.offset, frame_index)?;
+        validate_and_resolve_inter_frame_core(
+            &mut core,
+            sequence,
+            reference,
+            envelope.offset,
+            frame_index,
+        )?;
     }
     Ok(core)
+}
+
+fn validate_and_resolve_inter_frame_core(
+    core: &mut FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    validate_ras_reference_ids(core, reference, offset, frame_index)?;
+    resolve_ccso_reference_reuse(core, reference, offset)?;
+    validate_inter_frame_core(core, sequence, offset)
 }
 
 fn parse_sef_or_tip_frame_core(
