@@ -1819,7 +1819,9 @@ fn validate_frame_header_parse_status(
             ),
         });
     }
-    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
+    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id }
+    | FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id } = core.status
+    {
         return Err(unsupported_at(
             feature_id,
             offset,

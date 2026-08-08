@@ -96,17 +96,30 @@ fn truncated_inter_header_is_a_malformed_source_diagnostic() {
 fn inter_parser_coverage_preserves_feature_id() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
-    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
-        feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
-    };
-
-    let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
-        .expect_err("inter parser coverage stop");
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("expected unsupported feature, got {error}");
-    };
-    assert_eq!(unsupported.reason(), "AV2-5.18.7-SEGMENTATION-TILING");
-    assert_eq!(unsupported.spec_section(), "5.18.2");
+    let cases = [
+        (
+            FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+            },
+            "AV2-5.18.7-SEGMENTATION-TILING",
+        ),
+        (
+            FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
+                feature_id: "lr_temporal_reference_filter_match",
+            },
+            "lr_temporal_reference_filter_match",
+        ),
+    ];
+    for (status, expected) in cases {
+        core.status = status;
+        let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
+            .expect_err("inter parser coverage stop");
+        let DecodeError::UnsupportedFeature { unsupported } = error else {
+            panic!("expected unsupported feature, got {error}");
+        };
+        assert_eq!(unsupported.reason(), expected);
+        assert_eq!(unsupported.spec_section(), "5.18.2");
+    }
 }
 
 #[test]
