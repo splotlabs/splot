@@ -1433,8 +1433,9 @@ pub(crate) fn parse_validated_inter_frame_core_with_mfh(
     if envelope.header.obu_type.is_sef() {
         validate_sef_frame_core(&core, reference, envelope.offset, frame_index)?;
     } else if envelope.header.obu_type.is_tip_frame() {
+        validate_tip_output_frame_parse(&core, envelope.offset, frame_index)?;
         infer_tip_output_quantization(&mut core, sequence, reference, envelope.offset)?;
-        validate_tip_output_frame_core(&core, envelope.offset)?;
+        validate_tip_output_frame_core(&core)?;
     } else {
         validate_and_resolve_inter_frame_core(
             &mut core,
@@ -1632,7 +1633,7 @@ fn infer_tip_output_quantization(
     Ok(())
 }
 
-fn validate_tip_output_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
+fn validate_tip_output_frame_core(core: &FrameHeaderCore) -> Result<()> {
     let complete = core.status == FrameHeaderParseStatus::InterHeaderComplete
         && core.obu_type.is_tip_frame()
         && core.frame_is_intra == Some(false)
@@ -1645,11 +1646,49 @@ fn validate_tip_output_frame_core(core: &FrameHeaderCore, offset: ByteOffset) ->
             .is_some_and(|size| size.width != 0 && size.height != 0)
         && core.quantization_params.is_some();
     if !complete {
-        return Err(inter_cap!(
-            "tip_output_incomplete_state",
+        return Err(DecodeHeaderStateError::IncompleteTipOutput.into());
+    }
+    Ok(())
+}
+
+fn validate_tip_output_frame_parse(
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    if core.status.is_truncated_in_modeled_region() {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                frame_index,
+                "6.2.1",
+                "TIP-output OBU payload ends inside mandatory frame_header_info() syntax"
+                    .to_owned(),
+            ),
+        });
+    }
+    if core.obu_type.is_tip_frame()
+        && core
+            .inter
+            .as_ref()
+            .and_then(|inter| inter.tip_frame_mode)
+            .is_some_and(|mode| mode != TipFrameMode::AsOutput)
+    {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                frame_index,
+                SPEC_FRAME_HEADER_INFO_SEMANTICS,
+                "TIP-frame OBU did not compute TipFrameMode == TIP_FRAME_AS_OUTPUT".to_owned(),
+            ),
+        });
+    }
+    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
+        return Err(unsupported_at(
+            feature_id,
             offset,
-            "inter.tip_output.complete_state",
-            SPEC_HEADER
+            "TIP-output frame header requires unsupported parser coverage",
+            SPEC_HEADER,
         ));
     }
     Ok(())

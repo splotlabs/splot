@@ -386,6 +386,78 @@ fn empty_sef_trailing_bits_use_payload_conformance_section() {
     assert_eq!(issue.spec_section(), Some("6.2.1"));
 }
 
+fn tip_output_core_for_validation() -> (FrameHeaderCore, ByteOffset) {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.status = FrameHeaderParseStatus::InterHeaderComplete;
+    core.obu_type = splot_core::types::ObuType::RegularTip;
+    core.frame_is_intra = Some(false);
+    core.inter.as_mut().expect("inter control").tip_frame_mode = Some(TipFrameMode::AsOutput);
+    (core, offset)
+}
+
+#[test]
+fn truncated_tip_output_header_is_a_malformed_source_diagnostic() {
+    let (mut core, offset) = tip_output_core_for_validation();
+    core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
+
+    let error = super::super::validate_tip_output_frame_parse(&core, offset, Some(3))
+        .expect_err("truncated TIP-output header");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.2.1"));
+    assert_eq!(issue.frame_index(), Some(3));
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("truncated TIP-output header must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+#[test]
+fn non_output_tip_mode_is_a_malformed_source_diagnostic() {
+    let (mut core, offset) = tip_output_core_for_validation();
+    core.inter.as_mut().expect("inter control").tip_frame_mode = Some(TipFrameMode::Disabled);
+
+    let error = super::super::validate_tip_output_frame_parse(&core, offset, Some(4))
+        .expect_err("non-output TIP mode");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.17.2"));
+    assert_eq!(issue.frame_index(), Some(4));
+}
+
+#[test]
+fn tip_output_parser_coverage_preserves_feature_id() {
+    let (mut core, offset) = tip_output_core_for_validation();
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+    };
+
+    let error = super::super::validate_tip_output_frame_parse(&core, offset, Some(5))
+        .expect_err("TIP-output parser coverage stop");
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("expected unsupported feature, got {error}");
+    };
+    assert_eq!(unsupported.reason(), "AV2-5.18.7-SEGMENTATION-TILING");
+    assert_eq!(unsupported.spec_section(), "5.18.2");
+}
+
+#[test]
+fn impossible_tip_output_state_is_a_typed_header_state_error() {
+    let (mut core, _offset) = tip_output_core_for_validation();
+    core.frame_is_intra = Some(true);
+
+    let error = super::super::validate_tip_output_frame_core(&core)
+        .expect_err("incomplete TIP-output state");
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::IncompleteTipOutput
+        }
+    ));
+}
+
 #[test]
 fn impossible_sef_state_is_a_typed_header_state_error() {
     let (sequence, _) = fixture_sequence_and_key_core(SEF_FAMILIES_FIXTURE);

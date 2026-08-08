@@ -97,6 +97,9 @@ pub enum DecodeHeaderStateError {
     /// A successfully parsed show-existing frame was missing a mandatory derived field.
     #[error("show-existing-frame header state is incomplete")]
     IncompleteShowExistingFrame,
+    /// A successfully parsed TIP-output frame was missing mandatory derived state.
+    #[error("TIP-output frame header state is incomplete")]
+    IncompleteTipOutput,
     /// A frame required its parsed dimensions, but they were absent.
     #[error("frame size is missing")]
     MissingFrameSize,
