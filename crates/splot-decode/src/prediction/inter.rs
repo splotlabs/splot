@@ -1464,6 +1464,7 @@ fn validate_and_resolve_inter_frame_core(
     frame_index: Option<usize>,
 ) -> Result<()> {
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
+    validate_inter_frame_parse(core, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset)?;
     validate_inter_frame_core(core, sequence, offset)
 }
@@ -1652,25 +1653,13 @@ fn validate_tip_output_frame_parse(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
-    if core.status.is_truncated_in_modeled_region() {
-        return Err(DecodeError::MalformedSource {
-            issue: DecodeSourceIssue::frame_header_conformance(
-                offset,
-                frame_index,
-                "6.2.1",
-                "TIP-output OBU payload ends inside mandatory frame_header_info() syntax"
-                    .to_owned(),
-            ),
-        });
-    }
-    if let FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } = core.status {
-        return Err(unsupported_at(
-            feature_id,
-            offset,
-            "TIP-output frame header requires unsupported parser coverage",
-            SPEC_HEADER,
-        ));
-    }
+    validate_frame_header_parse_status(
+        core,
+        offset,
+        frame_index,
+        "TIP-output OBU payload ends inside mandatory frame_header_info() syntax",
+        "TIP-output frame header requires unsupported parser coverage",
+    )?;
     if core.obu_type.is_tip_frame()
         && core.inter.as_ref().and_then(|inter| inter.tip_frame_mode)
             != Some(TipFrameMode::AsOutput)
@@ -1798,6 +1787,64 @@ fn parse_inter_frame_core(
         ),
     })
 }
+
+fn validate_inter_frame_parse(
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    validate_frame_header_parse_status(
+        core,
+        offset,
+        frame_index,
+        "inter-frame OBU payload ends inside mandatory frame_header_info() syntax",
+        "inter-frame header requires unsupported parser coverage",
+    )?;
+    if core.status == FrameHeaderParseStatus::IntraHeaderComplete {
+        return Err(unsupported_at(
+            "unsupported_tile_boundary",
+            offset,
+            "decode runtime does not support intra-only frames carried by tile-group OBUs",
+            SPEC_HEADER,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_frame_header_parse_status(
+    core: &FrameHeaderCore,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+    truncated_message: &'static str,
+    unsupported_message: &'static str,
+) -> Result<()> {
+    if core.status.is_truncated_in_modeled_region() {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::frame_header_conformance(
+                offset,
+                frame_index,
+                "6.2.1",
+                truncated_message.to_owned(),
+            ),
+        });
+    }
+    match core.status {
+        FrameHeaderParseStatus::UnsupportedUntilFeature { feature_id } => Err(unsupported_at(
+            feature_id,
+            offset,
+            unsupported_message,
+            SPEC_HEADER,
+        )),
+        FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id } => Err(unsupported_at(
+            feature_id,
+            offset,
+            "frame header requires unsupported Wiener-NS reference filter coverage",
+            "5.18.7.11",
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn validate_inter_frame_core(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
@@ -1807,12 +1854,7 @@ fn validate_inter_frame_core(
         return validate_bridge_frame_core(core, offset);
     }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
-        return Err(inter_missing!(
-            "inter_incomplete_frame_header",
-            offset,
-            "inter.frame_header_complete",
-            SPEC_HEADER
-        ));
+        return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
     }
     if core.order_hint.is_none() {
         return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());

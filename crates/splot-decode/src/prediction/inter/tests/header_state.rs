@@ -37,11 +37,15 @@ fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
 #[test]
 fn missing_inter_header_regions_are_typed_header_state_errors() {
     use DecodeHeaderStateError::{
-        MissingDisplayOrderHint, MissingFrameSize, MissingInterControlRegion, MissingInterTail,
-        ZeroFrameSize,
+        IncompleteInterFrame, MissingDisplayOrderHint, MissingFrameSize, MissingInterControlRegion,
+        MissingInterTail, ZeroFrameSize,
     };
     type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
-    let cases: [MutationCase; 7] = [
+    let cases: [MutationCase; 8] = [
+        (
+            |core| core.status = FrameHeaderParseStatus::CoreFieldsOnly,
+            IncompleteInterFrame,
+        ),
         (|core| core.inter = None, MissingInterControlRegion),
         (|core| core.inter_tail = None, MissingInterTail),
         (
@@ -68,6 +72,74 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
             .expect_err("header state");
         assert!(matches!(error, DecodeError::HeaderState { source } if source == expected));
     }
+}
+
+#[test]
+fn truncated_inter_header_is_a_malformed_source_diagnostic() {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
+
+    let error = super::super::validate_inter_frame_parse(&core, offset, Some(3))
+        .expect_err("truncated inter header");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("6.2.1"));
+    assert_eq!(issue.frame_index(), Some(3));
+    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+        .expect("truncated inter header must remain user-reportable");
+    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+}
+
+#[test]
+fn inter_parser_coverage_preserves_feature_id() {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    let cases = [
+        (
+            FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+            },
+            "AV2-5.18.7-SEGMENTATION-TILING",
+            "5.18.2",
+        ),
+        (
+            FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
+                feature_id: "lr_temporal_reference_filter_match",
+            },
+            "lr_temporal_reference_filter_match",
+            "5.18.7.11",
+        ),
+    ];
+    for (status, expected_reason, expected_section) in cases {
+        core.status = status;
+        let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
+            .expect_err("inter parser coverage stop");
+        let DecodeError::UnsupportedFeature { unsupported } = error else {
+            panic!("expected unsupported feature, got {error}");
+        };
+        assert_eq!(unsupported.reason(), expected_reason);
+        assert_eq!(unsupported.spec_section(), expected_section);
+    }
+}
+
+#[test]
+fn complete_intra_tile_group_remains_reportable() {
+    let (_, mut core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    core.obu_type = splot_core::types::ObuType::RegularTileGroup;
+    core.frame_type = Some(splot_core::headers::frame::FrameType::IntraOnly);
+    let offset = ByteOffset::new(74);
+
+    let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
+        .expect_err("intra-only tile-group routing");
+    let DecodeError::UnsupportedFeature { unsupported } = &error else {
+        panic!("expected unsupported feature, got {error}");
+    };
+    assert_eq!(unsupported.reason(), "unsupported_tile_boundary");
+    assert_eq!(unsupported.spec_section(), "5.18.2");
+    assert_eq!(unsupported.byte_offset(), Some(offset));
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_some());
 }
 
 #[test]
@@ -878,6 +950,30 @@ fn ras_slot_conformance_precedes_ccso_reference_reuse() {
         Some(1),
     )
     .expect_err("RAS conformance must precede CCSO reuse");
+    assert!(matches!(error, DecodeError::MalformedSource { .. }));
+}
+
+#[test]
+fn ras_slot_conformance_precedes_parser_coverage() {
+    let (sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+    };
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [1].into_iter().collect();
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::validate_and_resolve_inter_frame_core(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(1),
+    )
+    .expect_err("RAS conformance must precede parser coverage");
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 

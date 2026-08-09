@@ -82,6 +82,9 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
+    /// A successfully parsed inter frame did not carry complete frame-header state.
+    #[error("inter-frame header state is incomplete")]
+    IncompleteInterFrame,
     /// An inter frame required its parsed control region, but it was absent.
     #[error("inter-frame control region is missing")]
     MissingInterControlRegion,
