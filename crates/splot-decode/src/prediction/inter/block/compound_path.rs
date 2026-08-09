@@ -1622,17 +1622,7 @@ fn compound_reference_order_hint<T: ReconSample>(
     ref_frame: i8,
     tile_offset: ByteOffset,
 ) -> Result<i32> {
-    let ref_index = usize::try_from(ref_frame).map_err(|_| {
-        compound_cap!(
-            "compound_group_ref_frame_range",
-            tile_offset,
-            "inter.compound.ref_frame",
-            SPEC_MODE_INFO
-        )
-    })?;
-    let slot = *ref_frame_idx.get(ref_index).ok_or_else(|| {
-        super::super::block_reference_out_of_range(ref_frame, ref_frame_idx.len())
-    })?;
+    let slot = super::super::block_reference_slot(ref_frame_idx, ref_frame)?;
     let slot = usize::try_from(slot).map_err(|_| {
         compound_cap!(
             "compound_group_ref_slot_range",
