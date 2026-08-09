@@ -1483,14 +1483,6 @@ fn decode_block<T: ReconSample>(
             ParsedLeaf::recon(ReconCommand::GeneralIntra(command), motion),
         ));
     }
-    if is_inter != 1 {
-        return Err(inter_cap!(
-            "inter_block_is_intra",
-            tile_offset,
-            "inter.block.is_inter out of range",
-            SPEC_MODE_INFO
-        ));
-    }
     if num_total_refs == 0 {
         return Err(crate::pipeline::malformed_tile_payload(
             tile_offset,
