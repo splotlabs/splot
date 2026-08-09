@@ -18,7 +18,7 @@ pub(crate) fn selectable_symbol_read_error(
     crate::pipeline::malformed_tile_payload(
         offset,
         spec_section,
-        "selectable transform-record symbol read failed",
+        "selectable transform-record syntax read failed",
     )
 }
 
