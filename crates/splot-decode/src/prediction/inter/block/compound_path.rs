@@ -82,7 +82,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
-    let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs, tile_offset)?;
+    let ref_contexts = compound_ref_contexts(neighbour_ctx, num_total_refs)?;
     let ref_distance_nonnegative = compound_ref_distance_signs(
         ref_frame_idx,
         reference,
@@ -1525,20 +1525,12 @@ fn compound_reference_facts<T: ReconSample>(
 fn compound_ref_contexts(
     neighbour_ctx: &BlockNeighbourContext,
     num_total_refs: usize,
-    tile_offset: ByteOffset,
 ) -> Result<[usize; 7]> {
     let mut contexts = [0usize; 7];
     for (ref_idx, ctx) in contexts.iter_mut().take(num_total_refs).enumerate() {
         *ctx = neighbour_ctx
             .single_ref_ctx(ref_idx, num_total_refs)
-            .ok_or_else(|| {
-                compound_missing!(
-                    "compound_block_missing_ref_context",
-                    tile_offset,
-                    "inter.compound.ref_context",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
     }
     Ok(contexts)
 }

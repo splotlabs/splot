@@ -129,6 +129,34 @@ fn compound_motion_contexts() -> (
     )
 }
 
+#[test]
+fn compound_ref_contexts_cover_every_valid_reference_count() {
+    let (_, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let grid = NeighbourMvGrid::new(16, 16).unwrap();
+    let neighbour_ctx = block_neighbour_ctx(&grid, &block);
+
+    for count in 0..=7 {
+        let contexts = compound_ref_contexts(&neighbour_ctx, count).unwrap();
+        assert_eq!(contexts[..count], [1; 7][..count]);
+        assert_eq!(contexts[count..], [0; 7][count..]);
+    }
+}
+
+#[test]
+fn compound_ref_contexts_keep_invalid_reference_count_fail_closed() {
+    let (_, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let grid = NeighbourMvGrid::new(16, 16).unwrap();
+    let neighbour_ctx = block_neighbour_ctx(&grid, &block);
+
+    let error = compound_ref_contexts(&neighbour_ctx, 8).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterReferenceMap
+        }
+    ));
+}
+
 fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
