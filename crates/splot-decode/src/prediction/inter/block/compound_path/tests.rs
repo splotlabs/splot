@@ -252,6 +252,23 @@ fn compound_opfl_consumers_keep_missing_header_state_fail_closed() {
             byte_offset: TILE_OFFSET,
         }
     ));
+
+    let error = compound_sized_reference_distances(
+        &core,
+        &reference,
+        &[],
+        compound,
+        CompoundReferencePath::RefineMv,
+        TILE_OFFSET,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::InternalState {
+            reason: "compound_refinemv_missing_frame_size",
+            byte_offset: TILE_OFFSET,
+        }
+    ));
 }
 
 #[test]
