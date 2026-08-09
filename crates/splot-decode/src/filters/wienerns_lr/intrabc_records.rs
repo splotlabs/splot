@@ -12,7 +12,7 @@ use splot_core::symbol::SymbolDecoder;
 use splot_recon::{PlaneRect, PlaneSize};
 
 use crate::bitstream::tile_payload::{
-    BlockSize, DecodeBlockFrontier, TileCdfSelector, TileCdfSubset,
+    BlockSize, BlockSymbolTraceReadError, DecodeBlockFrontier, TileCdfSelector, TileCdfSubset,
 };
 use crate::error::{DecodeError, Result};
 use crate::prediction::inter::mv_scaling::{PlaneScaling, derive_plane_scaling};
@@ -926,6 +926,7 @@ pub(crate) fn read_intrabc_use_and_skip(
         symbols,
         TileCdfSelector::Intrabc { ctx: intrabc_ctx },
         tile_offset,
+        "5.20.5.3",
     )? != 0;
     if !use_intrabc {
         return Ok(IntrabcUseSkip {
@@ -939,6 +940,7 @@ pub(crate) fn read_intrabc_use_and_skip(
         symbols,
         TileCdfSelector::Skip { ctx: skip_ctx },
         tile_offset,
+        "5.20.5.10",
     )? != 0;
     Ok(IntrabcUseSkip {
         use_intrabc: true,
@@ -1062,7 +1064,13 @@ fn read_intrabc_info_syntax(
                 "unsupported_wienerns_lr_selectable_transform_records_intrabc_drl_count",
             )
         })?;
-    let intrabc_mode = read_symbol(cdfs, symbols, TileCdfSelector::IntrabcMode, tile_offset)?;
+    let intrabc_mode = read_symbol(
+        cdfs,
+        symbols,
+        TileCdfSelector::IntrabcMode,
+        tile_offset,
+        "5.20.5.4",
+    )?;
     let mut ref_mv_idx = 0usize;
     for idx in 0..m {
         let drl_mode = symbols.read_literal(1).map_err(|_| {
@@ -1094,6 +1102,7 @@ fn read_intrabc_info_syntax(
             symbols,
             TileCdfSelector::IntrabcPrecision,
             tile_offset,
+            "5.20.5.4",
         )?;
         mv_precision = if precision != 0 {
             MV_PRECISION_QUARTER_PEL
@@ -1279,6 +1288,7 @@ fn read_intrabc_morph_pred(
             ctx: morph_pred_ctx,
         },
         tile_offset,
+        "5.20.5.4",
     )? != 0)
 }
 
@@ -1597,10 +1607,18 @@ fn read_symbol(
     symbols: &mut SymbolDecoder<'_>,
     selector: TileCdfSelector,
     tile_offset: ByteOffset,
+    spec_section: &'static str,
 ) -> Result<usize> {
     cdfs.read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| super::selectable_symbol_read_error(tile_offset, "5.20.5.4"))
+        .map_err(|error| match error {
+            BlockSymbolTraceReadError::Cdf(_) => {
+                crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
+            }
+            BlockSymbolTraceReadError::Symbol(_) => {
+                super::selectable_symbol_read_error(tile_offset, spec_section)
+            }
+        })
 }
 
 fn max_bvp_drl_bits_minus_1(
