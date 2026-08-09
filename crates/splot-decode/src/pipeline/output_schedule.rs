@@ -491,6 +491,8 @@ pub(super) fn bytes_per_sample(bit_depth: BitDepth) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
     use super::*;
     use crate::pipeline::FrameCdfSubset;
     use crate::pipeline::frame_lifecycle::PipelineDecodedFrame;
@@ -519,6 +521,10 @@ mod tests {
             motion_field: MotionFieldHandle::pending(),
             ccso_params: None,
             ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
+            segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
+                crate::bitstream::tile_payload::FrameSegmentIdMap::new(1, width.div_ceil(4))
+                    .unwrap(),
+            )),
             frame_rate_numerator: 1,
             frame_rate_denominator: 1,
         }

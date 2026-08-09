@@ -23,6 +23,7 @@ use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
 use crate::Result;
 use crate::bitstream::tile_payload::FrameCdfSubset;
+use crate::bitstream::tile_payload::FrameSegmentIdMap;
 use crate::filters::ccso::CcsoUnitGrid;
 use crate::filters::deblock::DeblockQuantDeltas;
 use crate::filters::wienerns_lr::FrameFilterRecords;
@@ -41,6 +42,7 @@ pub(crate) struct FrameWalk<T: ReconSample> {
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     /// The walk-parsed CCSO unit grid, retained for the reference update.
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
+    pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     /// The walk-derived temporal motion field.
     pub(crate) motion_field: TemporalMotionField,
 }
@@ -159,6 +161,7 @@ impl FilterSinkSetup {
         mut filter_inputs: InterFilterInputs,
         core: Arc<FrameHeaderCore>,
         frame_cdfs: Arc<FrameCdfSubset>,
+        segment_ids: FrameSegmentIdMap,
         carries_motion_field: bool,
     ) -> FrameWalk<T> {
         let ccso_grid = filter_inputs.ccso_grid.clone();
@@ -177,6 +180,7 @@ impl FilterSinkSetup {
             core,
             frame_cdfs,
             ccso_grid,
+            segment_ids: Arc::new(segment_ids),
             motion_field,
         }
     }

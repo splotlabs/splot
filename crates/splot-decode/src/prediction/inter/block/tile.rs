@@ -31,14 +31,17 @@ pub(super) struct TileDecodeOutput {
     pub(super) cdef_state: CdefState,
     pub(super) gdf_state: GdfState,
     pub(super) ccso_state: CcsoState,
+    pub(super) segment_ids: FrameSegmentIdMap,
     pub(super) motion_field: TemporalMotionField,
 }
 
 /// Folds one tile's walk-parsed filter grids into the frame-level state.
+#[allow(clippy::too_many_arguments)]
 fn merge_tile_filter_state(
     cdef_state: &mut CdefState,
     gdf_state: &mut GdfState,
     ccso_state: &mut CcsoState,
+    segment_ids: &mut FrameSegmentIdMap,
     tile: &TileParserOutput,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
@@ -56,7 +59,9 @@ fn merge_tile_filter_state(
         mi_cols.clone(),
         tile_offset,
     )?;
-    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols, tile_offset)
+    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols, tile_offset)?;
+    segment_ids.merge_tile(&tile.segment_id_state);
+    Ok(())
 }
 
 fn append_lr_records(
@@ -203,6 +208,7 @@ struct TileParserOutput {
     cdef_state: CdefState,
     gdf_state: GdfState,
     ccso_state: CcsoState,
+    segment_id_state: TileSegmentIdState,
     active_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
     unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
 }
@@ -541,6 +547,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             cdef_state: self.cdef_state,
             gdf_state: self.gdf_state,
             ccso_state: self.ccso_state,
+            segment_id_state: self.segment_id_state,
             active_source_blocks,
             unit_filters,
         })
@@ -1464,6 +1471,7 @@ impl ParsedTile {
         cdef_state: &mut CdefState,
         gdf_state: &mut GdfState,
         ccso_state: &mut CcsoState,
+        segment_ids: &mut FrameSegmentIdMap,
     ) -> Result<()> {
         let tile_offset = self.tile_offset;
         let output = self.output.take().ok_or_else(|| {
@@ -1478,6 +1486,7 @@ impl ParsedTile {
             cdef_state,
             gdf_state,
             ccso_state,
+            segment_ids,
             &output,
             self.mi_rows.clone(),
             self.mi_cols.clone(),
@@ -1911,6 +1920,14 @@ pub(super) fn decode_tiles<T: ReconSample>(
     let chunk_offset = work_units
         .first()
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
+    let mut segment_ids = FrameSegmentIdMap::new(mi_rows, mi_cols).map_err(|_| {
+        inter_missing!(
+            "inter_segment_id_frame_grid",
+            chunk_offset,
+            "inter.segment_id_frame_grid",
+            SPEC_MODE_INFO
+        )
+    })?;
     let row_gate = row_gate::RowReferenceGate::new(
         reference,
         core,
@@ -2036,6 +2053,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 &mut cdef_state,
                 &mut gdf_state,
                 &mut ccso_state,
+                &mut segment_ids,
                 &output,
                 tile.mi_rows.clone(),
                 tile.mi_cols.clone(),
@@ -2097,6 +2115,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             cdef_state,
             gdf_state,
             ccso_state,
+            segment_ids,
             motion_field: motion.into_field(),
         });
     }
@@ -2247,6 +2266,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &mut cdef_state,
             &mut gdf_state,
             &mut ccso_state,
+            &mut segment_ids,
             &output,
             tile_mi_rows,
             tile_mi_cols,
@@ -2280,6 +2300,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         cdef_state,
         gdf_state,
         ccso_state,
+        segment_ids,
         motion_field: motion.into_field(),
     })
 }

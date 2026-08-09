@@ -10,7 +10,6 @@ use splot_core::headers::frame::{
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, SequenceHeader};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
-use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::stream::{
     ParsedBitstream, ParsedIvfBitstream, ParsedIvfFrame, parse_bitstream_partial,
@@ -27,7 +26,6 @@ use super::block::{
 use super::test_support::fixture_sequence_and_key_core;
 use super::{
     ccso_reference_slot, compound_is_joint_context, compound_is_joint_context_from_order_hints,
-    inter_segmentation_supported,
 };
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
@@ -40,6 +38,7 @@ use crate::{
 };
 
 mod header_state;
+mod segmentation;
 mod zero_reference;
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -51,23 +50,6 @@ const SEF_FAMILIES_FIXTURE: &[u8] = include_bytes!(
 const SINGLE_PICTURE_BRIDGE_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-bridge-single-picture-32x32.ivf"
 );
-
-#[test]
-fn inter_segmentation_admits_only_current_alt_q_maps() {
-    let mut features = [[SegmentFeature::DISABLED; SEG_LVL_MAX]; MAX_SEGMENTS];
-    features[7][0] = SegmentFeature {
-        enabled: true,
-        data: 11,
-    };
-    assert!(inter_segmentation_supported(true, true, false, &features));
-    assert!(!inter_segmentation_supported(true, false, false, &features));
-    assert!(!inter_segmentation_supported(true, true, true, &features));
-    features[7][1] = SegmentFeature {
-        enabled: true,
-        data: 0,
-    };
-    assert!(!inter_segmentation_supported(true, true, false, &features));
-}
 
 const TWO_FRAME_INTER_10BIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64-10bit.ivf"
@@ -306,6 +288,7 @@ fn decode_inter_frame_after_core_mutation_inner(
         key_frame.frame_cdfs.clone(),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
+        key_frame.segment_ids.clone(),
         key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
@@ -393,6 +376,7 @@ pub(super) fn parse_inter_core_for_validation(
         key_frame.frame_cdfs.clone(),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
+        key_frame.segment_ids.clone(),
         key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
@@ -721,7 +705,12 @@ fn inter_frame_validation_admits_delta_q_and_rejects_missing_params() {
             core.delta_q_params = None;
             let error = super::validate_inter_frame_core(&core, &sequence, offset)
                 .expect_err("missing delta-Q params must stay fail-closed");
-            assert_eq!(unsupported_reason(error), "inter_unsupported_frame_tools");
+            assert!(matches!(
+                error,
+                DecodeError::HeaderState {
+                    source: DecodeHeaderStateError::IncompleteInterFrameTools
+                }
+            ));
             Ok(())
         })
         .unwrap();
@@ -1909,6 +1898,7 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
             Some(8),
             &ref_frame_idx,
             &is_inter,
+            &[0, 1],
             &base_q,
             &oh,
             &w,
@@ -1927,6 +1917,7 @@ fn choose_primary_ref_frame_skips_non_inter_slots() {
             Some(8),
             &ref_frame_idx,
             &is_inter,
+            &[0, 1],
             &base_q,
             &oh,
             &w,
@@ -1954,6 +1945,7 @@ fn choose_primary_ref_frame_ranks_two_inter_slots_by_qp_diff() {
         Some(8),
         &ref_frame_idx,
         &is_inter,
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -1987,6 +1979,7 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         Some(false), // cross-frame init enabled
         &ref_frame_idx,
         &is_inter,
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2014,6 +2007,7 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         Some(false),
         &[0u32],
         &key_only_is_inter,
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2034,6 +2028,7 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         Some(true), // disable_cross_frame_cdf_init == 1
         &ref_frame_idx,
         &is_inter,
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2054,6 +2049,7 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         Some(false),
         &ref_frame_idx,
         &is_inter,
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2074,6 +2070,7 @@ fn resolve_cdf_load_models_choose_resolution_and_load_decision() {
         Some(false),
         &ref_frame_idx,
         &is_inter,
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2104,6 +2101,7 @@ fn resolve_cdf_load_signal_primary_overrides_ranking_even_with_no_inter_candidat
         Some(false),
         &ref_frame_idx,
         &is_inter,
+        &[0],
         &base_q,
         &oh,
         &w,
@@ -2132,6 +2130,7 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
         Some(false),
         &[0u32, 1],
         &[true, true],
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2157,6 +2156,7 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
         Some(false),
         &[0u32, 1],
         &[false, true],
+        &[0, 1],
         &base_q,
         &oh,
         &w,
@@ -2182,6 +2182,7 @@ fn resolve_cdf_load_reports_blend_slot_only_when_a_secondary_exists() {
         Some(false),
         &[0u32],
         &[true],
+        &[0],
         &[70u32],
         &[0u32],
         &[64u32],
@@ -2217,6 +2218,7 @@ fn resolve_cdf_load_rejects_out_of_range_signalled_primary() {
             disable_cross_frame_cdf_init,
             &[0u32], // one reference: index 6 is out of bounds
             &[reference_is_inter],
+            &[0],
             &[70u32],
             &[0u32],
             &[64u32],

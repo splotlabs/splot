@@ -55,6 +55,7 @@ macro_rules! tile_cdf_saved_rows {
         $rows!(seg_id_ext_flag);
         $rows!(segment_id);
         $rows!(segment_id_ext);
+        $rows!(segment_id_predicted);
     };
 }
 
@@ -83,7 +84,8 @@ use splot_core::tables::cdf::{
     DEFAULT_LOSSLESS_TX_SIZE_CDF, DEFAULT_MORPH_PRED_CDF, DEFAULT_MRL_INDEX_CDF,
     DEFAULT_MRL_SEC_INDEX_CDF, DEFAULT_RECT_TYPE_CDF, DEFAULT_REGION_TYPE_CDF,
     DEFAULT_SEG_ID_EXT_FLAG_CDF, DEFAULT_SEGMENT_ID_CDF, DEFAULT_SEGMENT_ID_EXT_CDF,
-    DEFAULT_TX_2OR3_PARTITION_TYPE_CDF, DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
+    DEFAULT_SEGMENT_ID_PREDICTED_CDF, DEFAULT_TX_2OR3_PARTITION_TYPE_CDF,
+    DEFAULT_TX_DO_PARTITION_CDF, DEFAULT_TX_PARTITION_TYPE_CDF,
     DEFAULT_TX_PARTITION_TYPE_REDUCED_CDF, DEFAULT_USE_GDF_CDF,
 };
 
@@ -202,6 +204,7 @@ type MrlIndexCdfRows = [[u16; MRL_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 type MrlSecIndexCdfRows = [[u16; MRL_SEC_INDEX_ROW_LEN]; MRL_INDEX_CONTEXTS];
 type SegmentIdCdfRows = [[u16; SEGMENT_ID_ROW_LEN]; SEGMENT_ID_CONTEXTS];
 type SegIdExtFlagCdfRows = [[u16; SEG_ID_EXT_FLAG_ROW_LEN]; SEGMENT_ID_CONTEXTS];
+type SegmentIdPredictedCdfRows = [[u16; CDF_ROW_LEN]; SEGMENT_ID_CONTEXTS];
 type RegionTypeCdfRows = [[u16; CDF_ROW_LEN]; INTER_SDP_BSIZE_GROUPS];
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TileCdfPolicyInput {
@@ -460,6 +463,9 @@ pub(crate) enum TileCdfSelector {
     SegmentId {
         ctx: usize,
         ext: bool,
+    },
+    SegmentIdPredicted {
+        ctx: usize,
     },
     RegionType {
         ctx: usize,
@@ -752,6 +758,7 @@ tile_cdf_arrays! {
     MrlSecIndex => "TileMrlSecIndexCdf",
     SegIdExtFlag => "TileSegIdExtFlagCdf",
     SegmentId => "TileSegmentIdCdf",
+    SegmentIdPredicted => "TileSegmentIdPredictedCdf",
     RegionType => "TileRegionTypeCdf",
     YModeIndex => "TileYModeIndexCdf",
     YModeOffset => "TileYModeOffsetCdf",
@@ -1022,6 +1029,7 @@ pub(crate) struct TileCdfRows {
     seg_id_ext_flag: SegIdExtFlagCdfRows,
     segment_id: SegmentIdCdfRows,
     segment_id_ext: SegmentIdCdfRows,
+    segment_id_predicted: SegmentIdPredictedCdfRows,
     region_type: RegionTypeCdfRows,
     block: BlockCdfRows,
 }
@@ -1295,6 +1303,15 @@ macro_rules! tile_cdf_row {
                     Ok($self.segment_id[ctx].$as_slice())
                 }
             }
+            TileCdfSelector::SegmentIdPredicted { ctx } => {
+                let ctx = checked_context(
+                    TileCdfArray::SegmentIdPredicted,
+                    "ctx",
+                    ctx,
+                    SEGMENT_ID_CONTEXTS,
+                )?;
+                Ok($self.segment_id_predicted[ctx].$as_slice())
+            }
             TileCdfSelector::RegionType { ctx } => {
                 selected_cdf_row!(
                     $self.region_type,
@@ -1361,6 +1378,7 @@ impl TileCdfRows {
             seg_id_ext_flag: DEFAULT_SEG_ID_EXT_FLAG_CDF,
             segment_id: DEFAULT_SEGMENT_ID_CDF,
             segment_id_ext: DEFAULT_SEGMENT_ID_EXT_CDF,
+            segment_id_predicted: DEFAULT_SEGMENT_ID_PREDICTED_CDF,
             region_type: DEFAULT_REGION_TYPE_CDF,
             block: BlockCdfRows::from_defaults(),
         }

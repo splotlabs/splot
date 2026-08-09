@@ -148,6 +148,7 @@ pub(super) fn schedule_entropy<'scope, 'job, T, P>(
     frame_index: usize,
     frame_cdfs: inter::FrameCdfHandle,
     ccso_grid: inter::CcsoGridHandle,
+    segment_ids: inter::SegmentIdMapHandle,
     motion: inter::MotionFieldHandle,
     dependencies: &inter::EntropyDependencies,
     scheduler: &'scope AdmissionScheduler<'job>,
@@ -165,6 +166,7 @@ where
     let result_for_job = Arc::clone(&result);
     let failed_cdfs = frame_cdfs.clone();
     let failed_ccso = ccso_grid.clone();
+    let failed_segment_ids = segment_ids.clone();
     let failed_motion = motion;
     let conditions = dependencies.conditions();
     let order_key = u64::try_from(frame_index)
@@ -179,9 +181,11 @@ where
             if let Ok(deferred) = &parsed {
                 frame_cdfs.publish(Arc::clone(&deferred.frame_cdfs));
                 ccso_grid.publish(deferred.ccso_grid.clone().map(Arc::new));
+                segment_ids.publish(Arc::clone(&deferred.segment_ids));
             } else {
                 failed_cdfs.fail();
                 failed_ccso.fail();
+                failed_segment_ids.fail();
                 failed_motion.fail();
             }
             let _ = result_for_job.set(Mutex::new(Some(parsed)));
@@ -240,6 +244,7 @@ type PendingTipProducts<T> = (
     PendingFinish<T>,
     inter::FrameCdfHandle,
     inter::CcsoGridHandle,
+    inter::SegmentIdMapHandle,
     inter::MotionFieldHandle,
 );
 
@@ -258,10 +263,11 @@ pub(super) fn reserve_tip_output<T: ReconSample>(
     let (slot, finish) = super::inflight::reserve_pending_slot(info, erase, ring, frame_index)?;
     let frame_cdfs = inter::FrameCdfHandle::pending();
     let ccso_grid = inter::CcsoGridHandle::pending();
+    let segment_ids = inter::SegmentIdMapHandle::pending();
     let motion = inter::MotionFieldHandle::pending_with_layout(inter::motion_field_layout(
         core, sequence, info, offset,
     )?);
-    Ok((slot, finish, frame_cdfs, ccso_grid, motion))
+    Ok((slot, finish, frame_cdfs, ccso_grid, segment_ids, motion))
 }
 
 /// Admits one reference-gated TIP output reconstruction without stopping the
@@ -273,6 +279,7 @@ pub(super) fn schedule_tip_output<'job, 'scope, T, P>(
     dependencies: &[Condition<'_>],
     frame_cdfs: inter::FrameCdfHandle,
     ccso_grid: inter::CcsoGridHandle,
+    segment_ids: inter::SegmentIdMapHandle,
     motion: inter::MotionFieldHandle,
     finish: PendingFinish<T>,
     scheduler: &'scope AdmissionScheduler<'job>,
@@ -313,15 +320,17 @@ where
                 })
                 .unwrap_or_default();
             match reconstruct(&mut scratch) {
-                Ok((frame, _, cdfs, ccso, field)) => {
+                Ok((frame, _, cdfs, ccso, field, segments)) => {
                     frame_cdfs.publish(cdfs);
                     ccso_grid.publish(ccso.map(Arc::new));
+                    segment_ids.publish(Arc::new(segments));
                     motion.publish(field);
                     finish.complete_frame(frame);
                 }
                 Err(error) => {
                     frame_cdfs.fail();
                     ccso_grid.fail();
+                    segment_ids.fail();
                     motion.fail();
                     finish.fail(error);
                 }

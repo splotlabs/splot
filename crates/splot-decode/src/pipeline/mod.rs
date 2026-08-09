@@ -464,7 +464,7 @@ where
 {
     ring.reserve(scratch_eight, scratch_ten);
     let _user_qm_scope = crate::bitstream::tile_payload::FrameUserQmScope::install(user_qm);
-    let (frame, frame_cdfs, ccso_params, ccso_grid, motion_field) =
+    let (frame, frame_cdfs, ccso_params, ccso_grid, segment_ids, motion_field) =
         match sequence.general.bit_depth_idc {
             BitDepthIdc::Eight => {
                 let walk = frame_engine::walk_frame::<u8>(
@@ -494,6 +494,7 @@ where
                     walk.frame_cdfs,
                     ccso_params,
                     walk.ccso_grid,
+                    walk.segment_ids,
                     walk.motion_field,
                 )
             }
@@ -525,6 +526,7 @@ where
                     walk.frame_cdfs,
                     ccso_params,
                     walk.ccso_grid,
+                    walk.segment_ids,
                     walk.motion_field,
                 )
             }
@@ -538,6 +540,7 @@ where
         motion_field: inter::MotionFieldHandle::settled(motion_field),
         ccso_params,
         ccso_grid: inter::CcsoGridHandle::settled(ccso_grid.map(Arc::new)),
+        segment_ids: inter::SegmentIdMapHandle::settled(segment_ids),
         frame_rate_numerator: frame_rate.numerator,
         frame_rate_denominator: frame_rate.denominator,
     })
@@ -878,6 +881,7 @@ where
                     motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
                     ccso_params,
                     ccso_grid: inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
+                    segment_ids: inter::SegmentIdMapHandle::settled(walk.segment_ids),
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
                 }
@@ -922,6 +926,7 @@ where
                     motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
                     ccso_params,
                     ccso_grid: inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
+                    segment_ids: inter::SegmentIdMapHandle::settled(walk.segment_ids),
                     frame_rate_numerator: rate.numerator,
                     frame_rate_denominator: rate.denominator,
                 }
@@ -956,6 +961,7 @@ where
         key_frame.frame_cdfs.clone(),
         key_frame.ccso_params.clone(),
         key_frame.ccso_grid.clone(),
+        key_frame.segment_ids.clone(),
         key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
@@ -1149,6 +1155,7 @@ where
                     motion_field: source.motion_field.clone(),
                     ccso_params: source.ccso_params.clone(),
                     ccso_grid: source.ccso_grid.clone(),
+                    segment_ids: source.segment_ids.clone(),
                     frame_rate_numerator: output_rate.numerator,
                     frame_rate_denominator: output_rate.denominator,
                 };
@@ -1298,10 +1305,7 @@ where
                 }
                 let inter_frame_timer = crate::timing::start();
                 let frame_index = frames.len();
-                let (inter_slot, inter_core, frame_cdfs, ccso_grid, motion_field) = match sequence
-                    .general
-                    .bit_depth_idc
-                {
+                let decoded = match sequence.general.bit_depth_idc {
                     BitDepthIdc::Eight => {
                         let (store, meta) = reference.build_store_eight(&frames)?;
                         let inter_state = inter::InterReferenceState::from_metadata(store, meta);
@@ -1379,6 +1383,7 @@ where
                                 inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
                             let frame_cdfs = inter::FrameCdfHandle::pending();
                             let ccso_grid = inter::CcsoGridHandle::pending();
+                            let segment_ids = inter::SegmentIdMapHandle::pending();
                             let motion = inter::MotionFieldHandle::pending_with_layout(
                                 inter::motion_field_layout(
                                     &inter_core,
@@ -1392,6 +1397,7 @@ where
                                 Arc::new(inter_core.clone()),
                                 frame_cdfs.clone(),
                                 ccso_grid.clone(),
+                                segment_ids.clone(),
                                 motion.clone(),
                             );
                             let result = frame_pipeline::schedule_entropy(
@@ -1414,7 +1420,8 @@ where
                                 frame_index,
                                 frame_cdfs,
                                 ccso_grid,
-                                products.4.clone(),
+                                segment_ids,
+                                products.5.clone(),
                                 &dependencies,
                                 admission,
                                 spawner,
@@ -1442,7 +1449,7 @@ where
                                 )
                             })?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
-                            let (slot, finish, frame_cdfs, ccso_grid, motion) =
+                            let (slot, finish, frame_cdfs, ccso_grid, segment_ids, motion) =
                                 frame_pipeline::reserve_tip_output(
                                     &inter_core,
                                     &sequence,
@@ -1459,7 +1466,7 @@ where
                             );
                             let conditions = dependencies.conditions();
                             let task_core = inter_core.clone();
-                            let published_core = Arc::new(inter_core);
+                            let core = Arc::new(inter_core);
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
@@ -1479,13 +1486,14 @@ where
                                 &conditions,
                                 frame_cdfs.clone(),
                                 ccso_grid.clone(),
+                                segment_ids.clone(),
                                 motion.clone(),
                                 finish,
                                 admission,
                                 spawner,
                                 &mut recon_lane,
                             )?;
-                            (slot, published_core, frame_cdfs, ccso_grid, motion)
+                            (slot, core, frame_cdfs, ccso_grid, segment_ids, motion)
                         } else {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
@@ -1521,6 +1529,7 @@ where
                                 inter_core,
                                 inter::FrameCdfHandle::settled(walk.frame_cdfs),
                                 inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
+                                inter::SegmentIdMapHandle::settled(walk.segment_ids),
                                 inter::MotionFieldHandle::settled(walk.motion_field),
                             )
                         }
@@ -1602,6 +1611,7 @@ where
                                 inter::entropy_dependencies(&inter_core, &sequence, &inter_state);
                             let frame_cdfs = inter::FrameCdfHandle::pending();
                             let ccso_grid = inter::CcsoGridHandle::pending();
+                            let segment_ids = inter::SegmentIdMapHandle::pending();
                             let motion = inter::MotionFieldHandle::pending_with_layout(
                                 inter::motion_field_layout(
                                     &inter_core,
@@ -1615,6 +1625,7 @@ where
                                 Arc::new(inter_core.clone()),
                                 frame_cdfs.clone(),
                                 ccso_grid.clone(),
+                                segment_ids.clone(),
                                 motion.clone(),
                             );
                             let result = frame_pipeline::schedule_entropy(
@@ -1637,7 +1648,8 @@ where
                                 frame_index,
                                 frame_cdfs,
                                 ccso_grid,
-                                products.4.clone(),
+                                segment_ids,
+                                products.5.clone(),
                                 &dependencies,
                                 admission,
                                 spawner,
@@ -1665,7 +1677,7 @@ where
                                 )
                             })?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
-                            let (slot, finish, frame_cdfs, ccso_grid, motion) =
+                            let (slot, finish, frame_cdfs, ccso_grid, segment_ids, motion) =
                                 frame_pipeline::reserve_tip_output(
                                     &inter_core,
                                     &sequence,
@@ -1682,7 +1694,7 @@ where
                             );
                             let conditions = dependencies.conditions();
                             let task_core = inter_core.clone();
-                            let published_core = Arc::new(inter_core);
+                            let core = Arc::new(inter_core);
                             let shared =
                                 frame_pipeline::shared_sequence(&mut shared_sequence, &sequence);
                             frame_pipeline::schedule_tip_output(
@@ -1702,13 +1714,14 @@ where
                                 &conditions,
                                 frame_cdfs.clone(),
                                 ccso_grid.clone(),
+                                segment_ids.clone(),
                                 motion.clone(),
                                 finish,
                                 admission,
                                 spawner,
                                 &mut recon_lane,
                             )?;
-                            (slot, published_core, frame_cdfs, ccso_grid, motion)
+                            (slot, core, frame_cdfs, ccso_grid, segment_ids, motion)
                         } else {
                             frame_pipeline::drain_entropy_before_barrier(
                                 &mut pending_entropy,
@@ -1744,11 +1757,14 @@ where
                                 inter_core,
                                 inter::FrameCdfHandle::settled(walk.frame_cdfs),
                                 inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
+                                inter::SegmentIdMapHandle::settled(walk.segment_ids),
                                 inter::MotionFieldHandle::settled(walk.motion_field),
                             )
                         }
                     }
                 };
+                let (inter_slot, inter_core, frame_cdfs, ccso_grid, segment_ids, motion_field) =
+                    decoded;
                 crate::timing::report("inter_frame_decode", inter_frame_timer);
                 let inter_display_grain =
                     film_grain_slots.active_for_core(&inter_core, inter_envelope.offset)?;
@@ -1761,6 +1777,7 @@ where
                     frame_cdfs,
                     inter_core.ccso_params.clone(),
                     ccso_grid,
+                    segment_ids,
                     motion_field,
                     inter_envelope.header.embedded_layer_id,
                 )?;
@@ -1772,6 +1789,7 @@ where
                     motion_field: inter_update.motion_field.clone(),
                     ccso_params: inter_core.ccso_params.clone(),
                     ccso_grid: inter_update.ccso_grid.clone(),
+                    segment_ids: inter_update.segment_ids.clone(),
                     frame_rate_numerator: inter_frame_rate.numerator,
                     frame_rate_denominator: inter_frame_rate.denominator,
                 };
@@ -2059,6 +2077,7 @@ where
                     key_frame.frame_cdfs.clone(),
                     key_frame.ccso_params.clone(),
                     key_frame.ccso_grid.clone(),
+                    key_frame.segment_ids.clone(),
                     key_frame.motion_field.clone(),
                     key_envelope.header.embedded_layer_id,
                 )?;

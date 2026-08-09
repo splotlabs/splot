@@ -72,8 +72,8 @@ pub(crate) use input::{
 };
 pub(crate) use intra_joint_modes::IsCflContext;
 pub(crate) use intra_joint_modes::{
-    LumaPalette, TileFscModeState, TileIntraJointModeState, TileLumaPaletteState,
-    TileSegmentIdState, TileUseDipState, TileUsesMrlsState, neg_deinterleave,
+    FrameSegmentIdMap, LumaPalette, TileFscModeState, TileIntraJointModeState,
+    TileLumaPaletteState, TileSegmentIdState, TileUseDipState, TileUsesMrlsState, neg_deinterleave,
 };
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;

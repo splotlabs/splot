@@ -32,6 +32,9 @@ fn key_update() -> FrameRefUpdate {
         )),
         ccso_params: None,
         ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
+        segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
+            crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap(),
+        )),
         motion_field: crate::prediction::inter::MotionFieldHandle::pending(),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
@@ -62,6 +65,9 @@ fn inter_update() -> FrameRefUpdate {
         )),
         ccso_params: None,
         ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
+        segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
+            crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap(),
+        )),
         motion_field: crate::prediction::inter::MotionFieldHandle::pending(),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
@@ -99,6 +105,13 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
         motion_field: crate::prediction::inter::MotionFieldHandle::pending(),
         ccso_params: None,
         ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
+        segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
+            crate::bitstream::tile_payload::FrameSegmentIdMap::new(
+                height.div_ceil(4),
+                width.div_ceil(4),
+            )
+            .unwrap(),
+        )),
         frame_rate_numerator: 1,
         frame_rate_denominator: 1,
     }
