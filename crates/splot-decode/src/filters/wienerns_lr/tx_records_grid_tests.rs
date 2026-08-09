@@ -309,6 +309,40 @@ fn tx_skip_grid_retention_clamps_right_edge_overhang() {
     }
 }
 
+/// Two records covering the same MI cell with DISAGREEING `LrTxSkip` values are a
+/// hard error: the grid is a single-writer surface, so an overlap that would silently
+/// pick one value must fail closed instead.
+#[test]
+fn tx_skip_grid_retention_rejects_conflicting_overlapping_records() {
+    let records = [
+        WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 0,
+            rows: 1,
+            cols: 2,
+            skip_flag: true,
+            eob: 3,
+            intra_ist: None,
+        },
+        WienerNsLrTxSkipTransformRecord {
+            row: 0,
+            col: 1,
+            rows: 1,
+            cols: 1,
+            skip_flag: false,
+            eob: 3,
+            intra_ist: None,
+        },
+    ];
+
+    assert!(matches!(
+        derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap_err(),
+        ReconError::PcWienerInvalidBounds {
+            field: "LrTxSkip conflicting transform records"
+        }
+    ));
+}
+
 /// A genuine out-of-frame ORIGIN (`row >= rows` or `col >= cols`) is STILL a hard
 /// error, matching the §5.20.3.2 `block_coded` model: AVM never emits such a record.
 #[test]

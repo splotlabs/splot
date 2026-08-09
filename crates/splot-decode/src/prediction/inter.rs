@@ -569,7 +569,7 @@ fn previous_segment_ids<'a>(
     reference: &'a InterReferenceState<impl ReconSample>,
     mi_rows: usize,
     mi_cols: usize,
-) -> Option<&'a FrameSegmentIdMap> {
+) -> Option<&'a Arc<FrameSegmentIdMap>> {
     if !core
         .segmentation_params
         .as_ref()
@@ -583,7 +583,6 @@ fn previous_segment_ids<'a>(
         .get(slot)?
         .as_ref()?
         .product()
-        .map(Arc::as_ref)
         .filter(|map| map.dimensions() == (mi_rows, mi_cols))
 }
 

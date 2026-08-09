@@ -54,6 +54,8 @@ pub(crate) use general_intra_block::{
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
     read_general_intra_palette_y_mode, read_lossless_luma_tx_size, read_lossless_tx_size,
 };
+#[cfg(test)]
+pub(crate) use general_intra_residual::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
 pub(crate) use general_intra_residual::{
     FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope, FrameQuantizerSnapshot,
     FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope, GeneralIntraResidualError,
@@ -62,7 +64,6 @@ pub(crate) use general_intra_residual::{
     TransformToolResidualPolicy, current_frame_qm_segment_id,
     decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
     is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_into,
-    reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,
     reconstruct_inter_coeff_block_residual_rect_into,
@@ -156,7 +157,6 @@ pub(crate) struct TileFrameFacts {
     obu_type: ObuType,
     is_frame_intra: bool,
     is_last_tile_group: bool,
-    base_q_idx: u32,
     coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     cdf_policy: TileCdfPolicyInput,
@@ -176,7 +176,6 @@ impl TileFrameFacts {
             obu_type,
             is_frame_intra,
             is_last_tile_group,
-            base_q_idx,
             coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
             cdf_policy: TileCdfPolicyInput::single_tile_default(),
@@ -697,7 +696,9 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
     };
     let frame_cdfs = match &input.frame.initial_cdfs {
         Some(cdfs) => Arc::clone(cdfs),
-        None => Arc::new(FrameCdfSubset::default_for_base_q(input.frame.base_q_idx)),
+        None => Arc::new(FrameCdfSubset::default_for_base_q(
+            input.frame.coeff_frame_facts.base_q_idx(),
+        )),
     };
     let cdf_policy = input
         .frame

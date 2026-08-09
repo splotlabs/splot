@@ -7,11 +7,8 @@
 //! `DECODE-COEFF-FSC-SCAN-WALK`, and
 //! `DECODE-COEFF-FSC-BRANCH-SCAN-ORDER`.
 
-use std::collections::TryReserveError;
-
 use super::CoeffLoopContextError;
 use super::branch::NonZeroCoeffBlockStart;
-use super::max_level::CoeffTransformClass;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffScanEntry {
@@ -76,11 +73,12 @@ impl NonZeroCoeffScanWalk<'_> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FscCoeffScanWalk {
+    scan: &'static [u16],
+    width: usize,
     bob: usize,
     seg_eob: usize,
-    entries: Vec<CoeffScanEntry>,
 }
 
 impl FscCoeffScanWalk {
@@ -95,99 +93,19 @@ impl FscCoeffScanWalk {
     }
 
     #[must_use]
-    pub(crate) fn entries(&self) -> &[CoeffScanEntry] {
-        &self.entries
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum CoeffScanOrderError {
-    #[error("coefficient scan order invalid scan shape {width}x{height}")]
-    InvalidShape { width: usize, height: usize },
-    #[error("coefficient scan order allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
-}
-
-pub(crate) fn derive_coeff_scan_order(
-    tx_width: usize,
-    tx_height: usize,
-    tx_class: CoeffTransformClass,
-) -> Result<Vec<u16>, CoeffScanOrderError> {
-    let width = tx_width.min(32);
-    let height = tx_height.min(32);
-    if !matches!(width, 4 | 8 | 16 | 32) || !matches!(height, 4 | 8 | 16 | 32) {
-        return Err(CoeffScanOrderError::InvalidShape { width, height });
+    pub(crate) fn entries(&self) -> impl ExactSizeIterator<Item = CoeffScanEntry> + '_ {
+        (0..self.len()).map(|index| self.entry(index))
     }
 
-    let coeff_count = width * height;
-    let mut out = Vec::new();
-    out.try_reserve_exact(coeff_count)?;
-    match tx_class {
-        CoeffTransformClass::Vertical => {
-            for y in 0..height {
-                for x in 0..width {
-                    out.push((y * width + x) as u16);
-                }
-            }
-        }
-        CoeffTransformClass::Horizontal => {
-            for x in 0..width {
-                for y in 0..height {
-                    out.push((y * width + x) as u16);
-                }
-            }
-        }
-        CoeffTransformClass::TwoD => {
-            let (wi, hi) = (width as i32, height as i32);
-            let (mut x, mut y) = (0i32, 0i32);
-            for _ in 0..coeff_count {
-                out.push((y * wi + x) as u16);
-                x += 1;
-                y -= 1;
-                if y < 0 || x >= wi {
-                    x += 1;
-                    let s = x.min(hi - 1 - y);
-                    x -= s;
-                    y += s;
-                }
-            }
-        }
-    }
-    Ok(out)
-}
-
-fn collect_scan_entries<I>(
-    start: &NonZeroCoeffBlockStart,
-    scan_positions: I,
-    capacity: usize,
-) -> Result<Vec<CoeffScanEntry>, CoeffLoopContextError>
-where
-    I: IntoIterator<Item = (usize, u16)>,
-{
-    let block = start.block();
-    let width = block.width();
-    let coeff_count = block.coeff_count();
-    let mut entries = Vec::new();
-    entries.try_reserve(capacity)?;
-
-    for (scan_index, scan_pos) in scan_positions {
-        let pos = usize::from(scan_pos);
-        if pos >= coeff_count {
-            return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
-                scan_index,
-                pos,
-                coeff_count,
-            });
-        }
-        entries.push(CoeffScanEntry::new(
-            scan_index,
-            pos,
-            pos / width,
-            pos % width,
-        ));
+    #[must_use]
+    pub(crate) const fn len(&self) -> usize {
+        self.scan.len()
     }
 
-    Ok(entries)
+    fn entry(&self, index: usize) -> CoeffScanEntry {
+        let pos = usize::from(self.scan[index]);
+        CoeffScanEntry::new(self.bob + index, pos, pos / self.width, pos % self.width)
+    }
 }
 
 pub(crate) fn walk_nonzero_coeff_scan<'a>(
@@ -228,7 +146,7 @@ pub(crate) fn walk_nonzero_coeff_scan<'a>(
 pub(crate) fn walk_fsc_coeff_scan(
     start: &NonZeroCoeffBlockStart,
     seg_eob: usize,
-    scan: &[u16],
+    scan: &'static [u16],
 ) -> Result<FscCoeffScanWalk, CoeffLoopContextError> {
     let eob = start.eob_read().eob().eob();
     if eob == 0 {
@@ -245,15 +163,25 @@ pub(crate) fn walk_fsc_coeff_scan(
     }
 
     let bob = seg_eob - eob;
-    let entries = collect_scan_entries(
-        start,
-        (bob..seg_eob).zip(scan[bob..seg_eob].iter().copied()),
-        eob,
-    )?;
+    let block = start.block();
+    let width = block.width();
+    let coeff_count = block.coeff_count();
+    let scan = &scan[bob..seg_eob];
+    for (offset, scan_pos) in scan.iter().copied().enumerate() {
+        let pos = usize::from(scan_pos);
+        if pos >= coeff_count {
+            return Err(CoeffLoopContextError::ScanWalkPositionOutOfRange {
+                scan_index: bob + offset,
+                pos,
+                coeff_count,
+            });
+        }
+    }
 
     Ok(FscCoeffScanWalk {
+        scan,
+        width,
         bob,
         seg_eob,
-        entries,
     })
 }

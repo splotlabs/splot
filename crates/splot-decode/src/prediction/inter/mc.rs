@@ -12,8 +12,8 @@ use splot_recon::{
     subpel_predict_block_compound_average_fast_validated_strided_into,
     subpel_predict_block_compound_average_strided_into,
     subpel_predict_block_compound_average_strided_into_u8,
-    subpel_predict_block_compound_intermediate, subpel_predict_block_compound_intermediate_into,
-    subpel_predict_block_into, subpel_predict_block_strided_into, wedge_mask_plane_sample,
+    subpel_predict_block_compound_intermediate_into, subpel_predict_block_into,
+    subpel_predict_block_strided_into, wedge_mask_plane_sample,
 };
 
 use super::Mv;
@@ -1721,7 +1721,13 @@ fn compound_warp_plane_prediction<T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<CompoundPlanePrediction> {
     let (plane_x, plane_y, block_w, block_h) = block.rect.plane_rect(plane, sub_x, sub_y);
-    let pred0 = compound_ref_intermediate(
+    let sample_count = block_w
+        .checked_mul(block_h)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "compound prediction sample count",
+        })?;
+    let [mut pred0, mut pred1] = take_compound_prediction_buffers(sample_count);
+    let scaling0 = compound_ref_intermediate(
         sink,
         block.reference0,
         plane,
@@ -1732,8 +1738,9 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         sub_x,
         sub_y,
         offset,
+        &mut pred0,
     )?;
-    let pred1 = compound_ref_intermediate(
+    let scaling1 = compound_ref_intermediate(
         sink,
         block.reference1,
         plane,
@@ -1744,23 +1751,19 @@ fn compound_warp_plane_prediction<T: ReconSample>(
         sub_x,
         sub_y,
         offset,
+        &mut pred1,
     )?;
     Ok(CompoundPlanePrediction {
-        pred0: pred0.samples,
-        pred1: pred1.samples,
+        pred0,
+        pred1,
         plane_x,
         plane_y,
         block_w,
         block_h,
-        scaling0: pred0.scaling,
-        scaling1: pred1.scaling,
-        recycle_buffers: false,
+        scaling0,
+        scaling1,
+        recycle_buffers: true,
     })
-}
-
-struct CompoundRefIntermediate {
-    samples: Vec<i32>,
-    scaling: PlaneScaling,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1775,7 +1778,8 @@ fn compound_ref_intermediate<T: ReconSample>(
     sub_x: u32,
     sub_y: u32,
     offset: ByteOffset,
-) -> Result<CompoundRefIntermediate> {
+    samples: &mut [i32],
+) -> Result<PlaneScaling> {
     let (plane_x, plane_y, block_w, block_h) = rect.plane_rect(plane, sub_x, sub_y);
     let bit_depth = sink.info().bit_depth();
     let reference_size = reference.info().coded_luma_size();
@@ -1820,13 +1824,11 @@ fn compound_ref_intermediate<T: ReconSample>(
             last_y: scaling.last_y,
             bit_depth,
         };
-        return Ok(CompoundRefIntermediate {
-            samples: subpel_predict_block_compound_intermediate(&view, &params)?,
-            scaling,
-        });
+        subpel_predict_block_compound_intermediate_into(&view, &params, None, samples, block_w)?;
+        return Ok(scaling);
     };
     let (ref_width, ref_height) = (view.width(), view.height());
-    let mut samples = vec![0i32; block_w.saturating_mul(block_h)];
+    samples.fill(0);
     let skip_pred = !splot_recon::warp_shear_is_valid(warp_params)
         || block_w < WARPED_BLOCK_SIZE
         || block_h < WARPED_BLOCK_SIZE
@@ -1863,7 +1865,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                     bit_depth,
                 };
                 let predicted = ext_warp_predict_unit(&view, &params, i4, j4, true)?;
-                write_compound_section(&mut samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
+                write_compound_section(samples, block_w, j4 * 4, i4 * 4, &predicted, 4, 4, 4);
             }
         }
     } else {
@@ -1895,7 +1897,7 @@ fn compound_ref_intermediate<T: ReconSample>(
                 let write_w = (block_w - local_x).min(WARPED_BLOCK_SIZE);
                 let write_h = (block_h - local_y).min(WARPED_BLOCK_SIZE);
                 write_compound_section(
-                    &mut samples,
+                    samples,
                     block_w,
                     local_x,
                     local_y,
@@ -1907,7 +1909,7 @@ fn compound_ref_intermediate<T: ReconSample>(
             }
         }
     }
-    Ok(CompoundRefIntermediate { samples, scaling })
+    Ok(scaling)
 }
 
 #[allow(clippy::too_many_arguments)]

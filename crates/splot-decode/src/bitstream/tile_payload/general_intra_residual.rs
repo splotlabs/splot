@@ -48,10 +48,9 @@ mod reconstruct;
 
 #[cfg(test)]
 use cctx::apply_cross_chroma_transform;
-pub(crate) use cctx::{
-    reconstruct_general_intra_chroma_cctx_pair_into,
-    reconstruct_general_intra_chroma_cctx_pair_with_predictions,
-};
+pub(crate) use cctx::reconstruct_general_intra_chroma_cctx_pair_into;
+#[cfg(test)]
+pub(crate) use cctx::reconstruct_general_intra_chroma_cctx_pair_with_predictions;
 #[cfg(test)]
 use luma_transform_partition::MAX_LUMA_TRANSFORM_PARTITION_UNITS;
 pub(crate) use luma_transform_partition::{

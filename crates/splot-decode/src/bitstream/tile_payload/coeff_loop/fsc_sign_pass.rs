@@ -3,8 +3,6 @@
 
 //! FSC/IDTX coefficient sign pass.
 
-use std::collections::TryReserveError;
-
 use splot_core::symbol::SymbolDecoder;
 
 use super::super::cdf::block_read::BlockSymbolTraceReadError;
@@ -46,16 +44,6 @@ pub(crate) enum CoeffFscSignPassError {
         config_width: usize,
         config_height: usize,
     },
-    #[error("coefficient FSC sign segEob {seg_eob} exceeds scan length {scan_len}")]
-    ScanTooShort { seg_eob: usize, scan_len: usize },
-    #[error(
-        "coefficient FSC sign scan entry {scan_index} has position {pos}, outside coefficient count {coeff_count}"
-    )]
-    ScanPositionOutOfRange {
-        scan_index: usize,
-        pos: usize,
-        coeff_count: usize,
-    },
     #[error(
         "coefficient FSC sign scan entry {entry:?} maps to position {expected_pos}, not {actual_pos}"
     )]
@@ -64,20 +52,17 @@ pub(crate) enum CoeffFscSignPassError {
         expected_pos: usize,
         actual_pos: usize,
     },
-    #[error("coefficient FSC sign allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
     #[error("coefficient FSC sign symbol read failed: {0}")]
     SymbolRead(#[from] BlockSymbolTraceReadError),
     #[error("coefficient FSC sign state error: {0}")]
     State(#[from] TileCoeffStateError),
 }
 
-pub(crate) fn checked_fsc_sign_entries(
+pub(crate) fn checked_fsc_sign_walk(
     block: &TransformCoeffBlockState,
     level_walk: &FscCoeffScanWalk,
-    scan: &[u16],
     config: CoeffFscLevelPassConfig,
-) -> Result<Vec<CoeffScanEntry>, CoeffFscSignPassError> {
+) -> Result<(), CoeffFscSignPassError> {
     if block.width() != config.tx_width || block.height() != config.tx_height {
         return Err(CoeffFscSignPassError::BlockGeometryMismatch {
             block_width: block.width(),
@@ -86,46 +71,10 @@ pub(crate) fn checked_fsc_sign_entries(
             config_height: config.tx_height,
         });
     }
-    let entries = fsc_sign_entries(block, level_walk.bob(), level_walk.seg_eob(), scan)?;
-    for entry in entries.iter().copied() {
+    for entry in level_walk.entries() {
         preflight_entry(block, entry)?;
     }
-    Ok(entries)
-}
-
-pub(crate) fn fsc_sign_entries(
-    block: &TransformCoeffBlockState,
-    bob: usize,
-    seg_eob: usize,
-    scan: &[u16],
-) -> Result<Vec<CoeffScanEntry>, CoeffFscSignPassError> {
-    if seg_eob > scan.len() {
-        return Err(CoeffFscSignPassError::ScanTooShort {
-            seg_eob,
-            scan_len: scan.len(),
-        });
-    }
-    let width = block.width();
-    let coeff_count = block.coeff_count();
-    let mut entries = Vec::new();
-    entries.try_reserve(seg_eob.saturating_sub(bob))?;
-    for (scan_index, &scan_pos) in scan.iter().enumerate().take(seg_eob).skip(bob) {
-        let pos = usize::from(scan_pos);
-        if pos >= coeff_count {
-            return Err(CoeffFscSignPassError::ScanPositionOutOfRange {
-                scan_index,
-                pos,
-                coeff_count,
-            });
-        }
-        entries.push(CoeffScanEntry::new(
-            scan_index,
-            pos,
-            pos / width,
-            pos % width,
-        ));
-    }
-    Ok(entries)
+    Ok(())
 }
 
 fn preflight_entry(

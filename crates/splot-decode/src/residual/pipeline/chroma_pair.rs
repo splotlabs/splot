@@ -8,7 +8,7 @@ use splot_recon::{CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 use crate::bitstream::tile_payload::{
     DecodeTileWorkUnit, GeneralIntraResidualError, LumaCoeffBlock, LumaTransformTypeContext,
     TileBlockDecodedState, current_frame_qm_segment_id, is_cctx_geometry_allowed,
-    reconstruct_general_intra_chroma_cctx_pair_with_predictions,
+    reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::prediction::chroma::cfl::reconstruct_general_intra_chroma_cfl_pair_into;
 
@@ -206,7 +206,7 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         intra_edge,
         luma_context,
     )?;
-    let u_prediction = read_plane_prediction(workspace, u_plane)?;
+    read_plane_prediction(workspace, u_plane, &mut scratch.cctx_u_prediction)?;
     let v_prediction_block = prediction_only_coeff_block(&v_coeffs);
     v_plane.reconstruct(
         scratch,
@@ -218,21 +218,23 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
         intra_edge,
         luma_context,
     )?;
-    let v_prediction = read_plane_prediction(workspace, v_plane)?;
-    let (u_out, v_out) = reconstruct_general_intra_chroma_cctx_pair_with_predictions(
+    read_plane_prediction(workspace, v_plane, &mut scratch.cctx_v_prediction)?;
+    reconstruct_general_intra_chroma_cctx_pair_into(
         &u_coeffs,
-        &u_prediction,
+        &scratch.cctx_u_prediction,
         &v_coeffs,
-        &v_prediction,
+        &scratch.cctx_v_prediction,
         qindex,
         u_plane.tx.width_log2(),
         u_plane.tx.height_log2(),
         cctx_type,
         false,
         u_plane.block_ctx.bit_depth(),
+        &mut scratch.cctx_u_output,
+        &mut scratch.cctx_v_output,
     )?;
-    write_plane_block(workspace, u_plane, &u_out)?;
-    write_plane_block(workspace, v_plane, &v_out)?;
+    write_plane_block(workspace, u_plane, &scratch.cctx_u_output)?;
+    write_plane_block(workspace, v_plane, &scratch.cctx_v_output)?;
     Ok(())
 }
 
@@ -260,12 +262,14 @@ fn plane_rect(
 fn read_plane_prediction<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane: ResidualPlanePlan,
-) -> core::result::Result<Vec<T>, GeneralIntraResidualError> {
+    out: &mut Vec<T>,
+) -> core::result::Result<(), GeneralIntraResidualError> {
     let (rect, width) = plane_rect(plane)?;
     let expected = width
         .checked_mul(rect.height())
         .ok_or(GeneralIntraResidualError::UnexpectedBranch)?;
-    let mut out = Vec::with_capacity(expected);
+    out.clear();
+    out.reserve(expected);
     for row in workspace.rect_rows(plane.plane_id, rect)? {
         out.extend_from_slice(row);
     }
@@ -275,7 +279,7 @@ fn read_plane_prediction<T: ReconSample>(
             actual: out.len(),
         });
     }
-    Ok(out)
+    Ok(())
 }
 
 fn write_plane_block<T: ReconSample>(

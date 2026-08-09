@@ -241,11 +241,6 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
 pub(crate) struct DeferredInterWalk<T: ReconSample> {
     /// The frame header the walk consumed, shared with the filter phase.
     pub(crate) core: Arc<FrameHeaderCore>,
-    /// The frame's end-of-walk CDF subset, settled by the entropy pass.
-    pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
-    /// The walk-parsed CCSO unit grid, retained for the reference update.
-    pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
-    pub(crate) segment_ids: Arc<crate::bitstream::tile_payload::FrameSegmentIdMap>,
     /// The § 7.9 motion field the reconstruction publishes.
     pub(crate) motion: MotionFieldHandle,
     parse: InterFrameParse,
@@ -389,9 +384,6 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     motion.publish_metadata(parse.motion_field_metadata());
     Ok(DeferredInterWalk {
         core: Arc::new(core),
-        frame_cdfs: Arc::clone(&parse.frame_cdfs),
-        ccso_grid: parse.ccso_grid.clone(),
-        segment_ids: Arc::new(parse.segment_ids.clone()),
         motion,
         parse,
         workspace,
@@ -404,6 +396,23 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
 }
 
 impl<T: ReconSample> DeferredInterWalk<T> {
+    /// The frame's end-of-walk CDF subset, settled by the entropy pass.
+    pub(crate) const fn frame_cdfs(&self) -> &Arc<FrameCdfSubset> {
+        &self.parse.frame_cdfs
+    }
+
+    /// The walk-parsed CCSO unit grid, retained for the reference update.
+    pub(crate) const fn ccso_grid(&self) -> Option<&crate::filters::ccso::CcsoUnitGrid> {
+        self.parse.ccso_grid.as_ref()
+    }
+
+    /// The frame's settled segment id map, read by the reference update.
+    pub(crate) const fn segment_ids(
+        &self,
+    ) -> &Arc<crate::bitstream::tile_payload::FrameSegmentIdMap> {
+        &self.parse.segment_ids
+    }
+
     /// Shares the reference motion handles that gate this frame's temporal
     /// prelude.
     pub(crate) fn motion_dependencies(&self) -> Vec<MotionFieldHandle> {
@@ -423,9 +432,6 @@ impl<T: ReconSample> DeferredInterWalk<T> {
     )> {
         let Self {
             core,
-            frame_cdfs: _,
-            ccso_grid: _,
-            segment_ids: _,
             motion,
             parse,
             workspace,

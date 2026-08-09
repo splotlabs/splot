@@ -156,7 +156,7 @@ impl FilterSinkSetup {
         mut filter_inputs: InterFilterInputs,
         core: Arc<FrameHeaderCore>,
         frame_cdfs: Arc<FrameCdfSubset>,
-        segment_ids: FrameSegmentIdMap,
+        segment_ids: Arc<FrameSegmentIdMap>,
         carries_motion_field: bool,
     ) -> FrameWalk<T> {
         let ccso_grid = filter_inputs.ccso_grid.clone();
@@ -175,7 +175,7 @@ impl FilterSinkSetup {
             core,
             frame_cdfs,
             ccso_grid,
-            segment_ids: Arc::new(segment_ids),
+            segment_ids,
             motion_field,
         }
     }

@@ -375,7 +375,8 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                             block,
                         )?
                     } else {
-                        let copied = copy_base_block::<u16>(
+                        let mut block = [0; MI_SIZE * MI_SIZE];
+                        copy_base_block::<u16>(
                             post_lr_luma.samples(),
                             width,
                             y,
@@ -383,9 +384,8 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                             block_y,
                             block_width,
                             block_height,
+                            &mut block,
                         )?;
-                        let mut block = [0; MI_SIZE * MI_SIZE];
-                        block[..copied.len()].copy_from_slice(&copied);
                         block
                     };
                     preserve_lossless_luma_samples(
@@ -428,6 +428,7 @@ fn gdf_stripe_row_for_tile_end(y: usize, tile_end_y: usize) -> Result<usize> {
     Ok(stripe_row.min(tile_end_y / MI_SIZE))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn copy_base_block<T: ReconSample>(
     base_luma: &[u16],
     stride: usize,
@@ -436,9 +437,8 @@ fn copy_base_block<T: ReconSample>(
     y: usize,
     width: usize,
     height: usize,
-) -> Result<Vec<T>> {
-    let capacity = width.checked_mul(height).ok_or_else(gdf_state_error)?;
-    let mut output = Vec::with_capacity(capacity);
+    output: &mut [T],
+) -> Result<()> {
     for row in 0..height {
         let start = y
             .checked_add(row)
@@ -448,11 +448,16 @@ fn copy_base_block<T: ReconSample>(
             .ok_or_else(gdf_state_error)?;
         let end = start.checked_add(width).ok_or_else(gdf_state_error)?;
         let samples = base_luma.get(start..end).ok_or_else(gdf_state_error)?;
-        for &sample in samples {
-            output.push(T::try_from_u16(sample).map_err(|_| gdf_state_error())?);
+        let destination = row
+            .checked_mul(width)
+            .and_then(|start| start.checked_add(width).map(|end| start..end))
+            .and_then(|range| output.get_mut(range))
+            .ok_or_else(gdf_state_error)?;
+        for (slot, &sample) in destination.iter_mut().zip(samples) {
+            *slot = T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
         }
     }
-    Ok(output)
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1718,19 +1723,17 @@ mod tests {
     fn disabled_gdf_unit_copies_base_samples() {
         let base: Vec<u16> = (0..64).collect();
 
-        let result = copy_base_block::<u8>(&base, 8, 0, 4, 2, 4, 4);
+        let mut copied = [0u8; 16];
+        let result = copy_base_block::<u8>(&base, 8, 0, 4, 2, 4, 4, &mut copied);
         assert!(result.is_ok());
-        let Ok(copied) = result else {
-            return;
-        };
 
         assert_eq!(
             copied,
-            vec![
+            [
                 20, 21, 22, 23, 28, 29, 30, 31, 36, 37, 38, 39, 44, 45, 46, 47
             ]
         );
-        assert!(copy_base_block::<u8>(&base[..60], 8, 0, 4, 6, 4, 4).is_err());
+        assert!(copy_base_block::<u8>(&base[..60], 8, 0, 4, 6, 4, 4, &mut copied).is_err());
     }
 
     #[test]
