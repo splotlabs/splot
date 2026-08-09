@@ -1117,7 +1117,6 @@ fn decode_block<T: ReconSample>(
         n4w,
         n4h,
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-        tile_offset,
     )?;
     let mut block_ctx = MvBlockContext {
         mi_row,
