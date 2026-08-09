@@ -4,4 +4,4 @@
 # Implementation comments only. Excludes SPDX license lines, Rustdoc, and
 # xtask-generated Rust sources. Lower this ceiling in the same commit that
 # removes comments; never raise it without maintainer approval.
-max_implementation_comment_lines = 248
+max_implementation_comment_lines = 237
