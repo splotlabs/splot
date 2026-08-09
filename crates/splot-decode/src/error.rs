@@ -143,6 +143,12 @@ pub enum DecodeReferenceStateError {
         /// Zero-based reference slot selected for TIP output.
         slot: usize,
     },
+    /// A selected reference slot had no published entropy context.
+    #[error("reference slot {slot} has no published CDF context")]
+    MissingCdfContext {
+        /// Zero-based reference slot selected for cross-frame CDF initialization.
+        slot: usize,
+    },
     /// A selected reference had not published the motion field required by TIP output.
     #[error("a selected TIP-output reference has no published motion field")]
     MissingMotionFieldPublication,

@@ -187,6 +187,26 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
 }
 
 #[test]
+fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    let failed = super::super::FrameCdfHandle::pending();
+    failed.fail();
+    reference.ref_frame_cdfs = vec![Some(failed)];
+
+    for slot in [0, 1] {
+        let error = reference
+            .cdfs_for_slot(slot)
+            .expect_err("missing reference CDF context");
+        assert!(matches!(
+            error,
+            DecodeError::ReferenceState {
+                source: crate::DecodeReferenceStateError::MissingCdfContext { slot: actual }
+            } if actual == slot as usize
+        ));
+    }
+}
+
+#[test]
 fn ras_missing_reference_map_is_a_typed_header_state_error() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");

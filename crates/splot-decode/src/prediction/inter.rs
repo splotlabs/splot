@@ -383,13 +383,13 @@ fn resolve_initial_frame_cdfs(
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: None,
-        } => reference.cdfs_for_slot(primary, offset),
+        } => reference.cdfs_for_slot(primary),
         ResolvedCdfLoad::LoadSlot {
             primary,
             blend: Some(blend),
         } => {
-            let mut cdfs = (*reference.cdfs_for_slot(primary, offset)?).clone();
-            let blend_cdfs = reference.cdfs_for_slot(blend, offset)?;
+            let mut cdfs = (*reference.cdfs_for_slot(primary)?).clone();
+            let blend_cdfs = reference.cdfs_for_slot(blend)?;
             cdfs.blend_from_saved(&blend_cdfs);
             Ok(Arc::new(cdfs))
         }
@@ -1318,20 +1318,14 @@ impl<T: ReconSample> InterReferenceState<T> {
         self.store.get(slot).ok().flatten()
     }
 
-    fn cdfs_for_slot(&self, slot: u32, offset: ByteOffset) -> Result<Arc<FrameCdfSubset>> {
+    fn cdfs_for_slot(&self, slot: u32) -> Result<Arc<FrameCdfSubset>> {
+        let slot = usize::try_from(slot).unwrap_or(usize::MAX);
         self.ref_frame_cdfs
-            .get(slot as usize)
+            .get(slot)
             .and_then(Option::as_ref)
             .and_then(FrameCdfHandle::product)
             .cloned()
-            .ok_or_else(|| {
-                inter_missing!(
-                    "inter_missing_reference_cdf_context",
-                    offset,
-                    "inter.cdf.saved_primary",
-                    SPEC_HEADER
-                )
-            })
+            .ok_or(DecodeReferenceStateError::MissingCdfContext { slot }.into())
     }
 
     fn ccso_params_for_slot(
