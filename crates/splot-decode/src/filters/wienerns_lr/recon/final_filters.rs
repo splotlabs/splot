@@ -113,13 +113,13 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
             )
         };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
-            Some(copy(&frame.filtered_y)?)
+            Some(copy(&frame.filtered_y).map_err(|error| error.for_plane(PlaneId::Y))?)
         } else {
             None
         };
         let post_lr_u = if active_planes[PlaneId::U.index()] {
             match frame.filtered_u.as_ref() {
-                Some(plane) => Some(copy(plane)?),
+                Some(plane) => Some(copy(plane).map_err(|error| error.for_plane(PlaneId::U))?),
                 None => None,
             }
         } else {
@@ -127,7 +127,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         };
         let post_lr_v = if active_planes[PlaneId::V.index()] {
             match frame.filtered_v.as_ref() {
-                Some(plane) => Some(copy(plane)?),
+                Some(plane) => Some(copy(plane).map_err(|error| error.for_plane(PlaneId::V))?),
                 None => None,
             }
         } else {
@@ -170,6 +170,15 @@ impl<T> LrSourceScratch<T> {
 fn lr_window_error(error: ReconError) -> crate::error::DecodeError {
     match error {
         ReconError::WorkspaceAllocationFailed { .. } => error.into(),
+        _ => super::lr_pipeline_state_error(),
+    }
+}
+
+fn lr_plane_window_error(error: &ReconError, plane: PlaneId) -> crate::error::DecodeError {
+    match error {
+        ReconError::WorkspaceAllocationFailed { context, .. } => {
+            ReconError::WorkspaceAllocationFailed { plane, context }.into()
+        }
         _ => super::lr_pipeline_state_error(),
     }
 }
@@ -1050,7 +1059,7 @@ impl StripeChain<'_> {
                     block.height,
                     (WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAP_RADIUS),
                 )
-                .map_err(lr_window_error)?;
+                .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
                 let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
                 let luma_block_x = block_x
@@ -1078,7 +1087,7 @@ impl StripeChain<'_> {
                         .ok_or_else(super::lr_pipeline_state_error)?,
                     (luma_radius_x, luma_radius_y),
                 )
-                .map_err(lr_window_error)?;
+                .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
                 let (chroma_padded, chroma_stride) = chroma_window
                     .tail_from(
@@ -1101,7 +1110,7 @@ impl StripeChain<'_> {
                     block.height,
                     (sub_x as u8, sub_y as u8),
                 )
-                .map_err(lr_window_error)?;
+                .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 with_wiener_ns_chroma_scratch(|scratch| {
                     wiener_ns_filter_chroma_block_padded_into(
                         output,
@@ -1110,7 +1119,7 @@ impl StripeChain<'_> {
                         scratch,
                     )
                 })
-                .map_err(lr_window_error)
+                .map_err(|error| lr_plane_window_error(&error, plane_id))
             })?;
             self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, output, output_stride)
         })

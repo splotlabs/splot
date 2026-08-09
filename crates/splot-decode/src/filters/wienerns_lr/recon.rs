@@ -1276,9 +1276,9 @@ pub(crate) fn stripe_copy_error(
     error: crate::filters::source::StripeCopyError,
 ) -> crate::error::DecodeError {
     match error {
-        crate::filters::source::StripeCopyError::Allocation => {
+        crate::filters::source::StripeCopyError::Allocation(plane) => {
             splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: PlaneId::Y,
+                plane,
                 context: "deblocked stripe window",
             }
             .into()

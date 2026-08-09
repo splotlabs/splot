@@ -67,4 +67,4 @@
 # rectangular planner lowered it 2577 -> 2558.
 # Removing the dead ActiveIntraIst/ActiveChroma residual reject policies (production
 # always allowed the record handoff) lowered it 2558 -> 2549.
-max_deletable_lines = 2540
+max_deletable_lines = 2146

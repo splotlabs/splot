@@ -282,7 +282,7 @@ fn ccso_plane<T: ReconSample>(
     let width = source.width();
     let height = source.frame_height();
     let mut filtered = StripePlane::copy_from(source, 0, height).map_err(|error| match error {
-        crate::filters::source::StripeCopyError::Allocation => CcsoError::Allocation,
+        crate::filters::source::StripeCopyError::Allocation(_) => CcsoError::Allocation,
         crate::filters::source::StripeCopyError::Geometry => CcsoError::Workspace,
     })?;
     ccso_apply(

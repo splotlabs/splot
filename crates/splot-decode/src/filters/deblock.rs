@@ -2214,7 +2214,7 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
 impl From<crate::filters::source::StripeCopyError> for DeblockError {
     fn from(error: crate::filters::source::StripeCopyError) -> Self {
         match error {
-            crate::filters::source::StripeCopyError::Allocation => Self::Allocation,
+            crate::filters::source::StripeCopyError::Allocation(_) => Self::Allocation,
             crate::filters::source::StripeCopyError::Geometry => Self::Workspace,
         }
     }

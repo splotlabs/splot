@@ -828,6 +828,7 @@ fn read_intrabc_mvd(
         tile_offset,
         MvReadConfig::intrabc(mv_precision),
     )
+    .map_err(|_| selectable_symbol_read_error(tile_offset, "5.20.7.20"))
 }
 
 fn read_intrabc_morph_pred(

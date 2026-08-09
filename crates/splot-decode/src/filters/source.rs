@@ -20,7 +20,16 @@ fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StripeCopyError {
     Geometry,
-    Allocation,
+    Allocation(PlaneId),
+}
+
+impl StripeCopyError {
+    pub(crate) const fn for_plane(self, plane: PlaneId) -> Self {
+        match self {
+            Self::Allocation(_) => Self::Allocation(plane),
+            Self::Geometry => Self::Geometry,
+        }
+    }
 }
 
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
@@ -44,7 +53,7 @@ fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopy
     buffer.clear();
     buffer
         .try_reserve_exact(sample_count)
-        .map_err(|_| StripeCopyError::Allocation)?;
+        .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
     Ok(buffer)
 }
 
@@ -228,7 +237,7 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, Str
     buffer.clear();
     buffer
         .try_reserve(sample_count)
-        .map_err(|_| StripeCopyError::Allocation)?;
+        .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
     Ok(buffer)
 }
 
@@ -284,7 +293,9 @@ impl<T: ReconSample> DeblockedWindow<T> {
             let shift = if index == 0 { 0 } else { subsampling_y };
             let start = (luma_start >> shift).saturating_sub(margin);
             let end = (luma_end.div_ceil(1 << shift) + margin).min(source.frame_height());
-            planes[index] = Some(WindowPlane::copy(source, start, end)?);
+            planes[index] = Some(
+                WindowPlane::copy(source, start, end).map_err(|error| error.for_plane(plane))?,
+            );
         }
         Ok(Self { planes })
     }
@@ -318,7 +329,10 @@ impl<T: ReconSample> DeblockedWindow<T> {
             let shift = if index == 0 { 0 } else { subsampling_y };
             let start = (luma_start >> shift).saturating_sub(margin);
             let end = (luma_end.div_ceil(1 << shift) + margin).min(size.height());
-            planes[index] = Some(WindowPlane::copy_bands(frame, plane, start, end)?);
+            planes[index] = Some(
+                WindowPlane::copy_bands(frame, plane, start, end)
+                    .map_err(|error| error.for_plane(plane))?,
+            );
         }
         Ok(Self { planes })
     }

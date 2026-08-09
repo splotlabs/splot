@@ -895,7 +895,7 @@ pub(crate) enum CdefError {
 impl From<crate::filters::source::StripeCopyError> for CdefError {
     fn from(error: crate::filters::source::StripeCopyError) -> Self {
         match error {
-            crate::filters::source::StripeCopyError::Allocation => Self::Allocation,
+            crate::filters::source::StripeCopyError::Allocation(_) => Self::Allocation,
             crate::filters::source::StripeCopyError::Geometry => Self::Geometry,
         }
     }
