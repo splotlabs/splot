@@ -22,8 +22,6 @@ const MV_PROJECTION_DIV_MULT: [i32; 32] = [
     0, 16384, 8192, 5461, 4096, 3276, 2730, 2340, 2048, 1820, 1638, 1489, 1365, 1260, 1170, 1092,
     1024, 963, 910, 862, 819, 780, 744, 712, 682, 655, 630, 606, 585, 564, 546, 528,
 ];
-const SPEC_READ_REFINEMV: &str = "5.20.7.17";
-
 pub(super) fn read_reference_mode(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1384,20 +1382,20 @@ fn compound_sized_reference_distances<T: ReconSample>(
             }
         });
     };
-    let ref0 =
-        compound_reference_facts(reference, ref_frame_idx, compound.ref_frame0, tile_offset)?;
-    let ref1 =
-        compound_reference_facts(reference, ref_frame_idx, compound.ref_frame1, tile_offset)?;
-    if ref0.width != frame_size.width
+    let ref0 = compound_reference_facts(reference, ref_frame_idx, compound.ref_frame0)?;
+    let ref1 = compound_reference_facts(reference, ref_frame_idx, compound.ref_frame1)?;
+    if ref0.order_hint.is_restricted()
+        || ref1.order_hint.is_restricted()
+        || ref0.width != frame_size.width
         || ref0.height != frame_size.height
         || ref1.width != frame_size.width
         || ref1.height != frame_size.height
     {
         return Ok(None);
     }
-    let current = compound_current_order_hint(core, tile_offset)?;
-    let d0 = super::super::get_relative_dist(current, ref0.order_hint);
-    let d1 = super::super::get_relative_dist(current, ref1.order_hint);
+    let current = CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
+    let d0 = current.relative_dist(ref0.order_hint);
+    let d1 = current.relative_dist(ref1.order_hint);
     Ok(Some((d0, d1)))
 }
 
@@ -1456,7 +1454,7 @@ impl CompoundOrderHint {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CompoundReferenceFacts {
-    order_hint: i32,
+    order_hint: CompoundOrderHint,
     width: u32,
     height: u32,
 }
@@ -1465,7 +1463,6 @@ fn compound_reference_facts<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame: i8,
-    tile_offset: ByteOffset,
 ) -> Result<CompoundReferenceFacts> {
     let slot = super::super::block_reference_slot(ref_frame_idx, ref_frame)?;
     let slot = usize::try_from(slot).unwrap_or(usize::MAX);
@@ -1475,14 +1472,7 @@ fn compound_reference_facts<T: ReconSample>(
             slot_count: reference.ref_order_hint.len(),
         },
     )?;
-    let order_hint = i32::try_from(order_hint).map_err(|_| {
-        compound_cap!(
-            "compound_ref_order_hint_range",
-            tile_offset,
-            "inter.compound.ref_order_hint",
-            SPEC_READ_REFINEMV
-        )
-    })?;
+    let order_hint = CompoundOrderHint::reference(order_hint);
     let width = *reference.ref_frame_width.get(slot).ok_or(
         crate::DecodeReferenceStateError::SlotOutOfRange {
             slot,
