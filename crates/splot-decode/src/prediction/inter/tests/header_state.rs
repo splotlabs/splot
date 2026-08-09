@@ -207,6 +207,24 @@ fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
 }
 
 #[test]
+fn missing_reference_ccso_params_is_a_typed_reference_state_error() {
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_ccso_params = vec![None];
+
+    for slot in [0, 1] {
+        let error = reference
+            .ccso_params_for_slot(slot)
+            .expect_err("missing saved CCSO parameters");
+        assert!(matches!(
+            error,
+            DecodeError::ReferenceState {
+                source: crate::DecodeReferenceStateError::MissingCcsoParams { slot: actual }
+            } if actual == slot as usize
+        ));
+    }
+}
+
+#[test]
 fn ras_missing_reference_map_is_a_typed_header_state_error() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");

@@ -149,6 +149,12 @@ pub enum DecodeReferenceStateError {
         /// Zero-based reference slot selected for cross-frame CDF initialization.
         slot: usize,
     },
+    /// A selected reference slot had no saved CCSO parameters.
+    #[error("reference slot {slot} has no saved CCSO parameters")]
+    MissingCcsoParams {
+        /// Zero-based reference slot selected for CCSO parameter reuse.
+        slot: usize,
+    },
     /// A selected reference had not published the motion field required by TIP output.
     #[error("a selected TIP-output reference has no published motion field")]
     MissingMotionFieldPublication,

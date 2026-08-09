@@ -1331,19 +1331,12 @@ impl<T: ReconSample> InterReferenceState<T> {
     fn ccso_params_for_slot(
         &self,
         slot: u32,
-        offset: ByteOffset,
     ) -> Result<Arc<splot_core::headers::frame::CcsoParams>> {
+        let slot = usize::try_from(slot).unwrap_or(usize::MAX);
         self.ref_ccso_params
-            .get(slot as usize)
+            .get(slot)
             .and_then(Clone::clone)
-            .ok_or_else(|| {
-                inter_missing!(
-                    "inter_missing_reference_ccso_params",
-                    offset,
-                    "inter.ccso.saved_params",
-                    "7.23"
-                )
-            })
+            .ok_or(DecodeReferenceStateError::MissingCcsoParams { slot }.into())
     }
 
     pub(crate) fn header_view(&self) -> FrameReferenceStateView<'_> {
@@ -1698,7 +1691,7 @@ fn resolve_ccso_reference_reuse(
         if !reuse_ccso {
             continue;
         }
-        let ref_ccso = reference.ccso_params_for_slot(slot, offset)?;
+        let ref_ccso = reference.ccso_params_for_slot(slot)?;
         let Some(ref_plane) = ref_ccso.planes.get(plane_index) else {
             return Err(inter_missing!(
                 "inter_missing_reference_ccso_plane",
