@@ -105,7 +105,9 @@ pub(crate) fn choose_primary_secondary_ref_frame(
     let mut secondary = RankedRef::NONE;
     for (i, &slot) in ref_frame_idx.iter().enumerate() {
         let slot = slot as usize;
-        if ref_is_inter.get(slot).copied() != Some(true) {
+        if ref_is_inter.get(slot).copied() != Some(true)
+            || ref_order_hint.get(slot).copied() == Some(u32::MAX)
+        {
             continue;
         }
         let candidate = RankedRef::from_reference(
@@ -211,4 +213,27 @@ fn get_relative_dist(a: i32, b: i32) -> i32 {
 
 pub(crate) fn floor_log2(x: u64) -> i32 {
     if x == 0 { 0 } else { x.ilog2() as i32 }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::choose_primary_secondary_ref_frame;
+
+    #[test]
+    fn primary_reference_choice_excludes_restricted_order_hints() {
+        let (primary, secondary) = choose_primary_secondary_ref_frame(
+            Some(false),
+            Some(8),
+            &[0, 1],
+            &[true, true],
+            &[100, 110],
+            &[u32::MAX, 1],
+            &[64, 64],
+            &[64, 64],
+            100,
+            2,
+        );
+        assert_eq!(primary, 1);
+        assert_eq!(secondary, 7);
+    }
 }
