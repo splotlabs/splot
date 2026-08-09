@@ -93,11 +93,11 @@ fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
 #[test]
 fn missing_inter_header_regions_are_typed_header_state_errors() {
     use DecodeHeaderStateError::{
-        IncompleteInterFrame, MissingDisplayOrderHint, MissingFrameSize, MissingInterControlRegion,
-        MissingInterTail, ZeroFrameSize,
+        IncompleteInterFrame, IncompleteInterFrameTools, MissingDisplayOrderHint, MissingFrameSize,
+        MissingInterControlRegion, MissingInterTail, ZeroFrameSize,
     };
     type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
-    let cases: [MutationCase; 8] = [
+    let cases: [MutationCase; 9] = [
         (
             |core| core.status = FrameHeaderParseStatus::ActivationFieldsOnly,
             IncompleteInterFrame,
@@ -107,6 +107,10 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
         (
             |core| core.inter.as_mut().unwrap().interpolation_filter = None,
             DecodeHeaderStateError::MissingInterpolationFilter,
+        ),
+        (
+            |core| core.inter.as_mut().unwrap().max_drl_bits_minus_1 = None,
+            IncompleteInterFrameTools,
         ),
         (|core| core.order_hint = None, MissingDisplayOrderHint),
         (|core| core.frame_size = None, MissingFrameSize),
