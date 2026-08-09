@@ -13,7 +13,7 @@ use super::super::find_mv_stack::{BlockNeighbourContext, BlockPrecisionRecord};
 use super::super::read_mv::{
     MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_TWO_PEL, lower_mv_precision,
 };
-use super::super::{Mv, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, unsupported_at};
+use super::super::{Mv, SINGLE_MODE_NEWMV};
 use super::warp::inter_mv_read_config;
 use super::{
     DecodeBlockFrontier, INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE,
@@ -43,12 +43,7 @@ pub(super) fn resolve_interp_filter(
                 .map_err(|_| symbol_read_error(tile_offset))?;
             Ok(interp_filter_from_symbol(symbol.get()))
         }
-        _ => Err(inter_cap!(
-            "inter_unsupported_interpolation_filter",
-            tile_offset,
-            "inter.interpolation_filter",
-            SPEC_MODE_INFO
-        )),
+        _ => Err(crate::error::DecodeHeaderStateError::InvalidInterpolationFilter.into()),
     }
 }
 

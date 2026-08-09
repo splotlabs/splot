@@ -97,6 +97,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its parsed interpolation filter, but it was absent.
     #[error("inter-frame interpolation filter is missing")]
     MissingInterpolationFilter,
+    /// An inter frame carried an interpolation-filter variant unknown to this decoder.
+    #[error("inter-frame interpolation filter is invalid")]
+    InvalidInterpolationFilter,
     /// An inter frame required its derived display order hint, but it was absent.
     #[error("inter-frame display order hint is missing")]
     MissingDisplayOrderHint,
