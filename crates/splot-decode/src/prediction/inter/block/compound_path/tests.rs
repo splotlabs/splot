@@ -157,6 +157,33 @@ fn compound_ref_contexts_keep_invalid_reference_count_fail_closed() {
     ));
 }
 
+#[test]
+fn compound_ref_distance_signs_cover_every_valid_reference_count() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9, 11, 10, 10, 10, 10, 10];
+    let ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
+    let expected = [true, false, true, true, true, true, true];
+
+    for count in 0..=7 {
+        let signs = compound_ref_distance_signs(&ref_frame_idx, &reference, 10, count, TILE_OFFSET)
+            .unwrap();
+        assert_eq!(signs[..count], expected[..count]);
+        assert_eq!(signs[count..], [true; 7][count..]);
+    }
+}
+
+#[test]
+fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
+    let reference = InterReferenceState::<u8>::empty().unwrap();
+    let error = compound_ref_distance_signs(&[], &reference, 10, 1, TILE_OFFSET).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterReferenceMap
+        }
+    ));
+}
+
 fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
