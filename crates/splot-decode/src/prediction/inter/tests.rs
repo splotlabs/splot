@@ -25,7 +25,8 @@ use super::block::{
 };
 use super::test_support::fixture_sequence_and_key_core;
 use super::{
-    ccso_reference_slot, compound_is_joint_context, compound_is_joint_context_from_order_hints,
+    CompoundOrderHint, ccso_reference_slot, compound_is_joint_context,
+    compound_is_joint_context_from_order_hints,
 };
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
@@ -2376,24 +2377,47 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
 #[test]
 fn compound_is_joint_context_uses_strict_same_side_signs() {
     let ctx = compound_is_joint_context_from_order_hints;
+    let ordinary = CompoundOrderHint::Value;
 
-    assert_eq!(ctx(10, 10, 10), 0, "zero/zero distances are not same-side");
-    assert_eq!(ctx(9, 9, 10), 1, "both past references are same-side");
-    assert_eq!(ctx(11, 11, 10), 1, "both future references are same-side");
     assert_eq!(
-        ctx(9, 11, 10),
+        ctx(ordinary(10), ordinary(10), ordinary(10)),
+        0,
+        "zero/zero distances are not same-side"
+    );
+    assert_eq!(
+        ctx(ordinary(9), ordinary(9), ordinary(10)),
+        1,
+        "both past references are same-side"
+    );
+    assert_eq!(
+        ctx(ordinary(11), ordinary(11), ordinary(10)),
+        1,
+        "both future references are same-side"
+    );
+    assert_eq!(
+        ctx(ordinary(9), ordinary(11), ordinary(10)),
         0,
         "opposite-side equal-distance references stay context 0"
     );
     assert_eq!(
-        ctx(9, 12, 10),
+        ctx(ordinary(9), ordinary(12), ordinary(10)),
         1,
         "opposite-side unequal-distance references still use context 1"
     );
     assert_eq!(
-        ctx(-1, 0, 127),
+        ctx(CompoundOrderHint::Restricted, ordinary(0), ordinary(127),),
         1,
         "one restricted reference selects context 1 even at equal distance"
+    );
+    let current = i64::from(i32::MAX) + 100;
+    assert_eq!(
+        ctx(
+            ordinary(current - 1),
+            ordinary(current - 2),
+            ordinary(current)
+        ),
+        1,
+        "full-domain past references retain their same-side context"
     );
 }
 

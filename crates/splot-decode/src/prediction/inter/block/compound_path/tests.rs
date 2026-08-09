@@ -172,6 +172,17 @@ fn compound_ref_distance_signs_cover_every_valid_reference_count() {
 }
 
 #[test]
+fn compound_ref_distance_signs_preserve_wide_order_hints() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![0x7fff_fffe, 0x8000_0002, u32::MAX];
+
+    assert_eq!(
+        compound_ref_distance_signs(&[0, 1, 2], &reference, 0x8000_0000, 3).unwrap(),
+        [true, false, true, true, true, true, true]
+    );
+}
+
+#[test]
 fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
     let error = compound_ref_distance_signs(&[], &reference, 10, 1).unwrap_err();
@@ -545,8 +556,23 @@ fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
     );
     assert_eq!(
         CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
-            .relative_dist(CompoundOrderHint::current(i32::MAX)),
+            .relative_dist(CompoundOrderHint::current(i32::MAX as u32)),
         1
+    );
+}
+
+#[test]
+fn compound_current_order_hint_preserves_the_full_domain() {
+    let fixture = include_bytes!(
+        "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
+    );
+    let (_, mut core, _) =
+        crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
+    core.order_hint = Some(u32::MAX);
+
+    assert_eq!(
+        compound_current_order_hint(&core),
+        CompoundOrderHint::Value(i64::from(u32::MAX))
     );
 }
 
@@ -568,8 +594,13 @@ fn compound_furthest_future_ref_ranks_by_raw_order_hint() {
     reference.ref_order_hint = vec![i32::MAX as u32 + 128, i32::MAX as u32 + 129];
 
     assert_eq!(
-        compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(i32::MAX), 2)
-            .unwrap(),
+        compound_furthest_future_ref(
+            &reference,
+            &[0, 1],
+            CompoundOrderHint::current(i32::MAX as u32),
+            2,
+        )
+        .unwrap(),
         Some(1)
     );
 }
@@ -1164,12 +1195,15 @@ fn compound_non_skip_near_mode_reads_second_drl_idx() {
 fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
     assert_eq!(
         skip_mode_default_pair(
-            0,
+            CompoundOrderHint::current(0),
             Some((CompoundOrderHint::Restricted, CompoundOrderHint::Value(1),)),
         ),
         (0, 1)
     );
-    assert_eq!(skip_mode_default_pair(0, None), (0, 0));
+    assert_eq!(
+        skip_mode_default_pair(CompoundOrderHint::current(0), None),
+        (0, 0)
+    );
 }
 
 #[test]

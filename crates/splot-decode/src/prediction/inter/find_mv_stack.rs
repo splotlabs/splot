@@ -6,7 +6,7 @@ pub(crate) use splot_recon::IDENTITY_WARP_PARAMS as DEFAULT_WARP_PARAMS;
 use splot_recon::math::{round2_signed, round2_signed_i32};
 
 use super::block::{WARP_PARAM_REDUCE_BITS, WARPEDMODEL_PREC_BITS, WARPEDMODEL_TRANS_CLAMP};
-use super::{Mv, mc::CWP_EQUAL};
+use super::{CompoundOrderHint, Mv, mc::CWP_EQUAL};
 
 pub(crate) const MAX_REF_MV_STACK_SIZE: usize = 6;
 
@@ -433,7 +433,7 @@ impl BlockNeighbourContext {
         &self,
         ref_frame_idx: &[u32],
         ref_order_hint: &[u32],
-        current_order_hint: i32,
+        current_order_hint: CompoundOrderHint,
     ) -> usize {
         match self.cell_count {
             0 => 1,
@@ -648,7 +648,7 @@ fn is_backward_ref_frame(
     cell: NeighbourFlags,
     ref_frame_idx: &[u32],
     ref_order_hint: &[u32],
-    current_order_hint: i32,
+    current_order_hint: CompoundOrderHint,
 ) -> bool {
     if !cell.is_inter() || cell.ref_frame0 < 0 {
         return false;
@@ -662,10 +662,7 @@ fn is_backward_ref_frame(
     let Some(&order_hint) = ref_order_hint.get(slot as usize) else {
         return false;
     };
-    let Ok(order_hint) = i32::try_from(order_hint) else {
-        return false;
-    };
-    (order_hint - current_order_hint).clamp(-127, 127) > 0
+    CompoundOrderHint::reference(order_hint).frame_distance_from(current_order_hint) < 0
 }
 
 struct NeighbourContextLists {
