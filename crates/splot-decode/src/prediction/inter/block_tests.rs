@@ -393,11 +393,11 @@ fn chroma_smooth_tile_ranges_follow_chroma_sampling() {
 }
 
 #[test]
-fn warp_interintra_mode_three_maps_to_smooth() -> TestResult {
+fn warp_interintra_smooth_mode_builds_smooth_mask() -> TestResult {
     let prediction = super::warp::interintra_prediction_mode(
         super::warp::WarpInterIntraSyntax {
             enabled: true,
-            mode: Some(3),
+            mode: InterIntraMode::Smooth,
             use_wedge: false,
             wedge_index: None,
         },
@@ -459,7 +459,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
     let drl = super::read_drl_idx(&mut tile, &mut symbols, 1, 3, ByteOffset::new(0))?;
 
     assert!(interintra.enabled);
-    assert_eq!(interintra.mode, Some(3));
+    assert_eq!(interintra.mode, InterIntraMode::Smooth);
     assert!(!interintra.use_wedge);
     assert_eq!(drl, 0);
     Ok(())
