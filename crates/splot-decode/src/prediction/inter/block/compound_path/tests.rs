@@ -199,7 +199,7 @@ fn compound_reference_order_hint_covers_every_valid_reference_index() {
                 TILE_OFFSET,
             )
             .unwrap(),
-            expected as i32
+            CompoundOrderHint::Value(i64::from(expected))
         );
     }
 }
@@ -252,6 +252,79 @@ fn compound_reference_order_hint_keeps_reference_slot_bounds_fail_closed() {
                 slot_count: 1,
             }
         }
+    ));
+}
+
+#[test]
+fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
+
+    assert_eq!(
+        compound_reference_order_hint(&reference, &[0, 1], 0, TILE_OFFSET).unwrap(),
+        CompoundOrderHint::Restricted
+    );
+    assert_eq!(
+        compound_reference_order_hint(&reference, &[0, 1], 1, TILE_OFFSET).unwrap(),
+        CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
+    );
+    assert_eq!(
+        CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
+            .relative_dist(CompoundOrderHint::current(i32::MAX)),
+        1
+    );
+}
+
+#[test]
+fn compound_furthest_future_ref_excludes_restricted_references() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![u32::MAX, 15];
+
+    assert_eq!(
+        compound_furthest_future_ref(
+            &reference,
+            &[0, 1],
+            CompoundOrderHint::current(10),
+            2,
+            TILE_OFFSET,
+        )
+        .unwrap(),
+        Some(1)
+    );
+}
+
+#[test]
+fn compound_furthest_future_ref_ranks_by_raw_order_hint() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![i32::MAX as u32 + 128, i32::MAX as u32 + 129];
+
+    assert_eq!(
+        compound_furthest_future_ref(
+            &reference,
+            &[0, 1],
+            CompoundOrderHint::current(i32::MAX),
+            2,
+            TILE_OFFSET,
+        )
+        .unwrap(),
+        Some(1)
+    );
+}
+
+#[test]
+fn compound_joint_projection_preserves_restricted_reference_semantics() {
+    let current = CompoundOrderHint::current(10);
+    let ordinary = CompoundOrderHint::Value(200);
+    let restricted = CompoundOrderHint::Restricted;
+    let projection = compound_joint_mv_projection_from_order_hints(current, ordinary, restricted);
+
+    assert_eq!(projection.base_list, 1);
+    assert_eq!(projection.first_dist, 127);
+    assert_eq!(projection.second_dist, -127);
+    assert!(compound_references_same_side(
+        current,
+        restricted,
+        CompoundOrderHint::Value(0),
     ));
 }
 
@@ -803,7 +876,10 @@ fn compound_non_skip_near_mode_reads_second_drl_idx() {
 #[test]
 fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
     assert_eq!(
-        skip_mode_default_pair(0, Some((RESTRICTED_ORDER_HINT, 1))),
+        skip_mode_default_pair(
+            0,
+            Some((CompoundOrderHint::Restricted, CompoundOrderHint::Value(1),)),
+        ),
         (0, 1)
     );
     assert_eq!(skip_mode_default_pair(0, None), (0, 0));
