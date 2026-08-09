@@ -14,6 +14,31 @@ fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn select_buffer_index<I>(capacities: I, sample_count: usize, pool_is_full: bool) -> Option<usize>
+where
+    I: IntoIterator<Item = (usize, usize)>,
+{
+    let mut fitting: Option<(usize, usize)> = None;
+    let mut fallback: Option<(usize, usize)> = None;
+    for (index, capacity) in capacities {
+        if capacity >= sample_count {
+            if fitting.is_none_or(|(_, best_capacity)| capacity < best_capacity) {
+                fitting = Some((index, capacity));
+            }
+        } else if pool_is_full && fallback.is_none_or(|(_, best_capacity)| capacity > best_capacity)
+        {
+            fallback = Some((index, capacity));
+        }
+    }
+    fitting.or(fallback).map(|(index, _)| index)
+}
+
+fn recycle_buffer<B>(buffers: &mut Vec<B>, buffer: B, capacity: usize, max_buffers: usize) {
+    if capacity != 0 && buffers.len() < max_buffers && buffers.try_reserve(1).is_ok() {
+        buffers.push(buffer);
+    }
+}
+
 /// Why a stripe/window copy failed: inconsistent geometry, or storage that
 /// could not be reserved.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,20 +59,14 @@ impl StripeCopyError {
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
     let mut buffers = lock_stripe_sample_buffers();
     let pool_is_full = buffers.len() >= MAX_RETAINED_STRIPE_BUFFERS;
-    let mut fitting = None;
-    let mut fallback = None;
-    for (index, buffer) in buffers.iter().enumerate() {
-        let capacity = buffer.capacity();
-        if capacity >= sample_count {
-            if fitting.is_none_or(|(_, best_capacity)| capacity < best_capacity) {
-                fitting = Some((index, capacity));
-            }
-        } else if pool_is_full && fallback.is_none_or(|(_, best_capacity)| capacity > best_capacity)
-        {
-            fallback = Some((index, capacity));
-        }
-    }
-    let index = fitting.or(fallback).map(|(index, _)| index);
+    let index = select_buffer_index(
+        buffers
+            .iter()
+            .enumerate()
+            .map(|(index, buffer)| (index, buffer.capacity())),
+        sample_count,
+        pool_is_full,
+    );
     let mut buffer = index
         .map(|index| buffers.swap_remove(index))
         .unwrap_or_default();
@@ -64,10 +83,9 @@ fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
         return;
     }
     buffer.clear();
+    let capacity = buffer.capacity();
     let mut buffers = lock_stripe_sample_buffers();
-    if buffers.len() < MAX_RETAINED_STRIPE_BUFFERS && buffers.try_reserve(1).is_ok() {
-        buffers.push(buffer);
-    }
+    recycle_buffer(&mut buffers, buffer, capacity, MAX_RETAINED_STRIPE_BUFFERS);
 }
 
 /// A read view of one frame plane, or of a contiguous row window of it.
@@ -220,24 +238,15 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, Str
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let pool_is_full = buffers.len() >= MAX_RETAINED_WINDOW_BUFFERS;
-        let mut fitting = None;
-        let mut fallback = None;
-        for (index, buffer) in buffers.iter().enumerate() {
-            let Some(buffer) = buffer.downcast_ref::<Vec<T>>() else {
-                continue;
-            };
-            let capacity = buffer.capacity();
-            if capacity >= sample_count {
-                if fitting.is_none_or(|(_, best_capacity)| capacity < best_capacity) {
-                    fitting = Some((index, capacity));
-                }
-            } else if pool_is_full
-                && fallback.is_none_or(|(_, best_capacity)| capacity > best_capacity)
-            {
-                fallback = Some((index, capacity));
-            }
-        }
-        let index = fitting.or(fallback).map(|(index, _)| index);
+        let index = select_buffer_index(
+            buffers.iter().enumerate().filter_map(|(index, buffer)| {
+                buffer
+                    .downcast_ref::<Vec<T>>()
+                    .map(|buffer| (index, buffer.capacity()))
+            }),
+            sample_count,
+            pool_is_full,
+        );
         index
             .map(|index| buffers.swap_remove(index))
             .and_then(|buffer| buffer.downcast::<Vec<T>>().ok())
@@ -255,12 +264,16 @@ fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
         return;
     }
     buffer.clear();
+    let capacity = buffer.capacity();
     let mut buffers = WINDOW_SAMPLE_BUFFERS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if buffers.len() < MAX_RETAINED_WINDOW_BUFFERS && buffers.try_reserve(1).is_ok() {
-        buffers.push(Box::new(buffer));
-    }
+    recycle_buffer(
+        &mut buffers,
+        Box::new(buffer),
+        capacity,
+        MAX_RETAINED_WINDOW_BUFFERS,
+    );
 }
 
 /// One owned copy of the deblocked rows a run of filter stripes reads.

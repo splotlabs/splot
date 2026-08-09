@@ -6,11 +6,11 @@
 #![allow(clippy::expect_used)]
 
 use super::{
-    MAX_RETAINED_STRIPE_BUFFERS, MAX_RETAINED_WINDOW_BUFFERS, StripePlane, WINDOW_SAMPLE_BUFFERS,
-    lock_stripe_sample_buffers, recycle_stripe_sample_buffer, recycle_window_buffer,
-    take_stripe_sample_buffer, take_window_buffer,
+    MAX_RETAINED_STRIPE_BUFFERS, MAX_RETAINED_WINDOW_BUFFERS, StripePlane, recycle_buffer,
+    select_buffer_index,
 };
 use splot_recon::PlaneRect;
+use std::any::Any;
 
 const EIGHT_K_LUMA_WINDOW_SAMPLES: usize = 737_280;
 
@@ -23,151 +23,58 @@ fn oversized(samples: usize) -> Vec<u16> {
 }
 
 #[test]
-fn window_cache_selects_by_capacity_and_retains_large_frame_buffers() {
-    let small = Vec::<u16>::with_capacity(32);
-    let fitting = Vec::<u16>::with_capacity(128);
-    let fitting_ptr = fitting.as_ptr();
-    let large = Vec::<u16>::with_capacity(256);
-    {
-        let mut buffers = WINDOW_SAMPLE_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        buffers.clear();
-        buffers.push(Box::new(small));
-        buffers.push(Box::new(fitting));
-        buffers.push(Box::new(large));
-    }
-
-    let selected = take_window_buffer::<u16>(96).expect("a fitting window buffer");
-    assert!(std::ptr::eq(selected.as_ptr(), fitting_ptr));
-
-    let cached = Vec::<u16>::with_capacity(64);
-    let cached_ptr = cached.as_ptr();
-    {
-        let mut buffers = WINDOW_SAMPLE_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        buffers.clear();
-        buffers.push(Box::new(cached));
-    }
-    let fresh = take_window_buffer::<u16>(96).expect("a fresh window buffer");
-    assert!(!std::ptr::eq(fresh.as_ptr(), cached_ptr));
-    assert!(
-        WINDOW_SAMPLE_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .any(|buffer| buffer
+fn window_cache_selection_matches_type_and_capacity() {
+    let buffers: Vec<Box<dyn Any + Send>> = vec![
+        Box::new(Vec::<u8>::with_capacity(96)),
+        Box::new(Vec::<u16>::with_capacity(32)),
+        Box::new(Vec::<u16>::with_capacity(128)),
+        Box::new(Vec::<u16>::with_capacity(256)),
+    ];
+    let capacities = || {
+        buffers.iter().enumerate().filter_map(|(index, buffer)| {
+            buffer
                 .downcast_ref::<Vec<u16>>()
-                .is_some_and(|buffer| std::ptr::eq(buffer.as_ptr(), cached_ptr))),
-        "an undersized buffer must remain cached while the pool has room"
-    );
+                .map(|buffer| (index, buffer.capacity()))
+        })
+    };
 
-    let fallback = Vec::<u16>::with_capacity(64);
-    {
-        let mut buffers = WINDOW_SAMPLE_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        buffers.clear();
-        buffers.push(Box::new(fallback));
-        buffers.extend(
-            (1..MAX_RETAINED_WINDOW_BUFFERS)
-                .map(|_| Box::new(Vec::<u8>::with_capacity(1)) as Box<dyn std::any::Any + Send>),
-        );
-    }
-
-    let selected = take_window_buffer::<u16>(96).expect("an undersized fallback window buffer");
-    assert!(selected.capacity() >= 96);
-    assert!(
-        WINDOW_SAMPLE_BUFFERS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .all(|buffer| buffer.downcast_ref::<Vec<u16>>().is_none()),
-        "the only matching fallback must leave the full pool"
-    );
-
-    let oversized = oversized(EIGHT_K_LUMA_WINDOW_SAMPLES);
-    let oversized_ptr = oversized.as_ptr();
-    WINDOW_SAMPLE_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
-    recycle_window_buffer(oversized);
-
-    let mut buffers = WINDOW_SAMPLE_BUFFERS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    assert!(
-        buffers.iter().any(|buffer| buffer
-            .downcast_ref::<Vec<u16>>()
-            .is_some_and(|buffer| std::ptr::eq(buffer.as_ptr(), oversized_ptr))),
-        "the window cache must retain an 8K luma allocation"
-    );
-    buffers.clear();
+    assert_eq!(select_buffer_index(capacities(), 96, false), Some(2));
+    assert_eq!(select_buffer_index(capacities(), 512, false), None);
+    assert_eq!(select_buffer_index(capacities(), 512, true), Some(3));
 }
 
 #[test]
-fn stripe_cache_selects_by_capacity_and_retains_large_frame_buffers() {
-    let small = Vec::<u16>::with_capacity(32);
-    let fitting = Vec::<u16>::with_capacity(128);
-    let fitting_ptr = fitting.as_ptr();
-    let large = Vec::<u16>::with_capacity(256);
-    {
-        let mut buffers = lock_stripe_sample_buffers();
-        buffers.clear();
-        buffers.extend([small, fitting, large]);
-    }
+fn stripe_cache_selection_uses_fresh_storage_until_full() {
+    let capacities = [(0, 32), (1, 128), (2, 256)];
 
-    let selected = take_stripe_sample_buffer(96).expect("a fitting stripe buffer");
-    assert!(std::ptr::eq(selected.as_ptr(), fitting_ptr));
+    assert_eq!(select_buffer_index(capacities, 96, false), Some(1));
+    assert_eq!(select_buffer_index(capacities, 512, false), None);
+    assert_eq!(select_buffer_index(capacities, 512, true), Some(2));
+}
 
-    let cached = Vec::<u16>::with_capacity(64);
-    let cached_ptr = cached.as_ptr();
-    {
-        let mut buffers = lock_stripe_sample_buffers();
-        buffers.clear();
-        buffers.push(cached);
-    }
-    let fresh = take_stripe_sample_buffer(96).expect("a fresh stripe buffer");
-    assert!(!std::ptr::eq(fresh.as_ptr(), cached_ptr));
-    assert!(
-        lock_stripe_sample_buffers()
-            .iter()
-            .any(|buffer| std::ptr::eq(buffer.as_ptr(), cached_ptr)),
-        "an undersized buffer must remain cached while the pool has room"
+#[test]
+fn caches_retain_large_frame_buffers_under_their_count_caps() {
+    let stripe = oversized(EIGHT_K_LUMA_WINDOW_SAMPLES);
+    let stripe_capacity = stripe.capacity();
+    let mut stripe_buffers = Vec::new();
+    recycle_buffer(
+        &mut stripe_buffers,
+        stripe,
+        stripe_capacity,
+        MAX_RETAINED_STRIPE_BUFFERS,
     );
+    assert_eq!(stripe_buffers.len(), 1);
 
-    let fallback = Vec::<u16>::with_capacity(64);
-    {
-        let mut buffers = lock_stripe_sample_buffers();
-        buffers.clear();
-        buffers.push(fallback);
-        buffers.extend((1..MAX_RETAINED_STRIPE_BUFFERS).map(|_| Vec::with_capacity(1)));
-    }
-
-    let selected = take_stripe_sample_buffer(96).expect("an undersized fallback stripe buffer");
-    assert!(selected.capacity() >= 96);
-    assert!(
-        lock_stripe_sample_buffers()
-            .iter()
-            .all(|buffer| buffer.capacity() == 1),
-        "the largest fallback must leave the full pool"
+    let window = oversized(EIGHT_K_LUMA_WINDOW_SAMPLES);
+    let window_capacity = window.capacity();
+    let mut window_buffers: Vec<Box<dyn Any + Send>> = Vec::new();
+    recycle_buffer(
+        &mut window_buffers,
+        Box::new(window),
+        window_capacity,
+        MAX_RETAINED_WINDOW_BUFFERS,
     );
-
-    let oversized = oversized(EIGHT_K_LUMA_WINDOW_SAMPLES);
-    let oversized_ptr = oversized.as_ptr();
-    lock_stripe_sample_buffers().clear();
-    recycle_stripe_sample_buffer(oversized);
-
-    let mut buffers = lock_stripe_sample_buffers();
-    assert!(
-        buffers
-            .iter()
-            .any(|buffer| std::ptr::eq(buffer.as_ptr(), oversized_ptr)),
-        "the stripe cache must retain an 8K luma allocation"
-    );
-    buffers.clear();
+    assert_eq!(window_buffers.len(), 1);
 }
 
 #[test]
