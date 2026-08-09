@@ -462,7 +462,7 @@ pub(super) fn read_reference(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(tip_ref.get() != 0)
 }
 

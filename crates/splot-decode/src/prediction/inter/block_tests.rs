@@ -18,7 +18,7 @@ use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_all
 use super::{
     chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
     predict_interintra_planes, read_inter_intra_syntax_enabled, skip_segment_reference,
-    validate_segment_id,
+    symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -58,7 +58,7 @@ fn mvd_sign_derivation_requires_the_full_block_scope() {
     ));
 }
 use crate::bitstream::tile_payload::{
-    BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
+    BlockSize, BlockSymbolTraceReadError, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError};
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
@@ -107,6 +107,59 @@ fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
                 slot_count: 0,
             }
         }
+    ));
+    Ok(())
+}
+
+#[test]
+fn block_mode_failures_keep_typed_boundary() -> TestResult {
+    let decoder = SymbolDecoder::new(&[])?;
+    let Err(source) = decoder.finish() else {
+        return Err("empty symbol payload must fail at finish".into());
+    };
+    let error = symbol_read_error(
+        BlockSymbolTraceReadError::Symbol(source),
+        ByteOffset::new(41),
+    );
+
+    assert!(matches!(
+        error,
+        DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(ByteOffset::new(41))
+                && issue.spec_section() == Some(super::super::SPEC_MODE_INFO)
+    ));
+
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = SymbolDecoder::new(&[0x80])?;
+    let Err(source) = tile.read_block_symbol_trace(
+        TileCdfSelector::SingleMode { ctx: usize::MAX },
+        &mut symbols,
+    ) else {
+        return Err("invalid inter CDF selector must fail".into());
+    };
+    let error = symbol_read_error(source, ByteOffset::new(42));
+    assert!(matches!(
+        error,
+        DecodeError::InternalState {
+            reason: "inter_block_mode_parse",
+            byte_offset,
+        } if byte_offset == ByteOffset::new(42)
+    ));
+
+    let selector = TileCdfSelector::SingleMode { ctx: 0 };
+    let mut tile = FrameCdfSubset::from_defaults().tile_copy();
+    tile.with_row_mut(selector, |row| row[0] = 0)?;
+    let mut symbols = SymbolDecoder::new(&[0x80])?;
+    let Err(source) = tile.read_block_symbol_trace(selector, &mut symbols) else {
+        return Err("invalid inter CDF row must fail".into());
+    };
+    let error = symbol_read_error(source, ByteOffset::new(43));
+    assert!(matches!(
+        error,
+        DecodeError::InternalState {
+            reason: "inter_block_mode_parse",
+            byte_offset,
+        } if byte_offset == ByteOffset::new(43)
     ));
     Ok(())
 }
