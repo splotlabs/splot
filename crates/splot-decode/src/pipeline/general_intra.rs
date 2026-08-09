@@ -180,6 +180,15 @@ macro_rules! general_intra_at {
     };
 }
 
+macro_rules! general_intra_internal {
+    ($reason:literal, $offset:expr $(,)?) => {
+        DecodeError::InternalState {
+            reason: $reason,
+            byte_offset: $offset,
+        }
+    };
+}
+
 fn general_intra_chroma_tools(
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1185,12 +1194,9 @@ fn general_intra_residual_error(
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             ),
         },
-        GeneralIntraResidualError::UnexpectedBranch => general_intra_at!(
-            "general_intra_luma_coeff_unexpected_branch",
-            offset,
-            "general intra luma coefficient decode produced an unexpected branch result",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
+        GeneralIntraResidualError::UnexpectedBranch => {
+            general_intra_internal!("general_intra_luma_coeff_unexpected_branch", offset,)
+        }
         GeneralIntraResidualError::QuantLength { .. }
         | GeneralIntraResidualError::PredictionLength { .. }
         | GeneralIntraResidualError::Reconstruct { .. } => general_intra_at!(

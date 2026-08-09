@@ -40,7 +40,7 @@ const DECODE_SRC: &str = "crates/splot-decode/src";
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 78;
+const GAP_MARKER_FLOOR: usize = 77;
 
 /// One marker site: its reason id and the file it lives in.
 struct MarkerSite {
@@ -179,7 +179,7 @@ const FEATURE_MARKER_MACROS: &[&str] = &[
 
 /// Internal fail-closed marker macros. These share reason-id uniqueness with
 /// feature markers but are not protected by the feature count floor.
-const INTERNAL_MARKER_MACROS: &[&str] = &["inter_internal"];
+const INTERNAL_MARKER_MACROS: &[&str] = &["inter_internal", "general_intra_internal"];
 
 /// When `chars[i..]` begins one of `marker_macros` immediately followed by `!`,
 /// returns its name and the length of that `name!` token; otherwise `None`.
@@ -513,6 +513,7 @@ mod tests {
             r#"
                 let a = gap!("feature", o, "m", "s");
                 let b = inter_internal!("invariant", o);
+                let c = general_intra_internal!("intra_invariant", o);
             "#
             .to_string(),
         )];
@@ -520,12 +521,12 @@ mod tests {
             evaluate(&files, 1).unwrap(),
             MarkerCounts {
                 feature: 1,
-                internal: 1,
+                internal: 2,
             }
         );
         assert_eq!(
             scan_gap_reasons(&files[0].1, INTERNAL_MARKER_MACROS).reasons,
-            vec!["invariant"]
+            vec!["invariant", "intra_invariant"]
         );
     }
 
