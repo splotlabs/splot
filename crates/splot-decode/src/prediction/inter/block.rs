@@ -1902,15 +1902,8 @@ fn decode_block<T: ReconSample>(
     let interintra = if tip_ref || segment_forces_globalmv {
         None
     } else if !bawp.enabled {
-        let syntax = read_inter_intra_syntax(
-            cdfs,
-            symbols,
-            core,
-            frontier.b_size.index(),
-            n4w,
-            n4h,
-            tile_offset,
-        )?;
+        let syntax =
+            read_inter_intra_syntax(cdfs, symbols, core, frontier.b_size, n4w, n4h, tile_offset)?;
         interintra_prediction_mode(syntax, tile_offset)?
     } else {
         None
@@ -2204,7 +2197,7 @@ fn read_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     core: &FrameHeaderCore,
-    b_size: usize,
+    b_size: BlockSize,
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
@@ -2229,22 +2222,16 @@ fn read_inter_intra_syntax_enabled(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     frame_enables_interintra: bool,
-    b_size: usize,
+    b_size: BlockSize,
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<WarpInterIntraSyntax> {
+    let b_size = b_size.index();
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
         return Ok(WarpInterIntraSyntax::default());
     }
-    let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
-        inter_cap!(
-            "inter_interintra_bsize_group",
-            tile_offset,
-            "inter.inter_intra block size out of range",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     let inter_intra = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;

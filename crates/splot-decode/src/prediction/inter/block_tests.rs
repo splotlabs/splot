@@ -451,7 +451,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
         &mut tile,
         &mut symbols,
         true,
-        super::BLOCK_8X8,
+        BlockSize::new(super::BLOCK_8X8)?,
         2,
         2,
         ByteOffset::new(0),
