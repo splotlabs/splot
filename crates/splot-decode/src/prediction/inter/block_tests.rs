@@ -75,16 +75,30 @@ use crate::prediction::inter::{
 };
 
 #[test]
-fn block_reference_width_metadata_bounds_are_typed() -> TestResult {
+fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
     let fixture =
         include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
-    let (_, core, offset) = super::super::tests::parse_inter_core_for_validation(fixture)?;
-    let reference = InterReferenceState::<u8>::empty()?;
+    let (_, core, _) = super::super::tests::parse_inter_core_for_validation(fixture)?;
+    let mut reference = InterReferenceState::<u8>::empty()?;
 
-    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0, offset) else {
+    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0) else {
         return Err("missing reference-width metadata must fail closed".into());
     };
 
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 0,
+                slot_count: 0,
+            }
+        }
+    ));
+
+    reference.ref_frame_width.push(64);
+    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0) else {
+        return Err("missing reference-height metadata must fail closed".into());
+    };
     assert!(matches!(
         error,
         DecodeError::ReferenceState {
