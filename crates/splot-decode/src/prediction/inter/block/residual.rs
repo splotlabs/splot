@@ -13,6 +13,7 @@ const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
 const TX_4X4: usize = 0;
 const SPEC_RESIDUAL: &str = "5.20.7.23";
+const SPEC_READ_QUANT: &str = "5.20.7.28";
 const SPEC_TX_SIZE: &str = "5.20.6.1";
 const SPEC_TRANSFORM_TYPE: &str = "5.20.8.2";
 #[cfg(test)]
@@ -870,6 +871,12 @@ fn residual_read_error(
             )
         ) {
             return crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error);
+        }
+        if matches!(
+            current.downcast_ref::<crate::bitstream::tile_payload::CoeffReadQuantError>(),
+            Some(crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix { .. })
+        ) {
+            return crate::pipeline::malformed_tile_payload(tile_offset, SPEC_READ_QUANT, error);
         }
         if let Some(core_error) = current.downcast_ref::<splot_core::Error>() {
             return if matches!(core_error, splot_core::Error::UnexpectedEof { .. }) {

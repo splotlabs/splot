@@ -128,9 +128,6 @@ fn invalid_max_level_and_oversized_golomb_width_are_rejected() {
     let mut state = CoeffReadQuantState::new(config(1));
     assert!(matches!(
         state.read_one(&mut symbols, 0, input(2, 2)),
-        Err(CoeffReadQuantError::QuantOverflow {
-            operation: "coeff_rem literal width",
-            ..
-        })
+        Err(CoeffReadQuantError::OverlongGolombPrefix { index: 0 })
     ));
 }
