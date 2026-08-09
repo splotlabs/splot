@@ -1269,11 +1269,9 @@ fn compound_refinemv_reachable<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<bool> {
     let Some(seq_inter) = sequence.inter.as_ref() else {
-        return Err(compound_missing!(
+        return Err(inter_internal!(
             "compound_refinemv_missing_sequence_inter",
-            tile_offset,
-            "inter.sequence_tools",
-            SPEC_MODE_INFO
+            tile_offset
         ));
     };
     if !seq_inter.enable_refinemv || !compound_refinemv_size_allowed(n4w, n4h) {
