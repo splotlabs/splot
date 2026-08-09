@@ -125,7 +125,6 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
             prediction.mode(),
             enable_ibp,
             bit_depth,
-            tile_offset,
         )?;
     }
     let held = super::super::hold_inter_block_references(ref_frame_idx, reference, placed)?;
