@@ -366,12 +366,23 @@ fn read_warp_newmv_tail(
     })
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WarpInterIntraSyntax {
     pub(crate) enabled: bool,
-    pub(crate) mode: Option<u8>,
+    pub(crate) mode: InterIntraMode,
     pub(crate) use_wedge: bool,
     pub(crate) wedge_index: Option<u8>,
+}
+
+impl Default for WarpInterIntraSyntax {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: InterIntraMode::Dc,
+            use_wedge: false,
+            wedge_index: None,
+        }
+    }
 }
 
 pub(crate) fn inter_mv_read_config(
@@ -621,18 +632,7 @@ pub(crate) fn interintra_prediction_mode(
     if !syntax.enabled {
         return Ok(None);
     }
-    let mode = match syntax.mode {
-        Some(0) => InterIntraMode::Dc,
-        Some(1) => InterIntraMode::Vertical,
-        Some(2) => InterIntraMode::Horizontal,
-        Some(3) => InterIntraMode::Smooth,
-        _ => Err(inter_cap!(
-            "inter_interintra_mode_missing",
-            tile_offset,
-            "inter.interintra.mode",
-            "5.20.7.15"
-        ))?,
-    };
+    let mode = syntax.mode;
     Ok(Some(if syntax.use_wedge {
         InterIntraPrediction::WedgeMask {
             mode,
@@ -661,10 +661,16 @@ pub(super) fn read_active_inter_intra_tail(
     b_size: usize,
     tile_offset: ByteOffset,
 ) -> Result<WarpInterIntraSyntax> {
-    let mode = cdfs
+    let mode = match cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntraMode { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
-        .get();
+        .get()
+    {
+        0 => InterIntraMode::Dc,
+        1 => InterIntraMode::Vertical,
+        2 => InterIntraMode::Horizontal,
+        _ => InterIntraMode::Smooth,
+    };
 
     let use_wedge = if WEDGE_USED_BY_BSIZE.get(b_size).copied().unwrap_or(false) {
         let symbol = cdfs
@@ -683,7 +689,7 @@ pub(super) fn read_active_inter_intra_tail(
 
     Ok(WarpInterIntraSyntax {
         enabled: true,
-        mode: Some(mode),
+        mode,
         use_wedge,
         wedge_index,
     })
