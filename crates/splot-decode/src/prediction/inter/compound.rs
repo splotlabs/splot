@@ -4,7 +4,7 @@
 use splot_core::span::ByteOffset;
 use splot_core::symbol::SymbolDecoder;
 
-use super::{Mv, unsupported_compound_at};
+use super::Mv;
 use crate::Result;
 use crate::bitstream::tile_payload::{
     COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, TileCdfSelector,
@@ -18,7 +18,6 @@ const COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV: u8 = 2;
 const COMPOUND_MODE_NEW_NEWMV: u8 = 4;
 const RANKED_REF0_TO_PRUNE: usize = 3;
 const MAX_REFS_PER_FRAME: usize = 7;
-const SPEC_READ_REF_FRAMES: &str = "5.20.7.10";
 const SPEC_INTER_BLOCK_MODE_INFO: &str = "5.20.7.6";
 const _COMPOUND_MODE_MATCH_CDF_ROW_LEN_CHECK: () = {
     assert!(COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN == 5);
@@ -190,14 +189,8 @@ pub(crate) fn read_compound_reference_pair(
 
     let ref0 = i8::try_from(ref_frames[0])
         .map_err(|_| crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
-    let ref1 = i8::try_from(ref_frames[1]).map_err(|_| {
-        compound_cap!(
-            "compound_ref1_out_of_range",
-            tile_offset,
-            "inter.compound.ref_frame1",
-            SPEC_READ_REF_FRAMES
-        )
-    })?;
+    let ref1 = i8::try_from(ref_frames[1])
+        .map_err(|_| crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
     Ok((ref0, ref1))
 }
 
