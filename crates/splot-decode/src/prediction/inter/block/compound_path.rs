@@ -1378,12 +1378,9 @@ fn compound_sized_reference_distances<T: ReconSample>(
     }
     let Some(frame_size) = core.frame_size else {
         return Err(match path {
-            CompoundReferencePath::Opfl => compound_missing!(
-                "compound_opfl_missing_frame_size",
-                tile_offset,
-                "inter.compound.frame_size",
-                SPEC_MODE_INFO
-            ),
+            CompoundReferencePath::Opfl => {
+                inter_internal!("compound_opfl_missing_frame_size", tile_offset)
+            }
             CompoundReferencePath::RefineMv => compound_missing!(
                 "compound_refinemv_missing_frame_size",
                 tile_offset,
