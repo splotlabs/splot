@@ -394,7 +394,6 @@ fn prediction_unit_extent(output: bool, remaining: usize, unit_size: usize) -> u
 
 fn output_interpolation_filter(
     inter: &splot_core::headers::frame::InterControl,
-    offset: ByteOffset,
 ) -> Result<ReconInterpolationFilter> {
     match inter.tip_interpolation_filter {
         Some(splot_core::headers::frame::InterpolationFilter::Eighttap) => {
@@ -406,12 +405,7 @@ fn output_interpolation_filter(
         Some(splot_core::headers::frame::InterpolationFilter::EighttapSharp) => {
             Ok(ReconInterpolationFilter::EightTapSharp)
         }
-        _ => Err(inter_cap!(
-            "tip_output_interpolation_filter",
-            offset,
-            "inter.tip_output.interpolation_filter",
-            "7.10.6"
-        )),
+        _ => Err(DecodeHeaderStateError::IncompleteTipOutput.into()),
     }
 }
 
@@ -633,7 +627,7 @@ fn tip_block_plan<T: ReconSample>(
     });
     let search_refinemv = use_refinemv && refined_references_allowed;
     let interpolation_filter = if output {
-        output_interpolation_filter(inter, tile_offset)?
+        output_interpolation_filter(inter)?
     } else {
         ReconInterpolationFilter::EightTapSharp
     };
@@ -1299,7 +1293,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
             .as_ref()
             .ok_or(DecodeHeaderStateError::MissingSequenceTransformQuantEntropy)?;
         let seq_quant = CoreSeqQuantView::from_sequence_configs(&sequence.general, tq);
-        let interpolation_filter = output_interpolation_filter(inter, offset)?;
+        let interpolation_filter = output_interpolation_filter(inter)?;
         let enable_tip_refinemv = sequence
             .inter
             .as_ref()
@@ -1325,14 +1319,17 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
 #[cfg(test)]
 mod tests {
     use super::{
-        TipPrediction, TipUnit, compute_parallel_outputs, output_prediction_unit_size,
-        prediction_unit_extent, prediction_unit_size, tip_optflow_references_allowed,
-        tip_refinemv_offsets_allowed, tip_refinemv_references_allowed, tip_temporal_mvs,
-        tip_uses_refinemv, tip_uses_two_references, tmvp_unit_size8,
+        TipPrediction, TipUnit, compute_parallel_outputs, output_interpolation_filter,
+        output_prediction_unit_size, prediction_unit_extent, prediction_unit_size,
+        tip_optflow_references_allowed, tip_refinemv_offsets_allowed,
+        tip_refinemv_references_allowed, tip_temporal_mvs, tip_uses_refinemv,
+        tip_uses_two_references, tmvp_unit_size8,
     };
     use crate::prediction::inter::reference::ReferenceSamples;
     use crate::prediction::inter::{Mv, mc};
-    use splot_core::headers::frame::{FrameSize, FrameType};
+    use splot_core::headers::frame::{
+        FrameSize, FrameType, InterControl, InterpolationFilter as FrameInterpolationFilter,
+    };
     use splot_core::span::ByteOffset;
     use splot_parallel::{ThreadCount, WorkerPool};
     use splot_recon::{
@@ -1346,6 +1343,24 @@ mod tests {
         assert_eq!(prediction_unit_size(8, 32, false), 8);
         assert_eq!(prediction_unit_size(64, 32, true), 8);
         assert_eq!(prediction_unit_size(256, 256, true), 16);
+    }
+
+    #[test]
+    fn invalid_tip_output_filters_are_typed_header_state_errors() {
+        let mut inter = InterControl::default();
+        for filter in [
+            None,
+            Some(FrameInterpolationFilter::Bilinear),
+            Some(FrameInterpolationFilter::Switchable),
+        ] {
+            inter.tip_interpolation_filter = filter;
+            assert!(matches!(
+                output_interpolation_filter(&inter),
+                Err(crate::DecodeError::HeaderState {
+                    source: crate::DecodeHeaderStateError::IncompleteTipOutput
+                })
+            ));
+        }
     }
 
     #[test]
