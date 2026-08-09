@@ -14,6 +14,7 @@ const DCT_DCT: usize = 0;
 const TX_4X4: usize = 0;
 const SPEC_RESIDUAL: &str = "5.20.7.23";
 const SPEC_TX_SIZE: &str = "5.20.6.1";
+const SPEC_TRANSFORM_TYPE: &str = "5.20.8.2";
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
@@ -744,7 +745,7 @@ fn read_inter_residual_plane(
         cctx_allowed,
         residual_tool_policy,
     )
-    .map_err(|error| residual_read_error(&error, SPEC_RESIDUAL, tile_offset))
+    .map_err(|error| residual_plane_read_error(&error, tile_offset))
 }
 
 pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
@@ -872,6 +873,21 @@ fn residual_read_error(
         source = current.source();
     }
     residual_read_internal_error(tile_offset)
+}
+
+fn residual_plane_read_error(
+    error: &crate::bitstream::tile_payload::GeneralIntraResidualError,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    let spec_section = if matches!(
+        error,
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformTypeRead { .. }
+    ) {
+        SPEC_TRANSFORM_TYPE
+    } else {
+        SPEC_RESIDUAL
+    };
+    residual_read_error(error, spec_section, tile_offset)
 }
 
 fn residual_read_internal_error(tile_offset: ByteOffset) -> crate::error::DecodeError {

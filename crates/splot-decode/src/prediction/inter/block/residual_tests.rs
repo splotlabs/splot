@@ -52,7 +52,7 @@ fn residual_parse_failures_keep_typed_boundary() {
             needed: 1,
         }),
     };
-    let error = residual_read_error(&parse_error, SPEC_RESIDUAL, offset);
+    let error = residual_plane_read_error(&parse_error, offset);
     assert!(matches!(
         error,
         crate::DecodeError::MalformedSource { issue }
@@ -114,6 +114,26 @@ fn lossless_tx_size_eof_uses_tx_size_spec_section() {
         error,
         crate::DecodeError::MalformedSource { issue }
             if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_TX_SIZE)
+    ));
+}
+
+#[test]
+fn transform_type_eof_uses_transform_type_spec_section() {
+    let offset = ByteOffset::new(29);
+    let parse_error =
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformTypeRead {
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: ByteOffset::new(0),
+                needed: 1,
+            }),
+        };
+
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset)
+                && issue.spec_section() == Some(SPEC_TRANSFORM_TYPE)
     ));
 }
 
