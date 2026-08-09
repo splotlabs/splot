@@ -358,3 +358,26 @@ fn segment_id_state_translates_tile_coordinates() {
     assert_eq!(state.cell(4, 7), None);
     assert_eq!(state.predictor_and_ctx(5, 9, true, true), (3, 2));
 }
+
+#[test]
+fn temporal_segment_prediction_context_uses_above_and_left_flags() {
+    let mut state = TileSegmentIdState::new(4, 4).unwrap();
+    assert_eq!(state.predicted_context(0, 0), 0);
+    state.record_predicted(0, 0, 2, 1, true);
+    state.record_predicted(1, 0, 1, 2, true);
+    assert_eq!(state.predicted_context(1, 1), 2);
+    state.record_predicted(1, 0, 1, 1, false);
+    assert_eq!(state.predicted_context(1, 1), 1);
+}
+
+#[test]
+fn frame_segment_map_merges_tiles_and_finds_covered_minimum() {
+    let mut frame = FrameSegmentIdMap::new(4, 6).unwrap();
+    let mut tile = TileSegmentIdState::new_for_tile(1..4, 2..6).unwrap();
+    tile.record_block(1, 2, 2, 2, 5);
+    tile.record_block(2, 3, 3, 2, 3);
+    frame.merge_tile(&tile);
+    assert_eq!(frame.block_min(1, 2, 1, 1), 5);
+    assert_eq!(frame.block_min(2, 2, 4, 1), 3);
+    assert_eq!(frame.block_min(0, 0, 2, 2), 0);
+}

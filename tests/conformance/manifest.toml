@@ -561,6 +561,11 @@ description = "8-bit 4:2:0 3-frame inter stream (IVF, 64x64) encoded with no cod
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-3frame-seg-inherit-inter-64x64.ivf"
+description = "AVMenc 8-bit 4:2:0 three-frame inter stream (IVF, 64x64) with adaptive quantization. The first inter frame updates SegmentIds and the second signals segmentation_update_map == 0, so § 7.2 copies the § 6.17.2 SavedSegmentIds map selected by DerivedPrimaryRefFrame. Before the fix splot rejected that valid inherited-map frame with inter_unsupported_frame_tools. Current avmdec and splot produce the same complete 18,432-byte raw SHA-256 2d3b7c51e36a5e4364a7a1f4214ce928660d966e98aea24baae44268ce67d6d8; validates clean."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-mrl-sec-4x4-intra-128x128.ivf"
 description = "8-bit 4:2:0 intra key frame (IVF, 128x128) with multi-reference-line intra as the only enabled coding tool and the in-loop filters disabled, at base_q_idx 90. The frame contains 4x4 luma prediction units inside larger MRL coding blocks; AV2 section 7.13.2 gates the secondary MRL prediction on not4x4 == (w != 4 || h != 4), evaluated per prediction unit. Before the fix splot inherited the coding-block secondary_mrl flag into 4x4 units, applied the (pred + pred2 + 1) >> 1 average that the spec omits there, and silently emitted 24 luma samples one LSB high; it did not fail closed. avmdec raw SHA-256 is e9a6ac7f8cabc11457c1be89250edeb9e142ed91a665943912fb875a76da8f69 and splot now reproduces it byte-for-byte; validates clean."
 expect = "clean"

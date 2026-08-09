@@ -17,8 +17,22 @@ use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
     chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
-    predict_interintra_planes, read_inter_intra_syntax_enabled, validate_segment_id,
+    predict_interintra_planes, read_inter_intra_syntax_enabled, skip_segment_reference,
+    validate_segment_id,
 };
+
+#[test]
+fn skip_segment_reference_prefers_the_first_same_order_reference() {
+    let order_hints = [8, 10, 9];
+    assert_eq!(skip_segment_reference(10, &[2, 1, 0], &order_hints), 1);
+}
+
+#[test]
+fn skip_segment_reference_uses_the_closest_past_reference() {
+    let order_hints = [4, 8, 12];
+    assert_eq!(skip_segment_reference(10, &[0, 2, 1], &order_hints), 2);
+    assert_eq!(skip_segment_reference(3, &[1, 2], &order_hints), 0);
+}
 
 #[test]
 fn mvd_sign_derivation_requires_the_full_block_scope() {

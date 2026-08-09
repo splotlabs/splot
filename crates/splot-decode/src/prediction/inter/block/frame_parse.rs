@@ -34,6 +34,7 @@ pub(crate) struct InterFrameParse {
     cdef_grid: crate::filters::cdef::CdefUnitGrid,
     /// The walk-parsed CCSO unit grid, retained for the reference update.
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    pub(crate) segment_ids: FrameSegmentIdMap,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
 }
 
@@ -182,15 +183,26 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &ccso_state,
         true,
     )?;
+    let mut segment_ids = FrameSegmentIdMap::new(params.mi_rows, params.mi_cols).map_err(|_| {
+        inter_missing!(
+            "inter_segment_id_frame_grid",
+            offset,
+            "inter.segment_id_frame_grid",
+            SPEC_MODE_INFO
+        )
+    })?;
     records.clear();
     parsed.merge_filter_state(
         &mut records,
         &mut cdef_state,
         &mut gdf_state,
         &mut ccso_state,
+        &mut segment_ids,
     )?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, setup_offset)?;
     let ccso_grid = ccso_state.into_grid(first_tile_offset)?;
+    let segment_ids =
+        final_segment_ids(core, reference, params.mi_rows, params.mi_cols, segment_ids);
     Ok(InterFrameParse {
         parsed,
         records,
@@ -200,6 +212,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         frame_cdfs,
         cdef_grid: cdef_state.into_grid(first_tile_offset)?,
         ccso_grid,
+        segment_ids,
         gdf_grid: gdf_state.into_grid(first_tile_offset)?,
     })
 }
@@ -243,6 +256,7 @@ impl InterFrameParse {
             frame_cdfs: _,
             cdef_grid,
             ccso_grid,
+            segment_ids: _,
             gdf_grid,
         } = self;
         let InterDecodeScratch {

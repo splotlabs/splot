@@ -85,6 +85,9 @@ pub enum DecodeHeaderStateError {
     /// A successfully parsed inter frame did not carry complete frame-header state.
     #[error("inter-frame header state is incomplete")]
     IncompleteInterFrame,
+    /// A complete inter header was missing mandatory frame-tool state.
+    #[error("inter-frame tool state is incomplete")]
+    IncompleteInterFrameTools,
     /// An inter frame required its parsed control region, but it was absent.
     #[error("inter-frame control region is missing")]
     MissingInterControlRegion,
@@ -109,6 +112,9 @@ pub enum DecodeHeaderStateError {
     /// A frame's parsed width or height was zero.
     #[error("frame dimensions must be nonzero")]
     ZeroFrameSize,
+    /// A decoded frame could not materialize its § 7.23 segmentation map.
+    #[error("frame segmentation map is unavailable")]
+    MissingSegmentIdMap,
     /// An inter frame's reference count was invalid or did not match its map length.
     #[error("inter-frame reference count and map are inconsistent")]
     InvalidInterReferenceMap,

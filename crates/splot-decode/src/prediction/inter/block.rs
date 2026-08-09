@@ -41,11 +41,11 @@ use super::{
 };
 use crate::bitstream::tile_payload::{
     BlockSize, CoeffContextReset, DecodeBlockFrontier, DecodeTileWorkUnit, DecodedLeafPublication,
-    FrameCdfSubset, FrameQmSegmentScope, FrameQuantizerSnapshot, GeneralIntraLeafMode,
-    GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraTreeWalkError,
-    IsCflContext, LumaCoeffBlock, SavedCdfSubset, TileBlockDecodedState, TileCdfSelector,
-    TileCdfSubset, TileCoeffContextState, TileFscModeState, TileIntraJointModeState,
-    TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
+    FrameCdfSubset, FrameQmSegmentScope, FrameQuantizerSnapshot, FrameSegmentIdMap,
+    GeneralIntraLeafMode, GeneralIntraMultiblockCursor, GeneralIntraMultiblockError,
+    GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock, SavedCdfSubset, TileBlockDecodedState,
+    TileCdfSelector, TileCdfSubset, TileCoeffContextState, TileFscModeState,
+    TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
     TransformToolResidualPolicy, chroma_subsampling, current_frame_qm_segment_id,
     decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
     is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
@@ -64,6 +64,8 @@ use crate::{DecodeOptions, DecodeReferenceStateError, Result};
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
 const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
 const SINGLE_REF_FRAME0: i8 = 0;
+const SEG_LVL_SKIP: usize = 1;
+const SEG_LVL_GLOBALMV: usize = 2;
 const MI_SIZE: usize = 4;
 const CHUNK_64_N4: usize = 16;
 pub(super) const BLOCK_8X8: usize = 3;
@@ -500,7 +502,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs)> {
+) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs, FrameSegmentIdMap)> {
     let work_units = tile_plan.work_units_mut();
     let setup = derive_inter_block_setup(
         work_units,
@@ -562,7 +564,34 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         gdf_grid: walked.gdf_state.into_grid(first_tile_offset)?,
         motion_field: walked.motion_field,
     };
-    Ok((frame_cdfs, filter_inputs))
+    let segment_ids = final_segment_ids(
+        core,
+        reference,
+        params.mi_rows,
+        params.mi_cols,
+        walked.segment_ids,
+    );
+    Ok((frame_cdfs, filter_inputs, segment_ids))
+}
+
+fn final_segment_ids<T: ReconSample>(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<T>,
+    mi_rows: usize,
+    mi_cols: usize,
+    decoded: FrameSegmentIdMap,
+) -> FrameSegmentIdMap {
+    if core
+        .segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled && !seg.segmentation_update_map)
+    {
+        super::previous_segment_ids(core, reference, mi_rows, mi_cols)
+            .cloned()
+            .unwrap_or(decoded)
+    } else {
+        decoded
+    }
 }
 
 /// The frame-level inputs of the AV2 § 7.9 temporal prelude, captured so the
@@ -837,6 +866,124 @@ fn read_segment_id(
     validate_segment_id(segment_id, seg.last_active_seg_id, tile_offset)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn read_inter_segment_id(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    segment_id_state: &mut TileSegmentIdState,
+    previous_segment_ids: Option<&FrameSegmentIdMap>,
+    sequence: &SequenceHeader,
+    core: &FrameHeaderCore,
+    frontier: &DecodeBlockFrontier,
+    n4w: usize,
+    n4h: usize,
+    pre_skip: bool,
+    skip_flag: bool,
+    tile_offset: ByteOffset,
+) -> Result<u8> {
+    let Some(seg) = core
+        .segmentation_params
+        .as_ref()
+        .filter(|seg| seg.segmentation_enabled)
+    else {
+        return Ok(0);
+    };
+    let predicted_segment_id =
+        previous_segment_ids.map_or(0, |map| map.block_min(frontier.r, frontier.c, n4w, n4h));
+    if !seg.segmentation_update_map {
+        return Ok(predicted_segment_id);
+    }
+    if pre_skip && !seg.seg_id_pre_skip {
+        return Ok(0);
+    }
+    if !pre_skip && skip_flag {
+        segment_id_state.record_predicted(frontier.r, frontier.c, n4w, n4h, false);
+        return read_segment_id(
+            work_unit,
+            symbols,
+            segment_id_state,
+            sequence,
+            core,
+            frontier,
+            true,
+            tile_offset,
+        );
+    }
+    if !seg.segmentation_temporal_update {
+        return read_segment_id(
+            work_unit,
+            symbols,
+            segment_id_state,
+            sequence,
+            core,
+            frontier,
+            false,
+            tile_offset,
+        );
+    }
+    let ctx = segment_id_state.predicted_context(frontier.r, frontier.c);
+    let predicted = work_unit
+        .cdf_mut()
+        .tile_cdfs_mut()
+        .read_block_symbol_trace(TileCdfSelector::SegmentIdPredicted { ctx }, symbols)
+        .map_err(|_| symbol_read_error(tile_offset))?
+        .get()
+        != 0;
+    let segment_id = if predicted {
+        predicted_segment_id
+    } else {
+        read_segment_id(
+            work_unit,
+            symbols,
+            segment_id_state,
+            sequence,
+            core,
+            frontier,
+            false,
+            tile_offset,
+        )?
+    };
+    segment_id_state.record_predicted(frontier.r, frontier.c, n4w, n4h, predicted);
+    Ok(segment_id)
+}
+
+fn segment_feature_active(core: &FrameHeaderCore, segment_id: u8, feature: usize) -> bool {
+    core.segmentation_params
+        .as_ref()
+        .and_then(|seg| seg.features.get(usize::from(segment_id)))
+        .and_then(|features| features.get(feature))
+        .is_some_and(|feature| feature.enabled)
+}
+
+fn skip_segment_reference(
+    current_order_hint: u32,
+    ref_frame_idx: &[u32],
+    ref_order_hint: &[u32],
+) -> i8 {
+    let mut closest_past = None;
+    for (logical, &slot) in ref_frame_idx.iter().enumerate() {
+        let Some(&hint) = ref_order_hint.get(slot as usize) else {
+            continue;
+        };
+        if hint == u32::MAX {
+            continue;
+        }
+        let distance = super::get_relative_dist(
+            i32::try_from(current_order_hint).unwrap_or(i32::MAX),
+            i32::try_from(hint).unwrap_or(i32::MAX),
+        );
+        if distance == 0 {
+            return i8::try_from(logical).unwrap_or(SINGLE_REF_FRAME0);
+        }
+        if distance > 0 && closest_past.is_none_or(|(_, best)| distance < best) {
+            closest_past = Some((logical, distance));
+        }
+    }
+    closest_past
+        .and_then(|(logical, _)| i8::try_from(logical).ok())
+        .unwrap_or(SINGLE_REF_FRAME0)
+}
+
 fn validate_segment_id(segment_id: i32, last_active: u8, tile_offset: ByteOffset) -> Result<u8> {
     u8::try_from(segment_id)
         .ok()
@@ -1038,17 +1185,49 @@ fn decode_block<T: ReconSample>(
     let use_temporal = frame_uses_temporal_mvs(core);
     let temporal_first_frame = drl_reorder != DrlReorder::Always && use_temporal && refs_one_sided;
     let neighbour_ctx = block_neighbour_ctx(mv_grid, &block_ctx);
-    let skip_mode = read_skip_mode_syntax(
-        work_unit.cdf_mut().tile_cdfs_mut(),
-        symbols,
-        core.inter_tail
-            .as_ref()
-            .is_some_and(|tail| tail.skip_mode_present),
-        frontier,
-        comp_ref_allowed,
-        neighbour_ctx.skip_mode_ctx,
-        tile_offset,
-    )?;
+    let seg_pre_skip = core
+        .segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip);
+    let previous_segment_ids = super::previous_segment_ids(core, reference, mi_rows, mi_cols);
+    let mut segment_id = if frontier.is_chroma_part() {
+        segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
+    } else {
+        0
+    };
+    if !frontier.is_chroma_part() && seg_pre_skip {
+        segment_id = read_inter_segment_id(
+            work_unit,
+            symbols,
+            segment_id_state,
+            previous_segment_ids,
+            sequence,
+            core,
+            frontier,
+            n4w,
+            n4h,
+            true,
+            false,
+            tile_offset,
+        )?;
+    }
+    let segment_skips = segment_feature_active(core, segment_id, SEG_LVL_SKIP);
+    let segment_globalmv = segment_feature_active(core, segment_id, SEG_LVL_GLOBALMV);
+    let skip_mode = if segment_skips || segment_globalmv {
+        0
+    } else {
+        read_skip_mode_syntax(
+            work_unit.cdf_mut().tile_cdfs_mut(),
+            symbols,
+            core.inter_tail
+                .as_ref()
+                .is_some_and(|tail| tail.skip_mode_present),
+            frontier,
+            comp_ref_allowed,
+            neighbour_ctx.skip_mode_ctx,
+            tile_offset,
+        )?
+    };
 
     let is_inter = if leaf_uses_general_intra(
         core.frame_is_intra == Some(true),
@@ -1056,7 +1235,8 @@ fn decode_block<T: ReconSample>(
         frontier.is_chroma_part(),
     ) {
         0
-    } else if skip_mode == 1 || frontier.shared_mixed_chroma_ref_forces_inter() {
+    } else if skip_mode == 1 || segment_globalmv || frontier.shared_mixed_chroma_ref_forces_inter()
+    {
         1
     } else {
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
@@ -1070,15 +1250,6 @@ fn decode_block<T: ReconSample>(
         .get()
     };
     if is_inter == 0 {
-        let seg_pre_skip = core
-            .segmentation_params
-            .as_ref()
-            .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip);
-        let mut segment_id: u8 = if frontier.is_chroma_part() {
-            segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
-        } else {
-            0
-        };
         let mut prelude = IntrabcBlockPrelude::from_use_skip(
             IntrabcUseSkip {
                 use_intrabc: false,
@@ -1088,18 +1259,6 @@ fn decode_block<T: ReconSample>(
         );
         let mut pending_intrabc = None;
         if !frontier.is_chroma_part() {
-            if seg_pre_skip {
-                segment_id = read_segment_id(
-                    work_unit,
-                    symbols,
-                    segment_id_state,
-                    sequence,
-                    core,
-                    frontier,
-                    false,
-                    tile_offset,
-                )?;
-            }
             let use_skip = read_intrabc_use_and_skip(
                 work_unit.cdf_mut().tile_cdfs_mut(),
                 symbols,
@@ -1109,13 +1268,17 @@ fn decode_block<T: ReconSample>(
                 tile_offset,
             )?;
             if !seg_pre_skip {
-                segment_id = read_segment_id(
+                segment_id = read_inter_segment_id(
                     work_unit,
                     symbols,
                     segment_id_state,
+                    previous_segment_ids,
                     sequence,
                     core,
                     frontier,
+                    n4w,
+                    n4h,
+                    false,
                     use_skip.skip_flag,
                     tile_offset,
                 )?;
@@ -1353,7 +1516,9 @@ fn decode_block<T: ReconSample>(
             },
         ));
     }
-    let skip = {
+    let skip = if segment_skips {
+        1
+    } else {
         let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
         cdfs.read_block_symbol_trace(
             TileCdfSelector::Skip {
@@ -1362,24 +1527,27 @@ fn decode_block<T: ReconSample>(
             symbols,
         )
         .map_err(|_| symbol_read_error(tile_offset))?
+        .get()
     };
-    let skip = skip.get();
-    let segment_id = if frontier.is_chroma_part() {
-        segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
-    } else {
-        let segment_id = read_segment_id(
+    if !frontier.is_chroma_part() && !seg_pre_skip {
+        segment_id = read_inter_segment_id(
             work_unit,
             symbols,
             segment_id_state,
+            previous_segment_ids,
             sequence,
             core,
             frontier,
+            n4w,
+            n4h,
+            false,
             skip == 1,
             tile_offset,
         )?;
         segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
-        segment_id
-    };
+    } else if !frontier.is_chroma_part() {
+        segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
+    }
     let _segment_scope = FrameQmSegmentScope::install(usize::from(segment_id));
 
     gdf_state.read_for_block(work_unit, symbols, frontier, tile_offset)?;
@@ -1437,16 +1605,25 @@ fn decode_block<T: ReconSample>(
         .as_ref()
         .and_then(|inter| inter.tip_frame_mode)
         .unwrap_or(TipFrameMode::Disabled);
-    let tip_ref = tip::read_reference(
-        cdfs,
-        symbols,
-        tip_frame_mode,
-        frontier,
-        &neighbour_ctx,
-        (n4w, n4h),
-        tile_offset,
-    )?;
-    let uses_compound = if !tip_ref && reference_select && is_comp_ref_allowed(n4w, n4h) {
+    let segment_forces_globalmv = segment_skips || segment_globalmv;
+    let tip_ref = if segment_forces_globalmv {
+        false
+    } else {
+        tip::read_reference(
+            cdfs,
+            symbols,
+            tip_frame_mode,
+            frontier,
+            &neighbour_ctx,
+            (n4w, n4h),
+            tile_offset,
+        )?
+    };
+    let uses_compound = if !segment_forces_globalmv
+        && !tip_ref
+        && reference_select
+        && is_comp_ref_allowed(n4w, n4h)
+    {
         compound_path::read_reference_mode(
             cdfs,
             symbols,
@@ -1496,7 +1673,9 @@ fn decode_block<T: ReconSample>(
         );
     }
 
-    let ref_frame0: i8 = if tip_ref {
+    let ref_frame0: i8 = if segment_forces_globalmv {
+        skip_segment_reference(current_order_hint, ref_frame_idx, &reference.ref_order_hint)
+    } else if tip_ref {
         TIP_REF_FRAME
     } else if num_total_refs >= 2 {
         let decisions = num_total_refs - 1;
@@ -1536,7 +1715,7 @@ fn decode_block<T: ReconSample>(
     block_ctx.ref_frame0 = ref_frame0;
     let mode_ctx = find_mode_ctx(mv_grid, &block_ctx);
     let force_integer_mv = effective_force_integer_mv(core);
-    let warp_mode = if tip_ref {
+    let warp_mode = if tip_ref || segment_forces_globalmv {
         None
     } else {
         read_warp_inter_mode_syntax(
@@ -1710,7 +1889,9 @@ fn decode_block<T: ReconSample>(
         ));
     }
 
-    let single_mode = if tip_ref {
+    let single_mode = if segment_forces_globalmv {
+        SINGLE_MODE_GLOBALMV
+    } else if tip_ref {
         if cdfs
             .read_block_symbol_trace(TileCdfSelector::TipPredMode, symbols)
             .map_err(|_| symbol_read_error(tile_offset))?
@@ -1782,7 +1963,7 @@ fn decode_block<T: ReconSample>(
     } else {
         bawp
     };
-    let interintra = if tip_ref {
+    let interintra = if tip_ref || segment_forces_globalmv {
         None
     } else if !bawp.enabled {
         let syntax = read_inter_intra_syntax(

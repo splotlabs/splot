@@ -115,7 +115,7 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let _qm_scope = FrameQmScope::install(build_frame_qm_levels(&core));
 
-    let (frame_cdfs, filter_inputs) = decode_inter_blocks::<T>(
+    let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks::<T>(
         scratch,
         tile_plan,
         frame_envelope,
@@ -153,7 +153,14 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
         offset,
     };
     let core = std::sync::Arc::new(core);
-    Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, false))
+    Ok(setup.frame_walk(
+        workspace,
+        filter_inputs,
+        core,
+        frame_cdfs,
+        segment_ids,
+        false,
+    ))
 }
 
 pub(crate) fn build_frame_qm_levels(core: &FrameHeaderCore) -> Option<QmFrameLevels> {

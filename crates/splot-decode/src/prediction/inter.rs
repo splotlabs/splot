@@ -7,12 +7,11 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, QuantizationParams, RESTRICTED_OH,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RESTRICTED_OH,
     SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
 use splot_core::hls::MultiFrameHeaderRecord;
-use splot_core::segment::{MAX_SEGMENTS, SEG_LVL_MAX, SegmentFeature};
 use splot_core::span::ByteOffset;
 use splot_core::types::ObuType;
 use splot_recon::{
@@ -22,7 +21,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{
-    FrameCdfSubset, FrameQuantizerDeltasScope, GeneralIntraResidualError,
+    FrameCdfSubset, FrameQuantizerDeltasScope, FrameSegmentIdMap, GeneralIntraResidualError,
     reconstruct_general_intra_chroma_cctx_pair_into,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError, DecodeReferenceStateError};
@@ -107,12 +106,13 @@ impl Mv {
     const ZERO: Self = Self { row: 0, col: 0 };
 }
 fn completed_walk<T: ReconSample>(output: InterDecodeOutput<T>) -> FrameWalk<T> {
-    let (frame, core, frame_cdfs, ccso_grid, motion_field) = output;
+    let (frame, core, frame_cdfs, ccso_grid, motion_field, segment_ids) = output;
     FrameWalk {
         stage: WalkStage::complete(frame),
         core: Arc::new(core),
         frame_cdfs,
         ccso_grid,
+        segment_ids: Arc::new(segment_ids),
         motion_field,
     }
 }
@@ -185,7 +185,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         bit_depth,
     )?;
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
-    let (frame_cdfs, filter_inputs) = decode_inter_blocks(
+    let (frame_cdfs, filter_inputs, segment_ids) = decode_inter_blocks(
         scratch,
         tile_plan,
         frame_envelope,
@@ -198,7 +198,14 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         &mut workspace,
     )?;
     let core = Arc::new(core);
-    Ok(setup.frame_walk(workspace, filter_inputs, core, frame_cdfs, true))
+    Ok(setup.frame_walk(
+        workspace,
+        filter_inputs,
+        core,
+        frame_cdfs,
+        segment_ids,
+        true,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -238,7 +245,15 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
                 SPEC_REFERENCE
             )
         })?;
-    Ok((frame, core, Arc::new(frame_cdfs), None, motion_field))
+    let segment_ids = empty_segment_id_map(&core)?;
+    Ok((
+        frame,
+        core,
+        Arc::new(frame_cdfs),
+        None,
+        motion_field,
+        segment_ids,
+    ))
 }
 
 fn decode_bridge_frame<T: ReconSample>(
@@ -322,7 +337,30 @@ fn decode_bridge_frame<T: ReconSample>(
                 SPEC_REFERENCE
             )
         })?;
-    Ok((frame, core, Arc::new(frame_cdfs), None, motion_field))
+    let segment_ids = empty_segment_id_map(&core)?;
+    Ok((
+        frame,
+        core,
+        Arc::new(frame_cdfs),
+        None,
+        motion_field,
+        segment_ids,
+    ))
+}
+
+fn empty_segment_id_map(core: &FrameHeaderCore) -> Result<FrameSegmentIdMap> {
+    let size = core
+        .frame_size
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
+    FrameSegmentIdMap::new(
+        usize::try_from(size.height)
+            .unwrap_or(usize::MAX)
+            .div_ceil(4),
+        usize::try_from(size.width)
+            .unwrap_or(usize::MAX)
+            .div_ceil(4),
+    )
+    .map_err(|_| DecodeHeaderStateError::MissingSegmentIdMap.into())
 }
 
 fn resolve_initial_frame_cdfs(
@@ -400,6 +438,7 @@ fn resolve_initial_frame_cdfs(
 pub(crate) struct EntropyDependencies {
     cdfs: Vec<FrameCdfHandle>,
     ccso_grids: Vec<CcsoGridHandle>,
+    segment_ids: Vec<SegmentIdMapHandle>,
 }
 
 impl EntropyDependencies {
@@ -409,6 +448,7 @@ impl EntropyDependencies {
             .iter()
             .map(FrameCdfHandle::condition)
             .chain(self.ccso_grids.iter().map(CcsoGridHandle::condition))
+            .chain(self.segment_ids.iter().map(SegmentIdMapHandle::condition))
             .collect()
     }
 }
@@ -502,7 +542,75 @@ pub(crate) fn entropy_dependencies(
             }
         }
     }
-    EntropyDependencies { cdfs, ccso_grids }
+    let needs_previous_segment_ids = core.segmentation_params.as_ref().is_some_and(|seg| {
+        seg.segmentation_enabled
+            && (!seg.segmentation_update_map || seg.segmentation_temporal_update)
+    });
+    let segment_ids = needs_previous_segment_ids
+        .then(|| previous_segment_slot(core, reference))
+        .flatten()
+        .and_then(|slot| reference.ref_segment_ids.get(slot))
+        .and_then(Option::as_ref)
+        .cloned()
+        .into_iter()
+        .collect();
+    EntropyDependencies {
+        cdfs,
+        ccso_grids,
+        segment_ids,
+    }
+}
+
+fn previous_segment_slot(
+    core: &FrameHeaderCore,
+    reference: &InterReferenceState<impl ReconSample>,
+) -> Option<usize> {
+    if core.frame_is_intra == Some(true) || core.frame_type == Some(FrameType::Switch) {
+        return None;
+    }
+    let inter = core.inter.as_ref()?;
+    let current_base_q_idx = core.quantization_params.map_or(0, |q| q.base_q_idx);
+    let current_order_hint =
+        i32::try_from(core.display_order_hint().unwrap_or(0)).unwrap_or(i32::MAX);
+    let (derived, _) = cross_frame::choose_primary_secondary_ref_frame(
+        inter.signal_primary_ref_frame,
+        inter.primary_ref_frame,
+        &inter.ref_frame_idx,
+        &reference.ref_is_inter,
+        &reference.ref_base_q_idx,
+        &reference.ref_order_hint,
+        &reference.ref_frame_width,
+        &reference.ref_frame_height,
+        current_base_q_idx,
+        current_order_hint,
+    );
+    inter
+        .ref_frame_idx
+        .get(usize::from(derived))
+        .and_then(|&slot| usize::try_from(slot).ok())
+}
+
+fn previous_segment_ids<'a>(
+    core: &FrameHeaderCore,
+    reference: &'a InterReferenceState<impl ReconSample>,
+    mi_rows: usize,
+    mi_cols: usize,
+) -> Option<&'a FrameSegmentIdMap> {
+    if !core
+        .segmentation_params
+        .as_ref()
+        .is_some_and(|seg| seg.segmentation_enabled)
+    {
+        return None;
+    }
+    let slot = previous_segment_slot(core, reference)?;
+    reference
+        .ref_segment_ids
+        .get(slot)?
+        .as_ref()?
+        .product()
+        .map(Arc::as_ref)
+        .filter(|map| map.dimensions() == (mi_rows, mi_cols))
 }
 
 /// Resolves every sample, entropy, and motion product a TIP output may read.
@@ -999,6 +1107,7 @@ pub(crate) type InterDecodeOutput<T> = (
     Arc<FrameCdfSubset>,
     Option<crate::filters::ccso::CcsoUnitGrid>,
     TemporalMotionField,
+    FrameSegmentIdMap,
 );
 
 #[derive(Clone, Debug)]
@@ -1079,6 +1188,7 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_params: Vec<Option<Arc<splot_core::headers::frame::CcsoParams>>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
+    pub(crate) ref_segment_ids: Vec<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 
@@ -1113,6 +1223,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_frame_cdfs: Vec::new(),
             ref_ccso_params: Vec::new(),
             ref_ccso_unit_grids: Vec::new(),
+            ref_segment_ids: Vec::new(),
             ref_motion_fields: Vec::new(),
         })
     }
@@ -1178,6 +1289,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_frame_cdfs: metadata.ref_frame_cdfs,
             ref_ccso_params: metadata.ref_ccso_params,
             ref_ccso_unit_grids: metadata.ref_ccso_unit_grids,
+            ref_segment_ids: metadata.ref_segment_ids,
             ref_motion_fields: metadata.ref_motion_fields,
         }
     }
@@ -1209,6 +1321,7 @@ impl<T: ReconSample> Drop for InterReferenceState<T> {
             ref_frame_cdfs: std::mem::take(&mut self.ref_frame_cdfs),
             ref_ccso_params: std::mem::take(&mut self.ref_ccso_params),
             ref_ccso_unit_grids: std::mem::take(&mut self.ref_ccso_unit_grids),
+            ref_segment_ids: std::mem::take(&mut self.ref_segment_ids),
             ref_motion_fields: std::mem::take(&mut self.ref_motion_fields),
         };
         crate::reference::buffer::recycle_reference_metadata(meta);
@@ -1878,15 +1991,8 @@ fn validate_inter_frame_core(
     if width == 0 || height == 0 {
         return Err(DecodeHeaderStateError::ZeroFrameSize.into());
     }
-    let unsupported_tools = core.quantization_params.is_none()
-        || core.segmentation_params.as_ref().is_none_or(|seg| {
-            !inter_segmentation_supported(
-                seg.segmentation_enabled,
-                seg.segmentation_update_map,
-                seg.segmentation_temporal_update,
-                &seg.features,
-            )
-        })
+    let incomplete_tools = core.quantization_params.is_none()
+        || core.segmentation_params.is_none()
         || core.setup_qm_params.is_none()
         || core.delta_q_params.is_none()
         || core.lossless_info.is_none()
@@ -1896,13 +2002,8 @@ fn validate_inter_frame_core(
         || core.cdef_params.is_none()
         || core.lr_params.is_none()
         || core.ccso_params.is_none();
-    if unsupported_tools {
-        return Err(inter_cap!(
-            "inter_unsupported_frame_tools",
-            offset,
-            "inter.frame_tools",
-            SPEC_HEADER
-        ));
+    if incomplete_tools {
+        return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
     }
     Ok(())
 }
@@ -1989,20 +2090,6 @@ fn validate_bridge_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Res
     Ok(())
 }
 
-fn inter_segmentation_supported(
-    enabled: bool,
-    update_map: bool,
-    temporal_update: bool,
-    features: &[[SegmentFeature; SEG_LVL_MAX]; MAX_SEGMENTS],
-) -> bool {
-    !enabled
-        || (update_map
-            && !temporal_update
-            && features
-                .iter()
-                .all(|features| features[1..].iter().all(|feature| !feature.enabled)))
-}
-
 pub(crate) fn effective_quantizer_deltas(
     sequence: &SequenceHeader,
     quantization: &QuantizationParams,
@@ -2058,7 +2145,7 @@ pub(crate) use block::{
 };
 use cross_frame::{ResolvedCdfLoad, resolve_cdf_load};
 pub(crate) use find_mv_stack::{MotionFieldLayout, TemporalMotionField, TemporalMvScratch};
-pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle};
+pub(crate) use frame_products::{CcsoGridHandle, FrameCdfHandle, SegmentIdMapHandle};
 pub(crate) use frame_walk::{
     DeferredInterWalk, ScheduledInterWalk, inter_frame_info, motion_field_layout,
     parse_inter_frame, splittable_inter_frame,

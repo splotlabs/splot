@@ -609,6 +609,7 @@ pub(crate) struct TileSegmentIdState {
     origin_row: usize,
     origin_col: usize,
     grid: MiGrid<u8>,
+    predicted: MiGrid<u8>,
 }
 
 impl TileSegmentIdState {
@@ -624,18 +625,18 @@ impl TileSegmentIdState {
         let rows = mi_rows.end.saturating_sub(mi_rows.start);
         let cols = mi_cols.end.saturating_sub(mi_cols.start);
         let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, rows, cols, Ok(()))?;
+        let predicted = mi_grid_new!(TileSegmentIdStateError, 0u8, rows, cols, Ok(()))?;
         Ok(Self {
             origin_row: mi_rows.start,
             origin_col: mi_cols.start,
             grid,
+            predicted,
         })
     }
 
     pub(crate) fn cell(&self, r: usize, c: usize) -> Option<u8> {
-        self.grid.cell(
-            r.checked_sub(self.origin_row)?,
-            c.checked_sub(self.origin_col)?,
-        )
+        let (r, c) = self.local_position(r, c)?;
+        self.grid.cell(r, c)
     }
 
     pub(crate) fn record_block(
@@ -646,13 +647,49 @@ impl TileSegmentIdState {
         n4h: usize,
         segment_id: u8,
     ) {
-        let Some(r) = r.checked_sub(self.origin_row) else {
+        let Some(position) = self.local_position(r, c) else {
             return;
         };
-        let Some(c) = c.checked_sub(self.origin_col) else {
+        self.grid.record_block(position, (n4w, n4h), segment_id);
+    }
+
+    pub(crate) fn predicted_context(&self, r: usize, c: usize) -> usize {
+        let above = r
+            .checked_sub(1)
+            .and_then(|r| self.cell_in(&self.predicted, r, c))
+            .unwrap_or(0);
+        let left = c
+            .checked_sub(1)
+            .and_then(|c| self.cell_in(&self.predicted, r, c))
+            .unwrap_or(0);
+        usize::from(above) + usize::from(left)
+    }
+
+    pub(crate) fn record_predicted(
+        &mut self,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+        predicted: bool,
+    ) {
+        let Some(position) = self.local_position(r, c) else {
             return;
         };
-        self.grid.record_block((r, c), (n4w, n4h), segment_id);
+        self.predicted
+            .record_block(position, (n4w, n4h), u8::from(predicted));
+    }
+
+    fn cell_in(&self, grid: &MiGrid<u8>, r: usize, c: usize) -> Option<u8> {
+        let (r, c) = self.local_position(r, c)?;
+        grid.cell(r, c)
+    }
+
+    fn local_position(&self, r: usize, c: usize) -> Option<(usize, usize)> {
+        Some((
+            r.checked_sub(self.origin_row)?,
+            c.checked_sub(self.origin_col)?,
+        ))
     }
 
     pub(crate) fn predictor_and_ctx(
@@ -696,6 +733,61 @@ impl TileSegmentIdState {
             usize::from(prev_ul == prev_u || prev_ul == prev_l || prev_u == prev_l)
         };
         (u8::try_from(pred.max(0)).unwrap_or(0), ctx)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FrameSegmentIdMap {
+    mi_rows: usize,
+    mi_cols: usize,
+    cells: Vec<u8>,
+}
+
+impl FrameSegmentIdMap {
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileSegmentIdStateError> {
+        let grid = mi_grid_new!(TileSegmentIdStateError, 0u8, mi_rows, mi_cols, Ok(()))?;
+        Ok(Self {
+            mi_rows,
+            mi_cols,
+            cells: grid.into_cells(),
+        })
+    }
+
+    pub(crate) fn dimensions(&self) -> (usize, usize) {
+        (self.mi_rows, self.mi_cols)
+    }
+
+    pub(crate) fn block_min(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> u8 {
+        if r >= self.mi_rows || c >= self.mi_cols {
+            return 0;
+        }
+        let row_end = r.saturating_add(n4h).min(self.mi_rows);
+        let col_end = c.saturating_add(n4w).min(self.mi_cols);
+        (r..row_end)
+            .flat_map(|row| {
+                self.cells[row * self.mi_cols + c.min(self.mi_cols)..row * self.mi_cols + col_end]
+                    .iter()
+                    .copied()
+            })
+            .min()
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn merge_tile(&mut self, tile: &TileSegmentIdState) {
+        for row in tile.origin_row..tile.origin_row.saturating_add(tile.grid.rows) {
+            for col in tile.origin_col..tile.origin_col.saturating_add(tile.grid.cols) {
+                if row >= self.mi_rows || col >= self.mi_cols {
+                    continue;
+                }
+                if let (Some(value), Some(cell)) = (
+                    tile.cell(row, col),
+                    self.cells
+                        .get_mut(row.saturating_mul(self.mi_cols).saturating_add(col)),
+                ) {
+                    *cell = value;
+                }
+            }
+        }
     }
 }
 

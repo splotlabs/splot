@@ -267,6 +267,7 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     /// The walk-parsed CCSO unit grid, retained for the reference update.
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
+    pub(crate) segment_ids: Arc<crate::bitstream::tile_payload::FrameSegmentIdMap>,
     /// The § 7.9 motion field the reconstruction publishes.
     pub(crate) motion: MotionFieldHandle,
     parse: InterFrameParse,
@@ -412,6 +413,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         core: Arc::new(core),
         frame_cdfs: Arc::clone(&parse.frame_cdfs),
         ccso_grid: parse.ccso_grid.clone(),
+        segment_ids: Arc::new(parse.segment_ids.clone()),
         motion,
         parse,
         workspace,
@@ -445,6 +447,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             core,
             frame_cdfs: _,
             ccso_grid: _,
+            segment_ids: _,
             motion,
             parse,
             workspace,

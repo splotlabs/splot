@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use splot_parallel::{CompletionCell, Condition};
 
-use crate::bitstream::tile_payload::FrameCdfSubset;
+use crate::bitstream::tile_payload::{FrameCdfSubset, FrameSegmentIdMap};
 use crate::filters::ccso::CcsoUnitGrid;
 
 /// One entropy product that may be named before its parse job publishes it.
@@ -48,6 +48,7 @@ impl<T> EntropyProductHandle<T> {
 
 pub(crate) type FrameCdfHandle = EntropyProductHandle<Arc<FrameCdfSubset>>;
 pub(crate) type CcsoGridHandle = EntropyProductHandle<Option<Arc<CcsoUnitGrid>>>;
+pub(crate) type SegmentIdMapHandle = EntropyProductHandle<Arc<FrameSegmentIdMap>>;
 
 #[cfg(test)]
 mod tests {

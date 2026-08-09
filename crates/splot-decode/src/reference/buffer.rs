@@ -21,7 +21,9 @@ use crate::error::{DecodeReferenceStateError, Result};
 use crate::pipeline::ActiveFilmGrain;
 use crate::pipeline::PipelineFrame;
 use crate::pipeline::inflight::RefFrameSlot;
-use crate::prediction::inter::{CcsoGridHandle, FrameCdfHandle, MotionFieldHandle};
+use crate::prediction::inter::{
+    CcsoGridHandle, FrameCdfHandle, MotionFieldHandle, SegmentIdMapHandle,
+};
 
 #[derive(Clone, Debug)]
 struct Slot {
@@ -46,6 +48,7 @@ struct Slot {
     frame_cdfs: Option<FrameCdfHandle>,
     ccso_params: Option<Arc<CcsoParams>>,
     ccso_grid: Option<CcsoGridHandle>,
+    segment_ids: Option<SegmentIdMapHandle>,
     motion_field: Option<MotionFieldHandle>,
     long_term_id: Option<u32>,
     display_grain: Option<ActiveFilmGrain>,
@@ -76,6 +79,7 @@ impl Slot {
         frame_cdfs: None,
         ccso_params: None,
         ccso_grid: None,
+        segment_ids: None,
         motion_field: None,
         long_term_id: None,
         display_grain: None,
@@ -106,6 +110,7 @@ impl Slot {
             frame_cdfs: Some(update.frame_cdfs.clone()),
             ccso_params: update.ccso_params.clone(),
             ccso_grid: Some(update.ccso_grid.clone()),
+            segment_ids: Some(update.segment_ids.clone()),
             motion_field: Some(update.motion_field.clone()),
             long_term_id: update.long_term_id,
             display_grain: None,
@@ -137,6 +142,7 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) frame_cdfs: FrameCdfHandle,
     pub(crate) ccso_params: Option<Arc<CcsoParams>>,
     pub(crate) ccso_grid: CcsoGridHandle,
+    pub(crate) segment_ids: SegmentIdMapHandle,
     pub(crate) motion_field: MotionFieldHandle,
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
@@ -465,6 +471,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_frame_cdfs: Vec<Option<FrameCdfHandle>>,
     pub(crate) ref_ccso_params: Vec<Option<Arc<CcsoParams>>>,
     pub(crate) ref_ccso_unit_grids: Vec<Option<CcsoGridHandle>>,
+    pub(crate) ref_segment_ids: Vec<Option<SegmentIdMapHandle>>,
     pub(crate) ref_motion_fields: Vec<Option<MotionFieldHandle>>,
 }
 
@@ -492,6 +499,7 @@ impl ReferenceMetadata {
             ref_frame_cdfs: Vec::with_capacity(num),
             ref_ccso_params: Vec::with_capacity(num),
             ref_ccso_unit_grids: Vec::with_capacity(num),
+            ref_segment_ids: Vec::with_capacity(num),
             ref_motion_fields: Vec::with_capacity(num),
         }
     }
@@ -523,6 +531,7 @@ impl ReferenceMetadata {
         self.ref_frame_cdfs.push(slot.frame_cdfs.clone());
         self.ref_ccso_params.push(slot.ccso_params.clone());
         self.ref_ccso_unit_grids.push(slot.ccso_grid.clone());
+        self.ref_segment_ids.push(slot.segment_ids.clone());
         self.ref_motion_fields.push(slot.motion_field.clone());
     }
 
@@ -548,6 +557,7 @@ impl ReferenceMetadata {
         self.ref_frame_cdfs.clear();
         self.ref_ccso_params.clear();
         self.ref_ccso_unit_grids.clear();
+        self.ref_segment_ids.clear();
         self.ref_motion_fields.clear();
     }
 }
