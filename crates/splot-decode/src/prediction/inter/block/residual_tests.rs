@@ -43,6 +43,169 @@ fn residual_table_bounds_failure_is_internal() {
     ));
 }
 
+#[test]
+fn residual_parse_failures_keep_typed_boundary() {
+    let offset = ByteOffset::new(19);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
+        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        }),
+    };
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+    ));
+
+    let mut decoder = SymbolDecoder::new(&[0x80]).unwrap();
+    let source = decoder.read_symbol_u16(&mut [0, 0, 0]).unwrap_err();
+    let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
+        source: BlockSymbolTraceReadError::Symbol(source),
+    };
+    let decoder = SymbolDecoder::new(&[]).unwrap();
+    let decoder_state = decoder.finish().unwrap_err();
+    let fallback =
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformPartitionGeometry {
+            table: "test",
+            index: usize::MAX,
+        };
+    let internal_errors: [&(dyn std::error::Error + 'static); 3] =
+        [&cdf_error, &decoder_state, &fallback];
+    for internal_error in internal_errors {
+        let error = residual_read_error(internal_error, SPEC_RESIDUAL, offset);
+        assert!(matches!(
+            error,
+            crate::DecodeError::InternalState {
+                reason: "inter_block_residual_parse",
+                byte_offset,
+            } if byte_offset == offset
+        ));
+    }
+
+    let mut allocation = Vec::<u8>::new();
+    let allocation_error = allocation.try_reserve(usize::MAX).unwrap_err();
+    let error = residual_read_error(&allocation_error, SPEC_RESIDUAL, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: ReconPlaneId::Y,
+                context: "inter residual coefficient parse state",
+            }
+        }
+    ));
+}
+
+#[test]
+fn lossless_tx_size_eof_uses_tx_size_spec_section() {
+    let offset = ByteOffset::new(23);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraBlockModeError::SymbolRead {
+        reason: "lossless_tx_size",
+        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        }),
+    };
+
+    let error = residual_read_error(&parse_error, SPEC_TX_SIZE, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_TX_SIZE)
+    ));
+}
+
+#[test]
+fn transform_type_eof_uses_transform_type_spec_section() {
+    let offset = ByteOffset::new(29);
+    let parse_error =
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformTypeRead {
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: ByteOffset::new(0),
+                needed: 1,
+            }),
+        };
+
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset)
+                && issue.spec_section() == Some(SPEC_TRANSFORM_TYPE)
+    ));
+}
+
+#[test]
+fn cctx_type_eof_uses_residual_spec_section() {
+    let offset = ByteOffset::new(31);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::CctxTypeRead {
+        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        }),
+    };
+
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+    ));
+}
+
+#[test]
+fn reserved_pt512_eob_literal_is_malformed_residual_syntax() {
+    let offset = ByteOffset::new(37);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::NonZeroStart {
+        source: crate::bitstream::tile_payload::CoeffLoopContextError::InvalidPt512EobExtra {
+            eob_pt_extra: 3,
+        },
+    };
+
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+    ));
+}
+
+#[test]
+fn overlong_golomb_prefix_is_malformed_read_quant_syntax() {
+    let offset = ByteOffset::new(41);
+    let parse_error =
+        crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix { index: 0 };
+
+    let error = residual_read_error(&parse_error, SPEC_RESIDUAL, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_READ_QUANT)
+    ));
+}
+
+#[test]
+fn read_quant_eof_uses_read_quant_spec_section() {
+    let offset = ByteOffset::new(43);
+    let parse_error = crate::bitstream::tile_payload::CoeffReadQuantError::LiteralRead {
+        index: 0,
+        syntax: "golomb_length",
+        source: splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        },
+    };
+
+    let error = residual_read_error(&parse_error, SPEC_RESIDUAL, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_READ_QUANT)
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()

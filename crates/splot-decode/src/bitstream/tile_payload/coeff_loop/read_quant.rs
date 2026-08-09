@@ -45,6 +45,8 @@ pub(crate) enum CoeffReadQuantError {
         #[source]
         source: CoreError,
     },
+    #[error("coefficient read_quant input {index} has an overlong Golomb prefix")]
+    OverlongGolombPrefix { index: usize },
     #[error("coefficient read_quant input {index} overflowed during {operation}")]
     QuantOverflow {
         index: usize,
@@ -95,9 +97,8 @@ impl CoeffReadQuantState {
                 "golomb_length",
                 BypassSyntax::Unary,
             )?;
-            if prefix >= MAX_EXP_GOLOMB_PREFIX_BITS || prefix > MAX_COEFF_REM_BITS.saturating_sub(k)
-            {
-                return Err(quant_overflow(index, "coeff_rem literal width"));
+            if prefix >= MAX_EXP_GOLOMB_PREFIX_BITS {
+                return Err(CoeffReadQuantError::OverlongGolombPrefix { index });
             }
             let length = checked_add(index, prefix, k, "golomb length + k")?;
             let q_base = checked_shl(index, q, m, "q << m")?;

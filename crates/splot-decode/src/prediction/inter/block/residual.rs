@@ -12,6 +12,10 @@ use super::*;
 const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
 const TX_4X4: usize = 0;
+const SPEC_RESIDUAL: &str = "5.20.7.23";
+const SPEC_READ_QUANT: &str = "5.20.7.28";
+const SPEC_TX_SIZE: &str = "5.20.6.1";
+const SPEC_TRANSFORM_TYPE: &str = "5.20.8.2";
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
@@ -742,7 +746,7 @@ fn read_inter_residual_plane(
         cctx_allowed,
         residual_tool_policy,
     )
-    .map_err(|_| residual_read_error(tile_offset))
+    .map_err(|error| residual_plane_read_error(&error, tile_offset))
 }
 
 pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
@@ -763,7 +767,7 @@ fn inter_residual_tx_size(
     match mode {
         InterResidualLumaTxSizeMode::Inter | InterResidualLumaTxSizeMode::Intrabc => {
             read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
-                .map_err(|_| residual_read_error(tile_offset))
+                .map_err(|error| residual_read_error(&error, SPEC_TX_SIZE, tile_offset))
         }
     }
 }
@@ -847,13 +851,72 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
     Ok(())
 }
 
-fn residual_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_missing!(
-        "inter_block_residual_parse",
-        tile_offset,
-        "inter.residual.coefficients",
-        SPEC_MODE_INFO
-    )
+fn residual_read_error(
+    error: &(dyn std::error::Error + 'static),
+    spec_section: &'static str,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    let mut source = Some(error);
+    let mut source_spec_section = spec_section;
+    while let Some(current) = source {
+        if current
+            .downcast_ref::<std::collections::TryReserveError>()
+            .is_some()
+        {
+            return inter_allocation!("inter residual coefficient parse state");
+        }
+        if matches!(
+            current.downcast_ref::<crate::bitstream::tile_payload::CoeffLoopContextError>(),
+            Some(
+                crate::bitstream::tile_payload::CoeffLoopContextError::InvalidPt512EobExtra { .. }
+            )
+        ) {
+            return crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error);
+        }
+        if let Some(read_quant_error) =
+            current.downcast_ref::<crate::bitstream::tile_payload::CoeffReadQuantError>()
+        {
+            source_spec_section = SPEC_READ_QUANT;
+            if matches!(
+                read_quant_error,
+                crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix { .. }
+            ) {
+                return crate::pipeline::malformed_tile_payload(
+                    tile_offset,
+                    source_spec_section,
+                    error,
+                );
+            }
+        }
+        if let Some(core_error) = current.downcast_ref::<splot_core::Error>() {
+            return if matches!(core_error, splot_core::Error::UnexpectedEof { .. }) {
+                crate::pipeline::malformed_tile_payload(tile_offset, source_spec_section, error)
+            } else {
+                residual_read_internal_error(tile_offset)
+            };
+        }
+        source = current.source();
+    }
+    residual_read_internal_error(tile_offset)
+}
+
+fn residual_plane_read_error(
+    error: &crate::bitstream::tile_payload::GeneralIntraResidualError,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    let spec_section = if matches!(
+        error,
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformTypeRead { .. }
+    ) {
+        SPEC_TRANSFORM_TYPE
+    } else {
+        SPEC_RESIDUAL
+    };
+    residual_read_error(error, spec_section, tile_offset)
+}
+
+fn residual_read_internal_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    inter_internal!("inter_block_residual_parse", tile_offset)
 }
 
 #[cfg(test)]
