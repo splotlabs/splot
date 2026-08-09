@@ -698,7 +698,7 @@ pub(super) fn read_active_inter_intra_tail(
 pub(crate) fn read_warp_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-    b_size: usize,
+    b_size: BlockSize,
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
@@ -706,14 +706,8 @@ pub(crate) fn read_warp_inter_intra_syntax(
     if n4w < 2 || n4h < 2 || n4w.max(n4h) > CHUNK_64_N4 {
         return Ok(WarpInterIntraSyntax::default());
     }
-    let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
-        inter_cap!(
-            "inter_warp_interintra_bsize_group",
-            tile_offset,
-            "inter.warp_inter_intra block size out of range",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let b_size = b_size.index();
+    let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     let enabled = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpInterIntra { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
