@@ -81,7 +81,7 @@ impl InterLumaTxTypeMap {
             .ok_or_else(|| residual_geometry_error(tile_offset))?;
         self.values
             .try_reserve(len.saturating_sub(self.values.len()))
-            .map_err(|_| residual_geometry_error(tile_offset))?;
+            .map_err(|_| residual_allocation_error())?;
         self.values.resize(len, DCT_DCT);
         self.values.fill(DCT_DCT);
         self.row = row;
@@ -603,7 +603,7 @@ fn read_inter_residual_chroma_group(
             )?;
             chroma_reads
                 .try_reserve(1)
-                .map_err(|_| residual_geometry_error(tile_offset))?;
+                .map_err(|_| residual_allocation_error())?;
             chroma_reads.push(InterChromaURead {
                 unit,
                 block_index,
@@ -797,12 +797,7 @@ fn table_value_usize(values: &[i32], index: usize, tile_offset: ByteOffset) -> R
 }
 
 pub(super) fn residual_geometry_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_cap!(
-        "inter_block_residual_geometry",
-        tile_offset,
-        "inter.residual.transform_geometry",
-        SPEC_MODE_INFO
-    )
+    inter_internal!("inter_block_residual_geometry", tile_offset)
 }
 
 /// § 5.20.4 `reset_block_context`.
