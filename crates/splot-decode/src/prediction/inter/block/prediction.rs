@@ -55,14 +55,10 @@ pub(super) fn placed_inter_geometry(
     let luma_h = n4h * 4;
     let (chroma_luma_x, chroma_luma_y, chroma_luma_w, chroma_luma_h) = if frontier.has_chroma {
         let chroma_ref = frontier.chroma_ref_geometry();
-        let chroma_n4w = chroma_ref.size().num_4x4_wide().map_err(|_| {
-            inter_diag!(
-                "inter_chroma_ref_width",
-                tile_offset,
-                "invalid inter chroma reference width",
-                "5.20.4.1"
-            )
-        })?;
+        let chroma_n4w = chroma_ref
+            .size()
+            .num_4x4_wide()
+            .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
         let chroma_n4h = chroma_ref.size().num_4x4_high().map_err(|_| {
             inter_diag!(
                 "inter_chroma_ref_height",
