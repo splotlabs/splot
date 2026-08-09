@@ -415,7 +415,7 @@ mod tests {
             let c_string = cr"gap!(RAW_C_STRING, ...)";
             let live = gap!("live_reason", None, "msg", "7.1");
         "###;
-        let scan = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code, FEATURE_MARKER_MACROS);
         assert!(scan.non_literal_sites.is_empty());
         assert_eq!(scan.reasons, vec!["live_reason"]);
     }
