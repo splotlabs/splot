@@ -66,13 +66,36 @@ use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
     capture_spatial_intrabc_probes, intrabc_ref_stack_admission_from_candidates,
 };
 use crate::prediction::inter::{
-    BawpSyntax, InterBlock, InterIntraPrediction, Mv, PlacedInterBlock,
+    BawpSyntax, InterBlock, InterIntraPrediction, InterReferenceState, Mv, PlacedInterBlock,
     find_mv_stack::{
         BlockPrecisionRecord, INTRABC_REF_FRAME, MvBlockContext, NON_INTER_FLAG_SYNTAX,
         NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, RefMvBank,
     },
     mc::{CompoundBlend, McBlockRect},
 };
+
+#[test]
+fn block_reference_width_metadata_bounds_are_typed() -> TestResult {
+    let fixture =
+        include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
+    let (_, core, offset) = super::super::tests::parse_inter_core_for_validation(fixture)?;
+    let reference = InterReferenceState::<u8>::empty()?;
+
+    let Err(error) = super::block_reference_is_scaled(&core, &reference, &[0], 0, offset) else {
+        return Err("missing reference-width metadata must fail closed".into());
+    };
+
+    assert!(matches!(
+        error,
+        DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 0,
+                slot_count: 0,
+            }
+        }
+    ));
+    Ok(())
+}
 
 #[test]
 fn intrabc_spatial_probe_waits_for_ordered_motion_publication() -> TestResult {

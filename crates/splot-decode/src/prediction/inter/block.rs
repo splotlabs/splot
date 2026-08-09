@@ -2362,18 +2362,12 @@ fn block_reference_is_scaled<T: ReconSample>(
         .ok_or(crate::DecodeHeaderStateError::MissingFrameSize)?;
     let slot = usize::try_from(super::block_reference_slot(ref_frame_idx, ref_frame)?)
         .unwrap_or(usize::MAX);
-    let width = reference
-        .ref_frame_width
-        .get(slot)
-        .copied()
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_block_missing_reference_width",
-                tile_offset,
-                "inter.reference_width",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let width = reference.ref_frame_width.get(slot).copied().ok_or(
+        crate::DecodeReferenceStateError::SlotOutOfRange {
+            slot,
+            slot_count: reference.ref_frame_width.len(),
+        },
+    )?;
     let height = reference
         .ref_frame_height
         .get(slot)
