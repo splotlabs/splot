@@ -11,8 +11,12 @@ pub(crate) fn selectable_missing_quantization_error(_offset: ByteOffset) -> Deco
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-pub(crate) fn selectable_symbol_read_error(_offset: ByteOffset) -> DecodeError {
-    crate::error::DecodeHeaderStateError::SelectableTransformRecordReadFailed.into()
+pub(crate) fn selectable_symbol_read_error(offset: ByteOffset) -> DecodeError {
+    crate::pipeline::malformed_tile_payload(
+        offset,
+        "5.20.6.1",
+        "selectable transform-record symbol read failed",
+    )
 }
 
 pub(crate) fn wienerns_lr_selectable_transform_record_error_reason(

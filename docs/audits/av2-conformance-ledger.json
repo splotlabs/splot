@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "0bc4dea8ebb2309b95537a8a06a314a455a86db6",
+  "audited_commit": "3dceaccf653df5545e09cb8d884d88a3b20e4738",
   "outcome": "success",
   "files": [
     {
@@ -2448,7 +2448,7 @@
     },
     {
       "path": "crates/splot-decode/src/error.rs",
-      "sha256": "93412aa38a1dbdc0471f6473a90051f564edfa00e3af37e6fb813591147d24aa",
+      "sha256": "74121da72e793b5aebf31ba54bde6d538a5afd987b98c02f0c8441f2444b969a",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2577,7 +2577,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/diagnostics.rs",
-      "sha256": "6b65960961ab07143b699ff0c41c1b948c8a705acae030272184773f98c4bf1d",
+      "sha256": "4e0818fb52540d48e6dfb6a8cb42c02fe7514d2925404333cfe1149fc051ecf8",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2647,7 +2647,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
-      "sha256": "335e6bb37b8cae044289ca6f28ff9ba5d9e435db4e4e4b01104419bbe9de843b",
+      "sha256": "a4ada61351b37f12d6f1d51100b70fa7d175595259eebde995f57d4c2a839230",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-INTRA-PRELUDE-TX-FRONTIER",
@@ -2702,7 +2702,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs",
-      "sha256": "7157db7fb786d0f9ba937005b150acc7c3e66bdf43487070bfde13c163143c2c",
+      "sha256": "df142daa8cc49fb0a8aeb331a1b463a00d9267a6f29099d0000ec6cd64d748eb",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"

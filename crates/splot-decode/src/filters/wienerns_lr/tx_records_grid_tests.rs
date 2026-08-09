@@ -504,9 +504,7 @@ fn selectable_transform_record_failures_are_typed_header_state_errors() {
         }
     ));
     assert!(matches!(
-        selectable_read_error(),
-        crate::error::DecodeError::HeaderState {
-            source: crate::error::DecodeHeaderStateError::SelectableTransformRecordReadFailed,
-        }
+        selectable_read_error(ByteOffset::new(9)),
+        crate::error::DecodeError::MalformedSource { .. }
     ));
 }

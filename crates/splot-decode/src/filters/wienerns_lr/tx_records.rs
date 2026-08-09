@@ -149,8 +149,8 @@ fn selectable_state_error() -> crate::error::DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-fn selectable_read_error() -> crate::error::DecodeError {
-    crate::error::DecodeHeaderStateError::SelectableTransformRecordReadFailed.into()
+fn selectable_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    selectable_symbol_read_error(tile_offset)
 }
 
 impl DeltaQState {
@@ -206,7 +206,7 @@ impl DeltaQState {
             if delta_q_abs != 0 {
                 let sign_bit = symbols
                     .read_literal(DELTA_Q_SIGN_BIT_WIDTH)
-                    .map_err(|_| selectable_read_error())?
+                    .map_err(|_| selectable_read_error(tile_offset))?
                     != 0;
                 let delta_q_abs =
                     i32::try_from(delta_q_abs).map_err(|_| selectable_state_error())?;
@@ -1009,11 +1009,11 @@ fn read_delta_q_abs(
     }
     let delta_q_rem_bits = symbols
         .read_literal(DELTA_Q_REM_BITS_WIDTH)
-        .map_err(|_| selectable_read_error())?
+        .map_err(|_| selectable_read_error(tile_offset))?
         + 1;
     let delta_q_abs_bits = symbols
         .read_literal(delta_q_rem_bits)
-        .map_err(|_| selectable_read_error())?;
+        .map_err(|_| selectable_read_error(tile_offset))?;
     let delta_q_large_base = 1usize << delta_q_rem_bits;
     Ok(delta_q_abs_bits as usize + delta_q_large_base + (DELTA_Q_SMALL - 2))
 }
