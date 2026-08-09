@@ -188,14 +188,8 @@ pub(crate) fn read_compound_reference_pair(
         };
     }
 
-    let ref0 = i8::try_from(ref_frames[0]).map_err(|_| {
-        compound_cap!(
-            "compound_ref0_out_of_range",
-            tile_offset,
-            "inter.compound.ref_frame0",
-            SPEC_READ_REF_FRAMES
-        )
-    })?;
+    let ref0 = i8::try_from(ref_frames[0])
+        .map_err(|_| crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
     let ref1 = i8::try_from(ref_frames[1]).map_err(|_| {
         compound_cap!(
             "compound_ref1_out_of_range",
