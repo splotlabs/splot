@@ -314,14 +314,7 @@ fn derive_inter_block_setup<T: ReconSample>(
         frame_mi_dimensions(core).map_err(|_| inter_internal!("inter_mi_dimensions", offset))?;
     let coded_size = workspace.info().coded_luma_size();
     let current_order_hint = core.display_order_hint().unwrap_or(0);
-    let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
-        inter_missing!(
-            "inter_sb_size",
-            offset,
-            "inter.superblock_size",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let sb_h4 = superblock_h4(sequence, core).ok_or(inter_internal!("inter_sb_size", offset))?;
     let projection_step = tip::tmvp_projection_step(core);
     let temporal_config = TemporalProjectionConfig {
         frame_size: (coded_size.width(), coded_size.height()),
