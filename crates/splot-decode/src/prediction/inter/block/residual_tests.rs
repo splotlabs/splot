@@ -186,6 +186,26 @@ fn overlong_golomb_prefix_is_malformed_read_quant_syntax() {
     ));
 }
 
+#[test]
+fn read_quant_eof_uses_read_quant_spec_section() {
+    let offset = ByteOffset::new(43);
+    let parse_error = crate::bitstream::tile_payload::CoeffReadQuantError::LiteralRead {
+        index: 0,
+        syntax: "golomb_length",
+        source: splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        },
+    };
+
+    let error = residual_read_error(&parse_error, SPEC_RESIDUAL, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_READ_QUANT)
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()

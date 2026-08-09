@@ -857,6 +857,7 @@ fn residual_read_error(
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
     let mut source = Some(error);
+    let mut source_spec_section = spec_section;
     while let Some(current) = source {
         if current
             .downcast_ref::<std::collections::TryReserveError>()
@@ -872,15 +873,24 @@ fn residual_read_error(
         ) {
             return crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error);
         }
-        if matches!(
-            current.downcast_ref::<crate::bitstream::tile_payload::CoeffReadQuantError>(),
-            Some(crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix { .. })
-        ) {
-            return crate::pipeline::malformed_tile_payload(tile_offset, SPEC_READ_QUANT, error);
+        if let Some(read_quant_error) =
+            current.downcast_ref::<crate::bitstream::tile_payload::CoeffReadQuantError>()
+        {
+            source_spec_section = SPEC_READ_QUANT;
+            if matches!(
+                read_quant_error,
+                crate::bitstream::tile_payload::CoeffReadQuantError::OverlongGolombPrefix { .. }
+            ) {
+                return crate::pipeline::malformed_tile_payload(
+                    tile_offset,
+                    source_spec_section,
+                    error,
+                );
+            }
         }
         if let Some(core_error) = current.downcast_ref::<splot_core::Error>() {
             return if matches!(core_error, splot_core::Error::UnexpectedEof { .. }) {
-                crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error)
+                crate::pipeline::malformed_tile_payload(tile_offset, source_spec_section, error)
             } else {
                 residual_read_internal_error(tile_offset)
             };
