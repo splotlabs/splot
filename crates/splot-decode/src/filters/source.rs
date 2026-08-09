@@ -6,7 +6,6 @@ use std::any::Any;
 use std::sync::{Mutex, MutexGuard};
 
 const MAX_RETAINED_STRIPE_BUFFERS: usize = 128;
-const MAX_RETAINED_STRIPE_SAMPLES: usize = 4096 * 128;
 static STRIPE_SAMPLE_BUFFERS: Mutex<Vec<Vec<u16>>> = Mutex::new(Vec::new());
 
 fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
@@ -34,18 +33,21 @@ impl StripeCopyError {
 
 fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
     let mut buffers = lock_stripe_sample_buffers();
-    let index = buffers
-        .iter()
-        .enumerate()
-        .filter(|(_, buffer)| buffer.capacity() >= sample_count)
-        .min_by_key(|(_, buffer)| buffer.capacity())
-        .or_else(|| {
-            buffers
-                .iter()
-                .enumerate()
-                .max_by_key(|(_, buffer)| buffer.capacity())
-        })
-        .map(|(index, _)| index);
+    let pool_is_full = buffers.len() >= MAX_RETAINED_STRIPE_BUFFERS;
+    let mut fitting = None;
+    let mut fallback = None;
+    for (index, buffer) in buffers.iter().enumerate() {
+        let capacity = buffer.capacity();
+        if capacity >= sample_count {
+            if fitting.is_none_or(|(_, best_capacity)| capacity < best_capacity) {
+                fitting = Some((index, capacity));
+            }
+        } else if pool_is_full && fallback.is_none_or(|(_, best_capacity)| capacity > best_capacity)
+        {
+            fallback = Some((index, capacity));
+        }
+    }
+    let index = fitting.or(fallback).map(|(index, _)| index);
     let mut buffer = index
         .map(|index| buffers.swap_remove(index))
         .unwrap_or_default();
@@ -58,7 +60,7 @@ fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopy
 }
 
 fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
-    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_STRIPE_SAMPLES {
+    if buffer.capacity() == 0 {
         return;
     }
     buffer.clear();
@@ -210,15 +212,6 @@ impl<'a, T: ReconSample> DeblockedPlanes<'a, T> {
 }
 
 const MAX_RETAINED_WINDOW_BUFFERS: usize = 64;
-/// The largest window buffer worth keeping, in samples of the stored type.
-///
-/// A window is one stripe's rows plus its margins across the frame width, so a
-/// count cap alone lets a wide frame leave tens of megabytes resident for the
-/// life of the process. This bounds the cache by a constant instead of by the
-/// widest frame the process ever decoded, exactly as the stripe cache's
-/// [`MAX_RETAINED_STRIPE_SAMPLES`] does; a window past it is dropped and the
-/// next stripe allocates its own.
-const MAX_RETAINED_WINDOW_SAMPLES: usize = MAX_RETAINED_STRIPE_SAMPLES;
 static WINDOW_SAMPLE_BUFFERS: Mutex<Vec<Box<dyn Any + Send>>> = Mutex::new(Vec::new());
 
 fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, StripeCopyError> {
@@ -226,9 +219,25 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, Str
         let mut buffers = WINDOW_SAMPLE_BUFFERS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = buffers
-            .iter()
-            .position(|buffer| buffer.downcast_ref::<Vec<T>>().is_some());
+        let pool_is_full = buffers.len() >= MAX_RETAINED_WINDOW_BUFFERS;
+        let mut fitting = None;
+        let mut fallback = None;
+        for (index, buffer) in buffers.iter().enumerate() {
+            let Some(buffer) = buffer.downcast_ref::<Vec<T>>() else {
+                continue;
+            };
+            let capacity = buffer.capacity();
+            if capacity >= sample_count {
+                if fitting.is_none_or(|(_, best_capacity)| capacity < best_capacity) {
+                    fitting = Some((index, capacity));
+                }
+            } else if pool_is_full
+                && fallback.is_none_or(|(_, best_capacity)| capacity > best_capacity)
+            {
+                fallback = Some((index, capacity));
+            }
+        }
+        let index = fitting.or(fallback).map(|(index, _)| index);
         index
             .map(|index| buffers.swap_remove(index))
             .and_then(|buffer| buffer.downcast::<Vec<T>>().ok())
@@ -236,13 +245,13 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, Str
     };
     buffer.clear();
     buffer
-        .try_reserve(sample_count)
+        .try_reserve_exact(sample_count)
         .map_err(|_| StripeCopyError::Allocation(PlaneId::Y))?;
     Ok(buffer)
 }
 
 fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
-    if buffer.capacity() == 0 || buffer.capacity() > MAX_RETAINED_WINDOW_SAMPLES {
+    if buffer.capacity() == 0 {
         return;
     }
     buffer.clear();
