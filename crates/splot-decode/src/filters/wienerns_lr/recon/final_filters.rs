@@ -1298,9 +1298,12 @@ impl StripeChain<'_> {
         let cell_count = cell_cols
             .checked_mul(cell_rows)
             .ok_or_else(super::lr_pipeline_state_error)?;
-        cell_subclasses
-            .try_reserve_exact(cell_count)
-            .map_err(|_| super::lr_pipeline_state_error())?;
+        cell_subclasses.try_reserve_exact(cell_count).map_err(|_| {
+            crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "PC-Wiener cell subclasses",
+            })
+        })?;
         cell_subclasses.resize(cell_count, 0);
         let subclass_table = pc_wiener_subclass_table(num_classes, filter_set_index)
             .map_err(|_| super::lr_pipeline_state_error())?;

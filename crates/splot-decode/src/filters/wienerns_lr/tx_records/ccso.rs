@@ -89,7 +89,7 @@ impl CcsoState {
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
-        _tile_offset: ByteOffset,
+        tile_offset: ByteOffset,
     ) -> Result<Self> {
         let filter = sequence.filter.as_ref();
         let ccso = core.ccso_params.as_ref();
@@ -108,7 +108,7 @@ impl CcsoState {
                 .is_some_and(|params| params.sb_reuse_ccso)
         });
         let mut state = Self::active(shift, plane_enabled, sb_reuse, grid);
-        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids)?;
+        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids, tile_offset)?;
         Ok(state)
     }
 
@@ -287,6 +287,7 @@ impl CcsoState {
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
+        tile_offset: ByteOffset,
     ) -> Result<()> {
         let Some(ccso) = core.ccso_params.as_ref() else {
             return Ok(());
@@ -303,18 +304,20 @@ impl CcsoState {
             let slot = ref_frame_idx
                 .get(ref_index as usize)
                 .copied()
-                .ok_or_else(ccso_state_error)?;
+                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
             let grid = ref_ccso_unit_grids
                 .get(slot as usize)
                 .and_then(Option::as_ref)
-                .ok_or_else(ccso_state_error)?;
-            let source = grid.plane_blocks(plane).ok_or_else(ccso_state_error)?;
+                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
+            let source = grid
+                .plane_blocks(plane)
+                .ok_or_else(|| ccso_reuse_error(tile_offset))?;
             if grid.shift() != self.shift
                 || grid.grid_rows() != self.grid_rows
                 || grid.grid_cols() != self.grid_cols
                 || source.len() != self.blocks[plane].len()
             {
-                return Err(ccso_state_error());
+                return Err(ccso_reuse_error(tile_offset));
             }
             self.blocks[plane].copy_from_slice(source);
         }
@@ -413,6 +416,14 @@ fn ccso_grid(mi_rows: usize, mi_cols: usize, shift: u32) -> Result<(usize, usize
         .checked_mul(grid_cols)
         .ok_or_else(ccso_state_error)?;
     Ok((grid_rows, grid_cols, cells))
+}
+
+fn ccso_reuse_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    crate::pipeline::malformed_tile_payload(
+        tile_offset,
+        "6.17.7.8",
+        "CCSO block-flag reuse references an incompatible saved grid",
+    )
 }
 
 fn ccso_state_error() -> crate::error::DecodeError {

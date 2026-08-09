@@ -32,6 +32,14 @@ const MI_SIZE: usize = 4;
 const INTRABC_CONTEXT_MAX: usize = 2;
 const SKIP_CONTEXT_MAX: usize = 2;
 const MORPH_PRED_CONTEXT_MAX: usize = 2;
+fn intrabc_invalid_block_vector_error(tile_offset: ByteOffset) -> DecodeError {
+    crate::pipeline::malformed_tile_payload(
+        tile_offset,
+        "6.19.7.12",
+        "IntraBC block vector fails the is_mv_valid conformance check",
+    )
+}
+
 fn intrabc_state_error() -> DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
@@ -854,7 +862,7 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
     info: IntrabcInfo,
-    _tile_offset: ByteOffset,
+    tile_offset: ByteOffset,
 ) -> Result<IntrabcPredictionGeometry> {
     let domain = intrabc_luma_prediction_domain(core, geometry)?;
     let block = IntrabcBlockPixels::from_geometry(geometry)?;
@@ -863,12 +871,12 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
     let source = if fractional {
         target
     } else {
-        intrabc_luma_source_envelope(target, info.block_mv)?
+        intrabc_luma_source_envelope(target, info.block_mv, tile_offset)?
     };
     if !fractional
         && (!source.is_within(domain.storage) || !rect_is_within_rect(source, domain.tile_bounds))
     {
-        return Err(intrabc_state_error());
+        return Err(intrabc_invalid_block_vector_error(tile_offset));
     }
     let frame_size = core.frame_size.ok_or_else(intrabc_state_error)?;
     let frame_width = i32::try_from(frame_size.width).map_err(|_| intrabc_state_error())?;
@@ -1031,37 +1039,39 @@ fn rect_is_within_rect(rect: PlaneRect, bounds: PlaneRect) -> bool {
 fn intrabc_luma_source_envelope(
     target: PlaneRect,
     block_mv: IntrabcBlockVector,
+    tile_offset: ByteOffset,
 ) -> Result<PlaneRect> {
     let bottom_border = usize::from(block_mv.row & 7 != 0);
     let right_border = usize::from(block_mv.col & 7 != 0);
     let delta_row = block_mv.row >> 3;
     let delta_col = block_mv.col >> 3;
+    let invalid = || intrabc_invalid_block_vector_error(tile_offset);
     let source_x = i32::try_from(target.x())
         .ok()
         .and_then(|value| value.checked_add(delta_col))
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(invalid)?;
     let source_y = i32::try_from(target.y())
         .ok()
         .and_then(|value| value.checked_add(delta_row))
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(invalid)?;
     if source_x < 0 || source_y < 0 {
-        return Err(intrabc_state_error());
+        return Err(invalid());
     }
     let source_width = target
         .width()
         .checked_add(right_border)
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(invalid)?;
     let source_height = target
         .height()
         .checked_add(bottom_border)
-        .ok_or_else(intrabc_state_error)?;
+        .ok_or_else(invalid)?;
     PlaneRect::new(
-        usize::try_from(source_x).map_err(|_| intrabc_state_error())?,
-        usize::try_from(source_y).map_err(|_| intrabc_state_error())?,
+        usize::try_from(source_x).map_err(|_| invalid())?,
+        usize::try_from(source_y).map_err(|_| invalid())?,
         source_width,
         source_height,
     )
-    .map_err(|_| intrabc_state_error())
+    .map_err(|_| invalid())
 }
 
 fn intrabc_use_is_coded(

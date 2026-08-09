@@ -169,6 +169,15 @@ fn selectable_morph_fixture() -> (SequenceHeader, FrameHeaderCore) {
     (sequence, core)
 }
 
+fn assert_invalid_block_vector_error(error: &DecodeError) {
+    match error {
+        DecodeError::MalformedSource { issue } => {
+            assert_eq!(issue.spec_section(), Some("6.19.7.12"));
+        }
+        other => panic!("unexpected decode error: {other:?}"),
+    }
+}
+
 fn assert_state_error(error: &DecodeError) {
     assert!(matches!(
         error,
@@ -787,7 +796,7 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_state_error(&error);
+    assert_invalid_block_vector_error(&error);
 }
 
 #[test]
@@ -827,7 +836,7 @@ fn intrabc_geometry_rejects_out_of_frame_source() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_state_error(&error);
+    assert_invalid_block_vector_error(&error);
 }
 
 #[test]
