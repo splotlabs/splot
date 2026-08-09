@@ -7,6 +7,36 @@ const SEGMENTATION_INHERIT_FIXTURE: &[u8] = include_bytes!(
     "../../../../../../tests/conformance/vectors/valid/syn-3frame-seg-inherit-inter-64x64.ivf"
 );
 
+const SEGMENTATION_SKIP_FIXTURE: &[u8] = include_bytes!(
+    "../../../../../../tests/conformance/vectors/valid/syn-2frame-seg-skip-inter-64x64.ivf"
+);
+
+#[test]
+fn skip_segment_forces_skip_and_globalmv_decode_paths() {
+    let (_, core, _) = super::parse_inter_core_for_validation(SEGMENTATION_SKIP_FIXTURE)
+        .expect("fixture has a valid inter frame header");
+    let segmentation = core
+        .segmentation_params
+        .expect("fixture enables segmentation");
+    let seg_lvl_skip = 1;
+    assert!(segmentation.segmentation_enabled);
+    assert!(segmentation.segmentation_update_map);
+    assert!(segmentation.seg_id_pre_skip);
+    assert!(segmentation.features[7][seg_lvl_skip].enabled);
+
+    let frames = decode_fixture(SEGMENTATION_SKIP_FIXTURE);
+    assert_eq!(frames.len(), 2, "key frame + SKIP-segment inter frame");
+    assert_yuv420_8bit_frames(&frames, 64, 64);
+    assert_eq!(
+        frame_hashes(&frames),
+        [
+            "01b3da14663aeb93e50236b18d719224e30be3c8feaa71a67a88bb1cf6946bd6",
+            "5338821039316d18b02199df911cc42f56b5a687c5cb27649982bc236a4ba097",
+        ],
+        "frame hashes pinned from avmdec's byte-identical raw output"
+    );
+}
+
 #[test]
 fn inherited_inter_segmentation_map_decodes_expected_frames() {
     let frames = decode_fixture(SEGMENTATION_INHERIT_FIXTURE);

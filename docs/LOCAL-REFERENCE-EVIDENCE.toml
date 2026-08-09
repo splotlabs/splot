@@ -11348,3 +11348,55 @@ output_scope = "Complete 18,432-byte raw I420 output"
 kind = "digest-equality"
 left = "avm-seg-inherit-inter-raw-sha256"
 right = "splot-seg-inherit-inter-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-splot-syn-2frame-seg-skip-inter-64x64"
+feature_id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
+decoder_support_rows = ["first-inter-frame-frontier"]
+kind = "reference-output-agreement"
+summary = "Current AVM and splot emit byte-identical complete raw I420 output for a deterministic two-frame stream whose inter frame assigns every block to a SEG_LVL_SKIP segment."
+recorded_at = "2026-08-09"
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-2frame-seg-skip-inter-64x64.ivf"
+sha256 = "afa1f450e93e863755b7b22b34638481c05f91b300fdf05f2ff150e110ee76b8"
+size_bytes = 1917
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Generated deterministically by AVMenc revision 3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03 from the project-owned two-frame prefix of the 64x64 8-bit I420 ffmpeg testsrc2 source (full-source SHA-256 9ab310924e75f95684918fe7eafe01a9bda481fa9080890bb121ee2d32566fc7) using --codec=av2 --ivf -D --threads=1 --cpu-used=8 --end-usage=q --qp=120 --kf-min-dist=16 --kf-max-dist=16 --lag-in-frames=0 --limit=2 --i420 --width=64 --height=64 --input-bit-depth=8 --bit-depth=8 --aq-mode=0. A temporary local avmenc hook (patch SHA-256 1e7ee3662672fb429e4c2f68049259a35a42aff66699c0ddff817b4454366864) called AVM's public AVME_SET_ACTIVEMAP control before frame 2 with every 16x16 region inactive; AVM maps inactive regions to segment 7 with SEG_LVL_SKIP. The same build and command without the active map produced SHA-256 8d9872be1acd52a3e761655e588ece515dfd0bff756c81e2922d443bd09b6656 instead of this stream's afa1f450e93e863755b7b22b34638481c05f91b300fdf05f2ff150e110ee76b8, proving the encode changed. The temporary AVM source patch was restored after fixture generation; AVM is not vendored."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-current"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "3efe9fa8edadf5d1cbbf92e02b4ac8c3582c1e03"
+version_summary = "AOMedia Project AV2 Decoder 1.0.0-63-g3efe9fa8e."
+command_summary = "Current avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-seg-skip-inter-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "9b7199ed54f928114a3a158cb86d4e6f11f37818061ebdc4f9703bb3a554eec8"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree with inter segmentation-map and SEG_LVL_SKIP support."
+command_summary = "splot decode --output-format raw decoded {fixture:input}."
+output_digest_id = "splot-seg-skip-inter-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "9b7199ed54f928114a3a158cb86d4e6f11f37818061ebdc4f9703bb3a554eec8"
+output_scope = "Complete 12,288-byte raw I420 output"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-seg-skip-inter-raw-sha256"
+right = "splot-seg-skip-inter-raw-sha256"

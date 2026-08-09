@@ -16621,7 +16621,8 @@ perf = "not-applicable"
 tests = [
     "crates/splot-cli/tests/decode_cli.rs::decode_two_frame_inter_fixture_decodes_both_frames_bit_exact",
     "crates/splot-decode/src/prediction/inter/tests.rs::two_frame_inter_fixture_decodes_both_frames_bit_exact",
-    "crates/splot-decode/src/prediction/inter/tests.rs::inherited_inter_segmentation_map_decodes_expected_frames",
+    "crates/splot-decode/src/prediction/inter/tests/segmentation.rs::inherited_inter_segmentation_map_decodes_expected_frames",
+    "crates/splot-decode/src/prediction/inter/tests/segmentation.rs::skip_segment_forces_skip_and_globalmv_decode_paths",
     "crates/splot-decode/src/prediction/inter/tests.rs::inter_frame_is_a_bit_exact_copy_of_the_key_frame",
     "crates/splot-decode/src/prediction/inter/tests.rs::two_frame_inter_fixture_per_frame_hash_is_stable",
     "crates/splot-decode/src/bitstream/stream_plan/tests.rs::regular_tile_group_is_admitted_as_inter_frame_candidate",
@@ -16653,6 +16654,7 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf",
     "tests/conformance/vectors/valid/syn-3frame-seg-inherit-inter-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-2frame-seg-skip-inter-64x64.ivf",
     "tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf",
     "tests/conformance/vectors/valid/syn-2frame-warp-sample-list1-48x48-q90.ivf",
     "tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf",
