@@ -5,7 +5,6 @@ use splot_core::headers::frame::{FrameHeaderCore, IntrabcParams};
 use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, PlaneId, PlaneRect, ReconSample};
 
-use super::super::{SPEC_MODE_INFO, unsupported_at};
 use crate::bitstream::tile_payload::{DecodeBlockFrontier, FrameQmSegmentScope};
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcInfo, IntrabcPredictionGeometry,
@@ -186,15 +185,7 @@ impl IntrabcReconCommand {
                 PlaneId::Y,
                 prediction.luma.source,
                 prediction.luma.target,
-            )
-            .map_err(|_| {
-                inter_cap!(
-                    "inter_intrabc_copy",
-                    self.tile_offset,
-                    "inter.intrabc.copy",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            )?;
         }
         if let Some(mv) = prediction.morph_mv {
             crate::prediction::inter::bawp::apply_intrabc_morph_pred(
