@@ -686,14 +686,9 @@ fn push_inter_residual_block(
     let log2_width = u32::try_from(log2_width).map_err(|_| residual_geometry_error(tile_offset))?;
     let log2_height =
         u32::try_from(log2_height).map_err(|_| residual_geometry_error(tile_offset))?;
-    blocks.try_reserve(1).map_err(|_| {
-        inter_cap!(
-            "inter_block_residual_allocation",
-            tile_offset,
-            "inter.residual.transform_block_list",
-            SPEC_MODE_INFO
-        )
-    })?;
+    blocks
+        .try_reserve(1)
+        .map_err(|_| residual_allocation_error())?;
     let index = blocks.len();
     blocks.push(InterResidualBlock {
         plane,
@@ -706,6 +701,10 @@ fn push_inter_residual_block(
         coeffs,
     });
     Ok(index)
+}
+
+fn residual_allocation_error() -> crate::error::DecodeError {
+    inter_allocation!("inter residual transform-block list")
 }
 
 #[allow(clippy::too_many_arguments)]

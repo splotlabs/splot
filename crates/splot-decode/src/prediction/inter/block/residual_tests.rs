@@ -14,6 +14,21 @@ use super::super::block_chroma_subsampling;
 
 const BLOCK_16X8: usize = 5;
 
+#[test]
+fn residual_block_allocation_failure_is_operational() {
+    let error = residual_allocation_error();
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: ReconPlaneId::Y,
+                context: "inter residual transform-block list",
+            }
+        }
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()
