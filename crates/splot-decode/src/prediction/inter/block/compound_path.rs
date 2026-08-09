@@ -1467,20 +1467,7 @@ fn compound_reference_facts<T: ReconSample>(
     ref_frame: i8,
     tile_offset: ByteOffset,
 ) -> Result<CompoundReferenceFacts> {
-    let ref_index = usize::try_from(ref_frame).map_err(|_| {
-        compound_cap!(
-            "compound_ref_frame_range",
-            tile_offset,
-            "inter.compound.ref_frame",
-            SPEC_READ_REFINEMV
-        )
-    })?;
-    let slot = *ref_frame_idx.get(ref_index).ok_or(
-        crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
-            index: ref_frame,
-            list_len: ref_frame_idx.len(),
-        },
-    )?;
+    let slot = super::super::block_reference_slot(ref_frame_idx, ref_frame)?;
     let slot = usize::try_from(slot).unwrap_or(usize::MAX);
     let order_hint = reference.ref_order_hint.get(slot).copied().ok_or(
         crate::DecodeReferenceStateError::SlotOutOfRange {
