@@ -95,14 +95,9 @@ impl IntrabcReconPrediction {
             luma_prediction
         };
         let luma = prediction.target;
-        let frame_size = core.frame_size.ok_or_else(|| {
-            inter_missing!(
-                "inter_intrabc_missing_frame_size",
-                tile_offset,
-                "inter.intrabc.frame_size",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let frame_size = core
+            .frame_size
+            .ok_or(crate::DecodeHeaderStateError::MissingFrameSize)?;
         let (cx, cy) = (luma.x() >> sub_x, luma.y() >> sub_y);
         let (cw, ch) = (luma.width() >> sub_x, luma.height() >> sub_y);
         if cw == 0 || ch == 0 {
