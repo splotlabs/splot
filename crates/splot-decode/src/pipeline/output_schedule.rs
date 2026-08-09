@@ -393,7 +393,7 @@ pub(super) fn ensure_retained_frame_byte_limits_for_core(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
     offset: ByteOffset,
-) -> Result<u64> {
+) -> Result<()> {
     let frame_size = core.frame_size.ok_or_else(|| {
         unsupported_at(
             "missing_frame_size_for_retained_limit",
@@ -411,7 +411,8 @@ pub(super) fn ensure_retained_frame_byte_limits_for_core(
         bytes_per_sample(bit_depth),
     )
     .map(|budget| budget.decoded_bytes)?;
-    ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)
+    ensure_retained_frame_byte_limits_for_bytes(limits, retained_frame_bytes, frame_bytes)?;
+    Ok(())
 }
 
 pub(super) fn ensure_retained_frame_byte_limits_for_bytes(

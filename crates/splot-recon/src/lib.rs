@@ -198,11 +198,10 @@ pub use wienerns_filter::{
     wiener_ns_filter_luma_block_padded_into,
 };
 pub use workspace::{
-    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFramePlaneRowBand,
-    CurrentFrameRect, CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameRowBand,
-    CurrentFrameRowBands, CurrentFrameSurface, CurrentFrameWorkspace, InterIntraMode,
-    IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameBands, OwnedFramePlaneBand,
-    OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand, WorkspaceRectRows,
+    CurrentFrameIntraEdges, CurrentFramePlane, CurrentFramePlaneRect, CurrentFrameRect,
+    CurrentFrameRectRows, CurrentFrameRectRowsMut, CurrentFrameSurface, CurrentFrameWorkspace,
+    InterIntraMode, IntraPredictionScratch, IntraPredictionScratchBuffer, OwnedFrameBands,
+    OwnedFramePlaneBand, OwnedFrameRect, OwnedFrameRectRows, OwnedFrameRowBand, WorkspaceRectRows,
     wedge_mask_plane_sample,
 };
 pub use y4m::{

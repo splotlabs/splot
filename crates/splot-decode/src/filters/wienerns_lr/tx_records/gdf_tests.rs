@@ -13,7 +13,7 @@ fn inactive_state_has_no_grid() {
     let state = GdfState::inactive();
 
     assert!(!state.active);
-    assert!(state.into_grid(ByteOffset::new(0)).unwrap().is_none());
+    assert!(state.into_grid().unwrap().is_none());
 }
 
 #[test]
@@ -53,12 +53,11 @@ fn unvisited_gdf_unit_fails_closed() {
         values: vec![2],
     };
 
-    assert!(state.into_grid(ByteOffset::new(0)).is_err());
+    assert!(state.into_grid().is_err());
 }
 
 #[test]
 fn gdf_tile_merge_copies_only_the_owned_region() {
-    let offset = ByteOffset::new(0);
     let mut frame = GdfState {
         active: true,
         block_size: 64,
@@ -70,13 +69,13 @@ fn gdf_tile_merge_copies_only_the_owned_region() {
         grid_cols: 2,
         values: vec![2; 2],
     };
-    let mut left = frame.for_tile(0..16, 0..16, offset).unwrap();
-    let mut right = frame.for_tile(0..16, 16..32, offset).unwrap();
+    let mut left = frame.for_tile(0..16, 0..16).unwrap();
+    let mut right = frame.for_tile(0..16, 16..32).unwrap();
     left.values = vec![0];
     right.values = vec![0];
 
-    frame.merge_tile(&left, 0..16, 0..16, offset).unwrap();
-    frame.merge_tile(&right, 0..16, 16..32, offset).unwrap();
+    frame.merge_tile(&left, 0..16, 0..16).unwrap();
+    frame.merge_tile(&right, 0..16, 16..32).unwrap();
 
     assert_eq!(frame.values, [0, 0]);
 }

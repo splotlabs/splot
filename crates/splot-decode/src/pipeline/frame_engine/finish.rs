@@ -18,7 +18,6 @@
 use std::sync::Arc;
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::span::ByteOffset;
 use splot_recon::{DecodedFrame, DecodedFrameInfo, ReconSample, SharedFrame};
 
 use crate::Result;
@@ -80,7 +79,6 @@ pub(crate) struct FilterSinkSetup {
     pub(crate) cfl_ds_filter_index: u8,
     pub(crate) disable_loopfilters_across_tiles: bool,
     pub(crate) deblock_quant_deltas: DeblockQuantDeltas,
-    pub(crate) offset: ByteOffset,
 }
 
 impl FilterSinkSetup {
@@ -88,7 +86,7 @@ impl FilterSinkSetup {
         self,
         workspace: splot_recon::CurrentFrameWorkspace<T>,
         filter_inputs: InterFilterInputs,
-    ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas, ByteOffset) {
+    ) -> (WienerNsLrReconSink<T>, bool, DeblockQuantDeltas) {
         let mut sink = crate::filters::wienerns_lr::recon_final_filter_sink(
             workspace,
             self.luma_width,
@@ -105,7 +103,6 @@ impl FilterSinkSetup {
             sink,
             self.disable_loopfilters_across_tiles,
             self.deblock_quant_deltas,
-            self.offset,
         )
     }
 
@@ -117,14 +114,13 @@ impl FilterSinkSetup {
         filter_inputs: InterFilterInputs,
         core: Arc<FrameHeaderCore>,
     ) -> WalkedFrame<T> {
-        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas, offset) =
+        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas) =
             self.into_sink(workspace, filter_inputs);
         WalkedFrame::new(
             sink,
             core,
             disable_loopfilters_across_tiles,
             deblock_quant_deltas,
-            offset,
         )
     }
 
@@ -140,13 +136,12 @@ impl FilterSinkSetup {
         splot_recon::CurrentFrameWorkspace<T>,
         DeblockQuantDeltas,
     )> {
-        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas, offset) =
+        let (sink, disable_loopfilters_across_tiles, deblock_quant_deltas) =
             self.into_sink(workspace, filter_inputs);
         let (setup, workspace) = sink.into_owned_filter_setup_published(
             core,
             disable_loopfilters_across_tiles,
             progress,
-            offset,
         )?;
         Ok((setup, workspace, deblock_quant_deltas))
     }
@@ -192,7 +187,6 @@ pub(crate) struct WalkedFrame<T: ReconSample> {
     core: Arc<FrameHeaderCore>,
     disable_loopfilters_across_tiles: bool,
     deblock_quant_deltas: DeblockQuantDeltas,
-    offset: ByteOffset,
 }
 
 impl<T: ReconSample> WalkedFrame<T> {
@@ -202,14 +196,12 @@ impl<T: ReconSample> WalkedFrame<T> {
         core: Arc<FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         deblock_quant_deltas: DeblockQuantDeltas,
-        offset: ByteOffset,
     ) -> Self {
         Self {
             sink,
             core,
             disable_loopfilters_across_tiles,
             deblock_quant_deltas,
-            offset,
         }
     }
 
@@ -252,7 +244,6 @@ pub(crate) fn finish_walked_frame<T: ReconSample, R>(
         core,
         disable_loopfilters_across_tiles,
         deblock_quant_deltas,
-        offset,
     } = walked;
     let (frame, filter_records) = sink.into_filtered_frame(
         core,
@@ -260,7 +251,6 @@ pub(crate) fn finish_walked_frame<T: ReconSample, R>(
         deblock_quant_deltas,
         progress,
         admit,
-        offset,
         |frame| publish(SharedFrame::new(frame)),
     )?;
     Ok(FinishedFrame {

@@ -229,7 +229,6 @@ fn tip_optflow_references_allowed(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn tip_references_unscaled(
     frame_type: Option<FrameType>,
     frame_size: Option<splot_core::headers::frame::FrameSize>,
@@ -331,7 +330,6 @@ fn compute_parallel_outputs<T: ReconSample>(
         })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn compute_batched_output<T: ReconSample>(
     sink: &mc::WorkspaceSink<'_, '_, T>,
     units: &[TipUnit],

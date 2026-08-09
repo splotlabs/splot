@@ -188,7 +188,6 @@ fn ibp_secondary_edge_spec(above_smooth: bool, left_smooth: bool, p_angle: i32) 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn assemble_unit_edge_filter<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     plane_id: PlaneId,

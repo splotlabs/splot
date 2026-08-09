@@ -16,7 +16,7 @@ use super::intra_joint_modes::{
     TileUsesMrlsStateError, TileUvCflState,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
-use super::partition::{self, PartitionDecisionError, PartitionType, ReadPartitionDecision};
+use super::partition::{self, PartitionDecisionError, PartitionType};
 use super::partition_allowed::{
     PartitionAllowedError, PartitionAllowedInput, PartitionFeatureFlags, PartitionTreeType,
     partition_decision_facts,

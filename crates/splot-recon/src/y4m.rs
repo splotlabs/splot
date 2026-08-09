@@ -282,22 +282,6 @@ impl Y4mStreamHeader {
         }
     }
 
-    /// Creates stream header metadata from raw frame-rate components.
-    ///
-    /// # Errors
-    /// Returns [`Y4mError::InvalidFrameRate`] if either frame-rate component is
-    /// zero.
-    pub fn with_frame_rate(
-        frame_format: Y4mFrameFormat,
-        numerator: u32,
-        denominator: u32,
-    ) -> Y4mResult<Self> {
-        Ok(Self::new(
-            frame_format,
-            Y4mFrameRate::new(numerator, denominator)?,
-        ))
-    }
-
     /// Derives stream header metadata from a decoded frame and frame rate.
     ///
     /// # Errors
@@ -391,22 +375,6 @@ impl<W: Write> Y4mWriter<W> {
         })
     }
 
-    /// Creates a writer from raw frame-rate components.
-    ///
-    /// # Errors
-    /// Returns [`Y4mError::InvalidFrameRate`] before writing any bytes if either
-    /// frame-rate component is zero, or [`Y4mError::Io`] if writing the stream
-    /// header fails.
-    pub fn with_frame_rate(
-        writer: W,
-        frame_format: Y4mFrameFormat,
-        numerator: u32,
-        denominator: u32,
-    ) -> Y4mResult<Self> {
-        let stream_header = Y4mStreamHeader::with_frame_rate(frame_format, numerator, denominator)?;
-        Self::new(writer, stream_header)
-    }
-
     /// Derives the stream format from `frame`, writes the stream header, and
     /// creates a Y4M writer.
     ///
@@ -423,11 +391,6 @@ impl<W: Write> Y4mWriter<W> {
         frame_rate: Y4mFrameRate,
     ) -> Y4mResult<Self> {
         Self::new(writer, Y4mStreamHeader::from_frame(frame, frame_rate)?)
-    }
-
-    /// Returns the stream header metadata written by this writer.
-    pub const fn stream_header(&self) -> Y4mStreamHeader {
-        self.stream_header
     }
 
     /// Returns the number of accepted frames written after the stream header.
@@ -862,15 +825,9 @@ mod tests {
     }
 
     #[test]
-    fn invalid_frame_rate_is_rejected_before_stream_header_write() {
-        let frame = compact_mono_u8(2, 1, 3);
-        let format = Y4mFrameFormat::from_frame(&frame).unwrap();
-
+    fn invalid_frame_rate_is_rejected() {
         for (numerator, denominator) in [(0, 1), (1, 0)] {
-            let mut bytes = Vec::new();
-
-            let err =
-                Y4mWriter::with_frame_rate(&mut bytes, format, numerator, denominator).unwrap_err();
+            let err = Y4mFrameRate::new(numerator, denominator).unwrap_err();
 
             assert!(matches!(
                 err,
@@ -879,7 +836,6 @@ mod tests {
                     denominator: actual_denominator
                 } if actual_numerator == numerator && actual_denominator == denominator
             ));
-            assert!(bytes.is_empty());
         }
     }
 

@@ -90,7 +90,7 @@ fn raw_annex_b_plan_preserves_order_and_roles() {
     assert_eq!(plan.input_len_bytes(), bytes.len() as u64);
     assert_eq!(plan.obu_count(), 4);
     assert_eq!(plan.frame_candidate_count(), 1);
-    assert_eq!(plan.frame_candidates().count(), 1);
+    assert_eq!(plan.frame_candidates_all().count(), 1);
     assert_eq!(obus[0].index(), 0);
     assert_eq!(obus[0].offset(), ByteOffset::new(1));
     assert_eq!(obus[0].role(), DecodePlannedObuRole::Global);
@@ -304,7 +304,6 @@ fn regular_tile_group_is_admitted_as_inter_frame_candidate() {
 
     assert_eq!(plan_bytes(&bytes), plan);
     assert_eq!(plan.frame_candidate_count(), 2);
-    assert_eq!(plan.frame_candidates().count(), 1);
     assert_eq!(plan.frame_candidates_all().count(), 2);
     assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
     assert_eq!(obus[4].role(), DecodePlannedObuRole::InterFrameCandidate);
@@ -349,7 +348,6 @@ fn regular_tip_is_admitted_as_inter_frame_candidate() {
 
     assert_eq!(plan_bytes(&bytes), plan);
     assert_eq!(plan.frame_candidate_count(), 2);
-    assert_eq!(plan.frame_candidates().count(), 1);
     assert_eq!(plan.frame_candidates_all().count(), 2);
     assert_eq!(obus[2].role(), DecodePlannedObuRole::FrameCandidate);
     assert_eq!(obus[4].role(), DecodePlannedObuRole::InterFrameCandidate);

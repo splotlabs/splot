@@ -82,11 +82,6 @@ impl<'a, T: ReconSample> IntraPaethEdges<'a, T> {
     pub const fn above_samples(self) -> &'a [T] {
         self.above
     }
-
-    /// Returns the prepared top-left sample.
-    pub const fn top_left_sample(self) -> T {
-        self.top_left
-    }
 }
 
 /// Writes rectangular AV2 §7.13.2.2 basic/PAETH prediction into caller storage.

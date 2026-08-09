@@ -63,7 +63,6 @@ proptest = "1"
 # Dev-only: golden snapshot tests of the `splot inspect` JSON output (CONF-INSPECT-SNAPSHOTS).
 insta = "1"
 rayon = "1"
-crossbeam-channel = "0.5"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

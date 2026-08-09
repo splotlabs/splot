@@ -171,22 +171,18 @@ fn selectable_read_error(
 }
 
 impl DeltaQState {
-    pub(crate) fn new(
-        sequence: &SequenceHeader,
-        core: &FrameHeaderCore,
-        tile_offset: ByteOffset,
-    ) -> Result<Self> {
+    pub(crate) fn new(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<Self> {
         let delta_q = core.delta_q_params.as_ref();
         let present = delta_q.is_some_and(|params| params.delta_q_present);
         let delta_q_res = delta_q.map_or(0, |params| params.delta_q_res);
         let base_q_idx = core
             .quantization_params
             .as_ref()
-            .ok_or_else(|| selectable_missing_quantization_error(tile_offset))?
+            .ok_or_else(selectable_missing_quantization_error)?
             .base_q_idx;
         let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
             .map_err(|_| selectable_state_error())?;
-        let sb_size4 = intra_delta_q_sb_size4(sequence, tile_offset)?;
+        let sb_size4 = intra_delta_q_sb_size4(sequence)?;
         Ok(Self {
             present,
             delta_q_res,
@@ -255,7 +251,6 @@ impl CdefState {
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         let row_start = mi_rows.start / CDEF_UNIT_MI;
         let col_start = mi_cols.start / CDEF_UNIT_MI;
@@ -285,12 +280,7 @@ impl CdefState {
         })
     }
 
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sequence: &SequenceHeader,
-        tile_offset: ByteOffset,
-    ) -> Result<Self> {
+    pub(crate) fn new(mi_rows: usize, mi_cols: usize, sequence: &SequenceHeader) -> Result<Self> {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
         let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
         let values_len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
@@ -300,7 +290,7 @@ impl CdefState {
             rows,
             cols,
             values: vec![None; values_len],
-            sb_size4: intra_delta_q_sb_size4(sequence, tile_offset)?,
+            sb_size4: intra_delta_q_sb_size4(sequence)?,
         })
     }
 
@@ -462,7 +452,6 @@ impl CdefState {
         tile: &Self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        _tile_offset: ByteOffset,
     ) -> Result<()> {
         let expected_row_start = mi_rows.start / CDEF_UNIT_MI;
         let expected_col_start = mi_cols.start / CDEF_UNIT_MI;
@@ -487,7 +476,7 @@ impl CdefState {
         Ok(())
     }
 
-    pub(crate) fn into_grid(self, _tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
+    pub(crate) fn into_grid(self) -> Result<CdefUnitGrid> {
         if self.row_start != 0 || self.col_start != 0 {
             return Err(selectable_state_error());
         }
@@ -1080,8 +1069,8 @@ fn delta_q_is_coded_for_block(
     Ok(width4 != sb_size4 || height4 != sb_size4 || !skip)
 }
 
-fn intra_delta_q_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) -> Result<usize> {
-    Ok(match intra_capped_seq_sb_size(sequence, tile_offset)? {
+fn intra_delta_q_sb_size4(sequence: &SequenceHeader) -> Result<usize> {
+    Ok(match intra_capped_seq_sb_size(sequence)? {
         SuperblockSize::Block64x64 => 16,
         SuperblockSize::Block128x128 | SuperblockSize::Block256x256 => 32,
     })

@@ -173,7 +173,6 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
             .filter
             .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
         deblock_quant_deltas: crate::pipeline::deblock_quant_deltas(sequence, core),
-        offset,
     };
     Ok(InterWalkPrologue {
         tile_plan,

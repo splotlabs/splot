@@ -249,7 +249,6 @@ pub(crate) struct InterBlockSetup {
     ccso_state: CcsoState,
     motion_field: TemporalMotionField,
     initial_frame_cdfs: Arc<FrameCdfSubset>,
-    first_tile_offset: ByteOffset,
     qindex: u32,
 }
 
@@ -367,8 +366,8 @@ fn derive_inter_block_setup<T: ReconSample>(
         temporal_config.frame_size,
         &derived_order_hints,
     );
-    let cdef_state = CdefState::new(mi_rows, mi_cols, sequence, first_tile_offset)?;
-    let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core, first_tile_offset)?;
+    let cdef_state = CdefState::new(mi_rows, mi_cols, sequence)?;
+    let gdf_state = GdfState::new(mi_rows, mi_cols, sequence, core)?;
     let ref_ccso_unit_grids = reference
         .ref_ccso_unit_grids
         .iter()
@@ -437,7 +436,6 @@ fn derive_inter_block_setup<T: ReconSample>(
         ccso_state,
         motion_field,
         initial_frame_cdfs,
-        first_tile_offset,
         qindex,
     })
 }
@@ -497,7 +495,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
         initial_frame_cdfs,
-        first_tile_offset,
         qindex,
     } = setup;
     let mut records = core::mem::take(&mut scratch.frame_filter_records);
@@ -529,12 +526,12 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         motion_field,
     )?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
-    let ccso_grid = walked.ccso_state.into_grid(first_tile_offset)?;
+    let ccso_grid = walked.ccso_state.into_grid()?;
     let filter_inputs = InterFilterInputs {
         records,
-        cdef_grid: walked.cdef_state.into_grid(first_tile_offset)?,
+        cdef_grid: walked.cdef_state.into_grid()?,
         ccso_grid,
-        gdf_grid: walked.gdf_state.into_grid(first_tile_offset)?,
+        gdf_grid: walked.gdf_state.into_grid()?,
         motion_field: walked.motion_field,
     };
     let segment_ids = final_segment_ids(
@@ -1324,7 +1321,7 @@ fn decode_block<T: ReconSample>(
                     ..NON_INTER_FLAG_SYNTAX
                 },
             );
-            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
+            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             let (sub_x, sub_y) = chroma_subsampling(sequence.general.chroma_format_idc);
             let dependency = if intrabc::global_intrabc_enabled(core.intrabc) {
                 ReconDependency::GlobalIntrabcFence
@@ -1411,7 +1408,7 @@ fn decode_block<T: ReconSample>(
                     ..NON_INTER_FLAG_SYNTAX
                 },
             );
-            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude, tile_offset)?;
+            intrabc_state.record_block(frontier.r, frontier.c, n4w, n4h, prelude)?;
             motion = non_inter_leaf_motion(mi_row, mi_col, n4w, n4h);
         }
         return Ok((
@@ -1748,7 +1745,6 @@ fn decode_block<T: ReconSample>(
                 skip_flag: skip == 1,
             })
             .mark_inter(),
-            tile_offset,
         )?;
         let syntax = InterBlockSyntax {
             block_ctx,
@@ -2017,7 +2013,6 @@ fn decode_block<T: ReconSample>(
             skip_flag: skip == 1,
         })
         .mark_inter(),
-        tile_offset,
     )?;
     let syntax = InterBlockSyntax {
         block_ctx,

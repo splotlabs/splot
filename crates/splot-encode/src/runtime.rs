@@ -108,13 +108,6 @@ impl EncoderRuntimeConfig {
         }
     }
 
-    /// Returns a copy of this runtime config with a different speed preset.
-    #[must_use]
-    pub const fn with_speed_preset(mut self, speed_preset: SpeedPreset) -> Self {
-        self.speed_preset = speed_preset;
-        self
-    }
-
     /// Returns the configured runtime speed preset.
     #[must_use]
     pub const fn speed_preset(self) -> SpeedPreset {
@@ -151,13 +144,13 @@ mod tests {
     }
 
     #[test]
-    fn runtime_config_defaults_and_with_speed_preserve_thread_policy() {
-        let runtime = EncoderRuntimeConfig::new(ThreadCount::from(3_usize));
+    fn runtime_config_defaults_and_speed_preserve_thread_policy() {
+        let mut runtime = EncoderRuntimeConfig::new(ThreadCount::from(3_usize));
         assert_eq!(runtime.thread_count, ThreadCount::from(3_usize));
         assert_eq!(runtime.speed_preset(), SpeedPreset::default());
 
         let speed = SpeedPreset::try_from_u8(2).unwrap();
-        let runtime = runtime.with_speed_preset(speed);
+        runtime.speed_preset = speed;
         assert_eq!(runtime.thread_count, ThreadCount::from(3_usize));
         assert_eq!(runtime.speed_preset(), speed);
     }

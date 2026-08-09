@@ -4,10 +4,9 @@
 //! `splot-parallel` — the approved concurrency primitives for splot codec runtime code.
 //!
 //! `splot` uses exactly one data-parallel engine (Rayon, via a *local* owned
-//! [`WorkerPool`]) and exactly one coarse-pipeline queue primitive
-//! (`crossbeam-channel`, bounded only, via [`bounded_queue`]). This crate
-//! depends on no other `splot-*` crate. It does not use the global Rayon pool,
-//! `build_global`, unbounded channels, or any async runtime.
+//! [`WorkerPool`]). This crate depends on no other `splot-*` crate. It does not
+//! use the global Rayon pool, `build_global`, unbounded channels, or any async
+//! runtime.
 //!
 //! Downstream codec crates write data-parallel loops with the [`prelude`] (the
 //! curated Rayon parallel-iterator traits) **inside** [`WorkerPool::install`], so
@@ -28,7 +27,6 @@ pub mod error;
 pub mod frame_delay;
 pub mod pool;
 pub mod prelude;
-pub mod queue;
 pub mod thread_count;
 pub mod watermark;
 
@@ -39,10 +37,6 @@ pub use frame_delay::FrameDelay;
 pub use pool::{
     TaskScope, WorkerPool, assist_pool_or_park, current_pool_width, current_worker_index,
     on_multiworker_pool, on_worker_pool, ready_task_scope,
-};
-pub use queue::{
-    QueueCapacity, QueueReceiver, QueueSender, RecvError, SendError, TryRecvError, TrySendError,
-    bounded_queue,
 };
 pub use thread_count::ThreadCount;
 pub use watermark::WatermarkCell;

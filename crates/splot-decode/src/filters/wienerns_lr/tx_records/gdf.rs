@@ -30,12 +30,7 @@ pub(crate) struct GdfState {
 }
 
 impl GdfState {
-    pub(crate) fn for_tile(
-        &self,
-        mi_rows: Range<usize>,
-        mi_cols: Range<usize>,
-        _tile_offset: ByteOffset,
-    ) -> Result<Self> {
+    pub(crate) fn for_tile(&self, mi_rows: Range<usize>, mi_cols: Range<usize>) -> Result<Self> {
         if !self.active {
             return Ok(Self::inactive());
         }
@@ -72,7 +67,6 @@ impl GdfState {
         mi_cols: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         let per_block = core
             .gdf_params
@@ -184,7 +178,6 @@ impl GdfState {
         tile: &Self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        _tile_offset: ByteOffset,
     ) -> Result<()> {
         if self.active != tile.active
             || self.block_size != tile.block_size
@@ -220,7 +213,7 @@ impl GdfState {
         Ok(())
     }
 
-    pub(crate) fn into_grid(self, _tile_offset: ByteOffset) -> Result<Option<GdfBlockGrid>> {
+    pub(crate) fn into_grid(self) -> Result<Option<GdfBlockGrid>> {
         if !self.active {
             return Ok(None);
         }

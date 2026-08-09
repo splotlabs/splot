@@ -267,24 +267,6 @@ impl<'a> Frame<'a> {
         Ok(Self { info, y, u, v })
     }
 
-    /// Builds an input frame from a reconstruction frame view after validating
-    /// that the view matches the current 8-bit YUV420 input subset.
-    ///
-    /// # Errors
-    /// Returns [`crate::Error`] if the reconstruction view has unsupported
-    /// format metadata or lacks required chroma planes.
-    pub fn from_recon_frame_ref(
-        id: FrameId,
-        timestamp: Option<FrameTimestamp>,
-        frame: ReconFrameRef<'a, u8>,
-    ) -> Result<Self> {
-        let info = info_from_recon(id, timestamp, frame);
-        let y = FramePlaneInput::from_plane_ref(frame.y());
-        let u = frame.u().map(FramePlaneInput::from_plane_ref);
-        let v = frame.v().map(FramePlaneInput::from_plane_ref);
-        Self::from_planes(info, FramePlanesInput::new(y, u, v))
-    }
-
     /// Returns the validated frame metadata.
     pub const fn info(&self) -> FrameInfo {
         self.info

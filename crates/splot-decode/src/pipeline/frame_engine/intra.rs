@@ -150,7 +150,6 @@ pub(crate) fn walk_intra_frame<T: ReconSample>(
             .filter
             .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
         deblock_quant_deltas: deblock_quant_deltas(sequence, &core),
-        offset,
     };
     let core = std::sync::Arc::new(core);
     Ok(setup.frame_walk(

@@ -6,7 +6,7 @@ use splot_core::span::ByteOffset;
 
 use crate::error::{DecodeError, Result};
 
-pub(crate) fn selectable_missing_quantization_error(_offset: ByteOffset) -> DecodeError {
+pub(crate) fn selectable_missing_quantization_error() -> DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
@@ -21,10 +21,7 @@ pub(crate) fn selectable_symbol_read_error(
     )
 }
 
-pub(crate) fn intra_capped_seq_sb_size(
-    sequence: &SequenceHeader,
-    _tile_offset: ByteOffset,
-) -> Result<SuperblockSize> {
+pub(crate) fn intra_capped_seq_sb_size(sequence: &SequenceHeader) -> Result<SuperblockSize> {
     let partition = sequence
         .partition
         .as_ref()

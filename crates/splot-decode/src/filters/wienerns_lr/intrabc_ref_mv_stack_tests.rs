@@ -928,7 +928,6 @@ fn assert_row_smvp_table(
         "{label} step12 column (Max(2,bw4) on border)"
     );
     assert_eq!(scan.step14, expected[3], "{label} step14 column");
-    assert_eq!(scan.is_sb_border, mi_row.is_multiple_of(geom.sb_size4));
 }
 
 #[test]

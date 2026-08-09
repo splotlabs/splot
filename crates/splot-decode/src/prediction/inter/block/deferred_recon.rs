@@ -202,7 +202,6 @@ impl InterReconCommand {
     /// resolution pass runs ahead of reconstruction; the grid it returns is
     /// what [`Self::reconstruct_from_motion`] predicts from, and no other call
     /// can derive one.
-    #[allow(clippy::too_many_arguments)]
     fn derive_motion<T: ReconSample>(
         &self,
         sink: &WorkspaceSink<'_, '_, T>,
@@ -330,24 +329,24 @@ impl InterReconCommand {
                 super::sequence_enables_ibp(shared.sequence),
                 self.tile_offset,
             ),
-            sink @ (WorkspaceSink::Row(_)
-            | WorkspaceSink::Rect(_)
-            | WorkspaceSink::OwnedRect(_)) => super::prediction::reconstruct_pure_inter_block(
-                sink,
-                residual_scratch,
-                &self.placed,
-                residual_blocks,
-                motion,
-                use_refinemv,
-                refinemv_switchable,
-                shared.ref_frame_idx,
-                shared.reference,
-                self.qindex,
-                shared.luma_use_tcq,
-                shared.residual_use_ddt,
-                shared.bit_depth,
-                self.tile_offset,
-            ),
+            sink @ (WorkspaceSink::Rect(_) | WorkspaceSink::OwnedRect(_)) => {
+                super::prediction::reconstruct_pure_inter_block(
+                    sink,
+                    residual_scratch,
+                    &self.placed,
+                    residual_blocks,
+                    motion,
+                    use_refinemv,
+                    refinemv_switchable,
+                    shared.ref_frame_idx,
+                    shared.reference,
+                    self.qindex,
+                    shared.luma_use_tcq,
+                    shared.residual_use_ddt,
+                    shared.bit_depth,
+                    self.tile_offset,
+                )
+            }
         }
     }
 

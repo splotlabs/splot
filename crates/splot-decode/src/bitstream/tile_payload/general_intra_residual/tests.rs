@@ -475,7 +475,6 @@ fn ensure_with_test_state(
     ensure_with_test_payload_and_policy(facts, plane, tx_size, is_inter, eob, luma, &PAYLOAD)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ensure_with_test_payload_and_policy(
     facts: TileCoeffFrameFacts,
     plane: usize,

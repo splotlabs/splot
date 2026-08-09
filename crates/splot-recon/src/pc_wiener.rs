@@ -208,71 +208,6 @@ impl<'a, T: ReconSample> PcWienerClassifyPaddedSource<'a, T> {
         }
     }
 
-    /// Wraps a padded source after validating all samples once.
-    ///
-    /// Reusing the returned source for adjacent classification grids avoids
-    /// rescanning their overlapping source regions.
-    ///
-    /// # Errors
-    /// Returns [`ReconError`] if the sample storage does not match `bit_depth`
-    /// or any sample exceeds its range.
-    pub fn new_validated(
-        samples: &'a [T],
-        stride: usize,
-        origin_x: isize,
-        origin_y: isize,
-        bit_depth: BitDepth,
-    ) -> Result<Self> {
-        validate_sample_type::<T>(bit_depth)?;
-        if stride == 0 {
-            return Err(ReconError::PcWienerInvalidBounds {
-                field: "PC-Wiener padded source stride",
-            });
-        }
-        let max_sample = bit_depth.max_sample();
-        let invalid = if let Some(samples) = T::u16_slice(samples) {
-            if crate::workspace::u16_samples_exceed(samples, max_sample) {
-                samples
-                    .iter()
-                    .position(|&value| value > max_sample)
-                    .map(|index| (index, samples[index]))
-            } else {
-                None
-            }
-        } else {
-            samples
-                .iter()
-                .map(|sample| sample.to_u16())
-                .enumerate()
-                .find(|&(_, value)| value > max_sample)
-        };
-        if let Some((index, value)) = invalid {
-            let row = index / stride;
-            let col = index % stride;
-            return Err(ReconError::PcWienerSourceSampleOutOfRange {
-                x: coordinate_add(
-                    origin_x,
-                    usize_to_isize(col, "PC-Wiener padded source x")?,
-                    "PC-Wiener padded source x",
-                )?,
-                y: coordinate_add(
-                    origin_y,
-                    usize_to_isize(row, "PC-Wiener padded source y")?,
-                    "PC-Wiener padded source y",
-                )?,
-                value,
-                max: max_sample,
-            });
-        }
-        Ok(Self {
-            samples,
-            stride,
-            origin_x,
-            origin_y,
-            validated_bit_depth: Some(bit_depth),
-        })
-    }
-
     /// Wraps decoder-owned samples whose range is guaranteed by reconstruction
     /// before the padded source window is materialized.
     ///
@@ -391,7 +326,6 @@ where
         raw_tx_skip_sum,
         params.base_q_idx,
         params.bit_depth,
-        None,
     )
 }
 
@@ -1250,22 +1184,13 @@ fn finish_pc_wiener_classification(
     raw_tx_skip_sum: i32,
     base_q_idx: u32,
     bit_depth: BitDepth,
-    offsets_cache: Option<&QvalOffsetsCache>,
 ) -> Result<PcWienerClassification> {
     let normalized_tx_skip = raw_tx_skip_sum
         .checked_mul(PC_WIENER_NORMALIZER[PC_WIENER_NUM_FEATURES])
         .ok_or(ReconError::ArithmeticOverflow {
             context: "PC-Wiener tx-skip normalization",
         })?;
-    let cached = offsets_cache.and_then(|cache| {
-        usize::try_from(raw_tx_skip_sum)
-            .ok()
-            .and_then(|index| cache.get(index))
-    });
-    let offsets = match cached {
-        Some(cached) => *cached,
-        None => qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?,
-    };
+    let offsets = qval_tx_skip_offsets(base_q_idx, normalized_tx_skip, bit_depth)?;
     Ok(finish_pc_wiener_classification_with_offsets(
         raw_features,
         raw_tx_skip_sum,

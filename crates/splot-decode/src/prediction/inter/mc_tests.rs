@@ -4,7 +4,6 @@
 #![allow(clippy::expect_used, clippy::panic)]
 
 use super::*;
-use splot_core::headers::sequence::SuperblockSize;
 use splot_recon::{
     DecodedFrame, DecodedFrameInfo, FramePlanes, OutputIndex, PixelFormat, Plane, PlaneSize,
     wedge_mask_plane_sample,
@@ -337,45 +336,6 @@ fn dispatcher_zero_mv_copies_odd_reference_chroma_extents() {
         assert_eq!(
             visible_samples(&decoded, plane),
             visible_samples(&reference, plane)
-        );
-    }
-}
-
-#[test]
-fn dispatcher_row_surface_matches_frame_for_bottom_band() {
-    let reference = flat_frame(9, 68, 40, 90, 120);
-    let block = InterBlockParams::single(
-        ReferenceSamples::settled(&reference),
-        rect(0, 64, 9, 4),
-        Mv::ZERO,
-        InterpolationFilter::EightTap,
-    );
-    let mut frame_workspace = workspace(9, 68);
-    motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Frame(&mut frame_workspace),
-        block,
-        ByteOffset::new(0),
-    )
-    .expect("frame-backed bottom-band prediction");
-
-    let mut row_workspace = workspace(9, 68);
-    let mut row_band = row_workspace
-        .sb_row_bands(SuperblockSize::Block64x64)
-        .nth(1)
-        .expect("bottom row band");
-    motion_compensate_inter_block_into(
-        &mut WorkspaceSink::Row(&mut row_band),
-        block,
-        ByteOffset::new(0),
-    )
-    .expect("row-backed bottom-band prediction");
-
-    for plane in [PlaneId::Y, PlaneId::U, PlaneId::V] {
-        assert_eq!(
-            row_workspace.samples(plane).expect("row surface samples"),
-            frame_workspace
-                .samples(plane)
-                .expect("frame surface samples")
         );
     }
 }
@@ -1601,7 +1561,6 @@ fn frame_with_format(
     frame_for(BitDepth::Eight, pixel_format, width, height, y, u, v)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn frame_for<T: ReconSample>(
     bit_depth: BitDepth,
     pixel_format: PixelFormat,

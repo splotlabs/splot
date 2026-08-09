@@ -1487,7 +1487,6 @@ fn sorted_reference_hints(ref_order_hints: &[Option<u32>]) -> Vec<(usize, i32)> 
     sorted
 }
 
-#[allow(clippy::too_many_arguments)]
 fn prepare_tip_field(
     source: &mut ProjectedTemporalMotionField,
     projection: &mut ProjectedTemporalMotionField,
@@ -1716,7 +1715,6 @@ fn fill_temporal_sampling_gap(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Height of the TMVP unit row bands that [`project_temporal_motion_field`]
 /// keeps its writes inside.
 ///

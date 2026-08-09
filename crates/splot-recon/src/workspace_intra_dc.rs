@@ -10,29 +10,9 @@ use crate::intra_dc_subsampled::{
     predict_intra_dc_subsampled_rect_value_from_sums, subsampled_step,
 };
 use crate::intra_ibp_dc::apply_intra_ibp_dc_rect;
-use crate::{
-    IntraDcEdge, IntraRectBlockSize, IntraSquareBlockSize, PlaneId, PlaneRect, ReconSample, Result,
-};
+use crate::{IntraDcEdge, IntraRectBlockSize, PlaneId, PlaneRect, ReconSample, Result};
 
 impl<T: ReconSample> CurrentFrameWorkspace<T> {
-    /// Extracts left and above in-storage edges for a square block.
-    ///
-    /// Reads only adjacent in-storage edges; AV2 edge availability remains
-    /// caller-owned.
-    ///
-    /// # Errors
-    /// Returns [`crate::ReconError`] when the plane is absent or the target square is out
-    /// of bounds.
-    pub fn intra_dc_edges_for_square(
-        &self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraSquareBlockSize,
-    ) -> Result<CurrentFrameIntraEdges<T>> {
-        self.intra_dc_edges_for_rect(plane, x, y, size.into())
-    }
-
     /// Extracts left and above in-storage edges for a rectangular block.
     ///
     /// Reads only adjacent in-storage edges; AV2 edge availability remains
@@ -50,23 +30,6 @@ impl<T: ReconSample> CurrentFrameWorkspace<T> {
     ) -> Result<CurrentFrameIntraEdges<T>> {
         let rect = block_rect(x, y, size)?;
         self.plane(plane)?.dc_edges_for_rect(rect)
-    }
-
-    /// Predicts square DC intra samples into the workspace.
-    ///
-    /// Convenience wrapper over [`Self::predict_intra_dc_rect`].
-    ///
-    /// # Errors
-    /// Returns [`crate::ReconError`] for invalid target geometry, absent planes,
-    /// or invalid prediction inputs.
-    pub fn predict_intra_dc_square(
-        &mut self,
-        plane: PlaneId,
-        x: usize,
-        y: usize,
-        size: IntraSquareBlockSize,
-    ) -> Result<()> {
-        self.predict_intra_dc_rect(plane, x, y, size.into())
     }
 
     /// Predicts rectangular DC intra samples into the workspace.

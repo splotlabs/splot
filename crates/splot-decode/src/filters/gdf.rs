@@ -10,7 +10,6 @@ use std::simd::{
 };
 
 use splot_core::headers::frame::FrameHeaderCore;
-use splot_core::span::ByteOffset;
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_BIAS, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
 };
@@ -73,7 +72,6 @@ fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Opti
 pub(crate) fn stripe_ranges(
     core: &FrameHeaderCore,
     luma_height: usize,
-    _offset: ByteOffset,
 ) -> Result<Vec<(usize, usize)>> {
     if luma_height == 0 {
         return Err(gdf_state_error());
@@ -240,7 +238,6 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     bit_depth: BitDepth,
     disable_loopfilters_across_tiles: bool,
     reference: Option<GdfReferenceContext>,
-    offset: ByteOffset,
 ) -> Result<()> {
     let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
         return Ok(());
@@ -329,7 +326,6 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                     &scratch.classes,
                     &stripe_block,
                     band_origin,
-                    offset,
                 )?;
                 continue;
             }
@@ -377,7 +373,6 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                             classes,
                             class_cols,
                             block,
-                            offset,
                         )?
                     } else {
                         let copied = copy_base_block::<u16>(
@@ -433,7 +428,6 @@ fn gdf_stripe_row_for_tile_end(y: usize, tile_end_y: usize) -> Result<usize> {
     Ok(stripe_row.min(tile_end_y / MI_SIZE))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn copy_base_block<T: ReconSample>(
     base_luma: &[u16],
     stride: usize,
@@ -501,7 +495,6 @@ fn compute_block<T: ReconSample>(
     classes: &[GdfClass],
     class_cols: usize,
     block: GdfBlock,
-    offset: ByteOffset,
 ) -> Result<[T; MI_SIZE * MI_SIZE]> {
     let source_origin = source
         .relative_position(block.x, block.y)
@@ -551,7 +544,6 @@ fn compute_block<T: ReconSample>(
                 &block,
                 row,
                 source_origin,
-                offset,
             )?[0];
             for (col, sample) in samples.into_iter().enumerate() {
                 output[row * MI_SIZE + col] =
@@ -586,7 +578,6 @@ fn compute_enabled_segment(
     classes: &[GdfClass],
     block: &GdfBlock,
     source_origin: (usize, usize),
-    offset: ByteOffset,
 ) -> Result<()> {
     let geometry_error = || gdf_state_error();
     let source_error = gdf_state_error;
@@ -698,7 +689,6 @@ fn compute_enabled_segment(
                     classes,
                     block,
                     (source_origin.0 + local_x, source_origin.1 + row),
-                    offset,
                 )?;
                 base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
                 base_luma[next_output_start..next_output_start + 8].copy_from_slice(&filtered[1]);
@@ -724,7 +714,6 @@ fn compute_enabled_segment(
                 block,
                 0,
                 (source_origin.0 + local_x, source_origin.1 + row),
-                offset,
             )?;
             base_luma[output_start..output_start + MI_SIZE].copy_from_slice(&filtered[0]);
             base_luma[next_output_start..next_output_start + MI_SIZE].copy_from_slice(&filtered[1]);
@@ -1389,7 +1378,6 @@ fn exact_slice<T>(samples: &[T], start: usize, len: usize) -> Option<&[T]> {
     samples.get(start..)?.get(..len)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
     base_values: [[u16; WIDTH]; ROWS],
@@ -1654,7 +1642,6 @@ mod tests {
     use crate::error::DecodeError;
     use crate::filters::deblock::DeblockBlock;
     use crate::filters::lossless::LosslessBlockGrid;
-    use splot_core::span::ByteOffset;
     use splot_recon::{BitDepth, LoopRestorationSourceBounds};
 
     #[test]
@@ -1986,14 +1973,7 @@ mod tests {
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
-        let filtered = compute_block::<u16>(
-            &source,
-            &curr,
-            &classes,
-            block.width >> 1,
-            block,
-            ByteOffset::new(0),
-        );
+        let filtered = compute_block::<u16>(&source, &curr, &classes, block.width >> 1, block);
         assert!(filtered.is_ok());
         assert!(filtered.is_ok_and(|samples| samples.into_iter().all(|sample| sample <= 1023)));
     }

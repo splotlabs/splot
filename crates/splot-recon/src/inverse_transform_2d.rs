@@ -342,7 +342,6 @@ fn round2_2896(x: i32) -> i32 {
 mod tests {
     use super::*;
 
-    #[allow(clippy::too_many_arguments)]
     fn params(
         log2_width: u32,
         log2_height: u32,

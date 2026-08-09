@@ -47,7 +47,6 @@ pub(super) fn resolve_interp_filter(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn interp_filter_no_neighbour_ctx(ref_frame1_is_inter: bool) -> usize {
     INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE
         + usize::from(ref_frame1_is_inter) * INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET

@@ -127,9 +127,8 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
         splot_core::headers::frame::DeblockingFilterParams::new([true; 4], [false; 4], [0; 4]);
     core.deblocking_filter_params = Some(params);
     core.tile_info = None;
-    let offset = ByteOffset::new(0);
     assert_eq!(
-        crate::filters::gdf::stripe_ranges(&core, 32, offset).unwrap(),
+        crate::filters::gdf::stripe_ranges(&core, 32).unwrap(),
         [(0, 32)]
     );
     let records = deblock_records();
@@ -144,7 +143,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
             None,
-            offset,
             core::convert::identity,
         )
         .unwrap();
@@ -177,7 +175,6 @@ fn predeblocked_filter_tail_matches_the_combined_path() {
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
             None,
-            offset,
             core::convert::identity,
         )
         .unwrap();
@@ -217,7 +214,6 @@ fn final_filter_sink_10bit() -> WienerNsLrReconSink<u16> {
 #[test]
 fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously() {
     let core = Arc::new(switchable_core());
-    let offset = ByteOffset::new(0);
     let (expected, _) = final_filter_sink_10bit()
         .into_filtered_frame_from_deblocked(
             Arc::clone(&core),
@@ -225,7 +221,6 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
             None,
-            offset,
             core::convert::identity,
         )
         .unwrap();
@@ -233,7 +228,7 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
     let info = final_filter_sink_10bit().frame_info();
     let progress = crate::pipeline::frame_progress::FrameProgress::<u16>::new(info).unwrap();
     let (setup, workspace) = final_filter_sink_10bit()
-        .into_owned_filter_setup(Arc::clone(&core), false, Some(&progress), None, offset)
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(&progress), None)
         .unwrap();
     let ranges = setup.stripe_ranges().to_vec();
     assert_eq!(ranges.len(), 3, "fixture must exercise multiple stripes");
@@ -275,13 +270,12 @@ fn owned_multi_stripe_10bit_filter_matches_monolithic_and_publishes_contiguously
 #[test]
 fn owned_filter_failure_never_freezes_and_settles_the_pending_slot_once() {
     let core = Arc::new(switchable_core());
-    let offset = ByteOffset::new(0);
     let sink = final_filter_sink_10bit();
     let info = sink.frame_info();
     let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::<u16>::pending(info).unwrap();
     let progress = slot.progress().unwrap();
     let (setup, workspace) = sink
-        .into_owned_filter_setup(Arc::clone(&core), false, Some(progress), None, offset)
+        .into_owned_filter_setup(Arc::clone(&core), false, Some(progress), None)
         .unwrap();
     let ranges = setup.stripe_ranges().to_vec();
 
@@ -353,7 +347,7 @@ fn arc_owned_filter_setup() -> (
     let progress =
         Arc::new(crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap());
     let (setup, workspace) = sink
-        .into_owned_filter_setup_published(core, false, Arc::clone(&progress), ByteOffset::new(0))
+        .into_owned_filter_setup_published(core, false, Arc::clone(&progress))
         .unwrap();
     (Arc::new(setup), workspace, progress)
 }
@@ -375,13 +369,7 @@ fn owned_setup_derives_lossless_grid_before_deblock_records_move()
     sink.filter_records.deblock_blocks = records;
     let progress = crate::pipeline::frame_progress::FrameProgress::new(sink.frame_info()).unwrap();
     let (mut setup, workspace) = sink
-        .into_owned_filter_setup(
-            Arc::new(core),
-            false,
-            Some(&progress),
-            None,
-            ByteOffset::new(0),
-        )
+        .into_owned_filter_setup(Arc::new(core), false, Some(&progress), None)
         .unwrap();
 
     assert!(
@@ -436,7 +424,6 @@ fn arc_owned_filter_jobs_join_out_of_order_restore_records_and_freeze_once() {
             crate::filters::deblock::DeblockQuantDeltas::ZERO,
             None,
             None,
-            ByteOffset::new(0),
             core::convert::identity,
         )
         .unwrap();
@@ -551,23 +538,10 @@ fn apply_luma_lr(
     .unwrap();
     let filtered = sink
         .stripe_chain()
-        .apply_lr_stripe(
-            core,
-            ByteOffset::new(0),
-            cdef,
-            &CdefOverlap::default(),
-            [blocks, &[], &[]],
-            &[],
-        )
+        .apply_lr_stripe(core, cdef, &CdefOverlap::default(), [blocks, &[], &[]], &[])
         .unwrap()
         .into_filtered();
-    super::super::publish_filter_stripe_to(
-        &mut sink.workspace,
-        PlaneId::Y,
-        &filtered.y,
-        ByteOffset::new(0),
-    )
-    .unwrap();
+    super::super::publish_filter_stripe_to(&mut sink.workspace, PlaneId::Y, &filtered.y).unwrap();
 }
 
 #[test]
@@ -592,7 +566,6 @@ fn inactive_filter_planes_reuse_cdef_storage() {
         .stripe_chain()
         .apply_lr_stripe(
             &switchable_core(),
-            ByteOffset::new(0),
             cdef,
             &CdefOverlap::default(),
             [&[], &[], &[]],

@@ -73,12 +73,6 @@ impl IvfHeader {
             unused: 0,
         }
     }
-
-    /// Returns the first byte offset after the declared IVF header.
-    #[must_use]
-    pub fn payload_start_offset(self) -> ByteOffset {
-        ByteOffset::new(u64::from(self.header_len))
-    }
 }
 
 /// One IVF frame record and its payload.
@@ -622,7 +616,6 @@ mod tests {
         assert_eq!(header.timebase_denominator, 24);
         assert_eq!(header.timebase_numerator, 1);
         assert_eq!(header.frame_count, 1);
-        assert_eq!(header.payload_start_offset(), ByteOffset::new(32));
     }
 
     #[test]

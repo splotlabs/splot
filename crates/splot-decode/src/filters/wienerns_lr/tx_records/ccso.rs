@@ -33,7 +33,6 @@ impl CcsoState {
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         if !self.active {
             return Ok(Self::inactive());
@@ -194,7 +193,7 @@ impl CcsoState {
             if value >= CCSO_SYMBOL_VALUES {
                 return Err(ccso_state_error());
             }
-            self.set_block_value(plane, unit_row, unit_col, value as u8, tile_offset)?;
+            self.set_block_value(plane, unit_row, unit_col, value as u8)?;
         }
         Ok(())
     }
@@ -212,7 +211,6 @@ impl CcsoState {
         unit_row: usize,
         unit_col: usize,
         value: u8,
-        _tile_offset: ByteOffset,
     ) -> Result<()> {
         let index = self
             .block_index(unit_row, unit_col)
@@ -242,7 +240,6 @@ impl CcsoState {
         tile: &Self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        _tile_offset: ByteOffset,
     ) -> Result<()> {
         if self.active != tile.active
             || self.shift != tile.shift
@@ -324,7 +321,7 @@ impl CcsoState {
         Ok(())
     }
 
-    pub(crate) fn into_grid(self, _tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
+    pub(crate) fn into_grid(self) -> Result<Option<CcsoUnitGrid>> {
         if !self.active {
             return Ok(None);
         }

@@ -547,7 +547,7 @@ fn edge_implied_partition_consumes_no_symbol_before_first_child_frontier() {
     )
     .unwrap();
 
-    assert_eq!(decision.partition, PartitionType::Vert);
+    assert_eq!(decision, PartitionType::Vert);
     assert_eq!(symbols.symbol_count(), 0);
 }
 
@@ -614,10 +614,7 @@ fn non_origin_tile_square_split_does_not_read_neighbors_outside_tile() {
     )
     .unwrap();
 
-    assert!(
-        decision.trace.do_square_split.is_some(),
-        "expected do_square_split to be read, got {decision:?}"
-    );
+    assert_eq!(decision, PartitionType::Split);
 }
 
 #[test]

@@ -249,7 +249,6 @@ type PendingTipProducts<T> = (
 );
 
 /// Reserves the pending frame and product handles published by one TIP job.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn reserve_tip_output<T: ReconSample>(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,

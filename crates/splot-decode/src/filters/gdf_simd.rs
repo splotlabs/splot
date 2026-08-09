@@ -7,7 +7,6 @@ use std::simd::{
     num::{SimdInt, SimdUint},
 };
 
-use splot_core::span::ByteOffset;
 use splot_core::tables::loop_restoration::{
     GDF_ALPHA, GDF_INTER_ERROR, GDF_INTRA_ERROR, GDF_WEIGHT,
 };
@@ -29,7 +28,6 @@ pub(super) fn uniform_gdf_class<const LANES: usize>(classes: &[GdfClass; LANES])
         .then_some(first as u8)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn gdf_width8_rows<const ROWS: usize>(
     base_values: [[u16; 8]; ROWS],
     source: &GdfSource<'_>,
@@ -37,7 +35,6 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
     classes: [GdfClass; 4],
     block: &GdfBlock,
     source_origin: (usize, usize),
-    _offset: ByteOffset,
 ) -> Result<[[u16; 8]; ROWS]> {
     let source_error = gdf_state_error;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
@@ -112,7 +109,6 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
     Ok(output)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn gdf_width4_rows<const ROWS: usize>(
     base_values: [[u16; MI_SIZE]; ROWS],
     source: &GdfSource<'_>,
@@ -121,7 +117,6 @@ pub(super) fn gdf_width4_rows<const ROWS: usize>(
     block: &GdfBlock,
     row: usize,
     source_origin: (usize, usize),
-    _offset: ByteOffset,
 ) -> Result<[[u16; MI_SIZE]; ROWS]> {
     let source_error = gdf_state_error;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];

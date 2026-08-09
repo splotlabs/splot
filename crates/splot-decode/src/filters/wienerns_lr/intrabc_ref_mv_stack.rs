@@ -353,7 +353,6 @@ struct AboveRowScan {
     step10: Option<usize>,
     step12: Option<usize>,
     step14: Option<usize>,
-    is_sb_border: bool,
 }
 
 impl AboveRowScan {
@@ -367,7 +366,6 @@ impl AboveRowScan {
             step10: None,
             step12: None,
             step14: None,
-            is_sb_border,
         };
         if above_row.is_none() {
             return scan;
@@ -543,7 +541,6 @@ fn push_scan_col(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn push_scan_col_point(
     geometry: &SpatialScanGeometry,
     lookup: &impl Fn(usize, usize) -> Option<Mv>,

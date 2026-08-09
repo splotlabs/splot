@@ -16,8 +16,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::Result;
 
-use splot_core::span::ByteOffset;
-
 const MI_SIZE: usize = 4;
 
 /// Where one frame's filtered stripes are published.
@@ -100,19 +98,14 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
     /// behind it. Whichever thread next finds the output free copies the whole
     /// queue, so nothing lands twice and the copies stay off every wait path.
     /// A local output has no other user and is copied into straight away.
-    fn publish_stripe(
-        &self,
-        stripe: usize,
-        samples: final_filters::FilteredStripe,
-        offset: ByteOffset,
-    ) -> Result<()> {
+    fn publish_stripe(&self, stripe: usize, samples: final_filters::FilteredStripe) -> Result<()> {
         let copy = move |output: &mut CurrentFrameWorkspace<T>| {
-            publish_filter_stripe_to(output, PlaneId::Y, &samples.y, offset)?;
+            publish_filter_stripe_to(output, PlaneId::Y, &samples.y)?;
             if let Some(plane) = samples.u.as_ref() {
-                publish_filter_stripe_to(output, PlaneId::U, plane, offset)?;
+                publish_filter_stripe_to(output, PlaneId::U, plane)?;
             }
             if let Some(plane) = samples.v.as_ref() {
-                publish_filter_stripe_to(output, PlaneId::V, plane, offset)?;
+                publish_filter_stripe_to(output, PlaneId::V, plane)?;
             }
             Ok(())
         };
@@ -190,7 +183,6 @@ pub(crate) struct WienerNsLrReconSink<T: ReconSample> {
 pub(crate) struct OwnedFilterSetup<'progress, 'job, T: ReconSample> {
     core: Arc<splot_core::headers::frame::FrameHeaderCore>,
     disable_loopfilters_across_tiles: bool,
-    offset: ByteOffset,
     mi_rows: usize,
     mi_cols: usize,
     subsampling: (usize, usize),
@@ -373,7 +365,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
         admit: Option<&dyn splot_parallel::Admit<'_>>,
-        offset: ByteOffset,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         self.into_filtered_frame_inner(
@@ -382,7 +373,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             deblock_quant_deltas,
             progress,
             admit,
-            offset,
             false,
             publish,
         )
@@ -397,7 +387,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
         admit: Option<&dyn splot_parallel::Admit<'_>>,
-        offset: ByteOffset,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         self.into_filtered_frame_inner(
@@ -406,20 +395,17 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             deblock_quant_deltas,
             progress,
             admit,
-            offset,
             true,
             publish,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn into_owned_filter_setup<'progress, 'job>(
         self,
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Option<&'progress crate::pipeline::frame_progress::FrameProgress<T>>,
         admit: Option<&'progress dyn splot_parallel::Admit<'job>>,
-        offset: ByteOffset,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
         CurrentFrameWorkspace<T>,
@@ -428,7 +414,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             core,
             disable_loopfilters_across_tiles,
             FilteredFrameSinkSource::Borrowed { progress, admit },
-            offset,
         )
     }
 
@@ -439,7 +424,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
-        offset: ByteOffset,
     ) -> Result<(
         OwnedFilterSetup<'static, 'static, T>,
         CurrentFrameWorkspace<T>,
@@ -448,7 +432,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             core,
             disable_loopfilters_across_tiles,
             FilteredFrameSinkSource::Owned { progress },
-            offset,
         )
     }
 
@@ -457,7 +440,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: Arc<splot_core::headers::frame::FrameHeaderCore>,
         disable_loopfilters_across_tiles: bool,
         sink_source: FilteredFrameSinkSource<'progress, 'job, T>,
-        offset: ByteOffset,
     ) -> Result<(
         OwnedFilterSetup<'progress, 'job, T>,
         CurrentFrameWorkspace<T>,
@@ -493,13 +475,13 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         if self.needs_tx_skip_grid(&core) {
             self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
-        let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols, offset)?;
+        let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols)?;
         let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(&core);
         let lr_source_blocks = core::mem::take(&mut self.filter_records.lr_source_blocks);
         let lr_unit_filters = core::mem::take(&mut self.filter_records.lr_unit_filters);
         let (lr_source_blocks, lr_plane_ends) =
             final_filters::coalesced_lr_source_rows_all(lr_source_blocks);
-        let ranges = crate::filters::gdf::stripe_ranges(&core, self.luma_height, offset)?;
+        let ranges = crate::filters::gdf::stripe_ranges(&core, self.luma_height)?;
         let info = self.workspace.info();
         let pixel_format = info.pixel_format();
         let subsampling = (
@@ -541,7 +523,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             OwnedFilterSetup {
                 core,
                 disable_loopfilters_across_tiles,
-                offset,
                 mi_rows,
                 mi_cols,
                 subsampling,
@@ -582,20 +563,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         deblock_quant_deltas: crate::filters::deblock::DeblockQuantDeltas,
         progress: Option<&crate::pipeline::frame_progress::FrameProgress<T>>,
         admit: Option<&dyn splot_parallel::Admit<'_>>,
-        offset: ByteOffset,
         deblocked: bool,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
         if std::env::var_os("SPLOT_DECODE_SKIP_FILTERS").is_some() {
             return Ok((publish(self.workspace.freeze()?), self.filter_records));
         }
-        let (setup, mut workspace) = self.into_owned_filter_setup(
-            core,
-            disable_loopfilters_across_tiles,
-            progress,
-            admit,
-            offset,
-        )?;
+        let (setup, mut workspace) =
+            self.into_owned_filter_setup(core, disable_loopfilters_across_tiles, progress, admit)?;
         let mi_rows = setup.mi_rows;
         let mi_cols = setup.mi_cols;
         let bit_depth = setup.bit_depth;
@@ -919,8 +894,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
-        self.sink
-            .publish_stripe(stripe.stripe, stripe.frame, self.offset)
+        self.sink.publish_stripe(stripe.stripe, stripe.frame)
     }
 
     fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
@@ -1068,7 +1042,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let lr_timer = crate::timing::start();
         let mut frame = chain.apply_lr_stripe(
             &self.core,
-            self.offset,
             cdef,
             &cdef_overlap,
             [y_runs, u_runs, v_runs],
@@ -1092,7 +1065,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             self.bit_depth,
             self.disable_loopfilters_across_tiles,
             chain.gdf_reference,
-            self.offset,
         )?;
         crate::timing::accumulate(crate::timing::Phase::FilterGdfStripe, gdf_timer);
         Ok(frame.into_filtered())
@@ -1404,7 +1376,6 @@ fn publish_filter_stripe_to<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
     stripe: &crate::filters::source::StripePlane,
-    _offset: ByteOffset,
 ) -> Result<()> {
     let error = || lr_pipeline_state_error();
     let end_y = stripe.end_y().ok_or_else(&error)?;

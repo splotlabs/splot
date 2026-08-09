@@ -40,7 +40,6 @@ fn cdef_general_intra_frame<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn cdef_general_intra_frame_indexed<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     strengths: &[CdefFrameParams],

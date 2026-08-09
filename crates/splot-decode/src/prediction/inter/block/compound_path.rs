@@ -725,7 +725,6 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
             skip_flag: skip == 1,
         })
         .mark_inter(),
-        tile_offset,
     )?;
     let syntax = InterBlockSyntax {
         block_ctx,

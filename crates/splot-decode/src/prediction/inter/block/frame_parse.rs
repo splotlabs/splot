@@ -167,7 +167,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         mut ccso_state,
         motion_field,
         initial_frame_cdfs,
-        first_tile_offset,
         qindex,
     } = setup;
     let mut parsed = tile::parse_tile_units(
@@ -199,7 +198,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &mut segment_ids,
     )?;
     let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
-    let ccso_grid = ccso_state.into_grid(first_tile_offset)?;
+    let ccso_grid = ccso_state.into_grid()?;
     let segment_ids =
         final_segment_ids(core, reference, params.mi_rows, params.mi_cols, segment_ids);
     Ok(InterFrameParse {
@@ -209,10 +208,10 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         prelude,
         motion_field,
         frame_cdfs,
-        cdef_grid: cdef_state.into_grid(first_tile_offset)?,
+        cdef_grid: cdef_state.into_grid()?,
         ccso_grid,
         segment_ids,
-        gdf_grid: gdf_state.into_grid(first_tile_offset)?,
+        gdf_grid: gdf_state.into_grid()?,
     })
 }
 

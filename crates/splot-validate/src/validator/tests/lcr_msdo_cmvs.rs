@@ -138,7 +138,6 @@ pub(in crate::validator::tests) fn seq_header_obu_lcr_ref(
 /// activated by both layers' headers via `seq_lcr_id == global_id`. `msdo_first` selects
 /// the arrival order of the MSDO relative to the headers/global-LCR. Both layers are
 /// frame-confirmed by CLK frames in the opening temporal unit.
-#[allow(clippy::too_many_arguments)]
 pub(in crate::validator::tests) fn lcr_msdo_stream(
     msdo_first: bool,
     global_id: u32,

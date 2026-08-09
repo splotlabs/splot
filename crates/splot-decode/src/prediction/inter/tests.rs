@@ -769,8 +769,9 @@ fn two_frame_inter_fixture_decodes_both_frames_bit_exact() {
 
 #[test]
 fn multi_tile_inter_fixture_enforces_tile_count_limit() {
-    let options = DecodeOptions::default()
-        .with_limits(DecodeLimits::default().with_max_tile_count(DecodeLimitThreshold::Max(1)));
+    let options = DecodeOptions::new(
+        DecodeLimits::default().with_max_tile_count(DecodeLimitThreshold::Max(1)),
+    );
     let Err(error) = decode_fixture_with_options(MULTI_TILE_LR_FIXTURE, &options) else {
         panic!("two tile columns must exceed a one-tile resource limit");
     };
@@ -1674,7 +1675,7 @@ fn multiref_runtime_does_not_preflight_future_ivf_records_after_decodable_fourth
 
 #[test]
 fn multiref_runtime_enforces_cumulative_output_frame_limit() {
-    let options = DecodeOptions::default().with_limits(
+    let options = DecodeOptions::new(
         DecodeOptions::default()
             .limits()
             .with_max_output_frames(DecodeLimitThreshold::Max(2)),
@@ -1693,7 +1694,7 @@ fn multiref_runtime_enforces_cumulative_output_frame_limit() {
 
 #[test]
 fn multiref_runtime_enforces_cumulative_reference_store_byte_limit() {
-    let options = DecodeOptions::default().with_limits(
+    let options = DecodeOptions::new(
         DecodeOptions::default()
             .limits()
             .with_max_reference_store_bytes(DecodeLimitThreshold::Max(12_288)),

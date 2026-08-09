@@ -6,7 +6,7 @@
 
 use core::num::NonZeroUsize;
 
-use splot_parallel::{ThreadCount, WorkerPool};
+use splot_parallel::WorkerPool;
 
 use crate::DecodeHashReport;
 use crate::DecodeOptions;
@@ -58,12 +58,6 @@ impl DecodeContext {
     #[must_use]
     pub fn runtime(&self) -> &DecodeRuntimeConfig {
         &self.runtime
-    }
-
-    /// The originally requested (unresolved) thread-count policy.
-    #[must_use]
-    pub fn requested_threads(&self) -> ThreadCount {
-        self.runtime.thread_count
     }
 
     /// The resolved, non-zero worker-thread count.
