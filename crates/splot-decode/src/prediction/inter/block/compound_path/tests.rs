@@ -184,6 +184,43 @@ fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
     ));
 }
 
+#[test]
+fn compound_reference_order_hint_covers_every_valid_reference_index() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9, 11, 13, 15, 17, 19, 21];
+    let ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
+
+    for (ref_frame, expected) in reference.ref_order_hint.iter().copied().enumerate() {
+        assert_eq!(
+            compound_reference_order_hint(
+                &reference,
+                &ref_frame_idx,
+                ref_frame as i8,
+                TILE_OFFSET,
+            )
+            .unwrap(),
+            expected as i32
+        );
+    }
+}
+
+#[test]
+fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9];
+    let error = compound_reference_order_hint(&reference, &[0], 1, TILE_OFFSET).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: 1,
+                list_len: 1,
+            }
+        }
+    ));
+}
+
 fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
