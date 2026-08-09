@@ -1102,14 +1102,10 @@ fn decode_block<T: ReconSample>(
         work_unit.mi_row_range().start as usize,
         work_unit.mi_col_range().start as usize,
     );
-    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| {
-        inter_diag!(
-            "inter_block_geometry",
-            tile_offset,
-            "minimal inter block geometry lookup failed",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let n4w = frontier
+        .b_size
+        .num_4x4_wide()
+        .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
     let n4h = frontier.b_size.num_4x4_high().map_err(|_| {
         inter_diag!(
             "inter_block_geometry_height",

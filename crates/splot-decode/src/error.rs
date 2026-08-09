@@ -115,6 +115,9 @@ pub enum DecodeHeaderStateError {
     /// A frame's parsed width or height was zero.
     #[error("frame dimensions must be nonzero")]
     ZeroFrameSize,
+    /// A validated block-size value could not produce its table-defined geometry.
+    #[error("block geometry is inconsistent with the decoded block-size domain")]
+    InvalidBlockGeometry,
     /// A decoded frame could not materialize its § 7.23 segmentation map.
     #[error("frame segmentation map is unavailable")]
     MissingSegmentIdMap,
