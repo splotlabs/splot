@@ -160,7 +160,7 @@ pub(crate) fn read_compound_reference_pair(
             })?
         } else {
             let first_ref = ref_frames[0];
-            let bit_type = compound_ref_bit_type(input, first_ref, ref_idx, tile_offset)?;
+            let bit_type = compound_ref_bit_type(input, first_ref, ref_idx);
             read_symbol(TileCdfSelector::CompRef1 {
                 ctx: *input.ref_contexts.get(ref_idx).ok_or_else(|| {
                     compound_missing!(
@@ -297,25 +297,10 @@ fn compound_ref_loop_has_more(ref_idx: usize, n_refs: usize, n_bits: usize) -> b
         .is_some_and(|limit| ref_idx < limit)
 }
 
-fn compound_ref_bit_type(
-    input: CompoundParseInput,
-    first_ref: usize,
-    second_ref: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
+fn compound_ref_bit_type(input: CompoundParseInput, first_ref: usize, second_ref: usize) -> usize {
     let first_nonnegative = input.ref_distance_nonnegative[first_ref];
-    let second_nonnegative = *input
-        .ref_distance_nonnegative
-        .get(second_ref)
-        .ok_or_else(|| {
-            compound_missing!(
-                "compound_missing_second_ref_distance",
-                tile_offset,
-                "inter.compound.ref_distance[second]",
-                SPEC_READ_REF_FRAMES
-            )
-        })?;
-    Ok(usize::from(first_nonnegative ^ second_nonnegative))
+    let second_nonnegative = input.ref_distance_nonnegative[second_ref];
+    usize::from(first_nonnegative ^ second_nonnegative)
 }
 
 fn compound_symbol_read_error(
