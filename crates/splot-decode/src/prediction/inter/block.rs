@@ -1686,14 +1686,7 @@ fn decode_block<T: ReconSample>(
                     SPEC_MODE_INFO
                 )
             })?;
-        i8::try_from(selected).map_err(|_| {
-            inter_cap!(
-                "inter_block_single_ref_value",
-                tile_offset,
-                "inter.single_ref.selection out of range",
-                SPEC_MODE_INFO
-            )
-        })?
+        selected as i8
     } else {
         SINGLE_REF_FRAME0
     };
