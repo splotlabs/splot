@@ -38,10 +38,10 @@ use splot_core::headers::frame::{
     CcsoParams, CcsoPlaneParams, CdefParams, CdefStrengthSet, DeblockingFilterParams, DeltaQParams,
     FilmGrainConfig, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
     FrameHeaderParseStatus, FrameHeaderPrefix, FrameHeaderTail, FrameReferenceStateView, FrameType,
-    GdfParams, InterControl, InterStop, InterpolationFilter, LosslessInfo, LrParams,
-    LrPartialParams, LrPlaneParams, MvPrecision, QuantizationParams, SefTrailingBits,
-    SegmentationParams, SetupQmParams, TileInfo, TipFrameMode, WienerNsFrameFilterBank,
-    WienerNsFrameFilterClass, parse_frame_header_core, parse_frame_header_prefix,
+    GdfParams, InterControl, InterStop, InterpolationFilter, LosslessInfo, LrParams, LrPlaneParams,
+    MvPrecision, QuantizationParams, SefTrailingBits, SegmentationParams, SetupQmParams, TileInfo,
+    TipFrameMode, WienerNsFrameFilterBank, WienerNsFrameFilterClass, parse_frame_header_core,
+    parse_frame_header_prefix,
 };
 use splot_core::headers::metadata::{MetadataUnit, parse_metadata_group, parse_metadata_short};
 use splot_core::headers::operating_point_set::{OperatingPointSet, parse_operating_point_set};
@@ -976,8 +976,6 @@ struct FrameHeaderCoreView {
     #[serde(skip_serializing_if = "Option::is_none")]
     lr: Option<LrParamsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    lr_partial: Option<LrPartialParamsView>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     ccso: Option<CcsoParamsView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     intra_tail: Option<FrameHeaderTailView>,
@@ -1451,31 +1449,6 @@ impl LrParamsView {
     }
 }
 
-/// The partial `lr_params()` facts for `--json` when the parse stopped in a reserved
-/// unsupported Wiener branch (AV2 § 5.18.7.11, the core
-/// `StoppedBeforeWienerNsFilter` status). The fixed-coded frame-level bank is now surfaced
-/// under `lr`; this distinct `lr_partial` key is retained so a stopped parse is never
-/// reported as a complete one.
-#[derive(Serialize)]
-struct LrPartialParamsView {
-    stopped_before: &'static str,
-    uses_lr: bool,
-    loop_restoration_size: [u32; 3],
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    planes: Vec<LrPlaneParamsView>,
-}
-
-impl LrPartialParamsView {
-    fn new(partial: &LrPartialParams) -> Self {
-        Self {
-            stopped_before: "read_wienerns_filter",
-            uses_lr: partial.uses_lr,
-            loop_restoration_size: partial.loop_restoration_size,
-            planes: partial.planes.iter().map(LrPlaneParamsView::new).collect(),
-        }
-    }
-}
-
 /// One plane's parsed `ccso_params()` state for `--json` (AV2 § 5.18.7.12).
 #[derive(Serialize)]
 // Field names are the AV2 § 5.18.7.12 syntax-element names and the stable `--json` key contract.
@@ -1628,10 +1601,6 @@ impl FrameHeaderCoreView {
             gdf: core.gdf_params.map(GdfParamsView::new),
             cdef: core.cdef_params.as_ref().map(CdefParamsView::new),
             lr: core.lr_params.as_ref().map(LrParamsView::new),
-            lr_partial: core
-                .lr_params_partial
-                .as_ref()
-                .map(LrPartialParamsView::new),
             ccso: core.ccso_params.as_ref().map(CcsoParamsView::new),
             intra_tail: core.intra_tail.as_ref().map(FrameHeaderTailView::new),
             sef_film_grain: core.sef_film_grain.map(FilmGrainConfigView::new),

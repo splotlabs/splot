@@ -853,7 +853,10 @@ fn effect_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use splot_core::headers::metadata::{MetadataHdrCll, MetadataPayload};
+    use splot_core::obu::ObuHeader;
     use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+    use splot_core::types::TemporalLayerId;
 
     const STANDALONE_OLK_FIXTURE: &[u8] =
         include_bytes!("../../../../tests/conformance/vectors/valid/syn-standalone-olk-64x64.ivf");
@@ -864,25 +867,185 @@ mod tests {
         parse_content_interpretation(&mut reader)
     }
 
+    fn metadata_envelope(xlayer: u8, mlayer: u8) -> ObuEnvelope<'static> {
+        ObuEnvelope {
+            offset: ByteOffset::new(0),
+            size: 2,
+            header: ObuHeader {
+                has_header_extension: true,
+                obu_type: ObuType::MetadataShort,
+                temporal_layer_id: TemporalLayerId::from_bits(0),
+                embedded_layer_id: EmbeddedLayerId::from_bits(mlayer),
+                extended_layer_id: ExtendedLayerId::from_bits(xlayer),
+                header_size_bytes: 2,
+            },
+            payload: &[],
+        }
+    }
+
+    fn hdr_cll(max_cll: u16) -> MetadataUnit {
+        MetadataUnit {
+            metadata_type: MetadataType::HdrCll,
+            payload_size: 4,
+            payload: MetadataPayload::HdrCll(MetadataHdrCll {
+                max_cll,
+                max_fall: 0,
+            }),
+        }
+    }
+
+    fn max_cll(unit: &ActiveMetadata) -> Option<u16> {
+        match &unit.unit.payload {
+            MetadataPayload::HdrCll(cll) => Some(cll.max_cll),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn global_metadata_overwrites_global_and_survives_cancel() {
+        let mut state = OutputEffectState::new();
+        let envelope = metadata_envelope(0, 0);
+        state.store_metadata(envelope, LAYER_GLOBAL, 0, None, hdr_cll(10));
+        state.store_metadata(envelope, LAYER_CURRENT, 1, None, hdr_cll(20));
+        state.store_metadata(envelope, LAYER_GLOBAL, 0, None, hdr_cll(30));
+
+        assert_eq!(state.metadata.len(), 2);
+        assert_eq!(
+            state
+                .metadata
+                .iter()
+                .filter(|unit| unit.persistence == MetadataPersistence::Global)
+                .filter_map(max_cll)
+                .collect::<Vec<_>>(),
+            vec![30]
+        );
+
+        state.cancel_metadata(ExtendedLayerId::from_bits(0), MetadataType::HdrCll);
+
+        assert_eq!(state.metadata.len(), 1);
+        assert_eq!(state.metadata[0].persistence, MetadataPersistence::Global);
+        assert_eq!(max_cll(&state.metadata[0]), Some(30));
+    }
+
+    #[test]
+    fn basic_and_enhanced_metadata_replace_same_scope_and_cancel() {
+        let mut state = OutputEffectState::new();
+        let base = metadata_envelope(0, 0);
+        let upper = metadata_envelope(0, 1);
+        state.store_metadata(base, LAYER_CURRENT, 1, None, hdr_cll(10));
+        state.store_metadata(base, LAYER_CURRENT, 1, None, hdr_cll(20));
+        assert_eq!(state.metadata.len(), 1);
+        assert_eq!(max_cll(&state.metadata[0]), Some(20));
+
+        state.store_metadata(base, LAYER_CURRENT, 3, None, hdr_cll(30));
+        assert_eq!(state.metadata.len(), 1);
+        assert_eq!(state.metadata[0].persistence, MetadataPersistence::Enhanced);
+        assert_eq!(max_cll(&state.metadata[0]), Some(30));
+
+        state.store_metadata(base, LAYER_CURRENT, 3, None, hdr_cll(40));
+        assert_eq!(state.metadata.len(), 1);
+        assert_eq!(max_cll(&state.metadata[0]), Some(40));
+
+        state.store_metadata(upper, LAYER_CURRENT, 3, None, hdr_cll(50));
+        assert_eq!(state.metadata.len(), 2);
+
+        state.cancel_metadata(ExtendedLayerId::from_bits(0), MetadataType::HdrCll);
+        assert!(state.metadata.is_empty());
+    }
+
+    #[test]
+    fn metadata_snapshot_applies_only_to_selected_base_layer() {
+        let mut state = OutputEffectState::new();
+        state.store_metadata(metadata_envelope(0, 1), LAYER_GLOBAL, 2, None, hdr_cll(10));
+        state.store_metadata(metadata_envelope(0, 0), LAYER_CURRENT, 2, None, hdr_cll(20));
+        state.store_metadata(metadata_envelope(0, 1), LAYER_CURRENT, 2, None, hdr_cll(30));
+        state.store_metadata(
+            metadata_envelope(0, 1),
+            LAYER_VALUES,
+            2,
+            Some(0b0000_0001),
+            hdr_cll(40),
+        );
+        state.store_metadata(
+            metadata_envelope(0, 1),
+            LAYER_VALUES,
+            2,
+            Some(0b0000_0010),
+            hdr_cll(50),
+        );
+
+        let effects = state.finish_frame();
+        assert_eq!(
+            effects
+                .metadata
+                .iter()
+                .filter_map(|unit| match &unit.payload {
+                    MetadataPayload::HdrCll(cll) => Some(cll.max_cll),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![10, 20, 40]
+        );
+    }
+
     #[test]
     fn no_persistence_metadata_expires_after_frame_snapshot() {
         let mut state = OutputEffectState::new();
-        state.metadata.push(ActiveMetadata {
-            unit: MetadataUnit {
-                metadata_type: MetadataType::IccProfile,
-                payload_size: 4,
-                payload: splot_core::headers::metadata::MetadataPayload::IccProfile(
-                    splot_core::headers::metadata::MetadataIccProfile { payload_len: 4 },
-                ),
-            },
-            persistence: MetadataPersistence::No,
-            layer_idc: LAYER_CURRENT,
-            source_mlayer: EmbeddedLayerId::from_bits(0),
-            mlayer_map: None,
-            tu_index: 0,
-        });
+        state.store_metadata(metadata_envelope(0, 0), LAYER_CURRENT, 2, None, hdr_cll(10));
         assert_eq!(state.finish_frame().metadata.len(), 1);
         assert!(state.finish_frame().metadata.is_empty());
+    }
+
+    #[test]
+    fn coded_video_sequence_start_prunes_metadata_from_earlier_temporal_units() {
+        let parsed = parse_bitstream_partial(STANDALONE_OLK_FIXTURE);
+        assert!(
+            matches!(&parsed, ParsedBitstream::Ivf(_)),
+            "the standalone OLK fixture must remain IVF"
+        );
+        let ParsedBitstream::Ivf(ivf) = parsed else {
+            return;
+        };
+        let sequence_envelope = ivf
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.obus)
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader);
+        let olk_envelope = ivf
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.obus)
+            .find(|obu| obu.header.obu_type == ObuType::OpenLoopKey);
+        assert!(
+            sequence_envelope.is_some() && olk_envelope.is_some(),
+            "the fixture must contain a sequence header and open-loop key frame"
+        );
+        let (Some(sequence_envelope), Some(olk_envelope)) = (sequence_envelope, olk_envelope)
+        else {
+            return;
+        };
+        let sequence = crate::pipeline::parse_sequence(*sequence_envelope);
+        assert!(sequence.is_ok(), "the fixture sequence header must parse");
+        let Ok(sequence) = sequence else {
+            return;
+        };
+        let core = crate::pipeline::parse_frame_core(*olk_envelope, &sequence);
+        assert!(core.is_ok(), "the fixture frame header must parse");
+        let Ok(core) = core else {
+            return;
+        };
+        let mut state = OutputEffectState::new();
+        state.store_metadata(metadata_envelope(0, 0), LAYER_GLOBAL, 1, None, hdr_cll(10));
+        state.begin_temporal_unit();
+        state.store_metadata(metadata_envelope(0, 0), LAYER_CURRENT, 1, None, hdr_cll(20));
+
+        assert!(
+            state
+                .prepare_frame(*olk_envelope, &core, &sequence, true)
+                .is_ok()
+        );
+        assert_eq!(state.metadata.len(), 1);
+        assert_eq!(max_cll(&state.metadata[0]), Some(20));
     }
 
     #[test]

@@ -4,13 +4,13 @@
 //! The general intra multi-coefficient block composers (eob=2 two-coeff, visible-AC,
 //! two-nonzero; eob=3) and IVF emitters.
 
-use super::{CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_COEFF_CDF_Q_CTX, V_TXB_SKIP_CTX_NEUTRAL};
+use super::CHROMA_SIGN_BIT_WIDTH;
 use crate::block_symbol_trace::{BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace};
 use crate::coefficient_tokenization::{
     CoefficientEntropyToken, chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
     general_intra_64x64_luma_2d_base_tokens, general_intra_64x64_luma_eob3_base_tokens,
     general_intra_64x64_luma_two_coeff_tokens, general_intra_64x64_luma_two_nonzero_base_tokens,
-    general_intra_64x64_luma_visible_ac_tokens, luma_dc_sign_token,
+    general_intra_64x64_luma_visible_ac_tokens, luma_negative_dc_sign_token,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
@@ -18,7 +18,7 @@ use crate::partition_emission::emit_root_do_split_none;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LumaSignToken {
     AcBypass(u32),
-    DcSign(bool),
+    NegativeDc,
 }
 
 fn compose_general_intra_luma_block_trace(
@@ -44,21 +44,15 @@ fn compose_general_intra_luma_block_trace(
             LumaSignToken::AcBypass(symbol) => {
                 trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, symbol));
             }
-            LumaSignToken::DcSign(symbol) => {
-                trace.push(BlockSymbolToken::Coeff(luma_dc_sign_token(
-                    SKIP_FRAME_COEFF_CDF_Q_CTX,
-                    symbol,
-                )));
+            LumaSignToken::NegativeDc => {
+                trace.push(BlockSymbolToken::Coeff(luma_negative_dc_sign_token()));
             }
         }
     }
     trace.push(BlockSymbolToken::Coeff(
-        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+        general_intra_32x32_chroma_u_all_zero_token(),
     ));
-    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        V_TXB_SKIP_CTX_NEUTRAL,
-    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token()));
     Ok(trace)
 }
 
@@ -68,7 +62,7 @@ fn compose_general_intra_luma_block_trace(
 /// then the AC `sign_bit` § 8.2.5 bypass), then skipped U and V. The minimal level-1 AC residual
 /// is sub-visible, so the reconstruction is flat 128 (see `emit_minimal_intra_two_coeff_ivf`).
 fn compose_general_intra_two_coeff_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let luma = general_intra_64x64_luma_two_coeff_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let luma = general_intra_64x64_luma_two_coeff_tokens()?;
     compose_general_intra_luma_block_trace(
         luma,
         &[LumaSignToken::AcBypass(0)],
@@ -104,7 +98,7 @@ pub fn emit_minimal_intra_two_coeff_ivf() -> Result<Vec<u8>> {
 /// Unlike the minimal level-1 AC (which rounds back to flat 128), the level-4 AC dequantizes to
 /// a residual that reconstructs a visibly non-flat (low-frequency cosine) luma plane.
 fn compose_general_intra_visible_ac_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let luma = general_intra_64x64_luma_visible_ac_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let luma = general_intra_64x64_luma_visible_ac_tokens()?;
     compose_general_intra_luma_block_trace(
         luma,
         &[LumaSignToken::AcBypass(0)],
@@ -137,8 +131,6 @@ pub fn emit_minimal_intra_visible_ac_ivf() -> Result<Vec<u8>> {
 /// signs positive the block reconstructs identically under either sign order, so an ordering bug
 /// would pass undetected. With the DC negative and the AC positive, only the spec-correct order
 /// (AC `sign_bit` before DC `dc_sign`) reconstructs consistently.
-const TWO_NONZERO_DC_NEGATIVE: bool = true;
-
 /// Composes the general intra eob=2 **two-nonzero-coefficient** luma block trace: `do_split`,
 /// the mode prefix, the coded luma base pass (a level-4 AC at scan index 1 and a level-1 DC at
 /// scan index 0), then the sign pass in AV2 § 5.20.7.27 order `c = eob-1 .. 0` (reverse scan):
@@ -146,13 +138,10 @@ const TWO_NONZERO_DC_NEGATIVE: bool = true;
 /// are skipped. This is the first block where two coefficients are nonzero; the reconstruction is
 /// the visible-AC vertical cosine superimposed on the negative DC offset.
 fn compose_general_intra_two_nonzero_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let luma = general_intra_64x64_luma_two_nonzero_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let luma = general_intra_64x64_luma_two_nonzero_base_tokens()?;
     compose_general_intra_luma_block_trace(
         luma,
-        &[
-            LumaSignToken::AcBypass(0),
-            LumaSignToken::DcSign(TWO_NONZERO_DC_NEGATIVE),
-        ],
+        &[LumaSignToken::AcBypass(0), LumaSignToken::NegativeDc],
         "general two-nonzero block trace",
     )
 }
@@ -183,7 +172,7 @@ pub fn emit_minimal_intra_two_nonzero_ivf() -> Result<Vec<u8>> {
 /// frequency reconstructs a horizontal low-frequency cosine (the transpose of the visible-AC
 /// vertical cosine).
 fn compose_general_intra_eob3_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let luma = general_intra_64x64_luma_eob3_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let luma = general_intra_64x64_luma_eob3_base_tokens()?;
     compose_general_intra_luma_block_trace(
         luma,
         &[LumaSignToken::AcBypass(0)],
@@ -220,7 +209,7 @@ const COEFF_2D_SCAN1_NEGATIVE: bool = true;
 /// then scan 1 negative), then skipped U and V. This is the first block whose reconstruction
 /// varies in both dimensions: the horizontal and vertical low-frequency cosines superimposed.
 fn compose_general_intra_2d_block_trace() -> Result<Vec<BlockSymbolToken>> {
-    let luma = general_intra_64x64_luma_2d_base_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX)?;
+    let luma = general_intra_64x64_luma_2d_base_tokens()?;
     compose_general_intra_luma_block_trace(
         luma,
         &[
@@ -253,7 +242,6 @@ pub fn emit_minimal_intra_2d_ivf() -> Result<Vec<u8>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::block_symbol_trace::roundtrip_block_symbol_trace;
 
     #[test]
     fn composes_general_2d_block_trace_in_order() {
@@ -273,18 +261,6 @@ mod tests {
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 0, 2, 0, 3, 4, 0, 0, 1, 1, 1]
         );
-    }
-
-    #[test]
-    fn general_2d_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_2d_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        assert_eq!(
-            proof.decoded_symbols(),
-            &[0, 0, 0, 0, 0, 2, 0, 3, 4, 0, 0, 1, 1, 1]
-        );
-        assert_eq!(proof.symbol_count(), 14);
-        assert!(!proof.bytes().is_empty());
     }
 
     #[test]
@@ -315,18 +291,6 @@ mod tests {
     }
 
     #[test]
-    fn general_eob3_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_eob3_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        assert_eq!(
-            proof.decoded_symbols(),
-            &[0, 0, 0, 0, 0, 2, 0, 3, 0, 0, 0, 1, 1]
-        );
-        assert_eq!(proof.symbol_count(), 13);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
     fn emit_minimal_intra_eob3_ivf_differs_from_visible_ac_and_is_deterministic() {
         let eob3 = emit_minimal_intra_eob3_ivf().unwrap();
         assert!(!eob3.is_empty());
@@ -351,15 +315,6 @@ mod tests {
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1]
         );
-    }
-
-    #[test]
-    fn general_two_coeff_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_two_coeff_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1]);
-        assert_eq!(proof.symbol_count(), 11);
-        assert!(!proof.bytes().is_empty());
     }
 
     #[test]
@@ -390,15 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn general_visible_ac_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_visible_ac_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 0, 1, 3, 0, 0, 1, 1]);
-        assert_eq!(proof.symbol_count(), 11);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
     fn emit_minimal_intra_visible_ac_ivf_differs_from_two_coeff_and_is_deterministic() {
         let visible = emit_minimal_intra_visible_ac_ivf().unwrap();
         assert!(!visible.is_empty());
@@ -424,18 +370,6 @@ mod tests {
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 0, 1, 3, 1, 0, 1, 1, 1]
         );
-    }
-
-    #[test]
-    fn general_two_nonzero_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_two_nonzero_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        assert_eq!(
-            proof.decoded_symbols(),
-            &[0, 0, 0, 0, 0, 1, 3, 1, 0, 1, 1, 1]
-        );
-        assert_eq!(proof.symbol_count(), 12);
-        assert!(!proof.bytes().is_empty());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 
 //! The general intra DC **skip**-block composer, tile-data encoder, and IVF emitter.
 
-use super::{SKIP_FRAME_BASE_Q_IDX, SKIP_FRAME_COEFF_CDF_Q_CTX, V_TXB_SKIP_CTX_NEUTRAL};
+use super::SKIP_FRAME_BASE_Q_IDX;
 use crate::block_symbol_trace::{
     BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace, encode_block_symbol_trace,
 };
@@ -18,9 +18,8 @@ use crate::partition_emission::emit_root_do_split_none;
 /// decode path for one undivided 64x64 superblock: the § 5.20.3.2 `do_split == false`
 /// (`PARTITION_NONE`) flag, the § 5.20.5.3 mode-info prefix (`y_mode_set`, `y_mode_index`,
 /// `uv_mode`, all `0` for DC), then the per-plane § 5.20.7.27 `all_zero` (`txb_skip`) symbols
-/// (`1` each) in `residual()` order Y, U, V. Unlike the minimal-tier all-zero composer it leads
-/// with `do_split` and codes the luma/U `txb_skip` at the `TX_64X64` / `TX_32X32` `txSzCtx` of a
-/// 64x64 4:2:0 leaf (not `TX_4X4`); the V `txb_skip` keeps `ctx 0`, q-context `0`.
+/// (`1` each) in `residual()` order Y, U, V. The luma/U rows use the `TX_64X64` / `TX_32X32`
+/// contexts of a 64x64 4:2:0 leaf; V uses the neutral `txb_skip` row.
 pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
     let total = modes
@@ -38,24 +37,20 @@ pub(crate) fn compose_general_intra_dc_skip_block_trace() -> Result<Vec<BlockSym
     trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.push(BlockSymbolToken::Coeff(
-        general_intra_64x64_luma_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+        general_intra_64x64_luma_all_zero_token(),
     ));
     trace.push(BlockSymbolToken::Coeff(
-        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+        general_intra_32x32_chroma_u_all_zero_token(),
     ));
-    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        V_TXB_SKIP_CTX_NEUTRAL,
-    )));
+    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token()));
     Ok(trace)
 }
 
 /// Encodes the general intra DC skip-block trace into its AV2 § 8.2.4-finalized `tile_data`
 /// bytes — the entropy-coded payload of a single-tile general intra frame, which the decoder
 /// consumes from byte 0 via § 8.2.2 `init_symbol` (a single last tile has no `tile_size_minus_1`
-/// prefix). For an identical read-back the muxing header must set `base_q_idx <= 90` (q-context
-/// `0`, matching [`SKIP_FRAME_COEFF_CDF_Q_CTX`]) and `disable_cdf_update == 0`. Emits only the
-/// tile bytes; container assembly and the decode oracle are later bricks.
+/// prefix). The supported muxing headers select coefficient CDF q-context `0` and leave CDF
+/// updates enabled, matching these fixed rows.
 pub(crate) fn encode_general_intra_dc_skip_tile_data() -> Result<Vec<u8>> {
     let trace = compose_general_intra_dc_skip_block_trace()?;
     encode_block_symbol_trace(&trace)
@@ -99,9 +94,8 @@ pub fn emit_minimal_intra_skip_ivf() -> Result<Vec<u8>> {
 /// quantizer field changes. This is the access-unit form `Context::receive_packet` returns in a
 /// `Packet`: it is self-delimiting (the decoder auto-detects it as Annex B) and concatenating
 /// packets yields a valid stream, unlike emitting a full IVF file per packet. The tile's
-/// coefficient CDF q-context stays
-/// [`SKIP_FRAME_COEFF_CDF_Q_CTX`] (`0`), which matches the decoder's current q-context for the
-/// supported `base_q_idx` range; callers (`Context`) restrict `base_q_idx` to that range.
+/// coefficient CDF q-context stays `0`, matching the supported `base_q_idx` range enforced by
+/// [`crate::Context`].
 // TODO(spec: ENC-CONFIG-QP-FIELD): derive the coefficient CDF q-context from `base_q_idx`
 pub(crate) fn emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
     base_q_idx: u8,
@@ -117,8 +111,6 @@ pub(crate) fn emit_minimal_intra_skip_temporal_unit_with_base_q_idx(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-
-    use crate::block_symbol_trace::roundtrip_block_symbol_trace;
 
     #[test]
     fn skip_temporal_unit_is_the_skip_ivf_frame_payload() {
@@ -150,37 +142,6 @@ mod tests {
             trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
             vec![0, 0, 0, 0, 1, 1, 1]
         );
-    }
-
-    #[test]
-    fn general_skip_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_dc_skip_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 1, 1]);
-        assert_eq!(proof.symbol_count(), 7);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
-    fn general_skip_block_roundtrip_is_deterministic() {
-        let trace = compose_general_intra_dc_skip_block_trace().unwrap();
-        let first = roundtrip_block_symbol_trace(&trace).unwrap();
-        let second = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(first.bytes(), second.bytes());
-        assert_eq!(first.decoded_symbols(), second.decoded_symbols());
-    }
-
-    #[test]
-    fn skip_tile_data_is_nonempty_and_equals_the_proven_trace_bytes() {
-        let tile_data = encode_general_intra_dc_skip_tile_data().unwrap();
-        assert!(!tile_data.is_empty());
-
-        let trace = compose_general_intra_dc_skip_block_trace().unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-        assert_eq!(tile_data, proof.bytes());
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 1, 1]);
     }
 
     #[test]

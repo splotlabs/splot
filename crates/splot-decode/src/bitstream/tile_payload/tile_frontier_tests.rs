@@ -5,9 +5,7 @@
 
 use super::*;
 use splot_core::bitio::BitReader;
-use splot_core::headers::frame::{
-    CoreSeqRestorationView, LrGeometry, LrParseOutcome, parse_lr_params_for_inter,
-};
+use splot_core::headers::frame::{CoreSeqRestorationView, LrGeometry, parse_lr_params_for_inter};
 use splot_core::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 use splot_core::span::ByteOffset;
 
@@ -23,22 +21,18 @@ fn temporal_frame_wiener_ns_without_local_bank_keeps_lr_unit_syntax_enabled() {
     let geometry = LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Yuv420);
     let payload = [0xe4];
     let mut reader = BitReader::new(&payload, ByteOffset::new(0));
-    let outcome = parse_lr_params_for_inter(
+    let lr = parse_lr_params_for_inter(
         &mut reader,
         false,
         3,
         restoration,
         geometry,
-        100,
         1,
         [0; 3],
         &[Vec::new(), Vec::new(), Vec::new()],
         splot_core::headers::frame::LrTemporalReferenceView::unknown(&[0]),
     )
     .unwrap();
-    let LrParseOutcome::Parsed(lr) = outcome else {
-        panic!("expected complete temporal Wiener-NS LR params");
-    };
 
     assert_eq!(
         loop_restoration_state(&lr, 3),
@@ -65,22 +59,18 @@ fn switchable_luma_without_frame_filter_keeps_lr_unit_syntax_enabled() {
     };
     let geometry = LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Monochrome);
     let mut reader = BitReader::new(&[0xd0], ByteOffset::new(0));
-    let outcome = parse_lr_params_for_inter(
+    let lr = parse_lr_params_for_inter(
         &mut reader,
         false,
         1,
         restoration,
         geometry,
-        100,
         1,
         [0; 3],
         &[Vec::new(), Vec::new(), Vec::new()],
         splot_core::headers::frame::LrTemporalReferenceView::unknown(&[0]),
     )
     .unwrap();
-    let LrParseOutcome::Parsed(lr) = outcome else {
-        panic!("expected complete switchable LR params");
-    };
 
     assert_eq!(
         loop_restoration_state(&lr, 1),

@@ -19,21 +19,6 @@ const fn wbv(mv: Mv, weight: u16) -> WeightedBv {
     WeightedBv { mv, weight }
 }
 
-impl IntrabcRefMvBank {
-    fn record_block(
-        &mut self,
-        mi_row: usize,
-        mi_col: usize,
-        n4w: usize,
-        n4h: usize,
-        use_intrabc: bool,
-        block_mv: Option<Mv>,
-    ) {
-        self.enter_block_superblock(mi_row, mi_col);
-        self.update_after_block(mi_row, mi_col, n4w, n4h, use_intrabc, block_mv);
-    }
-}
-
 fn spatial_intrabc_scan(
     geometry: SpatialScanGeometry,
     lookup: impl Fn(usize, usize) -> Option<Mv>,
@@ -60,11 +45,13 @@ fn frontier_geometry(mi_row: usize, mi_col: usize) -> IntrabcStackGeometry {
 
 #[test]
 fn frontier_mi_0_112_is_default_only() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
-    assert_eq!(bank.entries(), [Mv { row: -512, col: 0 }]);
-
-    let stack = build_intrabc_ref_mv_stack(&bank, frontier_geometry(0, 112), true, &[]);
+    let stack = build_intrabc_ref_mv_stack_from_candidates(
+        &[Mv { row: -512, col: 0 }],
+        frontier_geometry(0, 112),
+        true,
+        &[],
+        0,
+    );
     assert_eq!(
         stack,
         vec![
@@ -78,15 +65,13 @@ fn frontier_mi_0_112_is_default_only() {
 
 #[test]
 fn frontier_mi_0_232_is_reordered_by_bank() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
-    bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
-    assert_eq!(
-        bank.entries(),
-        [Mv { row: -512, col: 0 }, Mv { row: 0, col: -256 }]
+    let stack = build_intrabc_ref_mv_stack_from_candidates(
+        &[Mv { row: 0, col: -256 }, Mv { row: -512, col: 0 }],
+        frontier_geometry(0, 232),
+        true,
+        &[],
+        0,
     );
-
-    let stack = build_intrabc_ref_mv_stack(&bank, frontier_geometry(0, 232), true, &[]);
     assert_eq!(
         stack,
         vec![
@@ -162,34 +147,6 @@ fn check_rmb_cand_bounds_rejection_still_spends_the_budget() {
     ));
 }
 
-#[test]
-fn bank_zeroes_at_new_superblock_row() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(0, 0, 8, 16, true, Some(Mv { row: -512, col: 0 }));
-    assert_eq!(bank.entries().len(), 1);
-    bank.record_block(32, 0, 8, 16, true, Some(Mv { row: -1024, col: 0 }));
-    assert_eq!(bank.entries(), [Mv { row: -1024, col: 0 }]);
-}
-
-#[test]
-fn first_block_of_new_sb_row_reads_empty_bank() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(0, 0, 8, 16, true, Some(Mv { row: 0, col: -256 }));
-    assert_eq!(bank.entries(), [Mv { row: 0, col: -256 }]);
-    bank.enter_block_superblock(32, 8);
-    assert!(bank.entries().is_empty());
-    let stack = build_intrabc_ref_mv_stack(&bank, frontier_geometry(32, 8), true, &[]);
-    assert_eq!(
-        stack,
-        vec![
-            Mv { row: -1024, col: 0 },
-            Mv { row: 0, col: -3072 },
-            Mv { row: -512, col: 0 },
-            Mv { row: 0, col: -256 },
-        ]
-    );
-}
-
 /// No spatial candidate.
 fn no_spatial() -> SpatialIntrabcScan {
     SpatialIntrabcScan {
@@ -201,11 +158,9 @@ fn no_spatial() -> SpatialIntrabcScan {
 
 #[test]
 fn admission_admits_frontier_mi_0_112_default_only() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[Mv { row: -512, col: 0 }],
             frontier_geometry(0, 112),
             &no_spatial(),
             true,
@@ -220,12 +175,9 @@ fn admission_admits_frontier_mi_0_112_default_only() {
 
 #[test]
 fn admission_selects_frontier_mi_0_232_bank_reordered_bv() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
-    bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
     let decide = |enable_refmvbank| {
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[Mv { row: 0, col: -256 }, Mv { row: -512, col: 0 }],
             frontier_geometry(0, 232),
             &no_spatial(),
             enable_refmvbank,
@@ -249,20 +201,22 @@ fn admission_selects_frontier_mi_0_232_bank_reordered_bv() {
 
 #[test]
 fn admission_selects_frontier_mi_0_240_spatial_bv() {
-    let mut bank = IntrabcRefMvBank::new(32);
-    bank.record_block(16, 56, 8, 16, true, Some(Mv { row: -512, col: 0 }));
-    bank.record_block(0, 112, 8, 16, true, Some(Mv { row: 0, col: -256 }));
-    bank.record_block(0, 232, 8, 16, true, Some(Mv { row: 0, col: -3072 }));
+    let bank_candidates = [
+        Mv { row: 0, col: -3072 },
+        Mv { row: 0, col: -256 },
+        Mv { row: -512, col: 0 },
+    ];
     let spatial = SpatialIntrabcScan {
         candidates: vec![adj(Mv { row: 0, col: -3072 })],
         nearest_len: 1,
         comparisons: 0,
     };
-    let stack = build_intrabc_ref_mv_stack(
-        &bank,
+    let stack = build_intrabc_ref_mv_stack_from_candidates(
+        &bank_candidates,
         frontier_geometry(0, 240),
         true,
         &[Mv { row: 0, col: -3072 }],
+        0,
     );
     assert_eq!(
         stack,
@@ -274,8 +228,8 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
         ]
     );
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &bank_candidates,
             frontier_geometry(0, 240),
             &spatial,
             true,
@@ -290,7 +244,6 @@ fn admission_selects_frontier_mi_0_240_spatial_bv() {
 
 #[test]
 fn admission_forced_swap_places_max_weight_at_slot0() {
-    let bank = IntrabcRefMvBank::new(32);
     let unsorted = SpatialIntrabcScan {
         candidates: vec![
             wbv(Mv { row: 0, col: -64 }, 0),
@@ -300,8 +253,8 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &unsorted,
             false, // bank fill OFF: the stack is spatial-prefix + defaults only.
@@ -314,8 +267,8 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
         "the §7.12.2.19 sort must move the weight-1 candidate to slot 0 (not a passthrough)"
     );
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &unsorted,
             false,
@@ -330,7 +283,6 @@ fn admission_forced_swap_places_max_weight_at_slot0() {
 
 #[test]
 fn admission_no_op_swap_when_slot0_already_max() {
-    let bank = IntrabcRefMvBank::new(32);
     let tie = SpatialIntrabcScan {
         candidates: vec![
             wbv(Mv { row: -1024, col: 0 }, 1),
@@ -340,8 +292,8 @@ fn admission_no_op_swap_when_slot0_already_max() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &tie,
             false,
@@ -362,8 +314,8 @@ fn admission_no_op_swap_when_slot0_already_max() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &frontier,
             false,
@@ -379,7 +331,6 @@ fn admission_no_op_swap_when_slot0_already_max() {
 
 #[test]
 fn admission_sort_respects_drl_reorder_mode() {
-    let bank = IntrabcRefMvBank::new(32);
     let candidates = vec![
         wbv(Mv { row: 0, col: -64 }, 0),
         wbv(Mv { row: -512, col: 0 }, 1),
@@ -390,8 +341,8 @@ fn admission_sort_respects_drl_reorder_mode() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &scan,
             false,
@@ -404,8 +355,8 @@ fn admission_sort_respects_drl_reorder_mode() {
         "DRL_REORDER_DISABLED must NOT sort (slot 0 stays scan-order-first)"
     );
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &scan,
             false,
@@ -418,8 +369,8 @@ fn admission_sort_respects_drl_reorder_mode() {
         "DRL_REORDER_CONSTRAINT with nearest < 4 must NOT sort"
     );
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &scan,
             false,
@@ -435,7 +386,6 @@ fn admission_sort_respects_drl_reorder_mode() {
 
 #[test]
 fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
-    let bank = IntrabcRefMvBank::new(32);
     let scan = SpatialIntrabcScan {
         candidates: vec![
             wbv(Mv { row: 0, col: -64 }, 0),
@@ -445,8 +395,8 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
         comparisons: 0,
     };
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &scan,
             false,
@@ -462,15 +412,14 @@ fn admission_sort_leaves_scan_col_tail_outside_nearest_prefix() {
 
 #[test]
 fn admission_admits_single_spatial_candidate() {
-    let bank = IntrabcRefMvBank::new(32);
     let one = SpatialIntrabcScan {
         candidates: vec![adj(Mv { row: 0, col: -64 })],
         nearest_len: 1,
         comparisons: 0,
     };
     assert!(matches!(
-        intrabc_ref_stack_admission(
-            &bank,
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             frontier_geometry(0, 240),
             &one,
             true,
@@ -571,7 +520,6 @@ fn spatial_scan_admits_frontier_mi_32_56_step8_above_neighbour() {
 
 #[test]
 fn admission_selects_frontier_mi_32_56_step8_bv() {
-    let bank = IntrabcRefMvBank::new(32); // freshly zeroed at the SB-row-1 entry.
     let spatial = spatial_intrabc_scan(
         frontier_mi_32_56_scan_geometry(),
         |row, col| (row == 31 && col == 62).then_some(Mv { row: -512, col: 0 }),
@@ -587,7 +535,13 @@ fn admission_selects_frontier_mi_32_56_step8_bv() {
         frame_h: 1080,
         max_bvp_drl_bits_minus_1: 2,
     };
-    let stack = build_intrabc_ref_mv_stack(&bank, geometry, true, &[Mv { row: -512, col: 0 }]);
+    let stack = build_intrabc_ref_mv_stack_from_candidates(
+        &[],
+        geometry,
+        true,
+        &[Mv { row: -512, col: 0 }],
+        0,
+    );
     assert_eq!(
         stack,
         vec![
@@ -598,7 +552,14 @@ fn admission_selects_frontier_mi_32_56_step8_bv() {
         ]
     );
     assert_eq!(
-        intrabc_ref_stack_admission(&bank, geometry, &spatial, true, DrlReorderMode::Always, 0),
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
+            geometry,
+            &spatial,
+            true,
+            DrlReorderMode::Always,
+            0,
+        ),
         IntrabcStackAdmission::Admit {
             selected: Mv { row: -512, col: 0 },
         }
@@ -843,8 +804,8 @@ fn admission_admits_frontier_mi_192_112_no_op_weight_sort() {
         max_bvp_drl_bits_minus_1: 2,
     };
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &IntrabcRefMvBank::new(32),
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             geometry,
             &scan,
             true,
@@ -856,8 +817,8 @@ fn admission_admits_frontier_mi_192_112_no_op_weight_sort() {
         },
     );
     assert_eq!(
-        intrabc_ref_stack_admission(
-            &IntrabcRefMvBank::new(32),
+        intrabc_ref_stack_admission_from_candidates(
+            &[],
             geometry,
             &scan,
             true,

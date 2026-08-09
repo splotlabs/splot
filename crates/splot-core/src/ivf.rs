@@ -445,7 +445,7 @@ struct IvfFileHeaderWire {
 /// Returns [`IvfError`] for a truncated header, invalid signature, or header length
 /// smaller than the 32-byte baseline. The parser never panics on malformed input.
 pub fn parse_ivf_header(input: &[u8]) -> Result<IvfHeader, IvfError> {
-    let (wire, _rest) =
+    let (wire, _) =
         IvfFileHeaderWire::ref_from_prefix(input).map_err(|_| IvfError::TruncatedHeader {
             offset: ByteOffset::new(input.len() as u64),
             needed: IVF_HEADER_SIZE_BYTES.saturating_sub(input.len()),

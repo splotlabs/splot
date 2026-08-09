@@ -13,12 +13,12 @@ use clap::{Parser, Subcommand};
 
 mod commands;
 
-/// splot — an AV2 bitstream validator/inspector and future encoder.
+/// splot — an AV2 bitstream validator, inspector, and experimental decoder.
 #[derive(Parser, Debug)]
 #[command(
     name = "splot",
     version,
-    about = "splot — an AV2 bitstream validator/inspector and future encoder",
+    about = "splot — an AV2 bitstream validator, inspector, and experimental decoder",
     propagate_version = true,
     after_help = "Licensed for noncommercial use only under PolyForm Noncommercial 1.0.0.\nCommercial use of ANY component (validator, inspector, encoder, CLI) requires a\nseparate written commercial license from Bartosz Tomczyk: bartekplus@gmail.com."
 )]
@@ -42,10 +42,7 @@ enum Command {
     /// Print OBUs and headers from a bitstream.
     #[command(visible_alias = "dump")]
     Inspect(commands::inspect::InspectArgs),
-    /// Future AV2 encoder entry point.
-    #[command(visible_alias = "enc")]
-    Encode(commands::encode::EncodeArgs),
-    /// Future reference-style decode / round-trip test entry point.
+    /// Decode the currently supported experimental AV2 subset.
     #[command(visible_alias = "dec")]
     Decode(commands::decode::DecodeArgs),
     /// Describe a validator diagnostic rule id (or list them all).
@@ -59,7 +56,6 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Validate(args) => commands::validate::run(&args),
         Command::Inspect(args) => commands::inspect::run(&args),
-        Command::Encode(args) => commands::encode::run(&args),
         Command::Decode(args) => commands::decode::run(&args),
         Command::Explain(args) => commands::explain::run(&args),
     };

@@ -9,7 +9,6 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 
 pub mod decode;
-pub mod encode;
 pub mod explain;
 pub mod inspect;
 pub mod validate;

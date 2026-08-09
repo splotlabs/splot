@@ -7,16 +7,18 @@ use splot_core::headers::frame::{
     FrameSize, InterControl, IntrabcParams, MvPrecision, TxMode, build_minimal_intra_clk_core,
     build_minimal_intra_sequence_header,
 };
+use splot_core::headers::sequence::DrlReorder;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConfig};
 use splot_core::symbol_encoder::SymbolEncoder;
 
+use super::*;
 use crate::bitstream::tile_payload::{FrameCdfSubset, MvCdfSelector};
 use crate::error::DecodeError;
-use crate::filters::wienerns_lr::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
-use crate::prediction::inter::prepare_intrabc_leaf_entry;
-
-use super::*;
+use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
+    DrlReorderMode, IntrabcStackAdmission, IntrabcStackGeometry,
+    build_intrabc_ref_mv_stack_from_candidates, intrabc_ref_stack_admission_from_candidates,
+};
 
 const BLOCK_16X16: usize = 6;
 
@@ -61,72 +63,63 @@ impl IntrabcBlockGeometry {
 fn read_intrabc_info_record(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
+    state: &TileIntrabcPreludeState,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
     geometry: IntrabcBlockGeometry,
     tile_offset: ByteOffset,
 ) -> Result<IntrabcInfo> {
-    let syntax = read_intrabc_info_syntax(cdfs, symbols, sequence, core, tile_offset)?;
+    let pending =
+        read_pending_intrabc_info(cdfs, symbols, state, sequence, core, geometry, tile_offset)?;
     let stack_geometry = IntrabcStackGeometry {
         mi_row: geometry.block.row,
         mi_col: geometry.block.col,
         n4w: geometry.n4w,
         n4h: geometry.n4h,
-        sb_samples: superblock_samples(sequence, tile_offset)?,
-        frame_w: i32::MAX,
-        frame_h: i32::MAX,
-        max_bvp_drl_bits_minus_1: syntax.max_bvp_drl_bits_minus_1,
+        sb_samples: i32::try_from(state.sb_size4.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        frame_w: i32::try_from(state.mi_cols.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        frame_h: i32::try_from(state.mi_rows.saturating_mul(MI_SIZE)).unwrap_or(i32::MAX),
+        max_bvp_drl_bits_minus_1: pending.max_bvp_drl_bits_minus_1(),
     };
-    let stack = build_intrabc_ref_mv_stack(&IntrabcRefMvBank::new(0), stack_geometry, false, &[]);
-    let pred_mv = *stack.get(syntax.ref_mv_idx).ok_or_else(|| {
-        wienerns_lr_selectable_transform_record_error_reason(
-            tile_offset,
-            "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_mv_idx_out_of_range",
-        )
-    })?;
-    finish_intrabc_info_record(
-        cdfs,
-        symbols,
-        sequence,
-        core,
-        syntax,
-        pred_mv,
-        0,
-        tile_offset,
-    )
+    let spatial = state
+        .capture_spatial_intrabc_probes(geometry)
+        .resolve(|_, _| None);
+    let drl_reorder = match sequence.inter.as_ref().map(|inter| inter.drl_reorder) {
+        Some(DrlReorder::Always) => DrlReorderMode::Always,
+        Some(DrlReorder::Constraint) => DrlReorderMode::Constraint,
+        Some(DrlReorder::Disabled) | None => DrlReorderMode::Disabled,
+    };
+    let enable_refmvbank = sequence
+        .inter
+        .as_ref()
+        .is_some_and(|inter| inter.enable_refmvbank);
+    let pred_mv = match intrabc_ref_stack_admission_from_candidates(
+        &[],
+        stack_geometry,
+        &spatial,
+        enable_refmvbank,
+        drl_reorder,
+        pending.ref_mv_idx(),
+    ) {
+        IntrabcStackAdmission::Admit { selected } => selected,
+        IntrabcStackAdmission::Defer => {
+            return Err(wienerns_lr_selectable_transform_record_error_reason(
+                tile_offset,
+                "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
+            ));
+        }
+    };
+    Ok(resolve_pending_intrabc_info(pending, pred_mv))
 }
 
-/// A `skip` IntrABC neighbour prelude with an integer block vector, for
-/// populating the neighbour grid / ref-MV bank in tests.
+/// Entropy-neighbour facts for a skipped IntrABC block; spatial probes resolve
+/// their block vector separately.
 fn frontier_skip_neighbour() -> IntrabcBlockPrelude {
     IntrabcBlockPrelude {
         use_intrabc: true,
         is_inter: true,
         skip_flag: true,
         morph_pred: false,
-        intrabc: Some(IntrabcInfo {
-            intrabc_mode: 1,
-            ref_mv_idx: 0,
-            mv_precision: MV_PRECISION_QUARTER_PEL,
-            morph_pred: false,
-            block_mv: IntrabcBlockVector { row: -512, col: 0 },
-        }),
-    }
-}
-
-fn horizontal_intrabc_neighbour() -> IntrabcBlockPrelude {
-    IntrabcBlockPrelude {
-        use_intrabc: true,
-        is_inter: true,
-        skip_flag: false,
-        morph_pred: false,
-        intrabc: Some(IntrabcInfo {
-            intrabc_mode: 0,
-            ref_mv_idx: 0,
-            mv_precision: MV_PRECISION_QUARTER_PEL,
-            morph_pred: false,
-            block_mv: IntrabcBlockVector { row: 0, col: -512 },
-        }),
     }
 }
 
@@ -136,7 +129,6 @@ fn ordinary_neighbour() -> IntrabcBlockPrelude {
         is_inter: false,
         skip_flag: false,
         morph_pred: false,
-        intrabc: None,
     }
 }
 
@@ -218,7 +210,15 @@ fn full_frame_state(
     frame_is_intra_only: bool,
     tile_offset: ByteOffset,
 ) -> crate::Result<TileIntrabcPreludeState> {
-    TileIntrabcPreludeState::new(mi_rows, mi_cols, sequence, frame_is_intra_only, tile_offset)
+    TileIntrabcPreludeState::new_for_tile(
+        (mi_rows, mi_cols),
+        0..mi_rows,
+        0..mi_cols,
+        sequence,
+        frame_is_intra_only,
+        true,
+        tile_offset,
+    )
 }
 
 fn state() -> TileIntrabcPreludeState {
@@ -250,10 +250,9 @@ fn inter_non_mixed_region_does_not_code_intrabc_use() {
     assert!(!intrabc_use_is_coded(&core, block, 4, 4));
 }
 
-/// Runs the live `read_intrabc_use_and_skip` → `read_intrabc_info` sequence over
-/// `steps` on the large-frame fixture, returning the decoded `use_skip`, the
-/// `read_intrabc_info` result (`Ok(info)` for a `skip` leaf that advances, `Err`
-/// for a fail-closed leaf), and the symbol count consumed.
+/// Runs the live use/skip read, pending-info read, reference-stack admission, and
+/// final resolution over `steps` on the large-frame fixture, returning the
+/// decoded `use_skip`, resolved info result, and symbol count consumed.
 fn run_intrabc_prelude(
     steps: &[(Option<TileCdfSelector>, u32)],
 ) -> (IntrabcUseSkip, Result<IntrabcInfo>, u64) {
@@ -274,7 +273,7 @@ fn run_intrabc_prelude(
         ByteOffset::new(20),
     )
     .unwrap();
-    let info = read_intrabc_info(
+    let info = read_intrabc_info_record(
         &mut cdfs,
         &mut symbols,
         &state,
@@ -356,23 +355,22 @@ fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual
 fn intrabc_morph_pred_zero_reads_symbol_and_advances() {
     let (sequence, core) = selectable_morph_fixture();
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
-    let payload = encode_steps(&[(Some(TileCdfSelector::MorphPred { ctx: 0 }), 0)]);
+    let payload = encode_steps(&[
+        (Some(TileCdfSelector::IntrabcMode), 1),
+        (None, 0),
+        (Some(TileCdfSelector::MorphPred { ctx: 0 }), 0),
+    ]);
     let mut symbols = decoder(&payload);
-    let syntax = IntrabcInfoSyntax {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        max_bvp_drl_bits_minus_1: 0,
-    };
+    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
 
-    let info = finish_intrabc_info_record(
+    let info = read_intrabc_info_record(
         &mut cdfs,
         &mut symbols,
+        &state,
         &sequence,
         &core,
-        syntax,
-        Mv { row: -512, col: 0 },
-        0,
+        geometry,
         ByteOffset::new(20),
     )
     .unwrap();
@@ -380,37 +378,36 @@ fn intrabc_morph_pred_zero_reads_symbol_and_advances() {
     assert_eq!(info.intrabc_mode, 1);
     assert!(!info.morph_pred);
     assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
-    assert_eq!(symbols.symbol_count(), 1);
+    assert_eq!(symbols.symbol_count(), 3);
 }
 
 #[test]
 fn intrabc_morph_pred_one_is_retained_for_reconstruction() {
     let (sequence, core) = selectable_morph_fixture();
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
-    let payload = encode_steps(&[(Some(TileCdfSelector::MorphPred { ctx: 0 }), 1)]);
+    let payload = encode_steps(&[
+        (Some(TileCdfSelector::IntrabcMode), 1),
+        (None, 0),
+        (Some(TileCdfSelector::MorphPred { ctx: 0 }), 1),
+    ]);
     let mut symbols = decoder(&payload);
-    let syntax = IntrabcInfoSyntax {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        max_bvp_drl_bits_minus_1: 0,
-    };
+    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
 
-    let info = finish_intrabc_info_record(
+    let info = read_intrabc_info_record(
         &mut cdfs,
         &mut symbols,
+        &state,
         &sequence,
         &core,
-        syntax,
-        Mv { row: -512, col: 0 },
-        0,
+        geometry,
         ByteOffset::new(20),
     )
     .unwrap();
 
     assert!(info.morph_pred);
     assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
-    assert_eq!(symbols.symbol_count(), 1);
+    assert_eq!(symbols.symbol_count(), 3);
 }
 
 #[test]
@@ -426,7 +423,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
     ]);
     let mut symbols = decoder(&payload);
     let mut state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
-    let neighbour = |state: &mut TileIntrabcPreludeState, row, col, mv| {
+    let neighbour = |state: &mut TileIntrabcPreludeState, row, col| {
         state
             .record_block(
                 row,
@@ -438,20 +435,13 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
                     is_inter: true,
                     skip_flag: false,
                     morph_pred: false,
-                    intrabc: Some(IntrabcInfo {
-                        intrabc_mode: 1,
-                        ref_mv_idx: 0,
-                        mv_precision: MV_PRECISION_QUARTER_PEL,
-                        morph_pred: false,
-                        block_mv: mv,
-                    }),
                 },
                 ByteOffset::new(0),
             )
             .unwrap();
     };
-    neighbour(&mut state, 23, 7, IntrabcBlockVector { row: -512, col: 0 });
-    neighbour(&mut state, 19, 8, IntrabcBlockVector { row: 0, col: -3072 });
+    neighbour(&mut state, 23, 7);
+    neighbour(&mut state, 19, 8);
     let block = IntrabcBlockContext::new(20, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
 
@@ -464,7 +454,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         ByteOffset::new(20),
     )
     .unwrap();
-    let info = read_intrabc_info(
+    let pending = read_pending_intrabc_info(
         &mut cdfs,
         &mut symbols,
         &state,
@@ -474,6 +464,34 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         ByteOffset::new(20),
     )
     .unwrap();
+    let spatial = state
+        .capture_spatial_intrabc_probes(geometry)
+        .resolve(|row, col| match (row, col) {
+            (23, 7) => Some(Mv { row: -512, col: 0 }),
+            (19, 8) => Some(Mv { row: 0, col: -3072 }),
+            _ => None,
+        });
+    let admission = intrabc_ref_stack_admission_from_candidates(
+        &[],
+        IntrabcStackGeometry {
+            mi_row: geometry.block.row,
+            mi_col: geometry.block.col,
+            n4w: geometry.n4w,
+            n4h: geometry.n4h,
+            sb_samples: i32::try_from(state.sb_size4 * MI_SIZE).unwrap(),
+            frame_w: i32::try_from(state.mi_cols * MI_SIZE).unwrap(),
+            frame_h: i32::try_from(state.mi_rows * MI_SIZE).unwrap(),
+            max_bvp_drl_bits_minus_1: pending.max_bvp_drl_bits_minus_1(),
+        },
+        &spatial,
+        true,
+        DrlReorderMode::Always,
+        pending.ref_mv_idx(),
+    );
+    let IntrabcStackAdmission::Admit { selected } = admission else {
+        panic!("two live spatial candidates must admit the requested IntrABC reference")
+    };
+    let info = resolve_pending_intrabc_info(pending, selected);
 
     assert_eq!(
         use_skip,
@@ -486,127 +504,8 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
 }
 
 #[test]
-fn intrabc_ref_stack_admits_frontier_mi_0_112_default_only_stack() {
-    let (mut sequence, _core) = selectable_large_frame_fixture();
-    sequence
-        .inter
-        .as_mut()
-        .unwrap()
-        .seq_max_bvp_drl_bits_minus_1 = 2;
-    let mut state = full_frame_state(128, 256, &sequence, true, no_off()).unwrap();
-    state
-        .record_block(16, 56, 8, 16, frontier_skip_neighbour(), no_off())
-        .unwrap();
-    let geometry =
-        IntrabcBlockGeometry::new(IntrabcBlockContext::new(0, 112, BLOCK_16X16, false), 8, 16);
-    let syntax = IntrabcInfoSyntax {
-        intrabc_mode: 1,
-        ref_mv_idx: 3,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        max_bvp_drl_bits_minus_1: 2,
-    };
-
-    let pred_mv =
-        ensure_intrabc_ref_stack_supported(&state, &sequence, geometry, syntax, no_off()).unwrap();
-    assert_eq!(pred_mv, Mv { row: 0, col: -256 });
-}
-
-#[test]
-fn inter_frame_seeds_intrabc_bank_from_previous_superblock_row() {
-    let (mut sequence, _core) = selectable_large_frame_fixture();
-    sequence
-        .inter
-        .as_mut()
-        .unwrap()
-        .seq_max_bvp_drl_bits_minus_1 = 2;
-    let mut state = full_frame_state(270, 480, &sequence, false, no_off()).unwrap();
-    state.prepare_for_block(240, 128);
-    state
-        .record_block(240, 128, 8, 16, frontier_skip_neighbour(), no_off())
-        .unwrap();
-
-    state.prepare_for_block(256, 128);
-    assert_eq!(state.bank().entries(), [Mv { row: -512, col: 0 }]);
-    let geometry = IntrabcBlockGeometry::new(
-        IntrabcBlockContext::new(264, 128, BLOCK_16X16, false),
-        16,
-        8,
-    );
-    let syntax = IntrabcInfoSyntax {
-        intrabc_mode: 0,
-        ref_mv_idx: 3,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        max_bvp_drl_bits_minus_1: 2,
-    };
-
-    let pred_mv =
-        ensure_intrabc_ref_stack_supported(&state, &sequence, geometry, syntax, no_off()).unwrap();
-    assert_eq!(pred_mv, Mv { row: -256, col: 0 });
-
-    let mut intra_only = full_frame_state(270, 480, &sequence, true, no_off()).unwrap();
-    intra_only.prepare_for_block(240, 128);
-    intra_only
-        .record_block(240, 128, 8, 16, frontier_skip_neighbour(), no_off())
-        .unwrap();
-    intra_only.prepare_for_block(256, 128);
-    assert!(intra_only.bank().entries().is_empty());
-}
-
-#[test]
-fn decode_leaf_entry_prepare_keeps_late_first_intrabc_in_the_bank() {
-    let (mut sequence, _core) = selectable_large_frame_fixture();
-    sequence
-        .inter
-        .as_mut()
-        .unwrap()
-        .seq_max_bvp_drl_bits_minus_1 = 2;
-    let partition = sequence.partition.as_mut().unwrap();
-    partition.use_256x256_superblock = false;
-    partition.use_128x128_superblock = true;
-    let mut state = full_frame_state(64, 480, &sequence, false, no_off()).unwrap();
-
-    prepare_intrabc_leaf_entry(&mut state, 0, 288, false);
-    state
-        .record_block(0, 288, 16, 16, ordinary_neighbour().mark_inter(), no_off())
-        .unwrap();
-    prepare_intrabc_leaf_entry(&mut state, 22, 288, false);
-    state
-        .record_block(22, 288, 16, 8, horizontal_intrabc_neighbour(), no_off())
-        .unwrap();
-    prepare_intrabc_leaf_entry(&mut state, 28, 320, false);
-
-    assert_eq!(state.bank().entries(), [Mv { row: 0, col: -512 }]);
-    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(28, 336, 24, false), 16, 4);
-    let syntax = IntrabcInfoSyntax {
-        intrabc_mode: 0,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
-        max_bvp_drl_bits_minus_1: 2,
-    };
-    let pred_mv =
-        ensure_intrabc_ref_stack_supported(&state, &sequence, geometry, syntax, no_off()).unwrap();
-    assert_eq!(pred_mv, Mv { row: 0, col: -512 });
-}
-
-#[test]
-fn late_superblock_prepare_does_not_invent_ref_mv_bank_budget() {
-    let (mut sequence, _core) = selectable_large_frame_fixture();
-    let partition = sequence.partition.as_mut().unwrap();
-    partition.use_256x256_superblock = false;
-    partition.use_128x128_superblock = true;
-    let mut state = full_frame_state(64, 480, &sequence, false, no_off()).unwrap();
-
-    state.prepare_for_block(22, 288);
-    state
-        .record_block(22, 288, 16, 8, horizontal_intrabc_neighbour(), no_off())
-        .unwrap();
-
-    assert!(state.bank().entries().is_empty());
-}
-
-#[test]
 fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
-    let (sequence, _core) = selectable_large_frame_fixture();
+    let (sequence, _) = selectable_large_frame_fixture();
     let neighbour = frontier_skip_neighbour(); // BV (-512, 0).
     let mut sb_border = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
     sb_border
@@ -614,7 +513,9 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         .unwrap();
     let at_border =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
-    let scan = sb_border.spatial_intrabc_scan(at_border);
+    let scan = sb_border
+        .capture_spatial_intrabc_probes(at_border)
+        .resolve(|row, col| (row == 15 && col == 54).then_some(Mv { row: -512, col: 0 }));
     assert_eq!(
         scan.candidates,
         vec![super::super::intrabc_ref_mv_stack::WeightedBv {
@@ -629,13 +530,15 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         .unwrap();
     let at_interior =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
-    let control = interior.spatial_intrabc_scan(at_interior);
+    let control = interior
+        .capture_spatial_intrabc_probes(at_interior)
+        .resolve(|row, col| (row == 19 && col == 54).then_some(Mv { row: -512, col: 0 }));
     assert!(control.candidates.is_empty());
 }
 
 #[test]
 fn sequence_256_intrabc_context_uses_the_frame_superblock_size() {
-    let (mut sequence, _core) = selectable_large_frame_fixture();
+    let (mut sequence, _) = selectable_large_frame_fixture();
     let partition = sequence.partition.as_mut().unwrap();
     partition.use_256x256_superblock = true;
     partition.use_128x128_superblock = false;
@@ -659,7 +562,7 @@ fn sequence_256_intrabc_context_uses_the_frame_superblock_size() {
 
 #[test]
 fn sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size() {
-    let (mut sequence, _core) = selectable_large_frame_fixture();
+    let (mut sequence, _) = selectable_large_frame_fixture();
     let partition = sequence.partition.as_mut().unwrap();
     partition.use_256x256_superblock = true;
     partition.use_128x128_superblock = false;
@@ -677,10 +580,10 @@ fn sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size() {
 
     let intra_scan = intra
         .capture_spatial_intrabc_probes(geometry)
-        .resolve(|row, col| intra.block_vector_at(row, col));
+        .resolve(|row, col| (row == 31 && col == 11).then_some(Mv { row: -512, col: 0 }));
     let inter_scan = inter
         .capture_spatial_intrabc_probes(geometry)
-        .resolve(|row, col| inter.block_vector_at(row, col));
+        .resolve(|row, col| (row == 31 && col == 11).then_some(Mv { row: -512, col: 0 }));
 
     assert!(intra_scan.candidates.is_empty());
     assert_eq!(
@@ -727,10 +630,12 @@ fn intrabc_newmv_geometry_derives_integer_luma_copy_rectangles() {
     let mut symbols = decoder(&payload);
     let block = IntrabcBlockContext::new(20, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+    let state = full_frame_state(32, 32, &sequence, true, no_off()).unwrap();
 
     let info = read_intrabc_info_record(
         &mut cdfs,
         &mut symbols,
+        &state,
         &sequence,
         &core,
         geometry,
@@ -758,10 +663,12 @@ fn intrabc_nearmv_geometry_derives_integer_luma_copy_rectangles() {
     let mut symbols = decoder(&payload);
     let block = IntrabcBlockContext::new(20, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+    let state = full_frame_state(32, 32, &sequence, true, no_off()).unwrap();
 
     let info = read_intrabc_info_record(
         &mut cdfs,
         &mut symbols,
+        &state,
         &sequence,
         &core,
         geometry,
@@ -1081,10 +988,12 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
     let mut symbols = decoder(&payload);
     let block = IntrabcBlockContext::new(0, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
+    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
 
     let info = read_intrabc_info_record(
         &mut cdfs,
         &mut symbols,
+        &state,
         &sequence,
         &core,
         geometry,
@@ -1107,8 +1016,13 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
 
 #[test]
 fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
+    let (mut sequence, mut core) = selectable_fixture();
+    sequence.inter.as_mut().unwrap().enable_refmvbank = true;
+    core.force_integer_mv = Some(true);
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
     let payload = encode_steps(&[
+        (Some(TileCdfSelector::IntrabcMode), 0),
+        (None, 0),
         (
             Some(TileCdfSelector::ReadMv(MvCdfSelector::JointShellSet {
                 mv_ctx: 1,
@@ -1134,42 +1048,46 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
         ),
     ]);
     let mut symbols = decoder(&payload);
+    let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 20, 2, false), 4, 4);
+    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
 
-    let block_mv = assign_intrabc_mv(
+    let pending = read_pending_intrabc_info(
         &mut cdfs,
         &mut symbols,
-        0,
-        MV_PRECISION_ONE_PEL,
-        Mv { row: 4, col: -316 },
+        &state,
+        &sequence,
+        &core,
+        geometry,
         ByteOffset::new(20),
     )
     .unwrap();
-
-    assert_eq!(block_mv, IntrabcBlockVector { row: 0, col: -312 });
-    assert_eq!(symbols.symbol_count(), 3);
-}
-
-#[test]
-fn intrabc_newmv_read_errors_use_intrabc_frontier_diagnostic() {
-    let (_sequence, _) = selectable_fixture();
-    let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
-    let payload = [];
-    let mut symbols = decoder(&payload);
-
-    let error = assign_intrabc_mv(
-        &mut cdfs,
-        &mut symbols,
-        0,
-        crate::prediction::inter::read_mv::MV_PRECISION_TWO_PEL,
-        Mv { row: 0, col: 0 },
-        ByteOffset::new(20),
-    )
-    .unwrap_err();
-
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_newmv"
+    let spatial = state
+        .capture_spatial_intrabc_probes(geometry)
+        .resolve(|_, _| None);
+    let admission = intrabc_ref_stack_admission_from_candidates(
+        &[Mv { row: 4, col: -316 }],
+        IntrabcStackGeometry {
+            mi_row: geometry.block.row,
+            mi_col: geometry.block.col,
+            n4w: geometry.n4w,
+            n4h: geometry.n4h,
+            sb_samples: i32::try_from(state.sb_size4 * MI_SIZE).unwrap(),
+            frame_w: i32::try_from(state.mi_cols * MI_SIZE).unwrap(),
+            frame_h: i32::try_from(state.mi_rows * MI_SIZE).unwrap(),
+            max_bvp_drl_bits_minus_1: pending.max_bvp_drl_bits_minus_1(),
+        },
+        &spatial,
+        true,
+        DrlReorderMode::Disabled,
+        pending.ref_mv_idx(),
     );
+    let IntrabcStackAdmission::Admit { selected } = admission else {
+        panic!("the live bank candidate must admit the requested IntrABC reference")
+    };
+    let info = resolve_pending_intrabc_info(pending, selected);
+
+    assert_eq!(info.block_mv, IntrabcBlockVector { row: 0, col: -312 });
+    assert_eq!(symbols.symbol_count(), 5);
 }
 
 #[test]
@@ -1269,7 +1187,6 @@ fn contexts_preserve_duplicate_neighbour_slots_before_cap() {
 
 #[test]
 fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
-    use super::super::intrabc_ref_mv_stack::build_intrabc_ref_mv_stack;
     let (mut sequence, _) = selectable_fixture();
     let partition = sequence.partition.as_mut().unwrap();
     partition.use_256x256_superblock = true;
@@ -1279,13 +1196,12 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
         mi_col: 0,
         n4w: 4,
         n4h: 4,
-        sb_samples: superblock_samples(&sequence, no_off()).unwrap(),
+        sb_samples: 128,
         frame_w: i32::MAX,
         frame_h: i32::MAX,
         max_bvp_drl_bits_minus_1: 2,
     };
-    let candidates =
-        build_intrabc_ref_mv_stack(&IntrabcRefMvBank::new(0), stack_geometry, false, &[]);
+    let candidates = build_intrabc_ref_mv_stack_from_candidates(&[], stack_geometry, false, &[], 0);
 
     assert_eq!(
         candidates,
@@ -1300,7 +1216,7 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
 
 #[test]
 fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
-    let (sequence, _core) = selectable_fixture();
+    let (sequence, _) = selectable_fixture();
     let mut state = full_frame_state(4, 4, &sequence, true, no_off()).unwrap();
     state
         .record_block(2, 0, 2, 4, frontier_skip_neighbour(), no_off())
@@ -1320,7 +1236,7 @@ fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
 
 #[test]
 fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
-    let (sequence, _core) = selectable_fixture();
+    let (sequence, _) = selectable_fixture();
     let mut state = full_frame_state(4, 4, &sequence, true, no_off()).unwrap();
     state
         .record_block(0, 2, 4, 1, frontier_skip_neighbour(), no_off())
@@ -1338,7 +1254,7 @@ fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
 
 #[test]
 fn tile_local_state_translates_absolute_coordinates() {
-    let (sequence, _core) = selectable_fixture();
+    let (sequence, _) = selectable_fixture();
     let mut state = TileIntrabcPreludeState::new_for_tile(
         (12, 16),
         4..8,
@@ -1381,7 +1297,6 @@ fn disabled_intrabc_state_skips_the_tile_grid() {
     .unwrap();
 
     assert!(state.values.is_empty());
-    assert!(!state.enable_refmvbank);
     state
         .record_block(0, 0, 16, 16, frontier_skip_neighbour(), no_off())
         .unwrap();

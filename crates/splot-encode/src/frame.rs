@@ -598,7 +598,7 @@ mod tests {
 
     #[test]
     fn borrowed_frame_rejects_missing_chroma_planes() {
-        let (y, _u, _v) = valid_odd_frame_data();
+        let (y, _, _) = valid_odd_frame_data();
 
         let err = Frame::from_planes(
             FrameInfo::yuv420_8bit(FrameId::new(0), size(3, 5)),

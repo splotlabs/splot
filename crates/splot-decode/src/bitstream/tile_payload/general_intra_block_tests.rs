@@ -30,7 +30,7 @@ fn make_work_unit(payload: &[u8]) -> DecodeTileWorkUnit<'_> {
 }
 
 fn symbols_at_block_start<'payload>(
-    work_unit: &mut DecodeTileWorkUnit<'payload>,
+    work_unit: &DecodeTileWorkUnit<'payload>,
 ) -> SymbolDecoder<'payload> {
     let mut symbols = symbol_decoder(work_unit.tile_bytes());
     let mut cdfs = FrameCdfSubset::from_defaults().tile_copy();
@@ -60,23 +60,23 @@ const D135_JOINT_MODE: u8 = 36;
 const SMOOTH_V_JOINT_MODE: u8 = 2;
 
 fn empty_joint_modes() -> TileIntraJointModeState {
-    TileIntraJointModeState::new(SB_N4, 2 * SB_N4).unwrap()
+    TileIntraJointModeState::new_for_tile(0..SB_N4, 0..(2 * SB_N4)).unwrap()
 }
 
 fn empty_uses_mrls() -> TileUsesMrlsState {
-    TileUsesMrlsState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    TileUsesMrlsState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
 }
 
 fn empty_use_dip() -> TileUseDipState {
-    TileUseDipState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    TileUseDipState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
 }
 
 fn empty_fsc_modes() -> TileFscModeState {
-    TileFscModeState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    TileFscModeState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
 }
 
 fn empty_palette_state() -> TileLumaPaletteState {
-    TileLumaPaletteState::new(SB_N4, 2 * SB_N4, SB_N4).unwrap()
+    TileLumaPaletteState::new_for_tile(0..SB_N4, 0..(2 * SB_N4), SB_N4).unwrap()
 }
 
 fn block_size(index: usize) -> BlockSize {
@@ -181,7 +181,7 @@ fn cfl_allowed_uses_the_chroma_plane_64_sample_limit() {
 #[test]
 fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
     let mut work_unit = make_work_unit(&PAYLOAD);
-    let mut symbols = symbols_at_block_start(&mut work_unit);
+    let mut symbols = symbols_at_block_start(&work_unit);
     let joint_modes = empty_joint_modes();
     let uses_mrls = empty_uses_mrls();
 
@@ -215,7 +215,7 @@ fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
 #[test]
 fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
     let mut work_unit = make_work_unit(&PAYLOAD);
-    let mut symbols = symbols_at_block_start(&mut work_unit);
+    let mut symbols = symbols_at_block_start(&work_unit);
     let mut joint_modes = empty_joint_modes();
     let uses_mrls = empty_uses_mrls();
     joint_modes.record_block(0, 0, SB_N4, SB_N4, SMOOTH_V_JOINT_MODE);
@@ -243,7 +243,7 @@ fn non_directional_left_neighbour_keeps_ctx_zero_and_decodes() {
 #[test]
 fn directional_neighbour_ctx_reads_with_the_real_context() {
     let mut work_unit = make_work_unit(&PAYLOAD);
-    let mut symbols = symbols_at_block_start(&mut work_unit);
+    let mut symbols = symbols_at_block_start(&work_unit);
     let symbol_count_before = symbols.symbol_count();
     let mut joint_modes = empty_joint_modes();
     let uses_mrls = empty_uses_mrls();
@@ -404,7 +404,8 @@ fn mixed_region_fsc_mode_uses_inter_context() {
     let mut symbols = symbol_decoder(&payload);
     let joint_modes = empty_joint_modes();
     let uses_mrls = empty_uses_mrls();
-    let mut fsc_modes = TileFscModeState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap();
+    let mut fsc_modes =
+        TileFscModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
     fsc_modes.record_block(7, 11, 1, 1, 1);
     fsc_modes.record_block(11, 7, 1, 1, 1);
 
@@ -556,7 +557,7 @@ fn active_dip_mode_info_reads_flag_transpose_and_mode_after_palette() {
     let mut symbols = symbol_decoder(&payload);
     let joint_modes = empty_joint_modes();
     let uses_mrls = empty_uses_mrls();
-    let mut use_dip = TileUseDipState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap();
+    let mut use_dip = TileUseDipState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
     use_dip.record_block(7, 11, 1, 1, 1);
     use_dip.record_block(11, 7, 1, 1, 1);
 
@@ -600,8 +601,10 @@ fn mrl_symbols_use_retained_neighbour_contexts() {
     ]);
     let mut work_unit = make_work_unit(&payload);
     let mut symbols = symbol_decoder(&payload);
-    let joint_modes = TileIntraJointModeState::new(2 * SB_N4, 2 * SB_N4).unwrap();
-    let mut uses_mrls = TileUsesMrlsState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap();
+    let joint_modes =
+        TileIntraJointModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4)).unwrap();
+    let mut uses_mrls =
+        TileUsesMrlsState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap();
     uses_mrls.record_block(7, 11, 1, 1, 2);
     uses_mrls.record_block(11, 7, 1, 1, 1);
 
@@ -611,7 +614,7 @@ fn mrl_symbols_use_retained_neighbour_contexts() {
         GeneralIntraChromaToolConfig::disabled().with_enable_mrls(true),
         &joint_modes,
         &uses_mrls,
-        &TileFscModeState::new(2 * SB_N4, 2 * SB_N4, SB_N4).unwrap(),
+        &TileFscModeState::new_for_tile(0..(2 * SB_N4), 0..(2 * SB_N4), SB_N4).unwrap(),
         BLOCK_16X16,
         8,
         8,

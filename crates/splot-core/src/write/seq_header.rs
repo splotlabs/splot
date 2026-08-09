@@ -1321,7 +1321,7 @@ mod proptests {
             bits.bit(u8::from(mlayer_present));
             if mlayer_present {
                 for curr in 1..=mm {
-                    for _ref in (0..=curr).rev() {
+                    for _ in (0..=curr).rev() {
                         bits.bit(next());
                     }
                 }
@@ -1338,7 +1338,7 @@ mod proptests {
                 };
                 for m in 0..=mm {
                     for curr in 1..=mt {
-                        for _ref in (0..=curr).rev() {
+                        for _ in (0..=curr).rev() {
                             if multi_eff || m == 0 {
                                 bits.bit(next());
                             }

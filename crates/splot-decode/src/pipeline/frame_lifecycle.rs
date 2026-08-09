@@ -577,28 +577,13 @@ pub(super) fn ensure_intra_header_complete(
     offset: ByteOffset,
 ) -> Result<()> {
     if core.status != FrameHeaderParseStatus::IntraHeaderComplete {
-        return Err(incomplete_intra_header_error(core.status, offset));
-    }
-    Ok(())
-}
-
-pub(crate) fn incomplete_intra_header_error(
-    status: FrameHeaderParseStatus,
-    offset: ByteOffset,
-) -> DecodeError {
-    match status {
-        FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { .. } => unsupported_feature_at(
-            "unsupported_wienerns_filter",
-            offset,
-            missing_capability_message!("filters.wiener_ns read_wienerns_filter §5.18.7.11"),
-            "5.18.7.11",
-        ),
-        _ => unsupported_at(
+        return Err(unsupported_at(
             "incomplete_frame_header",
             offset,
             "decode runtime requires a complete intra frame header",
-        ),
+        ));
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -664,5 +649,33 @@ mod crop_tests {
                 field: "visible width"
             })
         ));
+    }
+}
+
+#[cfg(test)]
+mod completeness_tests {
+    use super::*;
+
+    const INTRA_FIXTURE: &[u8] =
+        include_bytes!("../../../../tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf");
+
+    #[test]
+    fn incomplete_header_keeps_generic_runtime_frontier() {
+        let (_, mut core) =
+            crate::prediction::inter::test_support::fixture_sequence_and_key_core(INTRA_FIXTURE);
+        core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: "AV2-5.18-FRAME-HEADER",
+        };
+
+        let result = ensure_intra_header_complete(&core, ByteOffset::new(74));
+        assert!(matches!(
+            &result,
+            Err(DecodeError::UnsupportedFeature { .. })
+        ));
+        if let Err(DecodeError::UnsupportedFeature { unsupported }) = result {
+            assert_eq!(unsupported.reason(), "incomplete_frame_header");
+            assert_eq!(unsupported.spec_section(), "7.1");
+            assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
+        }
     }
 }

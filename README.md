@@ -14,9 +14,8 @@ ids, severities, spec sections, offsets, and messages.
 
 ## Status
 
-Pre-alpha, validator-first. The validator, inspector, diagnostic catalog, and a
-narrow experimental decode tier are present. `splot encode` is not a production
-encoder, and broad AV2 playback is not claimed.
+Pre-alpha, validator-first. Validation, inspection, and narrow decode are present.
+The encoder library has a limited packet subset; the CLI has no encode command.
 
 The canonical status ledger is
 [`docs/IMPLEMENTATION-MATRIX.toml`](./docs/IMPLEMENTATION-MATRIX.toml). Generated
@@ -71,7 +70,7 @@ crates/splot-tables    generated AV2 § 9 tables
 crates/splot-recon     reconstruction primitives and frame storage
 crates/splot-decode    decode planning, diagnostics, and narrow runtime output
 crates/splot-validate  parser-driven conformance diagnostics
-crates/splot-encode    future encoder API and private tools
+crates/splot-encode    limited encoder API and supported packet emitters
 crates/splot-cli       thin `splot` binary
 xtask                  repository automation
 fuzz                   cargo-fuzz targets outside the workspace

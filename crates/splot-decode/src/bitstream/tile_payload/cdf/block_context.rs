@@ -193,7 +193,7 @@ const CHROMA_EXPLICIT_BY_MODE: [Option<SupportedChromaMode>; 13] = [
 
 const DEFAULT_MODE_LIST_UV: [u8; 13] = [0, 9, 10, 11, 12, 1, 2, 3, 4, 8, 5, 6, 7];
 
-fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
+pub(crate) fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
     let y_directional = y_mode.is_directional();
     let mut mode_idx = usize::from(uv_mode);
     if y_directional {
@@ -211,10 +211,6 @@ fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
         }
     }
     None
-}
-
-pub(crate) fn resolved_chroma_uv_mode(y_mode: IntraYMode, uv_mode: u8) -> Option<u8> {
-    get_intra_uv_mode_set(y_mode, uv_mode)
 }
 
 pub(crate) fn supported_chroma_mode(

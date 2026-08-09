@@ -89,6 +89,87 @@ fn shared_ref_mv_bank_ordinary_entries_evict_intrabc_candidate() {
 }
 
 #[test]
+fn shared_ref_mv_bank_intrabc_candidates_are_newest_first() {
+    let mut bank = RefMvBank::new();
+    let older = Mv { row: -512, col: 0 };
+    let newer = Mv { row: 0, col: -512 };
+    bank.update(INTRABC_REF_FRAME, None, older, None, CWP_EQUAL, false);
+    bank.update(INTRABC_REF_FRAME, None, newer, None, CWP_EQUAL, false);
+    assert_eq!(bank.intrabc_candidates(), vec![newer, older]);
+
+    bank.update(INTRABC_REF_FRAME, None, older, None, CWP_EQUAL, false);
+    assert_eq!(bank.intrabc_candidates(), vec![older, newer]);
+}
+
+#[test]
+fn shared_ref_mv_bank_seeds_intrabc_from_previous_superblock_row() {
+    let mv = Mv { row: -512, col: 0 };
+    let mut grid = NeighbourMvGrid::new(270, 480).unwrap();
+    grid.record_block(
+        240,
+        128,
+        8,
+        16,
+        true,
+        INTRABC_REF_FRAME,
+        None,
+        false,
+        mv,
+        true,
+        SWITCHABLE_FILTERS,
+        false,
+        BlockPrecisionRecord::default(),
+    );
+    let mut inter_bank = RefMvBank::new();
+    inter_bank.reset_for_leaf(&grid, 256, 128, 32, true);
+    assert_eq!(inter_bank.intrabc_candidates(), vec![mv]);
+
+    let mut intra_bank = RefMvBank::new();
+    intra_bank.reset_for_leaf(&grid, 256, 128, 32, false);
+    assert!(intra_bank.intrabc_candidates().is_empty());
+}
+
+#[test]
+fn shared_ref_mv_bank_late_leaf_uses_only_existing_unit_budget() {
+    let grid = NeighbourMvGrid::new(64, 480).unwrap();
+    let mv = Mv { row: 0, col: -512 };
+    let mut ordered = RefMvBank::new();
+    ordered.reset_for_leaf(&grid, 0, 288, 32, true);
+    ordered.update_count_for_non_inter(0, 288, 16, 16, 32);
+    ordered.reset_for_leaf(&grid, 22, 288, 32, true);
+    ordered.update_for_block(
+        INTRABC_REF_FRAME,
+        None,
+        mv,
+        None,
+        CWP_EQUAL,
+        22,
+        288,
+        16,
+        8,
+        32,
+    );
+    ordered.reset_for_leaf(&grid, 28, 320, 32, true);
+    assert_eq!(ordered.intrabc_candidates(), vec![mv]);
+
+    let mut late = RefMvBank::new();
+    late.reset_for_leaf(&grid, 22, 288, 32, true);
+    late.update_for_block(
+        INTRABC_REF_FRAME,
+        None,
+        mv,
+        None,
+        CWP_EQUAL,
+        22,
+        288,
+        16,
+        8,
+        32,
+    );
+    assert!(late.intrabc_candidates().is_empty());
+}
+
+#[test]
 fn warp_bank_clears_per_superblock_row_and_reseeds_per_superblock() {
     let mut grid = NeighbourMvGrid::new(64, 64).unwrap();
     let above = [4 << 16, -6 << 16, 65536 + 512, 64, -128, 65536];

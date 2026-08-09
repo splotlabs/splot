@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Metadata dispatch, lifetime queries, and HDR metadata checks.
+//! Metadata dispatch plus HDR, scan-type, and timecode metadata checks.
 
 use super::*;
+
+const LAYER_GLOBAL: u8 = 1;
+const LAYER_CURRENT: u8 = 2;
+const LAYER_VALUES: u8 = 3;
 
 /// The bitstream-derived embedded-layer association of one HDR CLL / MDCV
 /// metadata unit (AV2 § 6.16.5 / § 6.16.6 bind "metadata units **associated with
@@ -239,14 +243,6 @@ pub(super) struct MetadataUnitHeader<'a> {
     /// `muh_layer_idc` (short form: parsed from the 1-byte header; group form:
     /// per-unit).
     pub(super) layer_idc: u8,
-    /// `muh_persistence_idc`.
-    pub(super) persistence_idc: u8,
-    /// The single-byte `muh_mlayer_map` collapse consumed by the § 6.16.3
-    /// lifetime store ([`ActiveMetadataUnit::mlayer_map`]): the local group
-    /// form's one byte, or a global group unit's byte when its `muh_xlayer_map`
-    /// selected exactly one extended layer; `None` otherwise (including the
-    /// short form, which carries no maps).
-    pub(super) collapsed_mlayer_map: Option<u8>,
     /// `muh_xlayer_map` (global group-form `LAYER_VALUES` only, § 5.17.3).
     pub(super) xlayer_map: Option<u32>,
     /// Every parsed `muh_mlayer_map` byte: one per set `muh_xlayer_map` bit when
@@ -308,9 +304,9 @@ pub(super) fn push_mlayer_pairs(
 }
 
 impl ValidatorContext {
-    /// Observes a metadata OBU (short or group form), feeding the § 6.16.3
-    /// persistence / cancellation lifetime store and the § 6.16.5 / § 6.16.6 HDR
-    /// repeat-content baselines. A parse failure is silent, matching
+    /// Observes a metadata OBU (short or group form), feeding the § 6.16.5 / § 6.16.6
+    /// HDR repeat-content baselines plus the scan-type and timecode consistency
+    /// checks. A parse failure is silent, matching
     /// `observe_content_interpretation` — the stateless `MetadataSyntax` check owns
     /// failure reporting.
     pub(super) fn observe_metadata(
@@ -324,11 +320,6 @@ impl ValidatorContext {
                 let Ok(short) = parse_metadata_short(&mut reader, obu.payload.len()) else {
                     return;
                 };
-                if short.muh_cancel_flag {
-                    self.metadata
-                        .cancel(obu.header.extended_layer_id, short.metadata_type.value());
-                    return;
-                }
                 let Some(unit) = short.unit else {
                     return;
                 };
@@ -336,12 +327,10 @@ impl ValidatorContext {
                     obu,
                     &MetadataUnitHeader {
                         layer_idc: short.muh_layer_idc,
-                        persistence_idc: short.muh_persistence_idc,
-                        collapsed_mlayer_map: None,
                         xlayer_map: None,
                         mlayer_maps: &[],
                     },
-                    unit,
+                    &unit,
                     report,
                 );
             }
@@ -351,34 +340,18 @@ impl ValidatorContext {
                     return;
                 };
                 for group_unit in group.units {
-                    if group_unit.muh_cancel_flag {
-                        self.metadata.cancel(
-                            obu.header.extended_layer_id,
-                            group_unit.metadata_type.value(),
-                        );
+                    let (Some(layer_idc), Some(unit)) = (group_unit.muh_layer_idc, group_unit.unit)
+                    else {
                         continue;
-                    }
-                    let (Some(layer_idc), Some(persistence_idc), Some(unit)) = (
-                        group_unit.muh_layer_idc,
-                        group_unit.muh_persistence_idc,
-                        group_unit.unit,
-                    ) else {
-                        continue;
-                    };
-                    let collapsed_mlayer_map = match group_unit.muh_mlayer_maps.as_slice() {
-                        [single] => Some(*single),
-                        _ => None,
                     };
                     self.observe_metadata_unit(
                         obu,
                         &MetadataUnitHeader {
                             layer_idc,
-                            persistence_idc,
-                            collapsed_mlayer_map,
                             xlayer_map: group_unit.muh_xlayer_map,
                             mlayer_maps: &group_unit.muh_mlayer_maps,
                         },
-                        unit,
+                        &unit,
                         report,
                     );
                 }
@@ -387,16 +360,15 @@ impl ValidatorContext {
         }
     }
 
-    /// Feeds one parsed non-cancel metadata unit into the § 6.16.3 lifetime store,
-    /// after running the § 6.16.5 / § 6.16.6 HDR repeat-content check.
+    /// Runs the stateful checks for one parsed non-cancel metadata unit.
     pub(super) fn observe_metadata_unit(
         &mut self,
         obu: &ObuEnvelope<'_>,
         header: &MetadataUnitHeader<'_>,
-        unit: MetadataUnit,
+        unit: &MetadataUnit,
         report: &mut ValidationReport,
     ) {
-        self.check_hdr_repeat_content(obu, header, &unit, report);
+        self.check_hdr_repeat_content(obu, header, unit, report);
         if let MetadataPayload::ScanType(scan) = &unit.payload {
             self.check_scan_type_consistency(obu, *scan, report);
         }
@@ -404,21 +376,6 @@ impl ValidatorContext {
             let targeting = derive_hdr_association(obu, header);
             self.check_timecode_consistency(obu, timecode, targeting, report);
         }
-
-        self.metadata.observe_unit(
-            obu.header.extended_layer_id,
-            ActiveMetadataUnit {
-                metadata_type: unit.metadata_type,
-                persistence: PersistenceMode::from_idc(header.persistence_idc),
-                layer_idc: header.layer_idc,
-                source_mlayer: obu.header.embedded_layer_id,
-                source_tlayer: obu.header.temporal_layer_id,
-                mlayer_map: header.collapsed_mlayer_map,
-                payload: unit.payload,
-                offset: obu.offset,
-                tu_index: self.cvs.tu_index,
-            },
-        );
     }
 
     /// Checks the § 6.16.5 / § 6.16.6 repeated-content rule for an HDR CLL / MDCV
@@ -634,54 +591,5 @@ impl ValidatorContext {
             self.cvs
                 .defer_or_emit(pair.0, seen_tu, build(std::slice::from_ref(&pair)), report);
         }
-    }
-
-    /// Returns the active metadata units for `(xlayer, metadata_type_raw)` from the
-    /// § 6.16.3 lifetime store.
-    ///
-    /// Query surface for the validator test suite and the deferred per-frame
-    /// metadata checks (tasks 8-9 of the `metadata-semantic-validation` change).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn active_metadata_units(
-        &self,
-        xlayer: ExtendedLayerId,
-        metadata_type_raw: u32,
-    ) -> &[ActiveMetadataUnit] {
-        self.metadata.active_units(xlayer, metadata_type_raw)
-    }
-
-    /// Returns whether `record` applies to `(target_mlayer, target_tlayer)` per the
-    /// § 6.16.3 propagation rules (see [`MetadataLifetimeStore::applies_to`]),
-    /// resolving the dependency maps from `xlayer`'s active sequence header
-    /// (`SequenceHeaderGeneral::{m,t}layer_dependency_map`, AV2 § 5.4.1). When no
-    /// sequence header is active for the extended layer (including the
-    /// `GLOBAL_XLAYER_ID` bucket, which never activates one), falls back to the
-    /// § 5.4.1 default fills built from the record's own source layer ids — the
-    /// most conservative read: with `max_mlayer_id = K` and `max_tlayer_id = T` the
-    /// default fills make the metadata apply only at its own `(K, T)` source point,
-    /// never inventing propagation a real sequence header might not permit.
-    ///
-    /// Pure query — never emits diagnostics.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn metadata_applies_to(
-        &self,
-        xlayer: ExtendedLayerId,
-        record: &ActiveMetadataUnit,
-        target_mlayer: EmbeddedLayerId,
-        target_tlayer: TemporalLayerId,
-    ) -> bool {
-        let general = self
-            .active_sequence_by_xlayer
-            .get(&xlayer)
-            .and_then(|id| self.sequence_headers.get(id))
-            .map(|header| header.general);
-        let (m_map, t_map) = match general {
-            Some(general) => (general.mlayer_dependency_map, general.tlayer_dependency_map),
-            None => (
-                MLayerDependencyMap::default_for(record.source_mlayer),
-                TLayerDependencyMap::default_for(record.source_tlayer, record.source_mlayer),
-            ),
-        };
-        MetadataLifetimeStore::applies_to(record, target_mlayer, target_tlayer, &t_map, &m_map)
     }
 }

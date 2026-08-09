@@ -2,10 +2,11 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
+use crate::bitstream::byte_stream::{FlatParsedBitstream, prepare_byte_stream};
 use crate::test_support::empty_avmenc_ivf;
 use crate::{DecodeContext, DecodeRuntimeConfig};
 use splot_core::ivf::{IvfHeader, write_ivf_frame, write_ivf_header};
-use splot_core::stream::parse_bitstream_partial;
+use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
 use splot_parallel::ThreadCount;
 
 const MULTIPLE_TILE_GROUP_FIXTURE: &[u8] = include_bytes!(
@@ -290,7 +291,7 @@ fn empty_ivf_decodes_to_empty_frame_set() -> std::result::Result<(), Box<dyn std
 }
 
 #[test]
-fn runtime_reparse_discards_reserved_obus_from_annex_b_and_ivf() {
+fn prepared_byte_stream_discards_reserved_obus_from_annex_b_and_ivf() {
     let reserved_0 = [0x02, 0x00, 0x80];
     let reserved_26 = [0x02, OBU_RESERVED_26, 0x80];
     let payload = [
@@ -302,10 +303,15 @@ fn runtime_reparse_discards_reserved_obus_from_annex_b_and_ivf() {
     ]
     .concat();
 
-    let mut annex_b = parse_bitstream_partial(&payload);
-    discard_runtime_noops(&mut annex_b);
-    assert!(matches!(annex_b, ParsedBitstream::AnnexB(_)));
-    let ParsedBitstream::AnnexB(annex_b) = annex_b else {
+    let options = DecodeOptions::default();
+    let annex_b = prepare_byte_stream(&payload, &options);
+    assert!(annex_b.is_ok());
+    let Ok(annex_b) = annex_b else {
+        return;
+    };
+    assert_eq!(annex_b.plan().obu_count(), 5);
+    assert!(matches!(annex_b.parsed(), FlatParsedBitstream::AnnexB(_)));
+    let FlatParsedBitstream::AnnexB(annex_b) = annex_b.parsed() else {
         return;
     };
     assert_eq!(annex_b.obus.len(), 3);
@@ -328,16 +334,20 @@ fn runtime_reparse_discards_reserved_obus_from_annex_b_and_ivf() {
     if frame_result.is_err() {
         return;
     }
-    let mut ivf = parse_bitstream_partial(&ivf_bytes);
-    discard_runtime_noops(&mut ivf);
-    assert!(matches!(ivf, ParsedBitstream::Ivf(_)));
-    let ParsedBitstream::Ivf(ivf) = ivf else {
+    let ivf = prepare_byte_stream(&ivf_bytes, &options);
+    assert!(ivf.is_ok());
+    let Ok(ivf) = ivf else {
         return;
     };
-    assert_eq!(ivf.frames[0].obus.len(), 3);
+    assert_eq!(ivf.plan().obu_count(), 5);
+    assert!(matches!(ivf.parsed(), FlatParsedBitstream::Ivf(_)));
+    let FlatParsedBitstream::Ivf(ivf) = ivf.parsed() else {
+        return;
+    };
+    assert_eq!(ivf.frames.len(), 1);
+    assert_eq!(ivf.frame_obus(&ivf.frames[0]).len(), 3);
     assert!(
-        ivf.frames[0]
-            .obus
+        ivf.frame_obus(&ivf.frames[0])
             .iter()
             .all(|obu| !obu.header.obu_type.is_reserved())
     );

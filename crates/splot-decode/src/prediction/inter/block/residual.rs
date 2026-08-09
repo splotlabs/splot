@@ -391,7 +391,7 @@ fn read_inter_residual_luma_chunk(
                 tile_offset,
             )?;
             luma_tx_types.update(y4, x4, tx_size, coeffs.plane_tx_type, tile_offset)?;
-            let _ = push_inter_residual_block(
+            push_inter_residual_block(
                 blocks,
                 ReconPlaneId::Y,
                 x4,
@@ -459,7 +459,7 @@ fn read_inter_residual_luma_records_for_chunk(
             coeffs.plane_tx_type,
             tile_offset,
         )?;
-        let _ = push_inter_residual_block(
+        push_inter_residual_block(
             blocks,
             ReconPlaneId::Y,
             record.col,

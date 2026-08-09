@@ -107,15 +107,6 @@ impl MotionFieldLayout {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) const fn empty() -> Self {
-        Self {
-            width8: 0,
-            height8: 0,
-            band_rows8: 8,
-        }
-    }
-
     pub(crate) const fn width8(self) -> usize {
         self.width8
     }

@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! Cross-crate end-to-end oracle: `splot-encode` emits a decodable minimal intra skip
-//! frame, and `splot decode` reconstructs it to a flat frame. `splot-cli` is the only crate
-//! that depends on both `splot-encode` and `splot-decode`, so this is where the encoder's
-//! first decodable output is proven against the decoder.
+//! frame, and `splot decode` reconstructs it to a flat frame. `splot-cli` keeps
+//! `splot-encode` as a dev-only dependency so these integration tests can prove the
+//! encoder's supported output against the decoder without a production CLI edge.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

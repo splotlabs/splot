@@ -577,11 +577,11 @@ fn parse_lcr_global_payload(
 
     let mut left = remaining_payload_bits;
     while left >= 32 {
-        let _ = reader.read_bits(32)?;
+        reader.read_bits(32)?;
         left -= 32;
     }
     if left > 0 {
-        let _ = reader.read_bits(u32::try_from(left).unwrap_or(0))?;
+        reader.read_bits(u32::try_from(left).unwrap_or(0))?;
     }
 
     Ok(LcrGlobalPayload {

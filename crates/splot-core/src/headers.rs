@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Placeholder sequence- and frame-header types.
+//! Typed AV2 sequence-, frame-, metadata-, and auxiliary-header models and parsers.
 //!
-//! Only fields citable from AV2 v1.0.0 are modeled; the full syntax is not yet
-//! implemented. Do not add fields that are not backed by the spec — leave a spec
-//! TODO that names the implementation-matrix feature id instead (see AGENTS.md).
+//! Models and parser coverage follow AV2 v1.0.0. Do not add fields that are not
+//! backed by the spec; leave a spec TODO that names the implementation-matrix
+//! feature id instead (see AGENTS.md).
 
 pub mod atlas_segment;
 pub mod buffer_removal_timing;
@@ -54,10 +54,10 @@ pub use quantizer_matrix::{
 pub use sequence::{SequenceHeader, SequenceHeaderGeneral};
 pub use tile_group::{TileGroupHeaderPrefix, parse_tile_group_prefix};
 
-/// Full AV2 frame header (`frame_header()`). Only a prefix parser exists today; the
-/// complete § 5.18 syntax (frame size, segmentation, filtering, quantization,
-/// prediction/reference, film grain, and `frame_header_copy()`) is not yet modeled.
-/// For the activation/reference fields, see [`FrameHeaderPrefix`].
+/// Reserved full AV2 `frame_header()` model.
+///
+/// Current parsed state is exposed through [`FrameHeaderPrefix`] and
+/// [`FrameHeaderCore`]; this empty type does not claim a complete § 5.18 model.
 // TODO(spec: AV2-5.18-FRAME-HEADER): model the full frame header syntax (AV2 v1.0.0 § 5.18).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[non_exhaustive]

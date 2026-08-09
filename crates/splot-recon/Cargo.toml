@@ -3,7 +3,7 @@
 
 [package]
 name = "splot-recon"
-description = "Reconstruction primitives scaffold for future AV2 decode and encoder roundtrips in the splot toolkit."
+description = "AV2 reconstruction primitives for the splot decoder and encoder input views."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

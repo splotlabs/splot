@@ -66,6 +66,9 @@
 //! - the per-segment QM index loop reaching a `using_qmatrix` read it cannot evaluate, or a
 //!   tile layout needing unmodeled sequence state: the sub-parser's `Unimplemented` is
 //!   surfaced.
+//! - `lr_params()` selecting a retained Wiener-NS reference filter whose taps are not
+//!   available: the facts parsed before LR are preserved and the header stops at the typed
+//!   capability boundary.
 //!
 //! An [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) inside the modeled tail
 //! is converted by the caller to the facts-preserving
@@ -88,8 +91,8 @@ use crate::headers::frame::quant::{
     parse_delta_q_params, parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::restoration::{
-    LrGeometry, LrParseOutcome, LrTemporalReferenceView, parse_ccso_params,
-    parse_ccso_params_for_inter, parse_lr_params_for_inter,
+    LrGeometry, LrTemporalReferenceView, parse_ccso_params, parse_ccso_params_for_inter,
+    parse_lr_params_for_inter,
 };
 use crate::headers::frame::segmentation::MfhSegView;
 use crate::headers::frame::tail::{FilmGrainConfig, TxMode, parse_film_grain_config, read_tx_mode};
@@ -282,13 +285,12 @@ pub(crate) fn parse_inter_shared_tail(
         lr_num_total_refs,
         lr_reference_filter_counts,
     );
-    match parse_lr_params_for_inter(
+    let lr_params = match parse_lr_params_for_inter(
         reader,
         coded_lossless,
         seq.quant.num_planes,
         seq.restoration,
         lr_geometry,
-        quantization.base_q_idx,
         lr_num_total_refs,
         lr_reference_filter_counts,
         &lr_reference_filter_taps,
@@ -297,20 +299,18 @@ pub(crate) fn parse_inter_shared_tail(
             reference_state.lr_frame_filter_class_counts,
             reference_state.lr_frame_filter_taps,
         ),
-    )? {
-        LrParseOutcome::Parsed(lr) => {
-            core.lr_params = Some(lr);
-        }
-        LrParseOutcome::StoppedBeforeWienerNsFilter {
-            feature_id,
-            partial,
-        } => {
-            core.lr_params_partial = Some(partial);
-            core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
+    ) {
+        Ok(params) => params,
+        Err(Error::Unimplemented { feature }) => {
+            core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+                feature_id: feature,
+            };
             store_shared_facts(core, &segmentation, qm, delta_q, lossless, quantization);
             return Ok(());
         }
-    }
+        Err(error) => return Err(error),
+    };
+    core.lr_params = Some(lr_params);
     trace_tail_position(reader, "after_lr");
 
     core.ccso_params = Some(if frame_type == FrameType::Switch {

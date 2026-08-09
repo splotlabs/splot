@@ -672,8 +672,7 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
     scheduler: &'scope AdmissionScheduler<'job>,
     scope: &splot_parallel::TaskScope<'_, 'scope>,
     lane: &mut ReconAdmissionLane,
-) -> Arc<CompletionCell<()>>
-where
+) where
     'job: 'scope,
 {
     let order_base = u64::try_from(frame_index)
@@ -698,7 +697,6 @@ where
     let temporal_source = temporal_gate.clone();
     let scheduled_scratch_source = scratch_source.clone();
     let scratch_done_for_job = Arc::clone(&scratch_done);
-    let done_for_job = Arc::clone(&recon_done);
     let filter_done_for_job = Arc::clone(&filter_done);
     scheduler.submit(
         scope,
@@ -728,7 +726,7 @@ where
                 let _ = temporal_done.set(Mutex::new(Some(inter::TemporalMvScratch::default())));
                 let _ = scratch_done_for_job.set(Mutex::new(None));
                 motion.fail();
-                let _ = done_for_job.set(());
+                let _ = recon_done.set(());
                 let _ = filter_done_for_job.set(());
                 finish.fail(error);
                 admit.admit_ready();
@@ -773,7 +771,7 @@ where
                 walk: scheduled,
                 finish: Mutex::new(Some(finish)),
                 motion,
-                recon_done: done_for_job,
+                recon_done,
                 scratch_done: scratch_done_for_job,
                 filter_gate,
                 filter_done: filter_done_for_job,
@@ -794,7 +792,6 @@ where
             }
         }),
     );
-    recon_done
 }
 
 pub(super) fn schedule_finish<'job, 'scope, T: splot_recon::ReconSample + Send + 'static>(
@@ -837,14 +834,14 @@ fn schedule_pending<'job, 'scope>(
     spawner: &FinishSpawner<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<Arc<CompletionCell<()>>>
+) -> Result<()>
 where
     'job: 'scope,
 {
     let FinishSpawner::Deferred(scope) = spawner else {
         return Err(frame_task_scope());
     };
-    Ok(match pending {
+    match pending {
         PendingWalk::Eight {
             frame_index,
             deferred,
@@ -855,7 +852,8 @@ where
             deferred,
             finish,
         } => schedule_typed(deferred, finish, frame_index, scheduler, scope, lane),
-    })
+    }
+    Ok(())
 }
 
 fn promote_front<'scope, 'job>(
@@ -863,17 +861,17 @@ fn promote_front<'scope, 'job>(
     spawner: &FinishSpawner<'_, 'scope>,
     scheduler: &'scope AdmissionScheduler<'job>,
     lane: &mut ReconAdmissionLane,
-) -> Result<Option<Arc<CompletionCell<()>>>>
+) -> Result<()>
 where
     'job: 'scope,
 {
     let Some(pending) = entropy.entries.pop_front() else {
-        return Ok(None);
+        return Ok(());
     };
-    pending
-        .promote()?
-        .map(|walk| schedule_pending(walk, spawner, scheduler, lane))
-        .transpose()
+    if let Some(walk) = pending.promote()? {
+        schedule_pending(walk, spawner, scheduler, lane)?;
+    }
+    Ok(())
 }
 
 fn drain_ready_entropy<'scope, 'job>(
@@ -890,7 +888,7 @@ where
         .front()
         .is_some_and(PendingEntropy::is_settled)
     {
-        let _ = promote_front(entropy, spawner, scheduler, lane)?;
+        promote_front(entropy, spawner, scheduler, lane)?;
     }
     Ok(())
 }
@@ -909,7 +907,7 @@ where
     let limit = limit.max(1);
     drain_ready_entropy(entropy, spawner, scheduler, lane)?;
     while entropy.entries.len() >= limit {
-        let _ = promote_front(entropy, spawner, scheduler, lane)?;
+        promote_front(entropy, spawner, scheduler, lane)?;
     }
     Ok(())
 }
@@ -929,7 +927,7 @@ where
     }
     let scheduler = admission.ok_or_else(frame_task_scope)?;
     while !entropy.is_empty() {
-        let _ = promote_front(entropy, spawner, scheduler, lane)?;
+        promote_front(entropy, spawner, scheduler, lane)?;
     }
     Ok(())
 }

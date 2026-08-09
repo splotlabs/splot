@@ -369,7 +369,7 @@ mod payload_tests {
 
     #[test]
     fn rejects_tile_data_count() {
-        let (framing, _region) = baseline();
+        let (framing, _) = baseline();
         let mut writer = BitWriter::new();
         let err = write_tile_group_payload(&mut writer, &framing, &[], 1, false).unwrap_err();
         assert_eq!(
@@ -431,7 +431,7 @@ mod payload_tests {
 
     #[test]
     fn rejects_tile_data_len() {
-        let (framing, _region) = baseline();
+        let (framing, _) = baseline();
         let wrong: &[u8] = &[0, 1, 2];
         let mut writer = BitWriter::new();
         let err = write_tile_group_payload(&mut writer, &framing, &[wrong], 1, false).unwrap_err();

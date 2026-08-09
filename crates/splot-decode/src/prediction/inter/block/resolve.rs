@@ -805,7 +805,7 @@ pub(super) fn compound_inter_block(
 fn resolve_single(
     syntax: &InterBlockSyntax,
     single: &SingleMotionSyntax,
-    state: &mut MvResolutionState<'_>,
+    state: &MvResolutionState<'_>,
 ) -> ResolvedInterBlock {
     let block = &syntax.block_ctx;
     let global_mv = if single.tip_ref {

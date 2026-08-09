@@ -99,7 +99,7 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
     type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
     let cases: [MutationCase; 8] = [
         (
-            |core| core.status = FrameHeaderParseStatus::CoreFieldsOnly,
+            |core| core.status = FrameHeaderParseStatus::ActivationFieldsOnly,
             IncompleteInterFrame,
         ),
         (|core| core.inter = None, MissingInterControlRegion),
@@ -152,32 +152,16 @@ fn truncated_inter_header_is_a_malformed_source_diagnostic() {
 fn inter_parser_coverage_preserves_feature_id() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
-    let cases = [
-        (
-            FrameHeaderParseStatus::UnsupportedUntilFeature {
-                feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
-            },
-            "AV2-5.18.7-SEGMENTATION-TILING",
-            "5.18.2",
-        ),
-        (
-            FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
-                feature_id: "lr_temporal_reference_filter_match",
-            },
-            "lr_temporal_reference_filter_match",
-            "5.18.7.11",
-        ),
-    ];
-    for (status, expected_reason, expected_section) in cases {
-        core.status = status;
-        let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
-            .expect_err("inter parser coverage stop");
-        let DecodeError::UnsupportedFeature { unsupported } = error else {
-            panic!("expected unsupported feature, got {error}");
-        };
-        assert_eq!(unsupported.reason(), expected_reason);
-        assert_eq!(unsupported.spec_section(), expected_section);
-    }
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+    };
+    let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
+        .expect_err("inter parser coverage stop");
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("expected unsupported feature, got {error}");
+    };
+    assert_eq!(unsupported.reason(), "AV2-5.18.7-SEGMENTATION-TILING");
+    assert_eq!(unsupported.spec_section(), "5.18.2");
 }
 
 #[test]
@@ -950,7 +934,9 @@ fn unpublished_tip_output_motion_field_is_a_typed_reference_state_error() {
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
     core.inter.as_mut().expect("inter control").ref_frame_idx = [0].into_iter().collect();
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    reference.ref_motion_fields = vec![Some(super::super::MotionFieldHandle::pending())];
+    reference.ref_motion_fields = vec![Some(super::super::MotionFieldHandle::pending_with_layout(
+        super::super::MotionFieldLayout::new(16, 16, 16).expect("valid motion-field layout"),
+    ))];
 
     let error = super::super::block::tip::reconstruct_output(
         &mut super::super::InterDecodeScratch::default(),

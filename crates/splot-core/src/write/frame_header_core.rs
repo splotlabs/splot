@@ -217,8 +217,8 @@ struct IntraGlue {
 ///
 /// Rejects (with [`WriteError::NonCanonicalFrameHeader`], `what` naming the field): a status
 /// other than `IntraHeaderComplete`; a non-intra / show-existing / inter model; any required
-/// `Option` that is `None` on the intra path; a set `lr_params_partial`; a control-region
-/// inferred value that disagrees with its derivation; a `starts_cvs` that disagrees with
+/// `Option` that is `None` on the intra path; a control-region inferred value that disagrees
+/// with its derivation; a `starts_cvs` that disagrees with
 /// `obu_type == OBU_CLOSED_LOOP_KEY && first_picture_in_tu`; a `refresh_frame_flags` the
 /// selected arm cannot represent; or an out-of-domain coded field.
 fn check_frame_header_core_encodable(
@@ -239,10 +239,6 @@ fn check_frame_header_core_encodable(
     if core.show_existing_frame != Some(false) {
         return reject("show_existing_frame");
     }
-    if core.lr_params_partial.is_some() {
-        return reject("lr_params_partial");
-    }
-
     let Some(frame_type) = core.frame_type else {
         return reject("frame_type");
     };
@@ -749,7 +745,6 @@ fn write_intra_header_into(
         seq.quant.num_planes,
         &seq.restoration,
         lr_geometry,
-        quantization.base_q_idx,
     )?;
 
     let ccso = core

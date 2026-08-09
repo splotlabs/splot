@@ -42,8 +42,7 @@
 //!   ([`FrameHeaderParseStatus::ShowExistingFrameComplete`]). A payload EOF inside the
 //!   SEF `film_grain_config()` preserves the parsed SEF facts and reports
 //!   [`FrameHeaderParseStatus::StoppedInsideShowExistingFrame`] — the SEF tail *is*
-//!   `film_grain_config()`, so an EOF there is a truncation of a fully-modeled region,
-//!   distinct from the ordinary bounded [`FrameHeaderParseStatus::CoreFieldsOnly`] stop.
+//!   `film_grain_config()`, so an EOF there is a truncation of a fully-modeled region.
 //! - **Inter / switch / TIP / RAS frame** → reads the inter output-control flags and
 //!   `order_hint`, then parses the § 5.18.2 reference-control region via
 //!   [`super::inter::parse_inter_control_into`]: the primary-reference signaling, the explicit
@@ -100,8 +99,7 @@ use crate::headers::frame::quant::{
     parse_lossless_info, parse_quantization_params, parse_setup_qm_params,
 };
 use crate::headers::frame::restoration::{
-    CcsoParams, LrGeometry, LrParams, LrParseOutcome, LrPartialParams, SlotFrameFilterTaps,
-    parse_ccso_params, parse_lr_params,
+    CcsoParams, LrGeometry, LrParams, SlotFrameFilterTaps, parse_ccso_params, parse_lr_params,
 };
 use crate::headers::frame::segmentation::{SegmentationParams, parse_segmentation_params};
 use crate::headers::frame::size::{FrameSize, ceil_log2, parse_frame_size};
@@ -510,18 +508,12 @@ pub struct FrameHeaderCore {
     /// it is parsed **after** `gdf_params()`.
     pub cdef_params: Option<CdefParams>,
     /// Parsed `lr_params()` (AV2 § 5.18.7.11), when reached on the intra tail (after
-    /// `cdef_params()`) **and parsed to completion**. If a plane signals the fixed-coded
+    /// `cdef_params()`). If a plane signals the fixed-coded
     /// frame-level Wiener NS bank, that bank is part of this complete value via
-    /// [`super::LrPlaneParams::frame_filter_bank`]. `None` when the parse stopped before
-    /// `lr_params()` or in a reserved unsupported branch.
+    /// [`super::LrPlaneParams::frame_filter_bank`]. `Some` only when `lr_params()` was
+    /// reached and completed; `None` when parsing stopped before it or failed/stopped
+    /// inside it.
     pub lr_params: Option<LrParams>,
-    /// Partial `lr_params()` facts committed before a reserved
-    /// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] coverage stop (AV2
-    /// § 5.18.7.11). The fixed-coded frame-level Wiener NS bank is now modeled, so this is
-    /// retained for out-of-tree compatibility and future unsupported branches. When set it
-    /// is mutually exclusive with [`Self::lr_params`], preserving the distinction between a
-    /// complete and partial `lr_params()` parse.
-    pub lr_params_partial: Option<LrPartialParams>,
     /// Parsed `ccso_params()` (AV2 § 5.18.7.12), when reached. Per § 5.18.2 call order it
     /// is parsed **after** `lr_params()`.
     pub ccso_params: Option<CcsoParams>,
@@ -735,7 +727,6 @@ pub(crate) fn init_core_from_prefix(
         gdf_params: None,
         cdef_params: None,
         lr_params: None,
-        lr_params_partial: None,
         ccso_params: None,
         intra_tail: None,
         inter_tail: None,
@@ -1097,11 +1088,10 @@ fn parse_tip_output_tail(
 /// ([`parse_inter_shared_tail`](crate::headers::frame::inter_shared_tail::parse_inter_shared_tail)).
 ///
 /// `tail_ran` is `true` when the shared-tail or TIP-output-tail parser was invoked. In that
-/// case the tail parser already set `core.status`
-/// (the terminal [`FrameHeaderParseStatus::InterHeaderComplete`], an honest
-/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] coverage stop, or a reserved
-/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] branch), so on `Ok` the status is left
-/// untouched. When `tail_ran` is `false` (any other control-region stop) the status
+/// case the tail parser already set `core.status` (the terminal
+/// [`FrameHeaderParseStatus::InterHeaderComplete`] or an honest
+/// [`FrameHeaderParseStatus::UnsupportedUntilFeature`] coverage stop), so on `Ok` the status is
+/// left untouched. When `tail_ran` is `false` (any other control-region stop) the status
 /// is set to the unsupported-coverage class exactly as [`finish_inter_control`] does. An
 /// [`Error::UnexpectedEof`] from anywhere in the closure — the control region OR the shared
 /// tail — is converted to the facts-preserving
@@ -1632,7 +1622,7 @@ fn parse_intra_structures(
 /// `cdef_params()` (§ 5.18.7.10), `lr_params()` (§ 5.18.7.11), and `ccso_params()`
 /// (§ 5.18.7.12), in that order (AV2 v1.0.0 § 5.18.2, mirror :5297-5307). All are
 /// determined by the parsed sequence filter config (§ 5.4.10), the frame state
-/// (`CodedLossless`, `NumPlanes`, `SbSize`, chroma subsampling, `base_q_idx`), the parsed
+/// (`CodedLossless`, `NumPlanes`, `SbSize`, chroma subsampling), the parsed
 /// `tile_info()` geometry, and — on the `cur_mfh_id > 0` path — the resolved MFH's
 /// deblocking-update state.
 ///
@@ -1641,9 +1631,8 @@ fn parse_intra_structures(
 /// [`FrameHeaderParseStatus::IntraHeaderComplete`] is set (or
 /// [`FrameHeaderParseStatus::StoppedInsideIntraTail`] when the payload runs out mid-tail).
 /// When a plane signals a frame-level Wiener filter, `lr_params()` consumes the fixed-coded
-/// `read_wienerns_filter()` bank and stores it on the completed `core.lr_params`. A reserved
-/// [`FrameHeaderParseStatus::StoppedBeforeWienerNsFilter`] outcome remains possible only for
-/// unsupported future branches. On error the partially-read fields stay `None`; the caller
+/// `read_wienerns_filter()` bank and stores it on the completed `core.lr_params`. On error the
+/// partially-read fields stay `None`; the caller
 /// decides whether a payload EOF in the loop-filter cluster (deblocking through ccso) is a
 /// truncation (`StoppedInsideFilterParams`) or a hard failure (a tail EOF is handled here as
 /// `StoppedInsideIntraTail`).
@@ -1697,30 +1686,13 @@ fn parse_filter_cluster(
     )?);
 
     let lr_geometry = LrGeometry::new(seq.tile.frame_sb_size(true), seq.chroma_format_idc);
-    let base_q_idx = core
-        .quantization_params
-        .as_ref()
-        .map_or(0, |quant| quant.base_q_idx);
-    match parse_lr_params(
+    core.lr_params = Some(parse_lr_params(
         reader,
         coded_lossless,
         seq.quant.num_planes,
         &seq.restoration,
         lr_geometry,
-        base_q_idx,
-    )? {
-        LrParseOutcome::Parsed(lr) => {
-            core.lr_params = Some(lr);
-        }
-        LrParseOutcome::StoppedBeforeWienerNsFilter {
-            feature_id,
-            partial,
-        } => {
-            core.lr_params_partial = Some(partial);
-            core.status = FrameHeaderParseStatus::StoppedBeforeWienerNsFilter { feature_id };
-            return Ok(());
-        }
-    }
+    )?);
 
     core.ccso_params = Some(parse_ccso_params(
         reader,

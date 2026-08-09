@@ -73,15 +73,6 @@ impl TileMiSizeState {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size: BlockSize,
-    ) -> Result<Self, TileMiSizeStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols, sb_size)
-    }
-
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
@@ -90,13 +81,6 @@ impl TileMiSizeState {
         let mi_rows = row_range.end.saturating_sub(row_range.start);
         let mi_cols = col_range.end.saturating_sub(col_range.start);
         let allocation = Self::allocation(mi_rows, mi_cols, sb_size)?;
-        let _ = mi_rows
-            .checked_mul(mi_cols)
-            .ok_or(TileMiSizeStateError::ArithmeticOverflow {
-                operation: "mi_rows * mi_cols",
-                left: mi_rows,
-                right: mi_cols,
-            })?;
         Ok(Self {
             origin_row: row_range.start,
             origin_col: col_range.start,

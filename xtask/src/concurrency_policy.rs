@@ -520,7 +520,11 @@ fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
             .and_then(toml::Value::as_str)
             .map(str::to_owned)
             .with_context(|| format!("{} has no [package].name", manifest_path.display()))?;
-        let direct_deps = direct_dependency_names(&manifest, &workspace_deps);
+        let direct_deps = direct_dependency_names(
+            &manifest,
+            &workspace_deps,
+            &["dependencies", "dev-dependencies", "build-dependencies"],
+        );
         crates.push(CrateManifestInfo { name, direct_deps });
     }
     Ok(crates)
@@ -530,16 +534,17 @@ fn collect_crate_manifest_info(root: &Path) -> Result<Vec<CrateManifestInfo>> {
 /// `[dependencies]`, `[dev-dependencies]`, `[build-dependencies]`, and any
 /// `[target.*.dependencies]` tables, deduplicated and sorted. `workspace_deps` maps a
 /// workspace-dependency alias to its real package name (from the root manifest).
-fn direct_dependency_names(
+pub(crate) fn direct_dependency_names(
     manifest: &toml::Table,
     workspace_deps: &HashMap<String, String>,
+    table_names: &[&str],
 ) -> Vec<String> {
     let mut names = Vec::new();
-    collect_dependency_names(manifest, workspace_deps, &mut names);
+    collect_dependency_names(manifest, workspace_deps, table_names, &mut names);
     if let Some(targets) = manifest.get("target").and_then(toml::Value::as_table) {
         for target in targets.values() {
             if let Some(table) = target.as_table() {
-                collect_dependency_names(table, workspace_deps, &mut names);
+                collect_dependency_names(table, workspace_deps, table_names, &mut names);
             }
         }
     }
@@ -548,16 +553,16 @@ fn direct_dependency_names(
     names
 }
 
-/// Appends the resolved real crate name of each entry in the dependency tables found
-/// directly under `parent`, resolving `package = "..."` renames and `workspace = true`
-/// aliases through `workspace_deps` (shared with `check-dependency-direction`).
+/// Appends the resolved real crate name of each entry in the requested dependency
+/// tables found directly under `parent`.
 fn collect_dependency_names(
     parent: &toml::Table,
     workspace_deps: &HashMap<String, String>,
+    table_names: &[&str],
     names: &mut Vec<String>,
 ) {
-    for table_name in ["dependencies", "dev-dependencies", "build-dependencies"] {
-        if let Some(table) = parent.get(table_name).and_then(toml::Value::as_table) {
+    for table_name in table_names {
+        if let Some(table) = parent.get(*table_name).and_then(toml::Value::as_table) {
             for (key, value) in table {
                 names.push(crate::resolved_dep_name(key, value, workspace_deps));
             }
@@ -1342,7 +1347,11 @@ mod tests {
             std::collections::HashMap::new();
         workspace_deps.insert("rt".to_owned(), "tokio".to_owned());
 
-        let deps = direct_dependency_names(&manifest, &workspace_deps);
+        let deps = direct_dependency_names(
+            &manifest,
+            &workspace_deps,
+            &["dependencies", "dev-dependencies", "build-dependencies"],
+        );
         assert!(
             deps.contains(&"tokio".to_owned()),
             "workspace alias must resolve to the real package name, got {deps:?}"

@@ -28,11 +28,6 @@ pub(crate) type TileYSmoothGrid = TileSmoothGrid;
 pub(crate) type TileChromaSmoothGrid = TileSmoothGrid;
 
 impl TileSmoothGrid {
-    #[cfg(test)]
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Option<Self> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols)
-    }
-
     pub(crate) fn new_for_tile(mi_rows: Range<usize>, mi_cols: Range<usize>) -> Option<Self> {
         let rows = mi_rows.end.checked_sub(mi_rows.start)?;
         let cols = mi_cols.end.checked_sub(mi_cols.start)?;

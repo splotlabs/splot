@@ -3,7 +3,7 @@
 
 [package]
 name = "splot-cli"
-description = "splot command-line interface: validate, inspect, and (future) encode/decode AV2 bitstreams."
+description = "splot command-line interface for validating, inspecting, and decoding AV2 bitstreams."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -23,7 +23,6 @@ path = "src/main.rs"
 splot-core.workspace = true
 splot-decode.workspace = true
 splot-validate.workspace = true
-splot-encode.workspace = true
 splot-parallel.workspace = true
 clap.workspace = true
 anyhow.workspace = true
@@ -33,6 +32,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# Decoder-backed encoder packet oracles; not a production CLI dependency.
+splot-encode.workspace = true
 # Conformance-corpus integration test reads tests/conformance/manifest.toml
 # (CONF-AVM-VALID-STREAMS). `toml`/`serde` are workspace dependencies already.
 toml.workspace = true

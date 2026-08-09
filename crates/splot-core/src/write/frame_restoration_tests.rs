@@ -8,8 +8,8 @@ mod tests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::frame::{
-        CcsoPlaneParams, LrParseOutcome, LrPlaneParams, parse_ccso_params, parse_lr_params,
-        WienerNsFrameFilterBank, WienerNsFrameFilterClass,
+        CcsoPlaneParams, LrPlaneParams, WienerNsFrameFilterBank, WienerNsFrameFilterClass,
+        parse_ccso_params, parse_lr_params,
     };
     use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
     use crate::span::ByteOffset;
@@ -41,34 +41,21 @@ mod tests {
         LrGeometry::new(sb, chroma)
     }
 
-    /// Parse `data` as `lr_params()`, expecting a complete `Parsed`, re-emit it via the writer,
-    /// and reparse the bytes — asserting the model round-trips and the bytes are byte-exact.
+    /// Parse `data` as `lr_params()`, re-emit it via the writer, and reparse the bytes —
+    /// asserting the model round-trips and the bytes are byte-exact.
     fn lr_round_trip(
         data: &[u8],
         num_planes: u8,
         view: CoreSeqRestorationView,
         geometry: LrGeometry,
     ) -> LrParams {
-        let parsed = match parse_lr_params(&mut reader(data), false, num_planes, &view, geometry, 99)
-            .unwrap()
-        {
-            LrParseOutcome::Parsed(p) => p,
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        };
+        let parsed =
+            parse_lr_params(&mut reader(data), false, num_planes, &view, geometry).unwrap();
         let mut writer = BitWriter::new();
-        write_lr_params(&mut writer, &parsed, false, num_planes, &view, geometry, 99).unwrap();
+        write_lr_params(&mut writer, &parsed, false, num_planes, &view, geometry).unwrap();
         let written = writer.into_bytes();
         let reparsed =
-            match parse_lr_params(&mut reader(&written), false, num_planes, &view, geometry, 99)
-                .unwrap()
-            {
-                LrParseOutcome::Parsed(p) => p,
-                other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                    panic!("reparse expected Parsed, got {other:?}")
-                }
-            };
+            parse_lr_params(&mut reader(&written), false, num_planes, &view, geometry).unwrap();
         assert_eq!(reparsed, parsed);
         parsed
     }
@@ -108,7 +95,6 @@ mod tests {
             num_planes,
             &restoration_enabled(),
             geometry,
-            0,
         );
         assert!(
             matches!(
@@ -133,7 +119,7 @@ mod tests {
                 loop_restoration_size: default_restoration_size(geometry),
             };
             let mut writer = BitWriter::new();
-            write_lr_params(&mut writer, &params, coded_lossless, 3, &view, geometry, 7).unwrap();
+            write_lr_params(&mut writer, &params, coded_lossless, 3, &view, geometry).unwrap();
             assert_eq!(writer.bit_len(), 0);
         }
     }
@@ -155,7 +141,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &view, geometry, 0),
+            write_lr_params(&mut writer, &params, false, 3, &view, geometry),
             Err(WriteError::NonCanonicalFrameHeader {
                 what: "lr_disabled"
             })
@@ -325,7 +311,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 1, &restoration_enabled(), geometry, 0),
+            write_lr_params(&mut writer, &params, false, 1, &restoration_enabled(), geometry),
             Err(WriteError::NonCanonicalFrameHeader {
                 what: "lr_frame_filter_bank"
             })
@@ -348,7 +334,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
+            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry),
             Err(WriteError::NonCanonicalFrameHeader {
                 what: "lr_num_planes"
             })
@@ -419,7 +405,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
+            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry),
             Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" })
         ));
         assert_eq!(writer.bit_len(), 0);
@@ -517,7 +503,7 @@ mod tests {
         };
         let mut writer = BitWriter::new();
         assert!(matches!(
-            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry, 0),
+            write_lr_params(&mut writer, &params, false, 3, &restoration_enabled(), geometry),
             Err(WriteError::NonCanonicalFrameHeader { what: "lr_size" })
         ));
         assert_eq!(writer.bit_len(), 0);

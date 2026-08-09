@@ -450,7 +450,6 @@ fn frame_header_core_frame_filters_on_parses_wienerns_bank() {
     assert_eq!(core.status, FrameHeaderParseStatus::IntraHeaderComplete);
     assert_eq!(core.frame_size, Some(FrameSize::new(16, 16)));
     assert!(core.deblocking_filter_params.is_some());
-    assert_eq!(core.lr_params_partial, None);
     let lr = core.lr_params.as_ref().expect("lr_params parsed fully");
     assert!(lr.uses_lr, "luma RESTORE_WIENER_NONSEP uses LR");
     assert_eq!(lr.planes.len(), 3);
@@ -1802,6 +1801,13 @@ fn minimal_inter_control_prefix(bits: &mut Bits) {
     bits.bit(0); // disable_cdf_update f(1), the shared-tail boundary.
 }
 
+fn minimal_inter_shared_tail_before_lr(bits: &mut Bits) {
+    bits.f(90, 8); // quantization_params(): base_q_idx
+    for _ in 0..6 {
+        bits.bit(0); // segmentation/QM/delta-Q/deblocking flags
+    }
+}
+
 /// The post-key reference state the fixture parse uses: only slot 0 valid (OrderHint 0,
 /// 64x64), so the implicit map resolves to the single-reference case.
 fn one_valid_ref_64() -> (
@@ -2012,13 +2018,7 @@ fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values()
     seq.film_grain_params_present = Some(true);
     let mut bits = Bits::default();
     minimal_inter_control_prefix(&mut bits);
-    bits.f(90, 8); // quantization_params(): base_q_idx f(8) (asymmetric, != 0)
-    bits.bit(0); // segmentation_params(): segmentation_enabled = 0
-    bits.bit(0); // setup_qm_params(): using_qmatrix = 0
-    bits.bit(0); // delta_q_params(): base_q>0 -> delta_q_present = 0
-    bits.bit(0); // allow_df_sub_pu
-    bits.bit(0); // apply_deblocking_filter[0]
-    bits.bit(0); // apply_deblocking_filter[1]
+    minimal_inter_shared_tail_before_lr(&mut bits);
     bits.bit(1); // read_tx_mode(): tx_mode_select = 1 -> TX_MODE_SELECT
     bits.bit(1); // frame_reference_mode(): reference_select = 1
     bits.bit(1); // skip_mode_params(): skip_mode_present = 1 (skipModeAllowed)
@@ -2051,6 +2051,45 @@ fn frame_header_core_inter_shared_tail_reads_inter_arms_with_asymmetric_values()
     assert!(tail.film_grain.apply_grain);
     assert_eq!(tail.film_grain.fgm_id, Some(5));
     assert_eq!(tail.film_grain.grain_seed, Some(0x1234));
+}
+
+#[test]
+fn frame_header_core_inter_missing_lr_reference_taps_is_a_coverage_stop() {
+    let mut seq = minimal_inter_seq_64();
+    seq.restoration.enable_restoration = true;
+    seq.restoration.lr_pc_wiener_disabled = true;
+    seq.restoration.lr_uv_pc_wiener_disabled = true;
+    let mut bits = Bits::default();
+    minimal_inter_control_prefix(&mut bits);
+    minimal_inter_shared_tail_before_lr(&mut bits);
+    bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
+    bits.bit(1); // frame_filters_on[0]
+    bits.bit(0); // temporal_pred_flag[0]
+    bits.f(0, 3); // one local filter class
+    bits.ns(0, 2); // plane 1 -> RESTORE_NONE
+    bits.ns(0, 2); // plane 2 -> RESTORE_NONE
+    bits.bit(1); // lr_luma_use_half_size
+    bits.bit(1); // local class selects the retained reference filter
+    let data = bits.into_bytes();
+    let (rv, roh, rw, rh) = one_valid_ref_64();
+    let filter_counts = [[1, 0, 0]; NUM_REF_FRAMES];
+    let filter_taps: [crate::headers::frame::restoration::SlotFrameFilterTaps; NUM_REF_FRAMES] =
+        std::array::from_fn(|_| None);
+    let rs = FrameReferenceStateView::from_slots(&rv, &roh, &rw, &rh)
+        .with_lr_frame_filter_class_counts(&filter_counts)
+        .with_lr_frame_filter_taps(&filter_taps);
+    let (core, _) =
+        parse_body_with_ref(&data, ObuType::RegularTileGroup, false, &seq, None, &rs).unwrap();
+    assert_eq!(
+        core.status,
+        FrameHeaderParseStatus::UnsupportedUntilFeature {
+            feature_id: "lr_temporal_reference_filter_match",
+        }
+    );
+    assert!(!core.status.is_truncated_in_modeled_region());
+    assert!(core.quantization_params.is_some());
+    assert!(core.deblocking_filter_params.is_some());
+    assert!(core.lr_params.is_none());
 }
 
 #[test]

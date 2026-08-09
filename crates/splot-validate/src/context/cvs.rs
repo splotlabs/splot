@@ -405,8 +405,8 @@ impl ValidatorContext {
 
     /// Starts a new coded video sequence for `xlayer` at the current temporal unit
     /// (AV2 § 7.3.6): drops the extended layer's CVS-scoped records (sequence
-    /// fingerprints, content interpretations, active metadata, HDR baselines,
-    /// scan-type observations) from earlier temporal units — same-temporal-unit
+    /// fingerprints, content interpretations, HDR baselines, scan-type observations)
+    /// from earlier temporal units — same-temporal-unit
     /// records, e.g. the sequence header preceding the activating CLK, joined the
     /// new coded video sequence and stay — and its pending deferred diagnostics.
     /// Records keyed under `GLOBAL_XLAYER_ID` belong to no single extended layer,
@@ -448,7 +448,6 @@ impl ValidatorContext {
         self.content_interpretations.retain(|(x, _), record| {
             !(*x == xlayer || x.is_global()) || record.tu_index >= tu_index
         });
-        self.metadata.reset_cvs(xlayer, tu_index);
         self.hdr_baselines.retain(|record| {
             !record.association.touches_xlayer(xlayer) || record.tu_index >= tu_index
         });
