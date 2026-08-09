@@ -165,8 +165,7 @@ fn compound_ref_distance_signs_cover_every_valid_reference_count() {
     let expected = [true, false, true, true, true, true, true];
 
     for count in 0..=7 {
-        let signs = compound_ref_distance_signs(&ref_frame_idx, &reference, 10, count, TILE_OFFSET)
-            .unwrap();
+        let signs = compound_ref_distance_signs(&ref_frame_idx, &reference, 10, count).unwrap();
         assert_eq!(signs[..count], expected[..count]);
         assert_eq!(signs[count..], [true; 7][count..]);
     }
@@ -175,11 +174,27 @@ fn compound_ref_distance_signs_cover_every_valid_reference_count() {
 #[test]
 fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_ref_distance_signs(&[], &reference, 10, 1, TILE_OFFSET).unwrap_err();
+    let error = compound_ref_distance_signs(&[], &reference, 10, 1).unwrap_err();
     assert!(matches!(
         error,
         crate::error::DecodeError::HeaderState {
             source: crate::DecodeHeaderStateError::InvalidInterReferenceMap
+        }
+    ));
+}
+
+#[test]
+fn compound_ref_distance_signs_keep_missing_order_hint_fail_closed() {
+    let reference = InterReferenceState::<u8>::empty().unwrap();
+    let error = compound_ref_distance_signs(&[0], &reference, 10, 1).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 0,
+                slot_count: 0,
+            }
         }
     ));
 }
