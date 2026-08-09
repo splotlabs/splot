@@ -1463,8 +1463,8 @@ fn validate_and_resolve_inter_frame_core(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
-    validate_inter_frame_parse(core, offset, frame_index)?;
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
+    validate_inter_frame_parse(core, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset)?;
     validate_inter_frame_core(core, sequence, offset)
 }
@@ -1799,7 +1799,16 @@ fn validate_inter_frame_parse(
         frame_index,
         "inter-frame OBU payload ends inside mandatory frame_header_info() syntax",
         "inter-frame header requires unsupported parser coverage",
-    )
+    )?;
+    if core.status == FrameHeaderParseStatus::IntraHeaderComplete {
+        return Err(unsupported_at(
+            "unsupported_tile_boundary",
+            offset,
+            "decode runtime does not support intra-only frames carried by tile-group OBUs",
+            SPEC_HEADER,
+        ));
+    }
+    Ok(())
 }
 
 fn validate_frame_header_parse_status(

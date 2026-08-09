@@ -125,6 +125,24 @@ fn inter_parser_coverage_preserves_feature_id() {
 }
 
 #[test]
+fn complete_intra_tile_group_remains_reportable() {
+    let (_, mut core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    core.obu_type = splot_core::types::ObuType::RegularTileGroup;
+    core.frame_type = Some(splot_core::headers::frame::FrameType::IntraOnly);
+    let offset = ByteOffset::new(74);
+
+    let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
+        .expect_err("intra-only tile-group routing");
+    let DecodeError::UnsupportedFeature { unsupported } = &error else {
+        panic!("expected unsupported feature, got {error}");
+    };
+    assert_eq!(unsupported.reason(), "unsupported_tile_boundary");
+    assert_eq!(unsupported.spec_section(), "5.18.2");
+    assert_eq!(unsupported.byte_offset(), Some(offset));
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_some());
+}
+
+#[test]
 fn block_reference_sample_failures_are_typed_reference_state_errors() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
     let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
@@ -932,6 +950,30 @@ fn ras_slot_conformance_precedes_ccso_reference_reuse() {
         Some(1),
     )
     .expect_err("RAS conformance must precede CCSO reuse");
+    assert!(matches!(error, DecodeError::MalformedSource { .. }));
+}
+
+#[test]
+fn ras_slot_conformance_precedes_parser_coverage() {
+    let (sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.obu_type = splot_core::types::ObuType::RasFrame;
+    core.status = FrameHeaderParseStatus::UnsupportedUntilFeature {
+        feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
+    };
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [1].into_iter().collect();
+    let reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    let error = super::super::validate_and_resolve_inter_frame_core(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(1),
+    )
+    .expect_err("RAS conformance must precede parser coverage");
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
 }
 
