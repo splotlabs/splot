@@ -7,26 +7,18 @@ use splot_core::span::ByteOffset;
 use crate::error::{DecodeError, Result};
 use crate::pipeline::unsupported_feature_at;
 
-macro_rules! gap {
-    ($reason:literal, $offset:expr $(,)?) => {
-        crate::filters::wienerns_lr::wienerns_lr_selectable_transform_record_error_reason(
-            $offset, $reason,
-        )
-    };
-}
-pub(crate) use gap;
-
-pub(crate) fn selectable_missing_quantization_error(offset: ByteOffset) -> DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_missing_quantization",
-        offset
-    )
+pub(crate) fn selectable_missing_quantization_error(_offset: ByteOffset) -> DecodeError {
+    crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-pub(crate) fn selectable_symbol_read_error(offset: ByteOffset) -> DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_symbol_read",
-        offset
+pub(crate) fn selectable_symbol_read_error(
+    offset: ByteOffset,
+    spec_section: &'static str,
+) -> DecodeError {
+    crate::pipeline::malformed_tile_payload(
+        offset,
+        spec_section,
+        "selectable transform-record syntax read failed",
     )
 }
 

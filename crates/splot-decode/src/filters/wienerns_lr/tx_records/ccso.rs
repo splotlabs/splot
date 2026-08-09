@@ -204,6 +204,7 @@ impl CcsoState {
                 symbols,
                 TileCdfSelector::CcsoBlk { plane, ctx },
                 tile_offset,
+                "5.20.10.2",
             )?;
             if value >= CCSO_SYMBOL_VALUES {
                 return Err(ccso_error(tile_offset, CCSO_SYMBOL_RANGE_REASON));

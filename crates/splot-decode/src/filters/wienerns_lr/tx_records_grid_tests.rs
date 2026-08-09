@@ -491,3 +491,20 @@ fn records_for_region_is_complete_for_clamped_edge_region() {
         Some(TX_16X16)
     );
 }
+
+#[test]
+fn selectable_transform_record_failures_are_typed_header_state_errors() {
+    assert!(matches!(
+        selectable_transform_record_error(SelectableTransformRecordError::Overlap {
+            row: 0,
+            col: 0
+        }),
+        crate::error::DecodeError::HeaderState {
+            source: crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords,
+        }
+    ));
+    assert!(matches!(
+        selectable_read_error(ByteOffset::new(9), "5.20.5.11"),
+        crate::error::DecodeError::MalformedSource { .. }
+    ));
+}

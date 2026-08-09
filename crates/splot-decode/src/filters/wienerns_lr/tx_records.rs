@@ -13,14 +13,14 @@ use splot_recon::{BitDepth, max_quantizer_index};
 use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
-    DecodeBlockFrontier, DecodeTileWorkUnit, IntraIstSyntax, TileCdfSelector,
+    BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, IntraIstSyntax,
+    TileCdfSelector,
 };
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
 
 use super::{
-    gap, intra_capped_seq_sb_size, selectable_missing_quantization_error,
-    selectable_symbol_read_error,
+    intra_capped_seq_sb_size, selectable_missing_quantization_error, selectable_symbol_read_error,
 };
 
 pub(crate) mod ccso;
@@ -142,115 +142,32 @@ pub(crate) enum SelectableTransformRecordError {
 #[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
     error: SelectableTransformRecordError,
-    tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
     match error {
-        SelectableTransformRecordError::EmptyTransform { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_empty_transform",
-            tile_offset
-        ),
-        SelectableTransformRecordError::InvalidTxSize { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_invalid_tx_size",
-            tile_offset
-        ),
-        SelectableTransformRecordError::OutOfBounds { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_out_of_bounds",
-            tile_offset
-        ),
-        SelectableTransformRecordError::Overlap { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_overlap",
-            tile_offset
-        ),
-        SelectableTransformRecordError::Incomplete { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_incomplete_grid",
-            tile_offset
-        ),
-        SelectableTransformRecordError::TableIndex { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_table_index",
-            tile_offset
-        ),
-        SelectableTransformRecordError::TableValue { .. } => gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_table_value",
-            tile_offset
-        ),
-        SelectableTransformRecordError::Unsupported { reason } => match reason {
-            "grid-size-overflow" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_grid_size_overflow",
-                tile_offset
-            ),
-            "tx-width-overflow" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_tx_width_overflow",
-                tile_offset
-            ),
-            "tx-height-overflow" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_tx_height_overflow",
-                tile_offset
-            ),
-            "record-allocation" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_record_allocation",
-                tile_offset
-            ),
-            "region-size-overflow" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_region_size_overflow",
-                tile_offset
-            ),
-            "grid-index-overflow" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_grid_index_overflow",
-                tile_offset
-            ),
-            "horz4-loop" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_horz4_loop",
-                tile_offset
-            ),
-            "vert4-loop" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_vert4_loop",
-                tile_offset
-            ),
-            "tx-partition-type" => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_tx_partition_type",
-                tile_offset
-            ),
-            _ => gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_unsupported_branch",
-                tile_offset
-            ),
-        },
+        SelectableTransformRecordError::Unsupported {
+            reason: "record-allocation",
+        } => selectable_allocation_error(),
+        _ => crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into(),
     }
 }
 
-fn quantizer_width_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_quantizer_width",
-        tile_offset
-    )
+fn selectable_allocation_error() -> crate::error::DecodeError {
+    splot_recon::ReconError::WorkspaceAllocationFailed {
+        plane: splot_recon::PlaneId::Y,
+        context: "selectable transform-record storage",
+    }
+    .into()
 }
 
-fn cdef_grid_overflow_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_cdef_grid_overflow",
-        tile_offset
-    )
+fn selectable_state_error() -> crate::error::DecodeError {
+    crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-fn cdef_index_bounds_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_cdef_index_bounds",
-        tile_offset
-    )
-}
-
-fn cdef_index_overflow_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_cdef_index_overflow",
-        tile_offset
-    )
-}
-
-fn cdef_grid_shape_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    gap!(
-        "unsupported_wienerns_lr_selectable_transform_records_cdef_grid_shape",
-        tile_offset
-    )
+fn selectable_read_error(
+    tile_offset: ByteOffset,
+    spec_section: &'static str,
+) -> crate::error::DecodeError {
+    selectable_symbol_read_error(tile_offset, spec_section)
 }
 
 impl DeltaQState {
@@ -268,21 +185,15 @@ impl DeltaQState {
             .ok_or_else(|| selectable_missing_quantization_error(tile_offset))?
             .base_q_idx;
         let bit_depth = BitDepth::from_av2_bit_depth_idc(sequence.general.bit_depth_idc.get())
-            .map_err(|_| {
-                gap!(
-                    "unsupported_wienerns_lr_selectable_transform_records_bit_depth",
-                    tile_offset
-                )
-            })?;
+            .map_err(|_| selectable_state_error())?;
         let sb_size4 = intra_delta_q_sb_size4(sequence, tile_offset)?;
         Ok(Self {
             present,
             delta_q_res,
             sb_size4,
-            current_q_index: i32::try_from(base_q_idx)
-                .map_err(|_| quantizer_width_error(tile_offset))?,
+            current_q_index: i32::try_from(base_q_idx).map_err(|_| selectable_state_error())?,
             max_q: i32::try_from(max_quantizer_index(bit_depth))
-                .map_err(|_| quantizer_width_error(tile_offset))?,
+                .map_err(|_| selectable_state_error())?,
             current_sb: None,
             read_deltas: present,
         })
@@ -306,22 +217,16 @@ impl DeltaQState {
         }
         let delta_q_is_coded =
             delta_q_is_coded_for_block(frontier.b_size.index(), self.sb_size4, skip)
-                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+                .map_err(selectable_transform_record_error)?;
         if self.read_deltas && delta_q_is_coded {
             let delta_q_abs = read_delta_q_abs(work_unit, symbols, tile_offset)?;
             if delta_q_abs != 0 {
-                let sign_bit = symbols.read_literal(DELTA_Q_SIGN_BIT_WIDTH).map_err(|_| {
-                    gap!(
-                        "unsupported_wienerns_lr_selectable_transform_records_delta_q_sign_read",
-                        tile_offset
-                    )
-                })? != 0;
-                let delta_q_abs = i32::try_from(delta_q_abs).map_err(|_| {
-                    gap!(
-                        "unsupported_wienerns_lr_selectable_transform_records_delta_q_abs_width",
-                        tile_offset
-                    )
-                })?;
+                let sign_bit = symbols
+                    .read_literal(DELTA_Q_SIGN_BIT_WIDTH)
+                    .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?
+                    != 0;
+                let delta_q_abs =
+                    i32::try_from(delta_q_abs).map_err(|_| selectable_state_error())?;
                 let reduced_delta_q_index = if sign_bit { -delta_q_abs } else { delta_q_abs };
                 self.current_q_index = updated_current_q_index(
                     self.current_q_index,
@@ -350,7 +255,7 @@ impl CdefState {
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         let row_start = mi_rows.start / CDEF_UNIT_MI;
         let col_start = mi_cols.start / CDEF_UNIT_MI;
@@ -364,13 +269,11 @@ impl CdefState {
             .min(self.col_start + self.cols);
         let rows = row_end.saturating_sub(row_start);
         let cols = col_end.saturating_sub(col_start);
-        let len = rows
-            .checked_mul(cols)
-            .ok_or_else(|| cdef_grid_overflow_error(tile_offset))?;
+        let len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
         let mut values = Vec::new();
         values
             .try_reserve_exact(len)
-            .map_err(|_| cdef_grid_overflow_error(tile_offset))?;
+            .map_err(|_| selectable_allocation_error())?;
         values.resize(len, None);
         Ok(Self {
             row_start,
@@ -390,9 +293,7 @@ impl CdefState {
     ) -> Result<Self> {
         let rows = mi_rows.div_ceil(CDEF_UNIT_MI);
         let cols = mi_cols.div_ceil(CDEF_UNIT_MI);
-        let values_len = rows
-            .checked_mul(cols)
-            .ok_or_else(|| cdef_grid_overflow_error(tile_offset))?;
+        let values_len = rows.checked_mul(cols).ok_or_else(selectable_state_error)?;
         Ok(Self {
             row_start: 0,
             col_start: 0,
@@ -419,10 +320,7 @@ impl CdefState {
             return Ok(());
         }
         let Some(cdef) = core.cdef_params.as_ref() else {
-            return Err(gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_missing_cdef_params",
-                tile_offset
-            ));
+            return Err(selectable_state_error());
         };
         if !cdef.cdef_frame_enable {
             return Ok(());
@@ -430,17 +328,9 @@ impl CdefState {
         if skip_txfm && cdef.cdef_on_skip_txfm_frame_enable == Some(false) {
             return Ok(());
         }
-        let strengths = cdef.cdef_strengths.ok_or_else(|| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_missing_cdef_strengths",
-                tile_offset
-            )
-        })? as usize;
+        let strengths = cdef.cdef_strengths.ok_or_else(selectable_state_error)? as usize;
         if !(1..=8).contains(&strengths) {
-            return Err(gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_strengths",
-                tile_offset
-            ));
+            return Err(selectable_state_error());
         }
 
         let unit_row = frontier.r / CDEF_UNIT_MI;
@@ -450,12 +340,9 @@ impl CdefState {
             || unit_row >= self.row_start + self.rows
             || unit_col >= self.col_start + self.cols
         {
-            return Err(gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_bounds",
-                tile_offset
-            ));
+            return Err(selectable_state_error());
         }
-        if self.value(unit_row, unit_col, tile_offset)?.is_some() {
+        if self.value(unit_row, unit_col)?.is_some() {
             return Ok(());
         }
 
@@ -464,14 +351,9 @@ impl CdefState {
         } else {
             let tile_row_start = work_unit.mi_row_range().start as usize;
             let tile_col_start = work_unit.mi_col_range().start as usize;
-            let ctx = self.cdef_index0_ctx_at(
-                frontier.r,
-                frontier.c,
-                tile_row_start,
-                tile_col_start,
-                tile_offset,
-            )?;
-            let cdef_index0 = read_tx_symbol(
+            let ctx =
+                self.cdef_index0_ctx_at(frontier.r, frontier.c, tile_row_start, tile_col_start)?;
+            let cdef_index0 = read_tx_symbol_cdef(
                 work_unit,
                 symbols,
                 TileCdfSelector::CdefIndex0 { ctx },
@@ -482,17 +364,17 @@ impl CdefState {
             } else if strengths == 2 {
                 1
             } else {
-                read_tx_symbol(
+                read_tx_symbol_cdef(
                     work_unit,
                     symbols,
                     TileCdfSelector::CdefIndexMinus1 { strengths },
                     tile_offset,
                 )?
                 .checked_add(1)
-                .ok_or_else(|| cdef_index_overflow_error(tile_offset))?
+                .ok_or_else(selectable_state_error)?
             }
         };
-        self.fill_units(frontier.r, frontier.c, n4w, n4h, strength, tile_offset)
+        self.fill_units(frontier.r, frontier.c, n4w, n4h, strength)
     }
 
     fn cdef_index0_ctx_at(
@@ -501,7 +383,6 @@ impl CdefState {
         mi_col: usize,
         tile_row_start: usize,
         tile_col_start: usize,
-        tile_offset: ByteOffset,
     ) -> Result<usize> {
         let unit_row = mi_row / CDEF_UNIT_MI;
         let unit_col = mi_col / CDEF_UNIT_MI;
@@ -512,7 +393,7 @@ impl CdefState {
             .checked_sub(CDEF_UNIT_MI)
             .is_some_and(|left_col| left_col >= tile_col_start)
         {
-            if self.value(unit_row, unit_col - 1, tile_offset)? == Some(0) {
+            if self.value(unit_row, unit_col - 1)? == Some(0) {
                 ctx += 1;
             }
             cnt += 1;
@@ -521,7 +402,7 @@ impl CdefState {
             && above_row >= tile_row_start
             && mi_row / self.sb_size4 == above_row / self.sb_size4
         {
-            if self.value(unit_row - 1, unit_col, tile_offset)? == Some(0) {
+            if self.value(unit_row - 1, unit_col)? == Some(0) {
                 ctx += 1;
             }
             cnt += 1;
@@ -539,7 +420,6 @@ impl CdefState {
         n4w: usize,
         n4h: usize,
         strength: usize,
-        tile_offset: ByteOffset,
     ) -> Result<()> {
         let start_unit_row = mi_row / CDEF_UNIT_MI;
         let start_unit_col = mi_col / CDEF_UNIT_MI;
@@ -549,32 +429,32 @@ impl CdefState {
         let col_end = (self.col_start + self.cols).min(start_unit_col.saturating_add(unit_cols));
         for row in start_unit_row.max(self.row_start)..row_end {
             for col in start_unit_col.max(self.col_start)..col_end {
-                let index = self.index(row, col, tile_offset)?;
+                let index = self.index(row, col)?;
                 self.values[index] = Some(strength);
             }
         }
         Ok(())
     }
 
-    fn value(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<Option<usize>> {
-        let index = self.index(row, col, tile_offset)?;
+    fn value(&self, row: usize, col: usize) -> Result<Option<usize>> {
+        let index = self.index(row, col)?;
         Ok(self.values[index])
     }
 
-    fn index(&self, row: usize, col: usize, tile_offset: ByteOffset) -> Result<usize> {
+    fn index(&self, row: usize, col: usize) -> Result<usize> {
         let local_row = row
             .checked_sub(self.row_start)
-            .ok_or_else(|| cdef_index_bounds_error(tile_offset))?;
+            .ok_or_else(selectable_state_error)?;
         let local_col = col
             .checked_sub(self.col_start)
-            .ok_or_else(|| cdef_index_bounds_error(tile_offset))?;
+            .ok_or_else(selectable_state_error)?;
         if local_row >= self.rows || local_col >= self.cols {
-            return Err(cdef_index_bounds_error(tile_offset));
+            return Err(selectable_state_error());
         }
         local_row
             .checked_mul(self.cols)
             .and_then(|start| start.checked_add(local_col))
-            .ok_or_else(|| cdef_index_overflow_error(tile_offset))
+            .ok_or_else(selectable_state_error)
     }
 
     pub(crate) fn merge_tile(
@@ -582,7 +462,7 @@ impl CdefState {
         tile: &Self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<()> {
         let expected_row_start = mi_rows.start / CDEF_UNIT_MI;
         let expected_col_start = mi_cols.start / CDEF_UNIT_MI;
@@ -596,23 +476,22 @@ impl CdefState {
             || tile.rows != row_end.saturating_sub(expected_row_start)
             || tile.cols != col_end.saturating_sub(expected_col_start)
         {
-            return Err(cdef_grid_shape_error(tile_offset));
+            return Err(selectable_state_error());
         }
         for row in mi_rows.start / CDEF_UNIT_MI..row_end {
             for col in mi_cols.start / CDEF_UNIT_MI..col_end {
-                let index = self.index(row, col, tile_offset)?;
-                self.values[index] = tile.value(row, col, tile_offset)?;
+                let index = self.index(row, col)?;
+                self.values[index] = tile.value(row, col)?;
             }
         }
         Ok(())
     }
 
-    pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
+    pub(crate) fn into_grid(self, _tile_offset: ByteOffset) -> Result<CdefUnitGrid> {
         if self.row_start != 0 || self.col_start != 0 {
-            return Err(cdef_grid_shape_error(tile_offset));
+            return Err(selectable_state_error());
         }
-        CdefUnitGrid::new(self.rows, self.cols, self.values)
-            .map_err(|_| cdef_grid_shape_error(tile_offset))
+        CdefUnitGrid::new(self.rows, self.cols, self.values).map_err(|_| selectable_state_error())
     }
 }
 
@@ -858,39 +737,21 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
         let b_size = frontier.b_size.index();
         if b_size == BLOCK_4X4 {
             grid.set_tx_size(frontier.r, frontier.c, 1, 1, false, false)
-                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+                .map_err(selectable_transform_record_error)?;
         } else {
             let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
-                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-            let tx_w4 = tx_dimension("Tx_Width", &TX_WIDTH, max_tx_size, tile_offset)? / MI_SIZE;
-            let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, max_tx_size, tile_offset)? / MI_SIZE;
-            let extent = frontier_4x4_extent(
-                frontier,
-                || {
-                    gap!(
-                        "unsupported_wienerns_lr_selectable_transform_records_inter_block_width",
-                        tile_offset
-                    )
-                },
-                || {
-                    gap!(
-                        "unsupported_wienerns_lr_selectable_transform_records_inter_block_height",
-                        tile_offset
-                    )
-                },
-            )?;
-            let row_end = frontier.r.checked_add(extent.rows).ok_or_else(|| {
-                gap!(
-                    "unsupported_wienerns_lr_selectable_transform_records_inter_row_end_overflow",
-                    tile_offset
-                )
-            })?;
-            let col_end = frontier.c.checked_add(extent.cols).ok_or_else(|| {
-                gap!(
-                    "unsupported_wienerns_lr_selectable_transform_records_inter_col_end_overflow",
-                    tile_offset
-                )
-            })?;
+                .map_err(selectable_transform_record_error)?;
+            let tx_w4 = tx_dimension("Tx_Width", &TX_WIDTH, max_tx_size)? / MI_SIZE;
+            let tx_h4 = tx_dimension("Tx_Height", &TX_HEIGHT, max_tx_size)? / MI_SIZE;
+            let extent = frontier_4x4_extent(frontier)?;
+            let row_end = frontier
+                .r
+                .checked_add(extent.rows)
+                .ok_or_else(selectable_state_error)?;
+            let col_end = frontier
+                .c
+                .checked_add(extent.cols)
+                .ok_or_else(selectable_state_error)?;
             for row in (frontier.r..row_end).step_by(tx_h4) {
                 for col in (frontier.c..col_end).step_by(tx_w4) {
                     let Some(tx_partition) = read_tx_partition_symbols(
@@ -909,39 +770,27 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
                         continue;
                     };
                     apply_tx_partition(grid, row, col, max_tx_size, tx_partition)
-                        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+                        .map_err(selectable_transform_record_error)?;
                 }
             }
         }
-        let extent = frontier_4x4_extent(
-            frontier,
-            || {
-                gap!(
-                    "unsupported_wienerns_lr_selectable_transform_records_inter_region_width",
-                    tile_offset
-                )
-            },
-            || {
-                gap!(
-                    "unsupported_wienerns_lr_selectable_transform_records_inter_region_height",
-                    tile_offset
-                )
-            },
-        )?;
+        let extent = frontier_4x4_extent(frontier)?;
         grid.records_for_region_into(frontier.r, frontier.c, extent.rows, extent.cols, records)
-            .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+            .map_err(selectable_transform_record_error)?;
         Ok(())
     })
-    .map_err(|error| selectable_transform_record_error(error, tile_offset))?
+    .map_err(selectable_transform_record_error)?
 }
 
-fn frontier_4x4_extent(
-    frontier: &DecodeBlockFrontier,
-    width_error: impl FnOnce() -> crate::error::DecodeError,
-    height_error: impl FnOnce() -> crate::error::DecodeError,
-) -> Result<Block4x4Extent> {
-    let n4w = frontier.b_size.num_4x4_wide().map_err(|_| width_error())?;
-    let n4h = frontier.b_size.num_4x4_high().map_err(|_| height_error())?;
+fn frontier_4x4_extent(frontier: &DecodeBlockFrontier) -> Result<Block4x4Extent> {
+    let n4w = frontier
+        .b_size
+        .num_4x4_wide()
+        .map_err(|_| selectable_state_error())?;
+    let n4h = frontier
+        .b_size
+        .num_4x4_high()
+        .map_err(|_| selectable_state_error())?;
     Ok(Block4x4Extent {
         cols: n4w,
         rows: n4h,
@@ -964,16 +813,16 @@ fn read_tx_partition_symbols(
     if row >= grid.rows || col >= grid.cols {
         return Ok(None);
     }
-    let tx_width = tx_dimension("Tx_Width", &TX_WIDTH, tx_size, tile_offset)?;
-    let tx_height = tx_dimension("Tx_Height", &TX_HEIGHT, tx_size, tile_offset)?;
+    let tx_width = tx_dimension("Tx_Width", &TX_WIDTH, tx_size)?;
+    let tx_height = tx_dimension("Tx_Height", &TX_HEIGHT, tx_size)?;
     let horz_tx = tx_size_from_dimensions(tx_width, tx_height >> 1);
     let vert_tx = tx_size_from_dimensions(tx_width >> 1, tx_height);
     let allow_horz = horz_tx.is_some();
     let allow_vert = vert_tx.is_some();
     let mut tx_partition = TX_PARTITION_NONE;
 
-    let block_width = block_dimension("Block_Width", mi_size, true, tile_offset)?;
-    let block_height = block_dimension("Block_Height", mi_size, false, tile_offset)?;
+    let block_width = block_dimension("Block_Width", mi_size, true)?;
+    let block_height = block_dimension("Block_Height", mi_size, false)?;
     let tx_fsc_mode = usize::from(fsc_mode != 0);
     let tx_is_inter = usize::from(is_inter);
     if block_width <= 64 && block_height <= 64 {
@@ -982,7 +831,7 @@ fn read_tx_partition_symbols(
             &SIZE_TO_TX_PART_GROUP_LOOKUP,
             mi_size,
         )
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+        .map_err(selectable_transform_record_error)?;
         let do_partition = read_tx_symbol(
             work_unit,
             symbols,
@@ -992,6 +841,7 @@ fn read_tx_partition_symbols(
                 txfm_split_group,
             },
             tile_offset,
+            "5.20.6.3",
         )? != 0;
         if do_partition {
             if allow_horz && allow_vert {
@@ -1000,7 +850,7 @@ fn read_tx_partition_symbols(
                     &SIZE_TO_TX_TYPE_GROUP_VERT_AND_HORZ,
                     mi_size,
                 )
-                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
+                .map_err(selectable_transform_record_error)?;
                 let symbol = read_tx_symbol(
                     work_unit,
                     symbols,
@@ -1011,18 +861,17 @@ fn read_tx_partition_symbols(
                         reduced: false,
                     },
                     tile_offset,
+                    "5.20.6.3",
                 )?;
-                tx_partition = symbol.checked_add(1).ok_or_else(|| {
-                    gap!("unsupported_wienerns_lr_selectable_transform_records_partition_symbol_overflow", tile_offset)
-                })?;
+                tx_partition = symbol + 1;
             } else {
                 let vert_or_horz_group = table_usize(
                     "Size_To_Tx_Type_Group_Vert_Or_Horz",
                     &SIZE_TO_TX_TYPE_GROUP_VERT_OR_HORZ,
                     mi_size,
                 )
-                .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-                if vert_or_horz_group > 0 {
+                .map_err(selectable_transform_record_error)?;
+                if let Some(vert_or_horz_ctx) = vert_or_horz_group.checked_sub(1) {
                     let tx_2or3 = if work_unit.coeff_frame_facts().reduced_tx_set() != 0 {
                         0
                     } else {
@@ -1032,11 +881,10 @@ fn read_tx_partition_symbols(
                             TileCdfSelector::Tx2Or3PartitionType {
                                 fsc_mode: tx_fsc_mode,
                                 is_inter: tx_is_inter,
-                                ctx: vert_or_horz_group.checked_sub(1).ok_or_else(|| {
-                                    gap!("unsupported_wienerns_lr_selectable_transform_records_vert_or_horz_context_underflow", tile_offset)
-                                })?,
+                                ctx: vert_or_horz_ctx,
                             },
                             tile_offset,
+                            "5.20.6.3",
                         )?
                     };
                     tx_partition = if allow_horz {
@@ -1091,29 +939,19 @@ fn apply_tx_partition(
         }
         TX_PARTITION_HORZ4 => {
             h4 >>= 2;
-            for part in 0..4 {
-                let tx = grid.set_tx_size(row, col, h4, w4, false, false)?;
-                if part == 3 {
-                    return Ok(tx);
-                }
+            for _ in 0..3 {
+                grid.set_tx_size(row, col, h4, w4, false, false)?;
                 row += h4;
             }
-            Err(SelectableTransformRecordError::Unsupported {
-                reason: "horz4-loop",
-            })
+            grid.set_tx_size(row, col, h4, w4, false, false)
         }
         TX_PARTITION_VERT4 => {
             w4 >>= 2;
-            for part in 0..4 {
-                let tx = grid.set_tx_size(row, col, h4, w4, false, false)?;
-                if part == 3 {
-                    return Ok(tx);
-                }
+            for _ in 0..3 {
+                grid.set_tx_size(row, col, h4, w4, false, false)?;
                 col += w4;
             }
-            Err(SelectableTransformRecordError::Unsupported {
-                reason: "vert4-loop",
-            })
+            grid.set_tx_size(row, col, h4, w4, false, false)
         }
         TX_PARTITION_HORZ5 => {
             h4 >>= 2;
@@ -1165,18 +1003,33 @@ fn apply_tx_partition(
     }
 }
 
+fn read_tx_symbol_cdef(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    selector: TileCdfSelector,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    read_tx_symbol(work_unit, symbols, selector, tile_offset, "5.20.10.1")
+}
+
 fn read_tx_symbol(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     selector: TileCdfSelector,
     tile_offset: ByteOffset,
+    spec_section: &'static str,
 ) -> Result<usize> {
     let value = work_unit
         .cdf_mut()
         .tile_cdfs_mut()
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| selectable_symbol_read_error(tile_offset))?;
+        .map_err(|error| match error {
+            BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
+            BlockSymbolTraceReadError::Symbol(_) => {
+                selectable_symbol_read_error(tile_offset, spec_section)
+            }
+        })?;
     Ok(value)
 }
 
@@ -1185,69 +1038,25 @@ fn read_delta_q_abs(
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let delta_q_abs = read_tx_symbol(work_unit, symbols, TileCdfSelector::DeltaQ, tile_offset)?;
+    let delta_q_abs = read_tx_symbol(
+        work_unit,
+        symbols,
+        TileCdfSelector::DeltaQ,
+        tile_offset,
+        "5.20.5.11",
+    )?;
     if delta_q_abs != DELTA_Q_SMALL {
         return Ok(delta_q_abs);
     }
-    let delta_q_rem_bits = read_literal_usize(symbols, DELTA_Q_REM_BITS_WIDTH, tile_offset)?
-        .checked_add(1)
-        .ok_or_else(|| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_rem_bits_overflow",
-                tile_offset
-            )
-        })?;
-    let delta_q_abs_bits = read_literal_usize(
-        symbols,
-        u32::try_from(delta_q_rem_bits).map_err(|_| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_rem_bits_width",
-                tile_offset
-            )
-        })?,
-        tile_offset,
-    )?;
-    let delta_q_large_base = 1usize
-        .checked_shl(u32::try_from(delta_q_rem_bits).map_err(|_| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_shift_width",
-                tile_offset
-            )
-        })?)
-        .ok_or_else(|| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_shift_overflow",
-                tile_offset
-            )
-        })?;
-    delta_q_abs_bits
-        .checked_add(delta_q_large_base)
-        .and_then(|value| value.checked_add(DELTA_Q_SMALL - 2))
-        .ok_or_else(|| {
-            gap!(
-                "unsupported_wienerns_lr_selectable_transform_records_delta_q_abs_overflow",
-                tile_offset
-            )
-        })
-}
-
-fn read_literal_usize(
-    symbols: &mut SymbolDecoder<'_>,
-    width: u32,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    let value = symbols.read_literal(width).map_err(|_| {
-        gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_literal_read",
-            tile_offset
-        )
-    })?;
-    usize::try_from(value).map_err(|_| {
-        gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_literal_width",
-            tile_offset
-        )
-    })
+    let delta_q_rem_bits = symbols
+        .read_literal(DELTA_Q_REM_BITS_WIDTH)
+        .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?
+        + 1;
+    let delta_q_abs_bits = symbols
+        .read_literal(delta_q_rem_bits)
+        .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?;
+    let delta_q_large_base = 1usize << delta_q_rem_bits;
+    Ok(delta_q_abs_bits as usize + delta_q_large_base + (DELTA_Q_SMALL - 2))
 }
 
 fn updated_current_q_index(
@@ -1278,35 +1087,19 @@ fn intra_delta_q_sb_size4(sequence: &SequenceHeader, tile_offset: ByteOffset) ->
     })
 }
 
-fn block_dimension(
-    table: &'static str,
-    block_size: usize,
-    width: bool,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
+fn block_dimension(table: &'static str, block_size: usize, width: bool) -> Result<usize> {
     let values = if width {
         &NUM_4X4_BLOCKS_WIDE
     } else {
         &NUM_4X4_BLOCKS_HIGH
     };
-    let dimension = table_usize(table, values, block_size)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))?;
-    dimension.checked_mul(MI_SIZE).ok_or_else(|| {
-        gap!(
-            "unsupported_wienerns_lr_selectable_transform_records_block_dimension_overflow",
-            tile_offset
-        )
-    })
+    let dimension =
+        table_usize(table, values, block_size).map_err(selectable_transform_record_error)?;
+    Ok(dimension * MI_SIZE)
 }
 
-fn tx_dimension(
-    table: &'static str,
-    values: &[i32],
-    tx_size: usize,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    tx_dimension_for_grid(table, values, tx_size)
-        .map_err(|error| selectable_transform_record_error(error, tile_offset))
+fn tx_dimension(table: &'static str, values: &[i32], tx_size: usize) -> Result<usize> {
+    tx_dimension_for_grid(table, values, tx_size).map_err(selectable_transform_record_error)
 }
 
 fn tx_dimension_for_grid(

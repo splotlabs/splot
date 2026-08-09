@@ -39,6 +39,7 @@ pub(crate) use block_decoded_state::TileBlockDecodedState;
 pub(crate) use cdf::block_context::{
     IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
 };
+pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
 pub(crate) use cdf::{
     FrameCdfSubset, MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
 };
