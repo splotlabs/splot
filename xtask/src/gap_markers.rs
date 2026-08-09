@@ -40,7 +40,7 @@ const DECODE_SRC: &str = "crates/splot-decode/src";
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 155;
+const GAP_MARKER_FLOOR: usize = 172;
 
 /// One `gap!("reason", …)` marker site: its reason id and the file it lives in.
 struct GapSite {
@@ -48,16 +48,28 @@ struct GapSite {
     file: String,
 }
 
+struct MarkerScan {
+    reasons: Vec<String>,
+    non_literal_sites: Vec<NonLiteralMarker>,
+}
+
+struct NonLiteralMarker {
+    macro_name: &'static str,
+    line: usize,
+}
+
 /// Extracts the `reason` literal of every `gap!("…", …)` call in `code`, skipping
 /// `//` line comments, `/* */` block comments, char literals, and string literals
-/// (so a `gap!` inside a comment or string is not matched). Only literal reasons
-/// are captured; the marker convention forbids non-literal reason ids.
-fn scan_gap_reasons(code: &str) -> Vec<String> {
+/// (so a `gap!` inside a comment or string is not matched). Marker calls whose
+/// first argument is not a literal are returned separately so the convention can
+/// be enforced instead of silently omitting them from the inventory.
+fn scan_gap_reasons(code: &str) -> MarkerScan {
     let chars: Vec<char> = code.chars().collect();
     let n = chars.len();
     let mut i = 0usize;
     let mut prev_ident = false;
-    let mut out = Vec::new();
+    let mut reasons = Vec::new();
+    let mut non_literal_sites = Vec::new();
     while i < n {
         let c = chars[i];
         if c == '/' && i + 1 < n && chars[i + 1] == '/' {
@@ -115,11 +127,15 @@ fn scan_gap_reasons(code: &str) -> Vec<String> {
             prev_ident = false;
             continue;
         }
-        if !prev_ident && let Some(bang_len) = matches_marker_bang(&chars, i) {
+        if !prev_ident && let Some((macro_name, bang_len)) = matches_marker_bang(&chars, i) {
             if let Some((reason, next)) = gap_reason_after(&chars, i + bang_len) {
-                out.push(reason);
+                reasons.push(reason);
                 i = next;
             } else {
+                non_literal_sites.push(NonLiteralMarker {
+                    macro_name,
+                    line: chars[..i].iter().filter(|&&ch| ch == '\n').count() + 1,
+                });
                 i += bang_len;
             }
             prev_ident = false;
@@ -128,7 +144,10 @@ fn scan_gap_reasons(code: &str) -> Vec<String> {
         prev_ident = c.is_alphanumeric() || c == '_';
         i += 1;
     }
-    out
+    MarkerScan {
+        reasons,
+        non_literal_sites,
+    }
 }
 
 /// Every unimplemented-feature marker macro. Their first `"reason"` literals share
@@ -146,13 +165,13 @@ const MARKER_MACROS: &[&str] = &[
 ];
 
 /// When `chars[i..]` begins one of [`MARKER_MACROS`] immediately followed by `!`,
-/// returns the length of that `name!` token; otherwise `None`.
-fn matches_marker_bang(chars: &[char], i: usize) -> Option<usize> {
-    for name in MARKER_MACROS {
-        let name: Vec<char> = name.chars().collect();
-        let end = i + name.len();
-        if end < chars.len() && chars[i..end] == name[..] && chars[end] == '!' {
-            return Some(name.len() + 1);
+/// returns its name and the length of that `name!` token; otherwise `None`.
+fn matches_marker_bang(chars: &[char], i: usize) -> Option<(&'static str, usize)> {
+    for &name in MARKER_MACROS {
+        let name_chars: Vec<char> = name.chars().collect();
+        let end = i + name_chars.len();
+        if end < chars.len() && chars[i..end] == name_chars[..] && chars[end] == '!' {
+            return Some((name, name_chars.len() + 1));
         }
     }
     None
@@ -210,13 +229,26 @@ fn skip_string_literal(chars: &[char], start: usize) -> (usize, String) {
 /// below `floor`.
 fn evaluate(files: &[(String, String)], floor: usize) -> Result<usize> {
     let mut sites: Vec<GapSite> = Vec::new();
+    let mut non_literals = String::new();
     for (path, text) in files {
-        for reason in scan_gap_reasons(strip_test_modules(text)) {
+        let scan = scan_gap_reasons(strip_test_modules(text));
+        for site in scan.non_literal_sites {
+            let _ = write!(
+                non_literals,
+                "\n  {path}:{}: `{}!` reason must be a string literal",
+                site.line, site.macro_name
+            );
+        }
+        for reason in scan.reasons {
             sites.push(GapSite {
                 reason,
                 file: path.clone(),
             });
         }
+    }
+
+    if !non_literals.is_empty() {
+        bail!("gap marker reason ids must be string literals:{non_literals}");
     }
 
     let mut by_reason: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
@@ -297,9 +329,10 @@ mod tests {
             // A lifetime must not be mistaken for a char literal that swallows a marker.
             fn f<'a>(e: Foo<'_>) { general_intra_at!("intra_after_lifetime", off, "m", "s"); }
         "#;
-        let reasons = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code);
+        assert!(scan.non_literal_sites.is_empty());
         assert_eq!(
-            reasons,
+            scan.reasons,
             vec![
                 "inter_use_global_motion",
                 "intra_missing_edge",
@@ -309,12 +342,30 @@ mod tests {
     }
 
     #[test]
-    fn ignores_non_literal_reason_and_identifier_prefix() {
+    fn reports_non_literal_reason_and_ignores_identifier_prefix() {
         let code = r#"
             let x = mygap!("not_a_marker", a, b, c);
             let y = gap!(REASON_CONST, a, b, c);
         "#;
-        assert!(scan_gap_reasons(code).is_empty());
+        let scan = scan_gap_reasons(code);
+        assert!(scan.reasons.is_empty());
+        assert_eq!(scan.non_literal_sites.len(), 1);
+        assert_eq!(scan.non_literal_sites[0].macro_name, "gap");
+        assert_eq!(scan.non_literal_sites[0].line, 3);
+    }
+
+    #[test]
+    fn non_literal_reason_fails_with_file_and_line() {
+        let files = vec![(
+            "a.rs".to_string(),
+            "let x = 1;\nlet y = gap!(REASON_CONST, a, b, c);".to_string(),
+        )];
+        let err = evaluate(&files, 0).unwrap_err().to_string();
+        assert!(err.contains("a.rs:2"), "{err}");
+        assert!(
+            err.contains("`gap!` reason must be a string literal"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -357,7 +408,9 @@ mod tests {
             let c = compound_missing!("compound_z", o, "in", "s");
             let d = inter_diag!("diag_w", o, "m", "s");
         "#;
-        let mut reasons = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code);
+        assert!(scan.non_literal_sites.is_empty());
+        let mut reasons = scan.reasons;
         reasons.sort();
         assert_eq!(reasons, vec!["compound_z", "diag_w", "inter_x", "intra_y"]);
     }
