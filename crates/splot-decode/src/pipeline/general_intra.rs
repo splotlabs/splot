@@ -174,7 +174,7 @@ impl GeneralIntraReconCommand {
 }
 
 macro_rules! general_intra_at {
-    ($reason:expr, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
+    ($reason:literal, $offset:expr, $message:expr, $spec_section:expr $(,)?) => {
         general_intra_unsupported($reason, Some($offset), $message, $spec_section)
     };
 }
@@ -1037,33 +1037,99 @@ fn general_intra_chroma_capability_error(
     error: ChromaCapabilityUnsupported,
     offset: ByteOffset,
 ) -> DecodeError {
-    general_intra_at!(
-        error.reason_id,
-        offset,
-        error.message,
-        GENERAL_INTRA_MODE_SPEC_SECTION,
-    )
+    match error.reason_id {
+        "general_intra_rect_cfl_missing_params" => general_intra_at!(
+            "general_intra_rect_cfl_missing_params",
+            offset,
+            error.message,
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        "general_intra_non_dc_chroma" => general_intra_at!(
+            "general_intra_non_dc_chroma",
+            offset,
+            error.message,
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        "general_intra_chroma_part_cfl_missing_params" => general_intra_at!(
+            "general_intra_chroma_part_cfl_missing_params",
+            offset,
+            error.message,
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        "general_intra_chroma_part_non_dc_chroma" => general_intra_at!(
+            "general_intra_chroma_part_non_dc_chroma",
+            offset,
+            error.message,
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        "general_intra_cfl_non_multi" => general_intra_at!(
+            "general_intra_cfl_non_multi",
+            offset,
+            error.message,
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        _ => general_intra_at!(
+            "general_intra_chroma_capability",
+            offset,
+            error.message,
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+    }
 }
 
 fn general_intra_luma_plan_error(error: IntraLumaUnsupported, offset: ByteOffset) -> DecodeError {
-    general_intra_at!(
-        error.reason_id(),
-        offset,
-        error.message(),
-        GENERAL_INTRA_MODE_SPEC_SECTION,
-    )
+    match error.reason_id() {
+        "general_intra_unsupported_luma_mode" => general_intra_at!(
+            "general_intra_unsupported_luma_mode",
+            offset,
+            error.message(),
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+        _ => general_intra_at!(
+            "general_intra_luma_plan",
+            offset,
+            error.message(),
+            GENERAL_INTRA_MODE_SPEC_SECTION,
+        ),
+    }
 }
 
 fn general_intra_residual_plan_error(
     error: ResidualPipelineUnsupported,
     offset: ByteOffset,
 ) -> DecodeError {
-    general_intra_at!(
-        error.reason_id(),
-        offset,
-        error.message(),
-        error.spec_section(),
-    )
+    match error.reason_id() {
+        "general_intra_rect_tx_size" => general_intra_at!(
+            "general_intra_rect_tx_size",
+            offset,
+            error.message(),
+            error.spec_section(),
+        ),
+        "general_intra_rect_chroma_tx_size" => general_intra_at!(
+            "general_intra_rect_chroma_tx_size",
+            offset,
+            error.message(),
+            error.spec_section(),
+        ),
+        "general_intra_large_block_chunk_geometry" => general_intra_at!(
+            "general_intra_large_block_chunk_geometry",
+            offset,
+            error.message(),
+            error.spec_section(),
+        ),
+        "general_intra_residual_plane_capacity" => general_intra_at!(
+            "general_intra_residual_plane_capacity",
+            offset,
+            error.message(),
+            error.spec_section(),
+        ),
+        _ => general_intra_at!(
+            "general_intra_residual_plan",
+            offset,
+            error.message(),
+            error.spec_section(),
+        ),
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -1107,14 +1173,32 @@ fn general_intra_residual_error(
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }
-        GeneralIntraResidualError::UnsupportedTransformPartition { reason } => {
-            general_intra_at!(
-                reason,
+        GeneralIntraResidualError::UnsupportedTransformPartition { reason } => match reason {
+            "unsupported_general_intra_tx_partition_record_capacity" => general_intra_at!(
+                "unsupported_general_intra_tx_partition_record_capacity",
                 offset,
                 missing_capability_message!("intra.residual.transform_partition"),
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            )
-        }
+            ),
+            "unsupported_general_intra_tx_partition_non_max_tx_size" => general_intra_at!(
+                "unsupported_general_intra_tx_partition_non_max_tx_size",
+                offset,
+                missing_capability_message!("intra.residual.transform_partition"),
+                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+            ),
+            "unsupported_general_intra_tx_partition_empty" => general_intra_at!(
+                "unsupported_general_intra_tx_partition_empty",
+                offset,
+                missing_capability_message!("intra.residual.transform_partition"),
+                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+            ),
+            _ => general_intra_at!(
+                "general_intra_transform_partition",
+                offset,
+                missing_capability_message!("intra.residual.transform_partition"),
+                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
+            ),
+        },
         GeneralIntraResidualError::UnexpectedBranch => general_intra_at!(
             "general_intra_luma_coeff_unexpected_branch",
             offset,
