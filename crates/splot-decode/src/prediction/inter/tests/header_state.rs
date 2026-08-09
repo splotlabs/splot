@@ -225,6 +225,69 @@ fn missing_reference_ccso_params_is_a_typed_reference_state_error() {
 }
 
 #[test]
+fn missing_reference_ccso_plane_is_a_malformed_source_diagnostic() {
+    let (_, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.num_total_refs = Some(1);
+    inter.ref_frame_idx = [0].into_iter().collect();
+    let saved_ccso = core.ccso_params.clone().expect("saved CCSO state");
+    let reuse_plane = splot_core::headers::frame::CcsoPlaneParams {
+        ccso_planes: true,
+        reuse_ccso: true,
+        sb_reuse_ccso: false,
+        ccso_ref_idx: Some(0),
+        ccso_bo_only: None,
+        ccso_scale_idx: None,
+        ccso_quant_idx: None,
+        ccso_ext_filter: None,
+        ccso_edge_clf: None,
+        ccso_max_band_log2: None,
+        ccso_offset_idx: Vec::new(),
+    };
+    core.ccso_params
+        .as_mut()
+        .expect("CCSO state")
+        .planes
+        .push(reuse_plane.clone());
+    let mut disabled_ccso = saved_ccso.clone();
+    let mut disabled_plane = reuse_plane;
+    disabled_plane.ccso_planes = false;
+    disabled_plane.reuse_ccso = false;
+    disabled_plane.ccso_ref_idx = None;
+    disabled_ccso.planes.push(disabled_plane);
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+
+    for (saved, reuse_ccso, sb_reuse_ccso) in [
+        (saved_ccso.clone(), true, false),
+        (disabled_ccso.clone(), true, false),
+        (disabled_ccso, false, true),
+    ] {
+        let plane = &mut core.ccso_params.as_mut().expect("CCSO state").planes[0];
+        plane.reuse_ccso = reuse_ccso;
+        plane.sb_reuse_ccso = sb_reuse_ccso;
+        reference.ref_ccso_params = vec![Some(std::sync::Arc::new(saved))];
+        let error =
+            super::super::resolve_ccso_reference_reuse(&mut core, &reference, offset, Some(2))
+                .expect_err("missing or disabled saved CCSO plane");
+        let DecodeError::MalformedSource { issue } = &error else {
+            panic!("expected malformed source, got {error}");
+        };
+        assert_eq!(issue.spec_section(), Some("6.17.7.8"));
+        assert_eq!(issue.offset(), Some(offset));
+        assert_eq!(issue.frame_index(), Some(2));
+        assert_eq!(
+            issue.message(),
+            "CCSO reference slot 0 has no saved enabled plane 0; \
+             SavedCcsoPlanes must equal 1 when ccso_ref_idx is present"
+        );
+        let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+            .expect("invalid saved CCSO plane must remain user-reportable");
+        assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+    }
+}
+
+#[test]
 fn ras_missing_reference_map_is_a_typed_header_state_error() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");

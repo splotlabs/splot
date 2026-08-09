@@ -1452,7 +1452,7 @@ fn validate_and_resolve_inter_frame_core(
 ) -> Result<()> {
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
     validate_inter_frame_parse(core, offset, frame_index)?;
-    resolve_ccso_reference_reuse(core, reference, offset)?;
+    resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
     validate_inter_frame_core(core, sequence, offset)
 }
 
@@ -1667,6 +1667,7 @@ fn resolve_ccso_reference_reuse(
     core: &mut FrameHeaderCore,
     reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
+    frame_index: Option<usize>,
 ) -> Result<()> {
     let Some(inter) = core.inter.as_ref() else {
         return Ok(());
@@ -1688,18 +1689,25 @@ fn resolve_ccso_reference_reuse(
         else {
             continue;
         };
+        let ref_ccso = reference.ccso_params_for_slot(slot)?;
+        let Some(ref_plane) = ref_ccso
+            .planes
+            .get(plane_index)
+            .filter(|plane| plane.ccso_planes)
+        else {
+            return Err(malformed_frame_header(
+                offset,
+                frame_index,
+                "6.17.7.8",
+                format!(
+                    "CCSO reference slot {slot} has no saved enabled plane {plane_index}; \
+                     SavedCcsoPlanes must equal 1 when ccso_ref_idx is present"
+                ),
+            ));
+        };
         if !reuse_ccso {
             continue;
         }
-        let ref_ccso = reference.ccso_params_for_slot(slot)?;
-        let Some(ref_plane) = ref_ccso.planes.get(plane_index) else {
-            return Err(inter_missing!(
-                "inter_missing_reference_ccso_plane",
-                offset,
-                "inter.ccso.saved_plane",
-                "7.23"
-            ));
-        };
         let plane = &mut ccso.planes[plane_index];
         plane.ccso_bo_only = ref_plane.ccso_bo_only;
         plane.ccso_scale_idx = ref_plane.ccso_scale_idx;
