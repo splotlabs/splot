@@ -304,6 +304,24 @@ fn compound_reference_facts_keep_missing_width_fail_closed() {
 }
 
 #[test]
+fn compound_reference_facts_keep_missing_height_fail_closed() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint.push(9);
+    reference.ref_frame_width.push(64);
+    let error = compound_reference_facts(&reference, &[0], 0, TILE_OFFSET).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 0,
+                slot_count: 0,
+            }
+        }
+    ));
+}
+
+#[test]
 fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
