@@ -140,14 +140,28 @@ pub(super) fn frame_header_core_checks(
         None
     };
 
-    let Some(core) = parse_frame_core(
+    let core = match parse_frame_core(
         obu,
         first_picture_in_tu,
         active_sequence,
         mfh_record,
         &reference_buffer,
-    ) else {
-        return FrameRapReferences::default();
+    ) {
+        Ok(Some(core)) => core,
+        Err(Error::InvalidTileParams { kind, .. }) => {
+            let rule_id = match kind {
+                TileParamsErrorKind::TileColsOutOfRange => "frame-header/tile-cols-out-of-range",
+                TileParamsErrorKind::TileRowsOutOfRange => "frame-header/tile-rows-out-of-range",
+            };
+            report.push(frame_header_error(
+                rule_id,
+                "6.17.7.2",
+                obu,
+                kind.to_string(),
+            ));
+            return FrameRapReferences::default();
+        }
+        Ok(None) | Err(_) => return FrameRapReferences::default(),
     };
 
     if core.status.is_truncated_in_modeled_region() {

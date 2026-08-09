@@ -9,9 +9,10 @@
 //! tile config (§ 5.4.2) and the frame-level `tile_info()` (§ 5.18.7.2,
 //! [`crate::headers::frame`]), which also uses the § 5.18.7.4 `reuse_tile_params`
 //! helper here. The parser reads syntax only and performs no tile decoding.
+//! Feature tracking: `AV2-5.18.7.3-TILE-PARAMS`.
 
 use crate::bitio::BitReader;
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, TileParamsErrorKind};
 use crate::headers::sequence::{LevelIdx, SuperblockSize, Tier};
 
 /// `MAX_TILE_COLS`: maximum number of tile columns (AV2 v1.0.0 § 3).
@@ -232,7 +233,8 @@ pub struct TileLayout {
 /// # Errors
 /// Returns [`Error::Unimplemented`] when `seq_level_idx` is a reserved level index
 /// (no defined scaling factor, so the bit layout is undefined — a non-conformant
-/// stream). Returns descriptor errors or
+/// stream), or [`Error::InvalidTileParams`] when a non-uniform layout exceeds the
+/// § 6.17.7.2 tile-count limits. Returns descriptor errors or
 /// [`Error::UnexpectedEof`] if the payload ends
 /// mid-field.
 pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileParams> {
@@ -246,7 +248,8 @@ pub fn parse_tile_params(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
 /// # Errors
 /// Returns [`Error::Unimplemented`] when `seq_level_idx` is a reserved level index
 /// (no defined scaling factor, so the bit layout is undefined — a non-conformant
-/// stream). Returns descriptor errors or
+/// stream), or [`Error::InvalidTileParams`] when a non-uniform layout exceeds the
+/// § 6.17.7.2 tile-count limits. Returns descriptor errors or
 /// [`Error::UnexpectedEof`] if the payload ends
 /// mid-field.
 pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> Result<TileLayout> {
@@ -332,6 +335,13 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         let mut tile_cols = 0u32;
         let mut sb_col_starts = Vec::new();
         while start_sb < sb_cols {
+            if tile_cols >= MAX_TILE_COLS {
+                return Err(Error::InvalidTileParams {
+                    offset: reader.byte_offset(),
+                    bit_offset: reader.bit_offset(),
+                    kind: TileParamsErrorKind::TileColsOutOfRange,
+                });
+            }
             sb_col_starts.push(start_sb);
             let n = (sb_cols - start_sb).min(max_tile_width_sb);
             let width_in_sbs_minus_1 = reader.read_ns(n)?;
@@ -354,6 +364,13 @@ pub fn parse_tile_layout(reader: &mut BitReader<'_>, input: TileParamsInput) -> 
         let mut tile_rows = 0u32;
         let mut sb_row_starts = Vec::new();
         while start_sb < sb_rows {
+            if tile_rows >= MAX_TILE_ROWS {
+                return Err(Error::InvalidTileParams {
+                    offset: reader.byte_offset(),
+                    bit_offset: reader.bit_offset(),
+                    kind: TileParamsErrorKind::TileRowsOutOfRange,
+                });
+            }
             sb_row_starts.push(start_sb);
             let max_height = (sb_rows - start_sb).min(max_tile_height_sb);
             let height_in_sbs_minus_1 = reader.read_ns(max_height)?;
@@ -506,6 +523,20 @@ mod tests {
         }
     }
 
+    fn unconstrained_input(frame_width: u32, frame_height: u32) -> TileParamsInput {
+        TileParamsInput {
+            seq_level_idx: LevelIdx::from_bits(NO_LEVEL_IDX),
+            ..input(frame_width, frame_height)
+        }
+    }
+
+    fn unit_tile_run(bits: &mut Bits, mut remaining: u32, count: u32) {
+        for _ in 0..count {
+            bits.ns(0, remaining);
+            remaining -= 1;
+        }
+    }
+
     #[test]
     fn tile_log2_returns_smallest_k() {
         assert_eq!(tile_log2(64, 1), 0);
@@ -577,6 +608,94 @@ mod tests {
         assert!(params.covers_cols);
         assert!(params.covers_rows);
         assert_eq!(reader.consumed_bits(), 2);
+    }
+
+    #[test]
+    fn parse_non_uniform_accepts_exact_tile_count_limits() {
+        let mut bits = Bits::default();
+        bits.bit(0); // uniform_tile_spacing_flag = 0
+        unit_tile_run(&mut bits, MAX_TILE_COLS, MAX_TILE_COLS);
+        unit_tile_run(&mut bits, MAX_TILE_ROWS, MAX_TILE_ROWS);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params = parse_tile_params(
+            &mut reader,
+            unconstrained_input(MAX_TILE_COLS * 64, MAX_TILE_ROWS * 64),
+        )
+        .unwrap();
+        assert!(!params.uniform_spacing);
+        assert_eq!(params.tile_cols, MAX_TILE_COLS);
+        assert_eq!(params.tile_rows, MAX_TILE_ROWS);
+    }
+
+    #[test]
+    fn parse_non_uniform_rejects_column_above_limit() {
+        let mut bits = Bits::default();
+        bits.bit(0); // uniform_tile_spacing_flag = 0
+        unit_tile_run(&mut bits, MAX_TILE_COLS + 1, MAX_TILE_COLS);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            parse_tile_params(
+                &mut reader,
+                unconstrained_input((MAX_TILE_COLS + 1) * 64, 64),
+            ),
+            Err(Error::InvalidTileParams {
+                kind: TileParamsErrorKind::TileColsOutOfRange,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_non_uniform_rejects_row_above_limit() {
+        let mut bits = Bits::default();
+        bits.bit(0); // uniform_tile_spacing_flag = 0
+        unit_tile_run(&mut bits, 1, 1);
+        unit_tile_run(&mut bits, MAX_TILE_ROWS + 1, MAX_TILE_ROWS);
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            parse_tile_params(
+                &mut reader,
+                unconstrained_input(64, (MAX_TILE_ROWS + 1) * 64),
+            ),
+            Err(Error::InvalidTileParams {
+                kind: TileParamsErrorKind::TileRowsOutOfRange,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_uniform_layout_remains_bounded_at_max_columns() {
+        let mut bits = Bits::default();
+        bits.bit(1); // uniform_tile_spacing_flag = 1
+        for _ in 0..tile_log2(1, MAX_TILE_COLS) {
+            bits.bit(1); // increment TileColsLog2 to its existing capped maximum
+        }
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        let params = parse_tile_params(
+            &mut reader,
+            unconstrained_input((MAX_TILE_COLS + 1) * 64, 64),
+        )
+        .unwrap();
+        assert!(params.uniform_spacing);
+        assert_eq!(params.tile_cols, MAX_TILE_COLS);
+        assert_eq!(params.tile_rows, 1);
+    }
+
+    #[test]
+    fn parse_non_uniform_tile_run_reports_eof() {
+        let mut bits = Bits::default();
+        bits.bit(0); // uniform_tile_spacing_flag = 0; remaining run is truncated
+        let data = bits.into_bytes();
+        let mut reader = BitReader::new(&data, ByteOffset::new(0));
+        assert!(matches!(
+            parse_tile_params(&mut reader, unconstrained_input(MAX_TILE_COLS * 64, 64),),
+            Err(Error::UnexpectedEof { .. })
+        ));
     }
 
     #[test]

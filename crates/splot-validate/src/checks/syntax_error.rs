@@ -10,7 +10,8 @@
 
 use splot_core::error::{
     AtlasSegmentErrorKind, ByteAlignmentErrorKind, Error, LayerConfigRecordErrorKind,
-    MetadataErrorKind, PaddingErrorKind, SequenceHeaderErrorKind, TrailingBitsErrorKind,
+    MetadataErrorKind, PaddingErrorKind, SequenceHeaderErrorKind, TileParamsErrorKind,
+    TrailingBitsErrorKind,
 };
 use splot_core::span::{BitOffset, ByteOffset};
 
@@ -36,6 +37,11 @@ pub(crate) fn syntax_error_diagnostic(error: &Error) -> Option<Diagnostic> {
             bit_offset,
             kind,
         } => Some(sequence_header_diagnostic(*kind, *offset, *bit_offset)),
+        Error::InvalidTileParams {
+            offset,
+            bit_offset,
+            kind,
+        } => Some(tile_params_diagnostic(*kind, *offset, *bit_offset)),
         Error::InvalidObuExtension { offset, bit_offset } => {
             Some(obu_extension_diagnostic(*offset, *bit_offset))
         }
@@ -153,6 +159,22 @@ fn sequence_header_diagnostic(
     };
     located(
         Diagnostic::error(rule_id, kind.to_string()).with_spec_section(spec_section),
+        offset,
+        bit_offset,
+    )
+}
+
+fn tile_params_diagnostic(
+    kind: TileParamsErrorKind,
+    offset: ByteOffset,
+    bit_offset: BitOffset,
+) -> Diagnostic {
+    let rule_id = match kind {
+        TileParamsErrorKind::TileColsOutOfRange => "tile-params/tile-cols-out-of-range",
+        TileParamsErrorKind::TileRowsOutOfRange => "tile-params/tile-rows-out-of-range",
+    };
+    located(
+        Diagnostic::error(rule_id, kind.to_string()).with_spec_section("6.17.7.2"),
         offset,
         bit_offset,
     )
@@ -372,5 +394,30 @@ mod tests {
         assert_eq!(diagnostic.spec_section.as_deref(), Some("6.4.1"));
         assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(11)));
         assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(2)));
+    }
+
+    #[test]
+    fn syntax_error_diagnostic_maps_tile_param_errors() {
+        for (kind, rule_id) in [
+            (
+                TileParamsErrorKind::TileColsOutOfRange,
+                "tile-params/tile-cols-out-of-range",
+            ),
+            (
+                TileParamsErrorKind::TileRowsOutOfRange,
+                "tile-params/tile-rows-out-of-range",
+            ),
+        ] {
+            let diagnostic = syntax_error_diagnostic(&Error::InvalidTileParams {
+                offset: ByteOffset::new(13),
+                bit_offset: BitOffset::from_bits(4),
+                kind,
+            })
+            .unwrap_or_else(|| Diagnostic::error("tile-params/test", "missing"));
+            assert_eq!(diagnostic.rule_id, rule_id);
+            assert_eq!(diagnostic.spec_section.as_deref(), Some("6.17.7.2"));
+            assert_eq!(diagnostic.byte_offset, Some(ByteOffset::new(13)));
+            assert_eq!(diagnostic.bit_offset, Some(BitOffset::from_bits(4)));
+        }
     }
 }

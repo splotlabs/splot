@@ -62,8 +62,8 @@ pub(super) fn parse_frame_prefix(
 
 /// Parses the frame-header core of a frame-bearing OBU against its active sequence
 /// header (AV2 § 5.18.2), positioning the reader past the `tile_group_obu()` prefix
-/// for tile-group OBUs. Returns `None` when there is no parseable first-tile-group
-/// frame header or the core parse fails (best-effort, never an error).
+/// for tile-group OBUs. Returns `Ok(None)` when there is no parseable first-tile-group
+/// frame header and propagates core parser errors to callers that own diagnostics.
 ///
 /// `mfh_record` is the in-band multi-frame header resolving this frame's `cur_mfh_id`
 /// (`> 0`) reference, or `None` for a `cur_mfh_id == 0` direct reference (or when the
@@ -77,15 +77,15 @@ pub(super) fn parse_frame_core(
     active_sequence: &SequenceHeader,
     mfh_record: Option<&MultiFrameHeaderRecord>,
     reference_state: &FrameReferenceStateView<'_>,
-) -> Option<FrameHeaderCore> {
+) -> splot_core::Result<Option<FrameHeaderCore>> {
     let obu_type = obu.header.obu_type;
     let mut reader = BitReader::new(obu.payload, obu.payload_offset());
     if obu_type.is_tile_group() {
-        if reader.read_bit().ok()? == 0 {
-            return None;
+        if reader.read_bit()? == 0 {
+            return Ok(None);
         }
     } else if !is_frame_bearing(obu_type) {
-        return None;
+        return Ok(None);
     }
     let input = FrameHeaderParseInput {
         obu_type,
@@ -95,7 +95,7 @@ pub(super) fn parse_frame_core(
         reference_state: *reference_state,
         mode: FrameHeaderParseMode::Core,
     };
-    parse_frame_header_core(&mut reader, &input).ok()
+    parse_frame_header_core(&mut reader, &input).map(Some)
 }
 
 impl ValidatorContext {
@@ -121,7 +121,9 @@ impl ValidatorContext {
             active_sequence,
             mfh_record,
             &reference_state,
-        )?;
+        )
+        .ok()
+        .flatten()?;
 
         let referenced = if core.cur_mfh_id.is_zero() {
             core.referenced_sequence_header_id

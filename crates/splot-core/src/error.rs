@@ -380,6 +380,25 @@ impl fmt::Display for SymbolDecoderErrorKind {
     }
 }
 
+/// Specific conformance violations of `tile_params()` (AV2 § 6.17.7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileParamsErrorKind {
+    /// `TileCols` exceeds `MAX_TILE_COLS`.
+    TileColsOutOfRange,
+    /// `TileRows` exceeds `MAX_TILE_ROWS`.
+    TileRowsOutOfRange,
+}
+
+impl fmt::Display for TileParamsErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let message = match self {
+            Self::TileColsOutOfRange => "TileCols must be less than or equal to MAX_TILE_COLS",
+            Self::TileRowsOutOfRange => "TileRows must be less than or equal to MAX_TILE_ROWS",
+        };
+        f.write_str(message)
+    }
+}
+
 /// Specific structural violations of the metadata OBUs (AV2 § 5.17 / § 6.16) that
 /// prevent further parsing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -546,6 +565,17 @@ pub enum Error {
         bit_offset: BitOffset,
         /// Specific sequence-header violation.
         kind: SequenceHeaderErrorKind,
+    },
+
+    /// `tile_params()` violated the tile-count limits in AV2 § 6.17.7.2.
+    #[error("invalid tile_params() at byte {offset}.{bit_offset}: {kind}")]
+    InvalidTileParams {
+        /// Offset at which the derived tile count exceeded its conformance limit.
+        offset: ByteOffset,
+        /// Bit offset within [`Self::InvalidTileParams::offset`].
+        bit_offset: BitOffset,
+        /// Specific tile-parameter violation.
+        kind: TileParamsErrorKind,
     },
 
     /// `global_motion_params()` violated AV2 § 6.17.9.

@@ -1049,6 +1049,7 @@ fn core_error_offset(error: &splot_core::Error) -> Option<ByteOffset> {
         | splot_core::Error::InvalidTrailingBits { offset, .. }
         | splot_core::Error::InvalidByteAlignment { offset, .. }
         | splot_core::Error::InvalidSequenceHeader { offset, .. }
+        | splot_core::Error::InvalidTileParams { offset, .. }
         | splot_core::Error::ObuSizeOutOfRange { offset, .. }
         | splot_core::Error::InvalidObuExtension { offset, .. }
         | splot_core::Error::ObuPayloadOutOfRange { offset, .. }
