@@ -1522,14 +1522,12 @@ fn compound_reference_facts<T: ReconSample>(
                 )
             })
         })?;
-    let width = *reference.ref_frame_width.get(slot).ok_or_else(|| {
-        compound_missing!(
-            "compound_missing_ref_width",
-            tile_offset,
-            "inter.compound.ref_width",
-            SPEC_READ_REFINEMV
-        )
-    })?;
+    let width = *reference.ref_frame_width.get(slot).ok_or(
+        crate::DecodeReferenceStateError::SlotOutOfRange {
+            slot,
+            slot_count: reference.ref_frame_width.len(),
+        },
+    )?;
     let height = *reference.ref_frame_height.get(slot).ok_or_else(|| {
         compound_missing!(
             "compound_missing_ref_height",
