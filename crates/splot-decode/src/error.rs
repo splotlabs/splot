@@ -48,6 +48,14 @@ pub enum DecodeError {
         /// Unsupported runtime feature metadata.
         unsupported: Box<DecodeUnsupportedFeature>,
     },
+    /// A validated decode pipeline invariant failed at runtime.
+    #[error("internal decode state `{reason}` failed at byte {byte_offset}")]
+    InternalState {
+        /// Stable internal-state reason id.
+        reason: &'static str,
+        /// Byte offset associated with the failed invariant.
+        byte_offset: ByteOffset,
+    },
     /// Parsed header or derived runtime decode state was internally inconsistent.
     #[error("decode header state failed: {source}")]
     HeaderState {

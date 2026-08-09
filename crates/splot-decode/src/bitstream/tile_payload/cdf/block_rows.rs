@@ -1350,21 +1350,6 @@ impl BlockCdfRows {
         }
     }
 
-    pub(crate) fn replicate_coeff_q_context(
-        &mut self,
-        coeff_cdf_q_ctx: usize,
-    ) -> Result<(), TileCdfError> {
-        let q = checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-        let bounded = [
-            CoeffCdfQContext::Q0,
-            CoeffCdfQContext::Q1,
-            CoeffCdfQContext::Q2,
-            CoeffCdfQContext::Q3,
-        ][q];
-        self.replicate_bounded_coeff_q_context(bounded);
-        Ok(())
-    }
-
     pub(super) fn replicate_bounded_coeff_q_context(&mut self, coeff_cdf_q_ctx: CoeffCdfQContext) {
         let q = coeff_cdf_q_ctx.index();
         self.txb_skip = [self.txb_skip[q]; COEFF_CDF_Q_CONTEXTS];

@@ -291,13 +291,10 @@ impl FrameCdfSubset {
         cdfs
     }
 
-    pub(crate) fn replicate_coeff_q_context_for_base_q(
-        &mut self,
-        base_q_idx: u32,
-    ) -> Result<(), TileCdfError> {
+    pub(crate) fn replicate_coeff_q_context_for_base_q(&mut self, base_q_idx: u32) {
         self.rows
             .block
-            .replicate_coeff_q_context(coeff_cdf_q_ctx_from_base_q_idx(base_q_idx))
+            .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {

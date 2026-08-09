@@ -250,7 +250,6 @@ pub(crate) struct InterBlockSetup {
     motion_field: TemporalMotionField,
     initial_frame_cdfs: Arc<FrameCdfSubset>,
     first_tile_offset: ByteOffset,
-    offset: ByteOffset,
     qindex: u32,
 }
 
@@ -362,14 +361,7 @@ fn derive_inter_block_setup<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
-    motion_field.set_band_rows8(sb_h4 / 2).ok_or_else(|| {
-        inter_cap!(
-            "inter_temporal_motion_field_band_rows",
-            offset,
-            "inter.temporal_motion_field",
-            SPEC_MODE_INFO
-        )
-    })?;
+    motion_field.set_band_rows8(sb_h4 / 2);
     motion_field.set_reference_metadata(
         !frame_is_intra,
         temporal_config.frame_size,
@@ -446,7 +438,6 @@ fn derive_inter_block_setup<T: ReconSample>(
         motion_field,
         initial_frame_cdfs,
         first_tile_offset,
-        offset,
         qindex,
     })
 }
@@ -457,8 +448,7 @@ fn finish_frame_cdfs(
     initial: &Arc<FrameCdfSubset>,
     work_units: &[DecodeTileWorkUnit<'_>],
     qindex: u32,
-    offset: ByteOffset,
-) -> Result<Arc<FrameCdfSubset>> {
+) -> Arc<FrameCdfSubset> {
     let mut saved_cdfs: Option<SavedCdfSubset> = None;
     for tile in work_units {
         SavedCdfSubset::apply_completed_tile(
@@ -470,17 +460,8 @@ fn finish_frame_cdfs(
         );
     }
     let mut frame_cdfs = FrameCdfSubset::frame_end_updated(initial.as_ref(), saved_cdfs);
-    frame_cdfs
-        .replicate_coeff_q_context_for_base_q(qindex)
-        .map_err(|_| {
-            inter_cap!(
-                "reference_coefficient_cdf_context",
-                offset,
-                "inter.cdf.reference_coefficient_context",
-                "7.23"
-            )
-        })?;
-    Ok(Arc::new(frame_cdfs))
+    frame_cdfs.replicate_coeff_q_context_for_base_q(qindex);
+    Arc::new(frame_cdfs)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,7 +498,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         motion_field,
         initial_frame_cdfs,
         first_tile_offset,
-        offset,
         qindex,
     } = setup;
     let mut records = core::mem::take(&mut scratch.frame_filter_records);
@@ -548,7 +528,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
-    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, offset)?;
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = walked.ccso_state.into_grid(first_tile_offset)?;
     let filter_inputs = InterFilterInputs {
         records,
@@ -647,14 +627,10 @@ impl TemporalPrelude {
             self.dimensions.1,
             self.sb_h4,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_scheduled_temporal_motion_layout",
-                self.offset,
-                "inter.temporal_motion_context",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!(
+            "inter_scheduled_temporal_motion_layout",
+            self.offset
+        ))?;
         let tip_mode = core
             .inter
             .as_ref()
@@ -678,14 +654,10 @@ impl TemporalPrelude {
                 tip_mode,
                 fill_tip_holes,
             )
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_scheduled_temporal_motion_context",
-                    self.offset,
-                    "inter.temporal_motion_context",
-                    SPEC_MODE_INFO
-                )
-            })
+            .ok_or(inter_internal!(
+                "inter_scheduled_temporal_motion_context",
+                self.offset
+            ))
     }
 }
 
@@ -710,16 +682,13 @@ fn frame_temporal_context<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<&'a mut TemporalMvContext> {
     let temporal_timer = crate::timing::start();
-    let ref_motion_fields = reference
-        .resolve_motion_fields(ref_frame_idx)
-        .ok_or_else(|| {
-            inter_missing!(
+    let ref_motion_fields =
+        reference
+            .resolve_motion_fields(ref_frame_idx)
+            .ok_or(inter_internal!(
                 "inter_reference_motion_field_unpublished",
-                offset,
-                "inter.reference_motion_field",
-                SPEC_MODE_INFO
-            )
-        })?;
+                offset
+            ))?;
     temporal_context
         .refresh_from_references(
             dimensions,
@@ -730,26 +699,15 @@ fn frame_temporal_context<'a, T: ReconSample>(
             &reference.ref_order_hint,
             &ref_motion_fields,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_fused_temporal_motion_context",
-                offset,
-                "inter.temporal_motion_context",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!(
+            "inter_fused_temporal_motion_context",
+            offset
+        ))?;
     crate::timing::report("inter_temporal_refresh", temporal_timer);
     let tip_prepare_timer = crate::timing::start();
     tip::prepare_motion_field(temporal_context, core, sb_h4);
     crate::timing::report("inter_tip_prepare", tip_prepare_timer);
-    if temporal_context.tip_references() != expected_tip_pair {
-        return Err(inter_cap!(
-            "inter_tip_reference_pair_mismatch",
-            offset,
-            "inter.temporal_motion_context",
-            SPEC_MODE_INFO
-        ));
-    }
+    debug_assert_eq!(temporal_context.tip_references(), expected_tip_pair);
     Ok(temporal_context)
 }
 /// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.

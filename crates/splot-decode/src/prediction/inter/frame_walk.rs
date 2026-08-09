@@ -43,14 +43,9 @@ pub(crate) fn inter_frame_info(
     bit_depth: BitDepth,
     offset: splot_core::span::ByteOffset,
 ) -> Result<DecodedFrameInfo> {
-    let frame_size = core.frame_size.ok_or_else(|| {
-        inter_missing!(
-            "inter_pending_missing_frame_size",
-            offset,
-            "inter.frame_size",
-            SPEC_HEADER
-        )
-    })?;
+    let frame_size = core
+        .frame_size
+        .ok_or(inter_internal!("inter_pending_missing_frame_size", offset))?;
     let pixel_format =
         PixelFormat::from_av2_chroma_format_idc(sequence.general.chroma_format_idc.get())?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
@@ -70,24 +65,13 @@ pub(crate) fn motion_field_layout(
     info: DecodedFrameInfo,
     offset: splot_core::span::ByteOffset,
 ) -> Result<MotionFieldLayout> {
-    let sb_h4 = block::superblock_h4(sequence, core).ok_or_else(|| {
-        inter_cap!(
-            "inter_temporal_motion_layout_superblock",
-            offset,
-            "inter.temporal_motion_field",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let sb_h4 = block::superblock_h4(sequence, core).ok_or(inter_internal!(
+        "inter_temporal_motion_layout_superblock",
+        offset
+    ))?;
     let luma = info.coded_luma_size();
-    MotionFieldLayout::new(luma.height().div_ceil(4), luma.width().div_ceil(4), sb_h4).ok_or_else(
-        || {
-            inter_cap!(
-                "inter_frame_temporal_motion_layout",
-                offset,
-                "inter.temporal_motion_field",
-                SPEC_MODE_INFO
-            )
-        },
+    MotionFieldLayout::new(luma.height().div_ceil(4), luma.width().div_ceil(4), sb_h4).ok_or(
+        inter_internal!("inter_frame_temporal_motion_layout", offset),
     )
 }
 
@@ -105,14 +89,9 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
 ) -> Result<InterWalkPrologue<'payload, T>> {
     let offset = frame_envelope.offset;
     let initial_cdfs = resolve_initial_frame_cdfs(core, sequence, reference, candidate, offset)?;
-    let frame_size = core.frame_size.ok_or_else(|| {
-        inter_missing!(
-            "inter_walk_missing_frame_size",
-            offset,
-            "inter.frame_size",
-            SPEC_HEADER
-        )
-    })?;
+    let frame_size = core
+        .frame_size
+        .ok_or(inter_internal!("inter_walk_missing_frame_size", offset))?;
     let frame_width = frame_size.width;
     let frame_height = frame_size.height;
     let inter = core

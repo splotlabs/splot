@@ -588,7 +588,7 @@ fn reference_cdf_save_replicates_active_coefficient_q_context() {
     let target_txb_skip = [32_571, 93, 7];
     frame.rows.block.txb_skip[3][0][4][0] = target_txb_skip;
 
-    frame.replicate_coeff_q_context_for_base_q(191).unwrap();
+    frame.replicate_coeff_q_context_for_base_q(191);
 
     for q_context in &frame.rows.block.txb_skip {
         assert_eq!(q_context[0][4][0], target_txb_skip);

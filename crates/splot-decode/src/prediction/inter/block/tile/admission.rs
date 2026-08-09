@@ -166,14 +166,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     .band(band)
                     .cloned()
             })
-            .ok_or_else(|| {
-                inter_missing!(
-                    "inter_reference_motion_band_unpublished",
-                    self.tile_offset,
-                    "inter.reference_motion_field",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .ok_or(inter_internal!(
+                "inter_reference_motion_band_unpublished",
+                self.tile_offset
+            ))?;
         let projected_rows = self.temporal_plan.rows8(index);
         let final_band = index.saturating_add(1) == self.temporal_plan.len();
         let context = self.params.context(
@@ -288,22 +284,18 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let ready = {
             let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(rows) = rows.get_mut(range.clone()) else {
-                return Err(inter_cap!(
+                return Err(inter_internal!(
                     "inter_admission_unit_range_missing",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
+                    self.tile_offset
                 ));
             };
             if rows
                 .iter()
                 .any(|row| !matches!(row, ScheduledRowState::Ready(_)))
             {
-                return Err(inter_cap!(
+                return Err(inter_internal!(
                     "inter_admission_unit_rows_missing",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
+                    self.tile_offset
                 ));
             }
             let mut ready = Vec::with_capacity(rows.len());
@@ -338,14 +330,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     let start = index
                         .checked_mul(self.params.sb_h4)
                         .and_then(|rows4| rows4.checked_mul(4))
-                        .ok_or_else(|| {
-                            inter_cap!(
-                                "inter_admission_band_start",
-                                self.tile_offset,
-                                "inter.row.task_capacity",
-                                SPEC_MODE_INFO
-                            )
-                        })?;
+                        .ok_or(inter_internal!(
+                            "inter_admission_band_start",
+                            self.tile_offset
+                        ))?;
                     let end = start
                         .saturating_add(self.params.sb_h4.saturating_mul(4))
                         .min(self.info.coded_luma_size().height());
@@ -386,11 +374,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                             )
                         });
                         if row.entries.iter().any(|entry| entry.command.is_some()) {
-                            return Err(inter_cap!(
+                            return Err(inter_internal!(
                                 "inter_admission_band_command_remaining",
-                                self.tile_offset,
-                                "inter.row.task_capacity",
-                                SPEC_MODE_INFO
+                                self.tile_offset
                             ));
                         }
                         rows.push(row);
@@ -438,20 +424,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
         let Some(slot) = prepared.get_mut(index) else {
             self.finished.store(true, Ordering::Release);
-            return Err(inter_cap!(
+            return Err(inter_internal!(
                 "inter_admission_unit_ordinal",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
+                self.tile_offset
             ));
         };
         if slot.is_some() {
             self.finished.store(true, Ordering::Release);
-            return Err(inter_cap!(
+            return Err(inter_internal!(
                 "inter_admission_unit_duplicate",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
+                self.tile_offset
             ));
         }
         *slot = Some(batch);
@@ -527,14 +509,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 terminal,
             )
         {
-            let filter = filter.as_ref().ok_or_else(|| {
-                inter_cap!(
-                    "inter_admission_frontier_filter_owner",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            let filter = filter.as_ref().ok_or(inter_internal!(
+                "inter_admission_frontier_filter_owner",
+                self.tile_offset
+            ))?;
             debug_assert!(
                 sealed_rows.is_none_or(|rows| {
                     deblock
@@ -595,24 +573,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             frontier
                 .filter
                 .as_ref()
-                .ok_or_else(|| {
-                    inter_cap!(
-                        "inter_admission_deblock_filter_owner",
-                        self.tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
-                    )
-                })?
+                .ok_or(inter_internal!(
+                    "inter_admission_deblock_filter_owner",
+                    self.tile_offset
+                ))?
                 .restore_deblock_records(records)?;
         }
-        let filter = frontier.filter.as_ref().ok_or_else(|| {
-            inter_cap!(
-                "inter_admission_terminal_filter_owner",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let filter = frontier.filter.as_ref().ok_or(inter_internal!(
+            "inter_admission_terminal_filter_owner",
+            self.tile_offset
+        ))?;
         while frontier.next_filter_stripe < filter.stripe_ranges().len() {
             let stripe = frontier.next_filter_stripe;
             let window = match (
@@ -625,11 +595,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 (Some(bands), _) => filter.extract_terminal_band_window(stripe, bands)?,
                 (None, Some(filtered)) => filter.extract_terminal_window(stripe, filtered)?,
                 (None, None) => {
-                    return Err(inter_cap!(
+                    return Err(inter_internal!(
                         "inter_admission_terminal_filter_source",
-                        self.tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
+                        self.tile_offset
                     ));
                 }
             };
@@ -642,14 +610,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         {
             workspace.recycle_planes();
         }
-        let filter = frontier.filter.take().ok_or_else(|| {
-            inter_cap!(
-                "inter_admission_finish_filter_owner",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let filter = frontier.filter.take().ok_or(inter_internal!(
+            "inter_admission_finish_filter_owner",
+            self.tile_offset
+        ))?;
         Ok(ScheduledTileProgress {
             filters,
             output: Some(ScheduledTileOutput {
@@ -665,14 +629,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take()
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_admission_recon_scratch_owner",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })
+            .ok_or(inter_internal!(
+                "inter_admission_recon_scratch_owner",
+                self.tile_offset
+            ))
     }
 
     /// Commits one precomputed unit after its predecessor has completed.
@@ -691,21 +651,15 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         let batch = {
             let mut prepared = self.prepared.lock().unwrap_or_else(PoisonError::into_inner);
             let Some(prepared) = prepared.get_mut(index) else {
-                return Err(inter_cap!(
+                return Err(inter_internal!(
                     "inter_admission_prepared_range_missing",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
+                    self.tile_offset
                 ));
             };
-            prepared.take().ok_or_else(|| {
-                inter_cap!(
-                    "inter_admission_prepared_rows_missing",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?
+            prepared.take().ok_or(inter_internal!(
+                "inter_admission_prepared_rows_missing",
+                self.tile_offset
+            ))?
         };
         let (ready, completed_band) = match batch {
             PreparedBatch::Legacy(ready) => (ready, None),
@@ -730,11 +684,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         for mut ready in ready {
             if commit.next != ready.row.ordinal {
                 self.finished.store(true, Ordering::Release);
-                return Err(inter_cap!(
+                return Err(inter_internal!(
                     "inter_admission_commit_order",
-                    self.tile_offset,
-                    "inter.row.task_capacity",
-                    SPEC_MODE_INFO
+                    self.tile_offset
                 ));
             }
             if let Some(surface) = ready.surface.take() {
@@ -776,14 +728,10 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             frontier
                 .bands
                 .as_mut()
-                .ok_or_else(|| {
-                    inter_cap!(
-                        "inter_admission_band_owner",
-                        self.tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
-                    )
-                })?
+                .ok_or(inter_internal!(
+                    "inter_admission_band_owner",
+                    self.tile_offset
+                ))?
                 .push(band)?;
         }
         let terminal = commit.next == self.unit_count;
@@ -806,22 +754,16 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         }
         if !commit.decoded_any {
             self.finished.store(true, Ordering::Release);
-            return Err(inter_missing!(
+            return Err(inter_internal!(
                 "inter_admission_commit_no_decoded_block",
-                self.tile_offset,
-                "inter.block",
-                SPEC_MODE_INFO
+                self.tile_offset
             ));
         }
         self.finished.store(true, Ordering::Release);
-        let mut commit = holder.take().ok_or_else(|| {
-            inter_cap!(
-                "inter_admission_commit_state",
-                self.tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let mut commit = holder.take().ok_or(inter_internal!(
+            "inter_admission_commit_state",
+            self.tile_offset
+        ))?;
         commit.surfaces.reverse();
         let scratch =
             TileDecodeScratch::from_scheduled(commit.ordered, &self.workers, commit.surfaces);
@@ -1149,11 +1091,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
         })
         .collect::<Vec<_>>();
     if rows.is_empty() {
-        return Err(inter_missing!(
+        return Err(inter_internal!(
             "inter_admission_no_resolved_rows",
-            tile_offset,
-            "inter.block",
-            SPEC_MODE_INFO
+            tile_offset
         ));
     }
     let prepass_block_decoded = parsed.block_decoded.clone();
@@ -1166,14 +1106,9 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     };
     let batch_count = batches.len();
     let mut prepared = Vec::new();
-    prepared.try_reserve_exact(batch_count).map_err(|_| {
-        inter_cap!(
-            "inter_admission_prepared_allocation",
-            tile_offset,
-            "inter.row.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
+    prepared
+        .try_reserve_exact(batch_count)
+        .map_err(|_| inter_internal!("inter_admission_prepared_allocation", tile_offset))?;
     prepared.resize_with(batch_count, || None);
     let deblock = deblock_records
         .zip(core.deblocking_filter_params)
@@ -1239,14 +1174,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
             next: 0,
             submitted_batches: 0,
             grid: NeighbourMvGrid::new_for_tile(parsed.mi_rows.clone(), parsed.mi_cols.clone())
-                .ok_or_else(|| {
-                    inter_cap!(
-                        "inter_admission_mv_grid",
-                        tile_offset,
-                        "inter.mv_grid",
-                        SPEC_MODE_INFO
-                    )
-                })?,
+                .ok_or(inter_internal!("inter_admission_mv_grid", tile_offset))?,
             state: TileResolveState::new(&sequence),
         }),
         workers,
