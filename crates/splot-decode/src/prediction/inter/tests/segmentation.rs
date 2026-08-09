@@ -12,6 +12,27 @@ const SEGMENTATION_SKIP_FIXTURE: &[u8] = include_bytes!(
 );
 
 #[test]
+fn empty_segment_map_uses_spec_mi_dimensions_for_odd_frames() {
+    let (_, mut core, _) = super::parse_inter_core_for_validation(SEGMENTATION_SKIP_FIXTURE)
+        .expect("fixture has a valid inter frame header");
+    let size = core.frame_size.as_mut().expect("fixture has a frame size");
+    size.width = 9;
+    size.height = 9;
+    let tile_info = core.tile_info.as_mut().expect("fixture has tile info");
+    *tile_info
+        .mi_col_starts
+        .last_mut()
+        .expect("tile columns include the frame edge") = 4;
+    *tile_info
+        .mi_row_starts
+        .last_mut()
+        .expect("tile rows include the frame edge") = 4;
+
+    let map = super::super::empty_segment_id_map(&core).expect("MI dimensions are valid");
+    assert_eq!(map.dimensions(), (4, 4));
+}
+
+#[test]
 fn skip_segment_forces_skip_and_globalmv_decode_paths() {
     let (_, core, _) = super::parse_inter_core_for_validation(SEGMENTATION_SKIP_FIXTURE)
         .expect("fixture has a valid inter frame header");

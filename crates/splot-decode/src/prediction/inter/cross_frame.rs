@@ -19,6 +19,7 @@ pub(crate) fn resolve_cdf_load(
     disable_cross_frame_cdf_init: Option<bool>,
     ref_frame_idx: &[u32],
     ref_is_inter: &[bool],
+    ref_counter: &[u32],
     ref_base_q_idx: &[u32],
     ref_order_hint: &[u32],
     ref_frame_width: &[u32],
@@ -42,6 +43,7 @@ pub(crate) fn resolve_cdf_load(
         primary_ref_frame,
         ref_frame_idx,
         ref_is_inter,
+        ref_counter,
         ref_base_q_idx,
         ref_order_hint,
         ref_frame_width,
@@ -94,6 +96,7 @@ pub(crate) fn choose_primary_secondary_ref_frame(
     primary_ref_frame: Option<u8>,
     ref_frame_idx: &[u32],
     ref_is_inter: &[bool],
+    ref_counter: &[u32],
     ref_base_q_idx: &[u32],
     ref_order_hint: &[u32],
     ref_frame_width: &[u32],
@@ -105,8 +108,17 @@ pub(crate) fn choose_primary_secondary_ref_frame(
     let mut secondary = RankedRef::NONE;
     for (i, &slot) in ref_frame_idx.iter().enumerate() {
         let slot = slot as usize;
+        let Some(&counter) = ref_counter.get(slot) else {
+            continue;
+        };
         if ref_is_inter.get(slot).copied() != Some(true)
             || ref_order_hint.get(slot).copied() == Some(u32::MAX)
+            || ref_counter[..slot]
+                .iter()
+                .enumerate()
+                .any(|(prior_slot, &prior_counter)| {
+                    ref_is_inter.get(prior_slot).copied() == Some(true) && prior_counter == counter
+                })
         {
             continue;
         }
@@ -220,12 +232,13 @@ mod tests {
     use super::choose_primary_secondary_ref_frame;
 
     #[test]
-    fn primary_reference_choice_excludes_restricted_order_hints() {
+    fn primary_reference_choice_excludes_restricted_and_duplicate_slots() {
         let (primary, secondary) = choose_primary_secondary_ref_frame(
             Some(false),
             Some(8),
             &[0, 1],
             &[true, true],
+            &[0, 1],
             &[100, 110],
             &[u32::MAX, 1],
             &[64, 64],
@@ -234,6 +247,22 @@ mod tests {
             2,
         );
         assert_eq!(primary, 1);
+        assert_eq!(secondary, 7);
+
+        let (primary, secondary) = choose_primary_secondary_ref_frame(
+            Some(false),
+            Some(8),
+            &[1, 2],
+            &[false, true, true],
+            &[0, 7, 7],
+            &[0, 110, 100],
+            &[0, 1, 2],
+            &[0, 64, 64],
+            &[0, 64, 64],
+            100,
+            3,
+        );
+        assert_eq!(primary, 0);
         assert_eq!(secondary, 7);
     }
 }

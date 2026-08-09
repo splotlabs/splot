@@ -352,15 +352,16 @@ fn empty_segment_id_map(core: &FrameHeaderCore) -> Result<FrameSegmentIdMap> {
     let size = core
         .frame_size
         .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
-    FrameSegmentIdMap::new(
-        usize::try_from(size.height)
-            .unwrap_or(usize::MAX)
-            .div_ceil(4),
-        usize::try_from(size.width)
-            .unwrap_or(usize::MAX)
-            .div_ceil(4),
-    )
-    .map_err(|_| DecodeHeaderStateError::MissingSegmentIdMap.into())
+    let mi_dimension = |samples| {
+        usize::try_from(samples)
+            .ok()
+            .and_then(|samples: usize| samples.div_ceil(8).checked_mul(2))
+            .ok_or(DecodeHeaderStateError::MissingSegmentIdMap)
+    };
+    let mi_rows = mi_dimension(size.height)?;
+    let mi_cols = mi_dimension(size.width)?;
+    FrameSegmentIdMap::new(mi_rows, mi_cols)
+        .map_err(|_| DecodeHeaderStateError::MissingSegmentIdMap.into())
 }
 
 fn resolve_initial_frame_cdfs(
@@ -391,6 +392,7 @@ fn resolve_initial_frame_cdfs(
         inter_ctrl.disable_cross_frame_cdf_init,
         &inter_ctrl.ref_frame_idx,
         &reference.ref_is_inter,
+        &reference.ref_counter,
         &reference.ref_base_q_idx,
         &reference.ref_order_hint,
         &reference.ref_frame_width,
@@ -492,6 +494,7 @@ pub(crate) fn entropy_dependencies(
             inter_ctrl.disable_cross_frame_cdf_init,
             &inter_ctrl.ref_frame_idx,
             &reference.ref_is_inter,
+            &reference.ref_counter,
             &reference.ref_base_q_idx,
             &reference.ref_order_hint,
             &reference.ref_frame_width,
@@ -577,6 +580,7 @@ fn previous_segment_slot(
         inter.primary_ref_frame,
         &inter.ref_frame_idx,
         &reference.ref_is_inter,
+        &reference.ref_counter,
         &reference.ref_base_q_idx,
         &reference.ref_order_hint,
         &reference.ref_frame_width,
