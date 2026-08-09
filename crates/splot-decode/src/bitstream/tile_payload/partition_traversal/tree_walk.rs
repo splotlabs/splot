@@ -79,9 +79,6 @@ pub(crate) struct GeneralIntraPartitionTreeCursor<'payload> {
     sb_mask: usize,
     next_sb_row: usize,
     next_sb_col: usize,
-    mi_row_end: usize,
-    mi_col_start: usize,
-    mi_col_end: usize,
     limits: DecodeLimits,
     step_count: u64,
     sdp_state: SdpPartitionState,
@@ -112,9 +109,6 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             .with_origin(tile_rows.start, tile_cols.start);
         let sb_size4 = frame.sb_size.num_4x4_wide()?.max(1);
         let next_sb_row = work_unit.mi_row_range().start as usize;
-        let mi_row_end = (work_unit.mi_row_range().end as usize).min(frame.mi_rows);
-        let mi_col_start = work_unit.mi_col_range().start as usize;
-        let mi_col_end = (work_unit.mi_col_range().end as usize).min(frame.mi_cols);
         Ok(Self {
             frame,
             symbols,
@@ -124,10 +118,7 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             sb_size4,
             sb_mask: sb_size4.saturating_sub(1),
             next_sb_row,
-            next_sb_col: mi_col_start,
-            mi_row_end,
-            mi_col_start,
-            mi_col_end,
+            next_sb_col: tile_bounds.mi_col_start,
             limits,
             step_count: 0,
             sdp_state: SdpPartitionState::default(),
@@ -163,12 +154,12 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
         ) -> Result<(GeneralIntraLeafMode, C), E>,
         P: FnMut(DecodedLeafPublication, C),
     {
-        if self.next_sb_row >= self.mi_row_end {
+        if self.next_sb_row >= self.tile_bounds.mi_row_end.min(self.frame.mi_rows) {
             return Ok(None);
         }
         let sb_row = self.next_sb_row;
         let sb_col = self.next_sb_col;
-        if sb_col == self.mi_col_start {
+        if sb_col == self.tile_bounds.mi_col_start {
             mi_size_state.clear_left_context();
         }
         let root = TilePartitionCall::root(sb_row, sb_col, self.frame.sb_size, ROOT_HAS_CHROMA);
@@ -297,8 +288,8 @@ impl<'payload> GeneralIntraPartitionTreeCursor<'payload> {
             }
         }
         self.next_sb_col = self.next_sb_col.saturating_add(self.sb_size4);
-        if self.next_sb_col >= self.mi_col_end {
-            self.next_sb_col = self.mi_col_start;
+        if self.next_sb_col >= self.tile_bounds.mi_col_end.min(self.frame.mi_cols) {
+            self.next_sb_col = self.tile_bounds.mi_col_start;
             self.next_sb_row = self.next_sb_row.saturating_add(self.sb_size4);
         }
         Ok(Some([sb_row, sb_col]))

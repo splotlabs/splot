@@ -527,11 +527,7 @@ pub(crate) fn require_minimal_obu_order<'a>(
     obus: &'a [ObuEnvelope<'a>],
 ) -> Result<[ObuEnvelope<'a>; 3]> {
     let indices = minimal_frame_unit_indices(obus)?;
-    Ok([
-        obus[indices.temporal_delimiter],
-        obus[indices.sequence],
-        obus[indices.frame],
-    ])
+    Ok([obus[0], obus[indices.sequence], obus[indices.frame]])
 }
 
 pub(super) fn require_leading_frame_unit<'a>(
@@ -590,7 +586,6 @@ fn require_key_frame_unit<'a>(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct MinimalFrameUnitIndices {
-    temporal_delimiter: usize,
     sequence: usize,
     frame: usize,
     suffix_end: usize,
@@ -649,7 +644,6 @@ fn minimal_frame_unit_indices(obus: &[ObuEnvelope<'_>]) -> Result<MinimalFrameUn
         ));
     }
     Ok(MinimalFrameUnitIndices {
-        temporal_delimiter: 0,
         sequence: sequence_index,
         frame: frame_index,
         suffix_end: skip_frame_suffix_obus(obus, frame_index + 1),

@@ -10,7 +10,6 @@ use crate::bitstream::tile_payload::{
 };
 use crate::filters::cdef::{CdefFrame, CdefSkipGrid};
 use crate::filters::source::{FramePlane, StripeCopyError, StripePlane};
-use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_recon::{
@@ -685,30 +684,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             &self.filter_records.tx_skip_records,
         )
         .map_err(|_| super::lr_pipeline_state_error())?;
-        let tx_skip_grid = &tx_skip_grid;
-        if tx_skip_grid.rows() < mi_rows || tx_skip_grid.cols() < mi_cols {
+        if tx_skip_grid.rows() != mi_rows || tx_skip_grid.cols() != mi_cols {
             return Err(super::lr_pipeline_state_error());
         }
-        let count = mi_rows
-            .checked_mul(mi_cols)
-            .ok_or_else(super::lr_pipeline_state_error)?;
-        let mut values = Vec::with_capacity(count);
-        for row in 0..mi_rows {
-            for col in 0..mi_cols {
-                let skip = tx_skip_grid
-                    .lookup(WienerNsLrTxSkipLookup {
-                        x: col.saturating_mul(MI_SIZE),
-                        y: row.saturating_mul(MI_SIZE),
-                        row,
-                        col,
-                    })
-                    .map_err(|_| super::lr_pipeline_state_error())?;
-                if !(0..=1).contains(&skip) {
-                    return Err(super::lr_pipeline_state_error());
-                }
-                values.push(skip != 0);
-            }
-        }
+        let values = tx_skip_grid
+            .into_values()
+            .into_iter()
+            .map(|skip| skip != 0)
+            .collect();
         CdefSkipGrid::new(mi_rows, mi_cols, values)
             .map(Some)
             .map_err(|_| super::lr_pipeline_state_error())

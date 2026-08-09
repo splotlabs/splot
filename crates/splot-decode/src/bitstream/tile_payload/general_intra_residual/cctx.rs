@@ -21,6 +21,7 @@ const CCTX_MTX: [[i32; 2]; 6] = [
     [128, -222],
 ];
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn reconstruct_general_intra_chroma_cctx_pair_with_predictions<T: ReconSample>(
     u_block: &LumaCoeffBlock,

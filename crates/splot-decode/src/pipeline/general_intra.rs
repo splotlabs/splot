@@ -109,6 +109,10 @@ pub(crate) struct GeneralIntraReconScratch<T: ReconSample> {
     pub(crate) cfl_prediction: Vec<T>,
     pub(crate) mhccp_refs: [Vec<u16>; 2],
     pub(crate) paeth_edges: [Vec<T>; 2],
+    pub(crate) cctx_u_prediction: Vec<T>,
+    pub(crate) cctx_v_prediction: Vec<T>,
+    pub(crate) cctx_u_output: Vec<T>,
+    pub(crate) cctx_v_output: Vec<T>,
 }
 
 impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
@@ -120,6 +124,10 @@ impl<T: ReconSample> Default for GeneralIntraReconScratch<T> {
             cfl_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
             mhccp_refs: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
             paeth_edges: core::array::from_fn(|_| Vec::with_capacity(MAX_INTRA_EDGE_SAMPLES)),
+            cctx_u_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            cctx_v_prediction: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            cctx_u_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
+            cctx_v_output: Vec::with_capacity(MAX_INTRA_BLOCK_SAMPLES),
         }
     }
 }

@@ -90,8 +90,7 @@ pub(crate) fn apply_nonzero_coeff_fsc_level_pass(
     preflight_pass(eob_read, &block, &walk, config)?;
     block.ensure_quant_sign()?;
 
-    let entries = walk.entries();
-    for (index, entry) in entries.iter().copied().enumerate() {
+    for (index, entry) in walk.entries().enumerate() {
         let input = derive_fsc_level_input(index, entry, &walk, &block, config);
         let level = read_fsc_level_symbol(cdfs, symbols, input)?;
         block.set_level(entry.row(), entry.col(), level)?;
@@ -115,14 +114,13 @@ fn preflight_pass(
         });
     }
     let eob = eob_read.eob().eob();
-    let entries = walk.entries();
-    if eob != entries.len() {
+    if eob != walk.len() {
         return Err(CoeffFscLevelPassError::ScanEntryCountMismatch {
             eob,
-            entries: entries.len(),
+            entries: walk.len(),
         });
     }
-    for entry in entries.iter().copied() {
+    for entry in walk.entries() {
         block.level_at(entry.row(), entry.col())?;
         block.quant_at(entry.pos())?;
         let expected_pos = expected_fsc_entry_pos(block, entry)?;

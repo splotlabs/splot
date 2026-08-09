@@ -100,7 +100,6 @@ pub(crate) struct FrameCandidateTileFacts<'a> {
     tile_rows_log2: u8,
     tile_size_bytes: Option<u32>,
     context_update_tile_id: u32,
-    base_q_idx: u32,
     coeff_frame_facts: TileCoeffFrameFacts,
     disable_cdf_update: bool,
     tile_group_structure_start_bits: u64,
@@ -186,7 +185,6 @@ impl<'a> FrameCandidateTileFacts<'a> {
             tile_rows_log2: tile_info.tile_rows_log2,
             tile_size_bytes: tile_info.tile_size_bytes,
             context_update_tile_id: tile_info.context_update_tile_id,
-            base_q_idx: quant.base_q_idx,
             coeff_frame_facts,
             disable_cdf_update,
             tile_group_structure_start_bits: core.consumed_bits.checked_add(1).ok_or(
@@ -227,7 +225,6 @@ impl<'a> FrameCandidateTileFacts<'a> {
             tile_rows_log2: 0,
             tile_size_bytes,
             context_update_tile_id,
-            base_q_idx,
             coeff_frame_facts: TileCoeffFrameFacts::default_for_base_q(base_q_idx),
             disable_cdf_update,
             tile_group_structure_start_bits: 8,
@@ -509,7 +506,7 @@ pub(crate) fn plan_derived_tile_payload_boundary<'payload>(
         input.facts.obu_type,
         input.facts.frame_is_intra,
         input.position.is_last_tile_group,
-        input.facts.base_q_idx,
+        input.facts.coeff_frame_facts.base_q_idx(),
         input.facts.disable_cdf_update,
     )
     .with_coeff_frame_facts(input.facts.coeff_frame_facts)

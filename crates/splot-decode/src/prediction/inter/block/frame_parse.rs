@@ -34,7 +34,7 @@ pub(crate) struct InterFrameParse {
     cdef_grid: crate::filters::cdef::CdefUnitGrid,
     /// The walk-parsed CCSO unit grid, retained for the reference update.
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
-    pub(crate) segment_ids: FrameSegmentIdMap,
+    pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
 }
 

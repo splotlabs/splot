@@ -461,7 +461,11 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
     ref_frame_idx: &[u32],
     reference: &InterReferenceState<T>,
     workspace: &mut CurrentFrameWorkspace<T>,
-) -> Result<(Arc<FrameCdfSubset>, InterFilterInputs, FrameSegmentIdMap)> {
+) -> Result<(
+    Arc<FrameCdfSubset>,
+    InterFilterInputs,
+    Arc<FrameSegmentIdMap>,
+)> {
     let work_units = tile_plan.work_units_mut();
     let setup = derive_inter_block_setup(
         work_units,
@@ -537,18 +541,16 @@ fn final_segment_ids<T: ReconSample>(
     mi_rows: usize,
     mi_cols: usize,
     decoded: FrameSegmentIdMap,
-) -> FrameSegmentIdMap {
+) -> Arc<FrameSegmentIdMap> {
     if core
         .segmentation_params
         .as_ref()
         .is_some_and(|seg| seg.segmentation_enabled && !seg.segmentation_update_map)
+        && let Some(previous) = super::previous_segment_ids(core, reference, mi_rows, mi_cols)
     {
-        super::previous_segment_ids(core, reference, mi_rows, mi_cols)
-            .cloned()
-            .unwrap_or(decoded)
-    } else {
-        decoded
+        return Arc::clone(previous);
     }
+    Arc::new(decoded)
 }
 
 /// The frame-level inputs of the AV2 § 7.9 temporal prelude, captured so the
@@ -1105,7 +1107,8 @@ fn decode_block<T: ReconSample>(
         .segmentation_params
         .as_ref()
         .is_some_and(|seg| seg.segmentation_enabled && seg.seg_id_pre_skip);
-    let previous_segment_ids = super::previous_segment_ids(core, reference, mi_rows, mi_cols);
+    let previous_segment_ids =
+        super::previous_segment_ids(core, reference, mi_rows, mi_cols).map(Arc::as_ref);
     let mut segment_id = if frontier.is_chroma_part() {
         segment_id_state.cell(frontier.r, frontier.c).unwrap_or(0)
     } else {

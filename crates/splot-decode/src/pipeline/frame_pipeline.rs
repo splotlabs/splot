@@ -179,9 +179,9 @@ where
         Box::new(move |admit| {
             let parsed = parse();
             if let Ok(deferred) = &parsed {
-                frame_cdfs.publish(Arc::clone(&deferred.frame_cdfs));
-                ccso_grid.publish(deferred.ccso_grid.clone().map(Arc::new));
-                segment_ids.publish(Arc::clone(&deferred.segment_ids));
+                frame_cdfs.publish(Arc::clone(deferred.frame_cdfs()));
+                ccso_grid.publish(deferred.ccso_grid().cloned().map(Arc::new));
+                segment_ids.publish(Arc::clone(deferred.segment_ids()));
             } else {
                 failed_cdfs.fail();
                 failed_ccso.fail();

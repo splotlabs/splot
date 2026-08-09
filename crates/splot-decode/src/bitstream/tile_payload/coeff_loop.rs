@@ -3,8 +3,6 @@
 
 //! Coefficient-loop foundation helpers.
 
-use std::collections::TryReserveError;
-
 use splot_core::Error as CoreError;
 use splot_core::symbol::SymbolDecoder;
 
@@ -164,8 +162,6 @@ pub(crate) enum CoeffLoopContextError {
         pos: usize,
         coeff_count: usize,
     },
-    #[error("coefficient scan walk allocation failed: {0}")]
-    ScanWalkAllocation(#[from] TryReserveError),
 }
 
 pub(crate) fn nonzero_coeff_eob(

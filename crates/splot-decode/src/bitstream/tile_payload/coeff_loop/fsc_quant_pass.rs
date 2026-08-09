@@ -3,12 +3,11 @@
 
 //! FSC/IDTX coefficient quant pass.
 
-use std::collections::TryReserveError;
-
 use splot_core::symbol::SymbolDecoder;
 use splot_core::tables::conversion::{
     ADJUSTED_TX_SIZE, TX_HEIGHT, TX_SIZE_SQR, TX_SIZE_SQR_UP, TX_WIDTH,
 };
+use splot_recon::{ReconError, coefficient_scan_slice, tx_class};
 
 use super::super::cdf::TileCdfSubset;
 use super::super::coeff_state::{
@@ -19,26 +18,25 @@ use super::fsc_level_pass::{
     CoeffFscLevelPassConfig, CoeffFscLevelPassError, apply_nonzero_coeff_fsc_level_pass,
 };
 use super::fsc_sign_pass::{
-    CoeffFscSignPassError, checked_fsc_sign_entries, derive_fsc_sign_input, quant_sign_value,
+    CoeffFscSignPassError, checked_fsc_sign_walk, derive_fsc_sign_input, quant_sign_value,
     read_fsc_sign_symbol,
 };
-use super::max_level::{COEFF_BASE_RANGE, CoeffTransformClass, NUM_BASE_LEVELS};
+use super::max_level::{COEFF_BASE_RANGE, NUM_BASE_LEVELS};
 use super::quant_state::{
-    CoeffQuantStateAccumulator, CoeffQuantStateConfig, CoeffQuantStateWrite,
-    CoeffQuantStateWriteError, NonZeroCoeffQuantState,
+    CoeffQuantStateAccumulator, CoeffQuantStateConfig, CoeffQuantStateWriteError,
+    NonZeroCoeffQuantState,
 };
 use super::read_quant::{
     CoeffReadQuantConfig, CoeffReadQuantError, CoeffReadQuantInput, CoeffReadQuantState,
 };
-use super::scan_walk::{
-    CoeffScanEntry, CoeffScanOrderError, derive_coeff_scan_order, walk_fsc_coeff_scan,
-};
+use super::scan_walk::{CoeffScanEntry, FscCoeffScanWalk, walk_fsc_coeff_scan};
 use super::{AllZeroCoeffBlockInput, CoeffLoopContextError, commit_nonzero_coeff_context};
 
 const FSC_MAX_LEVEL: u32 = NUM_BASE_LEVELS + COEFF_BASE_RANGE + 1;
+const MAX_SCAN_DIMENSION: usize = 32;
 
 struct CoeffFscBranchTxSizeFacts {
-    scan: Vec<u16>,
+    scan: &'static [u16],
     level_config: CoeffFscLevelPassConfig,
     context: AllZeroCoeffBlockInput,
 }
@@ -52,8 +50,6 @@ pub(crate) struct CoeffFscStagedTxSizeNonZeroInput {
 }
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CoeffFscQuantPassError {
-    #[error("coefficient FSC quant allocation failed: {0}")]
-    Allocation(#[from] TryReserveError),
     #[error("coefficient FSC quant sign step failed: {0}")]
     Sign(#[from] CoeffFscSignPassError),
     #[error("coefficient FSC quant state error: {0}")]
@@ -93,8 +89,10 @@ pub(crate) enum CoeffFscBranchError {
         expected_w4: usize,
         expected_h4: usize,
     },
+    #[error("coefficient FSC branch invalid scan shape {width}x{height}")]
+    InvalidScanShape { width: usize, height: usize },
     #[error("coefficient FSC branch scan-order derivation failed: {0}")]
-    ScanOrder(#[from] CoeffScanOrderError),
+    ScanOrder(#[source] ReconError),
     #[error("coefficient FSC branch requires luma plane, got plane {plane}")]
     NonLumaPlane { plane: usize },
     #[error("coefficient FSC branch handoff failed: {0}")]
@@ -123,16 +121,15 @@ pub(crate) fn apply_staged_nonzero_coeff_fsc_branch_from_tx_size(
         input.plane_tx_type,
         input.coeff_cdf_q_ctx,
     )?;
-    let walk = walk_fsc_coeff_scan(&input.start, facts.scan.len(), &facts.scan)?;
+    let walk = walk_fsc_coeff_scan(&input.start, facts.scan.len(), facts.scan)?;
     let level_pass =
         apply_nonzero_coeff_fsc_level_pass(cdfs, symbols, input.start, walk, facts.level_config)?;
     let (level_walk, mut block) = level_pass.into_parts();
-    let sign_entries =
-        checked_fsc_sign_entries(&block, &level_walk, &facts.scan, facts.level_config)
-            .map_err(CoeffFscQuantPassError::from)?;
-    let mut interleaved = FscInterleavedQuantPass::new(sign_entries.len())?;
-    interleaved.run(cdfs, symbols, &mut block, &sign_entries, facts.level_config)?;
-    let quant_state = interleaved.finish(&mut block)?;
+    checked_fsc_sign_walk(&block, &level_walk, facts.level_config)
+        .map_err(CoeffFscQuantPassError::from)?;
+    let mut interleaved = FscInterleavedQuantPass::new();
+    interleaved.run(cdfs, symbols, &mut block, &level_walk, facts.level_config)?;
+    let quant_state = interleaved.finish();
     commit_nonzero_coeff_context(state, facts.context, &quant_state)
         .map_err(CoeffFscQuantPassError::ContextUpdate)?;
     Ok(block)
@@ -236,12 +233,21 @@ fn fsc_branch_tx_size_facts(
         .map(|sum| sum >> 1)
         .ok_or(CoeffFscBranchError::TransformSizeContextOverflow { tx_size })?;
 
+    let scan = coefficient_scan_slice(
+        tx_width.min(MAX_SCAN_DIMENSION),
+        tx_height.min(MAX_SCAN_DIMENSION),
+        tx_class(plane_tx_type),
+    )
+    .map_err(|error| match error {
+        ReconError::InvalidScanShape { w, h } => CoeffFscBranchError::InvalidScanShape {
+            width: w,
+            height: h,
+        },
+        source => CoeffFscBranchError::ScanOrder(source),
+    })?;
+
     Ok(CoeffFscBranchTxSizeFacts {
-        scan: derive_coeff_scan_order(
-            tx_width,
-            tx_height,
-            CoeffTransformClass::from_plane_tx_type(plane_tx_type),
-        )?,
+        scan,
         level_config: CoeffFscLevelPassConfig {
             coeff_cdf_q_ctx,
             tx_size_ctx,
@@ -279,17 +285,13 @@ fn validate_fsc_block_geometry(
 }
 
 struct FscInterleavedQuantPass {
-    quant_writes: Vec<CoeffQuantStateWrite>,
     read_quant_state: CoeffReadQuantState,
     quant_state: CoeffQuantStateAccumulator,
 }
 
 impl FscInterleavedQuantPass {
-    fn new(entry_count: usize) -> Result<Self, CoeffFscQuantPassError> {
-        let mut quant_writes = Vec::new();
-        quant_writes.try_reserve(entry_count)?;
-        Ok(Self {
-            quant_writes,
+    const fn new() -> Self {
+        Self {
             read_quant_state: CoeffReadQuantState::new(CoeffReadQuantConfig {
                 is_hidden: false,
                 allow_tcq: false,
@@ -301,7 +303,7 @@ impl FscInterleavedQuantPass {
                 use_tcq: false,
                 lossless: false,
             }),
-        })
+        }
     }
 
     fn run(
@@ -309,10 +311,10 @@ impl FscInterleavedQuantPass {
         cdfs: &mut TileCdfSubset,
         symbols: &mut SymbolDecoder<'_>,
         block: &mut TransformCoeffBlockState,
-        sign_entries: &[CoeffScanEntry],
+        walk: &FscCoeffScanWalk,
         config: CoeffFscLevelPassConfig,
     ) -> Result<(), CoeffFscQuantPassError> {
-        for (index, entry) in sign_entries.iter().copied().enumerate() {
+        for (index, entry) in walk.entries().enumerate() {
             self.step(cdfs, symbols, block, index, entry, config)?;
         }
         Ok(())
@@ -341,26 +343,15 @@ impl FscInterleavedQuantPass {
                 max_level: FSC_MAX_LEVEL,
             },
         )?;
-        let quant_write = self
+        let write = self
             .quant_state
             .apply_entry(index, entry, sign.sign(), read_quant)?;
-        self.quant_writes.push(quant_write);
+        block.set_quant(write.entry().pos(), write.quant())?;
         Ok(())
     }
 
-    fn finish(
-        self,
-        block: &mut TransformCoeffBlockState,
-    ) -> Result<NonZeroCoeffQuantState, CoeffFscQuantPassError> {
-        let Self {
-            quant_writes,
-            read_quant_state: _,
-            quant_state,
-        } = self;
-        for write in &quant_writes {
-            block.set_quant(write.entry().pos(), write.quant())?;
-        }
-        Ok(NonZeroCoeffQuantState::from_accumulator(quant_state))
+    fn finish(self) -> NonZeroCoeffQuantState {
+        NonZeroCoeffQuantState::from_accumulator(self.quant_state)
     }
 }
 
