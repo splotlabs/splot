@@ -11,14 +11,15 @@ use splot_recon::{
     PlaneSize,
 };
 
+use super::super::single_ref::SingleRefReadError;
 use super::interintra::InterIntraScratch;
 use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
     chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
-    predict_interintra_planes, read_inter_intra_syntax_enabled, skip_segment_reference,
-    symbol_read_error, validate_segment_id,
+    predict_interintra_planes, read_inter_intra_syntax_enabled, single_ref_read_error,
+    skip_segment_reference, symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -162,6 +163,34 @@ fn block_mode_failures_keep_typed_boundary() -> TestResult {
         } if byte_offset == ByteOffset::new(43)
     ));
     Ok(())
+}
+
+#[test]
+fn single_ref_read_failures_keep_typed_boundary() {
+    let offset = ByteOffset::new(44);
+    for invariant in [
+        SingleRefReadError::InsufficientRefs { num_total_refs: 0 },
+        SingleRefReadError::MissingContext {
+            needed: 2,
+            got: 1,
+            num_total_refs: 3,
+        },
+    ] {
+        assert!(matches!(
+            single_ref_read_error(&invariant, offset),
+            DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidInterReferenceMap,
+            }
+        ));
+    }
+
+    assert!(matches!(
+        single_ref_read_error(&SingleRefReadError::SymbolRead { ref_idx: 0 }, offset),
+        DecodeError::InternalState {
+            reason: "inter_block_single_ref_read",
+            byte_offset,
+        } if byte_offset == offset
+    ));
 }
 
 #[test]

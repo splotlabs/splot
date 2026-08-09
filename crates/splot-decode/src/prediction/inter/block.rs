@@ -33,6 +33,7 @@ use super::read_mv::{
     MvReadConfig, apply_inter_mvd_signs, mv_clamp_to_integer, read_newmv_amvd_block_mvd,
     read_newmv_block_mvd_magnitude_with_config as read_newmv_block_mvd_magnitude,
 };
+use super::single_ref::SingleRefReadError;
 use super::{
     BawpSyntax, CcsoGridHandle, InterBlock, InterIntraPrediction, InterReferenceState,
     InterResidual, InterResidualBlock, MotionFieldHandle, Mv, PlacedInterBlock,
@@ -1586,14 +1587,7 @@ fn decode_block<T: ReconSample>(
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         }
         let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
-            .map_err(|_| {
-                inter_missing!(
-                    "inter_block_single_ref_read",
-                    tile_offset,
-                    "inter.single_ref.symbol",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .map_err(|error| single_ref_read_error(&error, tile_offset))?;
         selected as i8
     } else {
         SINGLE_REF_FRAME0
@@ -2307,6 +2301,20 @@ fn symbol_read_error(
         }
         BlockSymbolTraceReadError::Symbol(error) => {
             crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
+        }
+    }
+}
+
+fn single_ref_read_error(
+    error: &SingleRefReadError,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    match error {
+        SingleRefReadError::InsufficientRefs { .. } | SingleRefReadError::MissingContext { .. } => {
+            crate::DecodeHeaderStateError::InvalidInterReferenceMap.into()
+        }
+        SingleRefReadError::SymbolRead { .. } => {
+            inter_internal!("inter_block_single_ref_read", tile_offset)
         }
     }
 }
