@@ -1303,14 +1303,10 @@ fn compound_refinemv_mode_allowed(
         .inter
         .as_ref()
         .and_then(|inter| inter.opfl_refine_type)
-        .ok_or_else(|| {
-            compound_missing!(
-                "compound_refinemv_missing_opfl_refine_type",
-                tile_offset,
-                "inter.compound.opfl_refine_type",
-                SPEC_READ_REFINEMV
-            )
-        })?;
+        .ok_or(inter_internal!(
+            "compound_refinemv_missing_opfl_refine_type",
+            tile_offset
+        ))?;
     Ok(compound_refinemv_mode_allowed_for_type(
         compound,
         opfl_refine_type,
