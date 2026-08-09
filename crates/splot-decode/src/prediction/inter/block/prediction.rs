@@ -194,14 +194,7 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                         samples,
                     ),
             };
-            blend.map_err(|_| {
-                inter_diag!(
-                    "inter_interintra_blend",
-                    tile_offset,
-                    "interintra blend failed",
-                    "7.13.3.30"
-                )
-            })?;
+            blend?;
         }
     }
     if let Some(residual) = placed.block.residual.as_ref() {
