@@ -320,6 +320,44 @@ fn compound_reference_pair_roundtrips_three_ranked_refs() {
 }
 
 #[test]
+fn compound_reference_pair_rejects_selector_before_ref1_context_overrun() {
+    let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut encoder = SymbolEncoder::new();
+    encode_symbol(
+        &mut enc_tile,
+        &mut encoder,
+        TileCdfSelector::CompRef0 { ctx: 1, ref_idx: 0 },
+        1,
+    );
+    for ref_idx in 1..MAX_REFS_PER_FRAME - 1 {
+        encode_symbol(
+            &mut enc_tile,
+            &mut encoder,
+            TileCdfSelector::CompRef1 {
+                ctx: 1,
+                bit_type: 0,
+                ref_idx,
+            },
+            0,
+        );
+    }
+    let bytes = encoder.finish().unwrap().into_bytes();
+    let mut input = default_input();
+    input.num_total_refs = MAX_REFS_PER_FRAME + 2;
+    let mut dec_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let mut symbols = symbol_decoder(&bytes);
+
+    let error =
+        read_compound_reference_pair(&mut dec_tile, &mut symbols, input, ByteOffset::new(0))
+            .unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::MalformedSource { .. }
+    ));
+}
+
+#[test]
 fn compound_average_reads_same_reference_mode_symbol() {
     let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::new();
