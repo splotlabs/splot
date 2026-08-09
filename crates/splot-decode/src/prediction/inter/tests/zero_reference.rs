@@ -122,13 +122,17 @@ fn ccso_reference_slot_checks_all_reuse_modes_and_num_total_refs() {
 
     let error = ccso_reference_slot(&[3], false, true, 1, offset)
         .expect_err("block-reuse-only CCSO index must be less than NumTotalRefs");
-    let DecodeError::InternalState {
-        reason,
-        byte_offset,
-    } = error
-    else {
-        panic!("out-of-range CCSO reference index must be an internal-state error");
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("out-of-range CCSO reference index must be an unsupported-feature error");
     };
-    assert_eq!(reason, "inter_ccso_reference_index_out_of_range");
-    assert_eq!(byte_offset, offset);
+    assert_eq!(
+        unsupported.reason(),
+        "inter_ccso_reference_index_out_of_range"
+    );
+    assert_eq!(unsupported.spec_section(), "6.17.7.8");
+    assert_eq!(
+        unsupported.message(),
+        "CCSO reference index is outside NumTotalRefs"
+    );
+    assert_eq!(unsupported.byte_offset(), Some(offset));
 }

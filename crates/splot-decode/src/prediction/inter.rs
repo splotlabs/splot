@@ -1829,10 +1829,14 @@ fn ccso_reference_slot(
         .get(ref_index as usize)
         .copied()
         .map(Some)
-        .ok_or(inter_internal!(
-            "inter_ccso_reference_index_out_of_range",
-            offset
-        ))
+        .ok_or_else(|| {
+            inter_diag!(
+                "inter_ccso_reference_index_out_of_range",
+                offset,
+                "CCSO reference index is outside NumTotalRefs",
+                "6.17.7.8"
+            )
+        })
 }
 
 fn parse_inter_frame_core(
