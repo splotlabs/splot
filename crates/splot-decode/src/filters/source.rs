@@ -15,7 +15,15 @@ fn lock_stripe_sample_buffers() -> MutexGuard<'static, Vec<Vec<u16>>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-fn take_stripe_sample_buffer(sample_count: usize) -> Option<Vec<u16>> {
+/// Why a stripe/window copy failed: inconsistent geometry, or storage that
+/// could not be reserved.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StripeCopyError {
+    Geometry,
+    Allocation,
+}
+
+fn take_stripe_sample_buffer(sample_count: usize) -> Result<Vec<u16>, StripeCopyError> {
     let mut buffers = lock_stripe_sample_buffers();
     let index = buffers
         .iter()
@@ -34,8 +42,10 @@ fn take_stripe_sample_buffer(sample_count: usize) -> Option<Vec<u16>> {
         .unwrap_or_default();
     drop(buffers);
     buffer.clear();
-    buffer.try_reserve_exact(sample_count).ok()?;
-    Some(buffer)
+    buffer
+        .try_reserve_exact(sample_count)
+        .map_err(|_| StripeCopyError::Allocation)?;
+    Ok(buffer)
 }
 
 fn recycle_stripe_sample_buffer(mut buffer: Vec<u16>) {
@@ -202,7 +212,7 @@ const MAX_RETAINED_WINDOW_BUFFERS: usize = 64;
 const MAX_RETAINED_WINDOW_SAMPLES: usize = MAX_RETAINED_STRIPE_SAMPLES;
 static WINDOW_SAMPLE_BUFFERS: Mutex<Vec<Box<dyn Any + Send>>> = Mutex::new(Vec::new());
 
-fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Option<Vec<T>> {
+fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Result<Vec<T>, StripeCopyError> {
     let mut buffer = {
         let mut buffers = WINDOW_SAMPLE_BUFFERS
             .lock()
@@ -216,8 +226,10 @@ fn take_window_buffer<T: ReconSample>(sample_count: usize) -> Option<Vec<T>> {
             .map_or_else(Vec::new, |buffer| *buffer)
     };
     buffer.clear();
-    buffer.try_reserve(sample_count).ok()?;
-    Some(buffer)
+    buffer
+        .try_reserve(sample_count)
+        .map_err(|_| StripeCopyError::Allocation)?;
+    Ok(buffer)
 }
 
 fn recycle_window_buffer<T: ReconSample>(mut buffer: Vec<T>) {
@@ -259,7 +271,7 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma_start: usize,
         luma_end: usize,
         margin: usize,
-    ) -> Option<Self> {
+    ) -> Result<Self, StripeCopyError> {
         let format = workspace.info().pixel_format();
         let subsampling_y = usize::from(format.subsampling_y());
         let has_chroma = !format.is_monochrome();
@@ -268,13 +280,13 @@ impl<T: ReconSample> DeblockedWindow<T> {
             if index > 0 && !has_chroma {
                 break;
             }
-            let source = FramePlane::new(workspace, plane)?;
+            let source = FramePlane::new(workspace, plane).ok_or(StripeCopyError::Geometry)?;
             let shift = if index == 0 { 0 } else { subsampling_y };
             let start = (luma_start >> shift).saturating_sub(margin);
             let end = (luma_end.div_ceil(1 << shift) + margin).min(source.frame_height());
             planes[index] = Some(WindowPlane::copy(source, start, end)?);
         }
-        Some(Self { planes })
+        Ok(Self { planes })
     }
 
     /// Copies a deblocked stripe window directly from segmented canonical row
@@ -284,11 +296,13 @@ impl<T: ReconSample> DeblockedWindow<T> {
         luma_start: usize,
         luma_end: usize,
         margin: usize,
-    ) -> Option<Self> {
+    ) -> Result<Self, StripeCopyError> {
         let info = frame.info();
         let format = info.pixel_format();
         let luma = info.coded_luma_size();
-        let chroma = format.chroma_size(luma).ok()?;
+        let chroma = format
+            .chroma_size(luma)
+            .map_err(|_| StripeCopyError::Geometry)?;
         let subsampling_y = usize::from(format.subsampling_y());
         let has_chroma = !format.is_monochrome();
         let mut planes = [None, None, None];
@@ -296,13 +310,17 @@ impl<T: ReconSample> DeblockedWindow<T> {
             if index > 0 && !has_chroma {
                 break;
             }
-            let size = if index == 0 { luma } else { chroma? };
+            let size = if index == 0 {
+                luma
+            } else {
+                chroma.ok_or(StripeCopyError::Geometry)?
+            };
             let shift = if index == 0 { 0 } else { subsampling_y };
             let start = (luma_start >> shift).saturating_sub(margin);
             let end = (luma_end.div_ceil(1 << shift) + margin).min(size.height());
             planes[index] = Some(WindowPlane::copy_bands(frame, plane, start, end)?);
         }
-        Some(Self { planes })
+        Ok(Self { planes })
     }
 
     /// Borrows the window as the deblocked planes a stripe reads.
@@ -320,17 +338,19 @@ impl<T: ReconSample> DeblockedWindow<T> {
 }
 
 impl<T: ReconSample> WindowPlane<T> {
-    fn copy(source: FramePlane<'_, T>, start: usize, end: usize) -> Option<Self> {
-        let rows = end.checked_sub(start)?;
-        let mut samples = take_window_buffer::<T>(rows.checked_mul(source.width())?)?;
+    fn copy(source: FramePlane<'_, T>, start: usize, end: usize) -> Result<Self, StripeCopyError> {
+        let geometry = StripeCopyError::Geometry;
+        let rows = end.checked_sub(start).ok_or(geometry)?;
+        let mut samples =
+            take_window_buffer::<T>(rows.checked_mul(source.width()).ok_or(geometry)?)?;
         if let Some(source) = source.contiguous_rows(start, end) {
             samples.extend_from_slice(source);
         } else {
             for y in start..end {
-                samples.extend_from_slice(source.row(y)?);
+                samples.extend_from_slice(source.row(y).ok_or(geometry)?);
             }
         }
-        Some(Self {
+        Ok(Self {
             samples,
             width: source.width(),
             height: source.frame_height(),
@@ -344,16 +364,17 @@ impl<T: ReconSample> WindowPlane<T> {
         plane: PlaneId,
         start: usize,
         end: usize,
-    ) -> Option<Self> {
-        let bands = frame.plane_bands(plane).ok()?;
-        let first = bands.first()?;
+    ) -> Result<Self, StripeCopyError> {
+        let geometry = StripeCopyError::Geometry;
+        let bands = frame.plane_bands(plane).map_err(|_| geometry)?;
+        let first = bands.first().ok_or(geometry)?;
         let storage = first.storage_size();
         if start > end || end > storage.height() {
-            return None;
+            return Err(geometry);
         }
         let rows = end - start;
         let width = storage.width();
-        let mut samples = take_window_buffer::<T>(rows.checked_mul(width)?)?;
+        let mut samples = take_window_buffer::<T>(rows.checked_mul(width).ok_or(geometry)?)?;
         let mut band_index = 0;
         for y in start..end {
             while bands
@@ -362,19 +383,20 @@ impl<T: ReconSample> WindowPlane<T> {
             {
                 band_index += 1;
             }
-            let band = bands.get(band_index)?;
+            let band = bands.get(band_index).ok_or(geometry)?;
             let rect = band.rect();
-            let local_y = y.checked_sub(rect.y())?;
+            let local_y = y.checked_sub(rect.y()).ok_or(geometry)?;
             if local_y >= rect.height() || rect.width() != width {
-                return None;
+                return Err(geometry);
             }
-            let row_start = local_y.checked_mul(width)?;
+            let row_start = local_y.checked_mul(width).ok_or(geometry)?;
             samples.extend_from_slice(
                 band.samples()
-                    .get(row_start..row_start.checked_add(width)?)?,
+                    .get(row_start..row_start.checked_add(width).ok_or(geometry)?)
+                    .ok_or(geometry)?,
             );
         }
-        Some(Self {
+        Ok(Self {
             samples,
             width,
             height: storage.height(),
@@ -434,11 +456,15 @@ impl StripePlane {
         source: FramePlane<'_, T>,
         origin_y: usize,
         end_y: usize,
-    ) -> Option<Self> {
+    ) -> Result<Self, StripeCopyError> {
+        let geometry = StripeCopyError::Geometry;
         if origin_y > end_y || end_y > source.frame_height() {
-            return None;
+            return Err(geometry);
         }
-        let sample_count = source.width().checked_mul(end_y - origin_y)?;
+        let sample_count = source
+            .width()
+            .checked_mul(end_y - origin_y)
+            .ok_or(geometry)?;
         let mut samples = take_stripe_sample_buffer(sample_count)?;
         if let Some(source_rows) = source.contiguous_rows(origin_y, end_y)
             && let Some(source_samples) = T::u16_slice(source_rows)
@@ -448,17 +474,27 @@ impl StripePlane {
             for y in origin_y..end_y {
                 let start = y
                     .checked_sub(source.origin_y())
-                    .filter(|row| *row < source.end_y() - source.origin_y())?
-                    .checked_mul(source.stride())?;
-                let row = source_samples.get(start..start.checked_add(source.width())?)?;
+                    .filter(|row| *row < source.end_y() - source.origin_y())
+                    .ok_or(geometry)?
+                    .checked_mul(source.stride())
+                    .ok_or(geometry)?;
+                let row = source_samples
+                    .get(start..start.checked_add(source.width()).ok_or(geometry)?)
+                    .ok_or(geometry)?;
                 samples.extend_from_slice(row);
             }
         } else {
             for y in origin_y..end_y {
-                samples.extend(source.row(y)?.iter().map(|value| value.to_u16()));
+                samples.extend(
+                    source
+                        .row(y)
+                        .ok_or(geometry)?
+                        .iter()
+                        .map(|value| value.to_u16()),
+                );
             }
         }
-        Some(Self {
+        Ok(Self {
             width: source.width(),
             frame_height: source.frame_height(),
             origin_y,
@@ -466,15 +502,22 @@ impl StripePlane {
         })
     }
 
-    pub(crate) fn copy_rows(&self, origin_y: usize, end_y: usize) -> Option<Self> {
+    pub(crate) fn copy_rows(&self, origin_y: usize, end_y: usize) -> Result<Self, StripeCopyError> {
+        let geometry = StripeCopyError::Geometry;
         let start = origin_y
-            .checked_sub(self.origin_y)?
-            .checked_mul(self.width)?;
-        let end = end_y.checked_sub(self.origin_y)?.checked_mul(self.width)?;
-        let source = self.samples.get(start..end)?;
+            .checked_sub(self.origin_y)
+            .ok_or(geometry)?
+            .checked_mul(self.width)
+            .ok_or(geometry)?;
+        let end = end_y
+            .checked_sub(self.origin_y)
+            .ok_or(geometry)?
+            .checked_mul(self.width)
+            .ok_or(geometry)?;
+        let source = self.samples.get(start..end).ok_or(geometry)?;
         let mut samples = take_stripe_sample_buffer(source.len())?;
         samples.extend_from_slice(source);
-        Some(Self {
+        Ok(Self {
             width: self.width,
             frame_height: self.frame_height,
             origin_y,

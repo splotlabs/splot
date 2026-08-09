@@ -18,6 +18,7 @@ use splot_tables::tables::loop_restoration::{
 };
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint, simd_swizzle};
 
+use crate::PlaneId;
 use crate::dequant::quantizer_value;
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::{round2_i32, round2_signed_i32};
@@ -428,8 +429,9 @@ where
     let mut source_cache = Vec::new();
     source_cache
         .try_reserve_exact(geo.source_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener source-grid allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener source-grid",
         })?;
     for row in 0..geo.source_height {
         let y = coordinate_add(
@@ -769,8 +771,9 @@ fn build_padded_source_cache_into<T: ReconSample>(
     let max_sample = bit_depth.max_sample();
     source_cache
         .try_reserve_exact(geo.source_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener source-grid allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener source-grid",
         })?;
     for row in 0..geo.source_height {
         let base = region_start + row * source.stride;
@@ -905,8 +908,9 @@ where
     )?;
     output
         .try_reserve_exact(cell_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener classification-grid allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener classification-grid",
         })?;
     let flat_features = feature_grid.as_flattened();
     let feature_row_stride = 4 * geo.feature_width;
@@ -1031,14 +1035,16 @@ where
         })?;
     feature_grid
         .try_reserve_exact(geo.feature_count.saturating_sub(feature_grid.len()))
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener feature-grid allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener feature-grid",
         })?;
     feature_grid.resize(geo.feature_count, [0; 4]);
     skip_row
         .try_reserve_exact(geo.feature_width.saturating_sub(skip_row.len()))
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "PC-Wiener feature-grid allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "PC-Wiener feature-grid",
         })?;
     skip_row.resize(geo.feature_width, 0);
     let mut previous_skip_grid_row = None;

@@ -9,7 +9,7 @@ use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 use crate::filters::cdef::{CdefFrame, CdefSkipGrid};
-use crate::filters::source::{FramePlane, StripePlane};
+use crate::filters::source::{FramePlane, StripeCopyError, StripePlane};
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
@@ -102,8 +102,16 @@ pub(crate) struct FilteredStripe {
 }
 
 impl<'a, T: ReconSample> LrFrame<'a, T> {
-    fn from_cdef(frame: CdefFrame<'a, T>, active_planes: [bool; 3]) -> Option<Self> {
-        let copy = |plane: &StripePlane| plane.copy_rows(plane.origin_y(), plane.end_y()?);
+    fn from_cdef(
+        frame: CdefFrame<'a, T>,
+        active_planes: [bool; 3],
+    ) -> core::result::Result<Self, StripeCopyError> {
+        let copy = |plane: &StripePlane| {
+            plane.copy_rows(
+                plane.origin_y(),
+                plane.end_y().ok_or(StripeCopyError::Geometry)?,
+            )
+        };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
             Some(copy(&frame.filtered_y)?)
         } else {
@@ -125,7 +133,7 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         } else {
             None
         };
-        Some(Self {
+        Ok(Self {
             deblocked_y: frame.deblocked_y,
             deblocked_u: frame.deblocked_u,
             deblocked_v: frame.deblocked_v,
@@ -725,7 +733,7 @@ impl StripeChain<'_> {
             has_blocks(PlaneId::V.index(), cdef.filtered_v.as_ref()),
         ];
         let mut frame =
-            LrFrame::from_cdef(cdef, active_planes).ok_or_else(super::lr_pipeline_state_error)?;
+            LrFrame::from_cdef(cdef, active_planes).map_err(super::stripe_copy_error)?;
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
@@ -951,10 +959,10 @@ impl StripeChain<'_> {
                     .ok_or_else(super::lr_pipeline_state_error)?;
                 let padded_source =
                     PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
-                        .map_err(|_| super::lr_pipeline_state_error())?;
+                        .map_err(lr_window_error)?;
                 let timer = crate::timing::start();
                 pc_wiener_filter_block_padded(output, &params, &padded_source)
-                    .map_err(|_| super::lr_pipeline_state_error())?;
+                    .map_err(lr_window_error)?;
                 crate::timing::accumulate(crate::timing::Phase::PcWienerFilter, timer);
                 self.preserve_lossless_lr_samples(
                     PlaneId::Y,
@@ -1093,7 +1101,7 @@ impl StripeChain<'_> {
                     block.height,
                     (sub_x as u8, sub_y as u8),
                 )
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 with_wiener_ns_chroma_scratch(|scratch| {
                     wiener_ns_filter_chroma_block_padded_into(
                         output,
@@ -1102,7 +1110,7 @@ impl StripeChain<'_> {
                         scratch,
                     )
                 })
-                .map_err(|_| super::lr_pipeline_state_error())
+                .map_err(lr_window_error)
             })?;
             self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, output, output_stride)
         })
@@ -1192,7 +1200,7 @@ impl StripeChain<'_> {
                     .ok_or_else(super::lr_pipeline_state_error)?;
                 let padded_source =
                     WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
-                        .map_err(|_| super::lr_pipeline_state_error())?;
+                        .map_err(lr_window_error)?;
                 let timer = crate::timing::start();
                 with_wiener_ns_luma_scratch(sample_count, |scratch| {
                     if let Some(cell_subclasses) = cell_subclass_map {
@@ -1212,7 +1220,7 @@ impl StripeChain<'_> {
                         )
                     }
                 })
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 crate::timing::accumulate(crate::timing::Phase::WienerNsLuma, timer);
                 Ok(())
             })?;
@@ -1313,8 +1321,8 @@ impl StripeChain<'_> {
             })
         })?;
         cell_subclasses.resize(cell_count, 0);
-        let subclass_table = pc_wiener_subclass_table(num_classes, filter_set_index)
-            .map_err(|_| super::lr_pipeline_state_error())?;
+        let subclass_table =
+            pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
         let padded_source = PcWienerClassifyPaddedSource::new_prevalidated(
             window.samples,
             window.stride,
@@ -1322,7 +1330,7 @@ impl StripeChain<'_> {
             window.origin_y,
             self.bit_depth,
         )
-        .map_err(|_| super::lr_pipeline_state_error())?;
+        .map_err(lr_window_error)?;
         let mut group_start = 0;
         while group_start < cell_cols {
             let class_x = block
@@ -1371,7 +1379,7 @@ impl StripeChain<'_> {
                     },
                     scratch,
                 )
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 for cell_row in 0..cell_rows {
                     let class_start = cell_row
                         .checked_mul(group_cols)

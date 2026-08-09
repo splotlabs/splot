@@ -281,7 +281,10 @@ fn ccso_plane<T: ReconSample>(
     let source = FramePlane::new(workspace, plane_id).ok_or(CcsoError::Workspace)?;
     let width = source.width();
     let height = source.frame_height();
-    let mut filtered = StripePlane::copy_from(source, 0, height).ok_or(CcsoError::Workspace)?;
+    let mut filtered = StripePlane::copy_from(source, 0, height).map_err(|error| match error {
+        crate::filters::source::StripeCopyError::Allocation => CcsoError::Allocation,
+        crate::filters::source::StripeCopyError::Geometry => CcsoError::Workspace,
+    })?;
     ccso_apply(
         &mut filtered,
         FramePlane::window(curr_luma, luma_width, luma_height, 0, luma_height)
@@ -529,7 +532,7 @@ fn ccso_offset_lut(
     let scale = i32::from(params.ccso_scale_idx.ok_or(CcsoError::Params)?) + 1;
     let mut lut = Vec::new();
     lut.try_reserve_exact(expected_offsets)
-        .map_err(|_| CcsoError::Geometry)?;
+        .map_err(|_| CcsoError::Allocation)?;
     for &offset_idx in &params.ccso_offset_idx {
         let base = CCSO_OFFSET
             .get(usize::from(offset_idx))
@@ -601,6 +604,8 @@ pub(crate) enum CcsoError {
     Params,
     #[error("CCSO workspace access failed")]
     Workspace,
+    #[error("CCSO lookup-table storage could not be reserved")]
+    Allocation,
 }
 
 #[cfg(test)]

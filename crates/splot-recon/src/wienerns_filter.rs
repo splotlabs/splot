@@ -15,6 +15,7 @@
 
 use std::simd::{Simd, cmp::SimdOrd, num::SimdInt, num::SimdUint};
 
+use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
 use crate::workspace::u16_samples_exceed;
@@ -361,21 +362,23 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
     scratch
         .clean_rows
         .try_reserve_exact(padded_rows)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "Wiener NS clean-row scratch allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "Wiener NS clean-row scratch",
         })?;
-    scratch
-        .acc
-        .try_reserve_exact(params.width)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "Wiener NS accumulator scratch allocation",
-        })?;
+    scratch.acc.try_reserve_exact(params.width).map_err(|_| {
+        ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "Wiener NS accumulator scratch",
+        }
+    })?;
     scratch.acc.resize(params.width, 0);
     scratch
         .prepared_classes
         .try_reserve_exact(params.coeffs_by_class.len())
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "Wiener NS prepared-class scratch allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "Wiener NS prepared-class scratch",
         })?;
     scratch
         .prepared_classes
@@ -422,8 +425,9 @@ fn wiener_ns_filter_luma_block_padded_layout_into<T: ReconSample>(
         scratch
             .filtered
             .try_reserve_exact(sample_count)
-            .map_err(|_| ReconError::ArithmeticOverflow {
-                context: "Wiener NS filtered scratch allocation",
+            .map_err(|_| ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "Wiener NS filtered scratch",
             })?;
         scratch.filtered.resize(sample_count, T::default());
     }

@@ -257,16 +257,16 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     let has_chroma = deblocked.u.is_some();
     let deblocked_y = deblocked.y;
     let filtered_y =
-        StripePlane::copy_from(deblocked_y, luma_start, luma_end).ok_or(CdefError::Geometry)?;
+        StripePlane::copy_from(deblocked_y, luma_start, luma_end).map_err(CdefError::from)?;
     let chroma_start = luma_start >> sub_y;
     let chroma_end = luma_end.div_ceil(1usize << sub_y);
     let (deblocked_u, deblocked_v, filtered_u, filtered_v) = if has_chroma {
         let u = deblocked.u.ok_or(CdefError::Workspace)?;
         let v = deblocked.v.ok_or(CdefError::Workspace)?;
         let filtered_u =
-            StripePlane::copy_from(u, chroma_start, chroma_end).ok_or(CdefError::Geometry)?;
+            StripePlane::copy_from(u, chroma_start, chroma_end).map_err(CdefError::from)?;
         let filtered_v =
-            StripePlane::copy_from(v, chroma_start, chroma_end).ok_or(CdefError::Geometry)?;
+            StripePlane::copy_from(v, chroma_start, chroma_end).map_err(CdefError::from)?;
         (Some(u), Some(v), Some(filtered_u), Some(filtered_v))
     } else {
         (None, None, None, None)
@@ -888,6 +888,17 @@ pub(crate) enum CdefError {
     Geometry,
     #[error("CDEF workspace sample access went out of bounds")]
     Workspace,
+    #[error("CDEF stripe output storage could not be reserved")]
+    Allocation,
+}
+
+impl From<crate::filters::source::StripeCopyError> for CdefError {
+    fn from(error: crate::filters::source::StripeCopyError) -> Self {
+        match error {
+            crate::filters::source::StripeCopyError::Allocation => Self::Allocation,
+            crate::filters::source::StripeCopyError::Geometry => Self::Geometry,
+        }
+    }
 }
 
 #[cfg(test)]

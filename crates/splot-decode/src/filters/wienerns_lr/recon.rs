@@ -513,7 +513,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 crate::filters::ccso::prepare_ccso(&core, grid, self.bit_depth, subsampling)
             })
             .transpose()
-            .map_err(|_| lr_pipeline_state_error())?;
+            .map_err(|error| ccso_filter_error(&error))?;
         let sink = sink_source.open(info, &ranges)?;
         let stripe_count = ranges.len();
         let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
@@ -824,10 +824,16 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     fn extract_terminal_with(
         &self,
         stripe: usize,
-        extract: impl FnOnce(usize, usize) -> Option<crate::filters::source::DeblockedWindow<T>>,
+        extract: impl FnOnce(
+            usize,
+            usize,
+        ) -> core::result::Result<
+            crate::filters::source::DeblockedWindow<T>,
+            crate::filters::source::StripeCopyError,
+        >,
     ) -> Result<crate::filters::source::DeblockedWindow<T>> {
         let (start, end) = self.stripe_bounds(stripe)?;
-        extract(start, end).ok_or_else(lr_pipeline_state_error)
+        extract(start, end).map_err(stripe_copy_error)
     }
 
     fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
@@ -971,7 +977,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             start,
             end,
         )
-        .map_err(|_| lr_pipeline_state_error())?;
+        .map_err(|error| cdef_filter_error(&error))?;
         crate::timing::accumulate(crate::timing::Phase::FilterCdefStripe, cdef_timer);
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             let ccso_timer = crate::timing::start();
@@ -982,7 +988,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
                 chain.lossless_grid,
                 self.tile_starts(),
             )
-            .map_err(|_| lr_pipeline_state_error())?;
+            .map_err(|error| ccso_filter_error(&error))?;
             crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
         }
         Ok(cdef)
@@ -1222,7 +1228,7 @@ fn deblock_stripe_window<T: ReconSample>(
         range.1,
         STRIPE_WINDOW_MARGIN,
     )
-    .ok_or_else(lr_pipeline_state_error)
+    .map_err(stripe_copy_error)
 }
 
 pub(crate) fn deblock_prepare_error(
@@ -1237,6 +1243,47 @@ pub(crate) fn deblock_prepare_error(
             .into()
         }
         _ => lr_pipeline_state_error(),
+    }
+}
+
+fn cdef_filter_error(error: &crate::filters::cdef::CdefError) -> crate::error::DecodeError {
+    match error {
+        crate::filters::cdef::CdefError::Allocation => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "CDEF stripe output",
+            }
+            .into()
+        }
+        _ => lr_pipeline_state_error(),
+    }
+}
+
+fn ccso_filter_error(error: &crate::filters::ccso::CcsoError) -> crate::error::DecodeError {
+    match error {
+        crate::filters::ccso::CcsoError::Allocation => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "CCSO lookup table",
+            }
+            .into()
+        }
+        _ => lr_pipeline_state_error(),
+    }
+}
+
+pub(crate) fn stripe_copy_error(
+    error: crate::filters::source::StripeCopyError,
+) -> crate::error::DecodeError {
+    match error {
+        crate::filters::source::StripeCopyError::Allocation => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "deblocked stripe window",
+            }
+            .into()
+        }
+        crate::filters::source::StripeCopyError::Geometry => lr_pipeline_state_error(),
     }
 }
 

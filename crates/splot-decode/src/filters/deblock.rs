@@ -625,7 +625,7 @@ impl<'a> FrameDeblock<'a> {
     ) -> Result<DeblockedWindow<T>, DeblockError> {
         self.validate_window(workspace.info(), luma_start, luma_end, margin)?;
         DeblockedWindow::extract(workspace, luma_start, luma_end, margin)
-            .ok_or(DeblockError::Workspace)
+            .map_err(DeblockError::from)
     }
 
     /// Copies a final deblocked row window directly from segmented canonical
@@ -639,7 +639,7 @@ impl<'a> FrameDeblock<'a> {
     ) -> Result<DeblockedWindow<T>, DeblockError> {
         self.validate_window(frame.info(), luma_start, luma_end, margin)?;
         DeblockedWindow::extract_bands(frame, luma_start, luma_end, margin)
-            .ok_or(DeblockError::Workspace)
+            .map_err(DeblockError::from)
     }
 
     fn validate_window(
@@ -2208,6 +2208,15 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
         0 => PlaneId::Y,
         1 => PlaneId::U,
         _ => PlaneId::V,
+    }
+}
+
+impl From<crate::filters::source::StripeCopyError> for DeblockError {
+    fn from(error: crate::filters::source::StripeCopyError) -> Self {
+        match error {
+            crate::filters::source::StripeCopyError::Allocation => Self::Allocation,
+            crate::filters::source::StripeCopyError::Geometry => Self::Workspace,
+        }
     }
 }
 
