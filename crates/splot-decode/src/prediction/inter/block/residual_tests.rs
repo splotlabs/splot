@@ -29,6 +29,20 @@ fn residual_block_allocation_failure_is_operational() {
     ));
 }
 
+#[test]
+fn residual_table_bounds_failure_is_internal() {
+    let offset = ByteOffset::new(17);
+    let error = tx_size_dimension(&[], 0, offset).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::InternalState {
+            reason: "inter_block_residual_geometry",
+            byte_offset,
+        } if byte_offset == offset
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()
