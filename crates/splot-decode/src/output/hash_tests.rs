@@ -30,6 +30,9 @@ const GDF_MULTI_TILE_FIXTURE: &[u8] = include_bytes!(
 const INTER_444_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2frame-inter-444-64x64-q128.ivf"
 );
+const COMPOUND_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-3frame-compound-average-64x64.ivf"
+);
 const REFERENCE_SCALING_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-2frame-refscale-inter-64x64-51x51-q80.ivf"
 );
@@ -617,6 +620,25 @@ fn partition_symbol_mutation_fails_closed_at_exit_symbol() {
         DecodeError::UnsupportedFeature {
             unsupported
         } if unsupported.reason() == "inter_exit_symbol"
+    ));
+}
+
+#[test]
+fn compound_tile_mutation_fails_as_internal_parse_desync() {
+    let mut bytes = COMPOUND_FIXTURE.to_vec();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+
+    let error = context(ThreadCount::from(1usize))
+        .decode_hash_report_bytes(&bytes, DecodeOptions::default())
+        .unwrap_err();
+
+    assert!(matches!(
+        error,
+        DecodeError::InternalState {
+            reason: "compound_exit_symbol",
+            ..
+        }
     ));
 }
 

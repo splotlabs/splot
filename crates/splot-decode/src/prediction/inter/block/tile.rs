@@ -496,12 +496,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 } = walk.into_output();
                 recon_row.terminal = symbols.exit_symbol().err().map(|_| {
                     if context.reference_select {
-                        compound_cap!(
-                            "compound_exit_symbol",
-                            tile_offset,
-                            "inter.compound.exit_symbol",
-                            SPEC_MODE_INFO
-                        )
+                        inter_internal!("compound_exit_symbol", tile_offset)
                     } else {
                         inter_cap!(
                             "inter_exit_symbol",
