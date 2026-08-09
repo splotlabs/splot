@@ -1632,12 +1632,7 @@ fn compound_reference_order_hint<T: ReconSample>(
         )
     })?;
     let slot = *ref_frame_idx.get(ref_index).ok_or_else(|| {
-        compound_missing!(
-            "compound_group_missing_ref_frame_idx",
-            tile_offset,
-            "inter.compound.ref_frame_idx",
-            SPEC_MODE_INFO
-        )
+        super::super::block_reference_out_of_range(ref_frame, ref_frame_idx.len())
     })?;
     let slot = usize::try_from(slot).map_err(|_| {
         compound_cap!(
