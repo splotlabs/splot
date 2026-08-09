@@ -1302,15 +1302,7 @@ fn decode_block<T: ReconSample>(
         if !frontier.is_chroma_part() {
             segment_id_state.record_block(frontier.r, frontier.c, n4w, n4h, segment_id);
         }
-        if prelude.use_intrabc {
-            let (info, spatial) = pending_intrabc.ok_or_else(|| {
-                inter_missing!(
-                    "inter_intrabc_info",
-                    tile_offset,
-                    "inter.intrabc.info",
-                    SPEC_MODE_INFO
-                )
-            })?;
+        if let Some((info, spatial)) = pending_intrabc {
             let block_qindex = segment_block_qindex(
                 sequence,
                 core,
