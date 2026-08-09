@@ -475,10 +475,10 @@ fn compound_local_warp_signal_allowed(
 }
 
 /// AV2 § 7.13.3.23: § 7.12.3 warp-sample search plus least-squares estimation
-/// once per reference list. A signalled list that gathers no samples (the
-/// § 5.20.7.14 `WarpSampleFound` scan is wider than the § 7.12.3.1 gathering)
-/// fails closed: the spec's det==0 identity model and AVM's
-/// `wm_params[ref].invalid` translational fallback diverge in that corner.
+/// once per reference list. A signalled list can gather no samples because the
+/// § 5.20.7.14 `WarpSampleFound` scan is wider than the § 7.12.3.1 gathering.
+/// AVM marks that list's warp model invalid, which selects the translational
+/// prediction equivalent to the spec's det==0 identity model.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn compound_local_warp_models(
     mv_grid: &NeighbourMvGrid,
@@ -538,12 +538,7 @@ fn compound_ref_warp_model(
 ) -> Result<Option<[i32; 6]>> {
     let samples = super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref);
     if samples.is_empty() {
-        return Err(inter_cap!(
-            "compound_local_warp_empty_sample_list",
-            tile_offset,
-            "inter.compound.local_warp.empty_sample_list",
-            "7.12.3.1"
-        ));
+        return Ok(None);
     }
     Ok(Some(local_warp_estimation(
         &samples,

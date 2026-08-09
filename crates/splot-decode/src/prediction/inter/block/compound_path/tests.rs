@@ -530,8 +530,23 @@ fn compound_local_warp_derives_a_model_per_reference_list() {
 }
 
 #[test]
-fn compound_local_warp_rejects_a_signalled_list_without_samples() {
-    let grid = NeighbourMvGrid::new(16, 16).unwrap();
+fn compound_local_warp_uses_translation_for_a_list_without_samples() {
+    let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
+    grid.record_block(
+        0,
+        0,
+        2,
+        2,
+        true,
+        0,
+        None,
+        true,
+        Mv { row: 24, col: -8 },
+        false,
+        0,
+        false,
+        BlockPrecisionRecord::default(),
+    );
     let block = MvBlockContext {
         mi_row: 0,
         mi_col: 2,
@@ -543,15 +558,21 @@ fn compound_local_warp_rejects_a_signalled_list_without_samples() {
         mi_rows: 16,
         mi_cols: 16,
     };
-    let error =
-        compound_local_warp_models(&grid, &block, Mv::ZERO, Mv::ZERO, 0, 2, 2, 2, TILE_OFFSET)
-            .unwrap_err();
+    let models = compound_local_warp_models(
+        &grid,
+        &block,
+        Mv { row: 24, col: -8 },
+        Mv::ZERO,
+        0,
+        2,
+        2,
+        2,
+        TILE_OFFSET,
+    )
+    .unwrap();
 
-    assert!(
-        error
-            .to_string()
-            .contains("inter.compound.local_warp.empty_sample_list")
-    );
+    assert!(models[0].is_some(), "list-0 warp model");
+    assert_eq!(models[1], None, "list-1 translational fallback");
 }
 
 #[test]
