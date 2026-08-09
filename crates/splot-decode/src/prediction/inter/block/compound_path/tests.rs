@@ -374,6 +374,22 @@ fn compound_reference_facts_keep_reference_list_bounds_fail_closed() {
 }
 
 #[test]
+fn compound_reference_facts_keep_missing_order_hint_fail_closed() {
+    let reference = InterReferenceState::<u8>::empty().unwrap();
+    let error = compound_reference_facts(&reference, &[0], 0, TILE_OFFSET).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 0,
+                slot_count: 0,
+            }
+        }
+    ));
+}
+
+#[test]
 fn compound_reference_facts_keep_missing_width_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);

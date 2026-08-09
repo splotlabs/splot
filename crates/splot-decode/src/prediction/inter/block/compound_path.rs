@@ -1489,28 +1489,20 @@ fn compound_reference_facts<T: ReconSample>(
             SPEC_READ_REFINEMV
         )
     })?;
-    let order_hint = reference
-        .ref_order_hint
-        .get(slot)
-        .copied()
-        .ok_or_else(|| {
-            compound_missing!(
-                "compound_refinemv_missing_ref_order_hint",
-                tile_offset,
-                "inter.compound.ref_order_hint",
-                SPEC_READ_REFINEMV
-            )
-        })
-        .and_then(|hint| {
-            i32::try_from(hint).map_err(|_| {
-                compound_cap!(
-                    "compound_ref_order_hint_range",
-                    tile_offset,
-                    "inter.compound.ref_order_hint",
-                    SPEC_READ_REFINEMV
-                )
-            })
-        })?;
+    let order_hint = reference.ref_order_hint.get(slot).copied().ok_or(
+        crate::DecodeReferenceStateError::SlotOutOfRange {
+            slot,
+            slot_count: reference.ref_order_hint.len(),
+        },
+    )?;
+    let order_hint = i32::try_from(order_hint).map_err(|_| {
+        compound_cap!(
+            "compound_ref_order_hint_range",
+            tile_offset,
+            "inter.compound.ref_order_hint",
+            SPEC_READ_REFINEMV
+        )
+    })?;
     let width = *reference.ref_frame_width.get(slot).ok_or(
         crate::DecodeReferenceStateError::SlotOutOfRange {
             slot,

@@ -91,17 +91,6 @@ macro_rules! compound_cap {
     };
 }
 
-macro_rules! compound_missing {
-    ($reason:literal, $offset:expr, $input:literal, $spec_section:expr $(,)?) => {
-        unsupported_compound_at(
-            $reason,
-            $offset,
-            concat!("missing required input: ", $input),
-            $spec_section,
-        )
-    };
-}
-
 const SPEC_HEADER: &str = "5.18.2";
 const SPEC_HEADER_SEMANTICS: &str = "6.17";
 const SPEC_FRAME_HEADER_INFO_SEMANTICS: &str = "6.17.2";
