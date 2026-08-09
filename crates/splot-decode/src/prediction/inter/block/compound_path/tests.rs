@@ -360,7 +360,7 @@ fn compound_reference_order_hint_keeps_slot_conversion_and_bounds_fail_closed() 
 #[test]
 fn compound_reference_facts_keep_reference_list_bounds_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_reference_facts(&reference, &[], 0, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_facts(&reference, &[], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -376,7 +376,7 @@ fn compound_reference_facts_keep_reference_list_bounds_fail_closed() {
 #[test]
 fn compound_reference_facts_keep_negative_reference_index_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_reference_facts(&reference, &[0], -1, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_facts(&reference, &[0], -1).unwrap_err();
 
     assert!(matches!(
         error,
@@ -393,7 +393,7 @@ fn compound_reference_facts_keep_negative_reference_index_fail_closed() {
 fn compound_reference_facts_keep_slot_conversion_and_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);
-    let error = compound_reference_facts(&reference, &[u32::MAX], 0, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_facts(&reference, &[u32::MAX], 0).unwrap_err();
     let expected_slot = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
 
     assert!(matches!(
@@ -410,7 +410,7 @@ fn compound_reference_facts_keep_slot_conversion_and_bounds_fail_closed() {
 #[test]
 fn compound_reference_facts_keep_missing_order_hint_fail_closed() {
     let reference = InterReferenceState::<u8>::empty().unwrap();
-    let error = compound_reference_facts(&reference, &[0], 0, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_facts(&reference, &[0], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -427,7 +427,7 @@ fn compound_reference_facts_keep_missing_order_hint_fail_closed() {
 fn compound_reference_facts_keep_missing_width_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);
-    let error = compound_reference_facts(&reference, &[0], 0, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_facts(&reference, &[0], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -445,7 +445,7 @@ fn compound_reference_facts_keep_missing_height_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint.push(9);
     reference.ref_frame_width.push(64);
-    let error = compound_reference_facts(&reference, &[0], 0, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_facts(&reference, &[0], 0).unwrap_err();
 
     assert!(matches!(
         error,
@@ -456,6 +456,78 @@ fn compound_reference_facts_keep_missing_height_fail_closed() {
             }
         }
     ));
+}
+
+#[test]
+fn compound_reference_facts_map_the_full_order_hint_domain() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
+    reference.ref_frame_width = vec![64, 64];
+    reference.ref_frame_height = vec![64, 64];
+
+    assert_eq!(
+        compound_reference_facts(&reference, &[0, 1], 0)
+            .unwrap()
+            .order_hint,
+        CompoundOrderHint::Restricted
+    );
+    assert_eq!(
+        compound_reference_facts(&reference, &[0, 1], 1)
+            .unwrap()
+            .order_hint,
+        CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
+    );
+}
+
+#[test]
+fn compound_sized_reference_distances_reject_restricted_references() {
+    let fixture = include_bytes!(
+        "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
+    );
+    let (_, core, _) =
+        crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
+    let frame_size = core.frame_size.unwrap();
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![0, 0];
+    reference.ref_frame_width = vec![frame_size.width; 2];
+    reference.ref_frame_height = vec![frame_size.height; 2];
+    let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+        y_mode: CompoundYMode::NearNear,
+        use_optflow: false,
+        ref_frame0: 0,
+        ref_frame1: 1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+
+    for path in [CompoundReferencePath::Opfl, CompoundReferencePath::RefineMv] {
+        assert!(
+            compound_sized_reference_distances(
+                &core,
+                &reference,
+                &[0, 1],
+                compound,
+                path,
+                TILE_OFFSET,
+            )
+            .unwrap()
+            .is_some()
+        );
+        reference.ref_order_hint[0] = u32::MAX;
+        assert_eq!(
+            compound_sized_reference_distances(
+                &core,
+                &reference,
+                &[0, 1],
+                compound,
+                path,
+                TILE_OFFSET,
+            )
+            .unwrap(),
+            None
+        );
+        reference.ref_order_hint[0] = 0;
+    }
 }
 
 #[test]
