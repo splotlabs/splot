@@ -127,6 +127,12 @@ pub enum DecodeHeaderStateError {
     /// A decoded inter CCTX record did not have its paired chroma block.
     #[error("inter residual CCTX pair state is inconsistent")]
     MissingInterResidualCctxPair,
+    /// Derived selectable transform-record state was internally inconsistent.
+    #[error("selectable transform-record derivation state is inconsistent")]
+    InvalidSelectableTransformRecords,
+    /// A selectable transform-record symbol or literal could not be entropy-decoded.
+    #[error("selectable transform-record symbol read failed")]
+    SelectableTransformRecordReadFailed,
 }
 
 /// Runtime reference-frame state consistency failure.

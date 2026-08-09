@@ -53,8 +53,8 @@ impl FrameFilterRecords {
 }
 
 pub(crate) use self::diagnostics::{
-    gap, intra_capped_seq_sb_size, selectable_missing_quantization_error,
-    selectable_symbol_read_error, wienerns_lr_selectable_transform_record_error_reason,
+    intra_capped_seq_sb_size, selectable_missing_quantization_error, selectable_symbol_read_error,
+    wienerns_lr_selectable_transform_record_error_reason,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
