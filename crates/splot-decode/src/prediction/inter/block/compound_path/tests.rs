@@ -185,6 +185,25 @@ fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
 }
 
 #[test]
+fn compound_opfl_refine_type_keeps_missing_header_state_fail_closed() {
+    let fixture = include_bytes!(
+        "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
+    );
+    let (_, mut core, _) =
+        crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
+    core.inter.as_mut().unwrap().opfl_refine_type = None;
+
+    let error = compound_opfl_refine_type(&core, TILE_OFFSET).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::InternalState {
+            reason: "compound_missing_opfl_refine_type",
+            byte_offset: TILE_OFFSET,
+        }
+    ));
+}
+
+#[test]
 fn compound_reference_order_hint_covers_every_valid_reference_index() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = vec![9, 11, 13, 15, 17, 19, 21];
