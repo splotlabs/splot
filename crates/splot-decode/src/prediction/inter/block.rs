@@ -309,14 +309,7 @@ fn derive_inter_block_setup<T: ReconSample>(
         core.inter
             .as_ref()
             .and_then(|inter| inter.max_drl_bits_minus_1)
-            .ok_or_else(|| {
-                inter_missing!(
-                    "inter_missing_max_drl_bits",
-                    offset,
-                    "inter.max_drl_bits_minus_1",
-                    SPEC_MODE_INFO
-                )
-            })?
+            .ok_or(crate::DecodeHeaderStateError::IncompleteInterFrameTools)?
     };
 
     let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(|_| {
