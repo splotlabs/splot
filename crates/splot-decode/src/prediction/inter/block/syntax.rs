@@ -193,19 +193,10 @@ pub(super) fn read_skip_mode_syntax(
     {
         return Ok(0);
     }
-    let skip_mode = cdfs
+    Ok(cdfs
         .read_block_symbol_trace(TileCdfSelector::SkipMode { ctx }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
-        .get();
-    if skip_mode > 1 {
-        return Err(inter_cap!(
-            "inter_block_unexpected_skip_mode",
-            tile_offset,
-            "inter.block.skip_mode out of range",
-            SPEC_MODE_INFO
-        ));
-    }
-    Ok(skip_mode)
+        .get())
 }
 
 pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
