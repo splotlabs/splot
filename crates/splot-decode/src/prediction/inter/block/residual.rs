@@ -861,10 +861,10 @@ fn residual_read_error(
             return inter_allocation!("inter residual coefficient parse state");
         }
         if let Some(core_error) = current.downcast_ref::<splot_core::Error>() {
-            return if matches!(core_error, splot_core::Error::InvalidSymbolCdf { .. }) {
-                residual_read_internal_error(tile_offset)
-            } else {
+            return if matches!(core_error, splot_core::Error::UnexpectedEof { .. }) {
                 crate::pipeline::malformed_tile_payload(tile_offset, SPEC_RESIDUAL, error)
+            } else {
+                residual_read_internal_error(tile_offset)
             };
         }
         source = current.source();

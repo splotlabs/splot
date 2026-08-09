@@ -46,10 +46,11 @@ fn residual_table_bounds_failure_is_internal() {
 #[test]
 fn residual_parse_failures_keep_typed_boundary() {
     let offset = ByteOffset::new(19);
-    let decoder = SymbolDecoder::new(&[]).unwrap();
-    let source = decoder.finish().unwrap_err();
     let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
-        source: BlockSymbolTraceReadError::Symbol(source),
+        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        }),
     };
     let error = residual_read_error(&parse_error, offset);
     assert!(matches!(
@@ -63,14 +64,25 @@ fn residual_parse_failures_keep_typed_boundary() {
     let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
         source: BlockSymbolTraceReadError::Symbol(source),
     };
-    let error = residual_read_error(&cdf_error, offset);
-    assert!(matches!(
-        error,
-        crate::DecodeError::InternalState {
-            reason: "inter_block_residual_parse",
-            byte_offset,
-        } if byte_offset == offset
-    ));
+    let decoder = SymbolDecoder::new(&[]).unwrap();
+    let decoder_state = decoder.finish().unwrap_err();
+    let fallback =
+        crate::bitstream::tile_payload::GeneralIntraResidualError::TransformPartitionGeometry {
+            table: "test",
+            index: usize::MAX,
+        };
+    let internal_errors: [&(dyn std::error::Error + 'static); 3] =
+        [&cdf_error, &decoder_state, &fallback];
+    for internal_error in internal_errors {
+        let error = residual_read_error(internal_error, offset);
+        assert!(matches!(
+            error,
+            crate::DecodeError::InternalState {
+                reason: "inter_block_residual_parse",
+                byte_offset,
+            } if byte_offset == offset
+        ));
+    }
 
     let mut allocation = Vec::<u8>::new();
     let allocation_error = allocation.try_reserve(usize::MAX).unwrap_err();
