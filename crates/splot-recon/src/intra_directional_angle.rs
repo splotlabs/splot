@@ -175,50 +175,6 @@ impl IntraDirectionalAngle {
         }
     }
 
-    /// Returns the furthest logical edge index this one-sided §7.13.2.8 IDIF
-    /// projection reads for a `size` block at `mrl_index`, i.e. the largest
-    /// `base + 2` the 4-tap reads while `base <= maxBase`, capped at `maxBase`
-    /// (`= w + h - 1 + (mrlIndex << 1)`). Beyond the block's own in-edge span
-    /// (`side - 1`) this is how far into the above-right (zone-1) / below-left
-    /// (zone-3) the prediction reaches. A caller verifies those neighbour samples
-    /// are reconstructed before admitting the block. `mrl_index == 0` is the
-    /// immediate reference line.
-    ///
-    /// # Errors
-    /// Returns [`ReconError::ArithmeticOverflow`] when the block dimensions
-    /// overflow the index arithmetic.
-    pub fn max_one_sided_edge_read_index(
-        self,
-        size: IntraRectBlockSize,
-        mrl_index: usize,
-    ) -> Result<usize> {
-        let derivative = one_sided_idif_derivative(self);
-        let branch = self.branch();
-        let max_base = one_sided_max_base(size, mrl_index)?;
-        let mut furthest = 0i32;
-        for row in 0..size.height() {
-            for column in 0..size.width() {
-                let reference =
-                    one_sided_idif_reference(branch, row, column, derivative, mrl_index)?;
-                let read = if reference.base <= max_base {
-                    reference
-                        .base
-                        .checked_add(2)
-                        .filter(|&v| v <= max_base)
-                        .unwrap_or(max_base)
-                } else {
-                    max_base
-                };
-                if read > furthest {
-                    furthest = read;
-                }
-            }
-        }
-        usize::try_from(furthest).map_err(|_| ReconError::ArithmeticOverflow {
-            context: "one-sided directional angle furthest edge read index",
-        })
-    }
-
     const fn branch(self) -> DirectionalAngleBranch {
         let derivative = match Self::derivative_for(self.p_angle) {
             Some(derivative) => derivative,
@@ -433,16 +389,6 @@ impl<'a, T: ReconSample> IntraMiddleDirectionalAngleIdifEdges<'a, T> {
     pub const fn both(left_idif: &'a [T], above_idif: &'a [T]) -> Self {
         Self::new(Some(left_idif), Some(above_idif))
     }
-
-    /// Returns prepared IDIF left edge samples when available.
-    pub const fn left_idif(self) -> Option<&'a [T]> {
-        self.left_idif
-    }
-
-    /// Returns prepared IDIF above edge samples when available.
-    pub const fn above_idif(self) -> Option<&'a [T]> {
-        self.above_idif
-    }
 }
 
 /// Caller-provided prepared edge samples for luma IDIF middle prediction with
@@ -524,25 +470,6 @@ impl<'a, T: ReconSample> IntraDirectionalAngleIdifEdges<'a, T> {
             edge: left_idif,
             direction: IntraDirectionalAngleEdge::Left,
         }
-    }
-
-    /// Returns the prepared zone-1 IDIF above edge samples (the zone-1
-    /// constructor's edge); the zone-3 left edge is returned by
-    /// [`IntraDirectionalAngleIdifEdges::edge_samples`].
-    pub const fn above_idif(self) -> &'a [T] {
-        self.edge
-    }
-
-    /// Returns the prepared IDIF edge samples (above or left, per the
-    /// constructor used).
-    pub const fn edge_samples(self) -> &'a [T] {
-        self.edge
-    }
-
-    /// Returns which prepared edge (above for zone-1, left for zone-3) this set
-    /// carries.
-    pub const fn direction(self) -> IntraDirectionalAngleEdge {
-        self.direction
     }
 }
 

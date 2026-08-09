@@ -67,7 +67,7 @@ Toolchain: Rust nightly-2026-07-22 (1.99.0-nightly), edition 2024, resolver 3.
 
 ```text
 crates/splot-core      AV2 bitstream model + parsers; no splot-* dependency
-crates/splot-parallel  Rayon worker pool + bounded crossbeam queues; no splot-* dependency
+crates/splot-parallel  Rayon worker pool; no splot-* dependency
 crates/splot-tables    dependency-free generated AV2 § 9 tables
 crates/splot-recon     reconstruction primitives -> splot-core, splot-tables
 crates/splot-decode    decode planning/runtime -> splot-core, splot-parallel, splot-recon

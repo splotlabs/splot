@@ -673,7 +673,6 @@ mod tests {
     }
 
 
-    #[allow(clippy::too_many_arguments)]
     fn roundtrip_lossless(
         bits: Bits,
         quant: &CoreSeqQuantView,

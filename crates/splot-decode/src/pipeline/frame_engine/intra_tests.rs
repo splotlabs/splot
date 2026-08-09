@@ -47,7 +47,11 @@ fn decode_intra_fixture_with_core_on_threads(
     let context = DecodeContext::new(DecodeRuntimeConfig::new(threads)).expect("context");
     let options = DecodeOptions::default();
     let plan = context.plan_bytes(Q80_FIXTURE, options).expect("plan");
-    let candidate = plan.frame_candidates().next().expect("candidate").clone();
+    let candidate = plan
+        .frame_candidates_all()
+        .next()
+        .expect("candidate")
+        .clone();
     let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(Q80_FIXTURE) else {
         panic!("fixture is IVF");
     };

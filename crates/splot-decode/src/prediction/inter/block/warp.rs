@@ -96,7 +96,6 @@ const fn ls_product(a: i32, b: i32) -> i32 {
     ((a * b) >> 2) + (a + b)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn local_warp_estimation(
     samples: &[[i32; 4]],
     mv: Mv,
@@ -191,7 +190,6 @@ pub(super) fn local_warp_estimation(
     Ok(params)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn extend_warp_estimation(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,

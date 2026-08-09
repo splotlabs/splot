@@ -480,7 +480,6 @@ fn floor_log2_u32_from_u64(value: u64) -> u32 {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

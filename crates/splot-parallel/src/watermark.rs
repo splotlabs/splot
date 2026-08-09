@@ -3,11 +3,9 @@
 
 //! A monotonic progress watermark ([`WatermarkCell`]) with threshold admission.
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::admission::AdmissionWaiter;
-use crate::completion::ASSIST_PARK;
-use crate::pool::{PoolAssist, assist_installed_pool};
 
 /// One registered threshold waiter: the admission token fires once the
 /// watermark reaches `threshold`.
@@ -25,8 +23,7 @@ struct ThresholdWaiter {
 /// a consumer states the smallest value it needs. A threshold is satisfied when
 /// [`WatermarkCell::current`] is **greater than or equal to** it, so a consumer
 /// that needs rows `0..n` registers threshold `n`. The fast path is a lock-free
-/// `Acquire` load; the mutex and condition variable exist only to hold the
-/// waiter list and to park a blocked driver.
+/// `Acquire` load; the mutex guards only the waiter list.
 ///
 /// Registered waiters fire exactly once, on the publish that first reaches
 /// their threshold. [`WatermarkCell::register`] returns `false` when the
@@ -43,7 +40,6 @@ struct ThresholdWaiter {
 pub struct WatermarkCell {
     value: AtomicUsize,
     waiters: Mutex<Vec<ThresholdWaiter>>,
-    cond: Condvar,
 }
 
 impl WatermarkCell {
@@ -57,7 +53,6 @@ impl WatermarkCell {
         Self {
             value: AtomicUsize::new(0),
             waiters: Mutex::new(Vec::new()),
-            cond: Condvar::new(),
         }
     }
 
@@ -94,7 +89,6 @@ impl WatermarkCell {
             *waiters = pending;
             fired
         };
-        self.cond.notify_all();
         for entry in fired {
             entry.waiter.satisfy();
         }
@@ -115,62 +109,10 @@ impl WatermarkCell {
         waiters.push(ThresholdWaiter { threshold, waiter });
         true
     }
-
-    /// Blocks until the watermark reaches `threshold`, running pool jobs while
-    /// it waits, and returns the watermark observed at that point.
-    ///
-    /// Reserved for the pipeline driver thread, exactly like
-    /// [`crate::CompletionCell::wait_with_pool_assist`] and with the same
-    /// reentrancy contract: each assist step runs one arbitrary pool job, so the
-    /// caller must hold no lock, no thread-local scope guard, and no borrow such
-    /// a job could need. A pool task must never call this — a task that waits
-    /// can be resumed only by work below it on its own stack. Pool tasks state
-    /// their needs as an admission [`crate::Condition`] instead.
-    pub fn wait_at_least(&self, threshold: usize) -> usize {
-        loop {
-            let current = self.current();
-            if current >= threshold {
-                return current;
-            }
-            match assist_installed_pool() {
-                PoolAssist::Executed => (),
-                PoolAssist::Idle => self.park_briefly(threshold),
-                PoolAssist::OffPool => return self.park_until(threshold),
-            }
-        }
-    }
-
-    /// Parks for at most [`ASSIST_PARK`], returning early on a publish.
-    fn park_briefly(&self, threshold: usize) {
-        let waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.current() < threshold {
-            drop(
-                self.cond
-                    .wait_timeout(waiters, ASSIST_PARK)
-                    .unwrap_or_else(PoisonError::into_inner),
-            );
-        }
-    }
-
-    /// Blocks off-pool until the watermark reaches `threshold`.
-    fn park_until(&self, threshold: usize) -> usize {
-        let mut waiters = self.waiters.lock().unwrap_or_else(PoisonError::into_inner);
-        loop {
-            let current = self.current();
-            if current >= threshold {
-                return current;
-            }
-            waiters = self
-                .cond
-                .wait(waiters)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     /// A waiter that records how often it was satisfied.
@@ -257,25 +199,5 @@ mod tests {
             20,
             "a raising publish reports the watermark it established"
         );
-    }
-
-    #[test]
-    fn wait_at_least_returns_immediately_when_reached() {
-        let cell = WatermarkCell::new();
-        cell.publish(7);
-        assert_eq!(cell.wait_at_least(7), 7);
-        assert_eq!(cell.wait_at_least(0), 7);
-    }
-
-    #[test]
-    fn wait_at_least_blocks_until_a_publisher_reaches_the_threshold() {
-        let cell = Arc::new(WatermarkCell::new());
-        let publisher = Arc::clone(&cell);
-        let handle = std::thread::spawn(move || {
-            publisher.publish(1);
-            publisher.publish(4);
-        });
-        assert!(cell.wait_at_least(4) >= 4);
-        handle.join().unwrap();
     }
 }

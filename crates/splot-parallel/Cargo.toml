@@ -3,7 +3,7 @@
 
 [package]
 name = "splot-parallel"
-description = "Concurrency primitives (a local Rayon worker pool and bounded crossbeam-channel queues) for the splot codec runtime."
+description = "Concurrency primitives (a local Rayon worker pool) for the splot codec runtime."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,5 +17,4 @@ workspace = true
 
 [dependencies]
 rayon.workspace = true
-crossbeam-channel.workspace = true
 thiserror.workspace = true

@@ -421,7 +421,6 @@ impl<'a> FrameDeblock<'a> {
 
     /// Builds the frame's mode-info grids while taking ownership of detached
     /// deblock records.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_owned(
         records: OwnedDeblockRecords,
         mi_rows: usize,
@@ -1034,7 +1033,6 @@ fn apply_tip_filter_edge<T: ReconSample>(
     apply_edge_samples(plane_ctx, PerpLine::new(x, y, dx, dy), lanes, params)
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn deblock_plane_pass_serial<T: ReconSample>(
     band: &mut PlaneBand<'_, T>,
@@ -1064,7 +1062,6 @@ fn deblock_plane_pass_serial<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn deblock_plane_pass_serial_specialized<T: ReconSample, const PLANE: usize, const PASS: usize>(
     band: &mut PlaneBand<'_, T>,

@@ -163,16 +163,6 @@ pub(crate) struct CdefFrame<'a, T> {
     pub(crate) filtered_v: Option<StripePlane>,
 }
 
-impl<'a, T: ReconSample> CdefFrame<'a, T> {
-    pub(crate) fn deblocked(&self, plane: PlaneId) -> Option<FramePlane<'a, T>> {
-        match plane {
-            PlaneId::Y => Some(self.deblocked_y),
-            PlaneId::U => self.deblocked_u,
-            PlaneId::V => self.deblocked_v,
-        }
-    }
-}
-
 struct CdefBlockLookup<'a> {
     strengths: &'a [CdefFrameParams],
     grid: &'a CdefUnitGrid,
@@ -693,7 +683,6 @@ fn gather_interior_pad<S: ReconSample>(
 
 /// [`gather_interior_pad`] for `u16` plane storage, copying `SPAN` samples per
 /// row off one hoisted row base.
-#[allow(clippy::too_many_arguments)]
 fn gather_interior_rows<const SPAN: usize>(
     samples: &[u16],
     width: usize,

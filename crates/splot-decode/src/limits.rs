@@ -78,12 +78,6 @@ impl DecodeOptions {
         self.limits
     }
 
-    /// Returns a copy with the configured resource limits replaced.
-    #[must_use]
-    pub const fn with_limits(self, limits: DecodeLimits) -> Self {
-        Self { limits, ..self }
-    }
-
     /// Returns the optional caller-requested output-frame limit.
     #[must_use]
     pub const fn output_frame_limit(self) -> Option<NonZeroU64> {
@@ -270,28 +264,6 @@ impl DecodeLimits {
         } else {
             Err(DecodeLimitError::LimitExceeded { check })
         }
-    }
-
-    /// Computes checked addition, then compares the sum against a typed limit.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DecodeLimitError::ArithmeticOverflow`] when `left + right`
-    /// overflows `u64`, or [`DecodeLimitError::LimitExceeded`] when the sum
-    /// exceeds the configured threshold for `name`.
-    pub fn ensure_add(
-        self,
-        name: DecodeLimitName,
-        left: u64,
-        right: u64,
-    ) -> DecodeLimitResult<DecodeLimitCheck> {
-        self.ensure_checked_arithmetic(
-            name,
-            left,
-            right,
-            DecodeLimitOp::Add,
-            left.checked_add(right),
-        )
     }
 
     /// Computes checked multiplication, then compares the product against a typed limit.
@@ -539,12 +511,6 @@ impl DecodeLimitThreshold {
         Self::Unlimited
     }
 
-    /// Returns true when no finite threshold is configured.
-    #[must_use]
-    pub const fn is_unlimited(self) -> bool {
-        matches!(self, Self::Unlimited)
-    }
-
     /// Returns the configured maximum value, if the threshold is finite.
     #[must_use]
     pub const fn max_value(self) -> Option<u64> {
@@ -649,12 +615,6 @@ impl DecodeLimitCheck {
     #[must_use]
     pub const fn is_allowed(self) -> bool {
         self.threshold.allows(self.actual)
-    }
-
-    /// Returns true when the check exceeds the configured threshold.
-    #[must_use]
-    pub const fn is_exceeded(self) -> bool {
-        !self.is_allowed()
     }
 }
 

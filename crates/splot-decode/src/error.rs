@@ -379,24 +379,6 @@ impl DecodeOutputOperation {
             Self::CleanupRawTempFile => "cleanup_raw_temp_file",
         }
     }
-
-    /// Returns true when this operation belongs to the minimal raw output path.
-    #[must_use]
-    pub const fn is_raw(self) -> bool {
-        matches!(
-            self,
-            Self::SerializeRaw
-                | Self::WriteRawStream
-                | Self::ResolveRawOutputPath
-                | Self::CreateRawTempFile
-                | Self::WriteRawTempFile
-                | Self::FlushRawTempFile
-                | Self::SyncRawTempFile
-                | Self::RenameRawOutput
-                | Self::SyncRawOutputDirectory
-                | Self::CleanupRawTempFile
-        )
-    }
 }
 
 impl fmt::Display for DecodeOutputOperation {

@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::test_support::MINIMAL_FIXTURE;
+use splot_parallel::ThreadCount;
 
 #[test]
 fn default_runtime_config_is_auto() {
@@ -18,12 +19,6 @@ fn default_runtime_config_is_auto() {
 fn context_resolves_fixed_thread_count() {
     let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(4usize))).unwrap();
     assert_eq!(ctx.threads().get(), 4);
-}
-
-#[test]
-fn requested_threads_round_trips() {
-    let ctx = DecodeContext::new(DecodeRuntimeConfig::new(ThreadCount::from(4usize))).unwrap();
-    assert_eq!(ctx.requested_threads(), ThreadCount::from(4usize));
 }
 
 #[test]

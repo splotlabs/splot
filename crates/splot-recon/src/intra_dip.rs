@@ -88,11 +88,6 @@ impl<'a, T: ReconSample> IntraDipEdges<'a, T> {
     pub const fn above_samples(self) -> &'a [T] {
         self.above
     }
-
-    /// Returns the prepared top-left sample.
-    pub const fn top_left_sample(self) -> T {
-        self.top_left
-    }
 }
 
 /// Writes rectangular AV2 §7.13.2.3 data-driven intra prediction into caller storage.
@@ -229,7 +224,6 @@ fn dip_averages<T: ReconSample>(samples: &[T], block_len: usize, log2_len: u8) -
     averages
 }
 
-#[allow(clippy::too_many_arguments)]
 fn predict_coarse_grid<T: ReconSample>(
     bit_depth: BitDepth,
     size: IntraRectBlockSize,

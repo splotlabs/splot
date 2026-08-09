@@ -14,7 +14,7 @@
 use core::num::NonZeroUsize;
 use std::collections::VecDeque;
 
-use splot_parallel::{ThreadCount, WorkerPool};
+use splot_parallel::WorkerPool;
 
 use crate::config::EncoderConfig;
 use crate::error::{Error, Result};
@@ -161,12 +161,6 @@ impl Context {
     #[must_use]
     pub fn runtime(&self) -> &EncoderRuntimeConfig {
         &self.runtime
-    }
-
-    /// The originally requested (unresolved) thread-count policy.
-    #[must_use]
-    pub fn requested_threads(&self) -> ThreadCount {
-        self.runtime.thread_count
     }
 
     /// The configured runtime speed preset.
@@ -461,12 +455,12 @@ mod tests {
     #[test]
     fn context_exposes_config_and_threads() {
         let speed = SpeedPreset::try_from_u8(3).unwrap();
-        let runtime = EncoderRuntimeConfig::new(ThreadCount::from(4usize)).with_speed_preset(speed);
+        let mut runtime = EncoderRuntimeConfig::new(ThreadCount::from(4usize));
+        runtime.speed_preset = speed;
         let ctx = Context::new(EncoderConfig::new(1920, 1080), runtime).unwrap();
         assert_eq!(ctx.config().width, 1920);
         assert_eq!(ctx.config().height, 1080);
         assert_eq!(ctx.threads().get(), 4);
-        assert_eq!(ctx.requested_threads(), ThreadCount::from(4usize));
         assert_eq!(ctx.speed_preset(), speed);
         assert_eq!(ctx.state(), EncoderState::Accepting);
         assert_eq!(ctx.queued_input_frames(), 0);

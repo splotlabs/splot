@@ -237,13 +237,6 @@ impl InterStop {
             Self::TipAsOutputReturn => "tip_as_output_return",
         }
     }
-
-    /// `true` when the stop converges into the shared tail (`tile_info()` onward), so the
-    /// caller parses the shared structure cluster after the inter control region.
-    #[must_use]
-    pub const fn reaches_shared_tail(self) -> bool {
-        matches!(self, Self::ReachedSharedTail)
-    }
 }
 
 /// The parsed non-intra control region (AV2 v1.0.0 § 5.18.2). Every field is `Option`,

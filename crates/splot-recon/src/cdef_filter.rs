@@ -1149,7 +1149,6 @@ const fn constrain_with_adj(diff: i32, threshold: i32, damping_adj: i32) -> i32 
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

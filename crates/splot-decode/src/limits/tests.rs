@@ -86,12 +86,6 @@ fn default_options_and_limits_are_finite_and_pinned() {
     assert_eq!(DecodeOptions::default().limits(), DecodeLimits::DEFAULT);
     assert_eq!(DecodeOptions::default().y4m_frame_rate_override(), None);
     assert_eq!(DecodeOptions::new(limits).limits(), limits);
-    assert_eq!(
-        DecodeOptions::default()
-            .with_limits(DecodeLimits::zero())
-            .limits(),
-        DecodeLimits::zero()
-    );
     for (name, getter, expected) in cases {
         assert_eq!(getter, MAX(expected));
         assert_eq!(limits.threshold(name), MAX(expected));
@@ -107,7 +101,6 @@ fn zero_and_unlimited_policies_are_explicit() {
             DecodeLimits::unlimited().threshold(name),
             DecodeLimitThreshold::Unlimited
         );
-        assert!(DecodeLimits::unlimited().threshold(name).is_unlimited());
     }
 }
 
@@ -269,16 +262,12 @@ fn limit_checks_are_inclusive() {
         ))
     );
     assert!(
-        width_limited
+        !width_limited
             .check(DecodeLimitName::MaxFrameWidth, 11)
-            .is_exceeded()
+            .is_allowed()
     );
     assert!(zero_limited.check(DecodeLimitName::MaxObus, 0).is_allowed());
-    assert!(
-        zero_limited
-            .check(DecodeLimitName::MaxObus, 1)
-            .is_exceeded()
-    );
+    assert!(!zero_limited.check(DecodeLimitName::MaxObus, 1).is_allowed());
     assert!(
         DecodeLimits::unlimited()
             .check(DecodeLimitName::MaxInputBytes, u64::MAX)
@@ -297,29 +286,12 @@ fn checked_arithmetic_helpers_preserve_metadata() {
     let limits = DecodeLimits::unlimited().with_max_input_bytes(MAX(100));
 
     assert_eq!(
-        limits.ensure_add(DecodeLimitName::MaxInputBytes, 40, 2),
-        Ok(DecodeLimitCheck::new(
-            DecodeLimitName::MaxInputBytes,
-            MAX(100),
-            42,
-        ))
-    );
-    assert_eq!(
         limits.ensure_mul(DecodeLimitName::MaxInputBytes, 6, 7),
         Ok(DecodeLimitCheck::new(
             DecodeLimitName::MaxInputBytes,
             MAX(100),
             42,
         ))
-    );
-    assert_eq!(
-        limits.ensure_add(DecodeLimitName::MaxInputBytes, u64::MAX, 1),
-        Err(DecodeLimitError::ArithmeticOverflow {
-            name: DecodeLimitName::MaxInputBytes,
-            op: DecodeLimitOp::Add,
-            left: u64::MAX,
-            right: 1,
-        })
     );
     assert_eq!(
         limits.ensure_mul(DecodeLimitName::MaxInputBytes, u64::MAX, 2),

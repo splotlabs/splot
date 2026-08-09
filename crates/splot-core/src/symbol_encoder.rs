@@ -87,12 +87,6 @@ impl SymbolEncoderConfig {
         self.max_output_bytes
     }
 
-    /// Returns the configured maximum primitive operation count.
-    #[must_use]
-    pub const fn max_operations(self) -> usize {
-        self.max_operations
-    }
-
     /// Returns a copy of this configuration with a different CDF update mode.
     #[must_use]
     pub const fn with_cdf_update_mode(mut self, mode: CdfUpdateMode) -> Self {

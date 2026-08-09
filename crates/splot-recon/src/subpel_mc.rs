@@ -1215,7 +1215,6 @@ pub fn subpel_predict_block_compound_average_strided_into_u8<T: ReconSample>(
 /// # Errors
 ///
 /// Returns validation and output-layout errors.
-#[allow(clippy::too_many_arguments)]
 pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
@@ -1244,7 +1243,6 @@ pub fn subpel_predict_block_compound_average_fullpel_strided_into<T: ReconSample
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn subpel_predict_block_compound_average_fullpel_validated<
     const VALIDATE_OUTPUT: bool,
     T: ReconSample,
@@ -1594,7 +1592,6 @@ fn subpel_predict_block_compound_average_fast_dispatch<const VALIDATE: bool, T: 
 /// # Errors
 ///
 /// Returns validation and output-layout errors.
-#[allow(clippy::too_many_arguments)]
 pub fn subpel_predict_block_compound_average_horizontal_strided_into<T: ReconSample>(
     reference0: &ReferencePlaneView<'_, T>,
     params0: &SubpelPredictParams,
@@ -1631,7 +1628,6 @@ pub fn subpel_predict_block_compound_average_horizontal_strided_into<T: ReconSam
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn subpel_predict_block_compound_average_horizontal_validated<
     const VALIDATE_OUTPUT: bool,
     T: ReconSample,

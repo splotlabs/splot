@@ -461,7 +461,6 @@ impl ResidualPlanePlan {
 }
 
 impl ParsedGeneralIntraResidual {
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reconstruct<T: ReconSample>(
         self,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -556,7 +555,6 @@ impl ParsedResidualPlane {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn reconstruct<T: ReconSample>(
         self,
         scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
@@ -671,7 +669,6 @@ fn reconstruct_chroma_pair<T: ReconSample>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn reconstruct_deferred_planes<T: ReconSample>(
     scratch: &mut crate::pipeline::general_intra::GeneralIntraReconScratch<T>,
     workspace: &mut CurrentFrameWorkspace<T>,

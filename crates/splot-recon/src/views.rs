@@ -508,16 +508,6 @@ impl<'a, T: ReconSample> FrameMut<'a, T> {
         &mut self.y
     }
 
-    /// Returns the U plane view for exclusive access when present.
-    pub fn u_mut(&mut self) -> Option<&mut PlaneMut<'a, T>> {
-        self.u.as_mut()
-    }
-
-    /// Returns the V plane view for exclusive access when present.
-    pub fn v_mut(&mut self) -> Option<&mut PlaneMut<'a, T>> {
-        self.v.as_mut()
-    }
-
     /// Returns a plane view by identifier for exclusive access.
     pub fn plane_mut(&mut self, plane: PlaneId) -> Option<&mut PlaneMut<'a, T>> {
         match plane {

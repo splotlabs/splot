@@ -126,12 +126,7 @@ impl IntrabcBlockGeometry {
         }
     }
 
-    pub(crate) fn from_chroma_ref(
-        row: usize,
-        col: usize,
-        b_size: BlockSize,
-        _tile_offset: ByteOffset,
-    ) -> Result<Self> {
+    pub(crate) fn from_chroma_ref(row: usize, col: usize, b_size: BlockSize) -> Result<Self> {
         let n4w = b_size.num_4x4_wide().map_err(|_| intrabc_state_error())?;
         let n4h = b_size.num_4x4_high().map_err(|_| intrabc_state_error())?;
         Ok(Self {
@@ -368,7 +363,6 @@ impl TileIntrabcPreludeState {
         sequence: &SequenceHeader,
         frame_is_intra_only: bool,
         enabled: bool,
-        tile_offset: ByteOffset,
     ) -> Result<Self> {
         let (mi_rows, mi_cols) = frame_mi_size;
         let rows = tile_rows.end.saturating_sub(tile_rows.start);
@@ -378,7 +372,7 @@ impl TileIntrabcPreludeState {
         } else {
             0
         };
-        let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only, tile_offset)?;
+        let sb_size4 = intrabc_sb_size4(sequence, frame_is_intra_only)?;
         Ok(Self {
             enabled,
             mi_rows,
@@ -399,7 +393,6 @@ impl TileIntrabcPreludeState {
         n4w: usize,
         n4h: usize,
         prelude: IntrabcBlockPrelude,
-        _tile_offset: ByteOffset,
     ) -> Result<()> {
         if !self.enabled {
             return Ok(());
@@ -435,7 +428,6 @@ impl TileIntrabcPreludeState {
         col: usize,
         n4w: usize,
         n4h: usize,
-        _tile_offset: ByteOffset,
     ) -> Result<usize> {
         self.neighbor_context(row, col, n4w, n4h, IntrabcNeighborContext::UseIntrabc)
     }
@@ -638,7 +630,7 @@ pub(crate) fn read_intrabc_use_and_skip(
             skip_flag: false,
         });
     }
-    let intrabc_ctx = state.intrabc_ctx(block.row, block.col, n4w, n4h, tile_offset)?;
+    let intrabc_ctx = state.intrabc_ctx(block.row, block.col, n4w, n4h)?;
     let use_intrabc = read_symbol(
         cdfs,
         symbols,
@@ -666,7 +658,6 @@ pub(crate) fn read_intrabc_use_and_skip(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_pending_intrabc_info(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
@@ -1129,12 +1120,8 @@ fn max_bvp_drl_bits_minus_1(sequence: &SequenceHeader, core: &FrameHeaderCore) -
     Ok(inter.seq_max_bvp_drl_bits_minus_1)
 }
 
-fn intrabc_sb_size4(
-    sequence: &SequenceHeader,
-    frame_is_intra_only: bool,
-    tile_offset: ByteOffset,
-) -> Result<usize> {
-    let seq_sb_size = intra_capped_seq_sb_size(sequence, tile_offset)?;
+fn intrabc_sb_size4(sequence: &SequenceHeader, frame_is_intra_only: bool) -> Result<usize> {
+    let seq_sb_size = intra_capped_seq_sb_size(sequence)?;
     Ok(match seq_sb_size {
         SuperblockSize::Block64x64 => 16,
         SuperblockSize::Block128x128 => 32,

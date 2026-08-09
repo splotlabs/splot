@@ -22,7 +22,6 @@
 //! writer emits whole 8-bit groups regardless of the current bit position, exactly
 //! as [`crate::bitio::BitReader::read_leb128`] consumes them.
 
-use crate::bitio::LittleEndianValue;
 use crate::write::error::{WriteError, WriteResult};
 
 /// Writes fixed-width bit fields MSB-first, the inverse of [`crate::bitio::BitReader`].
@@ -261,14 +260,6 @@ impl BitWriter {
             self.write_bits_u8(byte, 8)?;
         }
         Ok(())
-    }
-
-    /// Writes a [`LittleEndianValue`] produced by [`crate::bitio::BitReader::read_le`].
-    ///
-    /// # Errors
-    /// Propagates [`WriteError`] from [`BitWriter::write_le`] (never fails today).
-    pub fn write_le_value(&mut self, value: &LittleEndianValue) -> WriteResult<()> {
-        self.write_le(value.as_le_bytes())
     }
 
     /// Writes an AV2 `le(n)` descriptor from a `u64` (AV2 v1.0.0 § 4.11.5,

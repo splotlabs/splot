@@ -349,11 +349,6 @@ impl<T: ReconSample> OwnedFrameBands<T> {
         self.info
     }
 
-    /// Returns the contiguous luma prefix owned by this frame.
-    pub const fn completed_luma_rows(&self) -> usize {
-        self.next_luma_y
-    }
-
     /// Appends the next canonical row band.
     ///
     /// # Errors
@@ -400,19 +395,6 @@ impl<T: ReconSample> OwnedFrameBands<T> {
             PlaneId::Y => Ok(&self.y),
             PlaneId::U if !self.u.is_empty() => Ok(&self.u),
             PlaneId::V if !self.v.is_empty() => Ok(&self.v),
-            PlaneId::U | PlaneId::V => Err(ReconError::MissingWorkspacePlane { plane }),
-        }
-    }
-
-    /// Returns the owned bands for one plane mutably.
-    ///
-    /// # Errors
-    /// Returns [`ReconError::MissingWorkspacePlane`] when chroma is absent.
-    pub fn plane_bands_mut(&mut self, plane: PlaneId) -> Result<&mut [OwnedFramePlaneBand<T>]> {
-        match plane {
-            PlaneId::Y => Ok(&mut self.y),
-            PlaneId::U if !self.u.is_empty() => Ok(&mut self.u),
-            PlaneId::V if !self.v.is_empty() => Ok(&mut self.v),
             PlaneId::U | PlaneId::V => Err(ReconError::MissingWorkspacePlane { plane }),
         }
     }

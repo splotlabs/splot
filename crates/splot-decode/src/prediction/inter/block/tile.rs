@@ -45,21 +45,10 @@ fn merge_tile_filter_state(
     tile: &TileParserOutput,
     mi_rows: Range<usize>,
     mi_cols: Range<usize>,
-    tile_offset: ByteOffset,
 ) -> Result<()> {
-    cdef_state.merge_tile(
-        &tile.cdef_state,
-        mi_rows.clone(),
-        mi_cols.clone(),
-        tile_offset,
-    )?;
-    gdf_state.merge_tile(
-        &tile.gdf_state,
-        mi_rows.clone(),
-        mi_cols.clone(),
-        tile_offset,
-    )?;
-    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols, tile_offset)?;
+    cdef_state.merge_tile(&tile.cdef_state, mi_rows.clone(), mi_cols.clone())?;
+    gdf_state.merge_tile(&tile.gdf_state, mi_rows.clone(), mi_cols.clone())?;
+    ccso_state.merge_tile(&tile.ccso_state, mi_rows, mi_cols)?;
     segment_ids.merge_tile(&tile.segment_id_state);
     Ok(())
 }
@@ -240,7 +229,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 SPEC_MODE_INFO
             )
         })?;
-        let delta_q_state = DeltaQState::new(context.sequence, context.core, tile_offset)?;
+        let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
         let intrabc_state = TileIntrabcPreludeState::new_for_tile(
             (context.mi_rows, context.mi_cols),
             tile_rows.clone(),
@@ -248,7 +237,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             context.sequence,
             context.core.frame_is_intra == Some(true),
             crate::filters::wienerns_lr::intrabc_records::frame_allows_intrabc(context.core),
-            tile_offset,
         )?;
         let segment_id_state =
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone()).map_err(
@@ -1490,7 +1478,6 @@ impl ParsedTile {
             &output,
             self.mi_rows.clone(),
             self.mi_cols.clone(),
-            tile_offset,
         )?;
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,
@@ -1582,9 +1569,9 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     let mut parser = TileParser::new(
         tile,
         context,
-        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
-        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
-        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
+        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone())?,
+        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
     )?;
     parser.mv_grid.log_flags();
     let started = crate::timing::start();
@@ -1808,9 +1795,9 @@ fn prepare_tile<T: ReconSample>(
     let mut parser = TileParser::new(
         tile,
         context,
-        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
-        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
-        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone(), tile_offset)?,
+        cdef_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
+        gdf_state.for_tile(mi_rows.clone(), mi_cols.clone())?,
+        ccso_state.try_for_tile(mi_rows.clone(), mi_cols.clone())?,
     )?;
     let mut resolve_state = TileResolveState::new(context.sequence);
     let mut sink = super::super::mc::WorkspaceSink::Rect(&mut surface);
@@ -2057,7 +2044,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 &output,
                 tile.mi_rows.clone(),
                 tile.mi_cols.clone(),
-                tile.tile_offset,
             )?;
             append_lr_records(
                 &mut frame_filter_records.lr_source_blocks,
@@ -2138,9 +2124,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut parser = TileParser::new(
             tile,
             &context,
-            cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
-            gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
-            ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone(), tile_offset)?,
+            cdef_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
+            gdf_state.for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
+            ccso_state.try_for_tile(tile_mi_rows.clone(), tile_mi_cols.clone())?,
         )?;
         let mut resolve_state = TileResolveState::new(sequence);
         if parse_ahead {
@@ -2270,7 +2256,6 @@ pub(super) fn decode_tiles<T: ReconSample>(
             &output,
             tile_mi_rows,
             tile_mi_cols,
-            tile_offset,
         )?;
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,

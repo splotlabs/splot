@@ -642,7 +642,6 @@ fn padded_tap_offset(stride: usize, dy: isize, dx: isize) -> usize {
         + (dx + WIENER_NS_CHROMA_TAP_RADIUS as isize) as usize
 }
 
-#[allow(clippy::too_many_arguments)]
 fn filter_chroma_padded_u16(
     filtered: &mut [u16],
     params: &WienerNsChromaFilter<'_>,
@@ -715,7 +714,6 @@ fn filter_chroma_padded_u16(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn filter_chroma_padded_scalar<T: ReconSample>(
     filtered: &mut [T],
     params: &WienerNsChromaFilter<'_>,

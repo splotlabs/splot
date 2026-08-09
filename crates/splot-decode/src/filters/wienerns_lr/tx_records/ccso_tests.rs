@@ -51,9 +51,7 @@ fn ccso_unit_size_follows_tile_alignment() {
 fn ccso_state_left_neighbour_context_matches_spec_8_3_2() {
     let mut state = active_luma_ccso_state(270, 480);
     assert_eq!(state.block_value(0, 0, 0), 0);
-    state
-        .set_block_value(0, 0, 0, 1, ByteOffset::new(0))
-        .unwrap();
+    state.set_block_value(0, 0, 0, 1).unwrap();
     assert_eq!(state.block_value(0, 0, 0), 1);
     let ctx = 2 * usize::from(state.block_value(0, 0, 0));
     assert_eq!(ctx, 2);
@@ -69,16 +67,8 @@ fn ccso_state_inactive_reads_nothing() {
 #[test]
 fn ccso_state_rejects_out_of_grid_access() {
     let mut state = active_luma_ccso_state(270, 480);
-    assert!(
-        state
-            .set_block_value(0, state.grid_rows, 0, 1, ByteOffset::new(0))
-            .is_err()
-    );
-    assert!(
-        state
-            .set_block_value(0, 0, state.grid_cols, 1, ByteOffset::new(0))
-            .is_err()
-    );
+    assert!(state.set_block_value(0, state.grid_rows, 0, 1).is_err());
+    assert!(state.set_block_value(0, 0, state.grid_cols, 1).is_err());
     assert_eq!(state.block_value(0, 0, state.grid_cols), 0);
     assert_eq!(state.block_value(0, 99, 99), 0);
     assert_eq!(state.block_value(0, usize::MAX, 0), 0);
@@ -86,15 +76,14 @@ fn ccso_state_rejects_out_of_grid_access() {
 
 #[test]
 fn ccso_tile_merge_copies_only_the_owned_region() {
-    let offset = ByteOffset::new(0);
     let mut frame = CcsoState::active(4, [true, false, false], [false; CCSO_PLANES], (1, 2, 2));
-    let mut left = frame.try_for_tile(0..16, 0..16, offset).unwrap();
-    let mut right = frame.try_for_tile(0..16, 16..32, offset).unwrap();
+    let mut left = frame.try_for_tile(0..16, 0..16).unwrap();
+    let mut right = frame.try_for_tile(0..16, 16..32).unwrap();
     left.blocks[0] = vec![1];
     right.blocks[0] = vec![1];
 
-    frame.merge_tile(&left, 0..16, 0..16, offset).unwrap();
-    frame.merge_tile(&right, 0..16, 16..32, offset).unwrap();
+    frame.merge_tile(&left, 0..16, 0..16).unwrap();
+    frame.merge_tile(&right, 0..16, 16..32).unwrap();
 
     assert_eq!(frame.blocks[0], [1, 1]);
 }

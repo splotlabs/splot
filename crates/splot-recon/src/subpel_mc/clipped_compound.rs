@@ -35,7 +35,6 @@ pub(super) fn two_axis<T: ReconSample>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn two_axis_lanes<const LANES: usize, T: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],
     params: [&SubpelPredictParams; 2],
@@ -196,7 +195,6 @@ pub(super) fn horizontal<T: ReconSample>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[inline]
 fn predictors<const LANES: usize, T: ReconSample>(
     references: [&ReferencePlaneView<'_, T>; 2],

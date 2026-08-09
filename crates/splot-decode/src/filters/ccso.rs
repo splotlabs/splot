@@ -237,7 +237,7 @@ pub(crate) fn ccso_stripe<T: ReconSample>(
     lossless_grid: Option<&crate::filters::lossless::LosslessBlockGrid>,
     tile_starts: Option<(&[u32], &[u32])>,
 ) -> Result<(), CcsoError> {
-    let luma = frame.deblocked(PlaneId::Y).ok_or(CcsoError::Workspace)?;
+    let luma = frame.deblocked_y;
     let destinations = [
         Some(&mut frame.filtered_y),
         frame.filtered_u.as_mut(),
@@ -313,7 +313,6 @@ fn ccso_plane<T: ReconSample>(
         .map_err(|_| CcsoError::Workspace)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn ccso_apply<L: ReconSample>(
     destination: &mut StripePlane,
     curr_luma: FramePlane<'_, L>,

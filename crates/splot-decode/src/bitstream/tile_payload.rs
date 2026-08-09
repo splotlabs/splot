@@ -105,7 +105,6 @@ pub(crate) struct TilePayloadBoundaryInput<'payload, 'facts> {
 }
 
 impl<'payload, 'facts> TilePayloadBoundaryInput<'payload, 'facts> {
-    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub(crate) const fn new(
         payload: &'payload [u8],

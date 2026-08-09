@@ -10,13 +10,12 @@ use super::{
     BLOCK_8X32, BlockSize, ChromaRefGeometry, DecodeBlockFrontier, DecodeLimitName, DecodeLimits,
     DecodeTileWorkUnit, GeneralIntraLeafMode, IsCflContext, PartitionAllowedInput,
     PartitionContextInput, PartitionSubsize, PartitionTreeType, PartitionType, ROOT_HAS_CHROMA,
-    ReadPartitionDecision, SquareSplitContextInput, SymbolDecoder, TileFscModeState,
-    TileIntraJointModeState, TileIntraYModeFacts, TileIntraYModeState, TileLumaPaletteState,
-    TileMiSizeState, TileMiSizeStateError, TilePartitionBounds, TilePartitionCall,
-    TilePartitionContextState, TilePartitionFrameFacts, TilePartitionTraversalError,
-    TileUseDipState, TileUsesMrlsState, TileUvCflState, call_in_frame, checked_mul, child_calls,
-    ensure_supported_traversal_frame, h_partition_midsize, partition_decision_facts,
-    partition_subsize, symbol_decoder_for_work_unit,
+    SquareSplitContextInput, SymbolDecoder, TileFscModeState, TileIntraJointModeState,
+    TileIntraYModeFacts, TileIntraYModeState, TileLumaPaletteState, TileMiSizeState,
+    TileMiSizeStateError, TilePartitionBounds, TilePartitionCall, TilePartitionContextState,
+    TilePartitionFrameFacts, TilePartitionTraversalError, TileUseDipState, TileUsesMrlsState,
+    TileUvCflState, call_in_frame, checked_mul, child_calls, ensure_supported_traversal_frame,
+    h_partition_midsize, partition_decision_facts, partition_subsize, symbol_decoder_for_work_unit,
 };
 
 const BLOCK_64X64: usize = 12;
@@ -341,7 +340,7 @@ fn read_frontier_partition_step(
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<(TilePartitionCall, PartitionType, bool), TilePartitionTraversalError> {
     let forced_chroma_partition = sdp_state.forced_chroma_partition(frame, call);
-    let decision = read_frontier_partition_decision(
+    let partition = read_frontier_partition_decision(
         call,
         frame,
         tile_bounds,
@@ -350,7 +349,6 @@ fn read_frontier_partition_step(
         cdfs,
         symbols,
     )?;
-    let partition = decision.partition;
     let call = call.with_cfl_allowed_in_sdp(sdp_state.record_partition(frame, call, partition));
     let (call, using_extended_sdp) =
         read_extended_sdp_region_type(frame, call, partition, cdfs, symbols)?;
@@ -365,7 +363,7 @@ pub(super) fn read_frontier_partition_decision(
     forced_chroma_partition: Option<PartitionType>,
     cdfs: &mut super::cdf::TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-) -> Result<ReadPartitionDecision, TilePartitionTraversalError> {
+) -> Result<PartitionType, TilePartitionTraversalError> {
     let mixed_region = !frame.frame_is_intra && call.parent_size.is_some() && !call.intra_region;
     let allowed = PartitionAllowedInput::new(
         call.r,
@@ -423,8 +421,11 @@ pub(super) fn read_frontier_partition_decision(
     )?;
     let decision_input =
         facts.read_partition_decision_input(true, partition_context, square_context);
-    let decision = super::partition::read_partition_decision(decision_input, cdfs, symbols)?;
-    Ok(decision)
+    Ok(super::partition::read_partition_decision(
+        decision_input,
+        cdfs,
+        symbols,
+    )?)
 }
 
 pub(super) const fn partition_cdf_plane(tree_type: PartitionTreeType) -> usize {

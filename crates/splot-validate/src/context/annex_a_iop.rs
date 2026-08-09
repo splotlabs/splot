@@ -498,7 +498,6 @@ impl ValidatorContext {
     /// table-determined here (the caller already returned for a reserved / Configurable /
     /// disagreeing profile). The Table A.3 "Number of Layers" (sum of embedded counts across
     /// singlestreams) bound is not tracked and stays a named residual.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn emit_iop_layer_budget(
         iop: InteroperabilityPoint,
         extended_layers: u32,
@@ -572,7 +571,6 @@ impl ValidatorContext {
     /// Table A.4 IOP2 rows (mirror lines 193-201). `global_lcr` is whether an *activated*
     /// global LCR is present in the window (only an activated one satisfies the global-LCR
     /// arms).
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn evaluate_iop2(
         e: bool,
         m: bool,

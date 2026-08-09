@@ -148,13 +148,6 @@ impl DecodeStreamPlan {
         self.obus.iter()
     }
 
-    /// Accepted key-frame candidates in deterministic source order.
-    pub fn frame_candidates(&self) -> impl Iterator<Item = &DecodePlannedObu> {
-        self.obus
-            .iter()
-            .filter(|obu| obu.role == DecodePlannedObuRole::FrameCandidate)
-    }
-
     /// Accepted frame candidates of any kind (key or inter), in deterministic
     /// source order. This is the per-frame decode order the multi-frame runtime
     /// walks (AV2 § 5.2.1, § 6.18).
@@ -183,7 +176,6 @@ pub enum DecodeObuSourceKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeIvfFrameContext {
     frame_index: usize,
-    frame_header_offset: ByteOffset,
     frame_payload_offset: ByteOffset,
     frame_payload_size: u32,
     pts: u64,
@@ -194,12 +186,6 @@ impl DecodeIvfFrameContext {
     #[must_use]
     pub const fn frame_index(self) -> usize {
         self.frame_index
-    }
-
-    /// Absolute offset of the IVF frame header.
-    #[must_use]
-    pub const fn frame_header_offset(self) -> ByteOffset {
-        self.frame_header_offset
     }
 
     /// Absolute offset of the IVF frame payload.
@@ -1030,7 +1016,6 @@ fn issue_from_ivf_source(
 fn ivf_frame_context(frame: splot_core::ivf::IvfFrame<'_>) -> DecodeIvfFrameContext {
     DecodeIvfFrameContext {
         frame_index: frame.index,
-        frame_header_offset: frame.header_offset,
         frame_payload_offset: frame.payload_offset,
         frame_payload_size: frame.size,
         pts: frame.pts,

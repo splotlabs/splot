@@ -36,20 +36,6 @@ impl LittleEndianValue {
     pub fn byte_len(&self) -> usize {
         self.bytes.len()
     }
-
-    /// Converts this value to `u64` when it fits in eight bytes.
-    #[must_use]
-    pub fn to_u64(&self) -> Option<u64> {
-        if self.bytes.len() > 8 {
-            return None;
-        }
-
-        let mut value = 0u64;
-        for (i, byte) in self.bytes.iter().enumerate() {
-            value |= u64::from(*byte) << (i * 8);
-        }
-        Some(value)
-    }
 }
 
 /// Returns the eight bytes at `byte_index` as a big-endian window, reading
@@ -184,23 +170,6 @@ impl<'a> BitReader<'a> {
         let window = be_window(self.data, self.byte_pos);
         self.advance_checked(n)?;
         Ok((window >> (64 - bit_pos - n)) as u32 & (u32::MAX >> (32 - n)))
-    }
-
-    /// Advances past `n` bits without extracting them, with the same bounds
-    /// and end-of-input behavior as [`Self::read_bits`].
-    ///
-    /// # Errors
-    /// Returns [`Error::BitWidthTooLarge`] if `n > 32`, or [`Error::UnexpectedEof`]
-    /// if fewer than `n` bits remain (the reader is then positioned at end of
-    /// input).
-    pub fn skip_bits(&mut self, n: u32) -> Result<()> {
-        if n > 32 {
-            return Err(Error::BitWidthTooLarge {
-                requested: n,
-                max: 32,
-            });
-        }
-        self.advance_checked(n)
     }
 
     /// Consumes `n` bits after bounding them against the payload end; on
@@ -603,37 +572,6 @@ mod tests {
     }
 
     #[test]
-    fn skip_bits_advances_like_read_bits() {
-        let data = [0xA5, 0x3C, 0x0F];
-        let mut skipper = BitReader::new(&data, ByteOffset::new(0));
-        let mut reader = BitReader::new(&data, ByteOffset::new(0));
-        skipper.skip_bits(0).unwrap();
-        skipper.skip_bits(11).unwrap();
-        let _ = reader.read_bits(11).unwrap();
-        assert_eq!(skipper.consumed_bits(), reader.consumed_bits());
-        assert_eq!(
-            skipper.read_bits(13).unwrap(),
-            reader.read_bits(13).unwrap()
-        );
-        assert!(matches!(
-            skipper.skip_bits(1),
-            Err(Error::UnexpectedEof { needed: 1, .. })
-        ));
-        assert!(skipper.is_byte_aligned());
-        assert_eq!(skipper.remaining_bits(), 0);
-
-        let mut wide = BitReader::new(&data, ByteOffset::new(0));
-        assert!(matches!(
-            wide.skip_bits(33),
-            Err(Error::BitWidthTooLarge {
-                requested: 33,
-                max: 32
-            })
-        ));
-        assert_eq!(wide.consumed_bits(), 0);
-    }
-
-    #[test]
     fn read_bits_rejects_widths_over_32() {
         let mut reader = BitReader::new(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF], ByteOffset::new(0));
         assert!(matches!(
@@ -731,11 +669,9 @@ mod tests {
         let first = reader.read_le(2).unwrap();
         assert_eq!(first.as_le_bytes(), &[0x34, 0x12]);
         assert_eq!(first.byte_len(), 2);
-        assert_eq!(first.to_u64(), Some(0x1234));
 
         let second = reader.read_le(1).unwrap();
         assert_eq!(second.as_le_bytes(), &[0xAB]);
-        assert_eq!(second.to_u64(), Some(0xAB));
 
         let mut u64_reader = BitReader::new(&[0x78, 0x56, 0x34, 0x12], ByteOffset::new(0));
         assert_eq!(u64_reader.read_le_u64(4).unwrap(), 0x1234_5678);
@@ -748,7 +684,6 @@ mod tests {
         let value = reader.read_le(9).unwrap();
         assert_eq!(value.as_le_bytes(), &data);
         assert_eq!(value.byte_len(), 9);
-        assert_eq!(value.to_u64(), None);
     }
 
     #[test]

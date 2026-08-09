@@ -207,7 +207,6 @@ pub(super) fn vertical_only<T: ReconSample, O>(
     true
 }
 
-#[allow(clippy::too_many_arguments)]
 fn vertical_scalar_value<T: ReconSample>(
     reference: &ReferencePlaneView<'_, T>,
     params: &SubpelPredictParams,

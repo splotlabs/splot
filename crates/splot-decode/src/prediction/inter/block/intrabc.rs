@@ -68,7 +68,6 @@ impl IntrabcReconPrediction {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn derive_chroma(
         core: &FrameHeaderCore,
         frontier: &DecodeBlockFrontier,
@@ -86,7 +85,6 @@ impl IntrabcReconPrediction {
                     chroma_ref.row(),
                     chroma_ref.col(),
                     chroma_ref.size(),
-                    tile_offset,
                 )?,
                 info,
                 tile_offset,

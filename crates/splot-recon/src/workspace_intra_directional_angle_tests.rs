@@ -521,7 +521,7 @@ fn workspace_directional_angle_invalid_edge_sample_does_not_mutate_target() {
     let mut workspace = workspace_with_format(BitDepth::Eight, PixelFormat::Yuv444, 10, 6, 7_u16);
     {
         let mut frame = workspace.as_frame_mut();
-        let mut rows = frame.u_mut().unwrap().visible_rows_mut();
+        let mut rows = frame.plane_mut(PlaneId::U).unwrap().visible_rows_mut();
         rows.next().unwrap()[1] = 300;
     }
     // splot-copy-ok: snapshot workspace samples for no-mutation regression assertion

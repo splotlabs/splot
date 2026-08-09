@@ -67,7 +67,7 @@ fn decision(
     input: ReadPartitionDecisionInput<'static>,
     payload: &'static [u8],
 ) -> (
-    Result<ReadPartitionDecision, PartitionDecisionError>,
+    Result<PartitionType, PartitionDecisionError>,
     TileCdfSubset,
     SymbolDecoder<'static>,
 ) {
@@ -95,8 +95,7 @@ fn implied_partition_returns_without_symbol_consumption() {
     )
     .unwrap();
 
-    assert_eq!(result.partition, PartitionType::Vert);
-    assert_eq!(result.trace, ReadPartitionDecisionTrace::default());
+    assert_eq!(result, PartitionType::Vert);
     assert_eq!(symbols.symbol_count(), 0);
     assert_eq!(cdfs, before);
 }
@@ -108,7 +107,7 @@ fn single_allowed_returns_in_spec_order_without_symbol_consumption() {
         &[0xFF, 0xFF],
     );
 
-    assert_eq!(result.unwrap().partition, PartitionType::Horz4B);
+    assert_eq!(result.unwrap(), PartitionType::Horz4B);
     assert_eq!(symbols.symbol_count(), 0);
     assert_eq!(cdfs_after, cdfs());
 }
@@ -129,7 +128,7 @@ fn inactive_bru_returns_none_without_symbol_consumption() {
         &[0xFF, 0xFF],
     );
 
-    assert_eq!(result.unwrap().partition, PartitionType::None);
+    assert_eq!(result.unwrap(), PartitionType::None);
     assert_eq!(symbols.symbol_count(), 0);
     assert_eq!(cdfs_after, cdfs());
 }
@@ -146,7 +145,7 @@ fn disallowed_implied_partition_falls_through_to_single_allowed() {
         &[0xFF, 0xFF],
     );
 
-    assert_eq!(result.unwrap().partition, PartitionType::Horz);
+    assert_eq!(result.unwrap(), PartitionType::Horz);
     assert_eq!(symbols.symbol_count(), 0);
     assert_eq!(cdfs_after, cdfs());
 }
@@ -164,8 +163,7 @@ fn disallowed_implied_partition_falls_through_to_reached_syntax() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::None);
-    assert_eq!(result.trace.do_split, Some(false));
+    assert_eq!(result, PartitionType::None);
     assert_eq!(symbols.symbol_count(), 1);
 }
 
@@ -181,7 +179,7 @@ fn inactive_bru_returns_none_even_when_none_is_disallowed() {
         &[0xFF, 0xFF],
     );
 
-    assert_eq!(result.unwrap().partition, PartitionType::None);
+    assert_eq!(result.unwrap(), PartitionType::None);
     assert_eq!(symbols.symbol_count(), 0);
     assert_eq!(cdfs_after, cdfs());
 }
@@ -203,9 +201,7 @@ fn do_split_false_returns_none_and_stops() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::None);
-    assert_eq!(result.trace.do_split, Some(false));
-    assert_eq!(result.trace.do_square_split, None);
+    assert_eq!(result, PartitionType::None);
     assert_eq!(symbols.symbol_count(), 1);
     assert_ne!(cdfs_after, cdfs());
 }
@@ -227,10 +223,7 @@ fn square_split_true_returns_split_before_rect_symbols() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::Split);
-    assert_eq!(result.trace.do_split, None);
-    assert_eq!(result.trace.do_square_split, Some(true));
-    assert_eq!(result.trace.rect_type, None);
+    assert_eq!(result, PartitionType::Split);
     assert_eq!(symbols.symbol_count(), 1);
 }
 
@@ -247,9 +240,7 @@ fn rect_type_symbol_selects_vertical_non_extended_partition() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::Vert);
-    assert_eq!(result.trace.do_square_split, None);
-    assert_eq!(result.trace.rect_type, Some(RectPartitionType::Vert));
+    assert_eq!(result, PartitionType::Vert);
     assert_eq!(symbols.symbol_count(), 1);
 }
 
@@ -266,9 +257,7 @@ fn forced_horizontal_rect_reads_ext_symbol_once() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::Horz3);
-    assert_eq!(result.trace.do_ext_partition, Some(true));
-    assert_eq!(result.trace.do_uneven_4way_partition, None);
+    assert_eq!(result, PartitionType::Horz3);
     assert_eq!(symbols.symbol_count(), 1);
 }
 
@@ -290,10 +279,7 @@ fn uneven_four_way_literal_selects_table_variant() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::Horz4B);
-    assert_eq!(result.trace.do_ext_partition, Some(true));
-    assert_eq!(result.trace.do_uneven_4way_partition, Some(true));
-    assert_eq!(result.trace.uneven_4way_partition_type, Some(true));
+    assert_eq!(result, PartitionType::Horz4B);
     assert_eq!(symbols.symbol_count(), 3);
 }
 
@@ -314,10 +300,7 @@ fn uneven_four_way_without_three_way_reads_only_literal() {
     );
     let result = result.unwrap();
 
-    assert_eq!(result.partition, PartitionType::Vert4B);
-    assert_eq!(result.trace.do_ext_partition, Some(true));
-    assert_eq!(result.trace.do_uneven_4way_partition, None);
-    assert_eq!(result.trace.uneven_4way_partition_type, Some(true));
+    assert_eq!(result, PartitionType::Vert4B);
     assert_eq!(symbols.symbol_count(), 2);
 }
 
@@ -413,8 +396,7 @@ fn empty_payload_literal_branch_is_deterministic() {
     )
     .unwrap();
 
-    assert_eq!(result.partition, PartitionType::Vert4A);
-    assert_eq!(result.trace.uneven_4way_partition_type, Some(false));
+    assert_eq!(result, PartitionType::Vert4A);
     assert_eq!(symbols.symbol_count(), 1);
 }
 

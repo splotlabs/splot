@@ -168,28 +168,6 @@ impl<'a> ReadPartitionDecisionInput<'a> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct ReadPartitionDecisionTrace {
-    pub(crate) do_split: Option<bool>,
-    pub(crate) do_square_split: Option<bool>,
-    pub(crate) rect_type: Option<RectPartitionType>,
-    pub(crate) do_ext_partition: Option<bool>,
-    pub(crate) do_uneven_4way_partition: Option<bool>,
-    pub(crate) uneven_4way_partition_type: Option<bool>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ReadPartitionDecision {
-    pub(crate) partition: PartitionType,
-    pub(crate) trace: ReadPartitionDecisionTrace,
-}
-
-impl ReadPartitionDecision {
-    const fn new(partition: PartitionType, trace: ReadPartitionDecisionTrace) -> Self {
-        Self { partition, trace }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PartitionDecisionError {
     #[error("partition decision has no allowed partitions")]
@@ -210,27 +188,25 @@ pub(crate) fn read_partition_decision(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
-) -> Result<ReadPartitionDecision, PartitionDecisionError> {
+) -> Result<PartitionType, PartitionDecisionError> {
     if input.allowed.count() == 0 {
         return Err(PartitionDecisionError::EmptyAllowedSet);
     }
 
-    let trace = ReadPartitionDecisionTrace::default();
     if let Some(partition) = input.implied_partition
         && input.allowed.contains(partition)
     {
-        return Ok(ReadPartitionDecision::new(partition, trace));
+        return Ok(partition);
     }
 
     if let Some(partition) = input.allowed.only() {
-        return Ok(ReadPartitionDecision::new(partition, trace));
+        return Ok(partition);
     }
 
     if !input.bru_active {
-        return Ok(ReadPartitionDecision::new(PartitionType::None, trace));
+        return Ok(PartitionType::None);
     }
 
-    let mut trace = trace;
     if input.allowed.contains(PartitionType::None) {
         let do_split = read_partition_bool(
             "do_split",
@@ -238,9 +214,8 @@ pub(crate) fn read_partition_decision(
             cdfs,
             symbols,
         )?;
-        trace.do_split = Some(do_split);
         if !do_split {
-            return Ok(ReadPartitionDecision::new(PartitionType::None, trace));
+            return Ok(PartitionType::None);
         }
     }
 
@@ -251,25 +226,23 @@ pub(crate) fn read_partition_decision(
             cdfs,
             symbols,
         )?;
-        trace.do_square_split = Some(do_square_split);
         if do_square_split {
-            return Ok(ReadPartitionDecision::new(PartitionType::Split, trace));
+            return Ok(PartitionType::Split);
         }
     }
 
-    let rect_type = resolve_rect_type(input, &mut trace, cdfs, symbols)?;
-    let partition = read_rect_partition(input, rect_type, &mut trace, cdfs, symbols)?;
+    let rect_type = resolve_rect_type(input, cdfs, symbols)?;
+    let partition = read_rect_partition(input, rect_type, cdfs, symbols)?;
     if !input.allowed.contains(partition) {
         return Err(PartitionDecisionError::FinalPartitionDisallowed { partition });
     }
 
-    Ok(ReadPartitionDecision::new(partition, trace))
+    Ok(partition)
 }
 
 fn read_rect_partition(
     input: ReadPartitionDecisionInput<'_>,
     rect_type: RectPartitionType,
-    trace: &mut ReadPartitionDecisionTrace,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<PartitionType, PartitionDecisionError> {
@@ -281,16 +254,14 @@ fn read_rect_partition(
     let ext_allowed = ext_allowed3 || ext_allowed4;
 
     let do_ext_partition = if non_ext_allowed && ext_allowed {
-        let value = read_partition_bool(
+        read_partition_bool(
             "do_ext_partition",
             input
                 .partition_context
                 .do_ext_partition_selector(rect_type)?,
             cdfs,
             symbols,
-        )?;
-        trace.do_ext_partition = Some(value);
-        value
+        )?
     } else {
         ext_allowed
     };
@@ -298,27 +269,23 @@ fn read_rect_partition(
     let do_uneven_4way_partition = if !do_ext_partition {
         false
     } else if ext_allowed3 && ext_allowed4 {
-        let value = read_partition_bool(
+        read_partition_bool(
             "do_uneven_4way_partition",
             input
                 .partition_context
                 .do_uneven_4way_partition_selector(rect_type)?,
             cdfs,
             symbols,
-        )?;
-        trace.do_uneven_4way_partition = Some(value);
-        value
+        )?
     } else {
         ext_allowed4
     };
 
     let uneven_4way_partition_type = if do_uneven_4way_partition {
-        let value = symbols
+        symbols
             .read_literal(1)
             .map_err(PartitionDecisionError::Literal)?
-            != 0;
-        trace.uneven_4way_partition_type = Some(value);
-        value
+            != 0
     } else {
         false
     };
@@ -332,7 +299,6 @@ fn read_rect_partition(
 
 fn resolve_rect_type(
     input: ReadPartitionDecisionInput<'_>,
-    trace: &mut ReadPartitionDecisionTrace,
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
 ) -> Result<RectPartitionType, PartitionDecisionError> {
@@ -355,13 +321,11 @@ fn resolve_rect_type(
         cdfs,
         symbols,
     )?;
-    let rect_type = if rect_type {
+    Ok(if rect_type {
         RectPartitionType::Vert
     } else {
         RectPartitionType::Horz
-    };
-    trace.rect_type = Some(rect_type);
-    Ok(rect_type)
+    })
 }
 
 fn read_partition_bool(

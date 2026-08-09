@@ -22,10 +22,6 @@ use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
 
 const BLOCK_16X16: usize = 6;
 
-fn no_off() -> ByteOffset {
-    ByteOffset::new(0)
-}
-
 impl IntrabcBlockContext {
     const fn new(row: usize, col: usize, b_size: usize, is_chroma_part: bool) -> Self {
         Self {
@@ -218,7 +214,6 @@ fn full_frame_state(
     mi_cols: usize,
     sequence: &SequenceHeader,
     frame_is_intra_only: bool,
-    tile_offset: ByteOffset,
 ) -> crate::Result<TileIntrabcPreludeState> {
     TileIntrabcPreludeState::new_for_tile(
         (mi_rows, mi_cols),
@@ -227,13 +222,12 @@ fn full_frame_state(
         sequence,
         frame_is_intra_only,
         true,
-        tile_offset,
     )
 }
 
 fn state() -> TileIntrabcPreludeState {
     let (sequence, _) = selectable_fixture();
-    full_frame_state(64, 64, &sequence, true, ByteOffset::new(0)).unwrap()
+    full_frame_state(64, 64, &sequence, true).unwrap()
 }
 
 #[test]
@@ -371,7 +365,7 @@ fn intrabc_morph_pred_zero_reads_symbol_and_advances() {
         (Some(TileCdfSelector::MorphPred { ctx: 0 }), 0),
     ]);
     let mut symbols = decoder(&payload);
-    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let state = full_frame_state(64, 64, &sequence, true).unwrap();
     let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
 
     let info = read_intrabc_info_record(
@@ -401,7 +395,7 @@ fn intrabc_morph_pred_one_is_retained_for_reconstruction() {
         (Some(TileCdfSelector::MorphPred { ctx: 0 }), 1),
     ]);
     let mut symbols = decoder(&payload);
-    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let state = full_frame_state(64, 64, &sequence, true).unwrap();
     let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 0, 2, false), 4, 4);
 
     let info = read_intrabc_info_record(
@@ -432,7 +426,7 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
         (None, 0),
     ]);
     let mut symbols = decoder(&payload);
-    let mut state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let mut state = full_frame_state(64, 64, &sequence, true).unwrap();
     let neighbour = |state: &mut TileIntrabcPreludeState, row, col| {
         state
             .record_block(
@@ -446,7 +440,6 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
                     skip_flag: false,
                     morph_pred: false,
                 },
-                ByteOffset::new(0),
             )
             .unwrap();
     };
@@ -517,10 +510,8 @@ fn active_intrabc_ref_stack_admits_two_distinct_spatial_candidates() {
 fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
     let (sequence, _) = selectable_large_frame_fixture();
     let neighbour = frontier_skip_neighbour(); // BV (-512, 0).
-    let mut sb_border = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
-    sb_border
-        .record_block(15, 54, 1, 1, neighbour, no_off())
-        .unwrap();
+    let mut sb_border = full_frame_state(64, 64, &sequence, true).unwrap();
+    sb_border.record_block(15, 54, 1, 1, neighbour).unwrap();
     let at_border =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(16, 56, BLOCK_16X16, false), 8, 16);
     let scan = sb_border
@@ -534,10 +525,8 @@ fn spatial_scan_admits_sb_border_col_minus_two_neighbour() {
         }]
     );
 
-    let mut interior = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
-    interior
-        .record_block(19, 54, 1, 1, neighbour, no_off())
-        .unwrap();
+    let mut interior = full_frame_state(64, 64, &sequence, true).unwrap();
+    interior.record_block(19, 54, 1, 1, neighbour).unwrap();
     let at_interior =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 56, BLOCK_16X16, false), 8, 16);
     let control = interior
@@ -553,19 +542,15 @@ fn sequence_256_intrabc_context_uses_the_frame_superblock_size() {
     partition.use_256x256_superblock = true;
     partition.use_128x128_superblock = false;
     let neighbour = frontier_skip_neighbour();
-    let mut intra = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
-    let mut inter = full_frame_state(64, 64, &sequence, false, no_off()).unwrap();
-    intra
-        .record_block(31, 11, 1, 1, neighbour, no_off())
-        .unwrap();
-    inter
-        .record_block(31, 11, 1, 1, neighbour, no_off())
-        .unwrap();
+    let mut intra = full_frame_state(64, 64, &sequence, true).unwrap();
+    let mut inter = full_frame_state(64, 64, &sequence, false).unwrap();
+    intra.record_block(31, 11, 1, 1, neighbour).unwrap();
+    inter.record_block(31, 11, 1, 1, neighbour).unwrap();
 
     assert_eq!(intra.sb_size4, 32);
     assert_eq!(inter.sb_size4, 64);
-    assert_eq!(intra.intrabc_ctx(32, 8, 4, 4, no_off()).unwrap(), 0);
-    assert_eq!(inter.intrabc_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
+    assert_eq!(intra.intrabc_ctx(32, 8, 4, 4).unwrap(), 0);
+    assert_eq!(inter.intrabc_ctx(32, 8, 4, 4).unwrap(), 1);
     assert_eq!(intra.skip_ctx(32, 8, 4, 4).unwrap(), 1);
     assert_eq!(inter.skip_ctx(32, 8, 4, 4).unwrap(), 1);
 }
@@ -577,14 +562,10 @@ fn sequence_256_intrabc_spatial_probe_uses_the_frame_superblock_size() {
     partition.use_256x256_superblock = true;
     partition.use_128x128_superblock = false;
     let neighbour = frontier_skip_neighbour();
-    let mut intra = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
-    let mut inter = full_frame_state(64, 64, &sequence, false, no_off()).unwrap();
-    intra
-        .record_block(31, 11, 1, 1, neighbour, no_off())
-        .unwrap();
-    inter
-        .record_block(31, 11, 1, 1, neighbour, no_off())
-        .unwrap();
+    let mut intra = full_frame_state(64, 64, &sequence, true).unwrap();
+    let mut inter = full_frame_state(64, 64, &sequence, false).unwrap();
+    intra.record_block(31, 11, 1, 1, neighbour).unwrap();
+    inter.record_block(31, 11, 1, 1, neighbour).unwrap();
     let geometry =
         IntrabcBlockGeometry::new(IntrabcBlockContext::new(32, 8, BLOCK_16X16, false), 4, 4);
 
@@ -640,7 +621,7 @@ fn intrabc_newmv_geometry_derives_integer_luma_copy_rectangles() {
     let mut symbols = decoder(&payload);
     let block = IntrabcBlockContext::new(20, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
-    let state = full_frame_state(32, 32, &sequence, true, no_off()).unwrap();
+    let state = full_frame_state(32, 32, &sequence, true).unwrap();
 
     let info = read_intrabc_info_record(
         &mut cdfs,
@@ -673,7 +654,7 @@ fn intrabc_nearmv_geometry_derives_integer_luma_copy_rectangles() {
     let mut symbols = decoder(&payload);
     let block = IntrabcBlockContext::new(20, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
-    let state = full_frame_state(32, 32, &sequence, true, no_off()).unwrap();
+    let state = full_frame_state(32, 32, &sequence, true).unwrap();
 
     let info = read_intrabc_info_record(
         &mut cdfs,
@@ -983,7 +964,7 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
     let mut symbols = decoder(&payload);
     let block = IntrabcBlockContext::new(0, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
-    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let state = full_frame_state(64, 64, &sequence, true).unwrap();
 
     let info = read_intrabc_info_record(
         &mut cdfs,
@@ -1044,7 +1025,7 @@ fn intrabc_newmv_one_pel_lowers_predictor_before_delta() {
     ]);
     let mut symbols = decoder(&payload);
     let geometry = IntrabcBlockGeometry::new(IntrabcBlockContext::new(20, 20, 2, false), 4, 4);
-    let state = full_frame_state(64, 64, &sequence, true, no_off()).unwrap();
+    let state = full_frame_state(64, 64, &sequence, true).unwrap();
 
     let pending = read_pending_intrabc_info(
         &mut cdfs,
@@ -1122,17 +1103,10 @@ fn assert_neighbour_contexts(
 ) {
     let mut state = state();
     for &(row, col, n4w, n4h, prelude) in blocks {
-        state
-            .record_block(row, col, n4w, n4h, prelude, ByteOffset::new(0))
-            .unwrap();
+        state.record_block(row, col, n4w, n4h, prelude).unwrap();
     }
     let (row, col, n4w, n4h) = probe;
-    assert_eq!(
-        state
-            .intrabc_ctx(row, col, n4w, n4h, ByteOffset::new(0))
-            .unwrap(),
-        expected
-    );
+    assert_eq!(state.intrabc_ctx(row, col, n4w, n4h).unwrap(), expected);
     assert_eq!(state.skip_ctx(row, col, n4w, n4h).unwrap(), expected);
 }
 
@@ -1205,9 +1179,9 @@ fn intrabc_ref_stack_caps_256_sequence_superblocks_to_intra_sb_size() {
 #[test]
 fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
     let (sequence, _) = selectable_fixture();
-    let mut state = full_frame_state(4, 4, &sequence, true, no_off()).unwrap();
+    let mut state = full_frame_state(4, 4, &sequence, true).unwrap();
     state
-        .record_block(2, 0, 2, 4, frontier_skip_neighbour(), no_off())
+        .record_block(2, 0, 2, 4, frontier_skip_neighbour())
         .unwrap();
 
     for r in 2..4 {
@@ -1225,9 +1199,9 @@ fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
 #[test]
 fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
     let (sequence, _) = selectable_fixture();
-    let mut state = full_frame_state(4, 4, &sequence, true, no_off()).unwrap();
+    let mut state = full_frame_state(4, 4, &sequence, true).unwrap();
     state
-        .record_block(0, 2, 4, 1, frontier_skip_neighbour(), no_off())
+        .record_block(0, 2, 4, 1, frontier_skip_neighbour())
         .unwrap();
 
     for c in 2..4 {
@@ -1243,20 +1217,13 @@ fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
 #[test]
 fn tile_local_state_translates_absolute_coordinates() {
     let (sequence, _) = selectable_fixture();
-    let mut state = TileIntrabcPreludeState::new_for_tile(
-        (12, 16),
-        4..8,
-        8..12,
-        &sequence,
-        true,
-        true,
-        no_off(),
-    )
-    .unwrap();
+    let mut state =
+        TileIntrabcPreludeState::new_for_tile((12, 16), 4..8, 8..12, &sequence, true, true)
+            .unwrap();
     assert_eq!(state.values.len(), 16);
 
     state
-        .record_block(5, 9, 2, 2, frontier_skip_neighbour(), no_off())
+        .record_block(5, 9, 2, 2, frontier_skip_neighbour())
         .unwrap();
 
     for row in 5..7 {
@@ -1273,20 +1240,13 @@ fn tile_local_state_translates_absolute_coordinates() {
 #[test]
 fn disabled_intrabc_state_skips_the_tile_grid() {
     let (sequence, _) = selectable_fixture();
-    let mut state = TileIntrabcPreludeState::new_for_tile(
-        (270, 480),
-        0..270,
-        0..480,
-        &sequence,
-        false,
-        false,
-        no_off(),
-    )
-    .unwrap();
+    let mut state =
+        TileIntrabcPreludeState::new_for_tile((270, 480), 0..270, 0..480, &sequence, false, false)
+            .unwrap();
 
     assert!(state.values.is_empty());
     state
-        .record_block(0, 0, 16, 16, frontier_skip_neighbour(), no_off())
+        .record_block(0, 0, 16, 16, frontier_skip_neighbour())
         .unwrap();
     assert!(state.values.is_empty());
 }

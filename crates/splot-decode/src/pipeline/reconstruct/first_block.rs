@@ -174,7 +174,6 @@ enum DipEdge {
     Left,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collect_available_dip_edge<T: ReconSample>(
     workspace: &CurrentFrameWorkspace<T>,
     direction: DipEdge,

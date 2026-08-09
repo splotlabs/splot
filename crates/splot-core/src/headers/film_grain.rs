@@ -51,14 +51,6 @@ pub struct FilmGrainObu {
     pub models: Vec<FilmGrainSlotUpdate>,
 }
 
-impl FilmGrainObu {
-    /// Returns the updated slot indices as a bitmap (equal to `update_flags`).
-    #[must_use]
-    pub const fn updated_slot_bitmap(&self) -> u8 {
-        self.update_flags
-    }
-}
-
 /// One updated film grain model slot within a `film_grain_obu()` (AV2 v1.0.0 § 5.14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

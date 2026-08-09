@@ -47,12 +47,10 @@ impl<T, const N: usize> FixedStack<T, N> {
         true
     }
 
-    fn try_swap(&mut self, a: usize, b: usize) -> bool {
-        if a >= self.len || b >= self.len {
-            return false;
+    fn swap_to_front(&mut self, index: usize) {
+        if index < self.len {
+            self.entries.swap(0, index);
         }
-        self.entries.swap(a, b);
-        true
     }
 }
 
@@ -1428,7 +1426,7 @@ pub(crate) fn find_mv_stack_with_temporal(
             .max_by_key(|(idx, entry)| (entry.weight, core::cmp::Reverse(*idx)))
             .map_or(0, |(idx, _)| idx);
         if max_idx != 0 {
-            let _ = entries.try_swap(0, max_idx);
+            entries.swap_to_front(max_idx);
         }
     }
     let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
@@ -1492,7 +1490,7 @@ pub(crate) fn find_compound_mv_stack_with_temporal(
             .max_by_key(|(idx, entry)| (entry.weight, core::cmp::Reverse(*idx)))
             .map_or(0, |(idx, _)| idx);
         if max_idx != 0 {
-            let _ = state.entries.try_swap(0, max_idx);
+            state.entries.swap_to_front(max_idx);
         }
     }
     let max_ref_mv_count = bank.map_or(MAX_REF_MV_STACK_SIZE, |(_, count)| count);
@@ -1866,7 +1864,6 @@ fn scan_temporal_mv_stack(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn add_temporal_mv_sample(
     grid: &NeighbourMvGrid,
     block: &MvBlockContext,

@@ -13,7 +13,6 @@ use crate::filters::source::{FramePlane, StripeCopyError, StripePlane};
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
-use splot_core::span::ByteOffset;
 use splot_recon::{
     LoopRestorationSource, LoopRestorationSourceBounds, PC_WIENER_CLASSIFY_READ_RADIUS,
     PC_WIENER_FILTER_TAP_RADIUS, PC_WIENER_FULL_CLASSES, PcWienerClassifyPaddedSource,
@@ -673,7 +672,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: &FrameHeaderCore,
         mi_rows: usize,
         mi_cols: usize,
-        _offset: ByteOffset,
     ) -> Result<Option<CdefSkipGrid>> {
         let Some(cdef) = core.cdef_params.as_ref() else {
             return Ok(None);
@@ -721,7 +719,6 @@ impl StripeChain<'_> {
     pub(crate) fn apply_lr_stripe<'a, T: ReconSample>(
         &self,
         core: &FrameHeaderCore,
-        offset: ByteOffset,
         cdef: CdefFrame<'a, T>,
         cdef_overlap: &CdefOverlap,
         plane_blocks: [&[WienerNsLrSourceBlock]; 3],
@@ -766,9 +763,7 @@ impl StripeChain<'_> {
             let qindex = core
                 .quantization_params
                 .as_ref()
-                .ok_or_else(|| {
-                    crate::filters::wienerns_lr::selectable_missing_quantization_error(offset)
-                })?
+                .ok_or_else(crate::filters::wienerns_lr::selectable_missing_quantization_error)?
                 .base_q_idx;
             let filter_set_index = pc_wiener_filter_set_index(qindex);
             let frame_coeffs = if matches!(
@@ -1244,7 +1239,6 @@ impl StripeChain<'_> {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn preserve_lossless_lr_samples<T: ReconSample>(
         &self,
         plane_id: PlaneId,
