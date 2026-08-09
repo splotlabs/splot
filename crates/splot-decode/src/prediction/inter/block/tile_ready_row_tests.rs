@@ -23,14 +23,11 @@ fn no_decoded_block_error_stays_reportable() {
     let error = no_decoded_block_error(offset);
     assert!(matches!(
         error,
-        crate::DecodeError::UnsupportedFeature { .. }
+        crate::DecodeError::InternalState {
+            reason: "inter_no_decoded_block",
+            byte_offset,
+        } if byte_offset == offset
     ));
-    let crate::DecodeError::UnsupportedFeature { unsupported } = error else {
-        return;
-    };
-    assert_eq!(unsupported.reason(), "inter_no_decoded_block");
-    assert_eq!(unsupported.spec_section(), SPEC_MODE_INFO);
-    assert_eq!(unsupported.byte_offset(), Some(offset));
 }
 
 #[test]

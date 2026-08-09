@@ -1788,12 +1788,7 @@ fn prepare_tile<T: ReconSample>(
 const PARSE_AHEAD_POOL_WIDTH: usize = 2;
 
 fn no_decoded_block_error(offset: ByteOffset) -> crate::DecodeError {
-    inter_missing!(
-        "inter_no_decoded_block",
-        offset,
-        "inter.block",
-        SPEC_MODE_INFO
-    )
+    inter_internal!("inter_no_decoded_block", offset)
 }
 
 #[allow(clippy::too_many_arguments)]
