@@ -1254,12 +1254,11 @@ fn validate_index_bounds(size: IntraRectBlockSize, angle: IntraDirectionalAngle)
     let max_inner = inner.checked_sub(1).ok_or(ReconError::ArithmeticOverflow {
         context: "directional angle inner dimension",
     })?;
-    let _max_referenced_base =
-        max_base_prefix
-            .checked_add(max_inner)
-            .ok_or(ReconError::ArithmeticOverflow {
-                context: "directional angle referenced base index",
-            })?;
+    max_base_prefix
+        .checked_add(max_inner)
+        .ok_or(ReconError::ArithmeticOverflow {
+            context: "directional angle referenced base index",
+        })?;
     Ok(())
 }
 

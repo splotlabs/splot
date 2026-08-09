@@ -80,9 +80,13 @@ pub(crate) struct ReferenceSamples<'a, T: ReconSample> {
 impl<'a, T: ReconSample> ReferenceSamples<'a, T> {
     /// Reads a settled reference frame, every row of which is final.
     pub(crate) fn settled(frame: &'a DecodedFrame<T>) -> Self {
+        #[cfg(test)]
+        let published = forced_band(frame);
+        #[cfg(not(test))]
+        let published = None;
         Self {
             source: SampleSource::Frozen(frame),
-            published: forced_band(frame),
+            published,
         }
     }
 
@@ -387,11 +391,6 @@ fn forced_band<T: ReconSample>(frame: &DecodedFrame<T>) -> Option<PublishedRows>
             .plane(PlaneId::U)
             .map_or(luma, |plane| plane.visible_rect().height()),
     })
-}
-
-#[cfg(not(test))]
-const fn forced_band<T: ReconSample>(_frame: &DecodedFrame<T>) -> Option<PublishedRows> {
-    None
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 [package]
 name = "splot-decode"
-description = "Decoder driver scaffold for future AV2 reconstruction support in the splot toolkit."
+description = "AV2 decoder runtime and reconstruction pipeline for the splot toolkit."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

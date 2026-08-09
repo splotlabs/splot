@@ -395,9 +395,6 @@ mod tests {
             FrameHeaderParseStatus::UnsupportedUntilFeature {
                 feature_id: "AV2-5.18.2-FRAME-HEADER-INFO",
             },
-            FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
-                feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
-            },
         ] {
             let (mut core, seq) = valid_core();
             core.status = status;
@@ -422,39 +419,6 @@ mod tests {
         let (mut core, seq) = valid_core();
         core.order_hint_lsb = None;
         assert_rejected_what(&core, &seq, true, "order_hint_lsb");
-    }
-
-    #[test]
-    fn reject_lr_params_partial_set() {
-        use crate::headers::frame::{FrameRestorationType, LrPartialParams, LrPlaneParams};
-        let partial = LrPartialParams {
-            uses_lr: true,
-            planes: vec![
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::WienerNonsep,
-                    frame_filters_on: true,
-                    num_filter_classes: Some(6),
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-                LrPlaneParams {
-                    restoration_type: FrameRestorationType::None,
-                    frame_filters_on: false,
-                    num_filter_classes: None,
-                    frame_filter_bank: None,
-                },
-            ],
-            loop_restoration_size: [256, 32, 32],
-        };
-
-        let (mut core, seq) = valid_core();
-        core.lr_params_partial = Some(partial);
-        assert_rejected_what(&core, &seq, true, "lr_params_partial");
     }
 
     #[test]

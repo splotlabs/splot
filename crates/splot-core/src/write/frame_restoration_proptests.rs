@@ -8,7 +8,7 @@ mod proptests {
     use super::*;
     use crate::bitio::BitReader;
     use crate::headers::frame::{
-        CcsoPlaneParams, LrParseOutcome, LrPlaneParams, parse_ccso_params, parse_lr_params,
+        CcsoPlaneParams, LrPlaneParams, parse_ccso_params, parse_lr_params,
     };
     use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
     use crate::span::ByteOffset;
@@ -64,7 +64,6 @@ mod proptests {
             lr_uv_wiener_nonsep_disabled in any::<bool>(),
             sb_size in arbitrary_sb_size(),
             chroma in arbitrary_chroma(),
-            base_q_idx in any::<u32>(),
             bits in proptest::collection::vec(any::<bool>(), 0..24),
         ) {
             let view = CoreSeqRestorationView {
@@ -76,13 +75,12 @@ mod proptests {
             };
             let geometry = LrGeometry::new(sb_size, chroma);
             let packed = pack(&bits);
-            if let Ok(LrParseOutcome::Parsed(params)) = parse_lr_params(
+            if let Ok(params) = parse_lr_params(
                 &mut reader(&packed),
                 coded_lossless,
                 num_planes,
                 &view,
                 geometry,
-                base_q_idx,
             ) {
                 if params.planes.iter().any(|plane| {
                     plane.frame_filters_on || plane.frame_filter_bank.is_some()
@@ -97,7 +95,6 @@ mod proptests {
                     num_planes,
                     &view,
                     geometry,
-                    base_q_idx,
                 )
                 .unwrap();
                 let written = writer.into_bytes();
@@ -107,10 +104,9 @@ mod proptests {
                     num_planes,
                     &view,
                     geometry,
-                    base_q_idx,
                 )
                 .unwrap();
-                prop_assert_eq!(reparsed, LrParseOutcome::Parsed(params));
+                prop_assert_eq!(reparsed, params);
             }
         }
 
@@ -142,7 +138,6 @@ mod proptests {
             lr_uv_wiener_nonsep_disabled in any::<bool>(),
             sb_size in arbitrary_sb_size(),
             chroma in arbitrary_chroma(),
-            base_q_idx in any::<u32>(),
         ) {
             let view = CoreSeqRestorationView {
                 enable_restoration,
@@ -174,7 +169,6 @@ mod proptests {
                 num_planes,
                 &view,
                 geometry,
-                base_q_idx,
             );
             if result.is_err() {
                 prop_assert_eq!(writer.bit_len(), 0);

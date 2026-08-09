@@ -734,13 +734,10 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         frontier.c,
         n4w,
         n4h,
-        IntrabcBlockPrelude::from_use_skip(
-            IntrabcUseSkip {
-                use_intrabc: false,
-                skip_flag: skip == 1,
-            },
-            None,
-        )
+        IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+            use_intrabc: false,
+            skip_flag: skip == 1,
+        })
         .mark_inter(),
         tile_offset,
     )?;

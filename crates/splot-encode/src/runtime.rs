@@ -10,8 +10,8 @@ use splot_parallel::ThreadCount;
 /// Runtime speed preset for future encoder decisions.
 ///
 /// Lower values reserve room for slower, more exhaustive decisions; higher
-/// values reserve room for faster decisions. The current encoder does not emit
-/// packets, so the preset is stored as runtime policy only.
+/// values reserve room for faster decisions. The fixed supported packet path
+/// does not yet consult this preset, so it is stored as runtime policy only.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SpeedPreset(u8);
 

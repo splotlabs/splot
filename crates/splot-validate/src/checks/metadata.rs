@@ -3,8 +3,8 @@
 
 //! Metadata OBU syntax (`OBU_METADATA_SHORT` / `OBU_METADATA_GROUP`) and the
 //! locally decidable § 6.16 per-unit conformance diagnostics (AV2 § 5.17 / § 6.16).
-//! The stateful § 6.16.3 persistence / cancellation lifetime and § 6.16.10 scan-type
-//! CVS-wide consistency checks live in the validator context.
+//! Stateful HDR, scan-type, and timecode consistency checks live in the validator
+//! context. Metadata persistence, cancellation, and applicability are decoder state.
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
@@ -21,11 +21,10 @@ use crate::diagnostic::{Diagnostic, ValidationReport};
 
 /// Metadata OBU syntax: full `metadata_short_obu()` / `metadata_group_obu()` parse and
 /// the locally-decidable § 6.16 conformance diagnostics (AV2 § 5.17 / § 6.16). The
-/// stateful § 6.16.3 persistence / cancellation lifetime and § 6.16.10 scan-type
-/// CVS-wide consistency checks live in the validator context (`MetadataLifetimeStore`
-/// and `ScanTypeCvsState`). Decoded-frame-hash verification (§ 6.16.13, blocked on a
-/// decoder for the decoded output samples) and frame-unit suffix/prefix placement
-/// (§ 7.3.3 / § 7.3.4, blocked on frame-unit structure parsing) remain deferred.
+/// stateful HDR, scan-type, and timecode consistency checks live in the validator
+/// context. § 6.16.3 persistence, cancellation, and layer applicability are owned by
+/// the decoder's output-effects state. Decoded-frame-hash verification (§ 6.16.13)
+/// remains decoder-output dependent.
 pub(super) struct MetadataSyntax;
 
 impl Check for MetadataSyntax {

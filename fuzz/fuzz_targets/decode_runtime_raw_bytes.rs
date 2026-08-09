@@ -75,7 +75,7 @@ fuzz_target!(|data: &[u8]| {
 
 fn assert_minimal_raw_shape(bytes: &[u8]) {
     assert_eq!(bytes.len(), MINIMAL_PAYLOAD_BYTES);
-    let (luma, _chroma) = bytes.split_at(MINIMAL_LUMA_BYTES);
+    let (luma, _) = bytes.split_at(MINIMAL_LUMA_BYTES);
     assert!(luma.iter().all(|sample| *sample == MINIMAL_LUMA_SAMPLE));
     assert_eq!(bytes, MINIMAL_EXPECTED_RAW);
 }

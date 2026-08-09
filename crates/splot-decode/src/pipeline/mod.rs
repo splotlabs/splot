@@ -22,8 +22,6 @@ use splot_core::headers::tile_group::{
 };
 use splot_core::ivf::IvfHeader;
 use splot_core::span::ByteOffset;
-#[cfg(test)]
-use splot_core::stream::ParsedBitstream;
 use splot_core::symbol::SymbolDecoder;
 use splot_core::types::ObuType;
 use splot_recon::BitDepth;
@@ -54,8 +52,6 @@ mod output_schedule;
 mod runtime_support;
 mod stream_schedule;
 
-#[cfg(test)]
-pub(crate) use frame_lifecycle::incomplete_intra_header_error;
 use frame_lifecycle::*;
 pub(crate) use frame_lifecycle::{
     ActiveFilmGrain, PipelineDecodedFrame, PipelineFrame, PipelineFrameRate, deblock_quant_deltas,
@@ -77,21 +73,6 @@ use stream_schedule::*;
 pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
-
-#[cfg(test)]
-fn discard_runtime_noops(parsed: &mut ParsedBitstream<'_>) {
-    match parsed {
-        ParsedBitstream::AnnexB(partial) => partial
-            .obus
-            .retain(|obu| !obu.header.obu_type.is_reserved()),
-        ParsedBitstream::Ivf(ivf) => {
-            for frame in &mut ivf.frames {
-                frame.obus.retain(|obu| !obu.header.obu_type.is_reserved());
-            }
-            ivf.frames.retain(|frame| frame.frame.size != 0);
-        }
-    }
-}
 
 #[cfg(test)]
 pub(crate) fn decode_frame_from_plan(
@@ -699,7 +680,7 @@ where
     let frame_rate = stream.frame_rate();
 
     let leading_obus = stream.leading_obus()?;
-    let ([_td_envelope, sequence_envelope, key_envelope], leading_frame_unit_len) =
+    let ([_, sequence_envelope, key_envelope], leading_frame_unit_len) =
         require_leading_frame_unit(leading_obus)?;
 
     let mut sequence = parse_sequence(sequence_envelope)?;

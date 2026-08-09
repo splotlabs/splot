@@ -1,14 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Encoder block-symbol trace composers for the **general** AV2 intra decode path.
+//! Block-symbol traces for the supported undivided 64x64 general-intra packet paths.
 //!
-//! The minimal-tier composers in `block_symbol_trace` model the frozen single-block
-//! acceptor; these model the symbol stream the AVM-validated general intra decode
-//! path reads for one undivided 64x64 superblock, which leads with the § 5.20.3.2
-//! `do_split` partition flag and codes the `txb_skip` symbols at the 64x64-leaf
-//! transform contexts. The composed traces are driven through the shared § 8.2
-//! coder by `block_symbol_trace::roundtrip_block_symbol_trace`.
+//! Each trace starts with the § 5.20.3.2 `do_split` flag, uses the fixed CDF rows
+//! selected by the supported header, and is verified by decoder-backed CLI oracles.
 
 mod chroma;
 mod coded_dc;
@@ -31,19 +27,9 @@ pub use skip::emit_minimal_intra_skip_ivf;
 use crate::block_symbol_trace::{BlockSymbolToken, encode_block_symbol_trace};
 use crate::error::{Error, Result};
 
-/// The coefficient CDF q-context for a skip frame whose `base_q_idx <= 90`:
-/// `coeff_cdf_q_ctx_from_base_q_idx` bank `0` (the same bank the AVM-validated
-/// `syn-flat-intra-64x64-q80` fixture's `base_q_idx == 80` selects).
-pub(super) const SKIP_FRAME_COEFF_CDF_Q_CTX: usize = 0;
-
-/// The § 8.3.2 neutral V `txb_skip` context: `0`. For these frames the chroma block equals its
-/// transform and U is all-zero (`EobU == 0`), so neither the `+3` nor the `+6` term applies.
-pub(super) const V_TXB_SKIP_CTX_NEUTRAL: usize = 0;
-
 /// The `base_q_idx` the minimal intra skip frame is muxed at: 80, the AVM- and
 /// dav2d-validated `syn-flat-intra-64x64-q80` fixture's value. It is `<= 90`, so the decoder
-/// derives coefficient CDF q-context `0` — the q-context [`skip::encode_general_intra_dc_skip_tile_data`]
-/// codes its `txb_skip` symbols under.
+/// derives coefficient CDF q-context `0`, matching the fixed rows used by the tile trace.
 pub(super) const SKIP_FRAME_BASE_Q_IDX: u8 = 80;
 
 /// A chroma DC `sign_bit` is a § 8.2.5 `L(1)` bypass literal.

@@ -53,12 +53,6 @@ impl MotionFieldHandle {
         }))
     }
 
-    /// Names a field whose frame has not reconstructed yet.
-    #[cfg(test)]
-    pub(crate) fn pending() -> Self {
-        Self::pending_with_layout(MotionFieldLayout::empty())
-    }
-
     /// Names a pending field with enough geometry to create every row-band
     /// completion before its entropy pass starts.
     pub(crate) fn pending_with_layout(layout: MotionFieldLayout) -> Self {

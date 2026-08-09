@@ -501,7 +501,7 @@ fn check_cdef_encodable(
         return Ok(());
     }
 
-    let (Some(damping), Some(strengths), Some(_on_skip)) = (
+    let (Some(damping), Some(strengths), Some(_)) = (
         params.cdef_damping,
         params.cdef_strengths,
         params.cdef_on_skip_txfm_frame_enable,

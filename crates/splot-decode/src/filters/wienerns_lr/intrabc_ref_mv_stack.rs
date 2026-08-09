@@ -39,16 +39,6 @@ use crate::prediction::inter::Mv;
 
 const REF_MV_BANK_SIZE: usize = 4;
 const MAX_SMVP_AXIS_MI: usize = 16;
-#[cfg(test)]
-const MAX_RMB_SB_HITS: u32 = 64;
-#[cfg(test)]
-pub(crate) const BANK_SB_ABOVE_ROW_MAX_HITS: usize = 4;
-#[cfg(test)]
-const BANK_1ST_UNIT_UPDATE_COUNT: u32 = 4;
-#[cfg(test)]
-const BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES: u32 = 16;
-#[cfg(test)]
-const SB_TO_RMB_UNITS_LOG2: u32 = 3;
 const MI_SIZE: i32 = 4;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BlockWidthType {
@@ -63,138 +53,6 @@ impl BlockWidthType {
             1 => Self::Width4,
             2 => Self::Width8,
             _ => Self::Others,
-        }
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct IntrabcRefMvBank {
-    mib_size: usize,
-    queue: Vec<Mv>,
-    remain_hits: u32,
-    unit_hits: u32,
-    sb_hits: u32,
-    current_sb_row: Option<usize>,
-    current_sb_col: Option<usize>,
-}
-
-#[cfg(test)]
-impl IntrabcRefMvBank {
-    pub(crate) const fn new(mib_size: usize) -> Self {
-        Self {
-            mib_size,
-            queue: Vec::new(),
-            remain_hits: 0,
-            unit_hits: 0,
-            sb_hits: 0,
-            current_sb_row: None,
-            current_sb_col: None,
-        }
-    }
-
-    pub(crate) fn entries(&self) -> &[Mv] {
-        &self.queue
-    }
-
-    pub(crate) fn enter_block_superblock(&mut self, mi_row: usize, mi_col: usize) -> bool {
-        if self.mib_size == 0 {
-            return false;
-        }
-        let sb_row = mi_row / self.mib_size;
-        let sb_col = mi_col / self.mib_size;
-        let sb_row_start = sb_row * self.mib_size;
-        let sb_col_start = sb_col * self.mib_size;
-        let entered =
-            self.current_sb_row != Some(sb_row_start) || self.current_sb_col != Some(sb_col_start);
-        if self.current_sb_row != Some(sb_row_start) {
-            self.queue.clear();
-            self.remain_hits = 0;
-            self.unit_hits = 0;
-            self.sb_hits = 0;
-            self.current_sb_row = Some(sb_row_start);
-            self.current_sb_col = Some(sb_col_start);
-        } else if self.current_sb_col != Some(sb_col_start) {
-            self.sb_hits = 0;
-            self.remain_hits = 0;
-            self.unit_hits = 0;
-            self.current_sb_col = Some(sb_col_start);
-        }
-        entered
-    }
-
-    pub(crate) fn seed_from_above_row(&mut self, mv: Option<Mv>) {
-        if self.sb_hits >= MAX_RMB_SB_HITS {
-            return;
-        }
-        self.sb_hits += 1;
-        if let Some(mv) = mv {
-            self.append_or_move_to_end(mv);
-        }
-    }
-
-    fn decide_unit_update_count(&mut self, mi_row: usize, mi_col: usize, n4w: usize, n4h: usize) {
-        if self.mib_size == 0 {
-            return;
-        }
-        let mib_size_log2 = self.mib_size.trailing_zeros();
-        let rmb_unit_mi_size_log2 = mib_size_log2.saturating_sub(SB_TO_RMB_UNITS_LOG2);
-        let rmb_unit_mi_size = 1usize << rmb_unit_mi_size_log2;
-        let mi_row_in_sb = mi_row % self.mib_size;
-        let mi_col_in_sb = mi_col % self.mib_size;
-        let units_w = (n4w >> rmb_unit_mi_size_log2).max(1);
-        let units_h = (n4h >> rmb_unit_mi_size_log2).max(1);
-        let rmb_units_count = u32::try_from(units_w.saturating_mul(units_h)).unwrap_or(u32::MAX);
-        if mi_row_in_sb == 0 && mi_col_in_sb == 0 {
-            self.remain_hits = rmb_units_count.max(BANK_1ST_UNIT_UPDATE_COUNT);
-            self.unit_hits = 0;
-        } else if mi_row_in_sb.is_multiple_of(rmb_unit_mi_size)
-            && mi_col_in_sb.is_multiple_of(rmb_unit_mi_size)
-        {
-            self.remain_hits = self.remain_hits.saturating_add(rmb_units_count);
-            self.unit_hits = 0;
-        }
-    }
-
-    pub(crate) fn update_after_block(
-        &mut self,
-        mi_row: usize,
-        mi_col: usize,
-        n4w: usize,
-        n4h: usize,
-        use_intrabc: bool,
-        block_mv: Option<Mv>,
-    ) {
-        self.decide_unit_update_count(mi_row, mi_col, n4w, n4h);
-        if let (true, Some(mv)) = (use_intrabc, block_mv) {
-            self.update_within_sb(mv);
-        }
-    }
-
-    fn update_within_sb(&mut self, mv: Mv) {
-        if self.remain_hits == 0
-            || self.unit_hits >= BANK_UNIT_MAX_ALLOWED_LEFTOVER_UPDATES
-            || self.sb_hits >= MAX_RMB_SB_HITS
-        {
-            return;
-        }
-        self.remain_hits -= 1;
-        self.unit_hits += 1;
-        self.sb_hits += 1;
-        self.append_or_move_to_end(mv);
-    }
-
-    fn append_or_move_to_end(&mut self, mv: Mv) {
-        if let Some(pos) = self.queue.iter().position(|&entry| entry == mv) {
-            let entry = self.queue.remove(pos);
-            self.queue.push(entry);
-            return;
-        }
-        if self.queue.len() < REF_MV_BANK_SIZE {
-            self.queue.push(mv);
-        } else {
-            self.queue.remove(0);
-            self.queue.push(mv);
         }
     }
 }
@@ -742,27 +600,6 @@ fn lookup_in_grid(
     lookup(row, col)
 }
 
-#[cfg(test)]
-fn reversed_bank_candidates(bank: &IntrabcRefMvBank) -> Vec<Mv> {
-    bank.entries().iter().rev().copied().collect()
-}
-
-#[cfg(test)]
-pub(crate) fn build_intrabc_ref_mv_stack(
-    bank: &IntrabcRefMvBank,
-    geometry: IntrabcStackGeometry,
-    enable_refmvbank: bool,
-    spatial: &[Mv],
-) -> Vec<Mv> {
-    build_intrabc_ref_mv_stack_from_candidates(
-        &reversed_bank_candidates(bank),
-        geometry,
-        enable_refmvbank,
-        spatial,
-        0,
-    )
-}
-
 pub(crate) fn build_intrabc_ref_mv_stack_from_candidates(
     bank_candidates: &[Mv],
     geometry: IntrabcStackGeometry,
@@ -864,25 +701,6 @@ pub(crate) fn sort_nearest_max_weight_to_slot0(candidates: &mut [WeightedBv]) {
 pub(crate) enum IntrabcStackAdmission {
     Admit { selected: Mv },
     Defer,
-}
-
-#[cfg(test)]
-pub(crate) fn intrabc_ref_stack_admission(
-    bank: &IntrabcRefMvBank,
-    geometry: IntrabcStackGeometry,
-    spatial: &SpatialIntrabcScan,
-    enable_refmvbank: bool,
-    drl_reorder: DrlReorderMode,
-    ref_mv_idx: usize,
-) -> IntrabcStackAdmission {
-    intrabc_ref_stack_admission_from_candidates(
-        &reversed_bank_candidates(bank),
-        geometry,
-        spatial,
-        enable_refmvbank,
-        drl_reorder,
-        ref_mv_idx,
-    )
 }
 
 pub(crate) fn intrabc_ref_stack_admission_from_candidates(

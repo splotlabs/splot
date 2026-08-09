@@ -11,34 +11,34 @@ const SB_N4: usize = 16;
 
 #[test]
 fn out_of_frame_neighbours_give_context_zero() {
-    let state = TileIntraJointModeState::new(16, 16).unwrap();
+    let state = TileIntraJointModeState::new_for_tile(0..16, 0..16).unwrap();
     assert_eq!(state.y_mode_index_ctx(0, 0, 16, 16), 0);
 }
 
 #[test]
 fn non_directional_neighbour_keeps_context_zero() {
-    let mut state = TileIntraJointModeState::new(16, 32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
     state.record_block(0, 0, 16, 16, SMOOTH_V_JOINT_MODE);
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
 }
 
 #[test]
 fn directional_left_neighbour_raises_context_to_one() {
-    let mut state = TileIntraJointModeState::new(16, 32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
     state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 1);
 }
 
 #[test]
 fn directional_above_neighbour_raises_context_to_one() {
-    let mut state = TileIntraJointModeState::new(32, 16).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..16).unwrap();
     state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
     assert_eq!(state.y_mode_index_ctx(16, 0, 16, 16), 1);
 }
 
 #[test]
 fn directional_both_neighbours_raise_context_to_two() {
-    let mut state = TileIntraJointModeState::new(32, 32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..32).unwrap();
     state.record_block(0, 16, 16, 16, D135_JOINT_MODE);
     state.record_block(16, 0, 16, 16, D135_JOINT_MODE);
     assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
@@ -46,7 +46,7 @@ fn directional_both_neighbours_raise_context_to_two() {
 
 #[test]
 fn non_intra_block_resets_directional_neighbour_to_dc() {
-    let mut state = TileIntraJointModeState::new(64, 64).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64).unwrap();
     state.record_block(32, 0, 16, 16, D135_JOINT_MODE);
     state.record_block(16, 16, 16, 16, D135_JOINT_MODE);
     assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 2);
@@ -59,7 +59,7 @@ fn non_intra_block_resets_directional_neighbour_to_dc() {
 
 #[test]
 fn get_joint_mode_uses_the_spec_neighbour_positions() {
-    let mut state = TileIntraJointModeState::new(8, 8).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..8, 0..8).unwrap();
     state.record_block(3, 1, 1, 1, D135_JOINT_MODE);
     assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), D135_JOINT_MODE);
     state.record_block(1, 3, 1, 1, D135_JOINT_MODE);
@@ -68,7 +68,7 @@ fn get_joint_mode_uses_the_spec_neighbour_positions() {
 
 #[test]
 fn last_non_directional_mode_does_not_raise_the_context() {
-    let mut state = TileIntraJointModeState::new(16, 32).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
     state.record_block(0, 0, 16, 16, NON_DIRECTIONAL_MODES_COUNT - 1);
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
 }
@@ -76,26 +76,26 @@ fn last_non_directional_mode_does_not_raise_the_context() {
 #[test]
 fn empty_dimensions_are_rejected() {
     assert!(matches!(
-        TileIntraJointModeState::new(0, 4),
+        TileIntraJointModeState::new_for_tile(0..0, 0..4),
         Err(TileIntraJointModeStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileIntraJointModeState::new(4, 0),
+        TileIntraJointModeState::new_for_tile(0..4, 0..0),
         Err(TileIntraJointModeStateError::EmptyDimensions { .. })
     ));
 }
 
 #[test]
 fn record_block_clips_to_the_grid() {
-    let mut state = TileIntraJointModeState::new(4, 4).unwrap();
+    let mut state = TileIntraJointModeState::new_for_tile(0..4, 0..4).unwrap();
     state.record_block(2, 2, 16, 16, D135_JOINT_MODE);
     assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), D135_JOINT_MODE);
 }
 
 #[test]
 fn luma_palette_grid_stores_one_palette_per_block() {
-    let mut state = TileLumaPaletteState::new(4, 4, SB_N4).unwrap();
-    let palette = LumaPalette::new(3, [7, 11, 19, 0, 0, 0, 0, 0]).unwrap();
+    let mut state = TileLumaPaletteState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
+    let palette = LumaPalette::from_size_symbol(Symbol::new(1), [7, 11, 19, 0, 0, 0, 0, 0]);
 
     state.record_block(1, 0, 2, 2, Some(palette));
 
@@ -126,7 +126,7 @@ fn grid_origin_keeps_only_tile_cells() {
 
 #[test]
 fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
-    let state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
+    let state = TileUsesMrlsState::new_for_tile(0..16, 0..16, SB_N4).unwrap();
 
     assert_eq!(state.mrl_index_ctx(0, 0, 16, 16), 0);
     assert_eq!(state.mrl_sec_index_ctx(0, 0, 16, 16), 0);
@@ -134,7 +134,7 @@ fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
 
 #[test]
 fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
-    let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
+    let mut state = TileUsesMrlsState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
     state.record_block(7, 11, 1, 1, 2);
     state.record_block(11, 7, 1, 1, 1);
 
@@ -145,7 +145,7 @@ fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
 
 #[test]
 fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
-    let mut state = TileUsesMrlsState::new(32, 32, SB_N4).unwrap();
+    let mut state = TileUsesMrlsState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
     state.record_block(31, 15, 1, 1, 1);
     state.record_block(15, 31, 1, 1, 2);
     state.record_block(15, 16, 1, 1, 2);
@@ -157,7 +157,7 @@ fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
 
 #[test]
 fn uses_mrls_npos_uses_fallback_positions() {
-    let mut state = TileUsesMrlsState::new(16, 16, SB_N4).unwrap();
+    let mut state = TileUsesMrlsState::new_for_tile(0..16, 0..16, SB_N4).unwrap();
     state.record_block(7, 3, 1, 1, 1);
     state.record_block(7, 0, 1, 1, 2);
 
@@ -168,7 +168,7 @@ fn uses_mrls_npos_uses_fallback_positions() {
 
 #[test]
 fn uses_mrls_record_block_clips_to_the_grid() {
-    let mut state = TileUsesMrlsState::new(4, 4, SB_N4).unwrap();
+    let mut state = TileUsesMrlsState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
     state.record_block(2, 2, 16, 16, 2);
 
     assert_eq!(state.neighbour_uses_mrls(2, 3, 1, 1), [2, 0]);
@@ -178,15 +178,15 @@ fn uses_mrls_record_block_clips_to_the_grid() {
 #[test]
 fn uses_mrls_empty_dimensions_are_rejected() {
     assert!(matches!(
-        TileUsesMrlsState::new(0, 4, SB_N4),
+        TileUsesMrlsState::new_for_tile(0..0, 0..4, SB_N4),
         Err(TileUsesMrlsStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileUsesMrlsState::new(4, 0, SB_N4),
+        TileUsesMrlsState::new_for_tile(0..4, 0..0, SB_N4),
         Err(TileUsesMrlsStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileUsesMrlsState::new(4, 4, 0),
+        TileUsesMrlsState::new_for_tile(0..4, 0..4, 0),
         Err(TileUsesMrlsStateError::EmptySuperblockSize)
     ));
 }
@@ -203,8 +203,8 @@ fn record_fsc_and_use_dip(
 
 #[test]
 fn fsc_and_use_dip_neighbours_select_context_sum() {
-    let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
-    let mut use_dip = TileUseDipState::new(32, 32, SB_N4).unwrap();
+    let mut state = TileFscModeState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
+    let mut use_dip = TileUseDipState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
     record_fsc_and_use_dip(&mut state, &mut use_dip, 7, 11);
     record_fsc_and_use_dip(&mut state, &mut use_dip, 11, 7);
 
@@ -214,8 +214,8 @@ fn fsc_and_use_dip_neighbours_select_context_sum() {
 
 #[test]
 fn fsc_and_use_dip_npos_excludes_above_superblock_row_neighbours() {
-    let mut state = TileFscModeState::new(32, 32, SB_N4).unwrap();
-    let mut use_dip = TileUseDipState::new(32, 32, SB_N4).unwrap();
+    let mut state = TileFscModeState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
+    let mut use_dip = TileUseDipState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
     record_fsc_and_use_dip(&mut state, &mut use_dip, 31, 15);
     record_fsc_and_use_dip(&mut state, &mut use_dip, 15, 31);
     record_fsc_and_use_dip(&mut state, &mut use_dip, 15, 16);
@@ -227,27 +227,27 @@ fn fsc_and_use_dip_npos_excludes_above_superblock_row_neighbours() {
 #[test]
 fn fsc_and_use_dip_empty_dimensions_are_rejected() {
     assert!(matches!(
-        TileFscModeState::new(0, 4, SB_N4),
+        TileFscModeState::new_for_tile(0..0, 0..4, SB_N4),
         Err(TileFscModeStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileUseDipState::new(0, 4, SB_N4),
+        TileUseDipState::new_for_tile(0..0, 0..4, SB_N4),
         Err(TileUseDipStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileFscModeState::new(4, 0, SB_N4),
+        TileFscModeState::new_for_tile(0..4, 0..0, SB_N4),
         Err(TileFscModeStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileUseDipState::new(4, 0, SB_N4),
+        TileUseDipState::new_for_tile(0..4, 0..0, SB_N4),
         Err(TileUseDipStateError::EmptyDimensions { .. })
     ));
     assert!(matches!(
-        TileFscModeState::new(4, 4, 0),
+        TileFscModeState::new_for_tile(0..4, 0..4, 0),
         Err(TileFscModeStateError::EmptySuperblockSize)
     ));
     assert!(matches!(
-        TileUseDipState::new(4, 4, 0),
+        TileUseDipState::new_for_tile(0..4, 0..4, 0),
         Err(TileUseDipStateError::EmptySuperblockSize)
     ));
 }
@@ -338,7 +338,7 @@ fn neg_deinterleave_matches_spec_branches() {
 /// equal up/up-left/left => ctx 2; a differing left is selected as the predictor.
 #[test]
 fn segment_id_predictor_and_context() {
-    let mut state = TileSegmentIdState::new(4, 4).unwrap();
+    let mut state = TileSegmentIdState::new_for_tile(0..4, 0..4).unwrap();
     assert_eq!(state.predictor_and_ctx(0, 0, false, false), (0, 0));
     state.record_block(0, 0, 2, 1, 5);
     state.record_block(0, 1, 1, 1, 5);
@@ -361,7 +361,7 @@ fn segment_id_state_translates_tile_coordinates() {
 
 #[test]
 fn temporal_segment_prediction_context_uses_above_and_left_flags() {
-    let mut state = TileSegmentIdState::new(4, 4).unwrap();
+    let mut state = TileSegmentIdState::new_for_tile(0..4, 0..4).unwrap();
     assert_eq!(state.predicted_context(0, 0), 0);
     state.record_predicted(0, 0, 2, 1, true);
     state.record_predicted(1, 0, 1, 2, true);

@@ -132,7 +132,7 @@ pub fn write_segmentation_params(
     writer.write_flag(params.segmentation_enabled)?;
 
     if params.segmentation_enabled {
-        let (_have_seg_params, allow_change, _reuse_source) = derive_seg_params(seg, mfh);
+        let (_, allow_change, _) = derive_seg_params(seg, mfh);
 
         if allow_change {
             writer.write_flag(params.reuse_seg_info)?;

@@ -98,7 +98,7 @@ fn assert_minimal_y4m_shape(bytes: &[u8]) {
     assert_header_token(header, b"C420");
     assert_nonzero_frame_rate(header);
     assert_eq!(payload.len(), MINIMAL_PAYLOAD_BYTES);
-    let (luma, _chroma) = payload.split_at(MINIMAL_LUMA_BYTES);
+    let (luma, _) = payload.split_at(MINIMAL_LUMA_BYTES);
     assert!(luma.iter().all(|sample| *sample == MINIMAL_LUMA_SAMPLE));
     assert_eq!(payload, MINIMAL_EXPECTED_RAW);
     assert!(find_subslice(payload, FRAME_MARKER).is_none());

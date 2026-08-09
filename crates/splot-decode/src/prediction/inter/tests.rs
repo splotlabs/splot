@@ -257,7 +257,7 @@ fn decode_inter_frame_after_core_mutation_inner(
     let parsed = parse_ivf_fixture(bytes, "inter");
     let header = parsed.header.expect("fixture carries an IVF header");
     let first_ivf_frame = parsed.frames.first().expect("fixture carries a key frame");
-    let [_td_envelope, sequence_envelope, key_envelope] =
+    let [_, sequence_envelope, key_envelope] =
         crate::pipeline::require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
     let sequence = crate::pipeline::parse_sequence(sequence_envelope)?;
 
@@ -345,7 +345,7 @@ pub(super) fn parse_inter_core_for_validation(
     let parsed = parse_ivf_fixture(bytes, "inter");
     let header = parsed.header.expect("fixture carries an IVF header");
     let first_ivf_frame = parsed.frames.first().expect("fixture carries a key frame");
-    let [_td_envelope, sequence_envelope, key_envelope] =
+    let [_, sequence_envelope, key_envelope] =
         crate::pipeline::require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
     let sequence = crate::pipeline::parse_sequence(sequence_envelope)?;
 
@@ -1572,42 +1572,6 @@ fn multiref_fixture_rejects_when_inter_tile_group_starts_ivf_record() {
 }
 
 #[test]
-fn wienerns_header_status_reports_precise_tile_frontier() {
-    let error = crate::pipeline::incomplete_intra_header_error(
-        FrameHeaderParseStatus::StoppedBeforeWienerNsFilter {
-            feature_id: "AV2-5.18.7-SEGMENTATION-TILING",
-        },
-        ByteOffset::new(74),
-    );
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("Wiener NS frontier must be an unsupported-feature error");
-    };
-
-    assert_eq!(unsupported.reason(), "unsupported_wienerns_filter");
-    assert_eq!(unsupported.spec_section(), "5.18.7.11");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-    assert!(
-        unsupported.message().contains("read_wienerns_filter"),
-        "message should name the exact unmodeled parser subroutine"
-    );
-}
-
-#[test]
-fn non_wienerns_header_status_keeps_generic_incomplete_frontier() {
-    let error = crate::pipeline::incomplete_intra_header_error(
-        FrameHeaderParseStatus::ActivationFieldsOnly,
-        ByteOffset::new(74),
-    );
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("incomplete header fallback must be an unsupported-feature error");
-    };
-
-    assert_eq!(unsupported.reason(), "incomplete_frame_header");
-    assert_eq!(unsupported.spec_section(), "7.1");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(74)));
-}
-
-#[test]
 fn multiref_runtime_decodes_first_inter_from_leading_ivf_record() {
     let repacked = repack_multiref_first_inter_into_leading_ivf_record();
     let original = decode_fixture(MULTIREF_FIXTURE);
@@ -2341,8 +2305,7 @@ fn tip_output_disables_saved_cdf_blending() {
 #[test]
 fn tip_output_validation_accepts_leading_and_regular_obus() {
     decode_context().pool().install(|| {
-        let (_sequence, mut core, _offset) =
-            parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
+        let (_, mut core, _) = parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).unwrap();
         core.status = FrameHeaderParseStatus::InterHeaderComplete;
         core.frame_is_intra = Some(false);
         core.inter

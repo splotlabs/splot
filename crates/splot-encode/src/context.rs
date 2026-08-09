@@ -17,13 +17,11 @@ use std::collections::VecDeque;
 use splot_parallel::{ThreadCount, WorkerPool};
 
 use crate::config::EncoderConfig;
-use crate::decide::{ConstantQp, RateController};
 use crate::error::{Error, Result};
 use crate::frame::{Frame, FrameInfo};
 use crate::runtime::{EncoderRuntimeConfig, SpeedPreset};
 
 const INPUT_QUEUE_CAPACITY: usize = 1;
-const OUTPUT_QUEUE_CAPACITY: usize = 0;
 
 /// An output coded packet: the bytes of one coded access unit (an AV2 Annex B temporal
 /// unit). A consumer muxes packets into a container (e.g. IVF) to store or decode them.
@@ -87,7 +85,7 @@ pub enum EncoderOperation {
 /// Status returned by [`Context::send_frame`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendFrameStatus {
-    /// The frame metadata was accepted into the bounded input queue.
+    /// The frame's visible pixels and metadata were copied into the bounded input queue.
     Accepted {
         /// Number of queued input frames after the operation.
         queued_frames: usize,
@@ -119,7 +117,7 @@ pub enum ReceivePacketStatus {
 pub enum FlushStatus {
     /// The context is draining queued input.
     Draining {
-        /// Number of input frames still queued for no-output draining.
+        /// Number of input frames still queued for packet processing.
         queued_frames: usize,
     },
     /// The context is already at end of stream.
@@ -131,13 +129,9 @@ pub enum FlushStatus {
 pub struct Context {
     config: EncoderConfig,
     runtime: EncoderRuntimeConfig,
-    /// The quantizer-decision seam. The minimal encoder installs a constant-QP controller
-    /// built from [`EncoderConfig::qp`]; a rate-controlled implementation swaps in here.
-    rate_controller: ConstantQp,
     pool: WorkerPool,
     state: EncoderState,
     input_queue: VecDeque<QueuedFrame>,
-    output_queue: VecDeque<Packet>,
 }
 
 impl Context {
@@ -148,15 +142,12 @@ impl Context {
     /// Returns [`crate::Error::Pool`] if the worker pool cannot be constructed.
     pub fn new(config: EncoderConfig, runtime: EncoderRuntimeConfig) -> Result<Self> {
         let pool = WorkerPool::new(runtime.thread_count)?;
-        let rate_controller = ConstantQp::new(config.qp);
         Ok(Self {
             config,
             runtime,
-            rate_controller,
             pool,
             state: EncoderState::Accepting,
             input_queue: VecDeque::with_capacity(INPUT_QUEUE_CAPACITY),
-            output_queue: VecDeque::with_capacity(OUTPUT_QUEUE_CAPACITY),
         })
     }
 
@@ -214,18 +205,6 @@ impl Context {
         INPUT_QUEUE_CAPACITY
     }
 
-    /// Returns the number of coded packets currently queued.
-    #[must_use]
-    pub fn queued_output_packets(&self) -> usize {
-        self.output_queue.len()
-    }
-
-    /// Returns the current output queue capacity in packets.
-    #[must_use]
-    pub const fn output_queue_capacity(&self) -> usize {
-        OUTPUT_QUEUE_CAPACITY
-    }
-
     /// Submits a frame to the encoder.
     ///
     /// # Errors
@@ -268,10 +247,6 @@ impl Context {
 
         if self.state == EncoderState::Finished {
             return Ok(ReceivePacketStatus::Finished);
-        }
-
-        if let Some(packet) = self.output_queue.pop_front() {
-            return Ok(ReceivePacketStatus::Packet(packet));
         }
 
         if let Some(frame) = self.input_queue.pop_front() {
@@ -317,7 +292,7 @@ impl Context {
         if size.width() != SUPPORTED_FRAME_DIMENSION || size.height() != SUPPORTED_FRAME_DIMENSION {
             return Ok(None);
         }
-        let base_q_idx = self.rate_controller.frame_base_q_idx();
+        let base_q_idx = self.config.qp;
         if !SUPPORTED_SKIP_QP.contains(&base_q_idx) {
             return Ok(None);
         }
@@ -343,7 +318,7 @@ impl Context {
     pub fn flush(&mut self) -> Result<FlushStatus> {
         match self.state {
             EncoderState::Accepting => {
-                if self.input_queue.is_empty() && self.output_queue.is_empty() {
+                if self.input_queue.is_empty() {
                     self.state = EncoderState::Finished;
                     Ok(FlushStatus::Finished)
                 } else {
@@ -399,7 +374,6 @@ impl Context {
     fn enter_failed_for_test(&mut self) {
         self.state = EncoderState::Failed;
         self.input_queue.clear();
-        self.output_queue.clear();
     }
 }
 
@@ -482,7 +456,6 @@ mod tests {
         ));
         assert!(matches!(ctx.flush().unwrap(), FlushStatus::Draining { .. }));
         assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);
-        assert_eq!(ctx.queued_output_packets(), 0);
     }
 
     #[test]
@@ -497,9 +470,7 @@ mod tests {
         assert_eq!(ctx.speed_preset(), speed);
         assert_eq!(ctx.state(), EncoderState::Accepting);
         assert_eq!(ctx.queued_input_frames(), 0);
-        assert_eq!(ctx.queued_output_packets(), 0);
         assert_eq!(ctx.input_queue_capacity(), 1);
-        assert_eq!(ctx.output_queue_capacity(), 0);
     }
 
     #[test]
@@ -621,7 +592,6 @@ mod tests {
         );
         assert_eq!(ctx.state(), EncoderState::Accepting);
         assert_eq!(ctx.queued_input_frames(), 0);
-        assert_eq!(ctx.queued_output_packets(), 0);
     }
 
     #[test]
@@ -657,7 +627,6 @@ mod tests {
         assert_eq!(ctx.receive_packet().unwrap(), ReceivePacketStatus::Finished);
         assert_eq!(ctx.state(), EncoderState::Finished);
         assert_eq!(ctx.queued_input_frames(), 0);
-        assert_eq!(ctx.queued_output_packets(), 0);
     }
 
     #[test]

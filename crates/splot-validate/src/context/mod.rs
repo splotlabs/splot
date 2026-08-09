@@ -63,10 +63,6 @@ use crate::annex_a::{
 use crate::celu::{CeluRole, CodedExtendedLayerTracker, FrameFacts, Leadingness};
 use crate::diagnostic::{Diagnostic, ValidationReport};
 use crate::frame_unit::{FrameBoundary, FrameUnitSegmenter, SegRole, type_decided_output};
-use crate::metadata_lifetime::{
-    ActiveMetadataUnit, LAYER_CURRENT, LAYER_GLOBAL, LAYER_VALUES, MetadataLifetimeStore,
-    PersistenceMode,
-};
 use crate::options::{ExternalHlsMode, ValidationOptions};
 use crate::reference_state::{
     FrameRefUpdate, NUM_REF_FRAMES, ReferenceStateScratch, ReferenceStateTracker, SlotFacts,
@@ -159,19 +155,14 @@ pub(crate) struct ValidatorContext {
     /// Film-grain `fgm_update_flags` slot state (§ 6.13) plus per-slot availability
     /// foundation for future frame-reference checks (§ 7.3.8).
     film_grain: FilmGrainState,
-    /// Active metadata persistence / cancellation state (AV2 § 6.16.3); see
-    /// [`MetadataLifetimeStore`]. Scoped to the coded video sequence via the
-    /// [`CvsTracker`] CLK hook and to the coded frame for `NO_PERSISTENCE` via
-    /// [`ValidatorContext::reset_coded_frame_window`].
-    metadata: MetadataLifetimeStore,
     /// HDR CLL / MDCV content baselines per coded-video-sequence scope, for the
     /// § 6.16.5 / § 6.16.6 "shall have the same content" checks: each record
     /// carries its unit's bitstream-derived embedded-layer association (see
     /// [`HdrAssociation`]) and a new unit is compared against every baseline of
     /// the same metadata type whose association intersects it. Independent of the
-    /// § 6.16.3 cancellation state in [`ValidatorContext::metadata`] — the
-    /// same-content rule carries no cancel exception, so a unit re-signaled after a
-    /// cancel is still compared against the earlier content.
+    /// § 6.16.3 cancellation semantics — the same-content rule carries no cancel
+    /// exception, so a unit re-signaled after a cancel is still compared against
+    /// the earlier content.
     hdr_baselines: Vec<HdrBaselineRecord>,
     /// For each extended layer, the temporal unit of its most recent random
     /// access point (AV2 § 7.3.8.11: the content interpretation parameters are
@@ -548,10 +539,6 @@ impl ValidatorContext {
         if is_frame_bearing(obu.header.obu_type) {
             self.reset_coded_frame_window();
         }
-        if is_frame_bearing(obu.header.obu_type) {
-            self.metadata.expire_no_persistence();
-        }
-
         let role = self.seg_role_for(obu, first_picture_in_tu);
         let boundary = self.frame_unit.observe(obu, role, report);
 

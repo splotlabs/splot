@@ -872,7 +872,7 @@ fn checked_byte_span(
     len: u64,
     name: DecodeLimitName,
 ) -> Result<ByteSpan, DecodeLimitError> {
-    let _end = checked_byte_offset(start, len, name)?;
+    checked_byte_offset(start, len, name)?;
     Ok(ByteSpan::new(start, len))
 }
 

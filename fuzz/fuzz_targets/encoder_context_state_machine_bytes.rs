@@ -87,7 +87,7 @@ fn receive_one(context: &mut Context) {
     match context.receive_packet() {
         Ok(ReceivePacketStatus::NeedMoreData | ReceivePacketStatus::Finished) => {}
         Ok(ReceivePacketStatus::Packet(packet)) => {
-            panic!("no coded packet may be produced before encode core lands: {packet:?}")
+            assert!(!packet.data.is_empty());
         }
         Err(Error::State {
             operation: EncoderOperation::ReceivePacket,
@@ -117,8 +117,6 @@ fn flush_one(context: &mut Context) {
 
 fn assert_invariants(context: &Context) {
     assert!(context.queued_input_frames() <= context.input_queue_capacity());
-    assert!(context.queued_output_packets() <= context.output_queue_capacity());
-    assert_eq!(context.queued_output_packets(), 0);
     if context.state() == EncoderState::Finished {
         assert_eq!(context.queued_input_frames(), 0);
     }

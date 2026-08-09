@@ -498,7 +498,7 @@ mod tests {
     use crate::pipeline::frame_lifecycle::PipelineDecodedFrame;
     use crate::pipeline::inflight::PipelineFrameSlot;
     use crate::pipeline::output_effects::FrameOutputEffects;
-    use crate::prediction::inter::MotionFieldHandle;
+    use crate::prediction::inter::{MotionFieldHandle, MotionFieldLayout};
     use std::sync::Arc;
 
     use splot_core::headers::metadata::{
@@ -507,9 +507,12 @@ mod tests {
     use splot_recon::SharedFrame;
 
     /// One settled output frame, `width` wide so `emit` can tell frames apart.
-    fn settled_frame(width: usize, output_effects: FrameOutputEffects) -> PipelineFrame {
+    fn settled_frame(
+        width: usize,
+        output_effects: FrameOutputEffects,
+    ) -> core::result::Result<PipelineFrame, &'static str> {
         let frame = crate::test_support::decoded_frame(width, 4);
-        PipelineFrame {
+        Ok(PipelineFrame {
             frame: PipelineFrameSlot::completed(PipelineDecodedFrame::Eight(SharedFrame::new(
                 frame,
             ))),
@@ -518,7 +521,9 @@ mod tests {
             frame_cdfs: crate::prediction::inter::FrameCdfHandle::settled(Arc::new(
                 FrameCdfSubset::from_defaults(),
             )),
-            motion_field: MotionFieldHandle::pending(),
+            motion_field: MotionFieldHandle::pending_with_layout(
+                MotionFieldLayout::new(1, 1, 16).ok_or("valid motion-field layout")?,
+            ),
             ccso_params: None,
             ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
             segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
@@ -527,7 +532,7 @@ mod tests {
             )),
             frame_rate_numerator: 1,
             frame_rate_denominator: 1,
-        }
+        })
     }
 
     /// Attached metadata AV2 § 6.16.1 refuses: the payload is not the one the
@@ -546,11 +551,12 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_frame_does_not_suppress_the_frames_scheduled_ahead_of_it() {
+    fn a_refused_frame_does_not_suppress_the_frames_scheduled_ahead_of_it()
+    -> core::result::Result<(), &'static str> {
         let options = DecodeOptions::default();
         let frames = vec![
-            Some(settled_frame(8, FrameOutputEffects::empty())),
-            Some(settled_frame(16, refused_output_effects())),
+            Some(settled_frame(8, FrameOutputEffects::empty())?),
+            Some(settled_frame(16, refused_output_effects())?),
         ];
         let mut scheduler = OutputScheduler::new(2);
         scheduler.emitted = vec![0, 1];
@@ -575,6 +581,7 @@ mod tests {
             vec![8],
             "the frame scheduled first reached the caller before the refusal"
         );
+        Ok(())
     }
 
     #[test]

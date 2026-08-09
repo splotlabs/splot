@@ -589,7 +589,7 @@ fn parse_metadata_group_unit(
 
     let header_extension_len = header_remaining as usize;
     for _ in 0..header_extension_len {
-        let _ = reader.read_bits_u8(8)?;
+        reader.read_bits_u8(8)?;
     }
 
     let unit = match muh_payload_size {

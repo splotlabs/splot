@@ -270,7 +270,7 @@ pub(crate) struct InterBlockFacts {
 
 #[allow(clippy::too_many_arguments)]
 fn derive_inter_block_setup<T: ReconSample>(
-    work_units: &mut [DecodeTileWorkUnit<'_>],
+    work_units: &[DecodeTileWorkUnit<'_>],
     frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
     core: &FrameHeaderCore,
@@ -1052,18 +1052,6 @@ fn current_residual_lossless(work_unit: &DecodeTileWorkUnit<'_>) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-pub(crate) fn prepare_intrabc_leaf_entry(
-    intrabc_state: &mut TileIntrabcPreludeState,
-    mi_row: usize,
-    mi_col: usize,
-    is_chroma_part: bool,
-) {
-    if !is_chroma_part {
-        intrabc_state.prepare_for_block(mi_row, mi_col);
-    }
-}
-
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn decode_block<T: ReconSample>(
     work_unit: &mut DecodeTileWorkUnit<'_>,
@@ -1250,13 +1238,10 @@ fn decode_block<T: ReconSample>(
         .get()
     };
     if is_inter == 0 {
-        let mut prelude = IntrabcBlockPrelude::from_use_skip(
-            IntrabcUseSkip {
-                use_intrabc: false,
-                skip_flag: false,
-            },
-            None,
-        );
+        let mut prelude = IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+            use_intrabc: false,
+            skip_flag: false,
+        });
         let mut pending_intrabc = None;
         if !frontier.is_chroma_part() {
             let use_skip = read_intrabc_use_and_skip(
@@ -1314,11 +1299,11 @@ fn decode_block<T: ReconSample>(
                     tile_offset,
                 )?;
                 let spatial = intrabc_state.capture_spatial_intrabc_probes(geometry);
-                prelude = IntrabcBlockPrelude::from_use_skip(use_skip, None)
-                    .with_morph_pred(info.morph_pred());
+                prelude =
+                    IntrabcBlockPrelude::from_use_skip(use_skip).with_morph_pred(info.morph_pred());
                 pending_intrabc = Some((info, spatial));
             } else {
-                prelude = IntrabcBlockPrelude::from_use_skip(use_skip, None);
+                prelude = IntrabcBlockPrelude::from_use_skip(use_skip);
             }
         }
         if !frontier.is_chroma_part() {
@@ -1844,13 +1829,10 @@ fn decode_block<T: ReconSample>(
             frontier.c,
             n4w,
             n4h,
-            IntrabcBlockPrelude::from_use_skip(
-                IntrabcUseSkip {
-                    use_intrabc: false,
-                    skip_flag: skip == 1,
-                },
-                None,
-            )
+            IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+                use_intrabc: false,
+                skip_flag: skip == 1,
+            })
             .mark_inter(),
             tile_offset,
         )?;
@@ -2123,13 +2105,10 @@ fn decode_block<T: ReconSample>(
         frontier.c,
         n4w,
         n4h,
-        IntrabcBlockPrelude::from_use_skip(
-            IntrabcUseSkip {
-                use_intrabc: false,
-                skip_flag: skip == 1,
-            },
-            None,
-        )
+        IntrabcBlockPrelude::from_use_skip(IntrabcUseSkip {
+            use_intrabc: false,
+            skip_flag: skip == 1,
+        })
         .mark_inter(),
         tile_offset,
     )?;

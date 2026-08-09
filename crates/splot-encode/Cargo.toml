@@ -3,7 +3,7 @@
 
 [package]
 name = "splot-encode"
-description = "API placeholder for the future AV2 encoder in the splot toolkit."
+description = "Limited AV2 encoder API and supported packet emitters for the splot toolkit."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -19,5 +19,4 @@ workspace = true
 splot-core.workspace = true
 splot-parallel.workspace = true
 splot-recon.workspace = true
-splot-tables.workspace = true
 thiserror.workspace = true

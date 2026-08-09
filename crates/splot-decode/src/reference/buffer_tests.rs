@@ -35,7 +35,10 @@ fn key_update() -> FrameRefUpdate {
         segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
             crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap(),
         )),
-        motion_field: crate::prediction::inter::MotionFieldHandle::pending(),
+        motion_field: crate::prediction::inter::MotionFieldHandle::pending_with_layout(
+            crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
+                .expect("valid motion-field layout"),
+        ),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -68,7 +71,10 @@ fn inter_update() -> FrameRefUpdate {
         segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
             crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap(),
         )),
-        motion_field: crate::prediction::inter::MotionFieldHandle::pending(),
+        motion_field: crate::prediction::inter::MotionFieldHandle::pending_with_layout(
+            crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
+                .expect("valid motion-field layout"),
+        ),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -102,7 +108,10 @@ fn pipeline_frame(width: usize, height: usize) -> PipelineFrame {
         frame_cdfs: crate::prediction::inter::FrameCdfHandle::settled(Arc::new(
             crate::bitstream::tile_payload::FrameCdfSubset::from_defaults(),
         )),
-        motion_field: crate::prediction::inter::MotionFieldHandle::pending(),
+        motion_field: crate::prediction::inter::MotionFieldHandle::pending_with_layout(
+            crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
+                .expect("valid motion-field layout"),
+        ),
         ccso_params: None,
         ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
         segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(

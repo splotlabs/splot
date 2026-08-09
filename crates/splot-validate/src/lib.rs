@@ -24,7 +24,6 @@ mod celu;
 mod context;
 mod error_location;
 mod frame_unit;
-mod metadata_lifetime;
 mod reference_state;
 
 pub use diagnostic::{Diagnostic, Severity, ValidationReport};

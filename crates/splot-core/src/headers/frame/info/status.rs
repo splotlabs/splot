@@ -42,20 +42,17 @@ pub enum FrameHeaderParseMode {
 /// - **Bounded coverage stop / complete parse** — the parser stopped at a point whose
 ///   following syntax it does NOT fully model (unsupported coverage), or it completed,
 ///   so an early stop is *not* evidence of a truncated payload and must stay silent:
-///   [`Self::ActivationFieldsOnly`], [`Self::CoreFieldsOnly`],
-///   [`Self::ShowExistingFrameComplete`], [`Self::IntraHeaderComplete`],
-///   [`Self::StoppedBeforeLoopRestorationParams`], [`Self::StoppedBeforeReadTxMode`],
-///   [`Self::StoppedBeforeWienerNsFilter`], and [`Self::UnsupportedUntilFeature`].
+///   [`Self::ActivationFieldsOnly`], [`Self::ShowExistingFrameComplete`],
+///   [`Self::IntraHeaderComplete`], [`Self::InterHeaderComplete`], and
+///   [`Self::UnsupportedUntilFeature`].
 ///
 /// The partition is exact: every status producer in this module either reaches a
 /// modeled-region EOF (the four `StoppedInside*` statuses) or sets a coverage/complete
-/// status. `CoreFieldsOnly` is deliberately on the silent side — it is reserved for an
-/// ordinary bounded stop, never a truncation (the SEF film-grain EOF, which previously
-/// reused it, now reports [`Self::StoppedInsideShowExistingFrame`]). The honest distinction
-/// for the inter / bridge control region (§ 5.18.2): the region IS fully modeled up to its
-/// coverage stops ([`InterStop`](crate::headers::frame::inter::InterStop)), so the parser
-/// can only return `Ok` at one of those stops or `Err(UnexpectedEof)` while reading a
-/// modeled field — the EOF case is the only truncation, recorded as
+/// status. The honest distinction for the inter / bridge control region (§ 5.18.2): the
+/// region IS fully modeled up to its coverage stops
+/// ([`InterStop`](crate::headers::frame::inter::InterStop)), so the parser can only return
+/// `Ok` at one of those stops or `Err(UnexpectedEof)` while reading a modeled field — the
+/// EOF case is the only truncation, recorded as
 /// [`Self::StoppedInsideInterControl`], while a clean coverage stop stays on the silent side
 /// (`UnsupportedUntilFeature`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,15 +62,6 @@ pub enum FrameHeaderParseStatus {
     /// [`FrameHeaderParseMode::ActivationPrefix`], or core mode lacked the sequence
     /// state (a fully parsed active sequence header) needed to continue.
     ActivationFieldsOnly,
-    /// Core control fields were read and the parser stopped at a bounded point that is
-    /// not the filtering/quantization/segmentation cluster.
-    ///
-    /// Reserved: superseded by [`Self::StoppedInsideShowExistingFrame`] for its last
-    /// in-tree producer (the show-existing-frame `film_grain_config()` truncation);
-    /// this variant is retained for completeness and out-of-tree compatibility but is
-    /// no longer produced by the in-tree parser. It stays on the silent side of the
-    /// truncation partition (an ordinary bounded stop, never a truncation).
-    CoreFieldsOnly,
     /// The show-existing-frame path was consumed in full: `frame_to_show_map_idx`,
     /// `derive_sef_order_hint`, the optional `sef_order_hint`, and the terminal
     /// `film_grain_config()` (§ 5.18.10.1, mirror :4186) all parsed, after which the SEF
@@ -111,44 +99,6 @@ pub enum FrameHeaderParseStatus {
     /// shared-tail model and the BRU/bridge return arms stay an honest
     /// [`Self::UnsupportedUntilFeature`] coverage stop.
     InterHeaderComplete,
-    /// An intra frame's control region was read through `disable_cdf_update`,
-    /// `tile_info()` (§ 5.18.7.2), `quantization_params()` (§ 5.18.6.1),
-    /// `segmentation_params()` (§ 5.18.7.1), `setup_qm_params()` (§ 5.18.6.2),
-    /// `delta_q_params()` (§ 5.18.7.8), the § 5.18.2 lossless/`allow_tcq`/
-    /// `allow_parity_hiding` tail, and the loop-filter cluster
-    /// `deblocking_filter_params()` (§ 5.18.5.2), `gdf_params()` (§ 5.18.7.9), and
-    /// `cdef_params()` (§ 5.18.7.10); the parser stopped before `lr_params()`
-    /// (loop restoration, § 5.18.7.11).
-    ///
-    /// Reserved: superseded by [`Self::StoppedBeforeReadTxMode`] once `lr_params()` and
-    /// `ccso_params()` parse on the intra path. The current intra path advances past both
-    /// and reports the next stop; this variant is retained for completeness and
-    /// out-of-tree compatibility but is no longer produced by the in-tree parser.
-    StoppedBeforeLoopRestorationParams,
-    /// An intra frame's control region was read in full through `cdef_params()`,
-    /// then `lr_params()` (loop restoration, § 5.18.7.11) and `ccso_params()`
-    /// (§ 5.18.7.12); the parser stopped before `read_tx_mode()` (§ 5.18.8.1), the next
-    /// § 5.18.2 tail structure (mirror :5307).
-    ///
-    /// Reserved: superseded by [`Self::IntraHeaderComplete`] (and
-    /// [`Self::StoppedInsideIntraTail`] on truncation) once the § 5.18.2 intra tail
-    /// parses to completion. The current intra path advances past `read_tx_mode()`;
-    /// this variant is retained for completeness and out-of-tree compatibility but is
-    /// no longer produced by the in-tree parser.
-    StoppedBeforeReadTxMode,
-    /// Reserved for an unsupported loop-restoration branch discovered before `lr_params()`
-    /// can be represented completely. The fixed-coded frame-level
-    /// `read_wienerns_filter(plane, 0, 0, 1)` path (mirror :7377; § 5.20.10.6) is now
-    /// modeled and stored on
-    /// [`LrPlaneParams::frame_filter_bank`](crate::headers::frame::LrPlaneParams::frame_filter_bank),
-    /// so this status is
-    /// not produced for that path by the in-tree parser. It remains a non-truncation coverage
-    /// stop for out-of-tree compatibility and future unsupported Wiener branches.
-    /// `feature_id` is the implementation-matrix row for the missing decode.
-    StoppedBeforeWienerNsFilter {
-        /// Implementation-matrix Feature ID for the unsupported `read_wienerns_filter()` branch.
-        feature_id: &'static str,
-    },
     /// An intra frame's control region was read in full through the § 5.18.2
     /// lossless/`allow_tcq`/`allow_parity_hiding` tail, but the payload ran out
     /// **inside** the loop-filter cluster `deblocking_filter_params()` (§ 5.18.5.2),
@@ -181,8 +131,7 @@ pub enum FrameHeaderParseStatus {
     /// [`Self::StoppedInsideIntraTail`] / [`Self::StoppedInsideFilterParams`], the
     /// truncation is a payload-bounds condition, not a structural violation, so it is
     /// reported through this status rather than as a hard parse error — but it is on the
-    /// truncated-in-modeled-region side of the partition, distinct from the ordinary
-    /// bounded [`Self::CoreFieldsOnly`] stop it previously (incorrectly) shared.
+    /// truncated-in-modeled-region side of the partition.
     StoppedInsideShowExistingFrame,
     /// A non-intra frame's `frame_header_info()` reached the § 5.18.2 inter / switch / TIP /
     /// bridge control region (after `frame_size_override_flag` / `order_hint`, or after the
@@ -216,13 +165,9 @@ impl FrameHeaderParseStatus {
     pub const fn label(self) -> &'static str {
         match self {
             Self::ActivationFieldsOnly => "activation_fields_only",
-            Self::CoreFieldsOnly => "core_fields_only",
             Self::ShowExistingFrameComplete => "show_existing_frame_complete",
             Self::IntraHeaderComplete => "intra_header_complete",
             Self::InterHeaderComplete => "inter_header_complete",
-            Self::StoppedBeforeLoopRestorationParams => "stopped_before_loop_restoration_params",
-            Self::StoppedBeforeReadTxMode => "stopped_before_read_tx_mode",
-            Self::StoppedBeforeWienerNsFilter { .. } => "stopped_before_wienerns_filter",
             Self::StoppedInsideFilterParams => "stopped_inside_filter_params",
             Self::StoppedInsideIntraTail => "stopped_inside_intra_tail",
             Self::StoppedInsideShowExistingFrame => "stopped_inside_show_existing_frame",
@@ -239,12 +184,11 @@ impl FrameHeaderParseStatus {
     /// [`Self::StoppedInsideShowExistingFrame`], and [`Self::StoppedInsideInterControl`].
     ///
     /// Coverage stops and complete parses return `false`: an early stop whose following
-    /// syntax is unmodeled ([`Self::StoppedBeforeWienerNsFilter`],
-    /// [`Self::UnsupportedUntilFeature`], [`Self::CoreFieldsOnly`], the reserved
-    /// `StoppedBefore*` variants) is not evidence of a truncated payload, and a complete
-    /// header ([`Self::IntraHeaderComplete`], [`Self::ShowExistingFrameComplete`]) was not
-    /// truncated at all. The validator fires its truncated-frame-header diagnostic on
-    /// exactly the `true` set.
+    /// syntax is unmodeled ([`Self::UnsupportedUntilFeature`]) is not evidence of a
+    /// truncated payload, and a complete header ([`Self::IntraHeaderComplete`],
+    /// [`Self::InterHeaderComplete`], [`Self::ShowExistingFrameComplete`]) was not truncated
+    /// at all. The validator fires its truncated-frame-header diagnostic on exactly the
+    /// `true` set.
     #[must_use]
     pub const fn is_truncated_in_modeled_region(self) -> bool {
         matches!(

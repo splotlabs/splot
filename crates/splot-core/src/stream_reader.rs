@@ -334,7 +334,7 @@ impl<R: Read> TemporalUnitReader<R> {
             if got == IVF_HEADER_SIZE_BYTES {
                 let header_len = usize::from(u16::from_le_bytes([self.buf[6], self.buf[7]]));
                 if header_len > IVF_HEADER_SIZE_BYTES {
-                    let _ = self.read_into_buf(header_len - IVF_HEADER_SIZE_BYTES)?;
+                    self.read_into_buf(header_len - IVF_HEADER_SIZE_BYTES)?;
                 }
             }
             match parse_ivf_header(&self.buf) {

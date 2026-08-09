@@ -37,7 +37,7 @@
 use std::sync::Arc;
 
 use crate::bitio::BitReader;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::headers::frame::size::ceil_log2;
 use crate::headers::sequence::{ChromaFormatIdc, SuperblockSize};
 
@@ -297,55 +297,12 @@ pub struct LrParams {
     pub loop_restoration_size: [u32; 3],
 }
 
-/// The partially-parsed `lr_params()` facts committed before a reserved
-/// [`LrParseOutcome::StoppedBeforeWienerNsFilter`] stop (AV2 v1.0.0 § 5.18.7.11).
-///
-/// The fixed-coded frame-level `read_wienerns_filter()` bank is now modeled as part of a
-/// complete [`LrParams`] value. This type remains separate for out-of-tree compatibility
-/// and for future unsupported Wiener branches that may be detected only after the
-/// `lr_params()` prefix has been consumed.
-///
-/// This is deliberately a *distinct* type from [`LrParams`]: a complete parse yields
-/// `LrParams`, a stopped parse yields `LrPartialParams`. The two are never interchangeable,
-/// so no consumer can mistake a partial parse for a complete one. The fields mirror the
-/// completed `LrParams` fields up to the stop point.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct LrPartialParams {
-    /// `UsesLr`: any plane uses loop restoration (derived before the stop).
-    pub uses_lr: bool,
-    /// Per-plane parsed state committed before the stop (`NumPlanes` entries).
-    pub planes: Vec<LrPlaneParams>,
-    /// `LoopRestorationSize[0..3]` derived per plane (the size-signaling flags are read
-    /// before the Wiener loop, so this is exact).
-    pub loop_restoration_size: [u32; 3],
-}
-
-/// The result of attempting to parse `lr_params()` on the intra path.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LrParseOutcome {
-    /// `lr_params()` parsed to completion.
-    Parsed(LrParams),
-    /// Reserved for a future unsupported `read_wienerns_filter()` branch whose presence is
-    /// known before its bits can be safely modeled. The fixed-coded frame-level path
-    /// (`readFrameFilters == 1`) is parsed to completion and stored on
-    /// [`LrPlaneParams::frame_filter_bank`].
-    StoppedBeforeWienerNsFilter {
-        /// Implementation-matrix Feature ID for the blocking `read_wienerns_filter()` branch.
-        feature_id: &'static str,
-        /// The LR facts parsed before the stop (per-plane tool/frame_filters_on/classes,
-        /// `UsesLr`, and the derived `LoopRestorationSize`).
-        partial: LrPartialParams,
-    },
-}
-
 /// Parses `lr_params()` (AV2 v1.0.0 § 5.18.7.11) on the intra path.
 ///
 /// `coded_lossless` is the frame `CodedLossless`; `num_planes` is `NumPlanes`; `view`
 /// carries the § 5.4.10 restoration-tool flags; `geometry` is the frame `SbSize` and
-/// chroma subsampling; `base_q_idx` is the frame `base_q_idx` (read only to mirror the
-/// spec's `get_filter_set_index` derivation, which signals no bits). On the intra path
-/// `FrameIsIntra` so `numRefFrames == 0`: the temporal-prediction arm and its
+/// chroma subsampling. On the intra path `FrameIsIntra` so `numRefFrames == 0`: the
+/// temporal-prediction arm and its
 /// `temporal_pred_flag` / `rst_ref_pic_idx` reads are dead.
 ///
 /// When a plane signals a frame-level Wiener filter, this consumes the fixed-coded
@@ -361,15 +318,13 @@ pub fn parse_lr_params(
     num_planes: u8,
     view: &CoreSeqRestorationView,
     geometry: LrGeometry,
-    base_q_idx: u32,
-) -> Result<LrParseOutcome> {
+) -> Result<LrParams> {
     parse_lr_params_with_references(
         reader,
         coded_lossless,
         num_planes,
         *view,
         geometry,
-        base_q_idx,
         0,
         [0; 3],
         &[Vec::new(), Vec::new(), Vec::new()],
@@ -395,19 +350,17 @@ pub fn parse_lr_params_for_inter(
     num_planes: u8,
     view: CoreSeqRestorationView,
     geometry: LrGeometry,
-    base_q_idx: u32,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
     reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
     temporal_references: LrTemporalReferenceView<'_>,
-) -> Result<LrParseOutcome> {
+) -> Result<LrParams> {
     parse_lr_params_with_references(
         reader,
         coded_lossless,
         num_planes,
         view,
         geometry,
-        base_q_idx,
         num_ref_frames,
         reference_filter_counts,
         reference_filter_taps,
@@ -422,19 +375,17 @@ fn parse_lr_params_with_references(
     num_planes: u8,
     view: CoreSeqRestorationView,
     geometry: LrGeometry,
-    base_q_idx: u32,
     num_ref_frames: u32,
     reference_filter_counts: [usize; 3],
     reference_filter_taps: &[Vec<Option<&[i16]>>; 3],
     temporal_references: LrTemporalReferenceView<'_>,
-) -> Result<LrParseOutcome> {
-    let _ = base_q_idx; // `get_filter_set_index(base_q_idx)` signals no bits (SubclassLookup only).
+) -> Result<LrParams> {
     if coded_lossless || !view.enable_restoration {
-        return Ok(LrParseOutcome::Parsed(LrParams {
+        return Ok(LrParams {
             uses_lr: false,
             planes: Vec::new(),
             loop_restoration_size: default_restoration_size(geometry),
-        }));
+        });
     }
 
     let mut uses_luma_lr = false;
@@ -445,7 +396,7 @@ fn parse_lr_params_with_references(
 
     for plane in 0..usize::from(num_planes) {
         let is_chroma = plane > 0;
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
+        let (index_to_tool, n) = lr_plane_tool_table(view, is_chroma);
         let tool_index = reader.read_ns(n)?;
         let tool = index_to_tool.get(tool_index as usize).copied().unwrap_or(0);
         let restoration_type = FrameRestorationType::from_tool(tool);
@@ -530,7 +481,6 @@ fn parse_lr_params_with_references(
 
     loop_restoration_size[2] = loop_restoration_size[1];
 
-    let mut unsupported_filter = None;
     for (plane, plane_params) in planes.iter_mut().enumerate() {
         if !plane_params.frame_filters_on {
             continue;
@@ -548,40 +498,22 @@ fn parse_lr_params_with_references(
             let ref_taps = reference_filter_taps
                 .get(plane)
                 .map_or(&[][..], Vec::as_slice);
-            match parse_frame_wiener_ns_filter(
+            plane_params.frame_filter_bank = Some(parse_frame_wiener_ns_filter(
                 reader,
                 plane,
                 classes,
                 num_ref_filters,
                 ref_taps,
                 view,
-            ) {
-                Ok(bank) => plane_params.frame_filter_bank = Some(bank),
-                Err(Error::Unimplemented { feature }) => {
-                    unsupported_filter = Some(feature);
-                    break;
-                }
-                Err(error) => return Err(error),
-            }
+            )?);
         }
     }
 
-    if let Some(feature_id) = unsupported_filter {
-        return Ok(LrParseOutcome::StoppedBeforeWienerNsFilter {
-            feature_id,
-            partial: LrPartialParams {
-                uses_lr,
-                planes,
-                loop_restoration_size,
-            },
-        });
-    }
-
-    Ok(LrParseOutcome::Parsed(LrParams {
+    Ok(LrParams {
         uses_lr,
         planes,
         loop_restoration_size,
-    }))
+    })
 }
 
 fn copy_temporal_frame_filter(
@@ -670,15 +602,15 @@ fn read_lr_size_shift(reader: &mut BitReader<'_>, sb_size: SuperblockSize) -> Re
 /// :7295-7312): index `0` is `RESTORE_NONE`; for `i in 1..RESTORE_SWITCHABLE_TYPES` the tool
 /// `i` is appended when `lr_tools_disable[isChroma][i]` is `0` (incrementing `toolsCount`);
 /// then `indexToTool[toolsCount] = RESTORE_SWITCHABLE`. Returns the filled
-/// `[RESTORE_SWITCHABLE_TYPES + 1]` table, `toolsCount`, and `n = toolsCount + allowSwitchable`
-/// (the `tool_index ns(n)` range, where `allowSwitchable = toolsCount > 2`).
+/// `[RESTORE_SWITCHABLE_TYPES + 1]` table and `n = toolsCount + allowSwitchable` (the
+/// `tool_index ns(n)` range, where `allowSwitchable = toolsCount > 2`).
 ///
 /// Shared by [`parse_lr_params`] (the reader) and the § 5.18.7.11 writer
 /// ([`crate::write::frame_restoration`]) so the table never drifts between the two.
 pub(crate) fn lr_plane_tool_table(
     view: CoreSeqRestorationView,
     is_chroma: bool,
-) -> ([u8; RESTORE_SWITCHABLE_TYPES + 1], usize, u32) {
+) -> ([u8; RESTORE_SWITCHABLE_TYPES + 1], u32) {
     let mut index_to_tool = [0u8; RESTORE_SWITCHABLE_TYPES + 1];
     let mut tools_count = 1usize; // indexToTool[0] = RESTORE_NONE.
     for i in 1..RESTORE_SWITCHABLE_TYPES {
@@ -690,7 +622,7 @@ pub(crate) fn lr_plane_tool_table(
     index_to_tool[tools_count] = RESTORE_SWITCHABLE_TYPES as u8;
     let allow_switchable = tools_count > 2;
     let n = tools_count as u32 + u32::from(allow_switchable);
-    (index_to_tool, tools_count, n)
+    (index_to_tool, n)
 }
 
 /// `LoopRestorationSize` when restoration is disabled or before any signalling
@@ -827,7 +759,7 @@ fn parse_ccso_params_with_references(
     }
 
     let mut planes: Vec<CcsoPlaneParams> = Vec::with_capacity(usize::from(num_planes));
-    for _plane in 0..usize::from(num_planes) {
+    for _ in 0..usize::from(num_planes) {
         let ccso_planes = reader.read_flag()?;
         let mut plane_params = CcsoPlaneParams {
             ccso_planes,
@@ -892,12 +824,8 @@ fn parse_ccso_params_with_references(
 
             let offset_count = (max_edge_interval * max_edge_interval * max_band) as usize;
             let mut ccso_offset_idx = Vec::with_capacity(offset_count);
-            for _d0 in 0..max_edge_interval {
-                for _d1 in 0..max_edge_interval {
-                    for _band in 0..max_band {
-                        ccso_offset_idx.push(read_tu(reader, 7)? as u8);
-                    }
-                }
+            for _ in 0..offset_count {
+                ccso_offset_idx.push(read_tu(reader, 7)? as u8);
             }
 
             plane_params.ccso_bo_only = Some(ccso_bo_only);
@@ -964,17 +892,10 @@ mod tests {
     #[test]
     fn lr_coded_lossless_reads_no_bits() {
         let mut r = reader(&[]);
-        let outcome =
-            parse_lr_params(&mut r, true, 3, &restoration_enabled(), geom_128_420(), 100).unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert!(!params.uses_lr);
-                assert!(params.planes.is_empty());
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        }
+        let params =
+            parse_lr_params(&mut r, true, 3, &restoration_enabled(), geom_128_420()).unwrap();
+        assert!(!params.uses_lr);
+        assert!(params.planes.is_empty());
         assert_eq!(r.consumed_bits(), 0);
     }
 
@@ -983,8 +904,8 @@ mod tests {
         let mut view = restoration_enabled();
         view.enable_restoration = false;
         let mut r = reader(&[]);
-        let outcome = parse_lr_params(&mut r, false, 3, &view, geom_128_420(), 100).unwrap();
-        assert!(matches!(outcome, LrParseOutcome::Parsed(p) if !p.uses_lr));
+        let params = parse_lr_params(&mut r, false, 3, &view, geom_128_420()).unwrap();
+        assert!(!params.uses_lr);
         assert_eq!(r.consumed_bits(), 0);
     }
 
@@ -996,29 +917,15 @@ mod tests {
         bits.ns(0, 2); // plane 2 tool_index ns(2) == 0 -> RESTORE_NONE
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params(
-            &mut r,
-            false,
-            3,
-            &restoration_enabled(),
-            geom_128_420(),
-            100,
-        )
-        .unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert!(!params.uses_lr);
-                assert_eq!(params.planes.len(), 3);
-                for plane in &params.planes {
-                    assert_eq!(plane.restoration_type, FrameRestorationType::None);
-                    assert!(!plane.frame_filters_on);
-                }
-                assert_eq!(params.loop_restoration_size, [64, 32, 32]);
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
+        let params =
+            parse_lr_params(&mut r, false, 3, &restoration_enabled(), geom_128_420()).unwrap();
+        assert!(!params.uses_lr);
+        assert_eq!(params.planes.len(), 3);
+        for plane in &params.planes {
+            assert_eq!(plane.restoration_type, FrameRestorationType::None);
+            assert!(!plane.frame_filters_on);
         }
+        assert_eq!(params.loop_restoration_size, [64, 32, 32]);
     }
 
     #[test]
@@ -1030,29 +937,15 @@ mod tests {
         bits.bit(1);
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params(
-            &mut r,
-            false,
-            3,
-            &restoration_enabled(),
-            geom_128_420(),
-            100,
-        )
-        .unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert!(params.uses_lr);
-                assert_eq!(
-                    params.planes[0].restoration_type,
-                    FrameRestorationType::PcWiener
-                );
-                assert!(!params.planes[0].frame_filters_on);
-                assert_eq!(params.loop_restoration_size[0], 256);
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        }
+        let params =
+            parse_lr_params(&mut r, false, 3, &restoration_enabled(), geom_128_420()).unwrap();
+        assert!(params.uses_lr);
+        assert_eq!(
+            params.planes[0].restoration_type,
+            FrameRestorationType::PcWiener
+        );
+        assert!(!params.planes[0].frame_filters_on);
+        assert_eq!(params.loop_restoration_size[0], 256);
     }
 
     #[test]
@@ -1069,39 +962,31 @@ mod tests {
         bits.bit(1); // merged[1]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params(
+        let params = parse_lr_params(
             &mut r,
             false,
             3,
             &restoration_enabled_without_luma_pc(),
             geom_128_420(),
-            100,
         )
         .unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert_eq!(
-                    params.planes[0].restoration_type,
-                    FrameRestorationType::WienerNonsep
-                );
-                assert!(params.planes[0].frame_filters_on);
-                assert_eq!(params.planes[0].num_filter_classes, Some(2));
-                assert!(params.uses_lr);
-                assert_eq!(params.loop_restoration_size[0], 256);
-                let bank = params.planes[0]
-                    .frame_filter_bank
-                    .as_ref()
-                    .expect("frame_filters_on carries the parsed bank");
-                assert_eq!(bank.classes.len(), 2);
-                assert_eq!(bank.classes[0].match_index, 0);
-                assert_eq!(bank.classes[1].match_index, 1);
-                assert!(bank.classes.iter().all(|class| class.merged));
-                assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        }
+        assert_eq!(
+            params.planes[0].restoration_type,
+            FrameRestorationType::WienerNonsep
+        );
+        assert!(params.planes[0].frame_filters_on);
+        assert_eq!(params.planes[0].num_filter_classes, Some(2));
+        assert!(params.uses_lr);
+        assert_eq!(params.loop_restoration_size[0], 256);
+        let bank = params.planes[0]
+            .frame_filter_bank
+            .as_ref()
+            .expect("frame_filters_on carries the parsed bank");
+        assert_eq!(bank.classes.len(), 2);
+        assert_eq!(bank.classes[0].match_index, 0);
+        assert_eq!(bank.classes[1].match_index, 1);
+        assert!(bank.classes.iter().all(|class| class.merged));
+        assert!(bank.classes.iter().all(|class| class.coeffs == vec![0; 16]));
     }
 
     #[test]
@@ -1119,33 +1004,25 @@ mod tests {
         bits.bit(1); // merged[1]
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params_for_inter(
+        let params = parse_lr_params_for_inter(
             &mut r,
             false,
             3,
             restoration_enabled_without_luma_pc(),
             geom_128_420(),
-            100,
             1,
             [0; 3],
             &[Vec::new(), Vec::new(), Vec::new()],
             LrTemporalReferenceView::unknown(&[0]),
         )
         .unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert!(params.planes[0].frame_filters_on);
-                assert_eq!(params.planes[0].num_filter_classes, Some(2));
-                assert!(params.planes[0].frame_filter_bank.is_some());
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        }
+        assert!(params.planes[0].frame_filters_on);
+        assert_eq!(params.planes[0].num_filter_classes, Some(2));
+        assert!(params.planes[0].frame_filter_bank.is_some());
     }
 
     #[test]
-    fn lr_inter_missing_reference_taps_stops_at_capability_frontier() {
+    fn lr_inter_missing_reference_taps_returns_typed_error() {
         let mut bits = Bits::default();
         bits.ns(1, 2); // plane 0 -> RESTORE_WIENER_NONSEP
         bits.bit(1); // frame_filters_on[0]
@@ -1157,30 +1034,24 @@ mod tests {
         bits.bit(1); // class 0 selects the retained reference filter
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params_for_inter(
+        let error = parse_lr_params_for_inter(
             &mut r,
             false,
             3,
             restoration_enabled_without_luma_pc(),
             geom_128_420(),
-            100,
             1,
             [1, 0, 0],
             &[vec![None], Vec::new(), Vec::new()],
             LrTemporalReferenceView::unknown(&[0]),
         )
-        .unwrap();
-        let LrParseOutcome::StoppedBeforeWienerNsFilter {
-            feature_id,
-            partial,
-        } = outcome
-        else {
-            panic!("missing reference taps must stop before Wiener-NS parsing");
-        };
-        assert_eq!(feature_id, "lr_temporal_reference_filter_match");
-        assert!(partial.uses_lr);
-        assert_eq!(partial.planes.len(), 3);
-        assert!(partial.planes[0].frame_filter_bank.is_none());
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::Error::Unimplemented {
+                feature: "lr_temporal_reference_filter_match"
+            }
+        ));
     }
 
     #[test]
@@ -1204,34 +1075,26 @@ mod tests {
                 Vec::new(),
             ])),
         ];
-        let outcome = parse_lr_params_for_inter(
+        let params = parse_lr_params_for_inter(
             &mut r,
             false,
             3,
             restoration_enabled_without_luma_pc(),
             geom_128_420(),
-            100,
             2,
             [0; 3],
             &[Vec::new(), Vec::new(), Vec::new()],
             LrTemporalReferenceView::new(&[0, 1], Some(&counts), Some(&taps)),
         )
         .unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert!(params.planes[0].frame_filters_on);
-                assert_eq!(params.planes[0].num_filter_classes, Some(2));
-                let bank = params.planes[0]
-                    .frame_filter_bank
-                    .as_ref()
-                    .expect("temporal reference coefficients are retained");
-                assert_eq!(bank.classes[0].coeffs, vec![3; 16]);
-                assert_eq!(bank.classes[1].coeffs, vec![7; 16]);
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        }
+        assert!(params.planes[0].frame_filters_on);
+        assert_eq!(params.planes[0].num_filter_classes, Some(2));
+        let bank = params.planes[0]
+            .frame_filter_bank
+            .as_ref()
+            .expect("temporal reference coefficients are retained");
+        assert_eq!(bank.classes[0].coeffs, vec![3; 16]);
+        assert_eq!(bank.classes[1].coeffs, vec![7; 16]);
     }
 
     #[test]
@@ -1267,14 +1130,7 @@ mod tests {
     fn lr_eof_mid_tool_index_is_structured_error() {
         let mut r = reader(&[]);
         assert!(matches!(
-            parse_lr_params(
-                &mut r,
-                false,
-                3,
-                &restoration_enabled(),
-                geom_128_420(),
-                100
-            ),
+            parse_lr_params(&mut r, false, 3, &restoration_enabled(), geom_128_420()),
             Err(crate::error::Error::UnexpectedEof { .. })
         ));
     }
@@ -1289,15 +1145,8 @@ mod tests {
         bits.bit(0); // lr_luma_use_half_size == 0; BLOCK_256X256 -> shift 0, no more flags
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params(&mut r, false, 3, &restoration_enabled(), geom, 100).unwrap();
-        match outcome {
-            LrParseOutcome::Parsed(params) => {
-                assert_eq!(params.loop_restoration_size[0], 512);
-            }
-            other @ LrParseOutcome::StoppedBeforeWienerNsFilter { .. } => {
-                panic!("expected Parsed, got {other:?}")
-            }
-        }
+        let params = parse_lr_params(&mut r, false, 3, &restoration_enabled(), geom).unwrap();
+        assert_eq!(params.loop_restoration_size[0], 512);
     }
 
     #[test]
@@ -1306,16 +1155,15 @@ mod tests {
         bits.ns(0, 4); // plane 0 -> NONE
         let data = bits.into_bytes();
         let mut r = reader(&data);
-        let outcome = parse_lr_params(
+        let params = parse_lr_params(
             &mut r,
             false,
             1,
             &restoration_enabled(),
             LrGeometry::new(SuperblockSize::Block128x128, ChromaFormatIdc::Monochrome),
-            100,
         )
         .unwrap();
-        assert!(matches!(outcome, LrParseOutcome::Parsed(p) if p.planes.len() == 1));
+        assert_eq!(params.planes.len(), 1);
     }
 
     fn ccso_enabled() -> CoreSeqCcsoView {
@@ -1580,7 +1428,6 @@ mod proptests {
             lr_uv_wiener_nonsep_disabled in any::<bool>(),
             sb_size in arbitrary_sb_size(),
             chroma in arbitrary_chroma(),
-            base_q_idx in any::<u32>(),
         ) {
             let view = CoreSeqRestorationView {
                 enable_restoration,
@@ -1591,11 +1438,11 @@ mod proptests {
             };
             let geometry = LrGeometry::new(sb_size, chroma);
             let mut reader = BitReader::new(&data, ByteOffset::new(0));
-            let _ = parse_lr_params(&mut reader, coded_lossless, num_planes, &view, geometry, base_q_idx);
+            let _ = parse_lr_params(&mut reader, coded_lossless, num_planes, &view, geometry);
         }
 
-        /// `ccso_params()` must never panic on arbitrary input and state. The offset triple
-        /// loop is bounded by f(2..=3) band bits, so it terminates without overflow.
+        /// `ccso_params()` must never panic on arbitrary input and state. The offset count is
+        /// bounded by the f(2..=3) band bits, so the read loop terminates without overflow.
         #[test]
         fn parse_ccso_never_panics(
             data in proptest::collection::vec(any::<u8>(), 0..256),

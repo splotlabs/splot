@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! `splot decode` — future reference-style decode / round-trip entry point.
+//! `splot decode` — experimental decoder for the currently supported AV2 subset.
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};

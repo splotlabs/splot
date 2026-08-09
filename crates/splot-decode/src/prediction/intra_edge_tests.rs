@@ -7,7 +7,7 @@ use super::*;
 
 #[test]
 fn grid_records_and_reads_cells() {
-    let mut grid = TileYSmoothGrid::new(4, 4).unwrap();
+    let mut grid = TileYSmoothGrid::new_for_tile(0..4, 0..4).unwrap();
     grid.record(1, 1, 2, 2, true);
     assert!(grid.at(1, 1));
     assert!(grid.at(2, 2));

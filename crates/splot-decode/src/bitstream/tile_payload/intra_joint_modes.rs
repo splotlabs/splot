@@ -287,15 +287,6 @@ pub(crate) struct LumaPalette {
 }
 
 impl LumaPalette {
-    #[cfg(test)]
-    pub(crate) fn new(size: u8, colors: [u16; PALETTE_MAX_SIZE]) -> Option<Self> {
-        let size_usize = usize::from(size);
-        if !(2..=PALETTE_MAX_SIZE).contains(&size_usize) {
-            return None;
-        }
-        Some(Self { size, colors })
-    }
-
     /// Builds a 2 through 8 color palette from a `TilePaletteYSizeCdf` symbol.
     pub(crate) fn from_size_symbol(size_symbol: Symbol, colors: [u16; PALETTE_MAX_SIZE]) -> Self {
         Self {
@@ -325,15 +316,6 @@ pub(crate) struct TileLumaPaletteState {
 }
 
 impl TileLumaPaletteState {
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size4: usize,
-    ) -> Result<Self, TileLumaPaletteStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols, sb_size4)
-    }
-
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
@@ -426,14 +408,6 @@ fn push_palette_cache(cache: &mut [u16; 2 * PALETTE_MAX_SIZE], len: &mut usize, 
 }
 
 impl TileIntraJointModeState {
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-    ) -> Result<Self, TileIntraJointModeStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols)
-    }
-
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
@@ -502,15 +476,6 @@ pub(crate) struct TileUsesMrlsState {
 }
 
 impl TileUsesMrlsState {
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size4: usize,
-    ) -> Result<Self, TileUsesMrlsStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols, sb_size4)
-    }
-
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
@@ -565,15 +530,6 @@ pub(crate) struct TileUseDipState {
 }
 
 impl TileUseDipState {
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size4: usize,
-    ) -> Result<Self, TileUseDipStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols, sb_size4)
-    }
-
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,
@@ -613,11 +569,6 @@ pub(crate) struct TileSegmentIdState {
 }
 
 impl TileSegmentIdState {
-    #[cfg(test)]
-    pub(crate) fn new(mi_rows: usize, mi_cols: usize) -> Result<Self, TileSegmentIdStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols)
-    }
-
     pub(crate) fn new_for_tile(
         mi_rows: core::ops::Range<usize>,
         mi_cols: core::ops::Range<usize>,
@@ -826,15 +777,6 @@ pub(crate) struct TileFscModeState {
 }
 
 impl TileFscModeState {
-    #[cfg(test)]
-    pub(crate) fn new(
-        mi_rows: usize,
-        mi_cols: usize,
-        sb_size4: usize,
-    ) -> Result<Self, TileFscModeStateError> {
-        Self::new_for_tile(0..mi_rows, 0..mi_cols, sb_size4)
-    }
-
     pub(crate) fn new_for_tile(
         row_range: Range<usize>,
         col_range: Range<usize>,

@@ -31,6 +31,5 @@ fuzz_target!(|data: &[u8]| {
     };
 
     let validator = Validator::new(strict);
-    let report = validator.validate_bytes_with_options(bitstream, &options);
-    let _ = report.diagnostics.len();
+    let _ = validator.validate_bytes_with_options(bitstream, &options);
 });

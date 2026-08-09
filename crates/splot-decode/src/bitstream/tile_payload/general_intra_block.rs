@@ -10,10 +10,10 @@ use splot_recon::{DpcmDirection, dpcm_direction};
 
 use super::cdf::block_context::{
     IntraYMode, MODE_INDEX_COUNT, NON_DIRECTIONAL_MODES_COUNT, SupportedChromaMode,
-    SupportedNonDcLumaMode, YModeEscapeResult, reconstruct_minimal_y_mode,
+    SupportedNonDcLumaMode, YModeEscapeResult, get_intra_uv_mode_set, reconstruct_minimal_y_mode,
     reconstruct_y_mode_first_set_directional_top_left, reconstruct_y_mode_offset_escape_top_left,
     reconstruct_y_mode_second_set_top_left, reconstruct_y_mode_with_neighbours,
-    resolved_chroma_uv_mode, supported_chroma_mode, supported_chroma_mode_value, uv_mode_ctx,
+    supported_chroma_mode, supported_chroma_mode_value, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -927,7 +927,7 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
         return Err(GeneralIntraBlockModeError::InvalidUvMode { uv_mode });
     }
 
-    let coeff_uv_mode = resolved_chroma_uv_mode(y_mode, uv_mode)
+    let coeff_uv_mode = get_intra_uv_mode_set(y_mode, uv_mode)
         .ok_or(GeneralIntraBlockModeError::InvalidUvMode { uv_mode })?;
 
     Ok(GeneralIntraChromaBlockMode::no_cfl(uv_mode, coeff_uv_mode))

@@ -4,6 +4,7 @@
 use super::*;
 use crate::bitstream::tile_payload::TileBlockDecodedState;
 use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
+use splot_core::symbol::Symbol;
 use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
 use splot_recon::{BitDepth, DpcmDirection};
 
@@ -798,7 +799,7 @@ fn chroma_angle_delta_tracks_directional_follow_mode() {
 fn palette_map_is_sliced_for_each_partitioned_transform_size() {
     let block = BlockRect::new(2, 3, 16, 16);
     let ctx = ctx(block, BitDepth::Ten);
-    let palette = LumaPalette::new(4, [16, 64, 128, 240, 0, 0, 0, 0]).expect("palette");
+    let palette = LumaPalette::from_size_symbol(Symbol::new(2), [16, 64, 128, 240, 0, 0, 0, 0]);
     let plan = GeneralIntraResidualPlan::rect(
         ctx,
         RectLumaPlan::Palette {

@@ -47,10 +47,7 @@ const CCSO_OFFSET_IDX_MAX: u8 = 7;
 
 /// Writes `lr_params()` (AV2 v1.0.0 § 5.18.7.11,
 /// `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-7-11`), the inverse of
-/// [`crate::headers::frame::parse_lr_params`] on the `LrParseOutcome::Parsed` surface.
-///
-/// `base_q_idx` is unused (the parser reads it only for the `get_filter_set_index` derivation,
-/// which signals no bits); it is threaded to mirror the parser signature.
+/// [`crate::headers::frame::parse_lr_params`].
 ///
 /// **Hard residual.** A plane carrying `frame_filters_on == true` is rejected up front
 /// (`what == "lr_frame_filters_on"`): this writer does not yet emit frame-level
@@ -81,9 +78,7 @@ pub fn write_lr_params(
     num_planes: u8,
     view: &CoreSeqRestorationView,
     geometry: LrGeometry,
-    base_q_idx: u32,
 ) -> WriteResult<()> {
-    let _ = base_q_idx;
     let plan = check_lr_encodable(params, coded_lossless, num_planes, *view, geometry)?;
 
     if plan.disabled {
@@ -92,7 +87,7 @@ pub fn write_lr_params(
 
     for (plane, plane_params) in params.planes.iter().enumerate() {
         let is_chroma = plane > 0;
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(*view, is_chroma);
+        let (index_to_tool, n) = lr_plane_tool_table(*view, is_chroma);
         let tool = plane_params.restoration_type.to_tool();
         let tool_index = index_to_tool
             .iter()
@@ -187,7 +182,7 @@ fn check_lr_encodable(
     let mut uses_chroma_lr = false;
     for (plane, plane_params) in params.planes.iter().enumerate() {
         let is_chroma = plane > 0;
-        let (index_to_tool, _tools_count, n) = lr_plane_tool_table(view, is_chroma);
+        let (index_to_tool, n) = lr_plane_tool_table(view, is_chroma);
         let tool = plane_params.restoration_type.to_tool();
         match index_to_tool.iter().position(|&t| t == tool) {
             Some(idx) if (idx as u32) < n => {}

@@ -41,7 +41,6 @@ proptest! {
     ) {
         let (strict, options) = options_from_bytes(flags, keys);
         let validator = Validator::new(strict);
-        let report = validator.validate_bytes_with_options(&data, &options);
-        let _ = report.diagnostics.len();
+        let _ = validator.validate_bytes_with_options(&data, &options);
     }
 }

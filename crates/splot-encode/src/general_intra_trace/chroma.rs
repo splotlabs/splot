@@ -3,38 +3,31 @@
 
 //! The general intra coded-chroma (U, V) and all-planes-coded block composers and IVF emitters.
 
-use super::coded_dc::CODED_LUMA_DC_MAGNITUDE;
-use super::{CHROMA_SIGN_BIT_WIDTH, SKIP_FRAME_COEFF_CDF_Q_CTX, V_TXB_SKIP_CTX_NEUTRAL};
+use super::CHROMA_SIGN_BIT_WIDTH;
 use crate::block_symbol_trace::{BlockSymbolToken, compose_minimal_intra_dc_block_mode_trace};
 use crate::coefficient_tokenization::{
-    chroma_v_all_zero_token, general_intra_32x32_chroma_u_all_zero_token,
-    general_intra_32x32_chroma_u_dc_coded_tokens, general_intra_32x32_chroma_v_dc_coded_tokens,
-    general_intra_64x64_luma_all_zero_token, general_intra_64x64_luma_dc_coded_tokens,
+    chroma_v_all_zero_after_coded_u_token, general_intra_32x32_chroma_u_all_zero_token,
+    general_intra_32x32_chroma_u_dc_coded_tokens,
+    general_intra_32x32_chroma_v_after_coded_u_dc_coded_tokens,
+    general_intra_32x32_chroma_v_dc_coded_tokens, general_intra_64x64_luma_all_zero_token,
+    general_intra_64x64_luma_dc_coded_tokens,
 };
 use crate::error::{Error, Result};
 use crate::partition_emission::emit_root_do_split_none;
 
-/// The unsigned chroma U DC magnitude the coded-chroma frame emits: `4` (`coeff_base_eob` 3,
+/// The chroma DC magnitude is `4` (`coeff_base_eob` 3,
 /// level 4 — the base tier, no `coeff_br`/golomb). Negative, it dequantizes to a flat U
 /// reconstruction below `128`.
-const CODED_CHROMA_U_DC_MAGNITUDE: u32 = 4;
-
-/// The § 8.3.2 V `txb_skip` context when the U plane is coded (`EobU != 0`): `6`.
-const V_TXB_SKIP_CTX_EOBU: usize = 6;
-
+///
 /// Composes the general intra coded-*chroma* block trace: `do_split`, the mode prefix, a
 /// **skipped** luma plane, then a single coded U DC coefficient (`txb_skip == 0`,
 /// `eob_pt == 0`, `coeff_base_eob`, then the U DC `sign_bit` § 8.2.5 bypass literal) at the
 /// general `TX_32X32` chroma contexts, then a skipped V plane whose `txb_skip` uses the
 /// `EobU != 0` context `6`. The decoded frame isolates chroma residual: luma stays flat 128,
 /// U carries the dequantized residual, V stays flat 128.
-fn compose_general_intra_coded_chroma_u_block_trace(
-    magnitude: u32,
-    negative: bool,
-) -> Result<Vec<BlockSymbolToken>> {
+fn compose_general_intra_coded_chroma_u_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let u_coeffs =
-        general_intra_32x32_chroma_u_dc_coded_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX, magnitude)?;
+    let u_coeffs = general_intra_32x32_chroma_u_dc_coded_tokens()?;
     let total = modes
         .len()
         .checked_add(u_coeffs.len())
@@ -51,17 +44,13 @@ fn compose_general_intra_coded_chroma_u_block_trace(
     trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.push(BlockSymbolToken::Coeff(
-        general_intra_64x64_luma_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+        general_intra_64x64_luma_all_zero_token(),
     ));
     trace.extend(u_coeffs.into_iter().map(BlockSymbolToken::Coeff));
-    trace.push(BlockSymbolToken::bypass(
-        CHROMA_SIGN_BIT_WIDTH,
-        negative as u32,
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 1));
+    trace.push(BlockSymbolToken::Coeff(
+        chroma_v_all_zero_after_coded_u_token(),
     ));
-    trace.push(BlockSymbolToken::Coeff(chroma_v_all_zero_token(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        V_TXB_SKIP_CTX_EOBU,
-    )));
     Ok(trace)
 }
 
@@ -79,8 +68,7 @@ fn compose_general_intra_coded_chroma_u_block_trace(
 /// or trace allocation), if entropy-coding the trace into tile data fails, or if
 /// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_coded_chroma_ivf() -> Result<Vec<u8>> {
-    let trace =
-        compose_general_intra_coded_chroma_u_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
+    let trace = compose_general_intra_coded_chroma_u_block_trace()?;
     super::emit_minimal_intra_ivf(&trace)
 }
 
@@ -90,16 +78,9 @@ pub fn emit_minimal_intra_coded_chroma_ivf() -> Result<Vec<u8>> {
 /// literal) at the general `TX_32X32` chroma contexts. The V `txb_skip` uses the neutral
 /// context `0` (`EobU == 0`, since U is skipped). The decoded frame isolates V residual: luma
 /// and U stay flat 128, V carries the dequantized residual.
-fn compose_general_intra_coded_chroma_v_block_trace(
-    magnitude: u32,
-    negative: bool,
-) -> Result<Vec<BlockSymbolToken>> {
+fn compose_general_intra_coded_chroma_v_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let v_coeffs = general_intra_32x32_chroma_v_dc_coded_tokens(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        magnitude,
-        V_TXB_SKIP_CTX_NEUTRAL,
-    )?;
+    let v_coeffs = general_intra_32x32_chroma_v_dc_coded_tokens()?;
     let total = modes
         .len()
         .checked_add(v_coeffs.len())
@@ -116,16 +97,13 @@ fn compose_general_intra_coded_chroma_v_block_trace(
     trace.push(BlockSymbolToken::Partition(emit_root_do_split_none()));
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.push(BlockSymbolToken::Coeff(
-        general_intra_64x64_luma_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+        general_intra_64x64_luma_all_zero_token(),
     ));
     trace.push(BlockSymbolToken::Coeff(
-        general_intra_32x32_chroma_u_all_zero_token(SKIP_FRAME_COEFF_CDF_Q_CTX),
+        general_intra_32x32_chroma_u_all_zero_token(),
     ));
     trace.extend(v_coeffs.into_iter().map(BlockSymbolToken::Coeff));
-    trace.push(BlockSymbolToken::bypass(
-        CHROMA_SIGN_BIT_WIDTH,
-        negative as u32,
-    ));
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 1));
     Ok(trace)
 }
 
@@ -145,8 +123,7 @@ fn compose_general_intra_coded_chroma_v_block_trace(
 /// or trace allocation), if entropy-coding the trace into tile data fails, or if
 /// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_coded_chroma_v_ivf() -> Result<Vec<u8>> {
-    let trace =
-        compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)?;
+    let trace = compose_general_intra_coded_chroma_v_block_trace()?;
     super::emit_minimal_intra_ivf(&trace)
 }
 
@@ -155,24 +132,11 @@ pub fn emit_minimal_intra_coded_chroma_v_ivf() -> Result<Vec<u8>> {
 /// (`TX_32X32`, `sign_bit` § 8.2.5 bypass), in `residual()` order Y, U, V. Because the U plane
 /// is coded (`EobU != 0`), the V `txb_skip` uses the § 8.3.2 context `6`. This mirrors the q80
 /// fixture's all-three-planes-coded structure with sub-golomb magnitudes.
-fn compose_general_intra_all_planes_coded_block_trace(
-    luma_magnitude: u32,
-    chroma_magnitude: u32,
-    negative: bool,
-) -> Result<Vec<BlockSymbolToken>> {
+fn compose_general_intra_all_planes_coded_block_trace() -> Result<Vec<BlockSymbolToken>> {
     let modes = compose_minimal_intra_dc_block_mode_trace()?;
-    let luma = general_intra_64x64_luma_dc_coded_tokens(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        luma_magnitude,
-        negative,
-    )?;
-    let u_coeffs =
-        general_intra_32x32_chroma_u_dc_coded_tokens(SKIP_FRAME_COEFF_CDF_Q_CTX, chroma_magnitude)?;
-    let v_coeffs = general_intra_32x32_chroma_v_dc_coded_tokens(
-        SKIP_FRAME_COEFF_CDF_Q_CTX,
-        chroma_magnitude,
-        V_TXB_SKIP_CTX_EOBU,
-    )?;
+    let luma = general_intra_64x64_luma_dc_coded_tokens()?;
+    let u_coeffs = general_intra_32x32_chroma_u_dc_coded_tokens()?;
+    let v_coeffs = general_intra_32x32_chroma_v_after_coded_u_dc_coded_tokens()?;
     let total = modes
         .len()
         .checked_add(luma.len())
@@ -192,15 +156,9 @@ fn compose_general_intra_all_planes_coded_block_trace(
     trace.extend(modes.into_iter().map(BlockSymbolToken::Mode));
     trace.extend(luma.into_iter().map(BlockSymbolToken::Coeff));
     trace.extend(u_coeffs.into_iter().map(BlockSymbolToken::Coeff));
-    trace.push(BlockSymbolToken::bypass(
-        CHROMA_SIGN_BIT_WIDTH,
-        negative as u32,
-    ));
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 1));
     trace.extend(v_coeffs.into_iter().map(BlockSymbolToken::Coeff));
-    trace.push(BlockSymbolToken::bypass(
-        CHROMA_SIGN_BIT_WIDTH,
-        negative as u32,
-    ));
+    trace.push(BlockSymbolToken::bypass(CHROMA_SIGN_BIT_WIDTH, 1));
     Ok(trace)
 }
 
@@ -217,11 +175,7 @@ fn compose_general_intra_all_planes_coded_block_trace(
 /// or trace allocation), if entropy-coding the trace into tile data fails, or if
 /// the AV2 IVF stream cannot be assembled by `splot-core`.
 pub fn emit_minimal_intra_all_planes_coded_ivf() -> Result<Vec<u8>> {
-    let trace = compose_general_intra_all_planes_coded_block_trace(
-        CODED_LUMA_DC_MAGNITUDE,
-        CODED_CHROMA_U_DC_MAGNITUDE,
-        true,
-    )?;
+    let trace = compose_general_intra_all_planes_coded_block_trace()?;
     super::emit_minimal_intra_ivf(&trace)
 }
 
@@ -229,13 +183,10 @@ pub fn emit_minimal_intra_all_planes_coded_ivf() -> Result<Vec<u8>> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::block_symbol_trace::roundtrip_block_symbol_trace;
 
     #[test]
     fn composes_general_coded_chroma_block_trace_in_order() {
-        let trace =
-            compose_general_intra_coded_chroma_u_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
-                .unwrap();
+        let trace = compose_general_intra_coded_chroma_u_block_trace().unwrap();
 
         assert_eq!(trace.len(), 10);
         assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
@@ -253,18 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn general_coded_chroma_block_trace_roundtrips_through_one_coder() {
-        let trace =
-            compose_general_intra_coded_chroma_u_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
-                .unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 0, 0, 3, 1, 1]);
-        assert_eq!(proof.symbol_count(), 10);
-        assert!(!proof.bytes().is_empty());
-    }
-
-    #[test]
     fn emit_minimal_intra_coded_chroma_ivf_is_parseable_and_deterministic() {
         let ivf = emit_minimal_intra_coded_chroma_ivf().unwrap();
         assert!(!ivf.is_empty());
@@ -275,33 +214,35 @@ mod tests {
     }
 
     #[test]
-    fn composes_general_coded_chroma_v_block_trace_in_order() {
-        let trace =
-            compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
-                .unwrap();
+    fn composes_general_coded_chroma_v_and_all_planes_traces_in_order() {
+        let cases = [
+            (
+                compose_general_intra_coded_chroma_v_block_trace().unwrap(),
+                &[(9, 1)][..],
+                &[0, 0, 0, 0, 1, 1, 0, 0, 3, 1][..],
+            ),
+            (
+                compose_general_intra_all_planes_coded_block_trace().unwrap(),
+                &[(12, 1), (16, 1)][..],
+                &[0, 0, 0, 0, 0, 0, 4, 1, 1, 0, 0, 3, 1, 0, 0, 3, 1][..],
+            ),
+        ];
 
-        assert_eq!(trace.len(), 10);
-        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
-        assert!(matches!(
-            trace[9],
-            BlockSymbolToken::Bypass { width: 1, value: 1 }
-        ));
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 1, 1, 0, 0, 3, 1]
-        );
-    }
-
-    #[test]
-    fn general_coded_chroma_v_block_trace_roundtrips_through_one_coder() {
-        let trace =
-            compose_general_intra_coded_chroma_v_block_trace(CODED_CHROMA_U_DC_MAGNITUDE, true)
-                .unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(proof.decoded_symbols(), &[0, 0, 0, 0, 1, 1, 0, 0, 3, 1]);
-        assert_eq!(proof.symbol_count(), 10);
-        assert!(!proof.bytes().is_empty());
+        for (trace, bypasses, expected_symbols) in cases {
+            assert_eq!(trace.len(), expected_symbols.len());
+            assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
+            for &(index, expected_value) in bypasses {
+                assert!(matches!(
+                    trace[index],
+                    BlockSymbolToken::Bypass { width: 1, value }
+                        if value == expected_value
+                ));
+            }
+            assert_eq!(
+                trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
+                expected_symbols
+            );
+        }
     }
 
     #[test]
@@ -312,49 +253,6 @@ mod tests {
         assert!(parsed.error.is_none());
         assert_eq!(parsed.frames.len(), 1);
         assert_eq!(ivf, emit_minimal_intra_coded_chroma_v_ivf().unwrap());
-    }
-
-    #[test]
-    fn composes_general_all_planes_coded_block_trace_in_order() {
-        let trace = compose_general_intra_all_planes_coded_block_trace(
-            CODED_LUMA_DC_MAGNITUDE,
-            CODED_CHROMA_U_DC_MAGNITUDE,
-            true,
-        )
-        .unwrap();
-
-        assert_eq!(trace.len(), 17);
-        assert!(matches!(trace[0], BlockSymbolToken::Partition(_)));
-        assert!(matches!(
-            trace[12],
-            BlockSymbolToken::Bypass { width: 1, value: 1 }
-        ));
-        assert!(matches!(
-            trace[16],
-            BlockSymbolToken::Bypass { width: 1, value: 1 }
-        ));
-        assert_eq!(
-            trace.iter().map(|token| token.symbol()).collect::<Vec<_>>(),
-            vec![0, 0, 0, 0, 0, 0, 4, 1, 1, 0, 0, 3, 1, 0, 0, 3, 1]
-        );
-    }
-
-    #[test]
-    fn general_all_planes_coded_block_trace_roundtrips_through_one_coder() {
-        let trace = compose_general_intra_all_planes_coded_block_trace(
-            CODED_LUMA_DC_MAGNITUDE,
-            CODED_CHROMA_U_DC_MAGNITUDE,
-            true,
-        )
-        .unwrap();
-        let proof = roundtrip_block_symbol_trace(&trace).unwrap();
-
-        assert_eq!(
-            proof.decoded_symbols(),
-            &[0, 0, 0, 0, 0, 0, 4, 1, 1, 0, 0, 3, 1, 0, 0, 3, 1]
-        );
-        assert_eq!(proof.symbol_count(), 17);
-        assert!(!proof.bytes().is_empty());
     }
 
     #[test]

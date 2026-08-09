@@ -871,7 +871,7 @@ impl DohTuAccumulator {
     /// The caller gates this on the active DOH constraint flag (mirror lines 650-657); each
     /// recorded mismatch is proven between two known samples, so it is emitted regardless of
     /// any undecidable participant.
-    fn resolve(&mut self, report: &mut ValidationReport) {
+    fn resolve(&self, report: &mut ValidationReport) {
         if let Some((first, found, offset)) = self.bits_mismatch {
             report.push(
                 Diagnostic::error(

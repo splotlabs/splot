@@ -12,8 +12,8 @@
 //! tripwire for the validator productization work: additive flags update these
 //! snapshots intentionally; an accidental or breaking surface change is caught
 //! here. The top-level `splot --help` is deliberately NOT snapshotted so this
-//! validator-stream test stays decoupled from the `decode`/`encode` subcommand
-//! wording the decoder/encoder streams own.
+//! validator-stream test stays decoupled from the `decode` subcommand wording
+//! the decoder stream owns.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

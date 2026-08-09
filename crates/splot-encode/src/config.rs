@@ -7,7 +7,7 @@
 //! instead of living here, so that this type describes *what* is encoded rather
 //! than *how fast*.
 
-/// Placeholder sample bit depth.
+/// Configured sample bit depth; the current frame-input path accepts only [`Self::Eight`].
 // TODO(spec: AV2-5.4-SEQUENCE-HEADER): confirm the exact set of permitted bit depths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -21,7 +21,7 @@ pub enum BitDepth {
     Twelve,
 }
 
-/// Placeholder chroma subsampling.
+/// Configured chroma subsampling; the current frame-input path accepts only [`Self::Yuv420`].
 // TODO(spec: AV2-5.4-SEQUENCE-HEADER): map to the sequence-header color configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
@@ -50,16 +50,16 @@ pub struct EncoderConfig {
     pub width: u32,
     /// Frame height in luma samples.
     pub height: u32,
-    /// Sample bit depth (placeholder).
+    /// Sample bit depth; the current frame-input path supports 8-bit samples.
     pub bit_depth: BitDepth,
-    /// Chroma subsampling (placeholder).
+    /// Chroma subsampling; the current frame-input path supports YUV 4:2:0.
     pub chroma_subsampling: ChromaSubsampling,
     /// The fixed quantizer index used for every frame: the frame-header `base_q_idx`
     /// (AV2 § 5.18.6.1; `docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-6-1`) and — once
     /// the lossy coefficient path is wired into
     /// `receive_packet` — the quantizer's qindex, both read from this single field so
-    /// the two cannot diverge. The minimal encoder is constant-QP; per-frame and
-    /// per-block rate control are a later phase behind a `RateController` seam.
+    /// the two cannot diverge. The supported packet path reads this value directly;
+    /// rate control is not implemented.
     pub qp: u8,
     // TODO(spec: AV2-5.4-SEQUENCE-HEADER): profile, level, color/transfer characteristics, and more.
 }

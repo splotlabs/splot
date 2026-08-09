@@ -489,44 +489,6 @@ fn tip_unequal_weighted_allowed(
         || (opfl_refine_type == REFINE_NONE && !seq.enable_refinemv)
 }
 
-/// Parses the non-intra `frame_header_info()` control region (AV2 v1.0.0 § 5.18.2) into a
-/// freshly default [`InterControl`], starting after the output-control flags. The reader is
-/// positioned just before `disable_cross_frame_cdf_init` (mirror :4341); on a
-/// [`InterStop::ReachedSharedTail`] stop it is positioned at the shared `tile_info()` (mirror
-/// :5183).
-///
-/// `frame_size_override_flag` was read (or inferred) by the caller along with the
-/// output-control flags; it selects the reference-grounded frame-size arm.
-///
-/// This is the value-returning convenience used by the unit tests; production callers use
-/// [`parse_inter_control_into`] with a caller-owned `control` so a mid-field
-/// [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) preserves the partial facts
-/// across EOF.
-///
-/// # Errors
-/// Returns a typed error if the payload ends or is malformed before a modeled field can
-/// be read. A branch needing unmodeled state or poisoned reference facts returns `Ok`
-/// with the corresponding [`InterStop`], never an error and never a guessed value.
-#[cfg(test)]
-pub(crate) fn parse_inter_control(
-    reader: &mut BitReader<'_>,
-    seq: &InterSeqView,
-    ctx: &InterFrameContext,
-    reference_state: &FrameReferenceStateView<'_>,
-    frame_size_override_flag: bool,
-) -> Result<InterControl> {
-    let mut control = InterControl::default();
-    parse_inter_control_into(
-        reader,
-        seq,
-        ctx,
-        reference_state,
-        frame_size_override_flag,
-        &mut control,
-    )?;
-    Ok(control)
-}
-
 /// Parses the non-intra control region (AV2 § 5.18.2) into a caller-owned `control`, so the
 /// fields parsed before any [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof)
 /// survive on the caller's `control` rather than being dropped with a local value. This is
@@ -1177,7 +1139,8 @@ mod tests {
         let seq = inter_seq();
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
 
         assert_eq!(control.signal_primary_ref_frame, Some(true));
         assert_eq!(control.primary_ref_frame, Some(2));
@@ -1235,7 +1198,9 @@ mod tests {
         heights[2] = 720;
         let state = FrameReferenceStateView::from_slots(&valid, &order_hints, &widths, &heights);
 
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &state, false).unwrap();
+        let mut control = InterControl::default();
+
+        parse_inter_control_into(&mut reader, &seq, &ctx, &state, false, &mut control).unwrap();
 
         assert_eq!(control.refresh_frame_flags, Some(1 << 5));
         assert_eq!(control.frame_size, Some(FrameSize::new(1280, 720)));
@@ -1275,7 +1240,8 @@ mod tests {
         let seq = inter_seq();
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
 
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
         assert_eq!(
@@ -1330,7 +1296,8 @@ mod tests {
         seq.enable_opfl_refine = REFINE_AUTO;
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
         assert_eq!(control.opfl_refine_type, Some(REFINE_SWITCHABLE));
         assert_eq!(control.allow_intrabc, Some(false));
@@ -1355,7 +1322,8 @@ mod tests {
         seq.enable_opfl_refine = REFINE_AUTO;
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::Disabled));
         assert_eq!(control.opfl_refine_type, Some(REFINE_NONE));
         assert_eq!(control.allow_intrabc, Some(false));
@@ -1379,7 +1347,8 @@ mod tests {
         seq.explicit_ref_frame_map = false;
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.explicit_ref_frame_map, Some(false));
         assert_eq!(control.num_total_refs, None);
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
@@ -1417,7 +1386,8 @@ mod tests {
         ref_w[0] = 64;
         ref_h[0] = 64;
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.explicit_ref_frame_map, Some(false));
         assert_eq!(control.num_total_refs, Some(1));
         assert_eq!(control.ref_frame_idx, vec![0]);
@@ -1451,7 +1421,8 @@ mod tests {
         let ref_w = [0u32; NUM_REF_FRAMES];
         let ref_h = [0u32; NUM_REF_FRAMES];
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.num_total_refs, Some(0));
         assert!(control.ref_frame_idx.is_empty());
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
@@ -1477,7 +1448,8 @@ mod tests {
         let ref_w = [64u32; NUM_REF_FRAMES];
         let ref_h = [64u32; NUM_REF_FRAMES];
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.num_total_refs, None);
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
     }
@@ -1522,7 +1494,8 @@ mod tests {
         let rs = FrameReferenceStateView::from_slots_with_base_q_idx(
             &ref_valid, &ref_oh, &ref_w, &ref_h, &ref_q,
         );
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.num_total_refs, Some(2));
         assert_eq!(control.ref_frame_idx, vec![0, 1]);
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
@@ -1550,7 +1523,8 @@ mod tests {
         let ref_w = [64u32; NUM_REF_FRAMES];
         let ref_h = [64u32; NUM_REF_FRAMES];
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.num_total_refs, None);
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
     }
@@ -1589,7 +1563,8 @@ mod tests {
             &ref_h,
             &ref_q,
         );
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.num_total_refs, None);
         assert_eq!(control.stop, Some(InterStop::UnmodeledDerivation));
     }
@@ -1614,7 +1589,8 @@ mod tests {
         seq.num_ref_frames = 20;
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert!(control.has_invalid_ref_frame_idx);
         assert_eq!(control.ref_frame_idx, vec![17]);
         assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
@@ -1645,7 +1621,9 @@ mod tests {
         seq.num_ref_frames = 6;
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap()
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
+        control
     }
 
     #[test]
@@ -1691,7 +1669,8 @@ mod tests {
         ctx.frame_type = FrameType::Switch;
         ctx.obu_type = ObuType::Switch;
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, true).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, true, &mut control).unwrap();
         assert_eq!(control.primary_ref_frame, Some(PRIMARY_REF_NONE));
         assert_eq!(control.explicit_ref_frame_map, Some(true));
         assert_eq!(control.num_total_refs, Some(1));
@@ -1727,7 +1706,8 @@ mod tests {
         ref_w[2] = 1280;
         ref_h[2] = 720;
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, true).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, true, &mut control).unwrap();
         assert_eq!(control.frame_size, Some(FrameSize::new(1280, 720)));
     }
 
@@ -1752,7 +1732,8 @@ mod tests {
         let seq = inter_seq();
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, true).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, true, &mut control).unwrap();
         assert_eq!(
             control.frame_size, None,
             "the hit slot's dims are unmodeled, so the size is genuinely unknown"
@@ -1791,7 +1772,8 @@ mod tests {
         seq.enable_bru = true;
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
         assert_eq!(control.use_bru, Some(true));
         assert_eq!(control.bru_ref, Some(1));
         assert_eq!(control.bru_inactive, Some(true));
@@ -1832,7 +1814,8 @@ mod tests {
                 ctx.obu_type = ObuType::RegularTip;
             }
             let rs = FrameReferenceStateView::unknown();
-            let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+            let mut control = InterControl::default();
+            parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
             assert_eq!(
                 (
                     control.use_ref_frame_mvs,
@@ -1880,7 +1863,9 @@ mod tests {
         ctx.obu_type = ObuType::RegularTip;
         let rs = FrameReferenceStateView::unknown();
 
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
         assert_eq!(control.allow_tip_hole_fill, Some(false));
@@ -1917,7 +1902,9 @@ mod tests {
         let ref_h = [2304; 8];
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
 
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsOutput));
         assert_eq!(control.tip_global_wtd_index, Some(5));
@@ -1947,9 +1934,10 @@ mod tests {
         let ref_w = [4096; 8];
         let ref_h = [2304; 8];
         let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
+        let mut control = InterControl::default();
 
         assert!(matches!(
-            parse_inter_control(&mut reader, &seq, &ctx, &rs, false),
+            parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control),
             Err(crate::error::Error::UnexpectedEof { .. })
         ));
     }
@@ -1976,7 +1964,9 @@ mod tests {
         ctx.obu_type = ObuType::RegularTip;
         let rs = FrameReferenceStateView::unknown();
 
-        let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+        let mut control = InterControl::default();
+
+        parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
 
         assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
         assert_eq!(control.allow_tip_hole_fill, Some(false));
@@ -2023,7 +2013,9 @@ mod tests {
             let ref_h = [2304; 8];
             let rs = FrameReferenceStateView::from_slots(&ref_valid, &ref_oh, &ref_w, &ref_h);
 
-            let control = parse_inter_control(&mut reader, &seq, &ctx, &rs, false).unwrap();
+            let mut control = InterControl::default();
+
+            parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).unwrap();
 
             assert_eq!(control.tip_frame_mode, Some(TipFrameMode::AsRef));
             assert_eq!(control.allow_tip_hole_fill, Some(true));
@@ -2060,7 +2052,10 @@ mod tests {
         let seq = inter_seq();
         let ctx = inter_ctx();
         let rs = FrameReferenceStateView::unknown();
-        assert!(parse_inter_control(&mut reader, &seq, &ctx, &rs, false).is_err());
+        let mut control = InterControl::default();
+        assert!(
+            parse_inter_control_into(&mut reader, &seq, &ctx, &rs, false, &mut control).is_err()
+        );
     }
 
     /// AV2 § 7.7 + § 5.18.2 — drive the REAL `syn-key-inter-64x64` fixture's inter frame

@@ -470,7 +470,7 @@ where
         geo.source_width,
         &mut feature_grid,
         &mut skip_row,
-        &mut qval_offsets,
+        &qval_offsets,
         &mut classifications,
         tx_skip,
         finish_pc_wiener_classification_cached,
@@ -879,7 +879,7 @@ fn classify_grid_from_cache<FT, O, FM>(
     source_stride: usize,
     feature_grid: &mut Vec<[u16; 4]>,
     skip_row: &mut Vec<u16>,
-    offsets_cache: &mut QvalOffsetsCache,
+    offsets_cache: &QvalOffsetsCache,
     output: &mut Vec<O>,
     mut tx_skip: FT,
     mut finish: FM,
@@ -2095,7 +2095,7 @@ fn validate_params(params: &PcWienerClassifyParams) -> Result<()> {
             field: "tile y range",
         });
     }
-    let _ = usize_to_isize(params.block_end_x, "PC-Wiener block end x")?;
+    usize_to_isize(params.block_end_x, "PC-Wiener block end x")?;
     Ok(())
 }
 
