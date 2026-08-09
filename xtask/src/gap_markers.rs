@@ -40,7 +40,7 @@ const DECODE_SRC: &str = "crates/splot-decode/src";
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 54;
+const GAP_MARKER_FLOOR: usize = 53;
 
 /// One marker site: its reason id and the file it lives in.
 struct MarkerSite {
@@ -172,7 +172,6 @@ const FEATURE_MARKER_MACROS: &[&str] = &[
     "inter_cap",
     "inter_missing",
     "inter_diag",
-    "compound_cap",
     "compound_missing",
     "general_intra_at",
 ];

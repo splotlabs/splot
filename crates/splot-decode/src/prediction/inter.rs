@@ -80,17 +80,6 @@ macro_rules! inter_allocation {
     };
 }
 
-macro_rules! compound_cap {
-    ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
-        unsupported_compound_at(
-            $reason,
-            $offset,
-            concat!("unsupported capability: ", $capability),
-            $spec_section,
-        )
-    };
-}
-
 const SPEC_HEADER: &str = "5.18.2";
 const SPEC_HEADER_SEMANTICS: &str = "6.17";
 const SPEC_FRAME_HEADER_INFO_SEMANTICS: &str = "6.17.2";
@@ -2160,13 +2149,4 @@ fn unsupported_at(
     spec_section: &'static str,
 ) -> DecodeError {
     crate::pipeline::unsupported_with_spec(reason, Some(byte_offset), message, spec_section)
-}
-
-fn unsupported_compound_at(
-    reason: &'static str,
-    byte_offset: ByteOffset,
-    message: &'static str,
-    spec_section: &'static str,
-) -> DecodeError {
-    unsupported_at(reason, byte_offset, message, spec_section)
 }
