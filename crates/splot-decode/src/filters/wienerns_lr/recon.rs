@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 
 use crate::Result;
 
-use super::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use splot_core::span::ByteOffset;
 
 const MI_SIZE: usize = 4;
@@ -57,18 +56,14 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSinkSource<'a, 'job, T> {
         self,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
-        offset: ByteOffset,
     ) -> Result<FilteredFrameSink<'a, 'job, T>> {
         match self {
             Self::Borrowed { progress, admit } => {
-                FilteredFrameSink::open(progress, admit, info, ranges, offset)
+                FilteredFrameSink::open(progress, admit, info, ranges)
             }
             Self::Owned { progress } => {
                 if !progress.begin(ranges) {
-                    return Err(wienerns_lr_selectable_transform_record_error_reason(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-                    ));
+                    return Err(lr_pipeline_state_error());
                 }
                 Ok(FilteredFrameSink::OwnedPublished { progress })
             }
@@ -82,15 +77,11 @@ impl<'a, 'job, T: ReconSample> FilteredFrameSink<'a, 'job, T> {
         admit: Option<&'a dyn splot_parallel::Admit<'job>>,
         info: splot_recon::DecodedFrameInfo,
         ranges: &[(usize, usize)],
-        offset: ByteOffset,
     ) -> Result<Self> {
         match progress {
             Some(progress) => {
                 if !progress.begin(ranges) {
-                    return Err(wienerns_lr_selectable_transform_record_error_reason(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-                    ));
+                    return Err(lr_pipeline_state_error());
                 }
                 Ok(Self::Published { progress, admit })
             }
@@ -485,16 +476,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     &self.filter_records.deblock_blocks,
                     &self.filter_records.chroma_deblock_blocks,
                 )
-                .map_err(|_| {
-                    wienerns_lr_selectable_transform_record_error_reason(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_lossless_grid",
-                    )
-                })?,
+                .map_err(|_| lr_pipeline_state_error())?,
             );
         }
         if self.needs_tx_skip_grid(&core) {
-            self.ensure_tx_skip_grid(mi_rows, mi_cols, offset)?;
+            self.ensure_tx_skip_grid(mi_rows, mi_cols)?;
         }
         let cdef_skip_grid = self.cdef_skip_grid(&core, mi_rows, mi_cols, offset)?;
         let cdef_strengths = crate::filters::cdef::cdef_frame_strengths(&core);
@@ -516,13 +502,8 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 crate::filters::ccso::prepare_ccso(&core, grid, self.bit_depth, subsampling)
             })
             .transpose()
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
-                )
-            })?;
-        let sink = sink_source.open(info, &ranges, offset)?;
+            .map_err(|_| lr_pipeline_state_error())?;
+        let sink = sink_source.open(info, &ranges)?;
         let stripe_count = ranges.len();
         let plane_sizes = [PlaneId::Y, PlaneId::U, PlaneId::V].map(|plane| {
             self.workspace
@@ -622,7 +603,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     disable_loopfilters_across_tiles,
                     deblock_quant_deltas,
                 )
-                .map_err(|_| deblock_filter_error(offset))?,
+                .map_err(|_| lr_pipeline_state_error())?,
                 None => None,
             }
         };
@@ -631,7 +612,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 let prime_timer = crate::timing::start();
                 sections
                     .prime_vertical_pass(&mut workspace, bit_depth)
-                    .map_err(|_| deblock_filter_error(offset))?;
+                    .map_err(|_| lr_pipeline_state_error())?;
                 crate::timing::report("filter_deblock_prime", prime_timer);
             }
             let mut slots: Vec<Option<Result<()>>> =
@@ -647,7 +628,6 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         range,
                         setup.subsampling.1,
                         bit_depth,
-                        offset,
                     ) {
                         Ok(window) => window,
                         Err(error) => {
@@ -668,12 +648,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             if let Some(error) = owed {
                 return Err(error);
             }
-            let missing = || {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-                )
-            };
+            let missing = lr_pipeline_state_error;
             scheduled.map_err(|_| missing())?;
             for slot in slots {
                 slot.unwrap_or_else(|| Err(missing()))?;
@@ -683,11 +658,11 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                 let deblock_timer = crate::timing::start();
                 sections
                     .advance(&mut workspace, mi_rows, bit_depth)
-                    .map_err(|_| deblock_filter_error(offset))?;
+                    .map_err(|_| lr_pipeline_state_error())?;
                 crate::timing::accumulate(crate::timing::Phase::FilterDeblock, deblock_timer);
             }
             let deblocked = crate::filters::source::DeblockedPlanes::frame(&workspace)
-                .ok_or_else(|| deblock_filter_error(offset))?;
+                .ok_or_else(lr_pipeline_state_error)?;
             for (stripe, range) in setup.stripe_ranges().iter().enumerate() {
                 let filtered = setup.run_borrowed_planes(stripe, range, deblocked)?;
                 setup.publish(filtered)?;
@@ -782,7 +757,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         };
         extract(start, end)
             .map(Some)
-            .map_err(|_| deblock_filter_error(self.offset))
+            .map_err(|_| lr_pipeline_state_error())
     }
 
     fn ready_stripe(
@@ -793,7 +768,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         let (start, end) = self.stripe_bounds(stripe)?;
         let needed = end
             .checked_add(STRIPE_WINDOW_MARGIN << self.subsampling.1)
-            .ok_or_else(|| self.stripe_error())?
+            .ok_or_else(lr_pipeline_state_error)?
             .min(self.luma_height);
         Ok((deblock
             .final_luma_rows(self.subsampling.1)
@@ -841,14 +816,14 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         extract: impl FnOnce(usize, usize) -> Option<crate::filters::source::DeblockedWindow<T>>,
     ) -> Result<crate::filters::source::DeblockedWindow<T>> {
         let (start, end) = self.stripe_bounds(stripe)?;
-        extract(start, end).ok_or_else(|| deblock_filter_error(self.offset))
+        extract(start, end).ok_or_else(lr_pipeline_state_error)
     }
 
     fn stripe_bounds(&self, stripe: usize) -> Result<(usize, usize)> {
         self.ranges
             .get(stripe)
             .copied()
-            .ok_or_else(|| self.stripe_error())
+            .ok_or_else(lr_pipeline_state_error)
     }
 
     /// Restores the moved deblock vectors exactly once before terminal freeze.
@@ -861,7 +836,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.is_some() {
-            return Err(self.stripe_error());
+            return Err(lr_pipeline_state_error());
         }
         *slot = Some(records);
         Ok(())
@@ -881,9 +856,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         window: crate::filters::source::DeblockedWindow<T>,
     ) -> Result<OwnedFilteredStripe> {
         let range = self.claim(stripe)?;
-        let deblocked = window
-            .planes()
-            .ok_or_else(|| deblock_filter_error(self.offset))?;
+        let deblocked = window.planes().ok_or_else(lr_pipeline_state_error)?;
         Ok(OwnedFilteredStripe {
             stripe,
             frame: self.run_planes(range, deblocked)?,
@@ -898,7 +871,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     ) -> Result<OwnedFilteredStripe> {
         let claimed = self.claim(stripe)?;
         if claimed != range {
-            return Err(self.stripe_error());
+            return Err(lr_pipeline_state_error());
         }
         Ok(OwnedFilteredStripe {
             stripe,
@@ -909,12 +882,12 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     /// Moves one completed stripe into the frame output exactly once.
     pub(crate) fn publish(&self, stripe: OwnedFilteredStripe) -> Result<()> {
         let chain = self.chain();
-        chain.validate_filter_stripe(PlaneId::Y, &stripe.frame.y, self.offset)?;
+        chain.validate_filter_stripe(PlaneId::Y, &stripe.frame.y)?;
         if let Some(plane) = stripe.frame.u.as_ref() {
-            chain.validate_filter_stripe(PlaneId::U, plane, self.offset)?;
+            chain.validate_filter_stripe(PlaneId::U, plane)?;
         }
         if let Some(plane) = stripe.frame.v.as_ref() {
-            chain.validate_filter_stripe(PlaneId::V, plane, self.offset)?;
+            chain.validate_filter_stripe(PlaneId::V, plane)?;
         }
         {
             let mut state = self
@@ -922,10 +895,10 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let Some(lifecycle) = state.get_mut(stripe.stripe) else {
-                return Err(self.stripe_error());
+                return Err(lr_pipeline_state_error());
             };
             if *lifecycle != StripeLifecycle::Claimed {
-                return Err(self.stripe_error());
+                return Err(lr_pipeline_state_error());
             }
             *lifecycle = StripeLifecycle::Submitted;
         }
@@ -934,24 +907,20 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
     }
 
     fn claim(&self, stripe: usize) -> Result<&(usize, usize)> {
-        let range = self.ranges.get(stripe).ok_or_else(|| self.stripe_error())?;
+        let range = self
+            .ranges
+            .get(stripe)
+            .ok_or_else(lr_pipeline_state_error)?;
         let mut state = self
             .stripe_state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let lifecycle = state.get_mut(stripe).ok_or_else(|| self.stripe_error())?;
+        let lifecycle = state.get_mut(stripe).ok_or_else(lr_pipeline_state_error)?;
         if *lifecycle != StripeLifecycle::Pending {
-            return Err(self.stripe_error());
+            return Err(lr_pipeline_state_error());
         }
         *lifecycle = StripeLifecycle::Claimed;
         Ok(range)
-    }
-
-    fn stripe_error(&self) -> crate::error::DecodeError {
-        wienerns_lr_selectable_transform_record_error_reason(
-            self.offset,
-            "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-        )
     }
 
     /// Runs § 7.5's CDEF-then-CCSO sequence over one luma row range.
@@ -991,12 +960,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             start,
             end,
         )
-        .map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                self.offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_filter",
-            )
-        })?;
+        .map_err(|_| lr_pipeline_state_error())?;
         crate::timing::accumulate(crate::timing::Phase::FilterCdefStripe, cdef_timer);
         if let Some((grid, config)) = chain.ccso_grid.zip(self.ccso_config.as_ref()) {
             let ccso_timer = crate::timing::start();
@@ -1007,12 +971,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
                 chain.lossless_grid,
                 self.tile_starts(),
             )
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    self.offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_ccso_filter",
-                )
-            })?;
+            .map_err(|_| lr_pipeline_state_error())?;
             crate::timing::accumulate(crate::timing::Phase::FilterCcsoStripe, ccso_timer);
         }
         Ok(cdef)
@@ -1128,7 +1087,6 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         mut self,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
-        let offset = self.offset;
         let complete = self
             .stripe_state
             .lock()
@@ -1136,7 +1094,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             .iter()
             .all(|lifecycle| *lifecycle == StripeLifecycle::Submitted);
         if !complete {
-            return Err(self.stripe_error());
+            return Err(lr_pipeline_state_error());
         }
         self.sink.drain_before_freeze()?;
         self.filter_records.lr_source_blocks = self.lr_source_blocks;
@@ -1150,10 +1108,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
             && (!self.filter_records.deblock_blocks.is_empty()
                 || !self.filter_records.chroma_deblock_blocks.is_empty())
         {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-            ));
+            return Err(lr_pipeline_state_error());
         }
         if let Some(records) = self
             .deblock_records
@@ -1187,13 +1142,7 @@ impl<T: ReconSample> OwnedFilterFinish<T> {
         self,
         publish: impl FnOnce(DecodedFrame<T>) -> R,
     ) -> Result<(R, super::FrameFilterRecords)> {
-        let offset = self.setup.offset;
-        let setup = Arc::try_unwrap(self.setup).map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-            )
-        })?;
+        let setup = Arc::try_unwrap(self.setup).map_err(|_| lr_pipeline_state_error())?;
         setup.finish(publish)
     }
 }
@@ -1238,7 +1187,6 @@ fn deblock_stripe_window<T: ReconSample>(
     range: &(usize, usize),
     subsampling_y: usize,
     bit_depth: BitDepth,
-    offset: ByteOffset,
 ) -> Result<crate::filters::source::DeblockedWindow<T>> {
     let needed = range.1 + (STRIPE_WINDOW_MARGIN << subsampling_y);
     if let Some(sections) = sections {
@@ -1250,10 +1198,10 @@ fn deblock_stripe_window<T: ReconSample>(
                 needed.saturating_add(reach).div_ceil(MI_SIZE),
                 bit_depth,
             )
-            .map_err(|_| deblock_filter_error(offset))?;
+            .map_err(|_| lr_pipeline_state_error())?;
         crate::timing::accumulate(crate::timing::Phase::FilterDeblock, deblock_timer);
         if sections.final_luma_rows(subsampling_y) < needed.min(sections.luma_rows()) {
-            return Err(deblock_filter_error(offset));
+            return Err(lr_pipeline_state_error());
         }
     }
     let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::FilterStripeWindow);
@@ -1263,14 +1211,11 @@ fn deblock_stripe_window<T: ReconSample>(
         range.1,
         STRIPE_WINDOW_MARGIN,
     )
-    .ok_or_else(|| deblock_filter_error(offset))
+    .ok_or_else(lr_pipeline_state_error)
 }
 
-pub(crate) fn deblock_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(
-        offset,
-        "unsupported_wienerns_lr_selectable_transform_records_deblock_filter",
-    )
+pub(crate) fn lr_pipeline_state_error() -> crate::error::DecodeError {
+    crate::error::DecodeHeaderStateError::InvalidLoopRestorationFilterState.into()
 }
 
 /// Everything one filter stripe reads, borrowed out of the sink so the deblock
@@ -1326,14 +1271,8 @@ impl StripeChain<'_> {
         &self,
         plane: PlaneId,
         stripe: &crate::filters::source::StripePlane,
-        offset: ByteOffset,
     ) -> Result<()> {
-        let error = || {
-            wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-            )
-        };
+        let error = || lr_pipeline_state_error();
         let size = self.plane_sizes[plane.index()].ok_or_else(&error)?;
         let end_y = stripe.end_y().ok_or_else(&error)?;
         if stripe.width() != size.width()
@@ -1373,12 +1312,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         cdef_needs_skip_grid || luma_lr_needs_skip_grid
     }
 
-    fn ensure_tx_skip_grid(
-        &mut self,
-        mi_rows: usize,
-        mi_cols: usize,
-        offset: ByteOffset,
-    ) -> Result<()> {
+    fn ensure_tx_skip_grid(&mut self, mi_rows: usize, mi_cols: usize) -> Result<()> {
         if self.tx_skip_grid.is_some() {
             return Ok(());
         }
@@ -1387,12 +1321,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             mi_cols,
             &self.filter_records.tx_skip_records,
         )
-        .map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_tx_skip_grid",
-            )
-        })?;
+        .map_err(|_| lr_pipeline_state_error())?;
         self.tx_skip_grid = Some(grid);
         Ok(())
     }
@@ -1402,14 +1331,9 @@ fn publish_filter_stripe_to<T: ReconSample>(
     workspace: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
     stripe: &crate::filters::source::StripePlane,
-    offset: ByteOffset,
+    _offset: ByteOffset,
 ) -> Result<()> {
-    let error = || {
-        wienerns_lr_selectable_transform_record_error_reason(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_filter_stripe_publish",
-        )
-    };
+    let error = || lr_pipeline_state_error();
     let end_y = stripe.end_y().ok_or_else(&error)?;
     let size = workspace.plane(plane).map_err(|_| error())?.storage_size();
     let mut frame = workspace.as_frame_mut();

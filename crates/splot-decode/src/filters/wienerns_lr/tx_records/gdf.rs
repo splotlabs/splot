@@ -13,10 +13,8 @@ use crate::bitstream::tile_payload::{
 use crate::error::Result;
 use crate::filters::gdf::GdfBlockGrid;
 
-use super::super::wienerns_lr_selectable_transform_record_error_reason;
-
-const GDF_GRID_REASON: &str = "unsupported_wienerns_lr_selectable_transform_records_gdf_grid";
-const GDF_SYMBOL_REASON: &str = "unsupported_wienerns_lr_selectable_transform_records_gdf_symbol";
+use super::super::selectable_symbol_read_error;
+use crate::bitstream::tile_payload::BlockSymbolTraceReadError;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct GdfState {
@@ -36,7 +34,7 @@ impl GdfState {
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         if !self.active {
             return Ok(Self::inactive());
@@ -50,11 +48,11 @@ impl GdfState {
         let grid_cols = col_end.saturating_sub(col_start);
         let len = grid_rows
             .checked_mul(grid_cols)
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+            .ok_or_else(gdf_state_error)?;
         let mut values = Vec::new();
         values
             .try_reserve_exact(len)
-            .map_err(|_| gdf_error(tile_offset, GDF_GRID_REASON))?;
+            .map_err(|_| gdf_allocation_error())?;
         values.resize(len, 2);
         Ok(Self {
             active: self.active,
@@ -74,7 +72,7 @@ impl GdfState {
         mi_cols: usize,
         sequence: &SequenceHeader,
         core: &FrameHeaderCore,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         let per_block = core
             .gdf_params
@@ -83,53 +81,40 @@ impl GdfState {
         if !per_block {
             return Ok(Self::inactive());
         }
-        let filter = sequence
-            .filter
-            .as_ref()
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
-        let partition = sequence
-            .partition
-            .as_ref()
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
-        let frame_is_intra = core
-            .frame_is_intra
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+        let filter = sequence.filter.as_ref().ok_or_else(gdf_state_error)?;
+        let partition = sequence.partition.as_ref().ok_or_else(gdf_state_error)?;
+        let frame_is_intra = core.frame_is_intra.ok_or_else(gdf_state_error)?;
         let sb_size = match (frame_is_intra, partition.seq_sb_size()) {
             (true, SuperblockSize::Block256x256) => SuperblockSize::Block128x128,
             (_, sb_size) => sb_size,
         };
-        let tile = core
-            .tile_info
-            .as_ref()
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+        let tile = core.tile_info.as_ref().ok_or_else(gdf_state_error)?;
         let geometry = GdfGeometry {
             sb_size,
-            mi_cols: u32::try_from(mi_cols).map_err(|_| gdf_error(tile_offset, GDF_GRID_REASON))?,
-            mi_rows: u32::try_from(mi_rows).map_err(|_| gdf_error(tile_offset, GDF_GRID_REASON))?,
+            mi_cols: u32::try_from(mi_cols).map_err(|_| gdf_state_error())?,
+            mi_rows: u32::try_from(mi_rows).map_err(|_| gdf_state_error())?,
             tile_cols: tile.tile_cols,
             tile_rows: tile.tile_rows,
             mi_col_starts: &tile.mi_col_starts,
             mi_row_starts: &tile.mi_row_starts,
         };
         let block_size = usize::try_from(gdf_block_size(filter.gdf_unit_matches_sb_size, geometry))
-            .map_err(|_| gdf_error(tile_offset, GDF_GRID_REASON))?;
+            .map_err(|_| gdf_state_error())?;
         let sb_size4 = sb_size4(sb_size);
-        let sb_width = sb_size4
-            .checked_mul(4)
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+        let sb_width = sb_size4.checked_mul(4).ok_or_else(gdf_state_error)?;
         let sb_per_gdf = block_size
             .checked_div(sb_width)
             .filter(|&value| value != 0)
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+            .ok_or_else(gdf_state_error)?;
         let unit_mi = block_size
             .checked_div(4)
             .filter(|&value| value != 0)
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+            .ok_or_else(gdf_state_error)?;
         let grid_rows = mi_rows.div_ceil(unit_mi);
         let grid_cols = mi_cols.div_ceil(unit_mi);
         let cells = grid_rows
             .checked_mul(grid_cols)
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+            .ok_or_else(gdf_state_error)?;
         Ok(Self {
             active: true,
             block_size,
@@ -177,9 +162,7 @@ impl GdfState {
         }
         let unit_row = sb_row / self.sb_per_gdf;
         let unit_col = sb_col / self.sb_per_gdf;
-        let index = self
-            .index(unit_row, unit_col)
-            .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+        let index = self.index(unit_row, unit_col).ok_or_else(gdf_state_error)?;
         self.values[index] =
             read_use_gdf(work_unit.cdf_mut().tile_cdfs_mut(), symbols, tile_offset)?;
         Ok(())
@@ -201,7 +184,7 @@ impl GdfState {
         tile: &Self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<()> {
         if self.active != tile.active
             || self.block_size != tile.block_size
@@ -210,7 +193,7 @@ impl GdfState {
             || self.row_start != 0
             || self.col_start != 0
         {
-            return Err(gdf_error(tile_offset, GDF_GRID_REASON));
+            return Err(gdf_state_error());
         }
         if !self.active {
             return Ok(());
@@ -225,32 +208,28 @@ impl GdfState {
             || tile.grid_rows != row_end.saturating_sub(expected_row_start)
             || tile.grid_cols != col_end.saturating_sub(expected_col_start)
         {
-            return Err(gdf_error(tile_offset, GDF_GRID_REASON));
+            return Err(gdf_state_error());
         }
         for row in mi_rows.start / unit_mi..row_end {
             for col in mi_cols.start / unit_mi..col_end {
-                let index = self
-                    .index(row, col)
-                    .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
-                let tile_index = tile
-                    .index(row, col)
-                    .ok_or_else(|| gdf_error(tile_offset, GDF_GRID_REASON))?;
+                let index = self.index(row, col).ok_or_else(gdf_state_error)?;
+                let tile_index = tile.index(row, col).ok_or_else(gdf_state_error)?;
                 self.values[index] = tile.values[tile_index];
             }
         }
         Ok(())
     }
 
-    pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<GdfBlockGrid>> {
+    pub(crate) fn into_grid(self, _tile_offset: ByteOffset) -> Result<Option<GdfBlockGrid>> {
         if !self.active {
             return Ok(None);
         }
         if self.row_start != 0 || self.col_start != 0 {
-            return Err(gdf_error(tile_offset, GDF_GRID_REASON));
+            return Err(gdf_state_error());
         }
         GdfBlockGrid::new(self.block_size, self.grid_rows, self.grid_cols, self.values)
             .map(Some)
-            .map_err(|()| gdf_error(tile_offset, GDF_GRID_REASON))
+            .map_err(|()| gdf_state_error())
     }
 }
 
@@ -261,10 +240,15 @@ fn read_use_gdf(
 ) -> Result<u8> {
     let value = cdfs
         .read_block_symbol_trace(TileCdfSelector::UseGdf, symbols)
-        .map_err(|_| gdf_error(tile_offset, GDF_SYMBOL_REASON))?
+        .map_err(|error| match error {
+            BlockSymbolTraceReadError::Cdf(_) => gdf_state_error(),
+            BlockSymbolTraceReadError::Symbol(_) => {
+                selectable_symbol_read_error(tile_offset, "5.20.10.3")
+            }
+        })?
         .get();
     if value > 1 {
-        return Err(gdf_error(tile_offset, GDF_SYMBOL_REASON));
+        return Err(gdf_state_error());
     }
     Ok(value)
 }
@@ -277,8 +261,16 @@ const fn sb_size4(sb_size: SuperblockSize) -> usize {
     }
 }
 
-fn gdf_error(tile_offset: ByteOffset, reason: &'static str) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(tile_offset, reason)
+fn gdf_state_error() -> crate::error::DecodeError {
+    crate::error::DecodeHeaderStateError::InvalidGdfFilterState.into()
+}
+
+fn gdf_allocation_error() -> crate::error::DecodeError {
+    splot_recon::ReconError::WorkspaceAllocationFailed {
+        plane: splot_recon::PlaneId::Y,
+        context: "GDF block grid",
+    }
+    .into()
 }
 
 #[cfg(test)]

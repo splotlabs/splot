@@ -22,7 +22,6 @@ use splot_recon::{
 
 use crate::Result;
 use crate::filters::source::{FramePlane, StripePlane};
-use crate::filters::wienerns_lr::wienerns_lr_selectable_transform_record_error_reason;
 use crate::support::reusable_scratch::with_reusable_scratch;
 
 #[path = "gdf_simd.rs"]
@@ -58,9 +57,6 @@ const GDF_COORDS: [(isize, isize); 18] = [
 pub(crate) const GDF_READ_RADIUS: usize = 7;
 const GDF_INTRA_REF_DST: usize = 0;
 const RESTRICTED_ORDER_HINT: u32 = u32::MAX;
-const GDF_SCRATCH_ALLOCATION_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_gdf_allocation";
-const GDF_SOURCE_REASON: &str = "unsupported_wienerns_lr_selectable_transform_records_gdf_source";
 
 fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Option<usize> {
     let local_y = y.checked_sub(tile_start)?;
@@ -77,13 +73,10 @@ fn gdf_stripe_end_for_tile(y: usize, tile_start: usize, tile_end: usize) -> Opti
 pub(crate) fn stripe_ranges(
     core: &FrameHeaderCore,
     luma_height: usize,
-    offset: ByteOffset,
+    _offset: ByteOffset,
 ) -> Result<Vec<(usize, usize)>> {
     if luma_height == 0 {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     }
     let mut ranges = Vec::new();
     let mut y = 0;
@@ -92,20 +85,10 @@ pub(crate) fn stripe_ranges(
             .tile_info
             .as_ref()
             .map_or(Ok((0, luma_height - 1)), |tile| {
-                tile_axis_bounds(&tile.mi_row_starts, y, luma_height, offset)
+                tile_axis_bounds(&tile.mi_row_starts, y, luma_height)
             })?;
-        let tile_end = tile_end.checked_add(1).ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
-        let end = gdf_stripe_end_for_tile(y, tile_start, tile_end).ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        let tile_end = tile_end.checked_add(1).ok_or_else(gdf_state_error)?;
+        let end = gdf_stripe_end_for_tile(y, tile_start, tile_end).ok_or_else(gdf_state_error)?;
         ranges.push((y, end));
         y = end;
     }
@@ -208,7 +191,6 @@ fn gdf_config(
     block_grid: Option<&GdfBlockGrid>,
     bit_depth: BitDepth,
     reference: Option<GdfReferenceContext>,
-    offset: ByteOffset,
 ) -> Result<Option<GdfConfig>> {
     let Some((gdf, per_block)) = core
         .gdf_params
@@ -219,39 +201,23 @@ fn gdf_config(
         return Ok(None);
     };
     if per_block && block_grid.is_none() {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_grid",
-        ));
+        return Err(gdf_state_error());
     }
-    let quant = core.quantization_params.as_ref().ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_quantization",
-        )
-    })?;
-    let frame_is_intra = core.frame_is_intra.ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_frame_type",
-        )
-    })?;
+    let quant = core
+        .quantization_params
+        .as_ref()
+        .ok_or_else(gdf_state_error)?;
+    let frame_is_intra = core.frame_is_intra.ok_or_else(gdf_state_error)?;
     let qp_idx = gdf_qp_idx(
         quant.base_q_idx,
         bit_depth,
         frame_is_intra,
         gdf.gdf_pic_qc_idx,
-        offset,
     )?;
     let ref_dst_idx = if frame_is_intra {
         GDF_INTRA_REF_DST
     } else {
-        gdf_inter_ref_dst_idx(reference.ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_inter_reference",
-            )
-        })?)
+        gdf_inter_ref_dst_idx(reference.ok_or_else(gdf_state_error)?)
     };
     Ok(Some(GdfConfig {
         per_block,
@@ -276,7 +242,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     reference: Option<GdfReferenceContext>,
     offset: ByteOffset,
 ) -> Result<()> {
-    let Some(config) = gdf_config(core, block_grid, bit_depth, reference, offset)? else {
+    let Some(config) = gdf_config(core, block_grid, bit_depth, reference)? else {
         return Ok(());
     };
     let width = post_lr_luma.width();
@@ -287,29 +253,16 @@ pub(crate) fn apply_stripe<T: ReconSample>(
         height >= 2 && height.is_multiple_of(2) && height.checked_mul(width) == Some(sample_count)
     });
     let Some(height) = height else {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     };
-    let end_y = y.checked_add(height).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+    let end_y = y.checked_add(height).ok_or_else(gdf_state_error)?;
     let (tile_start, tile_end) = core
         .tile_info
         .as_ref()
         .map_or(Ok((0, frame_height - 1)), |tile| {
-            tile_axis_bounds(&tile.mi_row_starts, y, frame_height, offset)
+            tile_axis_bounds(&tile.mi_row_starts, y, frame_height)
         })?;
-    let tile_end = tile_end.checked_add(1).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+    let tile_end = tile_end.checked_add(1).ok_or_else(gdf_state_error)?;
     if gdf_stripe_end_for_tile(y, tile_start, tile_end) != Some(end_y)
         || deblocked_luma.width() != width
         || deblocked_luma.frame_height() != frame_height
@@ -320,17 +273,14 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 || cdef_luma.samples().len() != sample_count
         })
     {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        ));
+        return Err(gdf_state_error());
     }
     let band_segments = if disable_loopfilters_across_tiles {
-        gdf_band_segments(core, width, offset)?
+        gdf_band_segments(core, width)?
     } else {
         vec![(0, width)]
     };
-    let stripe_row = gdf_stripe_row(core, y, frame_height, offset)?;
+    let stripe_row = gdf_stripe_row(core, y, frame_height)?;
     with_reusable_scratch(&GDF_SCRATCH, |scratch| {
         for &(segment_x, segment_width) in &band_segments {
             let stripe_block = GdfBlock {
@@ -347,12 +297,7 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 pix_scale: config.pix_scale,
                 max_sample: config.max_sample,
             };
-            let bounds = source_bounds(
-                core,
-                &stripe_block,
-                disable_loopfilters_across_tiles,
-                offset,
-            )?;
+            let bounds = source_bounds(core, &stripe_block, disable_loopfilters_across_tiles)?;
             let cdef_luma = separate_cdef_luma.unwrap_or(post_lr_luma);
             let source = GdfSource::materialize_stripe(
                 &mut scratch.source,
@@ -361,14 +306,10 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 cdef_overlap,
                 &bounds,
                 &stripe_block,
-                offset,
             )?;
-            let band_origin = source.relative_position(segment_x, y).ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-                )
-            })?;
+            let band_origin = source
+                .relative_position(segment_x, y)
+                .ok_or_else(gdf_state_error)?;
             band_classes_from_source(
                 &source,
                 band_origin,
@@ -376,7 +317,6 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 &mut scratch.classes,
                 &mut scratch.gradient_pairs,
                 &mut scratch.gradient_tmp,
-                offset,
             )?;
             if !config.per_block
                 && lossless_grid.is_none()
@@ -393,28 +333,20 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                 )?;
                 continue;
             }
-            let segment_end = segment_x.checked_add(segment_width).ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                )
-            })?;
+            let segment_end = segment_x
+                .checked_add(segment_width)
+                .ok_or_else(gdf_state_error)?;
             let class_cols = segment_width >> 1;
             for local_y in (0..height).step_by(MI_SIZE) {
                 let block_y = y + local_y;
                 let block_height = MI_SIZE.min(height - local_y);
-                let class_start = (local_y >> 1).checked_mul(class_cols).ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                    )
-                })?;
-                let classes = scratch.classes.get(class_start..).ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                    )
-                })?;
+                let class_start = (local_y >> 1)
+                    .checked_mul(class_cols)
+                    .ok_or_else(gdf_state_error)?;
+                let classes = scratch
+                    .classes
+                    .get(class_start..)
+                    .ok_or_else(gdf_state_error)?;
                 for x in (segment_x..segment_end).step_by(MI_SIZE) {
                     let block_width = MI_SIZE.min(segment_end - x);
                     if block_width < 2
@@ -422,20 +354,12 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                         || !block_width.is_multiple_of(2)
                         || !block_height.is_multiple_of(2)
                     {
-                        return Err(gdf_filter_error(
-                            offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                        ));
+                        return Err(gdf_state_error());
                     }
                     let block_enabled = if config.per_block {
                         block_grid
                             .and_then(|grid| grid.enabled(stripe_row, x))
-                            .ok_or_else(|| {
-                                gdf_filter_error(
-                                    offset,
-                                    "unsupported_wienerns_lr_selectable_transform_records_gdf_grid",
-                                )
-                            })?
+                            .ok_or_else(gdf_state_error)?
                     } else {
                         true
                     };
@@ -464,7 +388,6 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                             block_y,
                             block_width,
                             block_height,
-                            offset,
                         )?;
                         let mut block = [0; MI_SIZE * MI_SIZE];
                         block[..copied.len()].copy_from_slice(&copied);
@@ -480,7 +403,6 @@ pub(crate) fn apply_stripe<T: ReconSample>(
                         block_width,
                         block_height,
                         &mut output,
-                        offset,
                     )?;
                     for row in 0..block_height {
                         let src = &output[row * block_width..(row + 1) * block_width];
@@ -494,35 +416,20 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     })
 }
 
-fn gdf_stripe_row(
-    core: &FrameHeaderCore,
-    y: usize,
-    luma_height: usize,
-    offset: ByteOffset,
-) -> Result<usize> {
-    let frame_end_y = luma_height.checked_sub(1).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+fn gdf_stripe_row(core: &FrameHeaderCore, y: usize, luma_height: usize) -> Result<usize> {
+    let frame_end_y = luma_height.checked_sub(1).ok_or_else(gdf_state_error)?;
     let tile_end_y = core.tile_info.as_ref().map_or(Ok(frame_end_y), |tile| {
-        tile_axis_bounds(&tile.mi_row_starts, y, luma_height, offset).map(|(_, end)| end)
+        tile_axis_bounds(&tile.mi_row_starts, y, luma_height).map(|(_, end)| end)
     })?;
-    gdf_stripe_row_for_tile_end(y, tile_end_y, offset)
+    gdf_stripe_row_for_tile_end(y, tile_end_y)
 }
 
-fn gdf_stripe_row_for_tile_end(y: usize, tile_end_y: usize, offset: ByteOffset) -> Result<usize> {
+fn gdf_stripe_row_for_tile_end(y: usize, tile_end_y: usize) -> Result<usize> {
     let row = y / MI_SIZE;
     let stripe_row = row
         .checked_add(2)
         .map(|value| (value >> 4) << 4)
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     Ok(stripe_row.min(tile_end_y / MI_SIZE))
 }
 
@@ -535,14 +442,8 @@ fn copy_base_block<T: ReconSample>(
     y: usize,
     width: usize,
     height: usize,
-    offset: ByteOffset,
 ) -> Result<Vec<T>> {
-    let capacity = width.checked_mul(height).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+    let capacity = width.checked_mul(height).ok_or_else(gdf_state_error)?;
     let mut output = Vec::with_capacity(capacity);
     for row in 0..height {
         let start = y
@@ -550,31 +451,11 @@ fn copy_base_block<T: ReconSample>(
             .and_then(|sample_y| sample_y.checked_sub(origin_y))
             .and_then(|sample_y| sample_y.checked_mul(stride))
             .and_then(|row_start| row_start.checked_add(x))
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                )
-            })?;
-        let end = start.checked_add(width).ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
-        let samples = base_luma.get(start..end).ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-            )
-        })?;
+            .ok_or_else(gdf_state_error)?;
+        let end = start.checked_add(width).ok_or_else(gdf_state_error)?;
+        let samples = base_luma.get(start..end).ok_or_else(gdf_state_error)?;
         for &sample in samples {
-            output.push(T::try_from_u16(sample).map_err(|_| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
-                )
-            })?);
+            output.push(T::try_from_u16(sample).map_err(|_| gdf_state_error())?);
         }
     }
     Ok(output)
@@ -622,30 +503,19 @@ fn compute_block<T: ReconSample>(
     block: GdfBlock,
     offset: ByteOffset,
 ) -> Result<[T; MI_SIZE * MI_SIZE]> {
-    let source_origin = source.relative_position(block.x, block.y).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        )
-    })?;
+    let source_origin = source
+        .relative_position(block.x, block.y)
+        .ok_or_else(gdf_state_error)?;
     if source_origin.0 < GDF_READ_RADIUS || source_origin.1 < GDF_READ_RADIUS {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        ));
+        return Err(gdf_state_error());
     }
     let stride = source.stride;
-    let tap_offsets = gdf_tap_offsets(stride, offset)?;
+    let tap_offsets = gdf_tap_offsets(stride)?;
     let last_col = source_origin
         .0
         .checked_add(block.width)
         .and_then(|value| value.checked_add(GDF_READ_RADIUS - 1))
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     let window_end = source_origin
         .1
         .checked_add(block.height)
@@ -653,17 +523,9 @@ fn compute_block<T: ReconSample>(
         .and_then(|last_row| last_row.checked_mul(stride))
         .and_then(|prefix| prefix.checked_add(last_col))
         .and_then(|last_index| last_index.checked_add(1))
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     if last_col >= stride || window_end > source.samples.len() {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-        ));
+        return Err(gdf_state_error());
     }
     let class_col_base = (source_origin.0 - GDF_READ_RADIUS) >> 1;
     let mut output = [T::default(); MI_SIZE * MI_SIZE];
@@ -676,21 +538,11 @@ fn compute_block<T: ReconSample>(
                 .and_then(|y| y.checked_sub(block.base_origin_y))
                 .and_then(|y| y.checked_mul(block.frame_width))
                 .and_then(|index| index.checked_add(block.x))
-                .ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-                    )
-                })?;
+                .ok_or_else(gdf_state_error)?;
             let base_values = exact_slice(base_luma, base_start, MI_SIZE)
                 .and_then(|samples| <&[u16; MI_SIZE]>::try_from(samples).ok())
                 .copied()
-                .ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-                    )
-                })?;
+                .ok_or_else(gdf_state_error)?;
             let samples = gdf_width4_rows(
                 [base_values],
                 source,
@@ -702,12 +554,8 @@ fn compute_block<T: ReconSample>(
                 offset,
             )?[0];
             for (col, sample) in samples.into_iter().enumerate() {
-                output[row * MI_SIZE + col] = T::try_from_u16(sample).map_err(|_| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
-                    )
-                })?;
+                output[row * MI_SIZE + col] =
+                    T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
             }
         }
         return Ok(output);
@@ -725,12 +573,8 @@ fn compute_block<T: ReconSample>(
                 (source_origin.0 + col, source_origin.1 + row),
                 class,
             );
-            output[row * block.width + col] = T::try_from_u16(sample).map_err(|_| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
-                )
-            })?;
+            output[row * block.width + col] =
+                T::try_from_u16(sample).map_err(|_| gdf_state_error())?;
         }
     }
     Ok(output)
@@ -744,18 +588,13 @@ fn compute_enabled_segment(
     source_origin: (usize, usize),
     offset: ByteOffset,
 ) -> Result<()> {
-    let geometry_error = || {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    };
-    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
+    let geometry_error = || gdf_state_error();
+    let source_error = gdf_state_error;
     if !block.height.is_multiple_of(2) {
         return Err(geometry_error());
     }
     let class_cols = block.width >> 1;
-    let tap_offsets = gdf_tap_offsets(source.stride, offset)?;
+    let tap_offsets = gdf_tap_offsets(source.stride)?;
     let uniform_params: [GdfUniformParams; 4] =
         core::array::from_fn(|class| GdfUniformParams::new(block, class));
     for row in (0..block.height).step_by(2) {
@@ -798,7 +637,6 @@ fn compute_enabled_segment(
                         &uniform_params[class_index as usize],
                         block,
                         origin,
-                        offset,
                     )?;
                     base_luma[output_start..output_start + 16].copy_from_slice(&filtered[0]);
                     base_luma[next_output_start..next_output_start + 16]
@@ -831,7 +669,6 @@ fn compute_enabled_segment(
                         &uniform_params[class_index as usize],
                         block,
                         origin,
-                        offset,
                     )?;
                     base_luma[output_start..output_start + 8].copy_from_slice(&filtered[0]);
                     base_luma[next_output_start..next_output_start + 8]
@@ -908,7 +745,6 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
     width: usize,
     height: usize,
     output: &mut [T],
-    offset: ByteOffset,
 ) -> Result<()> {
     let Some(lossless_grid) = lossless_grid else {
         return Ok(());
@@ -925,104 +761,56 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
                 .and_then(|row| row.checked_mul(luma_width))
                 .and_then(|start| start.checked_add(sample_x))
                 .and_then(|index| base_luma.get(index).copied())
-                .ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-                    )
-                })?;
+                .ok_or_else(gdf_state_error)?;
             let dst = row
                 .checked_mul(width)
                 .and_then(|start| start.checked_add(col))
                 .and_then(|index| output.get_mut(index))
-                .ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                    )
-                })?;
-            *dst = T::try_from_u16(src).map_err(|_| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_sample",
-                )
-            })?;
+                .ok_or_else(gdf_state_error)?;
+            *dst = T::try_from_u16(src).map_err(|_| gdf_state_error())?;
         }
     }
     Ok(())
 }
 
-fn gdf_band_segments(
-    core: &FrameHeaderCore,
-    luma_width: usize,
-    offset: ByteOffset,
-) -> Result<Vec<(usize, usize)>> {
+fn gdf_band_segments(core: &FrameHeaderCore, luma_width: usize) -> Result<Vec<(usize, usize)>> {
     let Some(tile) = core.tile_info.as_ref() else {
         return Ok(vec![(0, luma_width)]);
     };
-    let tile_cols = usize::try_from(tile.tile_cols).map_err(|_| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+    let tile_cols = usize::try_from(tile.tile_cols).map_err(|_| gdf_state_error())?;
     if tile.mi_col_starts.len() != tile_cols.saturating_add(1) || luma_width == 0 {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     }
     let mut segments: Vec<(usize, usize)> = Vec::with_capacity(tile_cols);
     for window in tile.mi_col_starts.windows(2) {
         let start = usize::try_from(window[0])
             .ok()
             .and_then(|value| value.checked_mul(MI_SIZE))
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                )
-            })?
+            .ok_or_else(gdf_state_error)?
             .min(luma_width);
         let end = usize::try_from(window[1])
             .ok()
             .and_then(|value| value.checked_mul(MI_SIZE))
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                )
-            })?
+            .ok_or_else(gdf_state_error)?
             .min(luma_width);
         let width = end
             .checked_sub(start)
             .filter(|&width| width != 0)
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-                )
-            })?;
+            .ok_or_else(gdf_state_error)?;
         if segments
             .last()
             .is_some_and(|&(previous_x, previous_width)| {
                 previous_x.checked_add(previous_width) != Some(start)
             })
         {
-            return Err(gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            ));
+            return Err(gdf_state_error());
         }
         segments.push((start, width));
     }
     if segments.first().map(|&(x, _)| x) != Some(0)
         || segments.last().and_then(|&(x, width)| x.checked_add(width)) != Some(luma_width)
     {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     }
     Ok(segments)
 }
@@ -1031,13 +819,9 @@ fn tile_axis_bounds(
     starts: &[u32],
     position: usize,
     frame_extent: usize,
-    offset: ByteOffset,
 ) -> Result<(usize, usize)> {
     if position >= frame_extent {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     }
     let mi = position / MI_SIZE;
     let window = starts
@@ -1046,33 +830,18 @@ fn tile_axis_bounds(
             usize::try_from(window[0]).is_ok_and(|start| start <= mi)
                 && usize::try_from(window[1]).is_ok_and(|end| mi < end)
         })
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     let start = usize::try_from(window[0])
         .ok()
         .and_then(|value| value.checked_mul(MI_SIZE))
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     let end = usize::try_from(window[1])
         .ok()
         .and_then(|value| value.checked_mul(MI_SIZE))
         .map(|end| end.min(frame_extent))
         .and_then(|end| end.checked_sub(1))
         .filter(|&end| position >= start && position <= end)
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     Ok((start, end))
 }
 
@@ -1080,63 +849,40 @@ fn source_bounds(
     core: &FrameHeaderCore,
     block: &GdfBlock,
     disable_loopfilters_across_tiles: bool,
-    offset: ByteOffset,
 ) -> Result<LoopRestorationSourceBounds> {
-    let frame_end_x = block.frame_width.checked_sub(1).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    let frame_end_y = block.frame_height.checked_sub(1).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    let (tile_start_x, tile_end_x, tile_start_y, tile_end_y) =
-        if let Some(tile) = core.tile_info.as_ref() {
-            let (start_x, end_x) =
-                tile_axis_bounds(&tile.mi_col_starts, block.x, block.frame_width, offset)?;
-            let (start_y, end_y) =
-                tile_axis_bounds(&tile.mi_row_starts, block.y, block.frame_height, offset)?;
-            (start_x, end_x, start_y, end_y)
-        } else {
-            (0, frame_end_x, 0, frame_end_y)
-        };
-    let local_y = block.y.checked_sub(tile_start_y).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+    let frame_end_x = block
+        .frame_width
+        .checked_sub(1)
+        .ok_or_else(gdf_state_error)?;
+    let frame_end_y = block
+        .frame_height
+        .checked_sub(1)
+        .ok_or_else(gdf_state_error)?;
+    let (tile_start_x, tile_end_x, tile_start_y, tile_end_y) = if let Some(tile) =
+        core.tile_info.as_ref()
+    {
+        let (start_x, end_x) = tile_axis_bounds(&tile.mi_col_starts, block.x, block.frame_width)?;
+        let (start_y, end_y) = tile_axis_bounds(&tile.mi_row_starts, block.y, block.frame_height)?;
+        (start_x, end_x, start_y, end_y)
+    } else {
+        (0, frame_end_x, 0, frame_end_y)
+    };
+    let local_y = block
+        .y
+        .checked_sub(tile_start_y)
+        .ok_or_else(gdf_state_error)?;
     let stripe_num = local_y
         .checked_add(GDF_TEST_STRIPE_OFF)
         .map(|value| value / GDF_TEST_STRIPE_SIZE)
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     let stripe_base = stripe_num
         .checked_mul(GDF_TEST_STRIPE_SIZE)
         .and_then(|start| tile_start_y.checked_add(start))
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     let stripe_start = stripe_base.saturating_sub(GDF_TEST_STRIPE_OFF);
     let stripe_end = stripe_base
         .checked_add(GDF_TEST_STRIPE_SIZE - GDF_TEST_STRIPE_OFF - 1)
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
+        .ok_or_else(gdf_state_error)?;
     let (luma_start_x, luma_end_x, luma_start_y, luma_end_y) = if disable_loopfilters_across_tiles {
         (tile_start_x, tile_end_x, tile_start_y, tile_end_y)
     } else {
@@ -1154,15 +900,11 @@ fn source_bounds(
     })
 }
 
-fn resize_scratch<T: Clone + Default>(
-    buffer: &mut Vec<T>,
-    len: usize,
-    offset: ByteOffset,
-) -> Result<()> {
+fn resize_scratch<T: Clone + Default>(buffer: &mut Vec<T>, len: usize) -> Result<()> {
     buffer.clear();
     buffer
         .try_reserve_exact(len)
-        .map_err(|_| gdf_filter_error(offset, GDF_SCRATCH_ALLOCATION_REASON))?;
+        .map_err(|_| gdf_allocation_error())?;
     buffer.resize(len, T::default());
     Ok(())
 }
@@ -1222,9 +964,8 @@ impl<'a> GdfSource<'a> {
         cdef_luma: &[u16],
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
-        offset: ByteOffset,
     ) -> Result<Self> {
-        Self::materialize_rows::<u16, T>(samples, bounds, block, offset, |source, y| {
+        Self::materialize_rows::<u16, T>(samples, bounds, block, |source, y| {
             let plane = match source {
                 LoopRestorationSource::CurrFrame => curr_luma,
                 LoopRestorationSource::CdefFrame => cdef_luma,
@@ -1243,9 +984,8 @@ impl<'a> GdfSource<'a> {
         cdef_overlap: &[StripePlane],
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
-        offset: ByteOffset,
     ) -> Result<Self> {
-        Self::materialize_rows::<T, T>(samples, bounds, block, offset, |source, y| match source {
+        Self::materialize_rows::<T, T>(samples, bounds, block, |source, y| match source {
             LoopRestorationSource::CurrFrame => deblocked_luma.row(y).map(GdfSourceRow::Frame),
             LoopRestorationSource::CdefFrame => cdef_luma
                 .row(y)
@@ -1258,72 +998,26 @@ impl<'a> GdfSource<'a> {
         samples: &'a mut Vec<u16>,
         bounds: &LoopRestorationSourceBounds,
         block: &GdfBlock,
-        offset: ByteOffset,
         source_row: impl Fn(LoopRestorationSource, usize) -> Option<GdfSourceRow<'b, S>>,
     ) -> Result<Self> {
         let width = block
             .width
             .checked_add(GDF_READ_RADIUS * 2)
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                )
-            })?;
+            .ok_or_else(gdf_state_error)?;
         let height = block
             .height
             .checked_add(GDF_READ_RADIUS * 2)
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                )
-            })?;
-        let sample_count = width.checked_mul(height).ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-            )
-        })?;
-        resize_scratch(samples, sample_count, offset)?;
-        let radius = isize::try_from(GDF_READ_RADIUS).map_err(|_| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-            )
-        })?;
-        let origin_x = isize::try_from(block.x).map_err(|_| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-            )
-        })? - radius;
-        let origin_y = isize::try_from(block.y).map_err(|_| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-            )
-        })? - radius;
-        let source_error = || {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_source",
-            )
-        };
+            .ok_or_else(gdf_state_error)?;
+        let sample_count = width.checked_mul(height).ok_or_else(gdf_state_error)?;
+        resize_scratch(samples, sample_count)?;
+        let radius = isize::try_from(GDF_READ_RADIUS).map_err(|_| gdf_state_error())?;
+        let origin_x = isize::try_from(block.x).map_err(|_| gdf_state_error())? - radius;
+        let origin_y = isize::try_from(block.y).map_err(|_| gdf_state_error())? - radius;
+        let source_error = || gdf_state_error();
         for row in 0..height {
             let y = origin_y
-                .checked_add(isize::try_from(row).map_err(|_| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                    )
-                })?)
-                .ok_or_else(|| {
-                    gdf_filter_error(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                    )
-                })?;
+                .checked_add(isize::try_from(row).map_err(|_| gdf_state_error())?)
+                .ok_or_else(gdf_state_error)?;
             let left = loop_restoration_source_sample(PlaneId::Y, isize::MIN, y, bounds)
                 .map_err(|_| source_error())?;
             let right = loop_restoration_source_sample(PlaneId::Y, isize::MAX, y, bounds)
@@ -1421,21 +1115,12 @@ fn band_gradients(
     rows: usize,
     cols: usize,
     grad: &mut Vec<u16>,
-    offset: ByteOffset,
 ) -> Result<()> {
-    let plane = rows.checked_mul(cols).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    let len = GDF_DIRECTIONS.checked_mul(plane).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    resize_scratch(grad, len, offset)?;
+    let plane = rows.checked_mul(cols).ok_or_else(gdf_state_error)?;
+    let len = GDF_DIRECTIONS
+        .checked_mul(plane)
+        .ok_or_else(gdf_state_error)?;
+    resize_scratch(grad, len)?;
     for i in 0..rows {
         for j in 0..cols {
             let sample_col = source_origin.0 - 1 + j;
@@ -1488,7 +1173,6 @@ fn band_classes(
     grad_cols: usize,
     block: &GdfBlock,
     classes: &mut Vec<GdfClass>,
-    offset: ByteOffset,
 ) -> Result<()> {
     let class_cols = block.width >> 1;
     let class_rows = block.height >> 1;
@@ -1496,23 +1180,12 @@ fn band_classes(
         .height
         .checked_add(2)
         .and_then(|rows| rows.checked_mul(grad_cols))
-        .ok_or_else(|| {
-            gdf_filter_error(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-            )
-        })?;
-    let grad_len = GDF_DIRECTIONS.checked_mul(plane).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
+        .ok_or_else(gdf_state_error)?;
+    let grad_len = GDF_DIRECTIONS
+        .checked_mul(plane)
+        .ok_or_else(gdf_state_error)?;
     if grad.len() != grad_len {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     }
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
@@ -1521,13 +1194,10 @@ fn band_classes(
     } else {
         4
     };
-    let len = class_rows.checked_mul(class_cols).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    resize_scratch(classes, len, offset)?;
+    let len = class_rows
+        .checked_mul(class_cols)
+        .ok_or_else(gdf_state_error)?;
+    resize_scratch(classes, len)?;
     for i in 0..class_rows {
         for j in 0..class_cols {
             let mut strengths = [0_u32; GDF_DIRECTIONS];
@@ -1558,13 +1228,12 @@ fn gradient_pair_row(
     class_cols: usize,
     output: &mut Vec<[u16; GDF_DIRECTIONS]>,
     tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
-    offset: ByteOffset,
 ) -> Result<()> {
-    resize_scratch(tmp, class_cols + 1, offset)?;
-    resize_scratch(output, class_cols, offset)?;
+    resize_scratch(tmp, class_cols + 1)?;
+    resize_scratch(output, class_cols)?;
     let base_row = source_origin.1 - 1 + row_pair * 2;
     let base_col = source_origin.0 - 1;
-    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
+    let source_error = gdf_state_error;
     let window_col = base_col.checked_sub(1).ok_or_else(source_error)?;
     let window_len = class_cols
         .checked_mul(2)
@@ -1650,37 +1319,22 @@ fn band_classes_from_source(
     classes: &mut Vec<GdfClass>,
     gradient_pairs: &mut [Vec<[u16; GDF_DIRECTIONS]>; 2],
     gradient_tmp: &mut Vec<[u16; GDF_DIRECTIONS]>,
-    offset: ByteOffset,
 ) -> Result<()> {
     if source_origin.0 == 0
         || source_origin.1 == 0
         || !block.width.is_multiple_of(2)
         || !block.height.is_multiple_of(2)
     {
-        return Err(gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        ));
+        return Err(gdf_state_error());
     }
     let class_cols = block.width >> 1;
     let class_rows = block.height >> 1;
-    let len = class_rows.checked_mul(class_cols).ok_or_else(|| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_geometry",
-        )
-    })?;
-    resize_scratch(classes, len, offset)?;
+    let len = class_rows
+        .checked_mul(class_cols)
+        .ok_or_else(gdf_state_error)?;
+    resize_scratch(classes, len)?;
     let [previous, current] = gradient_pairs;
-    gradient_pair_row(
-        source,
-        source_origin,
-        0,
-        class_cols,
-        previous,
-        gradient_tmp,
-        offset,
-    )?;
+    gradient_pair_row(source, source_origin, 0, class_cols, previous, gradient_tmp)?;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let strength_shift = if block.bit_depth == BitDepth::Eight {
@@ -1696,7 +1350,6 @@ fn band_classes_from_source(
             class_cols,
             current,
             gradient_tmp,
-            offset,
         )?;
         for col in 0..class_cols {
             let strengths: [u32; GDF_DIRECTIONS] = core::array::from_fn(|direction| {
@@ -1719,25 +1372,15 @@ fn band_classes_from_source(
     Ok(())
 }
 
-fn gdf_tap_offsets(stride: usize, offset: ByteOffset) -> Result<[usize; GDF_COORDS.len()]> {
-    let stride = isize::try_from(stride).map_err(|_| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-        )
-    })?;
+fn gdf_tap_offsets(stride: usize) -> Result<[usize; GDF_COORDS.len()]> {
+    let stride = isize::try_from(stride).map_err(|_| gdf_state_error())?;
     let mut offsets = [0_usize; GDF_COORDS.len()];
     for (slot, &(dy, dx)) in offsets.iter_mut().zip(GDF_COORDS.iter()) {
         *slot = dy
             .checked_mul(stride)
             .and_then(|row| row.checked_add(dx))
             .and_then(|index| usize::try_from(index).ok())
-            .ok_or_else(|| {
-                gdf_filter_error(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_gdf_window",
-                )
-            })?;
+            .ok_or_else(gdf_state_error)?;
     }
     Ok(offsets)
 }
@@ -1756,9 +1399,8 @@ fn gdf_uniform_width_rows<const WIDTH: usize, const ROWS: usize>(
     params: &GdfUniformParams,
     block: &GdfBlock,
     source_origin: (usize, usize),
-    offset: ByteOffset,
 ) -> Result<[[u16; WIDTH]; ROWS]> {
-    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
+    let source_error = gdf_state_error;
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
     let mut bases = [0usize; ROWS];
     let mut centers = [Simd::<i16, WIDTH>::splat(0); ROWS];
@@ -1935,24 +1577,14 @@ fn gdf_qp_idx(
     bit_depth: BitDepth,
     frame_is_intra: bool,
     pic_qc_idx: Option<u8>,
-    offset: ByteOffset,
 ) -> Result<usize> {
     let qp_base = if frame_is_intra { 85_i32 } else { 110_i32 };
-    let qp_diff = i32::try_from(base_q_idx).map_err(|_| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_quantization",
-        )
-    })? - qp_base
+    let qp_diff = i32::try_from(base_q_idx).map_err(|_| gdf_state_error())?
+        - qp_base
         - 24 * (i32::from(bit_depth.bits()) - 8);
     let qp_bucket = ((qp_diff - 37) / 25).clamp(0, 2);
     let qc_idx = i32::from(pic_qc_idx.unwrap_or(0));
-    usize::try_from(qp_bucket + qc_idx).map_err(|_| {
-        gdf_filter_error(
-            offset,
-            "unsupported_wienerns_lr_selectable_transform_records_gdf_quantization",
-        )
-    })
+    usize::try_from(qp_bucket + qc_idx).map_err(|_| gdf_state_error())
 }
 
 fn gdf_inter_ref_dst_idx(reference: GdfReferenceContext) -> usize {
@@ -1992,8 +1624,18 @@ fn get_relative_dist(a: i32, b: i32) -> i32 {
 
 #[cold]
 #[inline(never)]
-fn gdf_filter_error(offset: ByteOffset, reason: &'static str) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(offset, reason)
+fn gdf_state_error() -> crate::error::DecodeError {
+    crate::error::DecodeHeaderStateError::InvalidGdfFilterState.into()
+}
+
+#[cold]
+#[inline(never)]
+fn gdf_allocation_error() -> crate::error::DecodeError {
+    splot_recon::ReconError::WorkspaceAllocationFailed {
+        plane: splot_recon::PlaneId::Y,
+        context: "GDF filter scratch",
+    }
+    .into()
 }
 
 #[cfg(test)]
@@ -2003,12 +1645,11 @@ mod wide_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        GDF_COORDS, GDF_READ_RADIUS, GDF_SCRATCH_ALLOCATION_REASON, GDF_WEIGHT, GdfBlock,
-        GdfBlockGrid, GdfReferenceContext, GdfSource, RESTRICTED_ORDER_HINT, band_classes,
-        band_classes_from_source, band_gradients, compute_block, copy_base_block,
-        gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_end_for_tile,
-        gdf_stripe_row_for_tile_end, grad_sum, preserve_lossless_luma_samples, resize_scratch,
-        tile_axis_bounds,
+        GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfReferenceContext,
+        GdfSource, RESTRICTED_ORDER_HINT, band_classes, band_classes_from_source, band_gradients,
+        compute_block, copy_base_block, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
+        gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end, grad_sum,
+        preserve_lossless_luma_samples, resize_scratch, tile_axis_bounds,
     };
     use crate::error::DecodeError;
     use crate::filters::deblock::DeblockBlock;
@@ -2053,13 +1694,11 @@ mod tests {
 
     #[test]
     fn stripe_row_switches_before_the_next_sixty_four_pixel_band() {
-        let offset = ByteOffset::new(0);
-
-        assert_eq!(gdf_stripe_row_for_tile_end(52, 127, offset).ok(), Some(0));
-        assert_eq!(gdf_stripe_row_for_tile_end(56, 127, offset).ok(), Some(16));
-        assert_eq!(gdf_stripe_row_for_tile_end(124, 127, offset).ok(), Some(31));
-        assert_eq!(gdf_stripe_row_for_tile_end(60, 63, offset).ok(), Some(15));
-        assert_eq!(gdf_stripe_row_for_tile_end(64, 127, offset).ok(), Some(16));
+        assert_eq!(gdf_stripe_row_for_tile_end(52, 127).ok(), Some(0));
+        assert_eq!(gdf_stripe_row_for_tile_end(56, 127).ok(), Some(16));
+        assert_eq!(gdf_stripe_row_for_tile_end(124, 127).ok(), Some(31));
+        assert_eq!(gdf_stripe_row_for_tile_end(60, 63).ok(), Some(15));
+        assert_eq!(gdf_stripe_row_for_tile_end(64, 127).ok(), Some(16));
     }
 
     #[test]
@@ -2079,33 +1718,20 @@ mod tests {
     #[test]
     fn tile_axis_bounds_select_the_containing_tile() {
         let starts = [0, 16, 32];
-        let offset = ByteOffset::new(0);
 
-        assert_eq!(
-            tile_axis_bounds(&starts, 0, 128, offset).ok(),
-            Some((0, 63))
-        );
-        assert_eq!(
-            tile_axis_bounds(&starts, 63, 128, offset).ok(),
-            Some((0, 63))
-        );
-        assert_eq!(
-            tile_axis_bounds(&starts, 64, 128, offset).ok(),
-            Some((64, 127))
-        );
-        assert_eq!(
-            tile_axis_bounds(&starts, 127, 128, offset).ok(),
-            Some((64, 127))
-        );
-        assert!(tile_axis_bounds(&starts, 128, 128, offset).is_err());
-        assert!(tile_axis_bounds(&[0, 16], 64, 128, offset).is_err());
+        assert_eq!(tile_axis_bounds(&starts, 0, 128).ok(), Some((0, 63)));
+        assert_eq!(tile_axis_bounds(&starts, 63, 128).ok(), Some((0, 63)));
+        assert_eq!(tile_axis_bounds(&starts, 64, 128).ok(), Some((64, 127)));
+        assert_eq!(tile_axis_bounds(&starts, 127, 128).ok(), Some((64, 127)));
+        assert!(tile_axis_bounds(&starts, 128, 128).is_err());
+        assert!(tile_axis_bounds(&[0, 16], 64, 128).is_err());
     }
 
     #[test]
     fn disabled_gdf_unit_copies_base_samples() {
         let base: Vec<u16> = (0..64).collect();
 
-        let result = copy_base_block::<u8>(&base, 8, 0, 4, 2, 4, 4, ByteOffset::new(0));
+        let result = copy_base_block::<u8>(&base, 8, 0, 4, 2, 4, 4);
         assert!(result.is_ok());
         let Ok(copied) = result else {
             return;
@@ -2117,7 +1743,7 @@ mod tests {
                 20, 21, 22, 23, 28, 29, 30, 31, 36, 37, 38, 39, 44, 45, 46, 47
             ]
         );
-        assert!(copy_base_block::<u8>(&base[..60], 8, 0, 4, 6, 4, 4, ByteOffset::new(0)).is_err());
+        assert!(copy_base_block::<u8>(&base[..60], 8, 0, 4, 6, 4, 4).is_err());
     }
 
     #[test]
@@ -2159,7 +1785,6 @@ mod tests {
             &cdef,
             &bounds,
             &stripe_block,
-            ByteOffset::new(0),
         );
         assert!(stripe_result.is_ok());
         let Ok(stripe_source) = stripe_result else {
@@ -2182,7 +1807,6 @@ mod tests {
                     &cdef,
                     &bounds,
                     &block,
-                    ByteOffset::new(0),
                 );
                 assert!(local_result.is_ok());
                 let Ok(local_source) = local_result else {
@@ -2278,18 +1902,8 @@ mod tests {
         let base: Vec<u16> = (0..64).collect();
         let mut output = vec![200_u8; 32];
 
-        let result = preserve_lossless_luma_samples(
-            Some(&grid),
-            &base,
-            8,
-            0,
-            4,
-            4,
-            8,
-            4,
-            &mut output,
-            ByteOffset::new(0),
-        );
+        let result =
+            preserve_lossless_luma_samples(Some(&grid), &base, 8, 0, 4, 4, 8, 4, &mut output);
         assert!(result.is_ok());
 
         for row in 0..4 {
@@ -2336,14 +1950,8 @@ mod tests {
             max_sample: 1023,
         };
         let mut source_samples = Vec::new();
-        let source_result = GdfSource::materialize::<u16>(
-            &mut source_samples,
-            &curr,
-            &curr,
-            &bounds,
-            &block,
-            ByteOffset::new(0),
-        );
+        let source_result =
+            GdfSource::materialize::<u16>(&mut source_samples, &curr, &curr, &bounds, &block);
         assert!(source_result.is_ok());
         let Ok(source) = source_result else {
             return;
@@ -2354,14 +1962,7 @@ mod tests {
         let grad_cols = block.width + 2;
         let plane = (block.height + 2) * grad_cols;
         let mut grad = Vec::new();
-        let grad_result = band_gradients(
-            &source,
-            origin,
-            block.height + 2,
-            grad_cols,
-            &mut grad,
-            ByteOffset::new(0),
-        );
+        let grad_result = band_gradients(&source, origin, block.height + 2, grad_cols, &mut grad);
         assert!(grad_result.is_ok());
         assert!(grad.iter().all(|&value| value <= 2046));
         assert!(
@@ -2370,8 +1971,7 @@ mod tests {
         );
 
         let mut classes = Vec::new();
-        let classes_result =
-            band_classes(&grad, grad_cols, &block, &mut classes, ByteOffset::new(0));
+        let classes_result = band_classes(&grad, grad_cols, &block, &mut classes);
         assert!(classes_result.is_ok());
         let mut fused_classes = Vec::new();
         let mut gradient_pairs = [Vec::new(), Vec::new()];
@@ -2383,7 +1983,6 @@ mod tests {
             &mut fused_classes,
             &mut gradient_pairs,
             &mut gradient_tmp,
-            ByteOffset::new(0),
         );
         assert!(fused_result.is_ok());
         assert_eq!(fused_classes, classes);
@@ -2402,11 +2001,11 @@ mod tests {
     #[test]
     fn scratch_resize_reuses_storage_and_clears_old_values() {
         let mut scratch = Vec::new();
-        assert!(resize_scratch(&mut scratch, 8, ByteOffset::new(0)).is_ok());
+        assert!(resize_scratch(&mut scratch, 8).is_ok());
         scratch.fill(9_u16);
         let capacity = scratch.capacity();
 
-        assert!(resize_scratch(&mut scratch, 4, ByteOffset::new(0)).is_ok());
+        assert!(resize_scratch(&mut scratch, 4).is_ok());
         assert_eq!(scratch, vec![0; 4]);
         assert_eq!(scratch.capacity(), capacity);
     }
@@ -2414,12 +2013,13 @@ mod tests {
     #[test]
     fn scratch_capacity_overflow_is_typed() {
         let mut scratch = vec![1_u8];
-        let result = resize_scratch(&mut scratch, usize::MAX, ByteOffset::new(17));
+        let result = resize_scratch(&mut scratch, usize::MAX);
 
         assert!(matches!(
             result,
-            Err(DecodeError::UnsupportedFeature { unsupported })
-                if unsupported.reason() == GDF_SCRATCH_ALLOCATION_REASON
+            Err(DecodeError::Reconstruction {
+                source: splot_recon::ReconError::WorkspaceAllocationFailed { .. },
+            })
         ));
         assert!(scratch.is_empty());
     }

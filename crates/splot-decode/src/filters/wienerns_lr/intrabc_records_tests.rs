@@ -103,10 +103,9 @@ fn read_intrabc_info_record(
     ) {
         IntrabcStackAdmission::Admit { selected } => selected,
         IntrabcStackAdmission::Defer => {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                tile_offset,
-                "unsupported_wienerns_lr_selectable_transform_records_intrabc_ref_stack",
-            ));
+            return Err(
+                crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into(),
+            );
         }
     };
     Ok(resolve_pending_intrabc_info(pending, pred_mv))
@@ -170,11 +169,13 @@ fn selectable_morph_fixture() -> (SequenceHeader, FrameHeaderCore) {
     (sequence, core)
 }
 
-fn unsupported_reason(error: DecodeError) -> &'static str {
-    match error {
-        DecodeError::UnsupportedFeature { unsupported } => unsupported.reason(),
-        other => panic!("unexpected decode error: {other:?}"),
-    }
+fn assert_state_error(error: &DecodeError) {
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords,
+        }
+    ));
 }
 
 fn encode_steps(steps: &[(Option<TileCdfSelector>, u32)]) -> Vec<u8> {
@@ -234,7 +235,7 @@ fn resolve_force_integer_mv_from_inter_mv_precision_when_flat_mirror_missing() {
     inter.mv_precision = Some(MvPrecision::QuarterPel);
     core.inter = Some(inter);
 
-    assert!(!resolve_intrabc_force_integer_mv(&core, no_off()).unwrap());
+    assert!(!resolve_intrabc_force_integer_mv(&core).unwrap());
 }
 
 #[test]
@@ -556,8 +557,8 @@ fn sequence_256_intrabc_context_uses_the_frame_superblock_size() {
     assert_eq!(inter.sb_size4, 64);
     assert_eq!(intra.intrabc_ctx(32, 8, 4, 4, no_off()).unwrap(), 0);
     assert_eq!(inter.intrabc_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
-    assert_eq!(intra.skip_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
-    assert_eq!(inter.skip_ctx(32, 8, 4, 4, no_off()).unwrap(), 1);
+    assert_eq!(intra.skip_ctx(32, 8, 4, 4).unwrap(), 1);
+    assert_eq!(inter.skip_ctx(32, 8, 4, 4).unwrap(), 1);
 }
 
 #[test]
@@ -786,10 +787,7 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds"
-    );
+    assert_state_error(&error);
 }
 
 #[test]
@@ -829,10 +827,7 @@ fn intrabc_geometry_rejects_out_of_frame_source() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_source_bounds"
-    );
+    assert_state_error(&error);
 }
 
 #[test]
@@ -851,10 +846,7 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
-    );
+    assert_state_error(&error);
 }
 
 /// A bottom-edge IntrABC block whose NOMINAL target footprint overhangs the frame
@@ -916,10 +908,7 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_target_bounds"
-    );
+    assert_state_error(&error);
 }
 
 #[test]
@@ -939,10 +928,7 @@ fn intrabc_geometry_rejects_missing_frame_size() {
     let error = derive_intrabc_luma_prediction_geometry(&core, geometry, info, ByteOffset::new(20))
         .unwrap_err();
 
-    assert_eq!(
-        unsupported_reason(error),
-        "unsupported_wienerns_lr_selectable_transform_records_intrabc_frame_size"
-    );
+    assert_state_error(&error);
 }
 
 #[test]
@@ -1120,69 +1106,62 @@ fn non_intrabc_path_reads_only_use_intrabc_symbol() {
     assert_eq!(symbols.symbol_count(), 1);
 }
 
+fn assert_neighbour_contexts(
+    blocks: &[(usize, usize, usize, usize, IntrabcBlockPrelude)],
+    probe: (usize, usize, usize, usize),
+    expected: usize,
+) {
+    let mut state = state();
+    for &(row, col, n4w, n4h, prelude) in blocks {
+        state
+            .record_block(row, col, n4w, n4h, prelude, ByteOffset::new(0))
+            .unwrap();
+    }
+    let (row, col, n4w, n4h) = probe;
+    assert_eq!(
+        state
+            .intrabc_ctx(row, col, n4w, n4h, ByteOffset::new(0))
+            .unwrap(),
+        expected
+    );
+    assert_eq!(state.skip_ctx(row, col, n4w, n4h).unwrap(), expected);
+}
+
 #[test]
 fn contexts_use_intrabc_npos_and_skip_nposbuf_boundaries() {
-    let mut state = state();
     let ordinary = ordinary_neighbour();
     let intrabc_skip = frontier_skip_neighbour();
-    state
-        .record_block(15, 4, 4, 1, intrabc_skip, ByteOffset::new(0))
-        .unwrap();
-    state
-        .record_block(15, 8, 4, 1, intrabc_skip, ByteOffset::new(0))
-        .unwrap();
-    state
-        .record_block(16, 3, 1, 4, ordinary, ByteOffset::new(0))
-        .unwrap();
-    state
-        .record_block(16, 4, 4, 4, intrabc_skip, ByteOffset::new(0))
-        .unwrap();
-
-    assert_eq!(
-        state.intrabc_ctx(16, 8, 4, 4, ByteOffset::new(0)).unwrap(),
-        2
+    assert_neighbour_contexts(
+        &[
+            (15, 4, 4, 1, intrabc_skip),
+            (15, 8, 4, 1, intrabc_skip),
+            (16, 3, 1, 4, ordinary),
+            (16, 4, 4, 4, intrabc_skip),
+        ],
+        (16, 8, 4, 4),
+        2,
     );
-    assert_eq!(state.skip_ctx(16, 8, 4, 4, ByteOffset::new(0)).unwrap(), 2);
 }
 
 #[test]
 fn contexts_stop_after_first_two_valid_neighbour_candidates() {
-    let mut state = state();
     let ordinary = ordinary_neighbour();
     let intrabc_skip = frontier_skip_neighbour();
-    state
-        .record_block(23, 7, 1, 1, ordinary, ByteOffset::new(0))
-        .unwrap();
-    state
-        .record_block(19, 11, 1, 1, ordinary, ByteOffset::new(0))
-        .unwrap();
-    state
-        .record_block(20, 7, 1, 1, intrabc_skip, ByteOffset::new(0))
-        .unwrap();
-    state
-        .record_block(19, 8, 1, 1, intrabc_skip, ByteOffset::new(0))
-        .unwrap();
-
-    assert_eq!(
-        state.intrabc_ctx(20, 8, 4, 4, ByteOffset::new(0)).unwrap(),
-        0
+    assert_neighbour_contexts(
+        &[
+            (23, 7, 1, 1, ordinary),
+            (19, 11, 1, 1, ordinary),
+            (20, 7, 1, 1, intrabc_skip),
+            (19, 8, 1, 1, intrabc_skip),
+        ],
+        (20, 8, 4, 4),
+        0,
     );
-    assert_eq!(state.skip_ctx(20, 8, 4, 4, ByteOffset::new(0)).unwrap(), 0);
 }
 
 #[test]
 fn contexts_preserve_duplicate_neighbour_slots_before_cap() {
-    let mut state = state();
-    let intrabc_skip = frontier_skip_neighbour();
-    state
-        .record_block(0, 7, 1, 1, intrabc_skip, ByteOffset::new(0))
-        .unwrap();
-
-    assert_eq!(
-        state.intrabc_ctx(0, 8, 4, 1, ByteOffset::new(0)).unwrap(),
-        2
-    );
-    assert_eq!(state.skip_ctx(0, 8, 4, 1, ByteOffset::new(0)).unwrap(), 2);
+    assert_neighbour_contexts(&[(0, 7, 1, 1, frontier_skip_neighbour())], (0, 8, 4, 1), 2);
 }
 
 #[test]
@@ -1225,13 +1204,13 @@ fn record_block_clamps_bottom_edge_overhang_to_in_frame_cells() {
     for r in 2..4 {
         for c in 0..2 {
             assert!(
-                state.value(r, c, no_off()).unwrap().is_some(),
+                state.value(r, c).unwrap().is_some(),
                 "in-frame MI cell ({r},{c}) must record the block"
             );
         }
     }
-    assert!(state.value(0, 0, no_off()).unwrap().is_none());
-    assert!(state.value(3, 3, no_off()).unwrap().is_none());
+    assert!(state.value(0, 0).unwrap().is_none());
+    assert!(state.value(3, 3).unwrap().is_none());
 }
 
 #[test]
@@ -1244,12 +1223,12 @@ fn record_block_clamps_right_edge_overhang_to_in_frame_cells() {
 
     for c in 2..4 {
         assert!(
-            state.value(0, c, no_off()).unwrap().is_some(),
+            state.value(0, c).unwrap().is_some(),
             "in-frame MI cell (0,{c}) must record the block"
         );
     }
-    assert!(state.value(0, 1, no_off()).unwrap().is_none());
-    assert!(state.value(1, 2, no_off()).unwrap().is_none());
+    assert!(state.value(0, 1).unwrap().is_none());
+    assert!(state.value(1, 2).unwrap().is_none());
 }
 
 #[test]
@@ -1273,13 +1252,13 @@ fn tile_local_state_translates_absolute_coordinates() {
 
     for row in 5..7 {
         for col in 9..11 {
-            assert!(state.value(row, col, no_off()).unwrap().is_some());
+            assert!(state.value(row, col).unwrap().is_some());
         }
     }
     assert!(state.facts_at(4, 8).is_none());
     assert!(state.facts_at(5, 8).is_none());
-    assert!(state.value(3, 9, no_off()).is_err());
-    assert!(state.value(5, 12, no_off()).is_err());
+    assert!(state.value(3, 9).is_err());
+    assert!(state.value(5, 12).is_err());
 }
 
 #[test]

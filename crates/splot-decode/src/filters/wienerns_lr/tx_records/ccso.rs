@@ -13,16 +13,7 @@ use crate::bitstream::tile_payload::{DecodeBlockFrontier, DecodeTileWorkUnit, Ti
 use crate::error::Result;
 use crate::filters::ccso::CcsoUnitGrid;
 
-use super::super::wienerns_lr_selectable_transform_record_error_reason;
 use super::{CCSO_PLANES, CCSO_SYMBOL_VALUES, MI_SIZE_LOG2, read_tx_symbol};
-
-const CCSO_GRID_OVERFLOW_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_ccso_grid_overflow";
-const CCSO_BOUNDS_REASON: &str = "unsupported_wienerns_lr_selectable_transform_records_ccso_bounds";
-const CCSO_SYMBOL_RANGE_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_ccso_symbol_range";
-const CCSO_REFERENCE_REUSE_REASON: &str =
-    "unsupported_wienerns_lr_selectable_transform_records_ccso_reference_reuse";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CcsoState {
@@ -42,14 +33,14 @@ impl CcsoState {
         &self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         if !self.active {
             return Ok(Self::inactive());
         }
         let unit_mi = 1usize
             .checked_shl(self.shift)
-            .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+            .ok_or_else(ccso_state_error)?;
         let row_start = mi_rows.start / unit_mi;
         let col_start = mi_cols.start / unit_mi;
         let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
@@ -58,25 +49,19 @@ impl CcsoState {
         let grid_cols = col_end.saturating_sub(col_start);
         let len = grid_rows
             .checked_mul(grid_cols)
-            .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+            .ok_or_else(ccso_state_error)?;
         let copy_region = |source: &[u8]| -> Result<Vec<u8>> {
             let mut blocks = Vec::new();
             blocks
                 .try_reserve_exact(len)
-                .map_err(|_| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+                .map_err(|_| ccso_allocation_error())?;
             for row in row_start..row_end {
                 let start = row
                     .checked_mul(self.grid_cols)
                     .and_then(|start| start.checked_add(col_start))
-                    .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
-                let end = start
-                    .checked_add(grid_cols)
-                    .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
-                blocks.extend_from_slice(
-                    source
-                        .get(start..end)
-                        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?,
-                );
+                    .ok_or_else(ccso_state_error)?;
+                let end = start.checked_add(grid_cols).ok_or_else(ccso_state_error)?;
+                blocks.extend_from_slice(source.get(start..end).ok_or_else(ccso_state_error)?);
             }
             Ok(blocks)
         };
@@ -104,7 +89,7 @@ impl CcsoState {
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<Self> {
         let filter = sequence.filter.as_ref();
         let ccso = core.ccso_params.as_ref();
@@ -112,8 +97,8 @@ impl CcsoState {
         if !filter.is_some_and(|f| f.enable_ccso) || !frame_flag {
             return Ok(Self::inactive());
         }
-        let shift = ccso_mi_width_log2(sequence, core, tile_offset)?;
-        let grid = ccso_grid(mi_rows, mi_cols, shift, tile_offset)?;
+        let shift = ccso_mi_width_log2(sequence, core)?;
+        let grid = ccso_grid(mi_rows, mi_cols, shift)?;
         let plane_enabled = std::array::from_fn(|plane| {
             ccso.and_then(|c| c.planes.get(plane))
                 .is_some_and(|params| params.ccso_planes)
@@ -123,7 +108,7 @@ impl CcsoState {
                 .is_some_and(|params| params.sb_reuse_ccso)
         });
         let mut state = Self::active(shift, plane_enabled, sb_reuse, grid);
-        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids, tile_offset)?;
+        state.load_reused_blocks(core, ref_frame_idx, ref_ccso_unit_grids)?;
         Ok(state)
     }
 
@@ -178,7 +163,7 @@ impl CcsoState {
         let unit_row = frontier.r >> self.shift;
         let unit_col = frontier.c >> self.shift;
         if self.block_index(unit_row, unit_col).is_none() {
-            return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+            return Err(ccso_state_error());
         }
         for plane in 0..CCSO_PLANES {
             if !self.plane_enabled[plane] {
@@ -207,7 +192,7 @@ impl CcsoState {
                 "5.20.10.2",
             )?;
             if value >= CCSO_SYMBOL_VALUES {
-                return Err(ccso_error(tile_offset, CCSO_SYMBOL_RANGE_REASON));
+                return Err(ccso_state_error());
             }
             self.set_block_value(plane, unit_row, unit_col, value as u8, tile_offset)?;
         }
@@ -227,16 +212,16 @@ impl CcsoState {
         unit_row: usize,
         unit_col: usize,
         value: u8,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<()> {
         let index = self
             .block_index(unit_row, unit_col)
-            .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+            .ok_or_else(ccso_state_error)?;
         let cell = self
             .blocks
             .get_mut(plane)
             .and_then(|grid| grid.get_mut(index))
-            .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+            .ok_or_else(ccso_state_error)?;
         *cell = value;
         Ok(())
     }
@@ -257,7 +242,7 @@ impl CcsoState {
         tile: &Self,
         mi_rows: Range<usize>,
         mi_cols: Range<usize>,
-        tile_offset: ByteOffset,
+        _tile_offset: ByteOffset,
     ) -> Result<()> {
         if self.active != tile.active
             || self.shift != tile.shift
@@ -266,14 +251,14 @@ impl CcsoState {
             || self.row_start != 0
             || self.col_start != 0
         {
-            return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+            return Err(ccso_state_error());
         }
         if !self.active {
             return Ok(());
         }
         let unit_mi = 1usize
             .checked_shl(self.shift)
-            .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+            .ok_or_else(ccso_state_error)?;
         let row_end = mi_rows.end.div_ceil(unit_mi).min(self.grid_rows);
         let col_end = mi_cols.end.div_ceil(unit_mi).min(self.grid_cols);
         let expected_row_start = mi_rows.start / unit_mi;
@@ -283,17 +268,13 @@ impl CcsoState {
             || tile.grid_rows != row_end.saturating_sub(expected_row_start)
             || tile.grid_cols != col_end.saturating_sub(expected_col_start)
         {
-            return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+            return Err(ccso_state_error());
         }
         for row in mi_rows.start / unit_mi..row_end {
             for col in mi_cols.start / unit_mi..col_end {
-                let index = self
-                    .block_index(row, col)
-                    .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+                let index = self.block_index(row, col).ok_or_else(ccso_state_error)?;
                 for plane in 0..CCSO_PLANES {
-                    let tile_index = tile
-                        .block_index(row, col)
-                        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+                    let tile_index = tile.block_index(row, col).ok_or_else(ccso_state_error)?;
                     self.blocks[plane][index] = tile.blocks[plane][tile_index];
                 }
             }
@@ -306,7 +287,6 @@ impl CcsoState {
         core: &FrameHeaderCore,
         ref_frame_idx: &[u32],
         ref_ccso_unit_grids: &[Option<Arc<CcsoUnitGrid>>],
-        tile_offset: ByteOffset,
     ) -> Result<()> {
         let Some(ccso) = core.ccso_params.as_ref() else {
             return Ok(());
@@ -323,32 +303,30 @@ impl CcsoState {
             let slot = ref_frame_idx
                 .get(ref_index as usize)
                 .copied()
-                .ok_or_else(|| ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON))?;
+                .ok_or_else(ccso_state_error)?;
             let grid = ref_ccso_unit_grids
                 .get(slot as usize)
                 .and_then(Option::as_ref)
-                .ok_or_else(|| ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON))?;
-            let source = grid
-                .plane_blocks(plane)
-                .ok_or_else(|| ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON))?;
+                .ok_or_else(ccso_state_error)?;
+            let source = grid.plane_blocks(plane).ok_or_else(ccso_state_error)?;
             if grid.shift() != self.shift
                 || grid.grid_rows() != self.grid_rows
                 || grid.grid_cols() != self.grid_cols
                 || source.len() != self.blocks[plane].len()
             {
-                return Err(ccso_error(tile_offset, CCSO_REFERENCE_REUSE_REASON));
+                return Err(ccso_state_error());
             }
             self.blocks[plane].copy_from_slice(source);
         }
         Ok(())
     }
 
-    pub(crate) fn into_grid(self, tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
+    pub(crate) fn into_grid(self, _tile_offset: ByteOffset) -> Result<Option<CcsoUnitGrid>> {
         if !self.active {
             return Ok(None);
         }
         if self.row_start != 0 || self.col_start != 0 {
-            return Err(ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON));
+            return Err(ccso_state_error());
         }
         CcsoUnitGrid::new(
             self.active,
@@ -359,19 +337,15 @@ impl CcsoState {
             self.grid_cols,
         )
         .map(Some)
-        .map_err(|_| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))
+        .map_err(|_| ccso_state_error())
     }
 }
 
-fn ccso_mi_width_log2(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    tile_offset: ByteOffset,
-) -> Result<u32> {
+fn ccso_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
     let filter = sequence.filter.as_ref();
-    let sb_mi_width_log2 = frame_sb_mi_width_log2(sequence, core, tile_offset)?;
+    let sb_mi_width_log2 = frame_sb_mi_width_log2(sequence, core)?;
     let Some(tile_info) = core.tile_info.as_ref() else {
-        return Err(ccso_error(tile_offset, CCSO_BOUNDS_REASON));
+        return Err(ccso_state_error());
     };
     Ok(ccso_mi_width_log2_for_layout(
         filter.is_some_and(|f| f.ccso_unit_matches_sb_size),
@@ -383,18 +357,9 @@ fn ccso_mi_width_log2(
     ))
 }
 
-fn frame_sb_mi_width_log2(
-    sequence: &SequenceHeader,
-    core: &FrameHeaderCore,
-    tile_offset: ByteOffset,
-) -> Result<u32> {
-    let partition = sequence
-        .partition
-        .as_ref()
-        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
-    let frame_is_intra = core
-        .frame_is_intra
-        .ok_or_else(|| ccso_error(tile_offset, CCSO_BOUNDS_REASON))?;
+fn frame_sb_mi_width_log2(sequence: &SequenceHeader, core: &FrameHeaderCore) -> Result<u32> {
+    let partition = sequence.partition.as_ref().ok_or_else(ccso_state_error)?;
+    let frame_is_intra = core.frame_is_intra.ok_or_else(ccso_state_error)?;
     let sb_size = if partition.use_256x256_superblock {
         if frame_is_intra {
             SuperblockSize::Block128x128
@@ -440,25 +405,26 @@ fn ccso_mi_width_log2_for_layout(
     ccso_luma_size_log2 - MI_SIZE_LOG2
 }
 
-fn ccso_grid(
-    mi_rows: usize,
-    mi_cols: usize,
-    shift: u32,
-    tile_offset: ByteOffset,
-) -> Result<(usize, usize, usize)> {
-    let unit_mi = 1usize
-        .checked_shl(shift)
-        .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+fn ccso_grid(mi_rows: usize, mi_cols: usize, shift: u32) -> Result<(usize, usize, usize)> {
+    let unit_mi = 1usize.checked_shl(shift).ok_or_else(ccso_state_error)?;
     let grid_rows = mi_rows.div_ceil(unit_mi);
     let grid_cols = mi_cols.div_ceil(unit_mi);
     let cells = grid_rows
         .checked_mul(grid_cols)
-        .ok_or_else(|| ccso_error(tile_offset, CCSO_GRID_OVERFLOW_REASON))?;
+        .ok_or_else(ccso_state_error)?;
     Ok((grid_rows, grid_cols, cells))
 }
 
-fn ccso_error(tile_offset: ByteOffset, reason: &'static str) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(tile_offset, reason)
+fn ccso_state_error() -> crate::error::DecodeError {
+    crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
+}
+
+fn ccso_allocation_error() -> crate::error::DecodeError {
+    splot_recon::ReconError::WorkspaceAllocationFailed {
+        plane: splot_recon::PlaneId::Y,
+        context: "CCSO block grid",
+    }
+    .into()
 }
 
 #[cfg(test)]

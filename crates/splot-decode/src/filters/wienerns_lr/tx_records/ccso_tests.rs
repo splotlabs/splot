@@ -7,7 +7,7 @@ use super::*;
 
 fn active_luma_ccso_state(mi_rows: usize, mi_cols: usize) -> CcsoState {
     let shift = 8 - MI_SIZE_LOG2;
-    let grid = ccso_grid(mi_rows, mi_cols, shift, ByteOffset::new(0)).unwrap();
+    let grid = ccso_grid(mi_rows, mi_cols, shift).unwrap();
     CcsoState::active(shift, [true, false, false], [false; CCSO_PLANES], grid)
 }
 

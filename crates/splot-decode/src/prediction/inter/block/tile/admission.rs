@@ -553,9 +553,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 }
                 (None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
             }
-            .map_err(|_| {
-                crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
-            })?;
+            .map_err(|_| crate::filters::wienerns_lr::recon::lr_pipeline_state_error())?;
             while *next_filter_stripe < filter.stripe_ranges().len() {
                 let stripe = *next_filter_stripe;
                 let window = match (
@@ -591,9 +589,9 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         mut filters: Vec<crate::filters::wienerns_lr::recon::OwnedFilterJob<T>>,
     ) -> Result<ScheduledTileProgress<T>> {
         if let Some(deblock) = frontier.deblock.take() {
-            let records = deblock.finish().ok_or_else(|| {
-                crate::filters::wienerns_lr::recon::deblock_filter_error(self.tile_offset)
-            })?;
+            let records = deblock
+                .finish()
+                .ok_or_else(crate::filters::wienerns_lr::recon::lr_pipeline_state_error)?;
             frontier
                 .filter
                 .as_ref()
@@ -1191,7 +1189,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                     .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
                 deblock_quant_deltas,
             )
-            .map_err(|_| crate::filters::wienerns_lr::recon::deblock_filter_error(tile_offset))
+            .map_err(|_| crate::filters::wienerns_lr::recon::lr_pipeline_state_error())
         })
         .transpose()?
         .flatten();

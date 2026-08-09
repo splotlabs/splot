@@ -130,6 +130,12 @@ pub enum DecodeHeaderStateError {
     /// Derived selectable transform-record state was internally inconsistent.
     #[error("selectable transform-record derivation state is inconsistent")]
     InvalidSelectableTransformRecords,
+    /// Derived GDF filter state was internally inconsistent.
+    #[error("GDF filter derivation state is inconsistent")]
+    InvalidGdfFilterState,
+    /// The loop-restoration filter pipeline state was internally inconsistent.
+    #[error("loop-restoration filter pipeline state is inconsistent")]
+    InvalidLoopRestorationFilterState,
 }
 
 /// Runtime reference-frame state consistency failure.

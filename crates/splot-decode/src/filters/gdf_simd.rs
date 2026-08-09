@@ -15,8 +15,8 @@ use splot_core::tables::loop_restoration::{
 use crate::Result;
 
 use super::{
-    GDF_BIAS, GDF_COORDS, GDF_INTRA_REF_DST, GDF_SOURCE_REASON, GdfBlock, GdfClass, GdfSource,
-    MI_SIZE, exact_slice, gdf_filter_error,
+    GDF_BIAS, GDF_COORDS, GDF_INTRA_REF_DST, GdfBlock, GdfClass, GdfSource, MI_SIZE, exact_slice,
+    gdf_state_error,
 };
 
 #[inline]
@@ -37,9 +37,9 @@ pub(super) fn gdf_width8_rows<const ROWS: usize>(
     classes: [GdfClass; 4],
     block: &GdfBlock,
     source_origin: (usize, usize),
-    offset: ByteOffset,
+    _offset: ByteOffset,
 ) -> Result<[[u16; 8]; ROWS]> {
-    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
+    let source_error = gdf_state_error;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
@@ -121,9 +121,9 @@ pub(super) fn gdf_width4_rows<const ROWS: usize>(
     block: &GdfBlock,
     row: usize,
     source_origin: (usize, usize),
-    offset: ByteOffset,
+    _offset: ByteOffset,
 ) -> Result<[[u16; MI_SIZE]; ROWS]> {
-    let source_error = || gdf_filter_error(offset, GDF_SOURCE_REASON);
+    let source_error = gdf_state_error;
     let alpha_table = &GDF_ALPHA[block.ref_dst_idx][block.qp_idx];
     let weight_table = &GDF_WEIGHT[block.ref_dst_idx][block.qp_idx];
     let shift = u32::from(10 - block.bit_depth.bits().min(10));
