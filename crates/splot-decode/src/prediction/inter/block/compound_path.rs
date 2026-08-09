@@ -1015,19 +1015,11 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         None
     };
     let default_pair = skip_mode_default_pair(current, ref_order_hints);
-    let (ref_frame0, ref_frame1) = neighbour_ctx.skip_mode_ref_pair(default_pair, tip_ref_pair);
-    if ref_frame0 < 0
-        || ref_frame1 < 0
-        || ref_frame0 as usize >= num_total_refs
-        || ref_frame1 as usize >= num_total_refs
-    {
-        return Err(compound_cap!(
-            "skip_mode_reference_pair",
-            tile_offset,
-            "inter.skip_mode.reference_pair",
-            SPEC_MODE_INFO
-        ));
-    }
+    let (ref_frame0, ref_frame1) = checked_skip_mode_reference_pair(
+        neighbour_ctx.skip_mode_ref_pair(default_pair, tip_ref_pair),
+        num_total_refs,
+        tile_offset,
+    )?;
     block_ctx.ref_frame0 = ref_frame0;
     block_ctx.ref_frame1 = Some(ref_frame1);
     let ref_mv_idx = read_skip_drl_idx(
@@ -1106,6 +1098,26 @@ fn skip_mode_default_pair(
     };
     let second = i8::from((distance(order_hint0) - distance(order_hint1)).abs() <= 1);
     (0, second)
+}
+
+fn checked_skip_mode_reference_pair(
+    pair: (i8, i8),
+    num_total_refs: usize,
+    tile_offset: ByteOffset,
+) -> Result<(i8, i8)> {
+    for reference in [pair.0, pair.1] {
+        if reference < 0 || reference as usize >= num_total_refs {
+            return Err(crate::pipeline::malformed_tile_payload(
+                tile_offset,
+                SPEC_MODE_INFO,
+                DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                    index: reference,
+                    list_len: num_total_refs,
+                },
+            ));
+        }
+    }
+    Ok(pair)
 }
 
 fn compound_switchable_opfl_reachable<T: ReconSample>(
