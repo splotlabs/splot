@@ -1381,12 +1381,9 @@ fn compound_sized_reference_distances<T: ReconSample>(
             CompoundReferencePath::Opfl => {
                 inter_internal!("compound_opfl_missing_frame_size", tile_offset)
             }
-            CompoundReferencePath::RefineMv => compound_missing!(
-                "compound_refinemv_missing_frame_size",
-                tile_offset,
-                "inter.compound.frame_size",
-                SPEC_READ_REFINEMV
-            ),
+            CompoundReferencePath::RefineMv => {
+                inter_internal!("compound_refinemv_missing_frame_size", tile_offset)
+            }
         });
     };
     let ref0 =
