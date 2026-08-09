@@ -334,6 +334,35 @@ fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
 }
 
 #[test]
+fn skip_mode_reference_pair_accepts_the_active_reference_range() {
+    assert_eq!(
+        checked_skip_mode_reference_pair((0, 0), 1, TILE_OFFSET).unwrap(),
+        (0, 0)
+    );
+    assert_eq!(
+        checked_skip_mode_reference_pair((0, 6), 7, TILE_OFFSET).unwrap(),
+        (0, 6)
+    );
+}
+
+#[test]
+fn skip_mode_reference_pair_rejects_out_of_range_state_as_malformed_syntax() {
+    for (pair, invalid) in [((-1, 0), -1), ((0, -1), -1), ((1, 0), 1), ((0, 1), 1)] {
+        let error = checked_skip_mode_reference_pair(pair, 1, TILE_OFFSET).unwrap_err();
+        assert!(matches!(
+            &error,
+            crate::error::DecodeError::MalformedSource { issue }
+                if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+                    && issue.spec_section() == Some(SPEC_MODE_INFO)
+                    && issue.message()
+                        == format!(
+                            "reference-list index {invalid} is outside the active 1-entry reference map"
+                        )
+        ));
+    }
+}
+
+#[test]
 fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = vec![9];

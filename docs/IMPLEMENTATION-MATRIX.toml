@@ -16032,6 +16032,8 @@ tests = [
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::wedge_temporal_storage_keeps_only_a_dominant_reference",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_opfl_near_near_uses_one_paired_drl_idx",
     "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::compound_opfl_near_near_selects_the_indexed_paired_candidate",
+    "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::skip_mode_reference_pair_accepts_the_active_reference_range",
+    "crates/splot-decode/src/prediction/inter/block/compound_path.rs::tests::skip_mode_reference_pair_rejects_out_of_range_state_as_malformed_syntax",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_skips_intrabc_neighbour_before_compound",
     "crates/splot-decode/src/prediction/inter/find_mv_stack/tests.rs::skip_mode_reference_pair_projects_tip_neighbour_to_sorted_tip_pair",
