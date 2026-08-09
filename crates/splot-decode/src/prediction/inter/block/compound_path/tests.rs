@@ -185,7 +185,7 @@ fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
 }
 
 #[test]
-fn compound_opfl_refine_type_keeps_missing_header_state_fail_closed() {
+fn compound_opfl_consumers_keep_missing_header_state_fail_closed() {
     let fixture = include_bytes!(
         "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
     );
@@ -198,6 +198,23 @@ fn compound_opfl_refine_type_keeps_missing_header_state_fail_closed() {
         error,
         crate::error::DecodeError::InternalState {
             reason: "compound_missing_opfl_refine_type",
+            byte_offset: TILE_OFFSET,
+        }
+    ));
+
+    let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+        y_mode: CompoundYMode::NearNear,
+        use_optflow: false,
+        ref_frame0: 0,
+        ref_frame1: 1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+    let error = compound_refinemv_mode_allowed(&core, compound, TILE_OFFSET).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::InternalState {
+            reason: "compound_refinemv_missing_opfl_refine_type",
             byte_offset: TILE_OFFSET,
         }
     ));
