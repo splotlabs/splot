@@ -43,6 +43,49 @@ fn residual_table_bounds_failure_is_internal() {
     ));
 }
 
+#[test]
+fn residual_parse_failures_keep_typed_boundary() {
+    let offset = ByteOffset::new(19);
+    let decoder = SymbolDecoder::new(&[]).unwrap();
+    let source = decoder.finish().unwrap_err();
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
+        source: BlockSymbolTraceReadError::Symbol(source),
+    };
+    let error = residual_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+    ));
+
+    let mut decoder = SymbolDecoder::new(&[0x80]).unwrap();
+    let source = decoder.read_symbol_u16(&mut [0, 0, 0]).unwrap_err();
+    let cdf_error = crate::bitstream::tile_payload::GeneralIntraResidualError::AllZeroRead {
+        source: BlockSymbolTraceReadError::Symbol(source),
+    };
+    let error = residual_read_error(&cdf_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::InternalState {
+            reason: "inter_block_residual_parse",
+            byte_offset,
+        } if byte_offset == offset
+    ));
+
+    let mut allocation = Vec::<u8>::new();
+    let allocation_error = allocation.try_reserve(usize::MAX).unwrap_err();
+    let error = residual_read_error(&allocation_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: ReconPlaneId::Y,
+                context: "inter residual coefficient parse state",
+            }
+        }
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()
