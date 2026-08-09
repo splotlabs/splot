@@ -2360,18 +2360,8 @@ fn block_reference_is_scaled<T: ReconSample>(
     let frame_size = core
         .frame_size
         .ok_or(crate::DecodeHeaderStateError::MissingFrameSize)?;
-    let slot = usize::try_from(ref_frame)
-        .ok()
-        .and_then(|index| ref_frame_idx.get(index))
-        .and_then(|&slot| usize::try_from(slot).ok())
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_block_missing_reference_slot",
-                tile_offset,
-                "inter.reference_slot",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let slot = usize::try_from(super::block_reference_slot(ref_frame_idx, ref_frame)?)
+        .unwrap_or(usize::MAX);
     let width = reference
         .ref_frame_width
         .get(slot)
