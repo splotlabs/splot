@@ -310,14 +310,8 @@ fn derive_inter_block_setup<T: ReconSample>(
             .ok_or(crate::DecodeHeaderStateError::IncompleteInterFrameTools)?
     };
 
-    let (mi_rows, mi_cols) = frame_mi_dimensions(core).map_err(|_| {
-        inter_missing!(
-            "inter_mi_dimensions",
-            offset,
-            "inter.mi_dimensions",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let (mi_rows, mi_cols) =
+        frame_mi_dimensions(core).map_err(|_| inter_internal!("inter_mi_dimensions", offset))?;
     let coded_size = workspace.info().coded_luma_size();
     let current_order_hint = core.display_order_hint().unwrap_or(0);
     let sb_h4 = superblock_h4(sequence, core).ok_or_else(|| {
