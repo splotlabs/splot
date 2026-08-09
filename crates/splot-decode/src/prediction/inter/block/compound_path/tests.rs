@@ -221,6 +221,23 @@ fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
     ));
 }
 
+#[test]
+fn compound_reference_order_hint_keeps_reference_slot_bounds_fail_closed() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9];
+    let error = compound_reference_order_hint(&reference, &[1], 0, TILE_OFFSET).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 1,
+                slot_count: 1,
+            }
+        }
+    ));
+}
+
 fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
