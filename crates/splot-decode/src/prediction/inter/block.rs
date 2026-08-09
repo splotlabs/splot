@@ -2357,14 +2357,9 @@ fn block_reference_is_scaled<T: ReconSample>(
     ref_frame: i8,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let frame_size = core.frame_size.ok_or_else(|| {
-        inter_missing!(
-            "inter_block_missing_frame_size",
-            tile_offset,
-            "inter.frame_size",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let frame_size = core
+        .frame_size
+        .ok_or(crate::DecodeHeaderStateError::MissingFrameSize)?;
     let slot = usize::try_from(ref_frame)
         .ok()
         .and_then(|index| ref_frame_idx.get(index))
