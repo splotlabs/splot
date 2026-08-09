@@ -23,6 +23,8 @@
 //! The scan is a line/char lexer over production decode source (inline
 //! `#[cfg(test)]` modules and `*_tests.rs` files excluded), so a marker mentioned in
 //! a comment or string does not count.
+//!
+//! Feature ID: `DECODE-UNSUPPORTED-DIAGNOSTIC-API`.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -40,7 +42,7 @@ const DECODE_SRC: &str = "crates/splot-decode/src";
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 169;
+const GAP_MARKER_FLOOR: usize = 165;
 
 /// One `gap!("reason", …)` marker site: its reason id and the file it lives in.
 struct GapSite {
@@ -122,6 +124,11 @@ fn scan_gap_reasons(code: &str) -> MarkerScan {
             prev_ident = false;
             continue;
         }
+        if !prev_ident && let Some(next) = skip_raw_string_literal(&chars, i) {
+            i = next;
+            prev_ident = false;
+            continue;
+        }
         if c == '"' {
             i = skip_string_literal(&chars, i).0;
             prev_ident = false;
@@ -196,6 +203,40 @@ fn gap_reason_after(chars: &[char], mut j: usize) -> Option<(String, usize)> {
     }
     let (next, reason) = skip_string_literal(chars, j);
     Some((reason, next))
+}
+
+/// Consumes a Rust raw string beginning at `start`, including `r`, `br`, and `cr`
+/// prefixes, and returns the index after its closing quote and hash delimiter.
+fn skip_raw_string_literal(chars: &[char], start: usize) -> Option<usize> {
+    let n = chars.len();
+    let mut i = start;
+    if matches!(chars.get(i), Some('b' | 'c')) {
+        i += 1;
+    }
+    if chars.get(i) != Some(&'r') {
+        return None;
+    }
+    i += 1;
+    let hashes_start = i;
+    while chars.get(i) == Some(&'#') {
+        i += 1;
+    }
+    if chars.get(i) != Some(&'"') {
+        return None;
+    }
+    let hashes = i - hashes_start;
+    i += 1;
+    while i < n {
+        if chars[i] == '"'
+            && chars
+                .get(i + 1..i + 1 + hashes)
+                .is_some_and(|tail| tail.iter().all(|&c| c == '#'))
+        {
+            return Some(i + 1 + hashes);
+        }
+        i += 1;
+    }
+    Some(n)
 }
 
 /// Consumes the string literal starting at `chars[start] == '"'`; returns the index
@@ -339,6 +380,19 @@ mod tests {
                 "intra_after_lifetime"
             ]
         );
+    }
+
+    #[test]
+    fn skips_marker_text_in_raw_string_literals() {
+        let code = r###"
+            let raw = r#"" gap!(RAW_REASON, ...)"#;
+            let bytes = br##"gap!(RAW_BYTES, ...)"##;
+            let c_string = cr"gap!(RAW_C_STRING, ...)";
+            let live = gap!("live_reason", None, "msg", "7.1");
+        "###;
+        let scan = scan_gap_reasons(code);
+        assert!(scan.non_literal_sites.is_empty());
+        assert_eq!(scan.reasons, vec!["live_reason"]);
     }
 
     #[test]

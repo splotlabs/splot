@@ -466,6 +466,16 @@ pub(crate) struct PositionedLumaCoeffBlock {
     pub(crate) coeffs: LumaCoeffBlock,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum TransformPartitionUnsupported {
+    #[error("unsupported_general_intra_tx_partition_record_capacity")]
+    RecordCapacity,
+    #[error("unsupported_general_intra_tx_partition_non_max_tx_size")]
+    NonMaxTxSize,
+    #[error("unsupported_general_intra_tx_partition_empty")]
+    Empty,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum GeneralIntraResidualError {
     #[error("general intra luma all_zero symbol read failed: {source}")]
@@ -483,7 +493,9 @@ pub(crate) enum GeneralIntraResidualError {
     #[error("general intra luma transform partition table {table} has invalid index {index}")]
     TransformPartitionGeometry { table: &'static str, index: usize },
     #[error("general intra luma transform partition syntax is unsupported: {reason}")]
-    UnsupportedTransformPartition { reason: &'static str },
+    UnsupportedTransformPartition {
+        reason: TransformPartitionUnsupported,
+    },
     #[error("general intra luma transform_type symbol read failed: {source}")]
     TransformTypeRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma palette token symbol read failed: {source}")]
@@ -648,7 +660,7 @@ fn read_luma_transform_partition_records(
         block_size_table_usize(&MAX_TX_SIZE_RECT, "Max_Tx_Size_Rect", context.mi_size)?;
     if tx_size != max_tx_size {
         return Err(unsupported_transform_partition(
-            "unsupported_general_intra_tx_partition_non_max_tx_size",
+            TransformPartitionUnsupported::NonMaxTxSize,
         ));
     }
     let block_width =
@@ -860,7 +872,7 @@ fn push_luma_transform_record(
 ) -> Result<(), GeneralIntraResidualError> {
     if h4 == 0 || w4 == 0 {
         return Err(unsupported_transform_partition(
-            "unsupported_general_intra_tx_partition_empty",
+            TransformPartitionUnsupported::Empty,
         ));
     }
     let width = w4 * MI_SIZE;
@@ -1928,7 +1940,9 @@ const fn unsupported_transform_tool_residual_error(
     GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }
 }
 
-const fn unsupported_transform_partition(reason: &'static str) -> GeneralIntraResidualError {
+const fn unsupported_transform_partition(
+    reason: TransformPartitionUnsupported,
+) -> GeneralIntraResidualError {
     GeneralIntraResidualError::UnsupportedTransformPartition { reason }
 }
 

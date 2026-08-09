@@ -11,12 +11,13 @@ use crate::bitstream::tile_payload::{
     CflIndex, GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext,
     GeneralIntraChromaToolConfig, GeneralIntraLeafMode, IntraYMode, IsCflContext,
     LumaTransformPartitionContext, LumaTransformTypeContext, SupportedChromaMode,
-    SupportedNonDcLumaMode, TransformToolResidualPolicy, read_lossless_luma_tx_size,
+    SupportedNonDcLumaMode, TransformPartitionUnsupported, TransformToolResidualPolicy,
+    read_lossless_luma_tx_size,
 };
 use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
-    ResidualPipelineUnsupported,
+    ResidualPipelineUnsupported, ResidualPipelineUnsupportedReason,
 };
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
@@ -853,13 +854,13 @@ fn rect_chroma_plan(
     if modes.is_cfl() {
         return cfl_chroma_plan(
             modes.cfl_params(),
-            "general_intra_rect_cfl_missing_params",
+            ChromaCapabilityReason::RectCflMissingParams,
             cfl_ds_filter_index,
             sb_mib,
         );
     }
     let mode = modes.supported_chroma_mode().ok_or(unsupported_chroma(
-        "general_intra_non_dc_chroma",
+        ChromaCapabilityReason::NonDcChroma,
         missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
     ))?;
     Ok(rect_chroma_plan_for_mode(
@@ -906,7 +907,7 @@ fn chroma_plan_for_parts(
     if chroma.is_cfl() {
         return cfl_chroma_plan(
             chroma.cfl_params(),
-            "general_intra_chroma_part_cfl_missing_params",
+            ChromaCapabilityReason::ChromaPartCflMissingParams,
             cfl_ds_filter_index,
             sb_mib,
         );
@@ -914,7 +915,7 @@ fn chroma_plan_for_parts(
     let mode = chroma
         .supported_chroma_mode(y_mode)
         .ok_or(unsupported_chroma(
-            "general_intra_chroma_part_non_dc_chroma",
+            ChromaCapabilityReason::ChromaPartNonDcChroma,
             missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
         ))?;
     Ok(rect_chroma_plan_for_mode(
@@ -926,7 +927,7 @@ fn chroma_plan_for_parts(
 
 fn cfl_chroma_plan(
     params: Option<crate::bitstream::tile_payload::CflParams>,
-    missing_reason: &'static str,
+    missing_reason: ChromaCapabilityReason,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
 ) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
@@ -940,7 +941,7 @@ fn cfl_chroma_plan(
     };
     if !supported {
         return Err(unsupported_chroma(
-            "general_intra_cfl_non_multi",
+            ChromaCapabilityReason::CflNonMulti,
             missing_capability_message!("intra.chroma.cfl", mode = "unsupported_params"),
         ));
     }
@@ -1021,55 +1022,58 @@ fn parse_general_intra_residual_plan(
 }
 
 #[derive(Clone, Copy)]
+enum ChromaCapabilityReason {
+    RectCflMissingParams,
+    NonDcChroma,
+    ChromaPartCflMissingParams,
+    ChromaPartNonDcChroma,
+    CflNonMulti,
+}
+
+#[derive(Clone, Copy)]
 struct ChromaCapabilityUnsupported {
-    reason_id: &'static str,
+    reason: ChromaCapabilityReason,
     message: &'static str,
 }
 
 const fn unsupported_chroma(
-    reason_id: &'static str,
+    reason: ChromaCapabilityReason,
     message: &'static str,
 ) -> ChromaCapabilityUnsupported {
-    ChromaCapabilityUnsupported { reason_id, message }
+    ChromaCapabilityUnsupported { reason, message }
 }
 
 fn general_intra_chroma_capability_error(
     error: ChromaCapabilityUnsupported,
     offset: ByteOffset,
 ) -> DecodeError {
-    match error.reason_id {
-        "general_intra_rect_cfl_missing_params" => general_intra_at!(
+    match error.reason {
+        ChromaCapabilityReason::RectCflMissingParams => general_intra_at!(
             "general_intra_rect_cfl_missing_params",
             offset,
             error.message,
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        "general_intra_non_dc_chroma" => general_intra_at!(
+        ChromaCapabilityReason::NonDcChroma => general_intra_at!(
             "general_intra_non_dc_chroma",
             offset,
             error.message,
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        "general_intra_chroma_part_cfl_missing_params" => general_intra_at!(
+        ChromaCapabilityReason::ChromaPartCflMissingParams => general_intra_at!(
             "general_intra_chroma_part_cfl_missing_params",
             offset,
             error.message,
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        "general_intra_chroma_part_non_dc_chroma" => general_intra_at!(
+        ChromaCapabilityReason::ChromaPartNonDcChroma => general_intra_at!(
             "general_intra_chroma_part_non_dc_chroma",
             offset,
             error.message,
             GENERAL_INTRA_MODE_SPEC_SECTION,
         ),
-        "general_intra_cfl_non_multi" => general_intra_at!(
+        ChromaCapabilityReason::CflNonMulti => general_intra_at!(
             "general_intra_cfl_non_multi",
-            offset,
-            error.message,
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        _ => general_intra_at!(
-            "general_intra_chroma_capability",
             offset,
             error.message,
             GENERAL_INTRA_MODE_SPEC_SECTION,
@@ -1078,15 +1082,9 @@ fn general_intra_chroma_capability_error(
 }
 
 fn general_intra_luma_plan_error(error: IntraLumaUnsupported, offset: ByteOffset) -> DecodeError {
-    match error.reason_id() {
-        "general_intra_unsupported_luma_mode" => general_intra_at!(
+    match error {
+        IntraLumaUnsupported::UnsupportedMode => general_intra_at!(
             "general_intra_unsupported_luma_mode",
-            offset,
-            error.message(),
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        _ => general_intra_at!(
-            "general_intra_luma_plan",
             offset,
             error.message(),
             GENERAL_INTRA_MODE_SPEC_SECTION,
@@ -1098,33 +1096,27 @@ fn general_intra_residual_plan_error(
     error: ResidualPipelineUnsupported,
     offset: ByteOffset,
 ) -> DecodeError {
-    match error.reason_id() {
-        "general_intra_rect_tx_size" => general_intra_at!(
+    match error.reason() {
+        ResidualPipelineUnsupportedReason::RectTxSize => general_intra_at!(
             "general_intra_rect_tx_size",
             offset,
             error.message(),
             error.spec_section(),
         ),
-        "general_intra_rect_chroma_tx_size" => general_intra_at!(
+        ResidualPipelineUnsupportedReason::RectChromaTxSize => general_intra_at!(
             "general_intra_rect_chroma_tx_size",
             offset,
             error.message(),
             error.spec_section(),
         ),
-        "general_intra_large_block_chunk_geometry" => general_intra_at!(
+        ResidualPipelineUnsupportedReason::LargeBlockChunkGeometry => general_intra_at!(
             "general_intra_large_block_chunk_geometry",
             offset,
             error.message(),
             error.spec_section(),
         ),
-        "general_intra_residual_plane_capacity" => general_intra_at!(
+        ResidualPipelineUnsupportedReason::ResidualPlaneCapacity => general_intra_at!(
             "general_intra_residual_plane_capacity",
-            offset,
-            error.message(),
-            error.spec_section(),
-        ),
-        _ => general_intra_at!(
-            "general_intra_residual_plan",
             offset,
             error.message(),
             error.spec_section(),
@@ -1174,26 +1166,20 @@ fn general_intra_residual_error(
             )
         }
         GeneralIntraResidualError::UnsupportedTransformPartition { reason } => match reason {
-            "unsupported_general_intra_tx_partition_record_capacity" => general_intra_at!(
+            TransformPartitionUnsupported::RecordCapacity => general_intra_at!(
                 "unsupported_general_intra_tx_partition_record_capacity",
                 offset,
                 missing_capability_message!("intra.residual.transform_partition"),
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             ),
-            "unsupported_general_intra_tx_partition_non_max_tx_size" => general_intra_at!(
+            TransformPartitionUnsupported::NonMaxTxSize => general_intra_at!(
                 "unsupported_general_intra_tx_partition_non_max_tx_size",
                 offset,
                 missing_capability_message!("intra.residual.transform_partition"),
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             ),
-            "unsupported_general_intra_tx_partition_empty" => general_intra_at!(
+            TransformPartitionUnsupported::Empty => general_intra_at!(
                 "unsupported_general_intra_tx_partition_empty",
-                offset,
-                missing_capability_message!("intra.residual.transform_partition"),
-                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            ),
-            _ => general_intra_at!(
-                "general_intra_transform_partition",
                 offset,
                 missing_capability_message!("intra.residual.transform_partition"),
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,

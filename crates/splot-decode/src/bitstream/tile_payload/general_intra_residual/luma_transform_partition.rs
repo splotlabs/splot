@@ -3,7 +3,9 @@
 
 //! Bounded luma transform-partition units.
 
-use super::{GeneralIntraResidualError, unsupported_transform_partition};
+use super::{
+    GeneralIntraResidualError, TransformPartitionUnsupported, unsupported_transform_partition,
+};
 
 // AV2 § 5.20.6.3 (`docs/spec/av2/1.0.0/05-syntax-structures.md`) emits at most five units.
 pub(super) const MAX_LUMA_TRANSFORM_PARTITION_UNITS: usize = 5;
@@ -43,9 +45,7 @@ impl<T> LumaTransformPartitionUnits<T> {
 
     pub(crate) fn push(&mut self, value: T) -> Result<(), GeneralIntraResidualError> {
         let entry = self.entries.get_mut(self.len).ok_or_else(|| {
-            unsupported_transform_partition(
-                "unsupported_general_intra_tx_partition_record_capacity",
-            )
+            unsupported_transform_partition(TransformPartitionUnsupported::RecordCapacity)
         })?;
         *entry = Some(value);
         self.len += 1;

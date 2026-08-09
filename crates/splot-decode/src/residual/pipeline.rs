@@ -210,15 +210,39 @@ pub(crate) enum RectChromaPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResidualPipelineUnsupportedReason {
+    RectTxSize,
+    RectChromaTxSize,
+    LargeBlockChunkGeometry,
+    ResidualPlaneCapacity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ResidualPipelineUnsupported {
-    reason_id: &'static str,
+    reason: ResidualPipelineUnsupportedReason,
     message: &'static str,
     spec_section: &'static str,
 }
 
 impl ResidualPipelineUnsupported {
+    pub(crate) const fn reason(self) -> ResidualPipelineUnsupportedReason {
+        self.reason
+    }
+
+    #[cfg(test)]
     pub(crate) const fn reason_id(self) -> &'static str {
-        self.reason_id
+        match self.reason {
+            ResidualPipelineUnsupportedReason::RectTxSize => "general_intra_rect_tx_size",
+            ResidualPipelineUnsupportedReason::RectChromaTxSize => {
+                "general_intra_rect_chroma_tx_size"
+            }
+            ResidualPipelineUnsupportedReason::LargeBlockChunkGeometry => {
+                "general_intra_large_block_chunk_geometry"
+            }
+            ResidualPipelineUnsupportedReason::ResidualPlaneCapacity => {
+                "general_intra_residual_plane_capacity"
+            }
+        }
     }
 
     pub(crate) const fn message(self) -> &'static str {
