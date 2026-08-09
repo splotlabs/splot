@@ -52,7 +52,7 @@ fn residual_parse_failures_keep_typed_boundary() {
             needed: 1,
         }),
     };
-    let error = residual_read_error(&parse_error, offset);
+    let error = residual_read_error(&parse_error, SPEC_RESIDUAL, offset);
     assert!(matches!(
         error,
         crate::DecodeError::MalformedSource { issue }
@@ -74,7 +74,7 @@ fn residual_parse_failures_keep_typed_boundary() {
     let internal_errors: [&(dyn std::error::Error + 'static); 3] =
         [&cdf_error, &decoder_state, &fallback];
     for internal_error in internal_errors {
-        let error = residual_read_error(internal_error, offset);
+        let error = residual_read_error(internal_error, SPEC_RESIDUAL, offset);
         assert!(matches!(
             error,
             crate::DecodeError::InternalState {
@@ -86,7 +86,7 @@ fn residual_parse_failures_keep_typed_boundary() {
 
     let mut allocation = Vec::<u8>::new();
     let allocation_error = allocation.try_reserve(usize::MAX).unwrap_err();
-    let error = residual_read_error(&allocation_error, offset);
+    let error = residual_read_error(&allocation_error, SPEC_RESIDUAL, offset);
     assert!(matches!(
         error,
         crate::DecodeError::Reconstruction {
@@ -95,6 +95,25 @@ fn residual_parse_failures_keep_typed_boundary() {
                 context: "inter residual coefficient parse state",
             }
         }
+    ));
+}
+
+#[test]
+fn lossless_tx_size_eof_uses_tx_size_spec_section() {
+    let offset = ByteOffset::new(23);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraBlockModeError::SymbolRead {
+        reason: "lossless_tx_size",
+        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        }),
+    };
+
+    let error = residual_read_error(&parse_error, SPEC_TX_SIZE, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_TX_SIZE)
     ));
 }
 

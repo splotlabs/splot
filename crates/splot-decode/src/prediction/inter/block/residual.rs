@@ -13,6 +13,7 @@ const INTER_UV_MODE_DC: usize = 0;
 const DCT_DCT: usize = 0;
 const TX_4X4: usize = 0;
 const SPEC_RESIDUAL: &str = "5.20.7.23";
+const SPEC_TX_SIZE: &str = "5.20.6.1";
 #[cfg(test)]
 const V_DCT: usize = 10;
 const TX_TYPE_MAP_UNIT_4X4: usize = 4;
@@ -743,7 +744,7 @@ fn read_inter_residual_plane(
         cctx_allowed,
         residual_tool_policy,
     )
-    .map_err(|error| residual_read_error(&error, tile_offset))
+    .map_err(|error| residual_read_error(&error, SPEC_RESIDUAL, tile_offset))
 }
 
 pub(crate) fn max_tx_size(block_size: usize, tile_offset: ByteOffset) -> Result<usize> {
@@ -764,7 +765,7 @@ fn inter_residual_tx_size(
     match mode {
         InterResidualLumaTxSizeMode::Inter | InterResidualLumaTxSizeMode::Intrabc => {
             read_lossless_tx_size(work_unit, symbols, block_size, false, true, true)
-                .map_err(|error| residual_read_error(&error, tile_offset))
+                .map_err(|error| residual_read_error(&error, SPEC_TX_SIZE, tile_offset))
         }
     }
 }
@@ -850,6 +851,7 @@ pub(crate) fn reset_inter_skip_coeff_contexts(
 
 fn residual_read_error(
     error: &(dyn std::error::Error + 'static),
+    spec_section: &'static str,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
     let mut source = Some(error);
@@ -862,7 +864,7 @@ fn residual_read_error(
         }
         if let Some(core_error) = current.downcast_ref::<splot_core::Error>() {
             return if matches!(core_error, splot_core::Error::UnexpectedEof { .. }) {
-                crate::pipeline::malformed_tile_payload(tile_offset, SPEC_RESIDUAL, error)
+                crate::pipeline::malformed_tile_payload(tile_offset, spec_section, error)
             } else {
                 residual_read_internal_error(tile_offset)
             };
