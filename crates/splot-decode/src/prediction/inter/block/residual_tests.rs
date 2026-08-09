@@ -155,6 +155,23 @@ fn cctx_type_eof_uses_residual_spec_section() {
     ));
 }
 
+#[test]
+fn reserved_pt512_eob_literal_is_malformed_residual_syntax() {
+    let offset = ByteOffset::new(37);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::NonZeroStart {
+        source: crate::bitstream::tile_payload::CoeffLoopContextError::InvalidPt512EobExtra {
+            eob_pt_extra: 3,
+        },
+    };
+
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()
