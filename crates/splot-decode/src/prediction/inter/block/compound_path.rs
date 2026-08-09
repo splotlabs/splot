@@ -1545,14 +1545,9 @@ fn compound_ref_distance_signs<T: ReconSample>(
     let mut signs = [true; 7];
     let current_order_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
     for (ref_idx, sign) in signs.iter_mut().take(num_total_refs).enumerate() {
-        let slot = *ref_frame_idx.get(ref_idx).ok_or_else(|| {
-            compound_missing!(
-                "compound_block_missing_ref_frame_idx",
-                tile_offset,
-                "inter.compound.ref_frame_idx",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let slot = *ref_frame_idx
+            .get(ref_idx)
+            .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         let ref_order_hint = reference
             .ref_order_hint
             .get(slot as usize)
