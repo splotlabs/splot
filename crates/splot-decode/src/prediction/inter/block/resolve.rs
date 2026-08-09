@@ -1013,6 +1013,7 @@ fn resolve_compound(
         compound_local_warp_models(
             state.grid,
             block,
+            compound.ref_frame1,
             mv[0],
             mv[1],
             block.mi_row,

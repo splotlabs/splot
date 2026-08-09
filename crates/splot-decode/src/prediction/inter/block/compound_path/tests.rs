@@ -509,12 +509,14 @@ fn compound_local_warp_symbol_reports_localwarp_when_set() {
 }
 
 #[test]
-fn compound_local_warp_derives_a_model_per_reference_list() {
-    let (grid, block) =
+fn compound_local_warp_derives_a_model_per_explicit_reference_list() {
+    let (grid, mut block) =
         compound_motion_grid_and_block(Mv { row: 24, col: -8 }, Mv { row: -16, col: 40 });
+    block.ref_frame1 = None;
     let models = compound_local_warp_models(
         &grid,
         &block,
+        1,
         Mv { row: 24, col: -8 },
         Mv { row: -16, col: 40 },
         block.mi_row,
@@ -561,6 +563,7 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
     let models = compound_local_warp_models(
         &grid,
         &block,
+        1,
         Mv { row: 24, col: -8 },
         Mv::ZERO,
         0,
