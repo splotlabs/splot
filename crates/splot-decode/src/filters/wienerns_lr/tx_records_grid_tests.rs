@@ -504,7 +504,7 @@ fn selectable_transform_record_failures_are_typed_header_state_errors() {
         }
     ));
     assert!(matches!(
-        selectable_read_error(ByteOffset::new(9)),
+        selectable_read_error(ByteOffset::new(9), "5.20.5.11"),
         crate::error::DecodeError::MalformedSource { .. }
     ));
 }

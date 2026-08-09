@@ -1600,7 +1600,7 @@ fn read_symbol(
 ) -> Result<usize> {
     cdfs.read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| super::selectable_symbol_read_error(tile_offset))
+        .map_err(|_| super::selectable_symbol_read_error(tile_offset, "5.20.5.4"))
 }
 
 fn max_bvp_drl_bits_minus_1(

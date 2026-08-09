@@ -13,7 +13,8 @@ use splot_recon::{BitDepth, max_quantizer_index};
 use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
-    DecodeBlockFrontier, DecodeTileWorkUnit, IntraIstSyntax, TileCdfSelector,
+    BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, IntraIstSyntax,
+    TileCdfSelector,
 };
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
@@ -140,17 +141,33 @@ pub(crate) enum SelectableTransformRecordError {
 
 #[allow(clippy::needless_pass_by_value)]
 fn selectable_transform_record_error(
-    _error: SelectableTransformRecordError,
+    error: SelectableTransformRecordError,
 ) -> crate::error::DecodeError {
-    crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
+    match error {
+        SelectableTransformRecordError::Unsupported {
+            reason: "record-allocation",
+        } => selectable_allocation_error(),
+        _ => crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into(),
+    }
+}
+
+fn selectable_allocation_error() -> crate::error::DecodeError {
+    splot_recon::ReconError::WorkspaceAllocationFailed {
+        plane: splot_recon::PlaneId::Y,
+        context: "selectable transform-record storage",
+    }
+    .into()
 }
 
 fn selectable_state_error() -> crate::error::DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-fn selectable_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    selectable_symbol_read_error(tile_offset)
+fn selectable_read_error(
+    tile_offset: ByteOffset,
+    spec_section: &'static str,
+) -> crate::error::DecodeError {
+    selectable_symbol_read_error(tile_offset, spec_section)
 }
 
 impl DeltaQState {
@@ -206,7 +223,7 @@ impl DeltaQState {
             if delta_q_abs != 0 {
                 let sign_bit = symbols
                     .read_literal(DELTA_Q_SIGN_BIT_WIDTH)
-                    .map_err(|_| selectable_read_error(tile_offset))?
+                    .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?
                     != 0;
                 let delta_q_abs =
                     i32::try_from(delta_q_abs).map_err(|_| selectable_state_error())?;
@@ -256,7 +273,7 @@ impl CdefState {
         let mut values = Vec::new();
         values
             .try_reserve_exact(len)
-            .map_err(|_| selectable_state_error())?;
+            .map_err(|_| selectable_allocation_error())?;
         values.resize(len, None);
         Ok(Self {
             row_start,
@@ -336,7 +353,7 @@ impl CdefState {
             let tile_col_start = work_unit.mi_col_range().start as usize;
             let ctx =
                 self.cdef_index0_ctx_at(frontier.r, frontier.c, tile_row_start, tile_col_start)?;
-            let cdef_index0 = read_tx_symbol(
+            let cdef_index0 = read_tx_symbol_cdef(
                 work_unit,
                 symbols,
                 TileCdfSelector::CdefIndex0 { ctx },
@@ -347,7 +364,7 @@ impl CdefState {
             } else if strengths == 2 {
                 1
             } else {
-                read_tx_symbol(
+                read_tx_symbol_cdef(
                     work_unit,
                     symbols,
                     TileCdfSelector::CdefIndexMinus1 { strengths },
@@ -824,6 +841,7 @@ fn read_tx_partition_symbols(
                 txfm_split_group,
             },
             tile_offset,
+            "5.20.6.3",
         )? != 0;
         if do_partition {
             if allow_horz && allow_vert {
@@ -843,6 +861,7 @@ fn read_tx_partition_symbols(
                         reduced: false,
                     },
                     tile_offset,
+                    "5.20.6.3",
                 )?;
                 tx_partition = symbol + 1;
             } else {
@@ -865,6 +884,7 @@ fn read_tx_partition_symbols(
                                 ctx: vert_or_horz_ctx,
                             },
                             tile_offset,
+                            "5.20.6.3",
                         )?
                     };
                     tx_partition = if allow_horz {
@@ -983,18 +1003,33 @@ fn apply_tx_partition(
     }
 }
 
+fn read_tx_symbol_cdef(
+    work_unit: &mut DecodeTileWorkUnit<'_>,
+    symbols: &mut SymbolDecoder<'_>,
+    selector: TileCdfSelector,
+    tile_offset: ByteOffset,
+) -> Result<usize> {
+    read_tx_symbol(work_unit, symbols, selector, tile_offset, "5.20.10.1")
+}
+
 fn read_tx_symbol(
     work_unit: &mut DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     selector: TileCdfSelector,
     tile_offset: ByteOffset,
+    spec_section: &'static str,
 ) -> Result<usize> {
     let value = work_unit
         .cdf_mut()
         .tile_cdfs_mut()
         .read_block_symbol_trace(selector, symbols)
         .map(|symbol| usize::from(symbol.get()))
-        .map_err(|_| selectable_symbol_read_error(tile_offset))?;
+        .map_err(|error| match error {
+            BlockSymbolTraceReadError::Cdf(_) => selectable_state_error(),
+            BlockSymbolTraceReadError::Symbol(_) => {
+                selectable_symbol_read_error(tile_offset, spec_section)
+            }
+        })?;
     Ok(value)
 }
 
@@ -1003,17 +1038,23 @@ fn read_delta_q_abs(
     symbols: &mut SymbolDecoder<'_>,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let delta_q_abs = read_tx_symbol(work_unit, symbols, TileCdfSelector::DeltaQ, tile_offset)?;
+    let delta_q_abs = read_tx_symbol(
+        work_unit,
+        symbols,
+        TileCdfSelector::DeltaQ,
+        tile_offset,
+        "5.20.5.11",
+    )?;
     if delta_q_abs != DELTA_Q_SMALL {
         return Ok(delta_q_abs);
     }
     let delta_q_rem_bits = symbols
         .read_literal(DELTA_Q_REM_BITS_WIDTH)
-        .map_err(|_| selectable_read_error(tile_offset))?
+        .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?
         + 1;
     let delta_q_abs_bits = symbols
         .read_literal(delta_q_rem_bits)
-        .map_err(|_| selectable_read_error(tile_offset))?;
+        .map_err(|_| selectable_read_error(tile_offset, "5.20.5.11"))?;
     let delta_q_large_base = 1usize << delta_q_rem_bits;
     Ok(delta_q_abs_bits as usize + delta_q_large_base + (DELTA_Q_SMALL - 2))
 }
