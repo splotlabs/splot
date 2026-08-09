@@ -11,9 +11,7 @@ use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
 const COMPOUND_MODE_NEAR_NEWMV: u8 = 1;
 const COMPOUND_MODE_NEW_NEARMV: u8 = 2;
-const COMPOUND_MODE_GLOBAL_GLOBALMV: u8 = 3;
 const COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV: u8 = 2;
-const COMPOUND_MODE_SAME_REF_NEW_NEWMV: u8 = 3;
 const COMPOUND_MODE_NEW_NEWMV: u8 = 4;
 const RANKED_REF0_TO_PRUNE: usize = 3;
 const MAX_REFS_PER_FRAME: usize = 7;
@@ -123,7 +121,7 @@ pub(crate) fn read_compound_reference_pair(
     let mut read_symbol = |selector| {
         cdfs.read_block_symbol_trace(selector, symbols)
             .map(splot_core::symbol::Symbol::get)
-            .map_err(|_| compound_symbol_read_error(tile_offset))
+            .map_err(|error| compound_symbol_read_error(error, tile_offset))
     };
 
     let n_refs = input.num_total_refs;
@@ -227,7 +225,7 @@ pub(crate) fn read_compound_mode_syntax(
     let mut read_symbol = |selector| {
         cdfs.read_block_symbol_trace(selector, symbols)
             .map(splot_core::symbol::Symbol::get)
-            .map_err(|_| compound_symbol_read_error(tile_offset))
+            .map_err(|error| compound_symbol_read_error(error, tile_offset))
     };
 
     if pair.0 == pair.1 {
@@ -238,8 +236,8 @@ pub(crate) fn read_compound_mode_syntax(
             COMPOUND_MODE_NEAR_NEARMV => CompoundYMode::NearNear,
             1 => CompoundYMode::NearNew,
             COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
-            COMPOUND_MODE_SAME_REF_NEW_NEWMV => CompoundYMode::NewNew,
-            _ => return Err(compound_symbol_read_error(tile_offset)),
+            // The four-symbol § 5.20.7.6 alphabet leaves only NewNew (3).
+            _ => CompoundYMode::NewNew,
         };
         return Ok(CompoundBlockSyntax {
             y_mode,
@@ -271,8 +269,8 @@ pub(crate) fn read_compound_mode_syntax(
         COMPOUND_MODE_NEAR_NEWMV => CompoundYMode::NearNew,
         COMPOUND_MODE_NEW_NEARMV => CompoundYMode::NewNear,
         COMPOUND_MODE_NEW_NEWMV => CompoundYMode::NewNew,
-        COMPOUND_MODE_GLOBAL_GLOBALMV => CompoundYMode::GlobalGlobal,
-        _ => return Err(compound_symbol_read_error(tile_offset)),
+        // The five-symbol § 5.20.7.6 alphabet leaves only GlobalGlobal (3).
+        _ => CompoundYMode::GlobalGlobal,
     };
 
     Ok(CompoundBlockSyntax {
@@ -323,13 +321,11 @@ fn compound_ref_bit_type(
     Ok(usize::from(first_nonnegative ^ second_nonnegative))
 }
 
-fn compound_symbol_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    compound_missing!(
-        "compound_block_mode_parse",
-        tile_offset,
-        "inter.compound.mode_info_symbols",
-        SPEC_INTER_BLOCK_MODE_INFO
-    )
+fn compound_symbol_read_error(
+    error: impl core::fmt::Display,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    crate::pipeline::malformed_tile_payload(tile_offset, SPEC_INTER_BLOCK_MODE_INFO, error)
 }
 
 #[cfg(test)]

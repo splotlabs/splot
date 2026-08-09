@@ -362,7 +362,7 @@ fn same_reference_compound_mode_mapping_is_complete() {
             COMPOUND_MODE_SAME_REF_GLOBAL_GLOBALMV,
             CompoundYMode::GlobalGlobal,
         ),
-        (COMPOUND_MODE_SAME_REF_NEW_NEWMV, CompoundYMode::NewNew),
+        (3, CompoundYMode::NewNew),
     ] {
         let mut enc_tile = FrameCdfSubset::from_defaults().tile_copy();
         let mut encoder = SymbolEncoder::new();
@@ -426,11 +426,15 @@ fn same_reference_compound_mode_rejects_out_of_range_context() {
     )
     .unwrap_err();
 
-    let crate::error::DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("out-of-range context must fail as a typed unsupported feature");
+    let crate::error::DecodeError::MalformedSource { issue } = error else {
+        panic!("out-of-range context must fail as malformed tile syntax");
     };
-    assert_eq!(unsupported.reason(), "compound_block_mode_parse");
-    assert_eq!(unsupported.byte_offset(), Some(ByteOffset::new(7)));
+    assert_eq!(
+        issue.kind(),
+        crate::DecodeSourceIssueKind::TilePayloadParseError
+    );
+    assert_eq!(issue.spec_section(), Some(SPEC_INTER_BLOCK_MODE_INFO));
+    assert_eq!(issue.offset(), Some(ByteOffset::new(7)));
 }
 
 #[test]
@@ -476,7 +480,7 @@ fn compound_average_reads_global_global_mode() {
         &mut enc_tile,
         &mut encoder,
         TileCdfSelector::CompoundModeNonJoint { ctx: 0 },
-        COMPOUND_MODE_GLOBAL_GLOBALMV,
+        3,
     );
     let bytes = encoder.finish().unwrap().into_bytes();
 
