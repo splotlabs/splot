@@ -497,6 +497,8 @@ pub(crate) enum GeneralIntraResidualError {
     },
     #[error("general intra luma transform_type symbol read failed: {source}")]
     TransformTypeRead { source: BlockSymbolTraceReadError },
+    #[error("general intra chroma cctx_type symbol read failed: {source}")]
+    CctxTypeRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma palette token symbol read failed: {source}")]
     PaletteSymbolRead { source: BlockSymbolTraceReadError },
     #[error("general intra luma palette token literal read failed for {reason}: {source}")]
@@ -1305,7 +1307,11 @@ fn ensure_transform_tool_residual_handoff(
         && input.cctx_allowed
         && (is_inter || eob != 1)
     {
-        let cctx_type = read_transform_symbol(cdfs, symbols, TileCdfSelector::CctxType)?;
+        let cctx_type = usize::from(
+            cdfs.read_block_symbol_trace(TileCdfSelector::CctxType, symbols)
+                .map_err(|source| GeneralIntraResidualError::CctxTypeRead { source })?
+                .get(),
+        );
         metadata.cctx_type = Some(cctx_type);
     }
     if lossless {

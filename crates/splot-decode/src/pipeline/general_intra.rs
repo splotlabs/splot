@@ -1153,7 +1153,8 @@ fn general_intra_residual_error(
         | GeneralIntraResidualError::StagedFscPass { .. }
         | GeneralIntraResidualError::TransformPartitionRead { .. }
         | GeneralIntraResidualError::TransformPartitionGeometry { .. }
-        | GeneralIntraResidualError::TransformTypeRead { .. } => general_intra_at!(
+        | GeneralIntraResidualError::TransformTypeRead { .. }
+        | GeneralIntraResidualError::CctxTypeRead { .. } => general_intra_at!(
             "general_intra_luma_coeff_parse",
             offset,
             "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",

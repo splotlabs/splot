@@ -137,6 +137,24 @@ fn transform_type_eof_uses_transform_type_spec_section() {
     ));
 }
 
+#[test]
+fn cctx_type_eof_uses_residual_spec_section() {
+    let offset = ByteOffset::new(31);
+    let parse_error = crate::bitstream::tile_payload::GeneralIntraResidualError::CctxTypeRead {
+        source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+            offset: ByteOffset::new(0),
+            needed: 1,
+        }),
+    };
+
+    let error = residual_plane_read_error(&parse_error, offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.offset() == Some(offset) && issue.spec_section() == Some(SPEC_RESIDUAL)
+    ));
+}
+
 fn tx_size_for(width: usize, height: usize) -> usize {
     TX_WIDTH
         .iter()
