@@ -192,13 +192,7 @@ fn compound_reference_order_hint_covers_every_valid_reference_index() {
 
     for (ref_frame, expected) in reference.ref_order_hint.iter().copied().enumerate() {
         assert_eq!(
-            compound_reference_order_hint(
-                &reference,
-                &ref_frame_idx,
-                ref_frame as i8,
-                TILE_OFFSET,
-            )
-            .unwrap(),
+            compound_reference_order_hint(&reference, &ref_frame_idx, ref_frame as i8).unwrap(),
             CompoundOrderHint::Value(i64::from(expected))
         );
     }
@@ -208,7 +202,7 @@ fn compound_reference_order_hint_covers_every_valid_reference_index() {
 fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = vec![9];
-    let error = compound_reference_order_hint(&reference, &[0], 1, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_order_hint(&reference, &[0], 1).unwrap_err();
 
     assert!(matches!(
         error,
@@ -225,7 +219,7 @@ fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
 fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = vec![9];
-    let error = compound_reference_order_hint(&reference, &[0], -1, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_order_hint(&reference, &[0], -1).unwrap_err();
 
     assert!(matches!(
         error,
@@ -239,19 +233,20 @@ fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
 }
 
 #[test]
-fn compound_reference_order_hint_keeps_reference_slot_bounds_fail_closed() {
+fn compound_reference_order_hint_keeps_slot_conversion_and_bounds_fail_closed() {
     let mut reference = InterReferenceState::<u8>::empty().unwrap();
     reference.ref_order_hint = vec![9];
-    let error = compound_reference_order_hint(&reference, &[1], 0, TILE_OFFSET).unwrap_err();
+    let error = compound_reference_order_hint(&reference, &[u32::MAX], 0).unwrap_err();
+    let expected_slot = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
 
     assert!(matches!(
         error,
         crate::error::DecodeError::ReferenceState {
             source: crate::DecodeReferenceStateError::SlotOutOfRange {
-                slot: 1,
+                slot,
                 slot_count: 1,
             }
-        }
+        } if slot == expected_slot
     ));
 }
 
@@ -261,11 +256,11 @@ fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
     reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
 
     assert_eq!(
-        compound_reference_order_hint(&reference, &[0, 1], 0, TILE_OFFSET).unwrap(),
+        compound_reference_order_hint(&reference, &[0, 1], 0).unwrap(),
         CompoundOrderHint::Restricted
     );
     assert_eq!(
-        compound_reference_order_hint(&reference, &[0, 1], 1, TILE_OFFSET).unwrap(),
+        compound_reference_order_hint(&reference, &[0, 1], 1).unwrap(),
         CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
     );
     assert_eq!(
@@ -281,14 +276,8 @@ fn compound_furthest_future_ref_excludes_restricted_references() {
     reference.ref_order_hint = vec![u32::MAX, 15];
 
     assert_eq!(
-        compound_furthest_future_ref(
-            &reference,
-            &[0, 1],
-            CompoundOrderHint::current(10),
-            2,
-            TILE_OFFSET,
-        )
-        .unwrap(),
+        compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(10), 2)
+            .unwrap(),
         Some(1)
     );
 }
@@ -299,14 +288,8 @@ fn compound_furthest_future_ref_ranks_by_raw_order_hint() {
     reference.ref_order_hint = vec![i32::MAX as u32 + 128, i32::MAX as u32 + 129];
 
     assert_eq!(
-        compound_furthest_future_ref(
-            &reference,
-            &[0, 1],
-            CompoundOrderHint::current(i32::MAX),
-            2,
-            TILE_OFFSET,
-        )
-        .unwrap(),
+        compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(i32::MAX), 2)
+            .unwrap(),
         Some(1)
     );
 }

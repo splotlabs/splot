@@ -1022,8 +1022,8 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     let current = compound_current_order_hint(core, tile_offset)?;
     let ref_order_hints = if num_total_refs > 1 {
         Some((
-            compound_reference_order_hint(reference, ref_frame_idx, 0, tile_offset)?,
-            compound_reference_order_hint(reference, ref_frame_idx, 1, tile_offset)?,
+            compound_reference_order_hint(reference, ref_frame_idx, 0)?,
+            compound_reference_order_hint(reference, ref_frame_idx, 1)?,
         ))
     } else {
         None
@@ -1623,19 +1623,12 @@ fn compound_group_idx_context<T: ReconSample>(
 ) -> Result<usize> {
     let current_order_hint =
         CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
-    let ref0_order_hint =
-        compound_reference_order_hint(reference, ref_frame_idx, ref_frame0, tile_offset)?;
-    let ref1_order_hint =
-        compound_reference_order_hint(reference, ref_frame_idx, ref_frame1, tile_offset)?;
+    let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
+    let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     let equal_ref_distance = current_order_hint.relative_dist(ref0_order_hint).abs()
         == ref1_order_hint.relative_dist(current_order_hint).abs();
-    let furthest_future_ref = compound_furthest_future_ref(
-        reference,
-        ref_frame_idx,
-        current_order_hint,
-        num_total_refs,
-        tile_offset,
-    )?;
+    let furthest_future_ref =
+        compound_furthest_future_ref(reference, ref_frame_idx, current_order_hint, num_total_refs)?;
     Ok(neighbour_ctx.compound_group_idx_ctx(equal_ref_distance, furthest_future_ref))
 }
 
@@ -1644,12 +1637,11 @@ fn compound_furthest_future_ref<T: ReconSample>(
     ref_frame_idx: &[u32],
     current_order_hint: CompoundOrderHint,
     num_total_refs: usize,
-    tile_offset: ByteOffset,
 ) -> Result<Option<i8>> {
     let mut best = None;
     for ref_idx in 0..num_total_refs {
         let ref_order_hint =
-            compound_reference_order_hint(reference, ref_frame_idx, ref_idx as i8, tile_offset)?;
+            compound_reference_order_hint(reference, ref_frame_idx, ref_idx as i8)?;
         let CompoundOrderHint::Value(order_hint) = ref_order_hint else {
             continue;
         };
@@ -1668,17 +1660,12 @@ fn compound_reference_order_hint<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame: i8,
-    tile_offset: ByteOffset,
 ) -> Result<CompoundOrderHint> {
-    let slot = super::super::block_reference_slot(ref_frame_idx, ref_frame)?;
-    let slot = usize::try_from(slot).map_err(|_| {
-        compound_cap!(
-            "compound_group_ref_slot_range",
-            tile_offset,
-            "inter.compound.ref_slot",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let slot = usize::try_from(super::super::block_reference_slot(
+        ref_frame_idx,
+        ref_frame,
+    )?)
+    .unwrap_or(usize::MAX);
     reference
         .ref_order_hint
         .get(slot)
@@ -1702,10 +1689,8 @@ fn compound_joint_mv_projection<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<CompoundJointMvProjection> {
     let current = CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
-    let ref0_order_hint =
-        compound_reference_order_hint(reference, ref_frame_idx, ref_frame0, tile_offset)?;
-    let ref1_order_hint =
-        compound_reference_order_hint(reference, ref_frame_idx, ref_frame1, tile_offset)?;
+    let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
+    let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     Ok(compound_joint_mv_projection_from_order_hints(
         current,
         ref0_order_hint,
@@ -2029,10 +2014,8 @@ fn compound_cwp_same_side<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<bool> {
     let current = CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
-    let ref0_order_hint =
-        compound_reference_order_hint(reference, ref_frame_idx, ref_frame0, tile_offset)?;
-    let ref1_order_hint =
-        compound_reference_order_hint(reference, ref_frame_idx, ref_frame1, tile_offset)?;
+    let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
+    let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     Ok(compound_references_same_side(
         current,
         ref0_order_hint,
