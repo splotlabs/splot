@@ -1228,14 +1228,10 @@ fn compound_opfl_refine_type(core: &FrameHeaderCore, tile_offset: ByteOffset) ->
     core.inter
         .as_ref()
         .and_then(|inter| inter.opfl_refine_type)
-        .ok_or_else(|| {
-            compound_missing!(
-                "compound_missing_opfl_refine_type",
-                tile_offset,
-                "inter.compound.opfl_refine_type",
-                SPEC_MODE_INFO
-            )
-        })
+        .ok_or(inter_internal!(
+            "compound_missing_opfl_refine_type",
+            tile_offset
+        ))
 }
 
 const fn compound_opfl_block_size_allowed(n4w: usize, n4h: usize) -> bool {
