@@ -483,6 +483,7 @@ fn compound_local_warp_signal_allowed(
 pub(super) fn compound_local_warp_models(
     mv_grid: &NeighbourMvGrid,
     block_ctx: &MvBlockContext,
+    ref_frame1: i8,
     mv0: Mv,
     mv1: Mv,
     mi_row: usize,
@@ -491,14 +492,6 @@ pub(super) fn compound_local_warp_models(
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<[Option<[i32; 6]>; 2]> {
-    let ref_frame1 = block_ctx.ref_frame1.ok_or_else(|| {
-        compound_missing!(
-            "compound_local_warp_missing_ref_frame1",
-            tile_offset,
-            "inter.compound.local_warp.ref_frame1",
-            "5.20.7.14"
-        )
-    })?;
     let model0 = compound_ref_warp_model(
         mv_grid,
         block_ctx,
