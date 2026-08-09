@@ -1730,14 +1730,7 @@ fn decode_block<T: ReconSample>(
             }
         };
         let warp_inter_intra = if warp_mode == WarpInterMode::Warpmv {
-            read_warp_inter_intra_syntax(
-                cdfs,
-                symbols,
-                frontier.b_size.index(),
-                n4w,
-                n4h,
-                tile_offset,
-            )?
+            read_warp_inter_intra_syntax(cdfs, symbols, frontier.b_size, n4w, n4h, tile_offset)?
         } else {
             WarpInterIntraSyntax::default()
         };
