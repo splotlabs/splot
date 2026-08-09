@@ -81,7 +81,7 @@ impl InterLumaTxTypeMap {
             .ok_or_else(|| residual_geometry_error(tile_offset))?;
         self.values
             .try_reserve(len.saturating_sub(self.values.len()))
-            .map_err(|_| residual_allocation_error())?;
+            .map_err(|_| inter_allocation!("inter residual luma transform-type map"))?;
         self.values.resize(len, DCT_DCT);
         self.values.fill(DCT_DCT);
         self.row = row;
@@ -603,7 +603,7 @@ fn read_inter_residual_chroma_group(
             )?;
             chroma_reads
                 .try_reserve(1)
-                .map_err(|_| residual_allocation_error())?;
+                .map_err(|_| inter_allocation!("inter residual chroma read list"))?;
             chroma_reads.push(InterChromaURead {
                 unit,
                 block_index,
