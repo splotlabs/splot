@@ -48,7 +48,7 @@ pub enum DecodeError {
         /// Unsupported runtime feature metadata.
         unsupported: Box<DecodeUnsupportedFeature>,
     },
-    /// Parsed header state was internally inconsistent.
+    /// Parsed header or derived runtime decode state was internally inconsistent.
     #[error("decode header state failed: {source}")]
     HeaderState {
         /// Underlying header-state consistency failure.
@@ -78,7 +78,7 @@ pub enum DecodeError {
     },
 }
 
-/// Runtime parsed-header state consistency failure.
+/// Runtime parsed-header or derived decode-state consistency failure.
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
@@ -115,6 +115,9 @@ pub enum DecodeHeaderStateError {
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,
+    /// Decoded inter residual records were inconsistent at reconstruction time.
+    #[error("inter residual reconstruction state is inconsistent")]
+    InvalidInterResidualReconstruction,
 }
 
 /// Runtime reference-frame state consistency failure.

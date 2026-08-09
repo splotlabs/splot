@@ -783,14 +783,6 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     bit_depth: BitDepth,
     offset: ByteOffset,
 ) -> Result<()> {
-    let map_recon = |_| {
-        inter_cap!(
-            "inter_residual_reconstruct",
-            offset,
-            "inter.residual.reconstruct",
-            SPEC_MC
-        )
-    };
     let use_ddt = enable_inter_ddt && !use_intrabc;
     let blocks = residual.blocks(residual_blocks).ok_or_else(|| {
         inter_missing!(
@@ -823,7 +815,7 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
                 use_ddt,
                 bit_depth,
             )
-            .map_err(map_recon)?;
+            .map_err(inter_residual_reconstruction_error)?;
             continue;
         }
         let use_tcq = block.plane == ReconPlaneId::Y && luma_use_tcq;
@@ -840,9 +832,39 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
             use_ddt,
             bit_depth,
         )
-        .map_err(map_recon)?;
+        .map_err(inter_residual_reconstruction_error)?;
     }
     Ok(())
+}
+
+fn inter_residual_reconstruction_error(error: GeneralIntraResidualError) -> DecodeError {
+    match error {
+        GeneralIntraResidualError::Reconstruct { source } => source.into(),
+        _ => DecodeHeaderStateError::InvalidInterResidualReconstruction.into(),
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn inter_residual_reconstruction_failures_keep_their_public_error_category() {
+    assert!(matches!(
+        inter_residual_reconstruction_error(GeneralIntraResidualError::UnexpectedBranch),
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::InvalidInterResidualReconstruction,
+        }
+    ));
+    assert!(matches!(
+        inter_residual_reconstruction_error(GeneralIntraResidualError::Reconstruct {
+            source: splot_recon::ReconError::ArithmeticOverflow {
+                context: "inter residual test",
+            },
+        }),
+        DecodeError::Reconstruction {
+            source: splot_recon::ReconError::ArithmeticOverflow {
+                context: "inter residual test",
+            },
+        }
+    ));
 }
 
 fn inter_residual_chroma_pair<'a>(
