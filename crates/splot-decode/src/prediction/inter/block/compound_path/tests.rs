@@ -200,11 +200,11 @@ fn compound_ref_distance_signs_keep_missing_order_hint_fail_closed() {
 }
 
 #[test]
-fn compound_opfl_consumers_keep_missing_header_state_fail_closed() {
+fn compound_consumers_keep_missing_header_state_fail_closed() {
     let fixture = include_bytes!(
         "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
     );
-    let (_, mut core, _) =
+    let (mut sequence, mut core, _) =
         crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
     core.inter.as_mut().unwrap().opfl_refine_type = None;
 
@@ -225,6 +225,27 @@ fn compound_opfl_consumers_keep_missing_header_state_fail_closed() {
         mv0: Mv::ZERO,
         mv1: Mv::ZERO,
     };
+    sequence.inter = None;
+    let reference = InterReferenceState::<u8>::empty().unwrap();
+    let error = compound_refinemv_reachable(
+        &sequence,
+        &core,
+        &reference,
+        &[],
+        compound,
+        2,
+        4,
+        TILE_OFFSET,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::InternalState {
+            reason: "compound_refinemv_missing_sequence_inter",
+            byte_offset: TILE_OFFSET,
+        }
+    ));
+
     let error = compound_refinemv_mode_allowed(&core, compound, TILE_OFFSET).unwrap_err();
     assert!(matches!(
         error,
@@ -235,7 +256,6 @@ fn compound_opfl_consumers_keep_missing_header_state_fail_closed() {
     ));
 
     core.frame_size = None;
-    let reference = InterReferenceState::<u8>::empty().unwrap();
     let error = compound_sized_reference_distances(
         &core,
         &reference,
