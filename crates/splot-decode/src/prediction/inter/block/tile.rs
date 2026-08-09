@@ -1800,6 +1800,15 @@ fn prepare_tile<T: ReconSample>(
 /// parse-then-reconstruct loop.
 const PARSE_AHEAD_POOL_WIDTH: usize = 2;
 
+fn no_decoded_block_error(offset: ByteOffset) -> crate::DecodeError {
+    inter_missing!(
+        "inter_no_decoded_block",
+        offset,
+        "inter.block",
+        SPEC_MODE_INFO
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
     scratch: &mut TileDecodeScratch<T>,
@@ -1990,10 +1999,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             }
         }
         if !decoded_any {
-            return Err(inter_internal!(
-                "inter_no_decoded_block_parallel",
-                chunk_offset
-            ));
+            return Err(no_decoded_block_error(chunk_offset));
         }
         return Ok(TileDecodeOutput {
             cdef_state,
@@ -2159,12 +2165,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         .ok_or(inter_internal!("inter_lr_filter_index_serial", tile_offset))?;
     }
     if !decoded_any {
-        return Err(inter_missing!(
-            "inter_no_decoded_block",
-            chunk_offset,
-            "inter.block",
-            SPEC_MODE_INFO
-        ));
+        return Err(no_decoded_block_error(chunk_offset));
     }
 
     Ok(TileDecodeOutput {
