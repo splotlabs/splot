@@ -249,7 +249,6 @@ pub(crate) struct InterBlockSetup {
     ccso_state: CcsoState,
     motion_field: TemporalMotionField,
     initial_frame_cdfs: Arc<FrameCdfSubset>,
-    offset: ByteOffset,
     qindex: u32,
 }
 
@@ -361,14 +360,7 @@ fn derive_inter_block_setup<T: ReconSample>(
             SPEC_MODE_INFO
         )
     })?;
-    motion_field.set_band_rows8(sb_h4 / 2).ok_or_else(|| {
-        inter_cap!(
-            "inter_temporal_motion_field_band_rows",
-            offset,
-            "inter.temporal_motion_field",
-            SPEC_MODE_INFO
-        )
-    })?;
+    motion_field.set_band_rows8(sb_h4 / 2);
     motion_field.set_reference_metadata(
         !frame_is_intra,
         temporal_config.frame_size,
@@ -444,7 +436,6 @@ fn derive_inter_block_setup<T: ReconSample>(
         ccso_state,
         motion_field,
         initial_frame_cdfs,
-        offset,
         qindex,
     })
 }
@@ -455,8 +446,7 @@ fn finish_frame_cdfs(
     initial: &Arc<FrameCdfSubset>,
     work_units: &[DecodeTileWorkUnit<'_>],
     qindex: u32,
-    offset: ByteOffset,
-) -> Result<Arc<FrameCdfSubset>> {
+) -> Arc<FrameCdfSubset> {
     let mut saved_cdfs: Option<SavedCdfSubset> = None;
     for tile in work_units {
         SavedCdfSubset::apply_completed_tile(
@@ -468,17 +458,8 @@ fn finish_frame_cdfs(
         );
     }
     let mut frame_cdfs = FrameCdfSubset::frame_end_updated(initial.as_ref(), saved_cdfs);
-    frame_cdfs
-        .replicate_coeff_q_context_for_base_q(qindex)
-        .map_err(|_| {
-            inter_cap!(
-                "reference_coefficient_cdf_context",
-                offset,
-                "inter.cdf.reference_coefficient_context",
-                "7.23"
-            )
-        })?;
-    Ok(Arc::new(frame_cdfs))
+    frame_cdfs.replicate_coeff_q_context_for_base_q(qindex);
+    Arc::new(frame_cdfs)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -514,7 +495,6 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
         initial_frame_cdfs,
-        offset,
         qindex,
     } = setup;
     let mut records = core::mem::take(&mut scratch.frame_filter_records);
@@ -545,7 +525,7 @@ pub(crate) fn decode_inter_blocks<T: ReconSample>(
         ccso_state,
         motion_field,
     )?;
-    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, offset)?;
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = walked.ccso_state.into_grid()?;
     let filter_inputs = InterFilterInputs {
         records,
@@ -644,14 +624,10 @@ impl TemporalPrelude {
             self.dimensions.1,
             self.sb_h4,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_scheduled_temporal_motion_layout",
-                self.offset,
-                "inter.temporal_motion_context",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!(
+            "inter_scheduled_temporal_motion_layout",
+            self.offset
+        ))?;
         let tip_mode = core
             .inter
             .as_ref()
@@ -675,14 +651,10 @@ impl TemporalPrelude {
                 tip_mode,
                 fill_tip_holes,
             )
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_scheduled_temporal_motion_context",
-                    self.offset,
-                    "inter.temporal_motion_context",
-                    SPEC_MODE_INFO
-                )
-            })
+            .ok_or(inter_internal!(
+                "inter_scheduled_temporal_motion_context",
+                self.offset
+            ))
     }
 }
 
@@ -707,16 +679,13 @@ fn frame_temporal_context<'a, T: ReconSample>(
     offset: ByteOffset,
 ) -> Result<&'a mut TemporalMvContext> {
     let temporal_timer = crate::timing::start();
-    let ref_motion_fields = reference
-        .resolve_motion_fields(ref_frame_idx)
-        .ok_or_else(|| {
-            inter_missing!(
+    let ref_motion_fields =
+        reference
+            .resolve_motion_fields(ref_frame_idx)
+            .ok_or(inter_internal!(
                 "inter_reference_motion_field_unpublished",
-                offset,
-                "inter.reference_motion_field",
-                SPEC_MODE_INFO
-            )
-        })?;
+                offset
+            ))?;
     temporal_context
         .refresh_from_references(
             dimensions,
@@ -727,25 +696,16 @@ fn frame_temporal_context<'a, T: ReconSample>(
             &reference.ref_order_hint,
             &ref_motion_fields,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_fused_temporal_motion_context",
-                offset,
-                "inter.temporal_motion_context",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!(
+            "inter_fused_temporal_motion_context",
+            offset
+        ))?;
     crate::timing::report("inter_temporal_refresh", temporal_timer);
     let tip_prepare_timer = crate::timing::start();
     tip::prepare_motion_field(temporal_context, core, sb_h4);
     crate::timing::report("inter_tip_prepare", tip_prepare_timer);
     if temporal_context.tip_references() != expected_tip_pair {
-        return Err(inter_cap!(
-            "inter_tip_reference_pair_mismatch",
-            offset,
-            "inter.temporal_motion_context",
-            SPEC_MODE_INFO
-        ));
+        return Err(inter_internal!("inter_tip_reference_pair_mismatch", offset));
     }
     Ok(temporal_context)
 }
@@ -1114,7 +1074,6 @@ fn decode_block<T: ReconSample>(
         n4w,
         n4h,
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-        tile_offset,
     )?;
     let mut block_ctx = MvBlockContext {
         mi_row,
@@ -1899,15 +1858,8 @@ fn decode_block<T: ReconSample>(
     let interintra = if tip_ref || segment_forces_globalmv {
         None
     } else if !bawp.enabled {
-        let syntax = read_inter_intra_syntax(
-            cdfs,
-            symbols,
-            core,
-            frontier.b_size.index(),
-            n4w,
-            n4h,
-            tile_offset,
-        )?;
+        let syntax =
+            read_inter_intra_syntax(cdfs, symbols, core, frontier.b_size, n4w, n4h, tile_offset)?;
         interintra_prediction_mode(syntax, tile_offset)?
     } else {
         None
@@ -2200,7 +2152,7 @@ fn read_inter_intra_syntax(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     core: &FrameHeaderCore,
-    b_size: usize,
+    b_size: BlockSize,
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
@@ -2225,22 +2177,16 @@ fn read_inter_intra_syntax_enabled(
     cdfs: &mut TileCdfSubset,
     symbols: &mut SymbolDecoder<'_>,
     frame_enables_interintra: bool,
-    b_size: usize,
+    b_size: BlockSize,
     n4w: usize,
     n4h: usize,
     tile_offset: ByteOffset,
 ) -> Result<WarpInterIntraSyntax> {
+    let b_size = b_size.index();
     if !frame_enables_interintra || b_size < BLOCK_8X8 || n4w.max(n4h) > CHUNK_64_N4 {
         return Ok(WarpInterIntraSyntax::default());
     }
-    let bsize_group = *SIZE_GROUP_LOOKUP.get(b_size).ok_or_else(|| {
-        inter_cap!(
-            "inter_interintra_bsize_group",
-            tile_offset,
-            "inter.inter_intra block size out of range",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     let inter_intra = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?;

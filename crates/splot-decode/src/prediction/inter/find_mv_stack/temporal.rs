@@ -243,12 +243,9 @@ impl TemporalMotionField {
         }
     }
 
-    pub(crate) fn set_band_rows8(&mut self, band_rows8: usize) -> Option<()> {
-        if !matches!(band_rows8, 8 | 16 | 32) {
-            return None;
-        }
+    pub(crate) fn set_band_rows8(&mut self, band_rows8: usize) {
+        debug_assert!(matches!(band_rows8, 8 | 16 | 32));
         self.band_rows8 = band_rows8;
-        Some(())
     }
 
     pub(crate) const fn layout(&self) -> MotionFieldLayout {

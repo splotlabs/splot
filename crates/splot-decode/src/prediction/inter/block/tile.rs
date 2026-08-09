@@ -463,11 +463,9 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     .map(|superblock| superblock.is_some()),
             }
         } else {
-            recon_row.terminal = Some(inter_cap!(
+            recon_row.terminal = Some(inter_internal!(
                 "inter_row_parser_missing_walk",
-                tile_offset,
-                "inter.row.parser_state",
-                SPEC_MODE_INFO
+                tile_offset
             ));
             return ParserStep::Last(recon_row);
         };
@@ -485,11 +483,9 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             }
             Ok(false) => {
                 let Some(walk) = self.walk.take() else {
-                    recon_row.terminal = Some(inter_cap!(
+                    recon_row.terminal = Some(inter_internal!(
                         "inter_row_parser_finish_missing_walk",
-                        tile_offset,
-                        "inter.row.parser_state",
-                        SPEC_MODE_INFO
+                        tile_offset
                     ));
                     return ParserStep::Last(recon_row);
                 };
@@ -524,12 +520,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
     fn into_output(self) -> Result<TileParserOutput> {
         let tile_offset = self.tile.tile_byte_span().start;
         let Some((active_source_blocks, unit_filters)) = self.tile_walk_output else {
-            return Err(inter_cap!(
-                "inter_row_parser_output",
-                tile_offset,
-                "inter.row.parser_output",
-                SPEC_MODE_INFO
-            ));
+            return Err(inter_internal!("inter_row_parser_output", tile_offset));
         };
         Ok(TileParserOutput {
             cdef_state: self.cdef_state,
@@ -1363,18 +1354,10 @@ where
         || row_gate.wait("arm=rows"),
     )
     .map_err(|error| match error {
-        ReadyRowPipelineError::Parallel => inter_cap!(
-            "inter_row_prepass_scope",
-            tile_offset,
-            "inter.row.task_scope",
-            SPEC_MODE_INFO
-        ),
-        ReadyRowPipelineError::Capacity => inter_cap!(
-            "inter_row_prepass_capacity",
-            tile_offset,
-            "inter.row.task_capacity",
-            SPEC_MODE_INFO
-        ),
+        ReadyRowPipelineError::Parallel => inter_internal!("inter_row_prepass_scope", tile_offset),
+        ReadyRowPipelineError::Capacity => {
+            inter_internal!("inter_row_prepass_capacity", tile_offset)
+        }
         ReadyRowPipelineError::Codec(error) => error,
     })?;
     if timer.is_some() {
@@ -1399,14 +1382,8 @@ where
     let active_limit = splot_parallel::current_pool_width()
         .saturating_sub(1)
         .max(1);
-    if prepared.max_pending > prepared.ready_limit || prepared.max_active > active_limit {
-        return Err(inter_cap!(
-            "inter_row_prepass_bounds",
-            tile_offset,
-            "inter.row.task_capacity",
-            SPEC_MODE_INFO
-        ));
-    }
+    debug_assert!(prepared.max_pending <= prepared.ready_limit);
+    debug_assert!(prepared.max_active <= active_limit);
     Ok(())
 }
 
@@ -1462,14 +1439,10 @@ impl ParsedTile {
         segment_ids: &mut FrameSegmentIdMap,
     ) -> Result<()> {
         let tile_offset = self.tile_offset;
-        let output = self.output.take().ok_or_else(|| {
-            inter_cap!(
-                "inter_parsed_tile_output",
-                tile_offset,
-                "inter.row.parser_output",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let output = self
+            .output
+            .take()
+            .ok_or(inter_internal!("inter_parsed_tile_output", tile_offset))?;
         merge_tile_filter_state(
             cdef_state,
             gdf_state,
@@ -1485,14 +1458,7 @@ impl ParsedTile {
             output.active_source_blocks,
             output.unit_filters,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_lr_filter_index_split",
-                tile_offset,
-                "inter.tile.lr_unit_filter_index",
-                SPEC_MODE_INFO
-            )
-        })
+        .ok_or(inter_internal!("inter_lr_filter_index_split", tile_offset))
     }
 }
 
@@ -1518,14 +1484,9 @@ fn tile_unit_capacity(
         ParserGranularity::Row => sb_rows,
         ParserGranularity::Superblock => sb_rows.saturating_mul(sb_cols),
     };
-    units.checked_add(1).ok_or_else(|| {
-        inter_cap!(
-            "inter_parsed_row_capacity",
-            tile_offset,
-            "inter.tile.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })
+    units
+        .checked_add(1)
+        .ok_or(inter_internal!("inter_parsed_row_capacity", tile_offset))
 }
 
 /// Runs one tile's entropy pass to the end, keeping every unit.
@@ -1558,14 +1519,8 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     let block_decoded = tile_block_decoded(tile, context)?;
     let capacity = tile_unit_capacity(&mi_rows, &mi_cols, params, granularity, tile_offset)?;
     let mut rows = Vec::new();
-    rows.try_reserve_exact(capacity).map_err(|_| {
-        inter_cap!(
-            "inter_parsed_row_allocation",
-            tile_offset,
-            "inter.tile.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
+    rows.try_reserve_exact(capacity)
+        .map_err(|_| inter_allocation!("inter parsed rows"))?;
     let mut parser = TileParser::new(
         tile,
         context,
@@ -1630,14 +1585,7 @@ fn tile_block_decoded<T: ReconSample>(
         (tile.mi_col_range().end as usize).min(context.mi_cols),
         (tile.mi_row_range().end as usize).min(context.mi_rows),
     )
-    .map_err(|_| {
-        inter_cap!(
-            "inter_tile_block_decoded_init",
-            tile.tile_byte_span().start,
-            "inter.partition_walk",
-            SPEC_MODE_INFO
-        )
-    })
+    .map_err(|_| inter_internal!("inter_tile_block_decoded_init", tile.tile_byte_span().start))
 }
 
 fn tile_luma_rect<T: ReconSample>(
@@ -1709,33 +1657,20 @@ fn superblock_luma_rects<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<Vec<splot_recon::PlaneRect>> {
     let bounds = luma_rect(mi_rows, mi_cols, workspace)?;
-    let side = sb_h4.checked_mul(4).ok_or_else(|| {
-        inter_cap!(
-            "inter_superblock_surface_size",
-            tile_offset,
-            "inter.superblock.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let side = sb_h4.checked_mul(4).ok_or(inter_internal!(
+        "inter_superblock_surface_size",
+        tile_offset
+    ))?;
     let rows = bounds.height().div_ceil(side);
     let cols = bounds.width().div_ceil(side);
-    let count = rows.checked_mul(cols).ok_or_else(|| {
-        inter_cap!(
-            "inter_superblock_surface_count",
-            tile_offset,
-            "inter.superblock.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let count = rows.checked_mul(cols).ok_or(inter_internal!(
+        "inter_superblock_surface_count",
+        tile_offset
+    ))?;
     let mut rects = Vec::new();
-    rects.try_reserve_exact(count).map_err(|_| {
-        inter_cap!(
-            "inter_superblock_surface_allocation",
-            tile_offset,
-            "inter.superblock.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
+    rects
+        .try_reserve_exact(count)
+        .map_err(|_| inter_allocation!("inter superblock surfaces"))?;
     for row in 0..rows {
         let y = bounds.y() + row * side;
         for column in 0..cols {
@@ -1775,23 +1710,10 @@ fn prepare_tile<T: ReconSample>(
         .saturating_sub(mi_rows.start)
         .div_ceil(context.sb_h4)
         .checked_add(1)
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_tile_row_capacity",
-                tile_offset,
-                "inter.tile.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!("inter_tile_row_capacity", tile_offset))?;
     let mut rows = Vec::new();
-    rows.try_reserve_exact(row_count).map_err(|_| {
-        inter_cap!(
-            "inter_tile_row_allocation",
-            tile_offset,
-            "inter.tile.task_capacity",
-            SPEC_MODE_INFO
-        )
-    })?;
+    rows.try_reserve_exact(row_count)
+        .map_err(|_| inter_allocation!("inter tile rows"))?;
     let mut parser = TileParser::new(
         tile,
         context,
@@ -1865,6 +1787,15 @@ fn prepare_tile<T: ReconSample>(
 /// parse-then-reconstruct loop.
 const PARSE_AHEAD_POOL_WIDTH: usize = 2;
 
+fn no_decoded_block_error(offset: ByteOffset) -> crate::DecodeError {
+    inter_missing!(
+        "inter_no_decoded_block",
+        offset,
+        "inter.block",
+        SPEC_MODE_INFO
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn decode_tiles<T: ReconSample>(
     scratch: &mut TileDecodeScratch<T>,
@@ -1933,14 +1864,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut luma_rects = Vec::new();
         luma_rects
             .try_reserve_exact(work_units.len())
-            .map_err(|_| {
-                inter_cap!(
-                    "inter_tile_surface_allocation",
-                    chunk_offset,
-                    "inter.tile.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .map_err(|_| inter_allocation!("inter tile surfaces"))?;
         for tile in work_units.iter() {
             luma_rects.push(tile_luma_rect(tile, workspace)?);
         }
@@ -1951,14 +1875,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut prepared_results = Vec::new();
         prepared_results
             .try_reserve_exact(work_units.len())
-            .map_err(|_| {
-                inter_cap!(
-                    "inter_tile_result_slots_allocation",
-                    chunk_offset,
-                    "inter.tile.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .map_err(|_| inter_allocation!("inter tile result slots"))?;
         prepared_results.resize_with(work_units.len(), || None);
         splot_parallel::ready_task_scope(|scope| {
             for ((tile, surface), result) in work_units
@@ -1991,14 +1908,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 });
             }
         })
-        .map_err(|_| {
-            inter_cap!(
-                "inter_tile_prepare_scope",
-                chunk_offset,
-                "inter.tile.task_scope",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .map_err(|_| inter_internal!("inter_tile_prepare_scope", chunk_offset))?;
         if timer.is_some() {
             crate::timing::report_detail(
                 "inter_tile_prepare",
@@ -2014,23 +1924,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(prepared_results.len())
-            .map_err(|_| {
-                inter_cap!(
-                    "inter_tile_result_collection_allocation",
-                    chunk_offset,
-                    "inter.tile.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .map_err(|_| inter_allocation!("inter tile result collection"))?;
         for result in prepared_results {
-            let result = result.ok_or_else(|| {
-                inter_cap!(
-                    "inter_tile_result_missing",
-                    chunk_offset,
-                    "inter.tile.task_scope",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            let result =
+                result.ok_or(inter_internal!("inter_tile_result_missing", chunk_offset))?;
             prepared.push(result?);
         }
         prepared.sort_by_key(|tile| tile.tile_num);
@@ -2051,14 +1948,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
                 output.active_source_blocks,
                 output.unit_filters,
             )
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_lr_filter_index_parallel",
-                    tile.tile_offset,
-                    "inter.tile.lr_unit_filter_index",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .ok_or(inter_internal!(
+                "inter_lr_filter_index_parallel",
+                tile.tile_offset
+            ))?;
 
             let mut recon_ordinal = 0usize;
             let mut current_block_decoded_superblock = None;
@@ -2090,12 +1983,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             }
         }
         if !decoded_any {
-            return Err(inter_missing!(
-                "inter_no_decoded_block_parallel",
-                chunk_offset,
-                "inter.block",
-                SPEC_MODE_INFO
-            ));
+            return Err(no_decoded_block_error(chunk_offset));
         }
         return Ok(TileDecodeOutput {
             cdef_state,
@@ -2131,11 +2019,9 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut resolve_state = TileResolveState::new(sequence);
         if parse_ahead {
             let Some(rects) = superblock_rects else {
-                return Err(inter_cap!(
+                return Err(inter_internal!(
                     "inter_superblock_surface_state",
-                    tile_offset,
-                    "inter.superblock.task_capacity",
-                    SPEC_MODE_INFO
+                    tile_offset
                 ));
             };
             let row_buffers = ReconRowBufferPool::new(
@@ -2164,14 +2050,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
             let mut shadow = parallel_prepass
                 .then(|| CurrentFrameWorkspace::new(workspace.info(), T::default()))
                 .transpose()?;
-            let done_limit = rects.len().checked_add(1).ok_or_else(|| {
-                inter_cap!(
-                    "inter_superblock_done_limit_overflow",
-                    tile_offset,
-                    "inter.superblock.task_capacity",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            let done_limit = rects.len().checked_add(1).ok_or(inter_internal!(
+                "inter_superblock_done_limit_overflow",
+                tile_offset
+            ))?;
             let surfaces = match shadow.as_mut() {
                 Some(shadow) => shadow
                     .rect_surfaces(&rects)?
@@ -2263,22 +2145,10 @@ pub(super) fn decode_tiles<T: ReconSample>(
             output.active_source_blocks,
             output.unit_filters,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_lr_filter_index_serial",
-                tile_offset,
-                "inter.tile.lr_unit_filter_index",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!("inter_lr_filter_index_serial", tile_offset))?;
     }
     if !decoded_any {
-        return Err(inter_missing!(
-            "inter_no_decoded_block",
-            chunk_offset,
-            "inter.block",
-            SPEC_MODE_INFO
-        ));
+        return Err(no_decoded_block_error(chunk_offset));
     }
 
     Ok(TileDecodeOutput {

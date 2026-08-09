@@ -99,8 +99,8 @@ const REFS_PER_FRAME_MINUS_1: usize = 6;
 const COMP_MODE_CONTEXTS: usize = 5;
 const IS_JOINT_CONTEXTS: usize = 2;
 const COMPOUND_MODE_CONTEXTS: usize = 5;
-const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
-const COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN: usize = 5;
+pub(crate) const COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN: usize = 6;
+pub(crate) const COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN: usize = 5;
 const JMVD_SCALE_MODE_CDF_ROW_LEN: usize = 6;
 const JMVD_ADAPTIVE_SCALE_MODE_CDF_ROW_LEN: usize = 4;
 const COMP_GROUP_IDX_CONTEXTS: usize = 12;
@@ -1348,21 +1348,6 @@ impl BlockCdfRows {
             palette_size_8_y_color: DEFAULT_PALETTE_SIZE_8_Y_COLOR_CDF,
             coeff: CoeffCdfRows::from_defaults(),
         }
-    }
-
-    pub(crate) fn replicate_coeff_q_context(
-        &mut self,
-        coeff_cdf_q_ctx: usize,
-    ) -> Result<(), TileCdfError> {
-        let q = checked_coeff_cdf_q_context(TileCdfArray::TxbSkip, coeff_cdf_q_ctx)?;
-        let bounded = [
-            CoeffCdfQContext::Q0,
-            CoeffCdfQContext::Q1,
-            CoeffCdfQContext::Q2,
-            CoeffCdfQContext::Q3,
-        ][q];
-        self.replicate_bounded_coeff_q_context(bounded);
-        Ok(())
     }
 
     pub(super) fn replicate_bounded_coeff_q_context(&mut self, coeff_cdf_q_ctx: CoeffCdfQContext) {

@@ -239,11 +239,9 @@ pub(super) fn resolve_parsed_leaves(
 ) -> Result<()> {
     let _phase = crate::timing::PhaseScope::new(crate::timing::Phase::ResolveRow);
     if queue.len() != entries.len() {
-        return Err(inter_cap!(
+        return Err(inter_internal!(
             "inter_resolve_queue_length",
-            state.tile_offset,
-            "inter.row.resolve_queue",
-            SPEC_MODE_INFO
+            state.tile_offset
         ));
     }
     let intrabc_sb_h4 = effective_intrabc_sb_h4(sb_h4, state.core.frame_is_intra == Some(true));
@@ -283,11 +281,9 @@ pub(super) fn resolve_parsed_leaves(
             }
             LeafMotionKind::Pending => {
                 let Some(block) = pending.next() else {
-                    return Err(inter_cap!(
+                    return Err(inter_internal!(
                         "inter_resolve_pending_missing",
-                        state.tile_offset,
-                        "inter.row.resolve_queue",
-                        SPEC_MODE_INFO
+                        state.tile_offset
                     ));
                 };
                 entry.command = Some(match block {
@@ -302,11 +298,9 @@ pub(super) fn resolve_parsed_leaves(
         }
     }
     if pending.next().is_some() {
-        return Err(inter_cap!(
+        return Err(inter_internal!(
             "inter_resolve_pending_leftover",
-            state.tile_offset,
-            "inter.row.resolve_queue",
-            SPEC_MODE_INFO
+            state.tile_offset
         ));
     }
     Ok(())
@@ -386,11 +380,9 @@ fn resolve_pending_intrabc(
     ) {
         IntrabcStackAdmission::Admit { selected } => selected,
         IntrabcStackAdmission::Defer => {
-            return Err(inter_cap!(
+            return Err(inter_internal!(
                 "inter_intrabc_ref_stack",
-                state.tile_offset,
-                "inter.intrabc.ref_stack",
-                "7.12.2"
+                state.tile_offset
             ));
         }
     };
@@ -477,11 +469,9 @@ fn resolve_pending_inter(
             refinemv_switchable,
         } => {
             let InterMotionSyntax::Compound(compound) = &syntax.motion else {
-                return Err(inter_cap!(
+                return Err(inter_internal!(
                     "inter_resolve_compound_syntax",
-                    state.tile_offset,
-                    "inter.compound.resolve_syntax",
-                    SPEC_MODE_INFO
+                    state.tile_offset
                 ));
             };
             let compound = *compound;
@@ -1023,6 +1013,7 @@ fn resolve_compound(
         compound_local_warp_models(
             state.grid,
             block,
+            compound.ref_frame1,
             mv[0],
             mv[1],
             block.mi_row,

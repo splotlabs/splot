@@ -7,27 +7,21 @@
 //!
 //! Feature tracking: `INFRA-DECODE-SERIAL-HOT-PATHS`.
 
-use splot_core::span::ByteOffset;
 use splot_recon::{
     BitDepth, CurrentFrameIntraEdges, CurrentFrameWorkspace, InterIntraMode,
     IntraCardinalDirection, IntraDirectionalAngleEdges, IntraRectBlockSize, IntraSmoothMode,
-    PlaneId as ReconPlaneId, ReconSample, apply_intra_ibp_dc_rect,
+    PlaneId as ReconPlaneId, ReconError, ReconSample, apply_intra_ibp_dc_rect,
     predict_intra_cardinal_directional_rect_into, predict_intra_dc_rect_value,
 };
 
-use super::super::{PlacedInterBlock, mc, unsupported_at};
+use super::super::{PlacedInterBlock, mc};
 use super::MI_SIZE;
 use crate::Result;
-use crate::bitstream::tile_payload::TileBlockDecodedState;
+use crate::bitstream::tile_payload::{GeneralIntraResidualError, TileBlockDecodedState};
+use crate::error::{DecodeError, DecodeHeaderStateError};
 use crate::pipeline::reconstruct::{
     SmoothIntraPredictionRequest, predict_intra_smooth_over_available_edges_into,
 };
-
-macro_rules! inter_diag {
-    ($reason:literal, $offset:expr, $message:literal, $spec_section:expr $(,)?) => {
-        unsupported_at($reason, $offset, $message, $spec_section)
-    };
-}
 
 fn interintra_cardinal_edge<'a, T: ReconSample>(
     mode: InterIntraMode,
@@ -151,16 +145,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
     mode: InterIntraMode,
     enable_ibp: bool,
     bit_depth: BitDepth,
-    tile_offset: ByteOffset,
 ) -> Result<()> {
-    let geometry_error = || {
-        inter_diag!(
-            "inter_interintra_geometry",
-            tile_offset,
-            "invalid interintra plane geometry",
-            "5.20.7.22"
-        )
-    };
     scratch.reset();
     for (plane, sub_x, sub_y) in mc::mc_planes(workspace.info().pixel_format()) {
         if plane != ReconPlaneId::Y && !placed.interintra_chroma {
@@ -181,29 +166,37 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
         let w = luma_w >> sub_x;
         let h = luma_h >> sub_y;
         if !w.is_power_of_two() || !h.is_power_of_two() {
-            return Err(geometry_error());
+            return Err(DecodeHeaderStateError::InvalidBlockGeometry.into());
         }
-        let log2_w = u8::try_from(w.trailing_zeros()).map_err(|_| geometry_error())?;
-        let log2_h = u8::try_from(h.trailing_zeros()).map_err(|_| geometry_error())?;
-        let size = IntraRectBlockSize::new(log2_w, log2_h).map_err(|_| geometry_error())?;
+        let log2_w = u8::try_from(w.trailing_zeros())
+            .map_err(|_| DecodeHeaderStateError::InvalidBlockGeometry)?;
+        let log2_h = u8::try_from(h.trailing_zeros())
+            .map_err(|_| DecodeHeaderStateError::InvalidBlockGeometry)?;
+        let size = IntraRectBlockSize::new(log2_w, log2_h)
+            .map_err(|_| DecodeHeaderStateError::InvalidBlockGeometry)?;
         let edges = workspace
             .intra_dc_edges_for_rect(plane, x, y, size)
-            .map_err(|_| geometry_error())?;
+            .map_err(|error| match error {
+                ReconError::WorkspaceRectOutOfBounds { .. } => {
+                    DecodeError::from(DecodeHeaderStateError::InvalidBlockGeometry)
+                }
+                _ => DecodeError::from(error),
+            })?;
         let sample_start = scratch.samples.len();
-        let sample_len = w.checked_mul(h).ok_or_else(geometry_error)?;
+        let sample_len = w
+            .checked_mul(h)
+            .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
         let sample_end = sample_start
             .checked_add(sample_len)
-            .ok_or_else(geometry_error)?;
+            .ok_or(DecodeHeaderStateError::InvalidBlockGeometry)?;
         scratch.samples.resize(sample_end, T::default());
         let samples = &mut scratch.samples[sample_start..];
         match mode {
             InterIntraMode::Dc => {
-                let dc = predict_intra_dc_rect_value(bit_depth, size, edges.as_dc_edges())
-                    .map_err(|_| geometry_error())?;
+                let dc = predict_intra_dc_rect_value(bit_depth, size, edges.as_dc_edges())?;
                 samples.fill(dc);
                 if enable_ibp && !(w == 4 && h == 4) {
-                    apply_intra_ibp_dc_rect(bit_depth, size, edges.as_dc_edges(), samples, w)
-                        .map_err(|_| geometry_error())?;
+                    apply_intra_ibp_dc_rect(bit_depth, size, edges.as_dc_edges(), samples, w)?;
                 }
             }
             InterIntraMode::Vertical | InterIntraMode::Horizontal => {
@@ -216,8 +209,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                             w,
                             bit_depth,
                             &mut scratch.fallback_edge,
-                        )
-                        .map_err(|_| geometry_error())?,
+                        )?,
                     )
                 } else {
                     (
@@ -228,8 +220,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                             h,
                             bit_depth,
                             &mut scratch.fallback_edge,
-                        )
-                        .map_err(|_| geometry_error())?,
+                        )?,
                     )
                 };
                 let prepared = if mode == InterIntraMode::Vertical {
@@ -239,8 +230,7 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                 };
                 predict_intra_cardinal_directional_rect_into(
                     bit_depth, size, direction, prepared, samples, w,
-                )
-                .map_err(|_| geometry_error())?;
+                )?;
             }
             InterIntraMode::Smooth => {
                 let sb_mask = block_decoded.sb_size4().saturating_sub(1);
@@ -274,7 +264,10 @@ pub(super) fn predict_interintra_planes<T: ReconSample>(
                     },
                     samples,
                 )
-                .map_err(|_| geometry_error())?;
+                .map_err(|error| match error {
+                    GeneralIntraResidualError::Reconstruct { source } => DecodeError::from(source),
+                    _ => DecodeHeaderStateError::InvalidBlockGeometry.into(),
+                })?;
             }
         }
         let prediction = InterIntraPlanePrediction {

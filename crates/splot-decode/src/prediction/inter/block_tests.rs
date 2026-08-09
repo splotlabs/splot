@@ -60,7 +60,7 @@ fn mvd_sign_derivation_requires_the_full_block_scope() {
 use crate::bitstream::tile_payload::{
     BlockSize, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
 };
-use crate::error::DecodeError;
+use crate::error::{DecodeError, DecodeHeaderStateError};
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
     DrlReorderMode, IntrabcStackAdmission, IntrabcStackGeometry, SpatialScanGeometry,
     capture_spatial_intrabc_probes, intrabc_ref_stack_admission_from_candidates,
@@ -451,7 +451,7 @@ fn regular_interintra_syntax_precedes_drl() -> TestResult {
         &mut tile,
         &mut symbols,
         true,
-        super::BLOCK_8X8,
+        BlockSize::new(super::BLOCK_8X8)?,
         2,
         2,
         ByteOffset::new(0),
@@ -499,7 +499,6 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
         InterIntraMode::Smooth,
         false,
         BitDepth::Eight,
-        ByteOffset::new(0),
     )?;
     let planes = scratch.planes().collect::<Vec<_>>();
 
@@ -512,6 +511,36 @@ fn interintra_smooth_builds_prediction_from_intra_edges() -> TestResult {
             .iter()
             .all(|sample| (127..=129).contains(sample))
     );
+    Ok(())
+}
+
+#[test]
+fn interintra_invalid_derived_geometry_and_placement_are_typed() -> TestResult {
+    let workspace = CurrentFrameWorkspace::<u8>::new(monochrome_info(8, 8)?, 128)?;
+    let block_decoded = TileBlockDecodedState::new(1, 1, 1, 16, 16, 16)?;
+    for (x, width) in [(0, 2), (0, 3), (8, 8)] {
+        let placed = placed_luma_block(x, 0, width, 8, InterIntraMode::Smooth);
+        let mut scratch = InterIntraScratch::default();
+
+        let Err(error) = predict_interintra_planes(
+            &mut scratch,
+            &workspace,
+            &placed,
+            &block_decoded,
+            InterIntraMode::Smooth,
+            false,
+            BitDepth::Eight,
+        ) else {
+            return Err("invalid interintra geometry must fail closed".into());
+        };
+
+        assert!(matches!(
+            error,
+            DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidBlockGeometry
+            }
+        ));
+    }
     Ok(())
 }
 
@@ -578,7 +607,6 @@ fn interintra_chroma_planes_follow_non420_subsampling() -> TestResult {
             InterIntraMode::Smooth,
             false,
             BitDepth::Eight,
-            ByteOffset::new(0),
         )?;
         let planes = scratch.planes().collect::<Vec<_>>();
 
@@ -615,7 +643,6 @@ fn interintra_chroma_fallback_edges_use_each_planes_neighbour() -> TestResult {
         InterIntraMode::Horizontal,
         false,
         BitDepth::Eight,
-        ByteOffset::new(0),
     )?;
     let planes = scratch.planes().collect::<Vec<_>>();
 
@@ -645,7 +672,6 @@ fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
             InterIntraMode::Vertical,
             false,
             BitDepth::Eight,
-            ByteOffset::new(0),
         )?;
         assert!(
             scratch
@@ -663,7 +689,6 @@ fn interintra_scratch_reuses_pixel_and_fallback_edge_storage() -> TestResult {
         InterIntraMode::Vertical,
         false,
         BitDepth::Eight,
-        ByteOffset::new(0),
     )?;
 
     assert_eq!(scratch.storage_identity(), warmed);
@@ -714,7 +739,6 @@ fn interintra_smooth_predictions(
         InterIntraMode::Smooth,
         false,
         BitDepth::Eight,
-        ByteOffset::new(0),
     )?;
     Ok(scratch
         .planes()

@@ -739,14 +739,7 @@ fn build_units<T: ReconSample>(
     scratch
         .units
         .try_reserve_exact(if first_only { 1 } else { plan.unit_count })
-        .map_err(|_| {
-            inter_cap!(
-                "inter_tip_unit_allocation",
-                tile_offset,
-                "inter.tip.prediction_unit_allocation",
-                "7.13.3.1"
-            )
-        })?;
+        .map_err(|_| inter_allocation!("TIP prediction units"))?;
     let units_timer = crate::timing::start();
     for local_y in (0..plan.block_h).step_by(plan.unit_size) {
         for local_x in (0..plan.block_w).step_by(plan.unit_size) {
@@ -839,14 +832,9 @@ pub(super) fn motion<T: ReconSample>(
         .use_optflow
         .then(|| tip_motion_grid(scratch, &plan, sink, reference, tile_offset))
         .transpose()?;
-    temporal_records.try_reserve(plan.unit_count).map_err(|_| {
-        inter_cap!(
-            "inter_tip_temporal_record_allocation",
-            tile_offset,
-            "inter.tip.temporal_record_allocation",
-            "7.22"
-        )
-    })?;
+    temporal_records
+        .try_reserve(plan.unit_count)
+        .map_err(|_| inter_allocation!("TIP temporal records"))?;
     let current_order_hint = core.display_order_hint().unwrap_or(0);
     for (index, unit) in scratch.units.iter().enumerate() {
         let stored_mvs = match grid.as_ref() {
@@ -1226,9 +1214,7 @@ pub(in crate::prediction::inter) fn reconstruct_output<T: ReconSample>(
         TemporalMotionField::new(mi_rows, mi_cols).ok_or(ReconError::ArithmeticOverflow {
             context: "TIP-output motion field",
         })?;
-    motion_field
-        .set_band_rows8(sb_h4 / 2)
-        .ok_or(DecodeHeaderStateError::IncompleteTipOutput)?;
+    motion_field.set_band_rows8(sb_h4 / 2);
     motion_field.set_reference_metadata(true, (width, height), temporal.reference_order_hints());
     let placed = PlacedInterBlock {
         luma_x: 0,

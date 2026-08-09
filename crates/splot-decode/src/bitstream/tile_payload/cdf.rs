@@ -90,7 +90,10 @@ use splot_core::tables::cdf::{
 };
 
 use self::block_rows::BlockCdfRows;
-pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
+pub(crate) use self::block_rows::{
+    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, EobPtSize,
+    MvCdfSelector,
+};
 pub(crate) use self::coeff_rows::CoeffCdfSelector;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
     avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,
@@ -288,13 +291,10 @@ impl FrameCdfSubset {
         cdfs
     }
 
-    pub(crate) fn replicate_coeff_q_context_for_base_q(
-        &mut self,
-        base_q_idx: u32,
-    ) -> Result<(), TileCdfError> {
+    pub(crate) fn replicate_coeff_q_context_for_base_q(&mut self, base_q_idx: u32) {
         self.rows
             .block
-            .replicate_coeff_q_context(coeff_cdf_q_ctx_from_base_q_idx(base_q_idx))
+            .replicate_bounded_coeff_q_context(CoeffCdfQContext::from_base_q_idx(base_q_idx));
     }
 
     pub(crate) fn blend_from_saved(&mut self, saved: &Self) {

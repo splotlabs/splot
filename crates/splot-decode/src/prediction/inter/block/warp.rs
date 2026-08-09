@@ -751,19 +751,7 @@ pub(crate) fn read_wedge_mode_syntax(
             .map_err(|_| symbol_read_error(tile_offset))?
             .get()
     };
-    let index = WEDGE_ANGLE_DIST_TO_INDEX
-        .get(usize::from(angle))
-        .and_then(|row| row.get(usize::from(dist)))
-        .copied()
-        .filter(|&index| index >= 0)
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_wedge_mode_index",
-                tile_offset,
-                "inter.wedge_angle_dist index out of range",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let index = WEDGE_ANGLE_DIST_TO_INDEX[usize::from(angle)][usize::from(dist)];
     u8::try_from(index).map_err(|_| warp_model_error(tile_offset))
 }
 

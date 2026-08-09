@@ -41,7 +41,8 @@ pub(crate) use cdf::block_context::{
 };
 pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
 pub(crate) use cdf::{
-    FrameCdfSubset, MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
+    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
+    MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
 };
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
 #[cfg(test)]
@@ -57,10 +58,10 @@ pub(crate) use general_intra_residual::{
     FrameQmScope, FrameQmSegmentScope, FrameQuantizerDeltasScope, FrameQuantizerSnapshot,
     FrameUserQmLevel, FrameUserQmLevels, FrameUserQmScope, GeneralIntraResidualError,
     IntraIstSyntax, LumaCoeffBlock, LumaTransformPartitionContext, LumaTransformPartitionUnits,
-    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformToolResidualPolicy,
-    current_frame_qm_segment_id, decode_general_intra_luma_partition_coeffs,
-    decode_general_intra_plane_coeffs, is_cctx_geometry_allowed,
-    reconstruct_general_intra_chroma_cctx_pair_into,
+    LumaTransformTypeContext, PositionedLumaCoeffBlock, TransformPartitionUnsupported,
+    TransformToolResidualPolicy, current_frame_qm_segment_id,
+    decode_general_intra_luma_partition_coeffs, decode_general_intra_plane_coeffs,
+    is_cctx_geometry_allowed, reconstruct_general_intra_chroma_cctx_pair_into,
     reconstruct_general_intra_chroma_cctx_pair_with_predictions,
     reconstruct_general_intra_coeff_block_rect_into_frame,
     reconstruct_general_intra_coeff_block_rect_with_prediction_into,

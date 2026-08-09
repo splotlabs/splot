@@ -129,6 +129,224 @@ fn compound_motion_contexts() -> (
     )
 }
 
+#[test]
+fn compound_ref_contexts_cover_every_valid_reference_count() {
+    let (_, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let grid = NeighbourMvGrid::new(16, 16).unwrap();
+    let neighbour_ctx = block_neighbour_ctx(&grid, &block);
+
+    for count in 0..=7 {
+        let contexts = compound_ref_contexts(&neighbour_ctx, count).unwrap();
+        assert_eq!(contexts[..count], [1; 7][..count]);
+        assert_eq!(contexts[count..], [0; 7][count..]);
+    }
+}
+
+#[test]
+fn compound_ref_contexts_keep_invalid_reference_count_fail_closed() {
+    let (_, block) = compound_motion_grid_and_block(Mv::ZERO, Mv::ZERO);
+    let grid = NeighbourMvGrid::new(16, 16).unwrap();
+    let neighbour_ctx = block_neighbour_ctx(&grid, &block);
+
+    let error = compound_ref_contexts(&neighbour_ctx, 8).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterReferenceMap
+        }
+    ));
+}
+
+#[test]
+fn compound_ref_distance_signs_cover_every_valid_reference_count() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9, 11, 10, 10, 10, 10, 10];
+    let ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
+    let expected = [true, false, true, true, true, true, true];
+
+    for count in 0..=7 {
+        let signs = compound_ref_distance_signs(&ref_frame_idx, &reference, 10, count, TILE_OFFSET)
+            .unwrap();
+        assert_eq!(signs[..count], expected[..count]);
+        assert_eq!(signs[count..], [true; 7][count..]);
+    }
+}
+
+#[test]
+fn compound_ref_distance_signs_keep_invalid_reference_map_fail_closed() {
+    let reference = InterReferenceState::<u8>::empty().unwrap();
+    let error = compound_ref_distance_signs(&[], &reference, 10, 1, TILE_OFFSET).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterReferenceMap
+        }
+    ));
+}
+
+#[test]
+fn compound_opfl_consumers_keep_missing_header_state_fail_closed() {
+    let fixture = include_bytes!(
+        "../../../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf"
+    );
+    let (_, mut core, _) =
+        crate::prediction::inter::tests::parse_inter_core_for_validation(fixture).unwrap();
+    core.inter.as_mut().unwrap().opfl_refine_type = None;
+
+    let error = compound_opfl_refine_type(&core, TILE_OFFSET).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::InternalState {
+            reason: "compound_missing_opfl_refine_type",
+            byte_offset: TILE_OFFSET,
+        }
+    ));
+
+    let compound = crate::prediction::inter::compound::CompoundBlockSyntax {
+        y_mode: CompoundYMode::NearNear,
+        use_optflow: false,
+        ref_frame0: 0,
+        ref_frame1: 1,
+        mv0: Mv::ZERO,
+        mv1: Mv::ZERO,
+    };
+    let error = compound_refinemv_mode_allowed(&core, compound, TILE_OFFSET).unwrap_err();
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::InternalState {
+            reason: "compound_refinemv_missing_opfl_refine_type",
+            byte_offset: TILE_OFFSET,
+        }
+    ));
+}
+
+#[test]
+fn compound_reference_order_hint_covers_every_valid_reference_index() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9, 11, 13, 15, 17, 19, 21];
+    let ref_frame_idx = [0, 1, 2, 3, 4, 5, 6];
+
+    for (ref_frame, expected) in reference.ref_order_hint.iter().copied().enumerate() {
+        assert_eq!(
+            compound_reference_order_hint(&reference, &ref_frame_idx, ref_frame as i8).unwrap(),
+            CompoundOrderHint::Value(i64::from(expected))
+        );
+    }
+}
+
+#[test]
+fn compound_reference_order_hint_keeps_reference_list_bounds_fail_closed() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9];
+    let error = compound_reference_order_hint(&reference, &[0], 1).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: 1,
+                list_len: 1,
+            }
+        }
+    ));
+}
+
+#[test]
+fn compound_reference_order_hint_keeps_negative_reference_index_fail_closed() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9];
+    let error = compound_reference_order_hint(&reference, &[0], -1).unwrap_err();
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                index: -1,
+                list_len: 1,
+            }
+        }
+    ));
+}
+
+#[test]
+fn compound_reference_order_hint_keeps_slot_conversion_and_bounds_fail_closed() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![9];
+    let error = compound_reference_order_hint(&reference, &[u32::MAX], 0).unwrap_err();
+    let expected_slot = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
+
+    assert!(matches!(
+        error,
+        crate::error::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot,
+                slot_count: 1,
+            }
+        } if slot == expected_slot
+    ));
+}
+
+#[test]
+fn compound_reference_order_hint_maps_the_full_relative_distance_domain() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![u32::MAX, i32::MAX as u32 + 1];
+
+    assert_eq!(
+        compound_reference_order_hint(&reference, &[0, 1], 0).unwrap(),
+        CompoundOrderHint::Restricted
+    );
+    assert_eq!(
+        compound_reference_order_hint(&reference, &[0, 1], 1).unwrap(),
+        CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
+    );
+    assert_eq!(
+        CompoundOrderHint::Value(i64::from(i32::MAX) + 1)
+            .relative_dist(CompoundOrderHint::current(i32::MAX)),
+        1
+    );
+}
+
+#[test]
+fn compound_furthest_future_ref_excludes_restricted_references() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![u32::MAX, 15];
+
+    assert_eq!(
+        compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(10), 2)
+            .unwrap(),
+        Some(1)
+    );
+}
+
+#[test]
+fn compound_furthest_future_ref_ranks_by_raw_order_hint() {
+    let mut reference = InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_order_hint = vec![i32::MAX as u32 + 128, i32::MAX as u32 + 129];
+
+    assert_eq!(
+        compound_furthest_future_ref(&reference, &[0, 1], CompoundOrderHint::current(i32::MAX), 2)
+            .unwrap(),
+        Some(1)
+    );
+}
+
+#[test]
+fn compound_joint_projection_preserves_restricted_reference_semantics() {
+    let current = CompoundOrderHint::current(10);
+    let ordinary = CompoundOrderHint::Value(200);
+    let restricted = CompoundOrderHint::Restricted;
+    let projection = compound_joint_mv_projection_from_order_hints(current, ordinary, restricted);
+
+    assert_eq!(projection.base_list, 1);
+    assert_eq!(projection.first_dist, 127);
+    assert_eq!(projection.second_dist, -127);
+    assert!(compound_references_same_side(
+        current,
+        restricted,
+        CompoundOrderHint::Value(0),
+    ));
+}
+
 fn encode_compound_local_warp(ctx: usize, enabled: bool) -> Vec<u8> {
     let mut tile = FrameCdfSubset::from_defaults().tile_copy();
     let mut encoder = SymbolEncoder::with_config(
@@ -327,12 +545,14 @@ fn compound_local_warp_symbol_reports_localwarp_when_set() {
 }
 
 #[test]
-fn compound_local_warp_derives_a_model_per_reference_list() {
-    let (grid, block) =
+fn compound_local_warp_derives_a_model_per_explicit_reference_list() {
+    let (grid, mut block) =
         compound_motion_grid_and_block(Mv { row: 24, col: -8 }, Mv { row: -16, col: 40 });
+    block.ref_frame1 = None;
     let models = compound_local_warp_models(
         &grid,
         &block,
+        1,
         Mv { row: 24, col: -8 },
         Mv { row: -16, col: 40 },
         block.mi_row,
@@ -348,8 +568,23 @@ fn compound_local_warp_derives_a_model_per_reference_list() {
 }
 
 #[test]
-fn compound_local_warp_rejects_a_signalled_list_without_samples() {
-    let grid = NeighbourMvGrid::new(16, 16).unwrap();
+fn compound_local_warp_uses_translation_for_a_list_without_samples() {
+    let mut grid = NeighbourMvGrid::new(16, 16).unwrap();
+    grid.record_block(
+        0,
+        0,
+        2,
+        2,
+        true,
+        0,
+        None,
+        true,
+        Mv { row: 24, col: -8 },
+        false,
+        0,
+        false,
+        BlockPrecisionRecord::default(),
+    );
     let block = MvBlockContext {
         mi_row: 0,
         mi_col: 2,
@@ -361,15 +596,22 @@ fn compound_local_warp_rejects_a_signalled_list_without_samples() {
         mi_rows: 16,
         mi_cols: 16,
     };
-    let error =
-        compound_local_warp_models(&grid, &block, Mv::ZERO, Mv::ZERO, 0, 2, 2, 2, TILE_OFFSET)
-            .unwrap_err();
+    let models = compound_local_warp_models(
+        &grid,
+        &block,
+        1,
+        Mv { row: 24, col: -8 },
+        Mv::ZERO,
+        0,
+        2,
+        2,
+        2,
+        TILE_OFFSET,
+    )
+    .unwrap();
 
-    assert!(
-        error
-            .to_string()
-            .contains("inter.compound.local_warp.empty_sample_list")
-    );
+    assert!(models[0].is_some(), "list-0 warp model");
+    assert_eq!(models[1], None, "list-1 translational fallback");
 }
 
 #[test]
@@ -677,7 +919,10 @@ fn compound_non_skip_near_mode_reads_second_drl_idx() {
 #[test]
 fn skip_mode_default_pair_treats_restricted_order_hint_as_zero_distance() {
     assert_eq!(
-        skip_mode_default_pair(0, Some((RESTRICTED_ORDER_HINT, 1))),
+        skip_mode_default_pair(
+            0,
+            Some((CompoundOrderHint::Restricted, CompoundOrderHint::Value(1),)),
+        ),
         (0, 1)
     );
     assert_eq!(skip_mode_default_pair(0, None), (0, 0));

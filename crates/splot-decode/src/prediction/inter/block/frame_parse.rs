@@ -167,7 +167,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         mut ccso_state,
         motion_field,
         initial_frame_cdfs,
-        offset: setup_offset,
         qindex,
     } = setup;
     let mut parsed = tile::parse_tile_units(
@@ -198,7 +197,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &mut ccso_state,
         &mut segment_ids,
     )?;
-    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex, setup_offset)?;
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
     let ccso_grid = ccso_state.into_grid()?;
     let segment_ids =
         final_segment_ids(core, reference, params.mi_rows, params.mi_cols, segment_ids);

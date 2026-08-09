@@ -356,7 +356,7 @@ fn luma_transform_partition_storage_rejects_a_sixth_unit() {
     assert!(matches!(
         units.push(MAX_LUMA_TRANSFORM_PARTITION_UNITS),
         Err(GeneralIntraResidualError::UnsupportedTransformPartition {
-            reason: "unsupported_general_intra_tx_partition_record_capacity",
+            reason: TransformPartitionUnsupported::RecordCapacity,
         })
     ));
     assert!(units.iter().copied().eq(0..5));

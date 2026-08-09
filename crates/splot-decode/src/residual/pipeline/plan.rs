@@ -12,7 +12,8 @@ use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
 use super::{
     CHROMA_PLANES, CHUNK_64_N4, GeneralIntraResidualPlan, IDTX, RectChromaPlan, RectLumaPlan,
-    RecycledVec, ResidualPipelineUnsupported, ResidualPlanePlan, ResidualReconstructionPlan,
+    RecycledVec, ResidualPipelineUnsupported, ResidualPipelineUnsupportedReason, ResidualPlanePlan,
+    ResidualReconstructionPlan,
 };
 
 // AV2 § 9.2 caps a block axis at 64 4x4 units
@@ -447,12 +448,12 @@ pub(super) fn rect_tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> 
 const fn unsupported_tx_size(plane_id: PlaneId) -> ResidualPipelineUnsupported {
     match plane_id {
         PlaneId::Y => unsupported(
-            "general_intra_rect_tx_size",
+            ResidualPipelineUnsupportedReason::RectTxSize,
             missing_capability_message!("intra.rect.tx_size", table = "missing"),
             crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ),
         PlaneId::U | PlaneId::V => unsupported(
-            "general_intra_rect_chroma_tx_size",
+            ResidualPipelineUnsupportedReason::RectChromaTxSize,
             missing_capability_message!("intra.rect.chroma_tx_size", table = "missing"),
             crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
         ),
@@ -460,24 +461,24 @@ const fn unsupported_tx_size(plane_id: PlaneId) -> ResidualPipelineUnsupported {
 }
 
 const UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY: ResidualPipelineUnsupported = unsupported(
-    "general_intra_large_block_chunk_geometry",
+    ResidualPipelineUnsupportedReason::LargeBlockChunkGeometry,
     missing_capability_message!("intra.large_block.chunk_geometry"),
     crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
 );
 
 const UNSUPPORTED_RESIDUAL_PLANE_CAPACITY: ResidualPipelineUnsupported = unsupported(
-    "general_intra_residual_plane_capacity",
+    ResidualPipelineUnsupportedReason::ResidualPlaneCapacity,
     missing_capability_message!("intra.residual_plane.capacity"),
     crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
 );
 
 const fn unsupported(
-    reason_id: &'static str,
+    reason: ResidualPipelineUnsupportedReason,
     message: &'static str,
     spec_section: &'static str,
 ) -> ResidualPipelineUnsupported {
     ResidualPipelineUnsupported {
-        reason_id,
+        reason,
         message,
         spec_section,
     }
