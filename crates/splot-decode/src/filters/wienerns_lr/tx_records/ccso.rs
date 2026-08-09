@@ -50,11 +50,11 @@ impl CcsoState {
         let len = grid_rows
             .checked_mul(grid_cols)
             .ok_or_else(ccso_state_error)?;
-        let copy_region = |source: &[u8]| -> Result<Vec<u8>> {
+        let copy_region = |source: &[u8], plane: splot_recon::PlaneId| -> Result<Vec<u8>> {
             let mut blocks = Vec::new();
             blocks
                 .try_reserve_exact(len)
-                .map_err(|_| ccso_allocation_error())?;
+                .map_err(|_| ccso_allocation_error(plane))?;
             for row in row_start..row_end {
                 let start = row
                     .checked_mul(self.grid_cols)
@@ -71,9 +71,9 @@ impl CcsoState {
             plane_enabled: self.plane_enabled,
             sb_reuse: self.sb_reuse,
             blocks: [
-                copy_region(&self.blocks[0])?,
-                copy_region(&self.blocks[1])?,
-                copy_region(&self.blocks[2])?,
+                copy_region(&self.blocks[0], splot_recon::PlaneId::Y)?,
+                copy_region(&self.blocks[1], splot_recon::PlaneId::U)?,
+                copy_region(&self.blocks[2], splot_recon::PlaneId::V)?,
             ],
             row_start,
             col_start,
@@ -430,9 +430,9 @@ fn ccso_state_error() -> crate::error::DecodeError {
     crate::error::DecodeHeaderStateError::InvalidSelectableTransformRecords.into()
 }
 
-fn ccso_allocation_error() -> crate::error::DecodeError {
+fn ccso_allocation_error(plane: splot_recon::PlaneId) -> crate::error::DecodeError {
     splot_recon::ReconError::WorkspaceAllocationFailed {
-        plane: splot_recon::PlaneId::Y,
+        plane,
         context: "CCSO block grid",
     }
     .into()

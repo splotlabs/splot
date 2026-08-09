@@ -768,7 +768,7 @@ impl<T: ReconSample> OwnedFilterSetup<'_, '_, T> {
         };
         extract(start, end)
             .map(Some)
-            .map_err(|_| lr_pipeline_state_error())
+            .map_err(|error| deblock_prepare_error(&error))
     }
 
     fn ready_stripe(

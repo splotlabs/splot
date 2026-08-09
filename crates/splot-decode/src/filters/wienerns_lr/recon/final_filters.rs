@@ -741,8 +741,15 @@ impl StripeChain<'_> {
             has_blocks(PlaneId::U.index(), cdef.filtered_u.as_ref()),
             has_blocks(PlaneId::V.index(), cdef.filtered_v.as_ref()),
         ];
-        let mut frame =
-            LrFrame::from_cdef(cdef, active_planes).map_err(super::stripe_copy_error)?;
+        let mut frame = LrFrame::from_cdef(cdef, active_planes).map_err(|error| match error {
+            StripeCopyError::Allocation(plane) => {
+                crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "post-LR stripe copy",
+                })
+            }
+            StripeCopyError::Geometry => super::lr_pipeline_state_error(),
+        })?;
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
