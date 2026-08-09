@@ -1748,6 +1748,26 @@ fn single_ref_ctx_counts_refs_above_two() {
 }
 
 #[test]
+fn single_ref_ctx_is_total_for_every_admitted_reference_count() {
+    let grid = empty_grid();
+    let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));
+
+    for num_total_refs in 2..=BlockNeighbourContext::MAX_NEIGHBOUR_REFS {
+        for ref_idx in 0..num_total_refs - 1 {
+            assert!(
+                nctx.single_ref_ctx(ref_idx, num_total_refs).is_some(),
+                "ref_idx {ref_idx} must be valid for {num_total_refs} references"
+            );
+        }
+    }
+    assert_eq!(
+        nctx.single_ref_ctx(0, BlockNeighbourContext::MAX_NEIGHBOUR_REFS + 1),
+        None,
+        "the guard remains load-bearing outside the admitted reference domain"
+    );
+}
+
+#[test]
 fn compound_group_idx_ctx_uses_equal_ref_distance_offset() {
     let grid = empty_grid();
     let nctx = block_neighbour_ctx(&grid, &block_at(0, 0));

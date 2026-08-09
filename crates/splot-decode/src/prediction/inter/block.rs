@@ -1583,14 +1583,7 @@ fn decode_block<T: ReconSample>(
         for (ref_idx, ctx) in contexts.iter_mut().take(decisions).enumerate() {
             *ctx = neighbour_ctx
                 .single_ref_ctx(ref_idx, num_total_refs)
-                .ok_or_else(|| {
-                    inter_missing!(
-                        "inter_block_single_ref_ctx",
-                        tile_offset,
-                        "inter.single_ref.context",
-                        SPEC_MODE_INFO
-                    )
-                })?;
+                .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         }
         let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
             .map_err(|_| {
