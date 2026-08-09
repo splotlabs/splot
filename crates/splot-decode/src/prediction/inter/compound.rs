@@ -303,17 +303,7 @@ fn compound_ref_bit_type(
     second_ref: usize,
     tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let first_nonnegative = *input
-        .ref_distance_nonnegative
-        .get(first_ref)
-        .ok_or_else(|| {
-            compound_missing!(
-                "compound_missing_first_ref_distance",
-                tile_offset,
-                "inter.compound.ref_distance[first]",
-                SPEC_READ_REF_FRAMES
-            )
-        })?;
+    let first_nonnegative = input.ref_distance_nonnegative[first_ref];
     let second_nonnegative = *input
         .ref_distance_nonnegative
         .get(second_ref)
