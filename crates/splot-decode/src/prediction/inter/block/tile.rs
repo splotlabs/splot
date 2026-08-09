@@ -1533,7 +1533,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
     let capacity = tile_unit_capacity(&mi_rows, &mi_cols, params, granularity, tile_offset)?;
     let mut rows = Vec::new();
     rows.try_reserve_exact(capacity)
-        .map_err(|_| inter_internal!("inter_parsed_row_allocation", tile_offset))?;
+        .map_err(|_| inter_allocation!("inter parsed rows"))?;
     let mut parser = TileParser::new(
         tile,
         context,
@@ -1683,7 +1683,7 @@ fn superblock_luma_rects<T: ReconSample>(
     let mut rects = Vec::new();
     rects
         .try_reserve_exact(count)
-        .map_err(|_| inter_internal!("inter_superblock_surface_allocation", tile_offset))?;
+        .map_err(|_| inter_allocation!("inter superblock surfaces"))?;
     for row in 0..rows {
         let y = bounds.y() + row * side;
         for column in 0..cols {
@@ -1726,7 +1726,7 @@ fn prepare_tile<T: ReconSample>(
         .ok_or(inter_internal!("inter_tile_row_capacity", tile_offset))?;
     let mut rows = Vec::new();
     rows.try_reserve_exact(row_count)
-        .map_err(|_| inter_internal!("inter_tile_row_allocation", tile_offset))?;
+        .map_err(|_| inter_allocation!("inter tile rows"))?;
     let mut parser = TileParser::new(
         tile,
         context,
@@ -1877,7 +1877,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut luma_rects = Vec::new();
         luma_rects
             .try_reserve_exact(work_units.len())
-            .map_err(|_| inter_internal!("inter_tile_surface_allocation", chunk_offset))?;
+            .map_err(|_| inter_allocation!("inter tile surfaces"))?;
         for tile in work_units.iter() {
             luma_rects.push(tile_luma_rect(tile, workspace)?);
         }
@@ -1888,7 +1888,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut prepared_results = Vec::new();
         prepared_results
             .try_reserve_exact(work_units.len())
-            .map_err(|_| inter_internal!("inter_tile_result_slots_allocation", chunk_offset))?;
+            .map_err(|_| inter_allocation!("inter tile result slots"))?;
         prepared_results.resize_with(work_units.len(), || None);
         splot_parallel::ready_task_scope(|scope| {
             for ((tile, surface), result) in work_units
@@ -1937,9 +1937,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(prepared_results.len())
-            .map_err(|_| {
-                inter_internal!("inter_tile_result_collection_allocation", chunk_offset)
-            })?;
+            .map_err(|_| inter_allocation!("inter tile result collection"))?;
         for result in prepared_results {
             let result =
                 result.ok_or(inter_internal!("inter_tile_result_missing", chunk_offset))?;

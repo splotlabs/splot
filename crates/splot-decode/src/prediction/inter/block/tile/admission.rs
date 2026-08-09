@@ -1105,7 +1105,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     let mut prepared = Vec::new();
     prepared
         .try_reserve_exact(batch_count)
-        .map_err(|_| inter_internal!("inter_admission_prepared_allocation", tile_offset))?;
+        .map_err(|_| inter_allocation!("inter admission prepared batches"))?;
     prepared.resize_with(batch_count, || None);
     let deblock = deblock_records
         .zip(core.deblocking_filter_params)

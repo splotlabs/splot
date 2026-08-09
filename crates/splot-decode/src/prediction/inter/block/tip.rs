@@ -741,7 +741,7 @@ fn build_units<T: ReconSample>(
     scratch
         .units
         .try_reserve_exact(if first_only { 1 } else { plan.unit_count })
-        .map_err(|_| inter_internal!("inter_tip_unit_allocation", tile_offset))?;
+        .map_err(|_| inter_allocation!("TIP prediction units"))?;
     let units_timer = crate::timing::start();
     for local_y in (0..plan.block_h).step_by(plan.unit_size) {
         for local_x in (0..plan.block_w).step_by(plan.unit_size) {
@@ -836,7 +836,7 @@ pub(super) fn motion<T: ReconSample>(
         .transpose()?;
     temporal_records
         .try_reserve(plan.unit_count)
-        .map_err(|_| inter_internal!("inter_tip_temporal_record_allocation", tile_offset))?;
+        .map_err(|_| inter_allocation!("TIP temporal records"))?;
     let current_order_hint = core.display_order_hint().unwrap_or(0);
     for (index, unit) in scratch.units.iter().enumerate() {
         let stored_mvs = match grid.as_ref() {

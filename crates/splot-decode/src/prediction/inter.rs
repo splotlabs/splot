@@ -71,6 +71,15 @@ macro_rules! inter_internal {
     };
 }
 
+macro_rules! inter_allocation {
+    ($context:literal $(,)?) => {
+        crate::error::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+            plane: splot_recon::PlaneId::Y,
+            context: $context,
+        })
+    };
+}
+
 macro_rules! compound_cap {
     ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
         unsupported_compound_at(

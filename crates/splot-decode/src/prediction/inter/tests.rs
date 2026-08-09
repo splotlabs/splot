@@ -16,7 +16,7 @@ use splot_core::stream::{
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, SharedFrame,
+    PlaneSize, ReconError, SharedFrame,
 };
 
 use super::block::{
@@ -40,6 +40,20 @@ use crate::{
 mod header_state;
 mod segmentation;
 mod zero_reference;
+
+#[test]
+fn inter_allocation_errors_stay_operational() {
+    let error = inter_allocation!("test inter allocation");
+    assert!(matches!(
+        error,
+        DecodeError::Reconstruction {
+            source: ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "test inter allocation",
+            },
+        }
+    ));
+}
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf");
