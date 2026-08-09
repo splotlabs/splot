@@ -159,6 +159,13 @@ impl<T> LrSourceScratch<T> {
     }
 }
 
+fn lr_window_error(error: ReconError) -> crate::error::DecodeError {
+    match error {
+        ReconError::WorkspaceAllocationFailed { .. } => error.into(),
+        _ => super::lr_pipeline_state_error(),
+    }
+}
+
 fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch<T>) -> R) -> R {
     LR_SOURCE_SCRATCH.with(|slot| {
         let mut scratch = slot
@@ -495,11 +502,12 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         let radius_x = isize::try_from(radius_x).map_err(|_| OVERFLOW_WINDOW)?;
         let radius_y = isize::try_from(radius_y).map_err(|_| OVERFLOW_WINDOW)?;
         if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
-            samples
-                .try_reserve_exact(missing)
-                .map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "LR source window allocation",
-                })?;
+            samples.try_reserve_exact(missing).map_err(|_| {
+                ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "LR source window",
+                }
+            })?;
             samples.resize(sample_count, T::default());
         }
         for row_index in 0..rows {
@@ -914,7 +922,7 @@ impl StripeChain<'_> {
                         (radius, radius)
                     },
                 )
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 let subclass_map = self.luma_lr_cell_subclasses(
                     &block,
                     &window,
@@ -1034,7 +1042,7 @@ impl StripeChain<'_> {
                     block.height,
                     (WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAP_RADIUS),
                 )
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
                 let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
                 let luma_block_x = block_x
@@ -1062,7 +1070,7 @@ impl StripeChain<'_> {
                         .ok_or_else(super::lr_pipeline_state_error)?,
                     (luma_radius_x, luma_radius_y),
                 )
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
                 let (chroma_padded, chroma_stride) = chroma_window
                     .tail_from(
@@ -1152,7 +1160,7 @@ impl StripeChain<'_> {
                         (radius, radius)
                     },
                 )
-                .map_err(|_| super::lr_pipeline_state_error())?;
+                .map_err(lr_window_error)?;
                 let cell_subclass_map = if num_classes > 1 {
                     Some(self.luma_lr_cell_subclasses(
                         &block,

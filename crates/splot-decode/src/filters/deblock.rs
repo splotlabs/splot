@@ -2221,6 +2221,8 @@ pub(crate) enum DeblockError {
     SampleFilter,
     #[error("deblocking workspace sample access went out of bounds")]
     Workspace,
+    #[error("deblocking MI grid storage could not be reserved")]
+    Allocation,
 }
 
 #[cfg(test)]

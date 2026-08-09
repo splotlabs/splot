@@ -137,7 +137,7 @@ fn lossless_cells<'a>(
     let mut cells = Vec::new();
     cells
         .try_reserve_exact(count)
-        .map_err(|_| LosslessGridError::Geometry)?;
+        .map_err(|_| LosslessGridError::Allocation)?;
     cells.resize(count, false);
 
     for block in blocks {
@@ -198,6 +198,8 @@ fn cell(cells: &[bool], mi_rows: usize, mi_cols: usize, row: usize, col: usize) 
 pub(crate) enum LosslessGridError {
     #[error("lossless grid geometry is inconsistent")]
     Geometry,
+    #[error("lossless grid storage could not be reserved")]
+    Allocation,
 }
 
 #[cfg(test)]

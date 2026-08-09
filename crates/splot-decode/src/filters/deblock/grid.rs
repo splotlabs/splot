@@ -149,12 +149,12 @@ pub(super) fn build_mi_grid(
     cells.clear();
     cells
         .try_reserve_exact(count)
-        .map_err(|_| DeblockError::Workspace)?;
+        .map_err(|_| DeblockError::Allocation)?;
     cells.resize(count, MiCell::default());
     candidates.clear();
     candidates
         .try_reserve_exact(count)
-        .map_err(|_| DeblockError::Workspace)?;
+        .map_err(|_| DeblockError::Allocation)?;
     candidates.resize(count, 0);
 
     for (block_index, block) in blocks.iter().enumerate() {

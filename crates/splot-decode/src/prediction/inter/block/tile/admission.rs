@@ -553,7 +553,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 }
                 (None, None) => Err(crate::filters::deblock::DeblockError::Workspace),
             }
-            .map_err(|_| crate::filters::wienerns_lr::recon::lr_pipeline_state_error())?;
+            .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))?;
             while *next_filter_stripe < filter.stripe_ranges().len() {
                 let stripe = *next_filter_stripe;
                 let window = match (
@@ -1189,7 +1189,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
                     .is_some_and(|filter| filter.disable_loopfilters_across_tiles),
                 deblock_quant_deltas,
             )
-            .map_err(|_| crate::filters::wienerns_lr::recon::lr_pipeline_state_error())
+            .map_err(|error| crate::filters::wienerns_lr::recon::deblock_prepare_error(&error))
         })
         .transpose()?
         .flatten();

@@ -1,6 +1,6 @@
 {
   "protocol_version": 1,
-  "audited_commit": "31fec13a6c5020b12c40525144b2feb16e8cfc20",
+  "audited_commit": "eb101eec18c32238e31b7b81c1dd2127e92b46f1",
   "outcome": "success",
   "files": [
     {
@@ -2470,7 +2470,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/deblock.rs",
-      "sha256": "da85ac297050fe634ab0d2e8f0d74dc03eddd6f18bd0b89b260a25483a206763",
+      "sha256": "928dd4015fe9e5c5c4fab1e377b5c9d0921d672288e430cbb4260fafd8d806fb",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-GENERAL-INTRA-DEBLOCK"
@@ -2479,7 +2479,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/deblock/grid.rs",
-      "sha256": "bcc2290d976f69fd402633dd78ec1047b3a7a7048c539415ee1c28e23806a368",
+      "sha256": "4439eb3bd4ddcc2104db00a63bf94918d93ddfee915d47cbace0757b4d40eff1",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2516,7 +2516,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/lossless.rs",
-      "sha256": "ca0acbe188a1886ca8a0530d204815c329456a36e21de4d62014b8f2090a8784",
+      "sha256": "e84b51c7825659dae6b2f71551b56b54eb9d2037647bad489eeaad6b79b1891b",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2576,7 +2576,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/intrabc_records_tests.rs",
-      "sha256": "b2bfae71b7267c31309164107a8397e25f1b38b3317100ad1f69d38c26da2b28",
+      "sha256": "a3d2b3af70ec42a55a176a584b1601e62d0c3a43a38ac273c87c68c670410483",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [],
       "outcome": "success"
@@ -2597,7 +2597,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon.rs",
-      "sha256": "01d721b7a395322067db16ceb9c80593b0b78430ec44967a2ec7dff22eb3ba21",
+      "sha256": "9e93aacf3b466cbfbc054e1e04478ecfc13394d62ffc8383bc229ff8dc27b736",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-LR-LIVE-STORAGE-ALLOCATION",
@@ -2608,7 +2608,7 @@
     },
     {
       "path": "crates/splot-decode/src/filters/wienerns_lr/recon/final_filters.rs",
-      "sha256": "46048e518070655c486ba86ef2f4468aaa43fc9dc965dd54ac11857ebb2b55e0",
+      "sha256": "0719e425cd50f6f5c46d326fc5be9bb35f0df3346cf8c90ecca6e42c17f57bc4",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "DECODE-LR-SOURCE-READ-FRONTIER",
@@ -3353,7 +3353,7 @@
     },
     {
       "path": "crates/splot-decode/src/prediction/inter/block/tile/admission.rs",
-      "sha256": "8430d4779ad5016c63a6978ee3194a13f3b8cc63eb0fc3458b6984db789b8de0",
+      "sha256": "dcfe0d9c038c2bae6b8547e19b19da36ad92eee60f8fd0f192c190f96071825c",
       "scope_kind": "workspace:splot-decode",
       "feature_ids": [
         "INFRA-DECODE-FRAME-PIPELINING",

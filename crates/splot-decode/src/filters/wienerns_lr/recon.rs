@@ -476,7 +476,18 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     &self.filter_records.deblock_blocks,
                     &self.filter_records.chroma_deblock_blocks,
                 )
-                .map_err(|_| lr_pipeline_state_error())?,
+                .map_err(|error| match error {
+                    crate::filters::lossless::LosslessGridError::Allocation => {
+                        splot_recon::ReconError::WorkspaceAllocationFailed {
+                            plane: PlaneId::Y,
+                            context: "lossless block grid",
+                        }
+                        .into()
+                    }
+                    crate::filters::lossless::LosslessGridError::Geometry => {
+                        lr_pipeline_state_error()
+                    }
+                })?,
             );
         }
         if self.needs_tx_skip_grid(&core) {
@@ -603,7 +614,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     disable_loopfilters_across_tiles,
                     deblock_quant_deltas,
                 )
-                .map_err(|_| lr_pipeline_state_error())?,
+                .map_err(|error| deblock_prepare_error(&error))?,
                 None => None,
             }
         };
@@ -1212,6 +1223,21 @@ fn deblock_stripe_window<T: ReconSample>(
         STRIPE_WINDOW_MARGIN,
     )
     .ok_or_else(lr_pipeline_state_error)
+}
+
+pub(crate) fn deblock_prepare_error(
+    error: &crate::filters::deblock::DeblockError,
+) -> crate::error::DecodeError {
+    match error {
+        crate::filters::deblock::DeblockError::Allocation => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "deblock MI grid",
+            }
+            .into()
+        }
+        _ => lr_pipeline_state_error(),
+    }
 }
 
 pub(crate) fn lr_pipeline_state_error() -> crate::error::DecodeError {
