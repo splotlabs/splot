@@ -155,14 +155,7 @@ pub(crate) fn read_compound_reference_pair(
             let first_ref = ref_frames[0];
             let bit_type = compound_ref_bit_type(input, first_ref, ref_idx);
             read_symbol(TileCdfSelector::CompRef1 {
-                ctx: *input.ref_contexts.get(ref_idx).ok_or_else(|| {
-                    compound_missing!(
-                        "compound_missing_ref1_context",
-                        tile_offset,
-                        "inter.compound.ref_context",
-                        SPEC_READ_REF_FRAMES
-                    )
-                })?,
+                ctx: input.ref_contexts[ref_idx],
                 bit_type,
                 ref_idx,
             })?
