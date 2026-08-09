@@ -90,7 +90,10 @@ use splot_core::tables::cdf::{
 };
 
 use self::block_rows::BlockCdfRows;
-pub(crate) use self::block_rows::{EobPtSize, MvCdfSelector};
+pub(crate) use self::block_rows::{
+    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, EobPtSize,
+    MvCdfSelector,
+};
 pub(crate) use self::coeff_rows::CoeffCdfSelector;
 pub(in crate::bitstream::tile_payload::cdf) use self::util::{
     avg_cdf_row, avg_cdf_rows, blend_cdf_row, blend_cdf_rows, scale_cdf_count, scale_cdf_rows,

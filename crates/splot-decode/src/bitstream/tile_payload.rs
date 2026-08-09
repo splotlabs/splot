@@ -41,7 +41,8 @@ pub(crate) use cdf::block_context::{
 };
 pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
 pub(crate) use cdf::{
-    FrameCdfSubset, MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
+    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, FrameCdfSubset,
+    MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
 };
 pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
 #[cfg(test)]
