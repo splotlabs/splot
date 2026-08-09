@@ -18,6 +18,22 @@ use super::ready_rows::{
 use super::*;
 
 #[test]
+fn no_decoded_block_error_stays_reportable() {
+    let offset = ByteOffset::new(23);
+    let error = no_decoded_block_error(offset);
+    assert!(matches!(
+        error,
+        crate::DecodeError::UnsupportedFeature { .. }
+    ));
+    let crate::DecodeError::UnsupportedFeature { unsupported } = error else {
+        return;
+    };
+    assert_eq!(unsupported.reason(), "inter_no_decoded_block");
+    assert_eq!(unsupported.spec_section(), SPEC_MODE_INFO);
+    assert_eq!(unsupported.byte_offset(), Some(offset));
+}
+
+#[test]
 fn recon_row_entry_stays_compact() {
     assert_eq!(core::mem::size_of::<ReconRowEntry>(), 392);
 }

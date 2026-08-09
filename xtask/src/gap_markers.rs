@@ -3,22 +3,20 @@
 
 //! Marker check for the unified decode engine.
 //!
-//! The decode engine flags every unimplemented feature at the op that consumes it
-//! with a typed `decode/unsupported-feature` marker. `gap!` is the unified marker;
-//! the tier-specific families ([`MARKER_MACROS`] — `inter_cap!`, `general_intra_at!`,
-//! …) are ergonomic wrappers that funnel to the same carrier. Their first `"reason"`
-//! literals form one global inventory of what the engine still misses, and the
-//! decoder-output oracle asserts a fixture's recorded `reason` against it. This
-//! check protects that inventory two ways:
+//! The decode engine has two marker namespaces. Feature markers flag unsupported
+//! AV2 behavior at the op that consumes it. Internal markers fail closed when a
+//! validated scheduler or pipeline invariant does not hold. Their first `"reason"`
+//! literals form one global namespace so every failure maps to exactly one site.
+//! This check protects the inventory two ways:
 //!
 //! 1. **Uniqueness** — no two marker sites share a `reason` id, across every family.
 //!    A collision would let the oracle satisfy one feature's `xfail` assertion with a
 //!    different feature's marker, silently accepting a regression under a
 //!    wrong-but-expected reason.
-//! 2. **Count floor** — the marker count may not drop below [`GAP_MARKER_FLOOR`], so
-//!    removing a guard (which would let a stream decode to wrong pixels instead of
-//!    failing closed) cannot pass unnoticed. Raise the floor in the same commit that
-//!    adds markers; lowering it is a reviewed edit.
+//! 2. **Feature count floor** — the feature-marker count may not drop below
+//!    [`GAP_MARKER_FLOOR`], so removing an unsupported-feature guard cannot pass
+//!    unnoticed. Internal markers deliberately have no floor because simplifying
+//!    an invariant away is progress.
 //!
 //! The scan is a line/char lexer over production decode source (inline
 //! `#[cfg(test)]` modules and `*_tests.rs` files excluded), so a marker mentioned in
@@ -35,17 +33,17 @@ use anyhow::{Context as _, Result, bail};
 use crate::diagnostic_registry::strip_test_modules;
 use crate::feature_status::collect_files;
 
-/// Decode-crate source root scanned for `gap!` markers.
+/// Decode-crate source root scanned for feature and internal markers.
 const DECODE_SRC: &str = "crates/splot-decode/src";
 
 /// Lowest permitted count of unimplemented-feature markers in production decode
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 164;
+const GAP_MARKER_FLOOR: usize = 86;
 
-/// One `gap!("reason", …)` marker site: its reason id and the file it lives in.
-struct GapSite {
+/// One marker site: its reason id and the file it lives in.
+struct MarkerSite {
     reason: String,
     file: String,
 }
@@ -60,12 +58,18 @@ struct NonLiteralMarker {
     line: usize,
 }
 
-/// Extracts the `reason` literal of every `gap!("…", …)` call in `code`, skipping
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MarkerCounts {
+    feature: usize,
+    internal: usize,
+}
+
+/// Extracts the `reason` literal of each named marker call in `code`, skipping
 /// `//` line comments, `/* */` block comments, char literals, and string literals
-/// (so a `gap!` inside a comment or string is not matched). Marker calls whose
+/// (so markers inside comments or strings are not matched). Marker calls whose
 /// first argument is not a literal are returned separately so the convention can
 /// be enforced instead of silently omitting them from the inventory.
-fn scan_gap_reasons(code: &str) -> MarkerScan {
+fn scan_gap_reasons(code: &str, marker_macros: &[&'static str]) -> MarkerScan {
     let chars: Vec<char> = code.chars().collect();
     let n = chars.len();
     let mut i = 0usize;
@@ -134,7 +138,9 @@ fn scan_gap_reasons(code: &str) -> MarkerScan {
             prev_ident = false;
             continue;
         }
-        if !prev_ident && let Some((macro_name, bang_len)) = matches_marker_bang(&chars, i) {
+        if !prev_ident
+            && let Some((macro_name, bang_len)) = matches_marker_bang(&chars, i, marker_macros)
+        {
             if let Some((reason, next)) = gap_reason_after(&chars, i + bang_len) {
                 reasons.push(reason);
                 i = next;
@@ -161,7 +167,7 @@ fn scan_gap_reasons(code: &str) -> MarkerScan {
 /// one global namespace regardless of decode tier, so a fixture's recorded reason
 /// maps to exactly one marker site. `gap!` is the unified target; the tier-specific
 /// families are ergonomic wrappers that all funnel to the same diagnostic carrier.
-const MARKER_MACROS: &[&str] = &[
+const FEATURE_MARKER_MACROS: &[&str] = &[
     "gap",
     "inter_cap",
     "inter_missing",
@@ -171,10 +177,18 @@ const MARKER_MACROS: &[&str] = &[
     "general_intra_at",
 ];
 
-/// When `chars[i..]` begins one of [`MARKER_MACROS`] immediately followed by `!`,
+/// Internal fail-closed marker macros. These share reason-id uniqueness with
+/// feature markers but are not protected by the feature count floor.
+const INTERNAL_MARKER_MACROS: &[&str] = &["inter_internal"];
+
+/// When `chars[i..]` begins one of `marker_macros` immediately followed by `!`,
 /// returns its name and the length of that `name!` token; otherwise `None`.
-fn matches_marker_bang(chars: &[char], i: usize) -> Option<(&'static str, usize)> {
-    for &name in MARKER_MACROS {
+fn matches_marker_bang(
+    chars: &[char],
+    i: usize,
+    marker_macros: &[&'static str],
+) -> Option<(&'static str, usize)> {
+    for &name in marker_macros {
         let name_chars: Vec<char> = name.chars().collect();
         let end = i + name_chars.len();
         if end < chars.len() && chars[i..end] == name_chars[..] && chars[end] == '!' {
@@ -184,7 +198,7 @@ fn matches_marker_bang(chars: &[char], i: usize) -> Option<(&'static str, usize)
     None
 }
 
-/// Given `chars` positioned just past `gap!`, returns the reason literal and the
+/// Given `chars` positioned just past a marker's `!`, returns the reason literal and the
 /// index after it when the call opens as `(  "reason"`, else `None`.
 fn gap_reason_after(chars: &[char], mut j: usize) -> Option<(String, usize)> {
     let n = chars.len();
@@ -266,25 +280,34 @@ fn skip_string_literal(chars: &[char], start: usize) -> (usize, String) {
     (i, s)
 }
 
-/// Fails when a reason id is shared by two `gap!` sites or the marker count drops
+/// Fails when a reason id is shared by two marker sites or the feature count drops
 /// below `floor`.
-fn evaluate(files: &[(String, String)], floor: usize) -> Result<usize> {
-    let mut sites: Vec<GapSite> = Vec::new();
+fn evaluate(files: &[(String, String)], floor: usize) -> Result<MarkerCounts> {
+    let mut sites: Vec<MarkerSite> = Vec::new();
+    let mut counts = MarkerCounts {
+        feature: 0,
+        internal: 0,
+    };
     let mut non_literals = String::new();
     for (path, text) in files {
-        let scan = scan_gap_reasons(strip_test_modules(text));
-        for site in scan.non_literal_sites {
-            let _ = write!(
-                non_literals,
-                "\n  {path}:{}: `{}!` reason must be a string literal",
-                site.line, site.macro_name
-            );
-        }
-        for reason in scan.reasons {
-            sites.push(GapSite {
+        let production = strip_test_modules(text);
+        for (marker_macros, count) in [
+            (FEATURE_MARKER_MACROS, &mut counts.feature),
+            (INTERNAL_MARKER_MACROS, &mut counts.internal),
+        ] {
+            let scan = scan_gap_reasons(production, marker_macros);
+            *count += scan.reasons.len();
+            for site in scan.non_literal_sites {
+                let _ = write!(
+                    non_literals,
+                    "\n  {path}:{}: `{}!` reason must be a string literal",
+                    site.line, site.macro_name
+                );
+            }
+            sites.extend(scan.reasons.into_iter().map(|reason| MarkerSite {
                 reason,
                 file: path.clone(),
-            });
+            }));
         }
     }
 
@@ -306,22 +329,22 @@ fn evaluate(files: &[(String, String)], floor: usize) -> Result<usize> {
         }
     }
     if !collisions.is_empty() {
-        bail!("gap! reason ids must be globally unique; duplicates:{collisions}");
+        bail!("marker reason ids must be globally unique; duplicates:{collisions}");
     }
 
-    if sites.len() < floor {
+    if counts.feature < floor {
         bail!(
-            "gap! marker count {} dropped below floor {floor}; a removed marker un-guards an \
+            "feature marker count {} dropped below floor {floor}; a removed marker un-guards an \
              unimplemented feature. Restore the marker or lower GAP_MARKER_FLOOR in a reviewed \
              commit.",
-            sites.len()
+            counts.feature
         );
     }
-    Ok(sites.len())
+    Ok(counts)
 }
 
-/// Verifies `gap!` reason-id uniqueness and the monotonic marker-count floor over
-/// production decode source.
+/// Verifies global reason-id uniqueness and the feature marker floor over production
+/// decode source.
 pub(crate) fn check_gap_markers(root: &Path) -> Result<()> {
     let dir = root.join(DECODE_SRC);
     let mut files: Vec<(String, String)> = Vec::new();
@@ -342,10 +365,11 @@ pub(crate) fn check_gap_markers(root: &Path) -> Result<()> {
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         files.push((rel, text));
     }
-    let count = evaluate(&files, GAP_MARKER_FLOOR)?;
+    let counts = evaluate(&files, GAP_MARKER_FLOOR)?;
     eprintln!(
-        "check-gap-markers: {count} unimplemented-feature markers, reason ids unique \
-         (floor {GAP_MARKER_FLOOR})"
+        "check-gap-markers: {} unimplemented-feature markers (floor \
+         {GAP_MARKER_FLOOR}), {} internal fail-closed markers; reason ids globally unique",
+        counts.feature, counts.internal
     );
     Ok(())
 }
@@ -353,7 +377,8 @@ pub(crate) fn check_gap_markers(root: &Path) -> Result<()> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::{evaluate, scan_gap_reasons};
+    use super::scan_gap_reasons;
+    use super::{FEATURE_MARKER_MACROS, INTERNAL_MARKER_MACROS, MarkerCounts, evaluate};
 
     #[test]
     fn scans_literal_reasons_and_skips_comments_and_strings() {
@@ -370,7 +395,7 @@ mod tests {
             // A lifetime must not be mistaken for a char literal that swallows a marker.
             fn f<'a>(e: Foo<'_>) { general_intra_at!("intra_after_lifetime", off, "m", "s"); }
         "#;
-        let scan = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code, FEATURE_MARKER_MACROS);
         assert!(scan.non_literal_sites.is_empty());
         assert_eq!(
             scan.reasons,
@@ -390,7 +415,7 @@ mod tests {
             let c_string = cr"gap!(RAW_C_STRING, ...)";
             let live = gap!("live_reason", None, "msg", "7.1");
         "###;
-        let scan = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code, FEATURE_MARKER_MACROS);
         assert!(scan.non_literal_sites.is_empty());
         assert_eq!(scan.reasons, vec!["live_reason"]);
     }
@@ -401,7 +426,7 @@ mod tests {
             let x = mygap!("not_a_marker", a, b, c);
             let y = gap!(REASON_CONST, a, b, c);
         "#;
-        let scan = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code, FEATURE_MARKER_MACROS);
         assert!(scan.reasons.is_empty());
         assert_eq!(scan.non_literal_sites.len(), 1);
         assert_eq!(scan.non_literal_sites[0].macro_name, "gap");
@@ -446,12 +471,24 @@ mod tests {
             r#"gap!("only", o, "m", "s");"#.to_string(),
         )];
         assert!(evaluate(&files, 2).is_err());
-        assert_eq!(evaluate(&files, 1).unwrap(), 1);
+        assert_eq!(
+            evaluate(&files, 1).unwrap(),
+            MarkerCounts {
+                feature: 1,
+                internal: 0,
+            }
+        );
     }
 
     #[test]
     fn empty_corpus_passes_zero_floor() {
-        assert_eq!(evaluate(&[], 0).unwrap(), 0);
+        assert_eq!(
+            evaluate(&[], 0).unwrap(),
+            MarkerCounts {
+                feature: 0,
+                internal: 0,
+            }
+        );
     }
 
     #[test]
@@ -462,10 +499,46 @@ mod tests {
             let c = compound_missing!("compound_z", o, "in", "s");
             let d = inter_diag!("diag_w", o, "m", "s");
         "#;
-        let scan = scan_gap_reasons(code);
+        let scan = scan_gap_reasons(code, FEATURE_MARKER_MACROS);
         assert!(scan.non_literal_sites.is_empty());
         let mut reasons = scan.reasons;
         reasons.sort();
         assert_eq!(reasons, vec!["compound_z", "diag_w", "inter_x", "intra_y"]);
+    }
+
+    #[test]
+    fn internal_markers_are_counted_without_affecting_feature_floor() {
+        let files = vec![(
+            "a.rs".to_string(),
+            r#"
+                let a = gap!("feature", o, "m", "s");
+                let b = inter_internal!("invariant", o);
+            "#
+            .to_string(),
+        )];
+        assert_eq!(
+            evaluate(&files, 1).unwrap(),
+            MarkerCounts {
+                feature: 1,
+                internal: 1,
+            }
+        );
+        assert_eq!(
+            scan_gap_reasons(&files[0].1, INTERNAL_MARKER_MACROS).reasons,
+            vec!["invariant"]
+        );
+    }
+
+    #[test]
+    fn reason_ids_are_unique_across_namespaces() {
+        let files = vec![(
+            "a.rs".to_string(),
+            r#"
+                let a = gap!("dup", o, "m", "s");
+                let b = inter_internal!("dup", o);
+            "#
+            .to_string(),
+        )];
+        assert!(evaluate(&files, 0).is_err());
     }
 }

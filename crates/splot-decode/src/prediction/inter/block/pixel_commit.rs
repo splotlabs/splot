@@ -17,9 +17,9 @@ use splot_core::headers::sequence::SequenceHeader;
 use splot_core::span::ByteOffset;
 use splot_recon::{BitDepth, CurrentFrameWorkspace, ReconSample};
 
+use super::super::InterReferenceState;
 use super::super::find_mv_stack::TemporalMvContext;
 use super::super::mc::WorkspaceSink;
-use super::super::{InterReferenceState, SPEC_MODE_INFO, unsupported_at};
 use super::ReconCommand;
 use super::deferred_recon;
 use super::temporal::MotionFieldUnits;
@@ -81,12 +81,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     tile_offset: ByteOffset,
 ) -> Result<ReconRowBuffers> {
     if row.ordinal != *expected_ordinal {
-        return Err(inter_cap!(
-            "inter_row_recon_order",
-            tile_offset,
-            "inter.row.recon_order",
-            SPEC_MODE_INFO
-        ));
+        return Err(inter_internal!("inter_row_recon_order", tile_offset));
     }
     let ordinal = row.ordinal;
     *expected_ordinal = expected_ordinal.saturating_add(1);
@@ -110,14 +105,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     } = row;
     let mut precompute_error = precompute_error;
     for superblock in &superblocks {
-        let superblock_entries = entries.get_mut(superblock.entries.clone()).ok_or_else(|| {
-            inter_cap!(
-                "inter_row_replay_entry_range",
-                tile_offset,
-                "inter.row.task_capacity",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let superblock_entries = entries
+            .get_mut(superblock.entries.clone())
+            .ok_or(inter_internal!("inter_row_replay_entry_range", tile_offset))?;
         debug_assert!(
             superblock_entries
                 .iter()
@@ -207,14 +197,10 @@ pub(super) fn replay_recon_row<T: ReconSample>(
                 }
             } else {
                 let _scope = crate::timing::PhaseScope::new(crate::timing::Phase::CommitReplay);
-                let records = temporal.get(entry.temporal.clone()).ok_or_else(|| {
-                    inter_cap!(
-                        "inter_row_replay_temporal_range",
-                        tile_offset,
-                        "inter.row.task_capacity",
-                        SPEC_MODE_INFO
-                    )
-                })?;
+                let records = temporal.get(entry.temporal.clone()).ok_or(inter_internal!(
+                    "inter_row_replay_temporal_range",
+                    tile_offset
+                ))?;
                 if motion_owed {
                     motion.fold_unit(ordinal, records);
                 }
@@ -222,14 +208,7 @@ pub(super) fn replay_recon_row<T: ReconSample>(
             entry
                 .publication
                 .publish_block_decoded(block_decoded)
-                .map_err(|_| {
-                    inter_cap!(
-                        "inter_row_block_decoded_publish",
-                        tile_offset,
-                        "inter.partition_walk",
-                        SPEC_MODE_INFO
-                    )
-                })?;
+                .map_err(|_| inter_internal!("inter_row_block_decoded_publish", tile_offset))?;
         }
     }
     if motion_owed {

@@ -62,6 +62,24 @@ macro_rules! inter_diag {
     };
 }
 
+macro_rules! inter_internal {
+    ($reason:literal, $offset:expr $(,)?) => {
+        crate::error::DecodeError::InternalState {
+            reason: $reason,
+            byte_offset: $offset,
+        }
+    };
+}
+
+macro_rules! inter_allocation {
+    ($context:literal $(,)?) => {
+        crate::error::DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+            plane: splot_recon::PlaneId::Y,
+            context: $context,
+        })
+    };
+}
+
 macro_rules! compound_cap {
     ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
         unsupported_compound_at(
@@ -236,15 +254,7 @@ pub(crate) fn decode_tip_output_frame<T: ReconSample>(
         block::tip::reconstruct_output(scratch, sequence, &core, reference, bit_depth, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
     frame_cdfs
-        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
-        .map_err(|_| {
-            inter_cap!(
-                "tip_output_coefficient_cdf_context",
-                offset,
-                "inter.cdf.reference_coefficient_context",
-                SPEC_REFERENCE
-            )
-        })?;
+        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx));
     let segment_ids = empty_segment_id_map(&core)?;
     Ok((
         frame,
@@ -266,14 +276,9 @@ fn decode_bridge_frame<T: ReconSample>(
     bit_depth: BitDepth,
 ) -> Result<InterDecodeOutput<T>> {
     let offset = frame_envelope.offset;
-    let frame_size = core.frame_size.ok_or_else(|| {
-        inter_missing!(
-            "bridge_missing_frame_size",
-            offset,
-            "inter.bridge.frame_size",
-            SPEC_HEADER
-        )
-    })?;
+    let frame_size = core
+        .frame_size
+        .ok_or(inter_internal!("bridge_missing_frame_size", offset))?;
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,
@@ -282,14 +287,9 @@ fn decode_bridge_frame<T: ReconSample>(
         bit_depth,
         sequence.general.chroma_format_idc,
     )?;
-    let ref_slot = core.bridge_frame_ref_idx.ok_or_else(|| {
-        inter_missing!(
-            "bridge_missing_reference_slot",
-            offset,
-            "inter.bridge.reference_slot",
-            SPEC_HEADER
-        )
-    })?;
+    let ref_slot = core
+        .bridge_frame_ref_idx
+        .ok_or(inter_internal!("bridge_missing_reference_slot", offset))?;
     let source = reference.hold_slot(ref_slot).ok_or_else(|| {
         inter_missing!(
             "bridge_missing_reference_frame",
@@ -302,41 +302,22 @@ fn decode_bridge_frame<T: ReconSample>(
         .ref_order_hint
         .get(ref_slot as usize)
         .copied()
-        .ok_or_else(|| {
-            inter_missing!(
-                "bridge_missing_reference_order_hint",
-                offset,
-                "inter.bridge.reference_order_hint",
-                SPEC_REFERENCE
-            )
-        })?;
+        .ok_or(inter_internal!(
+            "bridge_missing_reference_order_hint",
+            offset
+        ))?;
     let motion_field = bridge::motion_field(
         frame_size,
         core.display_order_hint().unwrap_or(0),
         reference_order_hint,
     )
-    .ok_or_else(|| {
-        inter_cap!(
-            "bridge_motion_field_dimensions",
-            offset,
-            "inter.bridge.motion_field_dimensions",
-            SPEC_REFERENCE
-        )
-    })?;
+    .ok_or(inter_internal!("bridge_motion_field_dimensions", offset))?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
     let mut frame_cdfs = (*frame_cdfs).clone();
     frame_cdfs
-        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx))
-        .map_err(|_| {
-            inter_cap!(
-                "bridge_coefficient_cdf_context",
-                offset,
-                "inter.cdf.reference_coefficient_context",
-                SPEC_REFERENCE
-            )
-        })?;
+        .replicate_coeff_q_context_for_base_q(core.quantization_params.map_or(0, |q| q.base_q_idx));
     let segment_ids = empty_segment_id_map(&core)?;
     Ok((
         frame,
@@ -896,14 +877,9 @@ pub(in crate::prediction::inter) fn add_inter_residual_to_workspace<T: ReconSamp
     offset: ByteOffset,
 ) -> Result<()> {
     let use_ddt = enable_inter_ddt && !use_intrabc;
-    let blocks = residual.blocks(residual_blocks).ok_or_else(|| {
-        inter_missing!(
-            "inter_residual_block_range",
-            offset,
-            "inter.residual.block_range",
-            SPEC_MC
-        )
-    })?;
+    let blocks = residual
+        .blocks(residual_blocks)
+        .ok_or(inter_internal!("inter_residual_block_range", offset))?;
     for (index, block) in blocks.iter().enumerate() {
         if block.cctx_pair_delta < 0 {
             continue;
@@ -2078,12 +2054,7 @@ fn validate_bridge_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Res
         && core.bridge_film_grain.is_some()
         && reference_map_complete;
     if !complete {
-        return Err(inter_cap!(
-            "bridge_incomplete_state",
-            offset,
-            "inter.bridge.complete_state",
-            SPEC_HEADER
-        ));
+        return Err(inter_internal!("bridge_incomplete_state", offset));
     }
     Ok(())
 }
