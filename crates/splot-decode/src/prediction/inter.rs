@@ -281,9 +281,14 @@ fn decode_bridge_frame<T: ReconSample>(
     let ref_slot = core
         .bridge_frame_ref_idx
         .ok_or(inter_internal!("bridge_missing_reference_slot", offset))?;
-    let source = reference
-        .hold_slot(ref_slot)
-        .ok_or(inter_internal!("bridge_missing_reference_frame", offset))?;
+    let source = reference.hold_slot(ref_slot).ok_or_else(|| {
+        inter_missing!(
+            "bridge_missing_reference_frame",
+            offset,
+            "inter.bridge.reference_frame",
+            SPEC_REFERENCE
+        )
+    })?;
     let reference_order_hint = reference
         .ref_order_hint
         .get(ref_slot as usize)

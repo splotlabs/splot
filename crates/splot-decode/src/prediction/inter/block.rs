@@ -707,7 +707,9 @@ fn frame_temporal_context<'a, T: ReconSample>(
     let tip_prepare_timer = crate::timing::start();
     tip::prepare_motion_field(temporal_context, core, sb_h4);
     crate::timing::report("inter_tip_prepare", tip_prepare_timer);
-    debug_assert_eq!(temporal_context.tip_references(), expected_tip_pair);
+    if temporal_context.tip_references() != expected_tip_pair {
+        return Err(inter_internal!("inter_tip_reference_pair_mismatch", offset));
+    }
     Ok(temporal_context)
 }
 /// AV2 § 7.12.2 TIP reference pair as the entropy pass sees it.
