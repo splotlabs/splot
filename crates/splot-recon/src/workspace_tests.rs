@@ -1131,15 +1131,18 @@ fn workspace_predicts_ibp_dc_from_in_storage_edges() {
 }
 
 #[test]
-fn workspace_ibp_dc_top_left_uses_dc_midpoint_without_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
+fn workspace_rectangular_and_ibp_dc_top_left_use_midpoint_without_edges() {
+    for predict in [
+        CurrentFrameWorkspace::<u8>::predict_intra_dc_rect,
+        CurrentFrameWorkspace::<u8>::predict_intra_ibp_dc_rect,
+    ] {
+        let mut workspace =
+            CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
 
-    workspace
-        .predict_intra_ibp_dc_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
-        .unwrap();
+        predict(&mut workspace, PlaneId::Y, 0, 0, rect_block(2, 2)).unwrap();
 
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[128; 16]);
+        assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[128; 16]);
+    }
 }
 
 #[test]
@@ -1409,17 +1412,6 @@ fn workspace_rejects_oversized_intra_prediction_scratch() {
             max_sample_count: 4096,
         })
     ));
-}
-
-#[test]
-fn workspace_top_left_rectangular_dc_uses_midpoint_without_edges() {
-    let mut workspace =
-        CurrentFrameWorkspace::<u8>::new(monochrome_info(BitDepth::Eight, 4, 4), 0).unwrap();
-    workspace
-        .predict_intra_dc_rect(PlaneId::Y, 0, 0, rect_block(2, 2))
-        .unwrap();
-
-    assert_eq!(workspace.samples(PlaneId::Y).unwrap(), &[128; 16]);
 }
 
 #[test]
