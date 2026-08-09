@@ -196,7 +196,10 @@ fn prepare_ccso_plane(
     if params.ccso_offset_idx.len() != expected_offsets {
         return Err(CcsoError::Params);
     }
-    let offset_lut = ccso_offset_lut(params, expected_offsets)?;
+    let offset_lut = ccso_offset_lut(params, expected_offsets).map_err(|error| match error {
+        CcsoError::Allocation(_) => CcsoError::Allocation(plane_id(plane)),
+        other => other,
+    })?;
     let mut offset_lut_simd = [[0u8; 16]; 5];
     if offset_lut.len() > offset_lut_simd.len() * 16 {
         return Err(CcsoError::Params);
@@ -282,7 +285,7 @@ fn ccso_plane<T: ReconSample>(
     let width = source.width();
     let height = source.frame_height();
     let mut filtered = StripePlane::copy_from(source, 0, height).map_err(|error| match error {
-        crate::filters::source::StripeCopyError::Allocation(_) => CcsoError::Allocation,
+        crate::filters::source::StripeCopyError::Allocation(plane) => CcsoError::Allocation(plane),
         crate::filters::source::StripeCopyError::Geometry => CcsoError::Workspace,
     })?;
     ccso_apply(
@@ -532,7 +535,7 @@ fn ccso_offset_lut(
     let scale = i32::from(params.ccso_scale_idx.ok_or(CcsoError::Params)?) + 1;
     let mut lut = Vec::new();
     lut.try_reserve_exact(expected_offsets)
-        .map_err(|_| CcsoError::Allocation)?;
+        .map_err(|_| CcsoError::Allocation(PlaneId::Y))?;
     for &offset_idx in &params.ccso_offset_idx {
         let base = CCSO_OFFSET
             .get(usize::from(offset_idx))
@@ -605,7 +608,7 @@ pub(crate) enum CcsoError {
     #[error("CCSO workspace access failed")]
     Workspace,
     #[error("CCSO lookup-table storage could not be reserved")]
-    Allocation,
+    Allocation(PlaneId),
 }
 
 #[cfg(test)]

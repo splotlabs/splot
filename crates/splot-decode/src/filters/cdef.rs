@@ -263,10 +263,10 @@ pub(crate) fn cdef_stripe<'a, T: ReconSample>(
     let (deblocked_u, deblocked_v, filtered_u, filtered_v) = if has_chroma {
         let u = deblocked.u.ok_or(CdefError::Workspace)?;
         let v = deblocked.v.ok_or(CdefError::Workspace)?;
-        let filtered_u =
-            StripePlane::copy_from(u, chroma_start, chroma_end).map_err(CdefError::from)?;
-        let filtered_v =
-            StripePlane::copy_from(v, chroma_start, chroma_end).map_err(CdefError::from)?;
+        let filtered_u = StripePlane::copy_from(u, chroma_start, chroma_end)
+            .map_err(|error| CdefError::from(error.for_plane(PlaneId::U)))?;
+        let filtered_v = StripePlane::copy_from(v, chroma_start, chroma_end)
+            .map_err(|error| CdefError::from(error.for_plane(PlaneId::V)))?;
         (Some(u), Some(v), Some(filtered_u), Some(filtered_v))
     } else {
         (None, None, None, None)
@@ -889,13 +889,13 @@ pub(crate) enum CdefError {
     #[error("CDEF workspace sample access went out of bounds")]
     Workspace,
     #[error("CDEF stripe output storage could not be reserved")]
-    Allocation,
+    Allocation(splot_recon::PlaneId),
 }
 
 impl From<crate::filters::source::StripeCopyError> for CdefError {
     fn from(error: crate::filters::source::StripeCopyError) -> Self {
         match error {
-            crate::filters::source::StripeCopyError::Allocation(_) => Self::Allocation,
+            crate::filters::source::StripeCopyError::Allocation(plane) => Self::Allocation(plane),
             crate::filters::source::StripeCopyError::Geometry => Self::Geometry,
         }
     }

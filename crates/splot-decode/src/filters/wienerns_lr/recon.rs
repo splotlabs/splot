@@ -477,9 +477,9 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                     &self.filter_records.chroma_deblock_blocks,
                 )
                 .map_err(|error| match error {
-                    crate::filters::lossless::LosslessGridError::Allocation => {
+                    crate::filters::lossless::LosslessGridError::Allocation(plane) => {
                         splot_recon::ReconError::WorkspaceAllocationFailed {
-                            plane: PlaneId::Y,
+                            plane,
                             context: "lossless block grid",
                         }
                         .into()
@@ -1248,9 +1248,9 @@ pub(crate) fn deblock_prepare_error(
 
 fn cdef_filter_error(error: &crate::filters::cdef::CdefError) -> crate::error::DecodeError {
     match error {
-        crate::filters::cdef::CdefError::Allocation => {
+        crate::filters::cdef::CdefError::Allocation(plane) => {
             splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: PlaneId::Y,
+                plane: *plane,
                 context: "CDEF stripe output",
             }
             .into()
@@ -1261,9 +1261,9 @@ fn cdef_filter_error(error: &crate::filters::cdef::CdefError) -> crate::error::D
 
 fn ccso_filter_error(error: &crate::filters::ccso::CcsoError) -> crate::error::DecodeError {
     match error {
-        crate::filters::ccso::CcsoError::Allocation => {
+        crate::filters::ccso::CcsoError::Allocation(plane) => {
             splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: PlaneId::Y,
+                plane: *plane,
                 context: "CCSO lookup table",
             }
             .into()
