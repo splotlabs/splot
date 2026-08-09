@@ -118,6 +118,9 @@ pub enum DecodeHeaderStateError {
     /// Decoded inter residual records were inconsistent at reconstruction time.
     #[error("inter residual reconstruction state is inconsistent")]
     InvalidInterResidualReconstruction,
+    /// A decoded inter CCTX record did not have its paired chroma block.
+    #[error("inter residual CCTX pair state is inconsistent")]
+    MissingInterResidualCctxPair,
 }
 
 /// Runtime reference-frame state consistency failure.
