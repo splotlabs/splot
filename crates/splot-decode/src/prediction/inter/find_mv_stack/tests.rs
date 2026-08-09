@@ -219,6 +219,20 @@ fn skip_mode_reference_pair_inherits_compound_neighbour_or_keeps_default() {
 }
 
 #[test]
+fn compound_mode_context_preserves_wide_order_hints() {
+    let mut grid = empty_grid();
+    let block = block_at(0, N4_32);
+    record_inter_ref(&mut grid, 0, 0, 0, false, Mv::ZERO, false);
+    let mut context = block_neighbour_ctx(&grid, &block);
+    context.cell_count = 1;
+    let current = CompoundOrderHint::current(0x8000_0000);
+
+    assert_eq!(context.comp_mode_ctx(&[0], &[0x7fff_fffe], current), 0);
+    assert_eq!(context.comp_mode_ctx(&[0], &[0x8000_0002], current), 1);
+    assert_eq!(context.comp_mode_ctx(&[0], &[u32::MAX], current), 0);
+}
+
+#[test]
 fn skip_mode_reference_pair_skips_intrabc_neighbour_before_compound() {
     let mut grid = empty_grid();
     let block = block_at(N4_32, N4_32);

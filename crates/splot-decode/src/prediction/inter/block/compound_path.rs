@@ -4,6 +4,7 @@
 use splot_core::symbol::SymbolDecoder;
 use splot_recon::wedge_mask_plane_sample;
 
+use super::super::CompoundOrderHint;
 use super::super::compound::{
     CompoundBlockSyntax, CompoundParseInput, CompoundYMode, read_compound_mode_syntax,
     read_compound_reference_pair,
@@ -31,8 +32,11 @@ pub(super) fn read_reference_mode(
     current_order_hint: u32,
     tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let current_order_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
-    let ctx = neighbour_ctx.comp_mode_ctx(ref_frame_idx, ref_order_hint, current_order_hint);
+    let ctx = neighbour_ctx.comp_mode_ctx(
+        ref_frame_idx,
+        ref_order_hint,
+        CompoundOrderHint::current(current_order_hint),
+    );
     let mode = cdfs
         .read_block_symbol_trace(TileCdfSelector::CompMode { ctx }, symbols)
         .map_err(|_| symbol_read_error(tile_offset))?
@@ -101,7 +105,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         ref_frame_idx,
         &reference.ref_order_hint,
         pair,
-        compound_current_order_hint(core, tile_offset)?,
+        core.display_order_hint().unwrap_or(0),
     )?;
     block_ctx.ref_frame0 = pair.0;
     block_ctx.ref_frame1 = Some(pair.1);
@@ -220,7 +224,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
                 ref_frame_idx,
                 compound.ref_frame0,
                 compound.ref_frame1,
-                tile_offset,
             )
         })
         .transpose()?;
@@ -283,7 +286,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             compound.ref_frame0,
             compound.ref_frame1,
             num_total_refs,
-            tile_offset,
         )?
     };
     let compound_blend = read_compound_blend_syntax(
@@ -1003,7 +1005,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
     block_qindex: u32,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, ParsedLeaf)> {
-    let current = compound_current_order_hint(core, tile_offset)?;
+    let current = compound_current_order_hint(core);
     let ref_order_hints = if num_total_refs > 1 {
         Some((
             compound_reference_order_hint(reference, ref_frame_idx, 0)?,
@@ -1089,13 +1091,12 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
 
 /// AV2 § 5.9.22 `skip_mode_params` fallback reference pair.
 fn skip_mode_default_pair(
-    current: i32,
+    current: CompoundOrderHint,
     order_hints: Option<(CompoundOrderHint, CompoundOrderHint)>,
 ) -> (i8, i8) {
     let Some((order_hint0, order_hint1)) = order_hints else {
         return (0, 0);
     };
-    let current = CompoundOrderHint::current(current);
     let distance = |reference: CompoundOrderHint| {
         if reference.is_restricted() {
             0
@@ -1393,63 +1394,14 @@ fn compound_sized_reference_distances<T: ReconSample>(
     {
         return Ok(None);
     }
-    let current = CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
+    let current = compound_current_order_hint(core);
     let d0 = current.relative_dist(ref0.order_hint);
     let d1 = current.relative_dist(ref1.order_hint);
     Ok(Some((d0, d1)))
 }
 
-fn compound_current_order_hint(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<i32> {
-    i32::try_from(core.display_order_hint().unwrap_or(0)).map_err(|_| {
-        compound_cap!(
-            "compound_order_hint_range",
-            tile_offset,
-            "inter.compound.order_hint",
-            SPEC_MODE_INFO
-        )
-    })
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CompoundOrderHint {
-    Restricted,
-    Value(i64),
-}
-
-impl CompoundOrderHint {
-    const fn current(value: i32) -> Self {
-        Self::Value(value as i64)
-    }
-
-    const fn reference(value: u32) -> Self {
-        if value == u32::MAX {
-            Self::Restricted
-        } else {
-            Self::Value(value as i64)
-        }
-    }
-
-    const fn is_restricted(self) -> bool {
-        matches!(self, Self::Restricted)
-    }
-
-    fn relative_dist(self, other: Self) -> i32 {
-        match (self, other) {
-            (Self::Restricted, Self::Restricted) => 0,
-            (Self::Restricted, _) => 127,
-            (_, Self::Restricted) => -127,
-            (Self::Value(first), Self::Value(second)) => (first - second).clamp(-127, 127) as i32,
-        }
-    }
-
-    fn frame_distance_from(self, current: Self) -> i32 {
-        let distance = current.relative_dist(self);
-        if self.is_restricted() {
-            -distance
-        } else {
-            distance
-        }
-    }
+fn compound_current_order_hint(core: &FrameHeaderCore) -> CompoundOrderHint {
+    CompoundOrderHint::current(core.display_order_hint().unwrap_or(0))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1512,7 +1464,7 @@ fn compound_ref_distance_signs<T: ReconSample>(
     num_total_refs: usize,
 ) -> Result<[bool; 7]> {
     let mut signs = [true; 7];
-    let current_order_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
+    let current_order_hint = CompoundOrderHint::current(current_order_hint);
     for (ref_idx, sign) in signs.iter_mut().take(num_total_refs).enumerate() {
         let slot = *ref_frame_idx
             .get(ref_idx)
@@ -1522,12 +1474,12 @@ fn compound_ref_distance_signs<T: ReconSample>(
             .ref_order_hint
             .get(slot)
             .copied()
-            .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
+            .map(CompoundOrderHint::reference)
             .ok_or(crate::DecodeReferenceStateError::SlotOutOfRange {
                 slot,
                 slot_count: reference.ref_order_hint.len(),
             })?;
-        *sign = super::super::get_relative_dist(current_order_hint, ref_order_hint) >= 0;
+        *sign = ref_order_hint.frame_distance_from(current_order_hint) >= 0;
     }
     Ok(signs)
 }
@@ -1541,10 +1493,8 @@ fn compound_group_idx_context<T: ReconSample>(
     ref_frame0: i8,
     ref_frame1: i8,
     num_total_refs: usize,
-    tile_offset: ByteOffset,
 ) -> Result<usize> {
-    let current_order_hint =
-        CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
+    let current_order_hint = compound_current_order_hint(core);
     let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
     let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     let equal_ref_distance = current_order_hint.relative_dist(ref0_order_hint).abs()
@@ -1608,9 +1558,8 @@ fn compound_joint_mv_projection<T: ReconSample>(
     ref_frame_idx: &[u32],
     ref_frame0: i8,
     ref_frame1: i8,
-    tile_offset: ByteOffset,
 ) -> Result<CompoundJointMvProjection> {
-    let current = CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
+    let current = compound_current_order_hint(core);
     let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
     let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     Ok(compound_joint_mv_projection_from_order_hints(
@@ -1905,7 +1854,6 @@ fn read_compound_cwp_syntax<T: ReconSample>(
         context.ref_frame_idx,
         input.ref_frame0,
         input.ref_frame1,
-        tile_offset,
     )?;
     Ok(input
         .blend
@@ -1933,9 +1881,8 @@ fn compound_cwp_same_side<T: ReconSample>(
     ref_frame_idx: &[u32],
     ref_frame0: i8,
     ref_frame1: i8,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
-    let current = CompoundOrderHint::current(compound_current_order_hint(core, tile_offset)?);
+    let current = compound_current_order_hint(core);
     let ref0_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame0)?;
     let ref1_order_hint = compound_reference_order_hint(reference, ref_frame_idx, ref_frame1)?;
     Ok(compound_references_same_side(

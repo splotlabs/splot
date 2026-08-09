@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RESTRICTED_OH,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams,
     SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
@@ -765,13 +765,55 @@ pub(in crate::prediction::inter) fn hold_reference_pair<T: ReconSample>(
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompoundOrderHint {
+    Restricted,
+    Value(i64),
+}
+
+impl CompoundOrderHint {
+    const fn current(value: u32) -> Self {
+        Self::Value(value as i64)
+    }
+
+    const fn reference(value: u32) -> Self {
+        if value == u32::MAX {
+            Self::Restricted
+        } else {
+            Self::Value(value as i64)
+        }
+    }
+
+    const fn is_restricted(self) -> bool {
+        matches!(self, Self::Restricted)
+    }
+
+    fn relative_dist(self, other: Self) -> i32 {
+        match (self, other) {
+            (Self::Restricted, Self::Restricted) => 0,
+            (Self::Restricted, _) => 127,
+            (_, Self::Restricted) => -127,
+            (Self::Value(first), Self::Value(second)) => (first - second).clamp(-127, 127) as i32,
+        }
+    }
+
+    fn frame_distance_from(self, current: Self) -> i32 {
+        let distance = current.relative_dist(self);
+        if self.is_restricted() {
+            -distance
+        } else {
+            distance
+        }
+    }
+}
+
 fn compound_is_joint_context(
     ref_frame_idx: &[u32],
     ref_order_hint: &[u32],
     pair: (i8, i8),
-    current_order_hint: i32,
+    current_order_hint: u32,
 ) -> Result<usize> {
-    let order_hint_of = |ref_frame: i8| -> Result<i32> {
+    let order_hint_of = |ref_frame: i8| -> Result<CompoundOrderHint> {
         let list_len = ref_frame_idx.len();
         let slot = usize::try_from(ref_frame)
             .ok()
@@ -786,13 +828,7 @@ fn compound_is_joint_context(
         ref_order_hint
             .get(slot_index)
             .copied()
-            .map(|hint| {
-                if hint == u32::MAX {
-                    RESTRICTED_OH
-                } else {
-                    i32::try_from(hint).unwrap_or(i32::MAX)
-                }
-            })
+            .map(CompoundOrderHint::reference)
             .ok_or_else(|| {
                 DecodeReferenceStateError::SlotOutOfRange {
                     slot: slot_index,
@@ -806,7 +842,7 @@ fn compound_is_joint_context(
     Ok(compound_is_joint_context_from_order_hints(
         first_order_hint,
         second_order_hint,
-        current_order_hint,
+        CompoundOrderHint::current(current_order_hint),
     ))
 }
 
@@ -839,17 +875,16 @@ fn compound_is_joint_context_keeps_reference_slot_bounds_fail_closed() {
 }
 
 fn compound_is_joint_context_from_order_hints(
-    first_order_hint: i32,
-    second_order_hint: i32,
-    current_order_hint: i32,
+    first_order_hint: CompoundOrderHint,
+    second_order_hint: CompoundOrderHint,
+    current_order_hint: CompoundOrderHint,
 ) -> usize {
-    let first_side = get_relative_dist(first_order_hint, current_order_hint);
-    let second_side = get_relative_dist(second_order_hint, current_order_hint);
+    let first_side = first_order_hint.relative_dist(current_order_hint);
+    let second_side = second_order_hint.relative_dist(current_order_hint);
     let first_dist = first_side.abs();
     let second_dist = second_side.abs();
     let same_side = (first_side < 0 && second_side < 0) || (first_side > 0 && second_side > 0);
-    let one_restricted =
-        (first_order_hint == RESTRICTED_OH) != (second_order_hint == RESTRICTED_OH);
+    let one_restricted = first_order_hint.is_restricted() != second_order_hint.is_restricted();
     usize::from(same_side || first_dist != second_dist || one_restricted)
 }
 #[allow(clippy::too_many_arguments)]
