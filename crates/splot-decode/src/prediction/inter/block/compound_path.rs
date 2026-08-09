@@ -87,7 +87,6 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
         reference,
         core.display_order_hint().unwrap_or(0),
         num_total_refs,
-        tile_offset,
     )?;
     let pair = read_compound_reference_pair(
         cdfs,
@@ -1559,7 +1558,6 @@ fn compound_ref_distance_signs<T: ReconSample>(
     reference: &InterReferenceState<T>,
     current_order_hint: u32,
     num_total_refs: usize,
-    tile_offset: ByteOffset,
 ) -> Result<[bool; 7]> {
     let mut signs = [true; 7];
     let current_order_hint = i32::try_from(current_order_hint).unwrap_or(i32::MAX);
@@ -1567,18 +1565,15 @@ fn compound_ref_distance_signs<T: ReconSample>(
         let slot = *ref_frame_idx
             .get(ref_idx)
             .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
+        let slot = usize::try_from(slot).unwrap_or(usize::MAX);
         let ref_order_hint = reference
             .ref_order_hint
-            .get(slot as usize)
+            .get(slot)
             .copied()
             .map(|hint| i32::try_from(hint).unwrap_or(i32::MAX))
-            .ok_or_else(|| {
-                compound_missing!(
-                    "compound_missing_ref_order_hint",
-                    tile_offset,
-                    "inter.compound.ref_order_hint",
-                    SPEC_MODE_INFO
-                )
+            .ok_or(crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot,
+                slot_count: reference.ref_order_hint.len(),
             })?;
         *sign = super::super::get_relative_dist(current_order_hint, ref_order_hint) >= 0;
     }
