@@ -47,7 +47,6 @@ pub(super) fn placed_inter_geometry(
     n4w: usize,
     n4h: usize,
     chroma_planes: bool,
-    tile_offset: ByteOffset,
 ) -> Result<PlacedInterGeometry> {
     let luma_x = frontier.c * 4;
     let luma_y = frontier.r * 4;
@@ -59,14 +58,10 @@ pub(super) fn placed_inter_geometry(
             .size()
             .num_4x4_wide()
             .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
-        let chroma_n4h = chroma_ref.size().num_4x4_high().map_err(|_| {
-            inter_diag!(
-                "inter_chroma_ref_height",
-                tile_offset,
-                "invalid inter chroma reference height",
-                "5.20.4.1"
-            )
-        })?;
+        let chroma_n4h = chroma_ref
+            .size()
+            .num_4x4_high()
+            .map_err(|_| crate::DecodeHeaderStateError::InvalidBlockGeometry)?;
         (
             chroma_ref.col() * 4,
             chroma_ref.row() * 4,

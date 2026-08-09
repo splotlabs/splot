@@ -706,7 +706,6 @@ pub(super) fn finish_compound_inter_block<T: ReconSample>(
         n4w,
         n4h,
         sequence.general.chroma_format_idc != ChromaFormatIdc::Monochrome,
-        tile_offset,
     )?;
     let reference_pair = CompoundBlockSyntax {
         y_mode: motion.y_mode,
