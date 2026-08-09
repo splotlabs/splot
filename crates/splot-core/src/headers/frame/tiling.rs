@@ -177,6 +177,8 @@ pub struct TileInfo {
 /// # Errors
 /// Returns [`Error::UnexpectedEof`](crate::error::Error::UnexpectedEof) or a typed
 /// descriptor error if the payload ends or is malformed mid-field, and
+/// [`Error::InvalidTileParams`](crate::error::Error::InvalidTileParams) when an explicit
+/// non-uniform layout exceeds the § 6.17.7.2 tile-count limits. Returns
 /// [`Error::Unimplemented`](crate::error::Error::Unimplemented) when the layout
 /// depends on unmodeled state (a reserved `seq_level_idx` leaves
 /// [`CoreSeqTileView::seq_tile_params`] `None` so the reuse eligibility cannot be

@@ -328,6 +328,8 @@ pub(super) fn tile_group_framing_checks(
 /// `TileCols <= MAX_TILE_COLS`, `TileRows <= MAX_TILE_ROWS`, and
 /// `context_update_tile_id < TileCols * TileRows`. `MAX_TILE_COLS` /
 /// `MAX_TILE_ROWS` are 64 (AV2 § 3, `docs/spec/av2/1.0.0/03-symbols.md`).
+/// The count checks remain as defense in depth for any `TileInfo` produced outside the
+/// parser, which rejects an oversized non-uniform layout before returning it.
 pub(super) fn frame_tile_info_checks(
     tile_info: &TileInfo,
     obu: &ObuEnvelope<'_>,

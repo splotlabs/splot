@@ -145,7 +145,9 @@ pub struct SequenceSegmentConfig {
 /// (§ 5.4.9) when `seq_seg_info_present_flag` is set.
 ///
 /// # Errors
-/// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field.
+/// Returns descriptor errors or [`Error::UnexpectedEof`] if the payload ends mid-field,
+/// and [`Error::InvalidTileParams`] when a non-uniform layout exceeds the § 6.17.7.2
+/// tile-count limits.
 pub fn parse_sequence_segment_config(reader: &mut BitReader<'_>) -> Result<SequenceSegmentConfig> {
     let enable_ext_seg = reader.read_flag()?;
     let max_segments = if enable_ext_seg { 16 } else { 8 };

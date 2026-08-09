@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use splot_core::annexb::ObuEnvelope;
 use splot_core::bitio::BitReader;
+use splot_core::error::{Error, TileParamsErrorKind};
 use splot_core::headers::atlas_segment::parse_atlas_segment;
 use splot_core::headers::buffer_removal_timing::parse_buffer_removal_timing;
 use splot_core::headers::content_interpretation::{
