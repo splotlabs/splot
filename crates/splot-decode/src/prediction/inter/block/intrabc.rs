@@ -115,14 +115,7 @@ impl IntrabcReconPrediction {
             frame_size.width as i32,
             frame_size.height as i32,
         );
-        let target = PlaneRect::new(cx, cy, cw, ch).map_err(|_| {
-            inter_cap!(
-                "inter_intrabc_chroma_geometry",
-                tile_offset,
-                "inter.intrabc.chroma.geometry",
-                SPEC_MODE_INFO
-            )
-        })?;
+        let target = PlaneRect::new(cx, cy, cw, ch)?;
         Ok(Some(IntrabcChromaPrediction { target, scaling }))
     }
 }
