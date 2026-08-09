@@ -8,8 +8,7 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
     let source_origin = (GDF_READ_RADIUS, GDF_READ_RADIUS);
     let stride = 16 + GDF_READ_RADIUS * 2;
     let source_len = stride * (1 + GDF_READ_RADIUS * 2);
-    let offset = ByteOffset::new(0);
-    let tap_offsets_result = gdf_tap_offsets(stride, offset);
+    let tap_offsets_result = gdf_tap_offsets(stride);
     assert!(tap_offsets_result.is_ok());
     let Ok(tap_offsets) = tap_offsets_result else {
         return;
@@ -60,7 +59,6 @@ fn uniform_width_sixteen_matches_scalar_samples_for_all_tables_and_classes() {
                         &params,
                         &block,
                         source_origin,
-                        offset,
                     );
                     assert!(wide_result.is_ok());
                     let Ok([actual]) = wide_result else {
@@ -95,7 +93,7 @@ fn mixed_width_eight_matches_scalar_samples_for_all_tables() {
     let stride = 8 + GDF_READ_RADIUS * 2;
     let source_len = stride * (1 + GDF_READ_RADIUS * 2);
     let offset = ByteOffset::new(0);
-    let tap_offsets_result = gdf_tap_offsets(stride, offset);
+    let tap_offsets_result = gdf_tap_offsets(stride);
     assert!(tap_offsets_result.is_ok());
     let Ok(tap_offsets) = tap_offsets_result else {
         return;
@@ -178,7 +176,7 @@ fn width_four_row_matches_legacy_samples_for_all_tables_and_classes() {
     let stride = 4 + GDF_READ_RADIUS * 2;
     let source_len = stride * (1 + GDF_READ_RADIUS * 2);
     let offset = ByteOffset::new(0);
-    let tap_offsets_result = gdf_tap_offsets(stride, offset);
+    let tap_offsets_result = gdf_tap_offsets(stride);
     assert!(tap_offsets_result.is_ok());
     let Ok(tap_offsets) = tap_offsets_result else {
         return;

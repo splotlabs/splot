@@ -625,7 +625,7 @@ impl<'a> FrameDeblock<'a> {
     ) -> Result<DeblockedWindow<T>, DeblockError> {
         self.validate_window(workspace.info(), luma_start, luma_end, margin)?;
         DeblockedWindow::extract(workspace, luma_start, luma_end, margin)
-            .ok_or(DeblockError::Workspace)
+            .map_err(DeblockError::from)
     }
 
     /// Copies a final deblocked row window directly from segmented canonical
@@ -639,7 +639,7 @@ impl<'a> FrameDeblock<'a> {
     ) -> Result<DeblockedWindow<T>, DeblockError> {
         self.validate_window(frame.info(), luma_start, luma_end, margin)?;
         DeblockedWindow::extract_bands(frame, luma_start, luma_end, margin)
-            .ok_or(DeblockError::Workspace)
+            .map_err(DeblockError::from)
     }
 
     fn validate_window(
@@ -2211,6 +2211,18 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
     }
 }
 
+impl From<crate::filters::source::StripeCopyError> for DeblockError {
+    fn from(error: crate::filters::source::StripeCopyError) -> Self {
+        match error {
+            crate::filters::source::StripeCopyError::Allocation(plane) => Self::Allocation {
+                plane,
+                context: "deblocked stripe window",
+            },
+            crate::filters::source::StripeCopyError::Geometry => Self::Workspace,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum DeblockError {
     #[error("deblocking MI ({row}, {col}) is not covered by any decoded block")]
@@ -2221,6 +2233,11 @@ pub(crate) enum DeblockError {
     SampleFilter,
     #[error("deblocking workspace sample access went out of bounds")]
     Workspace,
+    #[error("deblocking {context} storage could not be reserved")]
+    Allocation {
+        plane: splot_recon::PlaneId,
+        context: &'static str,
+    },
 }
 
 #[cfg(test)]

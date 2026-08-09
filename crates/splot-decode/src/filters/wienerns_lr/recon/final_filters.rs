@@ -9,9 +9,8 @@ use crate::bitstream::tile_payload::{
     LrUnitRestorationType, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
 };
 use crate::filters::cdef::{CdefFrame, CdefSkipGrid};
-use crate::filters::source::{FramePlane, StripePlane};
+use crate::filters::source::{FramePlane, StripeCopyError, StripePlane};
 use crate::filters::wienerns_lr::WienerNsLrTxSkipLookup;
-use crate::filters::wienerns_lr::diagnostics::wienerns_lr_selectable_transform_record_error_reason;
 use crate::support::reusable_scratch::with_reusable_scratch;
 use splot_core::headers::frame::{FrameHeaderCore, FrameRestorationType, LrPlaneParams};
 use splot_core::span::ByteOffset;
@@ -103,16 +102,24 @@ pub(crate) struct FilteredStripe {
 }
 
 impl<'a, T: ReconSample> LrFrame<'a, T> {
-    fn from_cdef(frame: CdefFrame<'a, T>, active_planes: [bool; 3]) -> Option<Self> {
-        let copy = |plane: &StripePlane| plane.copy_rows(plane.origin_y(), plane.end_y()?);
+    fn from_cdef(
+        frame: CdefFrame<'a, T>,
+        active_planes: [bool; 3],
+    ) -> core::result::Result<Self, StripeCopyError> {
+        let copy = |plane: &StripePlane| {
+            plane.copy_rows(
+                plane.origin_y(),
+                plane.end_y().ok_or(StripeCopyError::Geometry)?,
+            )
+        };
         let post_lr_y = if active_planes[PlaneId::Y.index()] {
-            Some(copy(&frame.filtered_y)?)
+            Some(copy(&frame.filtered_y).map_err(|error| error.for_plane(PlaneId::Y))?)
         } else {
             None
         };
         let post_lr_u = if active_planes[PlaneId::U.index()] {
             match frame.filtered_u.as_ref() {
-                Some(plane) => Some(copy(plane)?),
+                Some(plane) => Some(copy(plane).map_err(|error| error.for_plane(PlaneId::U))?),
                 None => None,
             }
         } else {
@@ -120,13 +127,13 @@ impl<'a, T: ReconSample> LrFrame<'a, T> {
         };
         let post_lr_v = if active_planes[PlaneId::V.index()] {
             match frame.filtered_v.as_ref() {
-                Some(plane) => Some(copy(plane)?),
+                Some(plane) => Some(copy(plane).map_err(|error| error.for_plane(PlaneId::V))?),
                 None => None,
             }
         } else {
             None
         };
-        Some(Self {
+        Ok(Self {
             deblocked_y: frame.deblocked_y,
             deblocked_u: frame.deblocked_u,
             deblocked_v: frame.deblocked_v,
@@ -160,6 +167,22 @@ impl<T> LrSourceScratch<T> {
     }
 }
 
+fn lr_window_error(error: ReconError) -> crate::error::DecodeError {
+    match error {
+        ReconError::WorkspaceAllocationFailed { .. } => error.into(),
+        _ => super::lr_pipeline_state_error(),
+    }
+}
+
+fn lr_plane_window_error(error: &ReconError, plane: PlaneId) -> crate::error::DecodeError {
+    match error {
+        ReconError::WorkspaceAllocationFailed { context, .. } => {
+            ReconError::WorkspaceAllocationFailed { plane, context }.into()
+        }
+        _ => super::lr_pipeline_state_error(),
+    }
+}
+
 fn with_lr_source_scratch<T: ReconSample, R>(f: impl FnOnce(&mut LrSourceScratch<T>) -> R) -> R {
     LR_SOURCE_SCRATCH.with(|slot| {
         let mut scratch = slot
@@ -188,26 +211,18 @@ fn with_lr_output_scratch<T: ReconSample, R>(f: impl FnOnce(&mut Vec<T>) -> R) -
     })
 }
 
-fn luma_lr_filter_error(offset: ByteOffset) -> crate::error::DecodeError {
-    wienerns_lr_selectable_transform_record_error_reason(
-        offset,
-        "unsupported_wienerns_lr_selectable_transform_records_luma_lr_filter",
-    )
-}
-
 fn luma_lr_frame_coeffs(
     plane: &LrPlaneParams,
     num_classes: usize,
-    offset: ByteOffset,
 ) -> Result<Vec<[i16; WIENER_NS_LUMA_COEFFS]>> {
     if num_classes == 0 {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     let Some(bank) = plane.frame_filter_bank.as_ref() else {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     };
     if bank.classes.len() != num_classes {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     let mut coeffs = Vec::with_capacity(num_classes);
     for class in &bank.classes {
@@ -215,7 +230,7 @@ fn luma_lr_frame_coeffs(
             .coeffs
             .as_slice()
             .try_into()
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .map_err(|_| super::lr_pipeline_state_error())?;
         coeffs.push(coeff);
     }
     Ok(coeffs)
@@ -224,42 +239,37 @@ fn luma_lr_frame_coeffs(
 fn luma_lr_unit_coeffs(
     filters: &[WienerNsLrUnitFilter],
     block: &WienerNsLrSourceBlock,
-    offset: ByteOffset,
 ) -> Result<[i16; WIENER_NS_LUMA_COEFFS]> {
-    let filter = lr_unit_filter_for_block(filters, block, offset)?;
+    let filter = lr_unit_filter_for_block(filters, block)?;
     if filter.coeff_count != WIENER_NS_LUMA_COEFFS {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     let mut coeffs = [0i16; WIENER_NS_LUMA_COEFFS];
     coeffs.copy_from_slice(&filter.coeffs[..WIENER_NS_LUMA_COEFFS]);
     Ok(coeffs)
 }
 
-fn chroma_lr_frame_coeffs(
-    plane: &LrPlaneParams,
-    offset: ByteOffset,
-) -> Result<[i16; WIENER_NS_CHROMA_COEFFS]> {
+fn chroma_lr_frame_coeffs(plane: &LrPlaneParams) -> Result<[i16; WIENER_NS_CHROMA_COEFFS]> {
     let Some(bank) = plane.frame_filter_bank.as_ref() else {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     };
     let [class] = bank.classes.as_slice() else {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     };
     class
         .coeffs
         .as_slice()
         .try_into()
-        .map_err(|_| luma_lr_filter_error(offset))
+        .map_err(|_| super::lr_pipeline_state_error())
 }
 
 fn chroma_lr_unit_coeffs(
     filters: &[WienerNsLrUnitFilter],
     block: &WienerNsLrSourceBlock,
-    offset: ByteOffset,
 ) -> Result<[i16; WIENER_NS_CHROMA_COEFFS]> {
-    let filter = lr_unit_filter_for_block(filters, block, offset)?;
+    let filter = lr_unit_filter_for_block(filters, block)?;
     if filter.coeff_count != WIENER_NS_CHROMA_COEFFS {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     Ok(filter.coeffs)
 }
@@ -267,17 +277,16 @@ fn chroma_lr_unit_coeffs(
 fn lr_unit_filter_for_block<'a>(
     filters: &'a [WienerNsLrUnitFilter],
     block: &WienerNsLrSourceBlock,
-    offset: ByteOffset,
 ) -> Result<&'a WienerNsLrUnitFilter> {
     let filter = block
         .unit_filter_index
         .and_then(|index| filters.get(index))
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
+        .ok_or_else(super::lr_pipeline_state_error)?;
     if filter.plane != block.plane
         || filter.unit_row != block.unit_row
         || filter.unit_col != block.unit_col
     {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     Ok(filter)
 }
@@ -327,19 +336,18 @@ fn clipped_lr_source_block(
     plane_height: usize,
     luma_width: usize,
     luma_height: usize,
-    offset: ByteOffset,
 ) -> Result<WienerNsLrSourceBlock> {
     let mut clipped = *block;
     let remaining_width = plane_width
         .checked_sub(block.x)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
+        .ok_or_else(super::lr_pipeline_state_error)?;
     let remaining_height = plane_height
         .checked_sub(block.y)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
+        .ok_or_else(super::lr_pipeline_state_error)?;
     clipped.width = block.width.min(remaining_width);
     clipped.height = block.height.min(remaining_height);
     if clipped.width == 0 || clipped.height == 0 || luma_width == 0 || luma_height == 0 {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
 
     let luma_end_x = luma_width - 1;
@@ -351,7 +359,7 @@ fn clipped_lr_source_block(
         || clipped.luma_start_y > clipped.luma_end_y
         || clipped.luma_stripe_start_y > clipped.luma_stripe_end_y
     {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     Ok(clipped)
 }
@@ -381,7 +389,6 @@ fn lr_block_in_rows(
 fn filter_lr_block_into<T: ReconSample>(
     plane: &mut StripePlane,
     block: &WienerNsLrSourceBlock,
-    offset: ByteOffset,
     filter: impl FnOnce(&mut [T], usize) -> Result<()>,
 ) -> Result<()> {
     if block
@@ -389,20 +396,20 @@ fn filter_lr_block_into<T: ReconSample>(
         .checked_add(block.width)
         .is_none_or(|end_x| end_x > plane.width())
     {
-        return Err(luma_lr_filter_error(offset));
+        return Err(super::lr_pipeline_state_error());
     }
     let rect = splot_recon::PlaneRect::new(block.x, block.y, block.width, block.height)
-        .map_err(|_| luma_lr_filter_error(offset))?;
+        .map_err(|_| super::lr_pipeline_state_error())?;
     let (destination, stride) = plane
         .rect_mut(rect)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
+        .ok_or_else(super::lr_pipeline_state_error)?;
     if let Some(output) = T::from_u16_slice_mut(destination) {
         return filter(output, stride);
     }
     let sample_count = block
         .width
         .checked_mul(block.height)
-        .ok_or_else(|| luma_lr_filter_error(offset))?;
+        .ok_or_else(super::lr_pipeline_state_error)?;
     with_lr_output_scratch(|staged: &mut Vec<T>| {
         staged.clear();
         staged.resize(sample_count, T::default());
@@ -410,13 +417,13 @@ fn filter_lr_block_into<T: ReconSample>(
         for (row, samples) in staged.chunks_exact(block.width).enumerate() {
             let start = row
                 .checked_mul(stride)
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+                .ok_or_else(super::lr_pipeline_state_error)?;
             let end = start
                 .checked_add(block.width)
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+                .ok_or_else(super::lr_pipeline_state_error)?;
             let row = destination
                 .get_mut(start..end)
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+                .ok_or_else(super::lr_pipeline_state_error)?;
             for (slot, sample) in row.iter_mut().zip(samples) {
                 *slot = sample.to_u16();
             }
@@ -512,11 +519,12 @@ impl<'a, T: ReconSample> LrSourceWindow<'a, T> {
         let radius_x = isize::try_from(radius_x).map_err(|_| OVERFLOW_WINDOW)?;
         let radius_y = isize::try_from(radius_y).map_err(|_| OVERFLOW_WINDOW)?;
         if let Some(missing) = sample_count.checked_sub(samples.len()).filter(|n| *n > 0) {
-            samples
-                .try_reserve_exact(missing)
-                .map_err(|_| ReconError::ArithmeticOverflow {
-                    context: "LR source window allocation",
-                })?;
+            samples.try_reserve_exact(missing).map_err(|_| {
+                ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "LR source window",
+                }
+            })?;
             samples.resize(sample_count, T::default());
         }
         for row_index in 0..rows {
@@ -665,7 +673,7 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
         core: &FrameHeaderCore,
         mi_rows: usize,
         mi_cols: usize,
-        offset: ByteOffset,
+        _offset: ByteOffset,
     ) -> Result<Option<CdefSkipGrid>> {
         let Some(cdef) = core.cdef_params.as_ref() else {
             return Ok(None);
@@ -678,25 +686,14 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
             mi_cols,
             &self.filter_records.tx_skip_records,
         )
-        .map_err(|_| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-            )
-        })?;
+        .map_err(|_| super::lr_pipeline_state_error())?;
         let tx_skip_grid = &tx_skip_grid;
         if tx_skip_grid.rows() < mi_rows || tx_skip_grid.cols() < mi_cols {
-            return Err(wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-            ));
+            return Err(super::lr_pipeline_state_error());
         }
-        let count = mi_rows.checked_mul(mi_cols).ok_or_else(|| {
-            wienerns_lr_selectable_transform_record_error_reason(
-                offset,
-                "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-            )
-        })?;
+        let count = mi_rows
+            .checked_mul(mi_cols)
+            .ok_or_else(super::lr_pipeline_state_error)?;
         let mut values = Vec::with_capacity(count);
         for row in 0..mi_rows {
             for col in 0..mi_cols {
@@ -707,29 +704,16 @@ impl<T: ReconSample> WienerNsLrReconSink<T> {
                         row,
                         col,
                     })
-                    .map_err(|_| {
-                        wienerns_lr_selectable_transform_record_error_reason(
-                            offset,
-                            "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-                        )
-                    })?;
+                    .map_err(|_| super::lr_pipeline_state_error())?;
                 if !(0..=1).contains(&skip) {
-                    return Err(wienerns_lr_selectable_transform_record_error_reason(
-                        offset,
-                        "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-                    ));
+                    return Err(super::lr_pipeline_state_error());
                 }
                 values.push(skip != 0);
             }
         }
         CdefSkipGrid::new(mi_rows, mi_cols, values)
             .map(Some)
-            .map_err(|_| {
-                wienerns_lr_selectable_transform_record_error_reason(
-                    offset,
-                    "unsupported_wienerns_lr_selectable_transform_records_cdef_skip_grid",
-                )
-            })
+            .map_err(|_| super::lr_pipeline_state_error())
     }
 }
 
@@ -757,8 +741,15 @@ impl StripeChain<'_> {
             has_blocks(PlaneId::U.index(), cdef.filtered_u.as_ref()),
             has_blocks(PlaneId::V.index(), cdef.filtered_v.as_ref()),
         ];
-        let mut frame =
-            LrFrame::from_cdef(cdef, active_planes).ok_or_else(|| luma_lr_filter_error(offset))?;
+        let mut frame = LrFrame::from_cdef(cdef, active_planes).map_err(|error| match error {
+            StripeCopyError::Allocation(plane) => {
+                crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
+                    plane,
+                    context: "post-LR stripe copy",
+                })
+            }
+            StripeCopyError::Geometry => super::lr_pipeline_state_error(),
+        })?;
         let Some(lr_params) = core.lr_params.as_ref() else {
             return Ok(frame);
         };
@@ -786,10 +777,7 @@ impl StripeChain<'_> {
             ) && plane.frame_filters_on
             {
                 let num_classes = usize::from(plane.num_filter_classes.unwrap_or(1));
-                Some((
-                    luma_lr_frame_coeffs(plane, num_classes, offset)?,
-                    num_classes,
-                ))
+                Some((luma_lr_frame_coeffs(plane, num_classes)?, num_classes))
             } else {
                 None
             };
@@ -797,18 +785,17 @@ impl StripeChain<'_> {
             let end_y = frame
                 .cdef_y
                 .end_y()
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+                .ok_or_else(super::lr_pipeline_state_error)?;
             let post_lr_y = frame
                 .post_lr_y
                 .as_mut()
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+                .ok_or_else(super::lr_pipeline_state_error)?;
             for block in plane_blocks[PlaneId::Y.index()]
                 .iter()
                 .filter_map(|block| lr_block_in_rows(block, start_y, end_y))
             {
                 match block.restoration_type {
                     LrUnitRestorationType::PcWiener => self.compute_pc_wiener_block(
-                        offset,
                         &block,
                         frame.deblocked_y,
                         &frame.cdef_y,
@@ -820,7 +807,6 @@ impl StripeChain<'_> {
                     LrUnitRestorationType::WienerNonsep => {
                         if let Some((coeffs, num_classes)) = frame_coeffs.as_ref() {
                             self.compute_luma_lr_block(
-                                offset,
                                 &block,
                                 frame.deblocked_y,
                                 &frame.cdef_y,
@@ -832,9 +818,8 @@ impl StripeChain<'_> {
                                 post_lr_y,
                             )?;
                         } else {
-                            let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, &block, offset)?];
+                            let coeffs = [luma_lr_unit_coeffs(lr_unit_filters, &block)?];
                             self.compute_luma_lr_block(
-                                offset,
                                 &block,
                                 frame.deblocked_y,
                                 &frame.cdef_y,
@@ -847,7 +832,7 @@ impl StripeChain<'_> {
                             )?;
                         }
                     }
-                    LrUnitRestorationType::None => return Err(luma_lr_filter_error(offset)),
+                    LrUnitRestorationType::None => return Err(super::lr_pipeline_state_error()),
                 }
             }
         }
@@ -863,7 +848,7 @@ impl StripeChain<'_> {
                 continue;
             }
             let frame_coeffs = if plane.frame_filters_on {
-                Some(chroma_lr_frame_coeffs(plane, offset)?)
+                Some(chroma_lr_frame_coeffs(plane)?)
             } else {
                 None
             };
@@ -878,24 +863,21 @@ impl StripeChain<'_> {
                     frame.cdef_v.as_ref(),
                     frame.post_lr_v.as_mut(),
                 ),
-                PlaneId::Y => return Err(luma_lr_filter_error(offset)),
+                PlaneId::Y => return Err(super::lr_pipeline_state_error()),
             };
-            let curr = curr.ok_or_else(|| luma_lr_filter_error(offset))?;
-            let cdef = cdef.ok_or_else(|| luma_lr_filter_error(offset))?;
-            let post_lr = post_lr.ok_or_else(|| luma_lr_filter_error(offset))?;
+            let curr = curr.ok_or_else(super::lr_pipeline_state_error)?;
+            let cdef = cdef.ok_or_else(super::lr_pipeline_state_error)?;
+            let post_lr = post_lr.ok_or_else(super::lr_pipeline_state_error)?;
             let start_y = post_lr.origin_y();
-            let end_y = post_lr
-                .end_y()
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+            let end_y = post_lr.end_y().ok_or_else(super::lr_pipeline_state_error)?;
             for block in plane_blocks[plane_id.index()]
                 .iter()
                 .filter_map(|block| lr_block_in_rows(block, start_y, end_y))
             {
                 if block.restoration_type != LrUnitRestorationType::WienerNonsep {
-                    return Err(luma_lr_filter_error(offset));
+                    return Err(super::lr_pipeline_state_error());
                 }
                 self.compute_chroma_lr_block(
-                    offset,
                     plane_id,
                     &block,
                     lr_unit_filters,
@@ -916,7 +898,6 @@ impl StripeChain<'_> {
     #[allow(clippy::too_many_arguments)]
     fn compute_pc_wiener_block<T: ReconSample>(
         &self,
-        offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
@@ -931,18 +912,17 @@ impl StripeChain<'_> {
             self.luma_height,
             self.luma_width,
             self.luma_height,
-            offset,
         )?;
         let sample_count = block
             .width
             .checked_mul(block.height)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
+            .ok_or_else(super::lr_pipeline_state_error)?;
         let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 0, 0);
         let block_x = usize_to_isize_recon(block.x, "PC-Wiener block x")
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "PC-Wiener block y")
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        filter_lr_block_into(post_lr, &block, offset, |output, output_stride| {
+            .map_err(|_| super::lr_pipeline_state_error())?;
+        filter_lr_block_into(post_lr, &block, |output, output_stride| {
             with_lr_source_scratch(|scratch| {
                 let LrSourceScratch {
                     primary,
@@ -966,9 +946,8 @@ impl StripeChain<'_> {
                         (radius, radius)
                     },
                 )
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(lr_window_error)?;
                 let subclass_map = self.luma_lr_cell_subclasses(
-                    offset,
                     &block,
                     &window,
                     qindex,
@@ -987,19 +966,19 @@ impl StripeChain<'_> {
                     subclasses: subclass_map,
                 };
                 let tap_radius = isize::try_from(PC_WIENER_FILTER_TAP_RADIUS)
-                    .map_err(|_| luma_lr_filter_error(offset))?;
+                    .map_err(|_| super::lr_pipeline_state_error())?;
                 let (padded, padded_stride) = window
                     .tail_from(
                         block_x.saturating_sub(tap_radius),
                         block_y.saturating_sub(tap_radius),
                     )
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let padded_source =
                     PcWienerPaddedSource::new(padded, padded_stride, block.width, block.height)
-                        .map_err(|_| luma_lr_filter_error(offset))?;
+                        .map_err(lr_window_error)?;
                 let timer = crate::timing::start();
                 pc_wiener_filter_block_padded(output, &params, &padded_source)
-                    .map_err(|_| luma_lr_filter_error(offset))?;
+                    .map_err(lr_window_error)?;
                 crate::timing::accumulate(crate::timing::Phase::PcWienerFilter, timer);
                 self.preserve_lossless_lr_samples(
                     PlaneId::Y,
@@ -1007,7 +986,6 @@ impl StripeChain<'_> {
                     curr_luma,
                     output,
                     output_stride,
-                    offset,
                 )
             })
         })
@@ -1024,7 +1002,6 @@ impl StripeChain<'_> {
     #[allow(clippy::too_many_arguments)]
     fn compute_chroma_lr_block<T: ReconSample>(
         &self,
-        offset: ByteOffset,
         plane_id: PlaneId,
         block: &WienerNsLrSourceBlock,
         lr_unit_filters: &[WienerNsLrUnitFilter],
@@ -1045,11 +1022,10 @@ impl StripeChain<'_> {
             plane_height,
             self.luma_width,
             self.luma_height,
-            offset,
         )?;
         let coeffs = match frame_coeffs {
             Some(coeffs) => *coeffs,
-            None => chroma_lr_unit_coeffs(lr_unit_filters, &block, offset)?,
+            None => chroma_lr_unit_coeffs(lr_unit_filters, &block)?,
         };
         let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(
             &block,
@@ -1057,10 +1033,10 @@ impl StripeChain<'_> {
             sub_y as u8,
         );
         let block_x = usize_to_isize_recon(block.x, "chroma LR block x")
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "chroma LR block y")
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        filter_lr_block_into(post_lr, &block, offset, |output, output_stride| {
+            .map_err(|_| super::lr_pipeline_state_error())?;
+        filter_lr_block_into(post_lr, &block, |output, output_stride| {
             let params = WienerNsChromaFilter {
                 x: block.x,
                 y: block.y,
@@ -1090,15 +1066,15 @@ impl StripeChain<'_> {
                     block.height,
                     (WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAP_RADIUS),
                 )
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(lr_window_error)?;
                 let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
                 let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
                 let luma_block_x = block_x
                     .checked_mul(1 << sub_x)
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let luma_block_y = block_y
                     .checked_mul(1 << sub_y)
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let luma_window = LrSourceWindow::<T>::materialize(
                     &mut scratch.secondary,
                     PlaneId::Y,
@@ -1111,27 +1087,27 @@ impl StripeChain<'_> {
                     block
                         .width
                         .checked_shl(sub_x as u32)
-                        .ok_or_else(|| luma_lr_filter_error(offset))?,
+                        .ok_or_else(super::lr_pipeline_state_error)?,
                     block
                         .height
                         .checked_shl(sub_y as u32)
-                        .ok_or_else(|| luma_lr_filter_error(offset))?,
+                        .ok_or_else(super::lr_pipeline_state_error)?,
                     (luma_radius_x, luma_radius_y),
                 )
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(lr_window_error)?;
                 let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
                 let (chroma_padded, chroma_stride) = chroma_window
                     .tail_from(
                         block_x.saturating_sub(radius),
                         block_y.saturating_sub(radius),
                     )
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let (luma_padded, luma_stride) = luma_window
                     .tail_from(
                         luma_block_x.saturating_sub(luma_radius_x as isize),
                         luma_block_y.saturating_sub(luma_radius_y as isize),
                     )
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let padded_source = WienerNsChromaPaddedSource::new(
                     chroma_padded,
                     chroma_stride,
@@ -1141,7 +1117,7 @@ impl StripeChain<'_> {
                     block.height,
                     (sub_x as u8, sub_y as u8),
                 )
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(|error| lr_plane_window_error(&error, plane_id))?;
                 with_wiener_ns_chroma_scratch(|scratch| {
                     wiener_ns_filter_chroma_block_padded_into(
                         output,
@@ -1150,23 +1126,15 @@ impl StripeChain<'_> {
                         scratch,
                     )
                 })
-                .map_err(|_| luma_lr_filter_error(offset))
+                .map_err(|error| lr_plane_window_error(&error, plane_id))
             })?;
-            self.preserve_lossless_lr_samples(
-                plane_id,
-                &block,
-                curr_chroma,
-                output,
-                output_stride,
-                offset,
-            )
+            self.preserve_lossless_lr_samples(plane_id, &block, curr_chroma, output, output_stride)
         })
     }
 
     #[allow(clippy::too_many_arguments)]
     fn compute_luma_lr_block<T: ReconSample>(
         &self,
-        offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
         curr_luma: FramePlane<'_, T>,
         cdef_luma: &StripePlane,
@@ -1183,18 +1151,17 @@ impl StripeChain<'_> {
             self.luma_height,
             self.luma_width,
             self.luma_height,
-            offset,
         )?;
         let sample_count = block
             .width
             .checked_mul(block.height)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
+            .ok_or_else(super::lr_pipeline_state_error)?;
         let bounds = crate::filters::wienerns_lr::wienerns_lr_source_block_bounds(&block, 0, 0);
         let block_x = usize_to_isize_recon(block.x, "luma LR block x")
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .map_err(|_| super::lr_pipeline_state_error())?;
         let block_y = usize_to_isize_recon(block.y, "luma LR block y")
-            .map_err(|_| luma_lr_filter_error(offset))?;
-        filter_lr_block_into(post_lr, &block, offset, |output, output_stride| {
+            .map_err(|_| super::lr_pipeline_state_error())?;
+        filter_lr_block_into(post_lr, &block, |output, output_stride| {
             with_lr_source_scratch(|scratch| -> Result<()> {
                 let LrSourceScratch {
                     primary,
@@ -1217,10 +1184,9 @@ impl StripeChain<'_> {
                         (radius, radius)
                     },
                 )
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(lr_window_error)?;
                 let cell_subclass_map = if num_classes > 1 {
                     Some(self.luma_lr_cell_subclasses(
-                        offset,
                         &block,
                         &window,
                         qindex,
@@ -1241,16 +1207,16 @@ impl StripeChain<'_> {
                     subclasses: None,
                 };
                 let tap_radius = isize::try_from(WIENER_NS_LUMA_TAP_RADIUS)
-                    .map_err(|_| luma_lr_filter_error(offset))?;
+                    .map_err(|_| super::lr_pipeline_state_error())?;
                 let (padded, padded_stride) = window
                     .tail_from(
                         block_x.saturating_sub(tap_radius),
                         block_y.saturating_sub(tap_radius),
                     )
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let padded_source =
                     WienerNsLumaPaddedSource::new(padded, padded_stride, block.width, block.height)
-                        .map_err(|_| luma_lr_filter_error(offset))?;
+                        .map_err(lr_window_error)?;
                 let timer = crate::timing::start();
                 with_wiener_ns_luma_scratch(sample_count, |scratch| {
                     if let Some(cell_subclasses) = cell_subclass_map {
@@ -1270,18 +1236,11 @@ impl StripeChain<'_> {
                         )
                     }
                 })
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(lr_window_error)?;
                 crate::timing::accumulate(crate::timing::Phase::WienerNsLuma, timer);
                 Ok(())
             })?;
-            self.preserve_lossless_lr_samples(
-                PlaneId::Y,
-                &block,
-                curr_luma,
-                output,
-                output_stride,
-                offset,
-            )
+            self.preserve_lossless_lr_samples(PlaneId::Y, &block, curr_luma, output, output_stride)
         })
     }
 
@@ -1293,7 +1252,6 @@ impl StripeChain<'_> {
         curr_plane: FramePlane<'_, T>,
         output: &mut [T],
         output_stride: usize,
-        offset: ByteOffset,
     ) -> Result<()> {
         let Some(lossless_grid) = self.lossless_grid else {
             return Ok(());
@@ -1304,24 +1262,24 @@ impl StripeChain<'_> {
                 let x = block
                     .x
                     .checked_add(col)
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let y = block
                     .y
                     .checked_add(row)
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 if !lossless_grid.plane_sample_lossless(plane_id, x, y, sub_x, sub_y) {
                     continue;
                 }
                 let output_index = row
                     .checked_mul(output_stride)
                     .and_then(|start| start.checked_add(col))
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let sample = *curr_plane
                     .row(y)
                     .and_then(|row| row.get(x))
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 let Some(slot) = output.get_mut(output_index) else {
-                    return Err(luma_lr_filter_error(offset));
+                    return Err(super::lr_pipeline_state_error());
                 };
                 *slot = sample;
             }
@@ -1342,7 +1300,6 @@ impl StripeChain<'_> {
     #[allow(clippy::too_many_arguments)]
     fn luma_lr_cell_subclasses<'a, T: ReconSample>(
         &self,
-        offset: ByteOffset,
         block: &WienerNsLrSourceBlock,
         window: &LrSourceWindow<'_, T>,
         qindex: u32,
@@ -1357,28 +1314,31 @@ impl StripeChain<'_> {
             != block
                 .width
                 .checked_mul(block.height)
-                .ok_or_else(|| luma_lr_filter_error(offset))?
+                .ok_or_else(super::lr_pipeline_state_error)?
         {
-            return Err(luma_lr_filter_error(offset));
+            return Err(super::lr_pipeline_state_error());
         }
         let cell_cols = block.width.div_ceil(MI_SIZE).max(1);
         let cell_rows = block.height.div_ceil(MI_SIZE).max(1);
         let Some(tx_skip_grid) = self.tx_skip_grid else {
-            return Err(luma_lr_filter_error(offset));
+            return Err(super::lr_pipeline_state_error());
         };
         let tile_start_y = mi_to_luma_start_recon(block.tile_mi_row_start, "luma LR tile start y")
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .map_err(|_| super::lr_pipeline_state_error())?;
         let tile_end_y = mi_to_luma_end_recon(block.tile_mi_row_end, "luma LR tile end y")
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .map_err(|_| super::lr_pipeline_state_error())?;
         let cell_count = cell_cols
             .checked_mul(cell_rows)
-            .ok_or_else(|| luma_lr_filter_error(offset))?;
-        cell_subclasses
-            .try_reserve_exact(cell_count)
-            .map_err(|_| luma_lr_filter_error(offset))?;
+            .ok_or_else(super::lr_pipeline_state_error)?;
+        cell_subclasses.try_reserve_exact(cell_count).map_err(|_| {
+            crate::error::DecodeError::from(ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "PC-Wiener cell subclasses",
+            })
+        })?;
         cell_subclasses.resize(cell_count, 0);
-        let subclass_table = pc_wiener_subclass_table(num_classes, filter_set_index)
-            .map_err(|_| luma_lr_filter_error(offset))?;
+        let subclass_table =
+            pc_wiener_subclass_table(num_classes, filter_set_index).map_err(lr_window_error)?;
         let padded_source = PcWienerClassifyPaddedSource::new_prevalidated(
             window.samples,
             window.stride,
@@ -1386,32 +1346,32 @@ impl StripeChain<'_> {
             window.origin_y,
             self.bit_depth,
         )
-        .map_err(|_| luma_lr_filter_error(offset))?;
+        .map_err(lr_window_error)?;
         let mut group_start = 0;
         while group_start < cell_cols {
             let class_x = block
                 .x
                 .checked_add(group_start.saturating_mul(MI_SIZE))
-                .ok_or_else(|| luma_lr_filter_error(offset))?;
+                .ok_or_else(super::lr_pipeline_state_error)?;
             let block_start_x = (class_x >> 6) << 6;
             let mut group_end = group_start + 1;
             while group_end < cell_cols {
                 let next_x = block
                     .x
                     .checked_add(group_end.saturating_mul(MI_SIZE))
-                    .ok_or_else(|| luma_lr_filter_error(offset))?;
+                    .ok_or_else(super::lr_pipeline_state_error)?;
                 if ((next_x >> 6) << 6) != block_start_x {
                     break;
                 }
                 group_end += 1;
             }
             let block_end_x = super::super::pc_wiener_block_end_x(block, block_start_x)
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(|_| super::lr_pipeline_state_error())?;
             let params = PcWienerClassifyParams {
                 x: usize_to_isize_recon(class_x, "luma LR PC-Wiener x")
-                    .map_err(|_| luma_lr_filter_error(offset))?,
+                    .map_err(|_| super::lr_pipeline_state_error())?,
                 y: usize_to_isize_recon(block.y, "luma LR PC-Wiener y")
-                    .map_err(|_| luma_lr_filter_error(offset))?,
+                    .map_err(|_| super::lr_pipeline_state_error())?,
                 bit_depth: self.bit_depth,
                 base_q_idx: qindex,
                 block_start_x,
@@ -1435,26 +1395,26 @@ impl StripeChain<'_> {
                     },
                     scratch,
                 )
-                .map_err(|_| luma_lr_filter_error(offset))?;
+                .map_err(lr_window_error)?;
                 for cell_row in 0..cell_rows {
                     let class_start = cell_row
                         .checked_mul(group_cols)
-                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let class_end = class_start
                         .checked_add(group_cols)
-                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let cell_start = cell_row
                         .checked_mul(cell_cols)
                         .and_then(|start| start.checked_add(group_start))
-                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let cell_end = cell_start
                         .checked_add(group_cols)
-                        .ok_or_else(|| luma_lr_filter_error(offset))?;
+                        .ok_or_else(super::lr_pipeline_state_error)?;
                     let Some(classes) = classes.get(class_start..class_end) else {
-                        return Err(luma_lr_filter_error(offset));
+                        return Err(super::lr_pipeline_state_error());
                     };
                     let Some(cells) = cell_subclasses.get_mut(cell_start..cell_end) else {
-                        return Err(luma_lr_filter_error(offset));
+                        return Err(super::lr_pipeline_state_error());
                     };
                     for (cell, &class) in cells.iter_mut().zip(classes) {
                         *cell = usize::from(subclass_table[usize::from(class)]);

@@ -51,12 +51,14 @@ impl LosslessBlockGrid {
                     mi_rows,
                     mi_cols,
                     chroma_blocks.iter_plane(0).map(|(_, block)| block),
-                )?,
+                )
+                .map_err(|error| error.for_plane(splot_recon::PlaneId::U))?,
                 lossless_cells(
                     mi_rows,
                     mi_cols,
                     chroma_blocks.iter_plane(1).map(|(_, block)| block),
-                )?,
+                )
+                .map_err(|error| error.for_plane(splot_recon::PlaneId::V))?,
             ],
         })
     }
@@ -137,7 +139,7 @@ fn lossless_cells<'a>(
     let mut cells = Vec::new();
     cells
         .try_reserve_exact(count)
-        .map_err(|_| LosslessGridError::Geometry)?;
+        .map_err(|_| LosslessGridError::Allocation(splot_recon::PlaneId::Y))?;
     cells.resize(count, false);
 
     for block in blocks {
@@ -198,6 +200,17 @@ fn cell(cells: &[bool], mi_rows: usize, mi_cols: usize, row: usize, col: usize) 
 pub(crate) enum LosslessGridError {
     #[error("lossless grid geometry is inconsistent")]
     Geometry,
+    #[error("lossless grid storage could not be reserved")]
+    Allocation(splot_recon::PlaneId),
+}
+
+impl LosslessGridError {
+    const fn for_plane(self, plane: splot_recon::PlaneId) -> Self {
+        match self {
+            Self::Allocation(_) => Self::Allocation(plane),
+            Self::Geometry => Self::Geometry,
+        }
+    }
 }
 
 #[cfg(test)]

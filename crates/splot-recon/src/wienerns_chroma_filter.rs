@@ -12,6 +12,7 @@
 //!
 //! Feature tracking: `RECON-WIENERNS-CHROMA-FILTER-PRIMITIVE`.
 
+use crate::PlaneId;
 use crate::intra_dc_math::validate_sample_type;
 use crate::math::round2_i32;
 use crate::workspace::u16_samples_exceed;
@@ -343,8 +344,9 @@ pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
     scratch
         .luma_ds
         .try_reserve(ds_len)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "Wiener NS chroma downsample scratch allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::U,
+            context: "Wiener NS chroma downsample scratch",
         })?;
     scratch.luma_ds.resize(ds_len, 0);
     downsample_luma(
@@ -361,8 +363,9 @@ pub fn wiener_ns_filter_chroma_block_padded_into<T: ReconSample>(
     scratch
         .filtered
         .try_reserve(context.sample_count)
-        .map_err(|_| ReconError::ArithmeticOverflow {
-            context: "Wiener NS chroma filtered scratch allocation",
+        .map_err(|_| ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::U,
+            context: "Wiener NS chroma filtered scratch",
         })?;
     scratch.filtered.resize(context.sample_count, T::default());
     if let (Some(chroma), Some(filtered)) = (

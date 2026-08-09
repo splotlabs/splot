@@ -47,10 +47,10 @@ fn lr_unit_filter_lookup_uses_the_recorded_offset() {
     let filters = [matching, other];
 
     source.unit_filter_index = Some(1);
-    assert!(lr_unit_filter_for_block(&filters, &source, ByteOffset::new(0)).is_err());
+    assert!(lr_unit_filter_for_block(&filters, &source).is_err());
     source.unit_filter_index = Some(0);
     assert_eq!(
-        lr_unit_filter_for_block(&filters, &source, ByteOffset::new(0)).unwrap(),
+        lr_unit_filter_for_block(&filters, &source).unwrap(),
         &matching
     );
 }
@@ -973,7 +973,7 @@ fn lr_block_output_lands_in_its_rectangle_for_both_storage_widths() {
         let mut source = block(0, 2, 5);
         source.width = 3;
         source.height = 2;
-        filter_lr_block_into::<T>(&mut plane, &source, ByteOffset::new(0), |output, stride| {
+        filter_lr_block_into::<T>(&mut plane, &source, |output, stride| {
             for row in 0..source.height {
                 for col in 0..source.width {
                     output[row * stride + col] =
@@ -1002,10 +1002,7 @@ fn lr_block_output_refuses_a_rectangle_wider_than_the_stripe() {
     let mut source = block(0, 6, 5);
     source.width = 3;
     source.height = 1;
-    assert!(
-        filter_lr_block_into::<u16>(&mut plane, &source, ByteOffset::new(0), |_, _| Ok(()))
-            .is_err()
-    );
+    assert!(filter_lr_block_into::<u16>(&mut plane, &source, |_, _| Ok(())).is_err());
     assert!(plane.samples().iter().all(|sample| *sample == 9));
 }
 
