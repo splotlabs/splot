@@ -39,7 +39,7 @@ pub(super) fn read_reference_mode(
     );
     let mode = cdfs
         .read_block_symbol_trace(TileCdfSelector::CompMode { ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     match mode {
         0 => Ok(false),
@@ -577,7 +577,7 @@ fn read_compound_motion_mode_syntax(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     Ok(use_local_warp != 0)
 }
@@ -1153,7 +1153,7 @@ fn read_compound_use_optflow_syntax(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_optflow.get() != 0)
 }
 
@@ -1182,7 +1182,7 @@ fn read_compound_use_refinemv_syntax(
     }
     let use_refinemv = cdfs
         .read_block_symbol_trace(TileCdfSelector::UseRefinemv { ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_refinemv.get() != 0)
 }
 
@@ -1677,7 +1677,7 @@ fn read_compound_use_amvd_syntax(
     };
     let use_amvd = cdfs
         .read_block_symbol_trace(TileCdfSelector::UseAmvd { index, ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_amvd.get() != 0)
 }
 
@@ -1698,7 +1698,7 @@ fn read_compound_jmvd_scale_mode_syntax(
     };
     cdfs.read_block_symbol_trace(selector, symbols)
         .map(splot_core::symbol::Symbol::get)
-        .map_err(|_| symbol_read_error(tile_offset))
+        .map_err(|error| symbol_read_error(error, tile_offset))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1780,7 +1780,7 @@ fn read_compound_blend_syntax(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     if comp_group_idx == 0 {
         return Ok(average_blend);
@@ -1790,7 +1790,7 @@ fn read_compound_blend_syntax(
     } else {
         match cdfs
             .read_block_symbol_trace(TileCdfSelector::CompoundType, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get()
         {
             0 => MaskedCompoundType::Wedge,
@@ -1799,17 +1799,16 @@ fn read_compound_blend_syntax(
     };
     match compound_type {
         MaskedCompoundType::DiffWeighted => {
-            let mask_type = symbols
-                .read_literal(1)
-                .map_err(|_| symbol_read_error(tile_offset))?
-                != 0;
+            let mask_type = symbols.read_literal(1).map_err(|error| {
+                symbol_read_error(BlockSymbolTraceReadError::Symbol(error), tile_offset)
+            })? != 0;
             Ok(mc::CompoundBlend::DiffWeighted { inverse: mask_type })
         }
         MaskedCompoundType::Wedge => {
             let index = read_wedge_mode_syntax(cdfs, symbols, tile_offset)?;
-            let sign = symbols
-                .read_bool()
-                .map_err(|_| symbol_read_error(tile_offset))?;
+            let sign = symbols.read_bool().map_err(|error| {
+                symbol_read_error(BlockSymbolTraceReadError::Symbol(error), tile_offset)
+            })?;
             Ok(mc::CompoundBlend::Wedge { index, sign })
         }
     }
@@ -1853,7 +1852,7 @@ fn read_compound_cwp_syntax<T: ReconSample>(
     for idx in 0..CWP_WEIGHTING_FACTOR[0].len() - 1 {
         let symbol = cdfs
             .read_block_symbol_trace(TileCdfSelector::CwpIdx { idx }, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get();
         coding_idx = idx + usize::from(symbol != 0);
         if symbol == 0 {

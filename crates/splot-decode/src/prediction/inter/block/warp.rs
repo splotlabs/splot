@@ -26,7 +26,7 @@ pub(crate) fn read_warp_inter_mode_syntax(
     }
     let is_warp = cdfs
         .read_block_symbol_trace(TileCdfSelector::IsWarp { ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     if is_warp.get() == 0 {
         return Ok(None);
     }
@@ -35,7 +35,7 @@ pub(crate) fn read_warp_inter_mode_syntax(
     }
     let warp_mv = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpMv, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(Some(if warp_mv.get() == 0 {
         WarpInterMode::WarpNewmv
     } else {
@@ -59,7 +59,7 @@ pub(crate) fn read_warp_newmv_motion_mode_syntax(
     let mut read_flag = |selector: TileCdfSelector| -> Result<bool> {
         let flag = cdfs
             .read_block_symbol_trace(selector, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?;
+            .map_err(|error| symbol_read_error(error, tile_offset))?;
         Ok(flag.get() != 0)
     };
     if warp_sample_found
@@ -572,7 +572,7 @@ fn read_warpmv_with_mvd_flag(
 ) -> Result<bool> {
     let flag = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpWithMvd, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     Ok(flag != 0)
 }
@@ -590,7 +590,7 @@ fn read_warp_ref_idx(
     for bit_idx in 0..max_num_warp_candidates.saturating_sub(1) {
         let warp_idx = cdfs
             .read_block_symbol_trace(TileCdfSelector::WarpIdx { ctx: bit_idx }, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get();
         ref_warp_idx = bit_idx + usize::from(warp_idx);
         if warp_idx == 0 {
@@ -661,7 +661,7 @@ pub(super) fn read_active_inter_intra_tail(
 ) -> Result<WarpInterIntraSyntax> {
     let mode = match cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntraMode { bsize_group }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get()
     {
         0 => InterIntraMode::Dc,
@@ -673,7 +673,7 @@ pub(super) fn read_active_inter_intra_tail(
     let use_wedge = if WEDGE_USED_BY_BSIZE.get(b_size).copied().unwrap_or(false) {
         let symbol = cdfs
             .read_block_symbol_trace(TileCdfSelector::WedgeInterIntra, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get();
         symbol != 0
     } else {
@@ -708,7 +708,7 @@ pub(crate) fn read_warp_inter_intra_syntax(
     let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     let enabled = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpInterIntra { bsize_group }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     if enabled == 0 {
         return Ok(WarpInterIntraSyntax::default());
@@ -724,7 +724,7 @@ pub(crate) fn read_wedge_mode_syntax(
 ) -> Result<u8> {
     let quad = cdfs
         .read_block_symbol_trace(TileCdfSelector::WedgeQuad, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     let angle_in_quad = cdfs
         .read_block_symbol_trace(
@@ -733,7 +733,7 @@ pub(crate) fn read_wedge_mode_syntax(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     let angle = quad
         .checked_mul(QUAD_WEDGE_ANGLES)
@@ -743,12 +743,12 @@ pub(crate) fn read_wedge_mode_syntax(
     let dist = if use_dist2 {
         let symbol = cdfs
             .read_block_symbol_trace(TileCdfSelector::WedgeDist2, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get();
         symbol + 1
     } else {
         cdfs.read_block_symbol_trace(TileCdfSelector::WedgeDist1, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get()
     };
     let index = WEDGE_ANGLE_DIST_TO_INDEX[usize::from(angle)][usize::from(dist)];
@@ -779,7 +779,7 @@ fn read_warp_delta_syntax(
             TileCdfSelector::WarpPrecision { block_size: b_size },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     let high = precision_idx != 0;
     let mut deltas = [0i32; 4];
@@ -859,12 +859,12 @@ fn read_warp_delta_param(
     let index_type = param.index_type();
     let mut value = cdfs
         .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamLow { index_type }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     if high_precision && value == WARP_DELTA_NUM_SYMBOLS_LOW - 1 {
         let high = cdfs
             .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamHigh { index_type }, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get();
         value = value
             .checked_add(high)
@@ -874,7 +874,7 @@ fn read_warp_delta_param(
     if signed != 0 {
         let sign = cdfs
             .read_block_symbol_trace(TileCdfSelector::WarpDeltaParamSign, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get();
         if sign != 0 {
             signed = -signed;

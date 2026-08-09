@@ -40,15 +40,15 @@ use super::{
     unsupported_at,
 };
 use crate::bitstream::tile_payload::{
-    BlockSize, CoeffContextReset, DecodeBlockFrontier, DecodeTileWorkUnit, DecodedLeafPublication,
-    FrameCdfSubset, FrameQmSegmentScope, FrameQuantizerSnapshot, FrameSegmentIdMap,
-    GeneralIntraLeafMode, GeneralIntraMultiblockCursor, GeneralIntraMultiblockError,
-    GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock, SavedCdfSubset, TileBlockDecodedState,
-    TileCdfSelector, TileCdfSubset, TileCoeffContextState, TileFscModeState,
-    TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
-    TransformToolResidualPolicy, chroma_subsampling, current_frame_qm_segment_id,
-    decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
-    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,
+    DecodeTileWorkUnit, DecodedLeafPublication, FrameCdfSubset, FrameQmSegmentScope,
+    FrameQuantizerSnapshot, FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
+    GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
+    SavedCdfSubset, TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
+    TileFscModeState, TileIntraJointModeState, TilePartitionTraversalError, TileSegmentIdState,
+    TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
+    current_frame_qm_segment_id, decode_general_intra_plane_coeffs, frame_mi_dimensions,
+    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -786,7 +786,7 @@ fn read_segment_id(
     let cdfs = work_unit.cdf_mut().tile_cdfs_mut();
     let seg_id_ext_flag = if enable_ext_seg {
         cdfs.read_block_symbol_trace(TileCdfSelector::SegIdExtFlag { ctx }, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get()
     } else {
         0
@@ -794,7 +794,7 @@ fn read_segment_id(
     let ext = seg_id_ext_flag != 0;
     let raw = cdfs
         .read_block_symbol_trace(TileCdfSelector::SegmentId { ctx, ext }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get();
     let coded = i32::from(raw) + if ext { 8 } else { 0 };
     let segment_id = neg_deinterleave(
@@ -865,7 +865,7 @@ fn read_inter_segment_id(
         .cdf_mut()
         .tile_cdfs_mut()
         .read_block_symbol_trace(TileCdfSelector::SegmentIdPredicted { ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get()
         != 0;
     let segment_id = if predicted {
@@ -1165,7 +1165,7 @@ fn decode_block<T: ReconSample>(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get()
     };
     if is_inter == 0 {
@@ -1426,7 +1426,7 @@ fn decode_block<T: ReconSample>(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get()
     };
     if !frontier.is_chroma_part() && !seg_pre_skip {
@@ -1776,7 +1776,7 @@ fn decode_block<T: ReconSample>(
     } else if tip_ref {
         if cdfs
             .read_block_symbol_trace(TileCdfSelector::TipPredMode, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get()
             == 0
         {
@@ -1791,7 +1791,7 @@ fn decode_block<T: ReconSample>(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get()
     };
     let use_amvd = read_use_amvd_syntax(
@@ -2179,7 +2179,7 @@ fn read_inter_intra_syntax_enabled(
     let bsize_group = SIZE_GROUP_LOOKUP[b_size];
     let inter_intra = cdfs
         .read_block_symbol_trace(TileCdfSelector::InterIntra { bsize_group }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     if inter_intra.get() == 0 {
         return Ok(WarpInterIntraSyntax::default());
     }
@@ -2219,7 +2219,7 @@ fn read_bawp_syntax(
 
     let use_bawp = cdfs
         .read_block_symbol_trace(TileCdfSelector::UseBawp, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     if use_bawp.get() == 0 {
         return Ok(BawpSyntax::default());
     }
@@ -2227,11 +2227,11 @@ fn read_bawp_syntax(
     let list_index = explicit_bawp_context(input.single_mode, input.use_amvd);
     let explicit_bawp = cdfs
         .read_block_symbol_trace(TileCdfSelector::ExplicitBawp { ctx: list_index }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     let explicit = explicit_bawp.get() != 0;
     let explicit_scale_positive = if explicit {
         cdfs.read_block_symbol_trace(TileCdfSelector::ExplicitBawpScale, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get()
             != 0
     } else {
@@ -2239,7 +2239,7 @@ fn read_bawp_syntax(
     };
     let chroma = if input.has_chroma {
         cdfs.read_block_symbol_trace(TileCdfSelector::UseBawpChroma, symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?
+            .map_err(|error| symbol_read_error(error, tile_offset))?
             .get()
             != 0
     } else {
@@ -2303,13 +2303,23 @@ fn single_inter_needs_interp_filter(n4w: usize, n4h: usize, single_mode: u8) -> 
     !(n4w >= 2 && n4h >= 2 && single_mode == SINGLE_MODE_GLOBALMV)
 }
 
-fn symbol_read_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_missing!(
-        "inter_block_mode_parse",
-        tile_offset,
-        "inter.block.mode_info_symbols",
-        SPEC_MODE_INFO
-    )
+fn symbol_read_error(
+    error: BlockSymbolTraceReadError,
+    tile_offset: ByteOffset,
+) -> crate::error::DecodeError {
+    match error {
+        BlockSymbolTraceReadError::Cdf(_) => symbol_read_internal_error(tile_offset),
+        BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. }) => {
+            symbol_read_internal_error(tile_offset)
+        }
+        BlockSymbolTraceReadError::Symbol(error) => {
+            crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
+        }
+    }
+}
+
+fn symbol_read_internal_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
+    inter_internal!("inter_block_mode_parse", tile_offset)
 }
 
 fn map_inter_multiblock_error(

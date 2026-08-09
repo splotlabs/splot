@@ -18,6 +18,7 @@ use super::warp::inter_mv_read_config;
 use super::{
     DecodeBlockFrontier, INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE,
     INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET, TileCdfSelector, TileCdfSubset, symbol_read_error,
+    symbol_read_internal_error,
 };
 use crate::Result;
 
@@ -40,7 +41,7 @@ pub(super) fn resolve_interp_filter(
             }
             let symbol = cdfs
                 .read_block_symbol_trace(TileCdfSelector::InterpFilter { ctx }, symbols)
-                .map_err(|_| symbol_read_error(tile_offset))?;
+                .map_err(|error| symbol_read_error(error, tile_offset))?;
             Ok(interp_filter_from_symbol(symbol.get()))
         }
         _ => Err(crate::error::DecodeHeaderStateError::InvalidInterpolationFilter.into()),
@@ -105,7 +106,7 @@ pub(super) fn read_drl_idx_from(
                 },
                 symbols,
             )
-            .map_err(|_| symbol_read_error(tile_offset))?;
+            .map_err(|error| symbol_read_error(error, tile_offset))?;
         if drl_mode.get() == 0 {
             return Ok(idx);
         }
@@ -135,7 +136,7 @@ fn read_indexed_drl_idx(
     for idx in 0..max_drl_bits {
         let drl_mode = cdfs
             .read_block_symbol_trace(selector(idx.min(2)), symbols)
-            .map_err(|_| symbol_read_error(tile_offset))?;
+            .map_err(|error| symbol_read_error(error, tile_offset))?;
         if drl_mode.get() == 0 {
             return Ok(idx);
         }
@@ -167,7 +168,7 @@ pub(super) fn read_use_amvd_syntax(
     }
     let use_amvd = cdfs
         .read_block_symbol_trace(TileCdfSelector::UseAmvd { index: 4, ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     Ok(use_amvd.get() != 0)
 }
 
@@ -189,7 +190,7 @@ pub(super) fn read_skip_mode_syntax(
     }
     Ok(cdfs
         .read_block_symbol_trace(TileCdfSelector::SkipMode { ctx }, symbols)
-        .map_err(|_| symbol_read_error(tile_offset))?
+        .map_err(|error| symbol_read_error(error, tile_offset))?
         .get())
 }
 
@@ -240,7 +241,7 @@ pub(super) fn read_block_mv_precision_syntax(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     if use_most_probable.get() != 0 {
         return Ok(BlockPrecisionRecord::most_probable(frame_precision));
     }
@@ -252,12 +253,12 @@ pub(super) fn read_block_mv_precision_syntax(
             },
             symbols,
         )
-        .map_err(|_| symbol_read_error(tile_offset))?;
+        .map_err(|error| symbol_read_error(error, tile_offset))?;
     let adjusted = MV_PRECISION_ONE_PEL
         .max(frame_precision - 2)
         .checked_sub(pb_mv_precision.get())
         .filter(|&adjusted| adjusted > 0)
-        .ok_or_else(|| symbol_read_error(tile_offset))?;
+        .ok_or_else(|| symbol_read_internal_error(tile_offset))?;
     let mv_precision = if adjusted <= MV_PRECISION_TWO_PEL {
         adjusted - 1
     } else {
