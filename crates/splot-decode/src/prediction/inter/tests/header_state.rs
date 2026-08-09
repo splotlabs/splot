@@ -6,6 +6,62 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
+#[test]
+fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
+    let mut u_coeffs = all_zero_inter_coeff_block();
+    u_coeffs.cctx_type = Some(1);
+    let residual_blocks = vec![
+        super::super::InterResidualBlock {
+            plane: PlaneId::U,
+            x: 0,
+            y: 0,
+            tx_size: 0,
+            log2_width: 2,
+            log2_height: 2,
+            cctx_pair_delta: 1,
+            coeffs: u_coeffs,
+        },
+        super::super::InterResidualBlock {
+            plane: PlaneId::V,
+            x: 4,
+            y: 0,
+            tx_size: 0,
+            log2_width: 2,
+            log2_height: 2,
+            cctx_pair_delta: -1,
+            coeffs: all_zero_inter_coeff_block(),
+        },
+    ];
+    let residual = super::super::InterResidual { block_range: 0..2 };
+    let mut scratch = super::super::InterResidualReconScratch::default();
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        16,
+        16,
+        BitDepth::Eight,
+        PixelFormat::Yuv420,
+    )
+    .unwrap();
+    let error = super::super::add_inter_residual_to_workspace(
+        &mut scratch,
+        &mut super::super::mc::WorkspaceSink::Frame(&mut workspace),
+        &residual,
+        &residual_blocks,
+        100,
+        false,
+        false,
+        false,
+        BitDepth::Eight,
+        ByteOffset::new(0),
+    )
+    .expect_err("mismatched CCTX pair");
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::MissingInterResidualCctxPair,
+        }
+    ));
+}
+
 fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
     let parsed = parse_ivf_fixture(SEF_FAMILIES_FIXTURE, "SEF families");
     let mut header = parsed.header.expect("SEF fixture has an IVF header");
