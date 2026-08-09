@@ -148,14 +148,7 @@ pub(crate) fn read_compound_reference_pair(
             1
         } else if n_bits == 0 {
             read_symbol(TileCdfSelector::CompRef0 {
-                ctx: *input.ref_contexts.get(ref_idx).ok_or_else(|| {
-                    compound_missing!(
-                        "compound_missing_ref0_context",
-                        tile_offset,
-                        "inter.compound.ref_context",
-                        SPEC_READ_REF_FRAMES
-                    )
-                })?,
+                ctx: input.ref_contexts[ref_idx],
                 ref_idx,
             })?
         } else {
