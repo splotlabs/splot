@@ -1883,7 +1883,7 @@ fn decode_block<T: ReconSample>(
     let reference_scaled = if tip_ref {
         false
     } else {
-        block_reference_is_scaled(core, reference, ref_frame_idx, ref_frame0, tile_offset)?
+        block_reference_is_scaled(core, reference, ref_frame_idx, ref_frame0)?
     };
     let bawp = if tip_ref {
         BawpSyntax::default()
@@ -2355,7 +2355,6 @@ fn block_reference_is_scaled<T: ReconSample>(
     reference: &InterReferenceState<T>,
     ref_frame_idx: &[u32],
     ref_frame: i8,
-    tile_offset: ByteOffset,
 ) -> Result<bool> {
     let frame_size = core
         .frame_size
@@ -2368,18 +2367,12 @@ fn block_reference_is_scaled<T: ReconSample>(
             slot_count: reference.ref_frame_width.len(),
         },
     )?;
-    let height = reference
-        .ref_frame_height
-        .get(slot)
-        .copied()
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_block_missing_reference_height",
-                tile_offset,
-                "inter.reference_height",
-                SPEC_MODE_INFO
-            )
-        })?;
+    let height = reference.ref_frame_height.get(slot).copied().ok_or(
+        crate::DecodeReferenceStateError::SlotOutOfRange {
+            slot,
+            slot_count: reference.ref_frame_height.len(),
+        },
+    )?;
     Ok(super::mv_scaling::reference_is_scaled(
         width as i32,
         height as i32,
