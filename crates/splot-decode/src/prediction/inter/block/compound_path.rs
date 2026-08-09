@@ -1647,12 +1647,11 @@ fn compound_reference_order_hint<T: ReconSample>(
         .get(slot)
         .copied()
         .ok_or_else(|| {
-            compound_missing!(
-                "compound_group_missing_ref_order_hint",
-                tile_offset,
-                "inter.compound.ref_order_hint",
-                SPEC_MODE_INFO
-            )
+            crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot,
+                slot_count: reference.ref_order_hint.len(),
+            }
+            .into()
         })
         .and_then(|hint| {
             i32::try_from(hint).map_err(|_| {
