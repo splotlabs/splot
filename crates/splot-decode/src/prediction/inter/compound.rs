@@ -6,7 +6,10 @@ use splot_core::symbol::SymbolDecoder;
 
 use super::{Mv, unsupported_compound_at};
 use crate::Result;
-use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{
+    COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN, COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN, TileCdfSelector,
+    TileCdfSubset,
+};
 
 const COMPOUND_MODE_NEAR_NEARMV: u8 = 0;
 const COMPOUND_MODE_NEAR_NEWMV: u8 = 1;
@@ -17,6 +20,10 @@ const RANKED_REF0_TO_PRUNE: usize = 3;
 const MAX_REFS_PER_FRAME: usize = 7;
 const SPEC_READ_REF_FRAMES: &str = "5.20.7.10";
 const SPEC_INTER_BLOCK_MODE_INFO: &str = "5.20.7.6";
+const _COMPOUND_MODE_MATCH_CDF_ROW_LEN_CHECK: () = {
+    assert!(COMPOUND_MODE_SAME_REFS_CDF_ROW_LEN == 5);
+    assert!(COMPOUND_MODE_NON_JOINT_CDF_ROW_LEN == 6);
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CompoundParseInput {
