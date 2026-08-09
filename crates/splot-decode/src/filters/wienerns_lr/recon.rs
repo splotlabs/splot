@@ -1235,10 +1235,10 @@ pub(crate) fn deblock_prepare_error(
     error: &crate::filters::deblock::DeblockError,
 ) -> crate::error::DecodeError {
     match error {
-        crate::filters::deblock::DeblockError::Allocation => {
+        crate::filters::deblock::DeblockError::Allocation { plane, context } => {
             splot_recon::ReconError::WorkspaceAllocationFailed {
-                plane: PlaneId::Y,
-                context: "deblock MI grid",
+                plane: *plane,
+                context,
             }
             .into()
         }

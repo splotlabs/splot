@@ -1066,7 +1066,7 @@ impl StripeChain<'_> {
                     block.height,
                     (WIENER_NS_CHROMA_TAP_RADIUS, WIENER_NS_CHROMA_TAP_RADIUS),
                 )
-                .map_err(|error| lr_plane_window_error(&error, plane_id))?;
+                .map_err(lr_window_error)?;
                 let luma_radius_x = WIENER_NS_CHROMA_TAP_RADIUS << sub_x;
                 let luma_radius_y = WIENER_NS_CHROMA_TAP_RADIUS << sub_y;
                 let luma_block_x = block_x
@@ -1094,7 +1094,7 @@ impl StripeChain<'_> {
                         .ok_or_else(super::lr_pipeline_state_error)?,
                     (luma_radius_x, luma_radius_y),
                 )
-                .map_err(|error| lr_plane_window_error(&error, plane_id))?;
+                .map_err(lr_window_error)?;
                 let radius = WIENER_NS_CHROMA_TAP_RADIUS as isize;
                 let (chroma_padded, chroma_stride) = chroma_window
                     .tail_from(

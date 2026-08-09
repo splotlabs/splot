@@ -149,12 +149,18 @@ pub(super) fn build_mi_grid(
     cells.clear();
     cells
         .try_reserve_exact(count)
-        .map_err(|_| DeblockError::Allocation)?;
+        .map_err(|_| DeblockError::Allocation {
+            plane: splot_recon::PlaneId::Y,
+            context: "deblock MI grid",
+        })?;
     cells.resize(count, MiCell::default());
     candidates.clear();
     candidates
         .try_reserve_exact(count)
-        .map_err(|_| DeblockError::Allocation)?;
+        .map_err(|_| DeblockError::Allocation {
+            plane: splot_recon::PlaneId::Y,
+            context: "deblock MI grid",
+        })?;
     candidates.resize(count, 0);
 
     for (block_index, block) in blocks.iter().enumerate() {

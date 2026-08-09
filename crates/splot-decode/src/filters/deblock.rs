@@ -2214,7 +2214,10 @@ fn plane_index_to_id(plane: usize) -> PlaneId {
 impl From<crate::filters::source::StripeCopyError> for DeblockError {
     fn from(error: crate::filters::source::StripeCopyError) -> Self {
         match error {
-            crate::filters::source::StripeCopyError::Allocation(_) => Self::Allocation,
+            crate::filters::source::StripeCopyError::Allocation(plane) => Self::Allocation {
+                plane,
+                context: "deblocked stripe window",
+            },
             crate::filters::source::StripeCopyError::Geometry => Self::Workspace,
         }
     }
@@ -2230,8 +2233,11 @@ pub(crate) enum DeblockError {
     SampleFilter,
     #[error("deblocking workspace sample access went out of bounds")]
     Workspace,
-    #[error("deblocking MI grid storage could not be reserved")]
-    Allocation,
+    #[error("deblocking {context} storage could not be reserved")]
+    Allocation {
+        plane: splot_recon::PlaneId,
+        context: &'static str,
+    },
 }
 
 #[cfg(test)]
