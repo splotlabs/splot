@@ -56,12 +56,6 @@ macro_rules! inter_missing {
     };
 }
 
-macro_rules! inter_diag {
-    ($reason:literal, $offset:expr, $message:literal, $spec_section:expr $(,)?) => {
-        unsupported_at($reason, $offset, $message, $spec_section)
-    };
-}
-
 macro_rules! inter_internal {
     ($reason:literal, $offset:expr $(,)?) => {
         crate::error::DecodeError::InternalState {
@@ -1835,6 +1829,7 @@ fn resolve_ccso_reference_reuse(
             plane.sb_reuse_ccso,
             plane.ccso_ref_idx.unwrap_or(0),
             offset,
+            frame_index,
         )?
         else {
             continue;
@@ -1876,22 +1871,23 @@ fn ccso_reference_slot(
     sb_reuse_ccso: bool,
     ref_index: u32,
     offset: ByteOffset,
+    frame_index: Option<usize>,
 ) -> Result<Option<u32>> {
     if !reuse_ccso && !sb_reuse_ccso {
         return Ok(None);
     }
-    ref_frame_idx
-        .get(ref_index as usize)
-        .copied()
-        .map(Some)
-        .ok_or_else(|| {
-            inter_diag!(
-                "inter_ccso_reference_index_out_of_range",
-                offset,
-                "CCSO reference index is outside NumTotalRefs",
-                "6.17.7.8"
-            )
-        })
+    let Some(slot) = ref_frame_idx.get(ref_index as usize).copied() else {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            "6.17.7.8",
+            format!(
+                "ccso_ref_idx {ref_index} must be less than NumTotalRefs {}",
+                ref_frame_idx.len()
+            ),
+        ));
+    };
+    Ok(Some(slot))
 }
 
 fn parse_inter_frame_core(

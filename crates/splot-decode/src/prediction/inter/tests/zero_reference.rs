@@ -105,34 +105,49 @@ fn invalid_inter_reference_maps_are_typed_header_state_errors() {
 fn ccso_reference_slot_checks_all_reuse_modes_and_num_total_refs() {
     let offset = ByteOffset::new(74);
     assert_eq!(
-        ccso_reference_slot(&[3], true, false, 0, offset)
+        ccso_reference_slot(&[3], true, false, 0, offset, Some(2))
             .expect("in-range CCSO reference index resolves its slot"),
         Some(3)
     );
     assert_eq!(
-        ccso_reference_slot(&[3], false, true, 0, offset)
+        ccso_reference_slot(&[3], false, true, 0, offset, Some(2))
             .expect("block-reuse-only CCSO also resolves its slot"),
         Some(3)
     );
     assert_eq!(
-        ccso_reference_slot(&[], false, false, 7, offset)
+        ccso_reference_slot(&[], false, false, 7, offset, Some(2))
             .expect("a plane without either reuse mode has no reference"),
         None
     );
+    assert_eq!(
+        ccso_reference_slot(&[3, 4, 5, 6, 7], true, false, 4, offset, Some(2))
+            .expect("the last in-range CCSO reference index resolves its slot"),
+        Some(7)
+    );
 
-    let error = ccso_reference_slot(&[3], false, true, 1, offset)
-        .expect_err("block-reuse-only CCSO index must be less than NumTotalRefs");
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("out-of-range CCSO reference index must be an unsupported-feature error");
-    };
-    assert_eq!(
-        unsupported.reason(),
-        "inter_ccso_reference_index_out_of_range"
-    );
-    assert_eq!(unsupported.spec_section(), "6.17.7.8");
-    assert_eq!(
-        unsupported.message(),
-        "CCSO reference index is outside NumTotalRefs"
-    );
-    assert_eq!(unsupported.byte_offset(), Some(offset));
+    for ref_index in [5, 7] {
+        let error = ccso_reference_slot(&[3, 4, 5, 6, 7], false, true, ref_index, offset, Some(2))
+            .expect_err("block-reuse-only CCSO index must be less than NumTotalRefs");
+        let DecodeError::MalformedSource { issue } = &error else {
+            panic!("out-of-range CCSO reference index must be malformed source, got {error}");
+        };
+        assert_eq!(
+            issue.kind(),
+            crate::DecodeSourceIssueKind::FrameHeaderConformanceError
+        );
+        assert_eq!(issue.spec_section(), Some("6.17.7.8"));
+        assert_eq!(issue.offset(), Some(offset));
+        assert_eq!(issue.frame_index(), Some(2));
+        assert_eq!(
+            issue.message(),
+            format!("ccso_ref_idx {ref_index} must be less than NumTotalRefs 5")
+        );
+        let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+            .expect("invalid CCSO reference index must remain user-reportable");
+        assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+        assert!(matches!(
+            report.details,
+            crate::DecodeDiagnosticDetails::MalformedSource(_)
+        ));
+    }
 }
