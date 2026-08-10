@@ -159,12 +159,7 @@ const fn tip_temporal_mvs(
 }
 
 fn tip_reference_pair_error(tile_offset: ByteOffset) -> crate::error::DecodeError {
-    inter_missing!(
-        "inter_tip_reference_pair",
-        tile_offset,
-        "inter.tip.closest_past_and_future",
-        SPEC_MODE_INFO
-    )
+    inter_internal!("inter_tip_reference_pair", tile_offset)
 }
 
 const fn tip_uses_refinemv(

@@ -1580,7 +1580,16 @@ fn validate_and_resolve_inter_frame_core(
     validate_ras_reference_ids(core, reference, offset, frame_index)?;
     validate_inter_frame_parse(core, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
-    validate_inter_frame_core(core, sequence, offset)
+    validate_inter_frame_core(core, sequence, offset)?;
+    if core.inter.as_ref().is_some_and(|inter| {
+        matches!(
+            inter.tip_frame_mode,
+            Some(TipFrameMode::AsRef | TipFrameMode::AsOutput)
+        )
+    }) {
+        required_tip_reference_pair(core, reference, offset, frame_index)?;
+    }
+    Ok(())
 }
 
 fn parse_sef_or_tip_frame_core(
@@ -1681,21 +1690,12 @@ fn validate_sef_frame_core(
     Ok(())
 }
 
-fn infer_tip_output_quantization(
-    core: &mut FrameHeaderCore,
-    sequence: &SequenceHeader,
+fn required_tip_reference_pair(
+    core: &FrameHeaderCore,
     reference: &InterReferenceState<impl ReconSample>,
     offset: ByteOffset,
     frame_index: Option<usize>,
-) -> Result<()> {
-    if core.quantization_params.is_some()
-        || sequence
-            .inter
-            .as_ref()
-            .is_some_and(|inter| inter.enable_tip_explicit_qp)
-    {
-        return Ok(());
-    }
+) -> Result<find_mv_stack::TipReferencePair> {
     let inter = core
         .inter
         .as_ref()
@@ -1708,15 +1708,38 @@ fn infer_tip_output_quantization(
     let current_order_hint = core
         .display_order_hint()
         .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
-    let pair = find_mv_stack::tip_reference_pair_from_hints(current_order_hint, &hints)
-        .ok_or_else(|| DecodeError::MalformedSource {
+    find_mv_stack::tip_reference_pair_from_hints(current_order_hint, &hints).ok_or_else(|| {
+        DecodeError::MalformedSource {
             issue: DecodeSourceIssue::frame_header_conformance(
                 offset,
                 frame_index,
                 SPEC_TIP_TEMPORAL_SCALE,
-                "TIP output has no usable past/future reference pair".to_owned(),
+                "TIP has no usable past/future reference pair".to_owned(),
             ),
-        })?;
+        }
+    })
+}
+
+fn infer_tip_output_quantization(
+    core: &mut FrameHeaderCore,
+    sequence: &SequenceHeader,
+    reference: &InterReferenceState<impl ReconSample>,
+    offset: ByteOffset,
+    frame_index: Option<usize>,
+) -> Result<()> {
+    let pair = required_tip_reference_pair(core, reference, offset, frame_index)?;
+    if core.quantization_params.is_some()
+        || sequence
+            .inter
+            .as_ref()
+            .is_some_and(|inter| inter.enable_tip_explicit_qp)
+    {
+        return Ok(());
+    }
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
     let past = block_reference_slot(&inter.ref_frame_idx, pair.past_ref)? as usize;
     let future = block_reference_slot(&inter.ref_frame_idx, pair.future_ref)? as usize;
     let quantizer = |slot| -> Result<(u32, i32, i32)> {

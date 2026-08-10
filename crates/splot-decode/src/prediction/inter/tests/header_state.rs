@@ -782,6 +782,67 @@ fn tip_output_without_reference_pair_is_a_malformed_source_diagnostic() {
 }
 
 #[test]
+fn explicit_qp_tip_output_without_reference_pair_is_malformed_during_admission() {
+    let (mut sequence, _) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+    let (mut core, offset) = tip_output_core_for_validation();
+    sequence
+        .inter
+        .as_mut()
+        .expect("fixture has inter sequence config")
+        .enable_tip_explicit_qp = true;
+    core.order_hint_lsb = Some(10);
+    core.order_hint = Some(10);
+    assert!(core.quantization_params.is_some());
+    core.inter.as_mut().expect("inter control").ref_frame_idx = [0, 1].into_iter().collect();
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_valid = vec![true; 2];
+    reference.ref_order_hint = vec![12, 13];
+
+    let error = super::super::infer_tip_output_quantization(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(7),
+    )
+    .expect_err("TIP reference pair");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("7.10.1"));
+    assert_eq!(issue.frame_index(), Some(7));
+}
+
+#[test]
+fn tip_as_ref_without_reference_pair_is_malformed_during_admission() {
+    let (sequence, mut core, offset) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    core.order_hint_lsb = Some(10);
+    core.order_hint = Some(10);
+    let inter = core.inter.as_mut().expect("inter control");
+    inter.tip_frame_mode = Some(TipFrameMode::AsRef);
+    inter.ref_frame_idx = [0, 1].into_iter().collect();
+    inter.num_total_refs = Some(2);
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    reference.ref_valid = vec![true; 2];
+    reference.ref_order_hint = vec![12, 13];
+
+    let error = super::super::validate_and_resolve_inter_frame_core(
+        &mut core,
+        &sequence,
+        &reference,
+        offset,
+        Some(8),
+    )
+    .expect_err("TIP reference pair");
+    let DecodeError::MalformedSource { issue } = &error else {
+        panic!("expected malformed source, got {error}");
+    };
+    assert_eq!(issue.spec_section(), Some("7.10.1"));
+    assert_eq!(issue.frame_index(), Some(8));
+}
+
+#[test]
 fn tip_output_missing_reference_quantizer_is_a_typed_reference_state_error() {
     let (mut sequence, _) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
     let (mut core, offset) = tip_output_core_for_validation();
