@@ -70,7 +70,6 @@ pub(crate) use stream_schedule::following_inter_envelope;
 pub(crate) use stream_schedule::require_minimal_obu_order;
 use stream_schedule::*;
 
-pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 

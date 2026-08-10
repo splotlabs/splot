@@ -51,6 +51,34 @@ fn impossible_mhccp_direction_is_typed_internal_state() {
 }
 
 #[test]
+fn residual_plan_failures_keep_internal_and_resource_taxonomy() {
+    let geometry =
+        general_intra_residual_plan_error(ResidualPlanError::InvalidGeometry, ByteOffset::new(42));
+    assert!(matches!(
+        geometry,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidBlockGeometry,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&geometry).is_none());
+
+    let allocation = general_intra_residual_plan_error(
+        ResidualPlanError::Allocation { plane: PlaneId::U },
+        ByteOffset::new(42),
+    );
+    assert!(matches!(
+        allocation,
+        DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::U,
+                context: "general-intra residual plan",
+            },
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&allocation).is_none());
+}
+
+#[test]
 fn unexpected_general_intra_branch_is_internal_state() {
     let error = general_intra_residual_error(
         GeneralIntraResidualError::UnexpectedBranch,

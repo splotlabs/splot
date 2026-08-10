@@ -17,7 +17,7 @@ use crate::bitstream::tile_payload::{
 use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
-    ResidualPipelineUnsupported, ResidualPipelineUnsupportedReason,
+    ResidualPlanError,
 };
 use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, ChromaSampling, TxShape};
@@ -1000,35 +1000,18 @@ fn general_intra_luma_plan_error(error: IntraLumaUnsupported, offset: ByteOffset
     }
 }
 
-fn general_intra_residual_plan_error(
-    error: ResidualPipelineUnsupported,
-    offset: ByteOffset,
-) -> DecodeError {
-    match error.reason() {
-        ResidualPipelineUnsupportedReason::RectTxSize => general_intra_at!(
-            "general_intra_rect_tx_size",
-            offset,
-            error.message(),
-            error.spec_section(),
-        ),
-        ResidualPipelineUnsupportedReason::RectChromaTxSize => general_intra_at!(
-            "general_intra_rect_chroma_tx_size",
-            offset,
-            error.message(),
-            error.spec_section(),
-        ),
-        ResidualPipelineUnsupportedReason::LargeBlockChunkGeometry => general_intra_at!(
-            "general_intra_large_block_chunk_geometry",
-            offset,
-            error.message(),
-            error.spec_section(),
-        ),
-        ResidualPipelineUnsupportedReason::ResidualPlaneCapacity => general_intra_at!(
-            "general_intra_residual_plane_capacity",
-            offset,
-            error.message(),
-            error.spec_section(),
-        ),
+fn general_intra_residual_plan_error(error: ResidualPlanError, _offset: ByteOffset) -> DecodeError {
+    match error {
+        ResidualPlanError::InvalidGeometry => {
+            crate::DecodeHeaderStateError::InvalidBlockGeometry.into()
+        }
+        ResidualPlanError::Allocation { plane } => {
+            splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane,
+                context: "general-intra residual plan",
+            }
+            .into()
+        }
     }
 }
 

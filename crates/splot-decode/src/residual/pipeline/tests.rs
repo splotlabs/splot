@@ -129,7 +129,7 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
 
 #[test]
 fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
-    let tx_8x8 = rect_tx_size_from_log2(3, 3).expect("8x8 transform");
+    let tx_8x8 = tx_size_from_log2(3, 3).expect("8x8 transform");
     let mut blocks = Vec::new();
     let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::default();
     let mut tx_skip_records = Vec::new();
@@ -609,7 +609,7 @@ fn every_av2_block_shape_maps_to_valid_luma_and_chroma_chunk_tx_sizes() {
 }
 
 #[test]
-fn max_residual_plan_capacity_reuses_storage_after_bound_error() {
+fn max_residual_plan_capacity_reuses_storage_after_invalid_geometry() {
     let plan = |width4, height4| {
         let block = BlockRect::new(0, 0, width4, height4);
         let tx = TxShape::from_luma_4x4(width4.min(64), height4.min(64))
@@ -638,11 +638,35 @@ fn max_residual_plan_capacity_reuses_storage_after_bound_error() {
     drop(max_plan);
 
     let error = plan(65, 64).expect_err("first out-of-table width must exceed the plan bound");
-    assert_eq!(error.reason_id(), "general_intra_residual_plane_capacity");
+    assert_eq!(error, ResidualPlanError::InvalidGeometry);
 
     let after_error = plan(64, 64).expect("bound error must leave plan storage reusable");
     assert_eq!(after_error.planes.len(), MAX_RESIDUAL_PLANES);
     assert_eq!(after_error.planes.as_ptr(), storage);
+}
+
+std::thread_local! {
+    static FAILED_RESIDUAL_PLAN_ALLOCATION: std::cell::Cell<Option<Vec<u8>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+#[test]
+fn residual_plan_storage_allocation_is_fallible() {
+    RecycledVec::take(&FAILED_RESIDUAL_PLAN_ALLOCATION, usize::MAX)
+        .expect_err("an impossible capacity must fail without allocating");
+}
+
+#[test]
+fn transform_size_lookup_rejects_internal_shapes_outside_av2_table() {
+    for (tx_size, (&width_log2, &height_log2)) in
+        TX_WIDTH_LOG2.iter().zip(&TX_HEIGHT_LOG2).enumerate()
+    {
+        let width_log2 = u32::try_from(width_log2).expect("non-negative AV2 transform width");
+        let height_log2 = u32::try_from(height_log2).expect("non-negative AV2 transform height");
+        assert_eq!(tx_size_from_log2(width_log2, height_log2), Some(tx_size));
+    }
+    assert_eq!(tx_size_from_log2(7, 7), None);
+    assert_eq!(tx_size_from_log2(8, 8), None);
 }
 
 #[test]
@@ -1057,7 +1081,7 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
         .transform_unit_plan(&PositionedLumaCoeffBlock {
             x: 0,
             y: 16,
-            tx_size: rect_tx_size_from_log2(4, 4).expect("16x16 transform size"),
+            tx_size: tx_size_from_log2(4, 4).expect("16x16 transform size"),
             middle: false,
             coeffs: empty_luma_coeffs(),
         })
@@ -1123,7 +1147,7 @@ fn assert_case(case: Case) {
             false,
         )
     }
-    .unwrap_or_else(|error| panic!("{}: {}", case.label, error.reason_id()));
+    .unwrap_or_else(|error| panic!("{}: {error}", case.label));
     let plane = plan
         .plane_plan(case.plane)
         .unwrap_or_else(|| panic!("{}: missing plane", case.label));

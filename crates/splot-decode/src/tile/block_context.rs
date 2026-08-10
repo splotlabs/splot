@@ -111,18 +111,6 @@ impl TxShape {
         1usize << (self.height_log2 - 2)
     }
 
-    pub(crate) const fn is_square(self) -> bool {
-        self.width_log2 == self.height_log2
-    }
-
-    pub(crate) const fn square_tx_index(self) -> Option<usize> {
-        if self.is_square() && self.width_log2 >= 2 {
-            Some((self.width_log2 - 2) as usize)
-        } else {
-            None
-        }
-    }
-
     pub(crate) const fn subsampled(self, sub_x: u32, sub_y: u32) -> Self {
         let width_log2 = self.width_log2.saturating_sub(sub_x);
         let height_log2 = self.height_log2.saturating_sub(sub_y);

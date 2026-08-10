@@ -29,7 +29,7 @@ use crate::bitstream::tile_payload::{
 };
 pub(crate) use deblock_recorder::DeblockRecorder;
 #[cfg(test)]
-use plan::{MAX_RESIDUAL_PLANES, coeff_plane, rect_tx_size_from_log2};
+use plan::{MAX_RESIDUAL_PLANES, coeff_plane, tx_size_from_log2};
 pub(crate) use plane_execution::ParsedGeneralIntraResidual;
 #[cfg(test)]
 use plane_execution::{
@@ -53,22 +53,14 @@ struct RecycledVec<T: 'static> {
 }
 
 impl<T> RecycledVec<T> {
-    fn take(recycler: &'static LocalKey<Cell<Option<Vec<T>>>>, capacity: usize) -> Self {
+    fn take(
+        recycler: &'static LocalKey<Cell<Option<Vec<T>>>>,
+        capacity: usize,
+    ) -> core::result::Result<Self, std::collections::TryReserveError> {
         let mut entries = recycler.with(Cell::take).unwrap_or_default();
         entries.clear();
-        entries.reserve(capacity);
-        Self { entries, recycler }
-    }
-}
-
-impl<T> Clone for RecycledVec<T>
-where
-    T: Clone,
-{
-    fn clone(&self) -> Self {
-        let mut clone = Self::take(self.recycler, self.len());
-        clone.extend_from_slice(&self.entries);
-        clone
+        entries.try_reserve(capacity)?;
+        Ok(Self { entries, recycler })
     }
 }
 
@@ -120,7 +112,7 @@ impl<T> Drop for RecycledVec<T> {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraResidualPlan {
     planes: RecycledVec<ResidualPlanePlan>,
 }
@@ -209,49 +201,12 @@ pub(crate) enum RectChromaPlan {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ResidualPipelineUnsupportedReason {
-    RectTxSize,
-    RectChromaTxSize,
-    LargeBlockChunkGeometry,
-    ResidualPlaneCapacity,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ResidualPipelineUnsupported {
-    reason: ResidualPipelineUnsupportedReason,
-    message: &'static str,
-    spec_section: &'static str,
-}
-
-impl ResidualPipelineUnsupported {
-    pub(crate) const fn reason(self) -> ResidualPipelineUnsupportedReason {
-        self.reason
-    }
-
-    #[cfg(test)]
-    pub(crate) const fn reason_id(self) -> &'static str {
-        match self.reason {
-            ResidualPipelineUnsupportedReason::RectTxSize => "general_intra_rect_tx_size",
-            ResidualPipelineUnsupportedReason::RectChromaTxSize => {
-                "general_intra_rect_chroma_tx_size"
-            }
-            ResidualPipelineUnsupportedReason::LargeBlockChunkGeometry => {
-                "general_intra_large_block_chunk_geometry"
-            }
-            ResidualPipelineUnsupportedReason::ResidualPlaneCapacity => {
-                "general_intra_residual_plane_capacity"
-            }
-        }
-    }
-
-    pub(crate) const fn message(self) -> &'static str {
-        self.message
-    }
-
-    pub(crate) const fn spec_section(self) -> &'static str {
-        self.spec_section
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum ResidualPlanError {
+    #[error("residual plan geometry is inconsistent with the AV2 block-size domain")]
+    InvalidGeometry,
+    #[error("failed to allocate general-intra residual plan storage for the {plane:?} plane")]
+    Allocation { plane: PlaneId },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
