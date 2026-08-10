@@ -6,6 +6,9 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
+const BRIDGE_CELU_FIXTURE: &[u8] =
+    include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
+
 #[test]
 fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     let mut u_coeffs = all_zero_inter_coeff_block();
@@ -187,9 +190,9 @@ fn complete_intra_tile_group_remains_reportable() {
 }
 
 #[test]
-fn block_reference_sample_failures_are_typed_reference_state_errors() {
+fn shared_reference_sample_failures_are_typed_reference_state_errors() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
+    let Err(error) = super::super::hold_reference_slot(&reference, 0) else {
         panic!("an empty reference slot must fail closed");
     };
     assert!(matches!(
@@ -199,7 +202,7 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
         }
     ));
 
-    let Err(error) = super::super::hold_reference_pair(&reference, 1, None) else {
+    let Err(error) = super::super::hold_reference_slot(&reference, 1) else {
         panic!("a reference beyond the active store must fail closed");
     };
     assert!(matches!(
@@ -219,7 +222,7 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
         .store
         .put(splot_recon::ReferenceSlot::new(0).expect("slot zero"), slot)
         .expect("store pending reference");
-    let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
+    let Err(error) = super::super::hold_reference_slot(&reference, 0) else {
         panic!("an unpublished reference slot must fail closed");
     };
     assert!(matches!(
@@ -228,6 +231,67 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
             source: crate::DecodeReferenceStateError::ReferenceSamplesUnavailable { slot: 0 }
         }
     ));
+}
+
+#[test]
+fn bridge_frame_validation_maps_impossible_state_to_typed_errors() {
+    use DecodeHeaderStateError::{
+        IncompleteInterFrame, IncompleteInterFrameTools, InvalidInterReferenceMap,
+        MissingDisplayOrderHint, MissingFrameSize, MissingInterControlRegion, ZeroFrameSize,
+    };
+    type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
+
+    let (_, core, _) =
+        parse_inter_core_for_validation(BRIDGE_CELU_FIXTURE).expect("complete bridge core");
+    assert_eq!(core.obu_type, splot_core::types::ObuType::BridgeFrame);
+    super::super::validate_bridge_frame_core(&core).expect("valid bridge state");
+
+    let cases: [MutationCase; 12] = [
+        (
+            |core| core.status = FrameHeaderParseStatus::ActivationFieldsOnly,
+            IncompleteInterFrame,
+        ),
+        (|core| core.frame_is_intra = None, IncompleteInterFrame),
+        (
+            |core| core.show_existing_frame = Some(true),
+            IncompleteInterFrame,
+        ),
+        (|core| core.order_hint = None, MissingDisplayOrderHint),
+        (|core| core.frame_size = None, MissingFrameSize),
+        (
+            |core| {
+                core.frame_size = Some(splot_core::headers::frame::FrameSize::new(0, 64));
+            },
+            ZeroFrameSize,
+        ),
+        (|core| core.tile_info = None, IncompleteInterFrameTools),
+        (
+            |core| core.quantization_params = None,
+            IncompleteInterFrameTools,
+        ),
+        (
+            |core| core.bridge_film_grain = None,
+            IncompleteInterFrameTools,
+        ),
+        (|core| core.inter = None, MissingInterControlRegion),
+        (
+            |core| core.bridge_frame_ref_idx = None,
+            InvalidInterReferenceMap,
+        ),
+        (
+            |core| core.inter.as_mut().unwrap().num_total_refs = Some(2),
+            InvalidInterReferenceMap,
+        ),
+    ];
+
+    for (mutate, expected) in cases {
+        let mut mutated = core.clone();
+        mutate(&mut mutated);
+        let error = super::super::validate_bridge_frame_core(&mutated)
+            .expect_err("impossible bridge state");
+        assert!(matches!(error, DecodeError::HeaderState { ref source } if *source == expected));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
 }
 
 #[test]
