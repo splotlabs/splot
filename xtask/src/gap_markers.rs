@@ -24,9 +24,9 @@
 //!
 //! Feature ID: `DECODE-UNSUPPORTED-DIAGNOSTIC-API`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -40,7 +40,7 @@ const DECODE_SRC: &str = "crates/splot-decode/src";
 /// source. Raised as markers are added; a count below this floor fails the check,
 /// so removing a guard (which would let a stream decode to wrong pixels instead of
 /// failing closed) cannot pass unnoticed. Lowering it is a reviewed edit.
-const GAP_MARKER_FLOOR: usize = 31;
+const GAP_MARKER_FLOOR: usize = 30;
 
 /// One marker site: its reason id and the file it lives in.
 struct MarkerSite {
@@ -347,14 +347,7 @@ fn evaluate(files: &[(String, String)], floor: usize) -> Result<MarkerCounts> {
 pub(crate) fn check_gap_markers(root: &Path) -> Result<()> {
     let dir = root.join(DECODE_SRC);
     let mut files: Vec<(String, String)> = Vec::new();
-    for path in collect_files(&dir, &["rs"])? {
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with("_tests.rs"))
-        {
-            continue;
-        }
+    for path in production_rust_sources(&dir)? {
         let rel = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -373,11 +366,146 @@ pub(crate) fn check_gap_markers(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn production_rust_sources(dir: &Path) -> Result<Vec<PathBuf>> {
+    let paths = collect_files(dir, &["rs"])?;
+    let mut declarations = Vec::new();
+    for path in &paths {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("read module declarations from {}", path.display()))?;
+        for (module, test_only) in external_modules(path, &text) {
+            declarations.push((path, module, test_only));
+        }
+    }
+    let test_modules: BTreeSet<_> = declarations
+        .iter()
+        .filter(|(_, _, test_only)| *test_only)
+        .map(|(_, module, _)| module.clone())
+        .collect();
+    let all_test_roots: Vec<_> = test_modules
+        .iter()
+        .map(|path| (path, module_directory(path)))
+        .collect();
+    let production_modules: BTreeSet<_> = declarations
+        .iter()
+        .filter(|(parent, _, test_only)| {
+            !*test_only
+                && !all_test_roots
+                    .iter()
+                    .any(|(file, root)| *parent == *file || parent.starts_with(root))
+        })
+        .map(|(_, module, _)| module.clone())
+        .collect();
+    let test_roots: Vec<_> = test_modules
+        .difference(&production_modules)
+        .map(|path| (path, module_directory(path)))
+        .collect();
+    let production_roots: Vec<_> = production_modules
+        .iter()
+        .map(|path| (path, module_directory(path)))
+        .collect();
+    Ok(paths
+        .into_iter()
+        .filter(|path| {
+            let named_test = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("_tests.rs"));
+            let in_test_module = test_roots
+                .iter()
+                .any(|(file, root)| path == *file || path.starts_with(root));
+            let in_production_module = production_roots
+                .iter()
+                .any(|(file, root)| path == *file || path.starts_with(root));
+            !named_test && (!in_test_module || in_production_module)
+        })
+        .collect())
+}
+
+fn external_modules(parent: &Path, text: &str) -> Vec<(PathBuf, bool)> {
+    let mut modules = Vec::new();
+    let mut test_only = false;
+    let mut explicit_path = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "#[cfg(test)]" {
+            test_only = true;
+            continue;
+        }
+        if trimmed.starts_with("#[") {
+            if let Some(path) = path_attribute(trimmed) {
+                explicit_path = Some(path);
+            }
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if let Some(name) = external_module_name(trimmed) {
+            modules.push((
+                resolve_external_module(parent, name, explicit_path.as_deref()),
+                test_only,
+            ));
+        }
+        test_only = false;
+        explicit_path = None;
+    }
+    modules
+}
+
+fn path_attribute(attribute: &str) -> Option<PathBuf> {
+    if !attribute.starts_with("#[path") {
+        return None;
+    }
+    let start = attribute.find('"')? + 1;
+    let end = attribute[start..].find('"')? + start;
+    Some(PathBuf::from(&attribute[start..end]))
+}
+
+fn external_module_name(line: &str) -> Option<&str> {
+    let declaration = line.split_once("//").map_or(line, |(code, _)| code).trim();
+    let declaration = declaration.strip_suffix(';')?.trim_end();
+    let mut tokens = declaration.split_whitespace().rev();
+    let name = tokens.next()?;
+    (tokens.next()? == "mod"
+        && name
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_'))
+    .then_some(name)
+}
+
+fn resolve_external_module(parent: &Path, name: &str, explicit_path: Option<&Path>) -> PathBuf {
+    let parent_dir = parent.parent().unwrap_or_else(|| Path::new(""));
+    if let Some(path) = explicit_path {
+        return parent_dir.join(path);
+    }
+    let module_dir = match parent.file_name().and_then(|file| file.to_str()) {
+        Some("lib.rs" | "main.rs" | "mod.rs") => parent_dir.to_path_buf(),
+        _ => parent.with_extension(""),
+    };
+    let file = module_dir.join(format!("{name}.rs"));
+    if file.exists() {
+        file
+    } else {
+        module_dir.join(name).join("mod.rs")
+    }
+}
+
+fn module_directory(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|file| file.to_str()) == Some("mod.rs") {
+        path.parent().unwrap_or_else(|| Path::new("")).to_path_buf()
+    } else {
+        path.with_extension("")
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::scan_gap_reasons;
-    use super::{FEATURE_MARKER_MACROS, INTERNAL_MARKER_MACROS, MarkerCounts, evaluate};
+    use super::{
+        FEATURE_MARKER_MACROS, INTERNAL_MARKER_MACROS, MarkerCounts, evaluate,
+        production_rust_sources,
+    };
 
     #[test]
     fn scans_literal_reasons_and_skips_comments_and_strings() {
@@ -461,6 +589,64 @@ mod tests {
         let err = evaluate(&files, 0).unwrap_err().to_string();
         assert!(err.contains("dup"), "{err}");
         assert!(err.contains("a.rs") && err.contains("b.rs"), "{err}");
+    }
+
+    #[test]
+    fn external_test_module_does_not_hide_later_markers() {
+        let files = vec![(
+            "a.rs".to_string(),
+            "#[cfg(test)]\nmod tests;\nlet x = gap!(\"visible\", o, \"m\", \"s\");".to_string(),
+        )];
+        assert_eq!(
+            evaluate(&files, 1).unwrap(),
+            MarkerCounts {
+                feature: 1,
+                internal: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn external_test_module_bodies_are_not_production_sources() -> anyhow::Result<()> {
+        let root = crate::util::temp_root("splot-gap-marker-external-test-modules")?;
+        let parent = root.join("parent.rs");
+        let default_child = root.join("parent/test_body.rs");
+        let nested_child = root.join("parent/test_body/nested.rs");
+        let path_child = root.join("custom_test_body.rs");
+        std::fs::create_dir_all(nested_child.parent().unwrap())?;
+        std::fs::write(
+            &parent,
+            "#[cfg(test)]\nmod test_body;\n#[cfg(test)]\n#[path = \"custom_test_body.rs\"]\nmod custom;\nlet x = gap!(\"production\", o, \"m\", \"s\");\n",
+        )?;
+        std::fs::write(
+            default_child,
+            "mod nested;\nlet x = gap!(\"default_test_body\", o, \"m\", \"s\");\n",
+        )?;
+        std::fs::write(
+            nested_child,
+            "let x = gap!(\"nested_test_body\", o, \"m\", \"s\");\n",
+        )?;
+        std::fs::write(
+            path_child,
+            "let x = gap!(\"path_test_body\", o, \"m\", \"s\");\n",
+        )?;
+
+        let files = production_rust_sources(&root)?
+            .into_iter()
+            .map(|path| {
+                let text = std::fs::read_to_string(&path)?;
+                Ok((path.display().to_string(), text))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        assert_eq!(
+            evaluate(&files, 1)?,
+            MarkerCounts {
+                feature: 1,
+                internal: 0,
+            }
+        );
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

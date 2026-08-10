@@ -127,7 +127,7 @@ impl<T: ReconSample> ScheduledInterReconstruction<T> {
 /// invariant violation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
-    tile_plan: &mut crate::bitstream::tile_payload::DecodeTilePayloadPlan<'_>,
+    tile: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     mut records: crate::filters::wienerns_lr::FrameFilterRecords,
     frame_envelope: splot_core::annexb::ObuEnvelope<'_>,
     sequence: &SequenceHeader,
@@ -138,10 +138,8 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
     reference: &InterReferenceState<T>,
     workspace: &CurrentFrameWorkspace<T>,
 ) -> Result<InterFrameParse> {
-    let offset = frame_envelope.offset;
-    let work_units = tile_plan.work_units_mut();
     let setup = derive_inter_block_setup(
-        work_units,
+        std::slice::from_mut(tile),
         frame_envelope,
         sequence,
         core,
@@ -151,14 +149,6 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         reference,
         workspace,
     )?;
-    let [tile] = work_units else {
-        return Err(inter_cap!(
-            "inter_split_walk_tile_count",
-            offset,
-            "inter.tile_count == 1 for the split walk",
-            SPEC_MODE_INFO
-        ));
-    };
     let InterBlockSetup {
         params,
         prelude,
@@ -181,14 +171,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &ccso_state,
         true,
     )?;
-    let mut segment_ids = FrameSegmentIdMap::new(params.mi_rows, params.mi_cols).map_err(|_| {
-        inter_missing!(
-            "inter_segment_id_frame_grid",
-            offset,
-            "inter.segment_id_frame_grid",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let mut segment_ids = frame_segment_id_map(params.mi_rows, params.mi_cols)?;
     records.clear();
     parsed.merge_filter_state(
         &mut records,
@@ -197,7 +180,7 @@ pub(crate) fn parse_inter_frame_blocks<T: ReconSample>(
         &mut ccso_state,
         &mut segment_ids,
     )?;
-    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, work_units, qindex);
+    let frame_cdfs = finish_frame_cdfs(&initial_frame_cdfs, std::slice::from_mut(tile), qindex);
     let ccso_grid = ccso_state.into_grid()?;
     let segment_ids =
         final_segment_ids(core, reference, params.mi_rows, params.mi_cols, segment_ids);

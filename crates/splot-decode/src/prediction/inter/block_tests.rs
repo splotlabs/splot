@@ -17,10 +17,45 @@ use super::prediction::{leaf_predicts_chroma, sub8x8_chroma_disables_compound};
 use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
-    chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
+    chroma_smooth_tile_ranges, frame_segment_id_map, inter_skip_txfm_ctx, leaf_uses_general_intra,
     map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
     single_ref_read_error, skip_segment_reference, symbol_read_error, validate_segment_id,
 };
+
+#[test]
+fn frame_segment_id_map_maps_construction_failures_by_kind()
+-> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(frame_segment_id_map(2, 3)?.dimensions(), (2, 3));
+
+    for (mi_rows, mi_cols) in [(0, 1), (1, 0)] {
+        assert!(matches!(
+            frame_segment_id_map(mi_rows, mi_cols),
+            Err(DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidSegmentIdMapDimensions {
+                    mi_rows: actual_rows,
+                    mi_cols: actual_cols,
+                }
+            }) if actual_rows == mi_rows && actual_cols == mi_cols
+        ));
+    }
+
+    assert!(matches!(
+        frame_segment_id_map(usize::MAX, 2),
+        Err(DecodeError::HeaderState {
+            source: DecodeHeaderStateError::SegmentIdMapSizeOverflow { .. }
+        })
+    ));
+    assert!(matches!(
+        frame_segment_id_map(usize::MAX, 1),
+        Err(DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                context: "inter frame segment id map",
+                ..
+            }
+        })
+    ));
+    Ok(())
+}
 
 #[test]
 fn skip_segment_reference_prefers_the_first_same_order_reference() {

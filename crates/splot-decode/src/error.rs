@@ -123,12 +123,36 @@ pub enum DecodeHeaderStateError {
     /// A frame's parsed width or height was zero.
     #[error("frame dimensions must be nonzero")]
     ZeroFrameSize,
+    /// A split inter walk received a tile plan inconsistent with its validated header.
+    #[error("split inter walk requires exactly one tile, got {actual}")]
+    InvalidSplitTileCount {
+        /// Number of tile work units materialized by the validated payload plan.
+        actual: usize,
+    },
     /// A validated block-size value could not produce its table-defined geometry.
     #[error("block geometry is inconsistent with the decoded block-size domain")]
     InvalidBlockGeometry,
     /// A decoded frame could not materialize its § 7.23 segmentation map.
     #[error("frame segmentation map is unavailable")]
     MissingSegmentIdMap,
+    /// Validated frame geometry produced an empty segmentation-map dimension.
+    #[error("frame segmentation map dimensions must be nonzero, got {mi_rows}x{mi_cols}")]
+    InvalidSegmentIdMapDimensions {
+        /// Frame height in 4x4 luma units.
+        mi_rows: usize,
+        /// Frame width in 4x4 luma units.
+        mi_cols: usize,
+    },
+    /// Validated frame geometry overflowed while sizing its segmentation map.
+    #[error("frame segmentation map arithmetic overflow in {operation}: {left} * {right}")]
+    SegmentIdMapSizeOverflow {
+        /// Sizing operation that overflowed.
+        operation: &'static str,
+        /// Left operand.
+        left: usize,
+        /// Right operand.
+        right: usize,
+    },
     /// An inter frame's reference count was invalid or did not match its map length.
     #[error("inter-frame reference count and map are inconsistent")]
     InvalidInterReferenceMap,

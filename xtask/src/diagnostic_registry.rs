@@ -242,13 +242,14 @@ fn accepts_registry_id(registry: &RegistryConfig, s: &str, origin: &str) -> Resu
     Ok(true)
 }
 
-/// Returns the slice of `text` before the first top-level `#[cfg(test)]` module.
+/// Returns the slice of `text` before the first inline top-level `#[cfg(test)]` module.
 ///
 /// Every test module in the validate crate is a single top-level `mod tests` that runs to
 /// end of file, so cutting from the first `#[cfg(test)]`-followed-by-`mod` line to EOF
 /// removes all test-only literals (assertions, `starts_with` prefixes, fake examples). The
-/// cut triggers only when the attribute is followed by a `mod` declaration — a
-/// `#[cfg(test)]` on a single `fn` does not truncate the real code after it.
+/// cut triggers only when the attribute is followed by an inline `mod` declaration. An
+/// external `mod tests;` has no body to remove, and a `#[cfg(test)]` on a single `fn` does
+/// not truncate the real code after it.
 pub(crate) fn strip_test_modules(text: &str) -> &str {
     let lines = line_starts(text);
     for (i, (start, line)) in lines.iter().enumerate() {
@@ -260,7 +261,9 @@ pub(crate) fn strip_test_modules(text: &str) -> &str {
             if trimmed.is_empty() || trimmed.starts_with("#[") {
                 continue;
             }
-            if trimmed.starts_with("mod ") || trimmed.starts_with("pub mod ") {
+            if (trimmed.starts_with("mod ") || trimmed.starts_with("pub mod "))
+                && !trimmed.ends_with(';')
+            {
                 return &text[..*start];
             }
             break;
@@ -470,6 +473,12 @@ mod tests {
     #[test]
     fn strip_test_modules_keeps_cfg_test_fn() {
         let src = "#[cfg(test)]\nfn helper() {}\nfn real() { d(\"ops/foo\"); }\n";
+        assert_eq!(ids(strip_test_modules(src)), ["ops/foo"]);
+    }
+
+    #[test]
+    fn strip_test_modules_keeps_code_after_external_test_mod() {
+        let src = "#[cfg(test)]\nmod tests;\nfn real() { d(\"ops/foo\"); }\n";
         assert_eq!(ids(strip_test_modules(src)), ["ops/foo"]);
     }
 

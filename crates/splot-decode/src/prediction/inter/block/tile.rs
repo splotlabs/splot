@@ -1798,14 +1798,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
     let chunk_offset = work_units
         .first()
         .map_or(ByteOffset::new(0), |tile| tile.tile_byte_span().start);
-    let mut segment_ids = FrameSegmentIdMap::new(mi_rows, mi_cols).map_err(|_| {
-        inter_missing!(
-            "inter_segment_id_frame_grid",
-            chunk_offset,
-            "inter.segment_id_frame_grid",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let mut segment_ids = frame_segment_id_map(mi_rows, mi_cols)?;
     let row_gate = row_gate::RowReferenceGate::new(
         reference,
         core,

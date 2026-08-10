@@ -362,8 +362,12 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();
     let started = crate::timing::start();
+    let tile_count = tile_plan.work_units().len();
+    let [tile] = tile_plan.work_units_mut() else {
+        return Err(DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into());
+    };
     let parse = parse_inter_frame_blocks(
-        &mut tile_plan,
+        tile,
         records,
         frame_envelope,
         &sequence,

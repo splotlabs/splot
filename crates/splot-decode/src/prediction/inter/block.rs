@@ -61,7 +61,7 @@ use crate::filters::wienerns_lr::tx_records::{
     derive_inter_luma_tx_records_for_block, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
-use crate::{DecodeOptions, DecodeReferenceStateError, Result};
+use crate::{DecodeHeaderStateError, DecodeOptions, DecodeReferenceStateError, Result};
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
 const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
@@ -545,6 +545,27 @@ fn final_segment_ids<T: ReconSample>(
         return Arc::clone(previous);
     }
     Arc::new(decoded)
+}
+
+fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentIdMap> {
+    FrameSegmentIdMap::new(mi_rows, mi_cols).map_err(|error| match error {
+        TileSegmentIdStateError::EmptyDimensions { mi_rows, mi_cols } => {
+            DecodeHeaderStateError::InvalidSegmentIdMapDimensions { mi_rows, mi_cols }.into()
+        }
+        TileSegmentIdStateError::ArithmeticOverflow {
+            operation,
+            left,
+            right,
+        } => DecodeHeaderStateError::SegmentIdMapSizeOverflow {
+            operation,
+            left,
+            right,
+        }
+        .into(),
+        TileSegmentIdStateError::Allocation { .. } => {
+            inter_allocation!("inter frame segment id map")
+        }
+    })
 }
 
 /// The frame-level inputs of the AV2 § 7.9 temporal prelude, captured so the
