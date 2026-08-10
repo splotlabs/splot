@@ -930,13 +930,22 @@ fn validate_segment_id(segment_id: i32, last_active: u8, tile_offset: ByteOffset
         .ok()
         .filter(|&id| id <= last_active)
         .ok_or_else(|| {
-            inter_cap!(
-                "inter_segment_id_out_of_range",
+            crate::pipeline::malformed_tile_payload(
                 tile_offset,
-                "inter.segment_id out of range",
-                "5.20.5.8"
+                "6.19.5.8",
+                SegmentIdOutOfRange {
+                    segment_id,
+                    last_active,
+                },
             )
         })
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("postprocessed segment id {segment_id} is outside 0..={last_active}")]
+struct SegmentIdOutOfRange {
+    segment_id: i32,
+    last_active: u8,
 }
 
 /// § 5.11.4 `AvailU` / `AvailL`: `is_inside` bounds the up and left neighbour
