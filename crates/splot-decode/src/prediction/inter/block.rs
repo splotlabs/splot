@@ -339,14 +339,8 @@ fn derive_inter_block_setup<T: ReconSample>(
         &reference.ref_order_hint,
     );
     let expected_tip_pair = derived_tip_reference_pair(core, &derived_order_hints);
-    let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols).ok_or_else(|| {
-        inter_cap!(
-            "inter_temporal_motion_field",
-            offset,
-            "inter.temporal_motion_field",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let mut motion_field = TemporalMotionField::new(mi_rows, mi_cols)
+        .ok_or(inter_internal!("inter_temporal_motion_field", offset))?;
     motion_field.set_band_rows8(sb_h4 / 2);
     motion_field.set_reference_metadata(
         !frame_is_intra,

@@ -11,6 +11,16 @@ fn temporal_motion_block_stays_compact() {
 }
 
 #[test]
+fn temporal_grid_cell_count_fits_at_maximum_frame_size() {
+    let max_frame_dimension = 1_usize << 16;
+    let max_mi_dimension = 2 * ((max_frame_dimension + 7) >> 3);
+    let (width8, height8, cells) =
+        allocate_temporal_grid::<()>(max_mi_dimension, max_mi_dimension).unwrap();
+    assert_eq!((width8, height8), (8192, 8192));
+    assert_eq!(cells.len(), width8 * height8);
+}
+
+#[test]
 fn compact_temporal_motion_preserves_every_warp_shape() {
     let mvs = [Mv { row: 9, col: -7 }, Mv { row: -5, col: 3 }];
     let first = [1 << 16, 0, 2 << 16, 0, 1 << 16, -(1 << 16)];
