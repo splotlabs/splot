@@ -276,14 +276,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             chroma_rows,
             chroma_cols,
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_chroma_smooth_grid",
-                tile_offset,
-                "inter.chroma_smooth_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!("inter_chroma_smooth_grid", tile_offset))?;
         let walk =
             GeneralIntraMultiblockCursor::new(tile, context.sequence, context.core, context.limits)
                 .map_err(|error| {
