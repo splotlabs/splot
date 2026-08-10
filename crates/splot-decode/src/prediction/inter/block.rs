@@ -46,10 +46,11 @@ use crate::bitstream::tile_payload::{
     FrameQuantizerSnapshot, FrameSegmentIdMap, GeneralIntraLeafMode, GeneralIntraMultiblockCursor,
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
     SavedCdfSubset, TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
-    TileCoeffStateError, TileFscModeState, TileIntraJointModeState, TilePartitionTraversalError,
-    TileSegmentIdState, TileUsesMrlsState, TransformToolResidualPolicy, chroma_subsampling,
-    current_frame_qm_segment_id, decode_general_intra_plane_coeffs, frame_mi_dimensions,
-    get_plane_residual_size, is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
+    TileCoeffStateError, TileFscModeState, TileIntraJointModeState, TilePartitionFrontierError,
+    TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
+    TransformToolResidualPolicy, chroma_subsampling, current_frame_qm_segment_id,
+    decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
+    is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
 };
 use crate::filters::wienerns_lr::intrabc_records::{
     IntrabcBlockGeometry, IntrabcBlockPrelude, IntrabcUseSkip, TileIntrabcPreludeState,
@@ -2332,12 +2333,18 @@ fn map_inter_multiblock_error(
         GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
             TilePartitionTraversalError::Limit(source),
         )) => crate::error::DecodeError::Limit { source },
-        _ => inter_cap!(
-            "inter_partition_walk",
-            tile_offset,
-            "inter.partition_walk",
-            SPEC_MODE_INFO
-        ),
+        GeneralIntraMultiblockError::Setup(TilePartitionFrontierError::Traversal(
+            TilePartitionTraversalError::Symbol(error),
+        ))
+        | GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::Symbol(error),
+        )) => symbol_read_error(BlockSymbolTraceReadError::Symbol(error), tile_offset),
+        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::Decision(error),
+        )) if error.is_source_read_failure() => {
+            crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
+        }
+        _ => inter_internal!("inter_partition_walk", tile_offset),
     }
 }
 

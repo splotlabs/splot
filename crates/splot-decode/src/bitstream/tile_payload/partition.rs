@@ -184,6 +184,18 @@ pub(crate) enum PartitionDecisionError {
     FinalPartitionDisallowed { partition: PartitionType },
 }
 
+impl PartitionDecisionError {
+    pub(crate) fn is_source_read_failure(&self) -> bool {
+        match self {
+            Self::Literal(_) => true,
+            Self::Symbol(PartitionEntrySymbolReadError::Symbol(error)) => {
+                !matches!(error, CoreError::InvalidSymbolCdf { .. })
+            }
+            _ => false,
+        }
+    }
+}
+
 pub(crate) fn read_partition_decision(
     input: ReadPartitionDecisionInput<'_>,
     cdfs: &mut TileCdfSubset,

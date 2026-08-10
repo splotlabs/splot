@@ -18,8 +18,8 @@ use super::resolve::effective_intrabc_sb_h4;
 use super::warp::{extend_warp_base_position, mvd_sign_derivation_block_scope_allowed};
 use super::{
     chroma_smooth_tile_ranges, inter_skip_txfm_ctx, leaf_uses_general_intra,
-    predict_interintra_planes, read_inter_intra_syntax_enabled, single_ref_read_error,
-    skip_segment_reference, symbol_read_error, validate_segment_id,
+    map_inter_multiblock_error, predict_interintra_planes, read_inter_intra_syntax_enabled,
+    single_ref_read_error, skip_segment_reference, symbol_read_error, validate_segment_id,
 };
 
 #[test]
@@ -59,7 +59,9 @@ fn mvd_sign_derivation_requires_the_full_block_scope() {
     ));
 }
 use crate::bitstream::tile_payload::{
-    BlockSize, BlockSymbolTraceReadError, FrameCdfSubset, TileBlockDecodedState, TileCdfSelector,
+    BlockSize, BlockSymbolTraceReadError, FrameCdfSubset, GeneralIntraMultiblockError,
+    GeneralIntraTreeWalkError, PartitionDecisionError, TileBlockDecodedState, TileCdfSelector,
+    TilePartitionTraversalError, TilePartitionTraversalUnsupported,
 };
 use crate::error::{DecodeError, DecodeHeaderStateError};
 use crate::filters::wienerns_lr::intrabc_ref_mv_stack::{
@@ -215,6 +217,48 @@ fn single_ref_read_failures_keep_typed_boundary() {
             byte_offset,
         } if byte_offset == offset
     ));
+}
+
+#[test]
+fn partition_walk_failures_keep_typed_boundaries() {
+    let offset = ByteOffset::new(45);
+    let error = GeneralIntraMultiblockError::<DecodeError>::Walk(
+        GeneralIntraTreeWalkError::Traversal(TilePartitionTraversalError::Unsupported(
+            TilePartitionTraversalUnsupported::ReadLoopRestoration,
+        )),
+    );
+
+    assert!(matches!(
+        map_inter_multiblock_error(error, offset),
+        DecodeError::InternalState {
+            reason: "inter_partition_walk",
+            byte_offset,
+        } if byte_offset == offset
+    ));
+
+    for error in [
+        GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::Decision(PartitionDecisionError::Literal(
+                splot_core::Error::UnexpectedEof {
+                    offset: ByteOffset::new(0),
+                    needed: 1,
+                },
+            )),
+        )),
+        GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: ByteOffset::new(0),
+                needed: 1,
+            }),
+        )),
+    ] {
+        assert!(matches!(
+            map_inter_multiblock_error(error, offset),
+            DecodeError::MalformedSource { issue }
+                if issue.offset() == Some(offset)
+                    && issue.spec_section() == Some(super::super::SPEC_MODE_INFO)
+        ));
+    }
 }
 
 #[test]
