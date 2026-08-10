@@ -251,14 +251,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             tile_rows.clone(),
             tile_cols.clone(),
         )
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_y_smooth_grid",
-                tile_offset,
-                "inter.y_smooth_grid",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!("inter_y_smooth_grid", tile_offset))?;
         let (chroma_rows, chroma_cols) =
             super::chroma_smooth_tile_ranges(tile_rows, tile_cols, chroma);
         let chroma_smooth = crate::prediction::intra_edge::TileChromaSmoothGrid::new_for_tile(
