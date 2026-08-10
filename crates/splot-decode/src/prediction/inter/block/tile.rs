@@ -238,13 +238,11 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         )?;
         let segment_id_state =
             TileSegmentIdState::new_for_tile(tile_rows.clone(), tile_cols.clone()).map_err(
-                |_| {
-                    inter_missing!(
-                        "inter_segment_id_grid",
-                        tile_offset,
-                        "inter.segment_id_grid",
-                        SPEC_MODE_INFO
-                    )
+                |error| match error {
+                    TileSegmentIdStateError::Allocation { .. } => {
+                        inter_allocation!("inter segment id state")
+                    }
+                    _ => inter_internal!("inter_segment_id_grid", tile_offset),
                 },
             )?;
         let mv_grid = NeighbourMvGrid::new_for_tile(tile_rows.clone(), tile_cols.clone())

@@ -47,7 +47,7 @@ use crate::bitstream::tile_payload::{
     GeneralIntraMultiblockError, GeneralIntraTreeWalkError, IsCflContext, LumaCoeffBlock,
     SavedCdfSubset, TileBlockDecodedState, TileCdfSelector, TileCdfSubset, TileCoeffContextState,
     TileCoeffStateError, TileFscModeState, TileIntraJointModeState, TilePartitionFrontierError,
-    TilePartitionTraversalError, TileSegmentIdState, TileUsesMrlsState,
+    TilePartitionTraversalError, TileSegmentIdState, TileSegmentIdStateError, TileUsesMrlsState,
     TransformToolResidualPolicy, chroma_subsampling, current_frame_qm_segment_id,
     decode_general_intra_plane_coeffs, frame_mi_dimensions, get_plane_residual_size,
     is_cctx_geometry_allowed, neg_deinterleave, read_lossless_tx_size,
