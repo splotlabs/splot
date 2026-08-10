@@ -488,13 +488,12 @@ fn segment_id_validation_accepts_the_last_active_segment() {
 }
 
 #[test]
-fn segment_id_validation_rejects_values_above_the_active_range() {
+fn segment_id_validation_reports_values_above_the_active_range_as_malformed() {
     assert!(matches!(
         validate_segment_id(8, 7, ByteOffset::new(11)),
-        Err(DecodeError::UnsupportedFeature { unsupported })
-            if unsupported.reason() == "inter_segment_id_out_of_range"
-                && unsupported.spec_section() == "5.20.5.8"
-                && unsupported.byte_offset() == Some(ByteOffset::new(11))
+        Err(DecodeError::MalformedSource { issue })
+            if issue.spec_section() == Some("6.19.5.8")
+                && issue.offset() == Some(ByteOffset::new(11))
     ));
 }
 
