@@ -757,14 +757,7 @@ fn build_units<T: ReconSample>(
                 placed.predict_chroma && chroma_end_x > chroma_x && chroma_end_y > chroma_y;
             let mvs = temporal
                 .tip_candidate(luma_y / 8, luma_x / 8, placed.block.mv)
-                .ok_or_else(|| {
-                    inter_missing!(
-                        "inter_tip_motion_field",
-                        tile_offset,
-                        "inter.tip.motion_field",
-                        SPEC_MODE_INFO
-                    )
-                })?;
+                .ok_or(inter_internal!("inter_tip_motion_field", tile_offset))?;
             scratch.units.push(TipUnit {
                 rect: mc::McBlockRect {
                     luma_x,
