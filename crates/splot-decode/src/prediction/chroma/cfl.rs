@@ -23,7 +23,7 @@ use splot_recon::{
 };
 
 use crate::bitstream::tile_payload::{
-    CflIndex, CflParams, GeneralIntraResidualError, LumaCoeffBlock,
+    CflMultiDirection, CflParams, GeneralIntraResidualError, LumaCoeffBlock,
 };
 use crate::pipeline::reconstruct::commit_intra_prediction;
 use crate::tile::block_context::NeighbourAvailability;
@@ -69,7 +69,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_block_into<T: ReconSample>(
     )?;
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
-    let luma_ac = if cfl_params.index == CflIndex::Multi {
+    let luma_ac = if matches!(cfl_params, CflParams::Multi { .. }) {
         None
     } else {
         prepare_cfl_luma_ac_into(
@@ -144,7 +144,7 @@ pub(crate) fn reconstruct_general_intra_chroma_cfl_pair_into<T: ReconSample>(
     } = scratch;
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
-    let luma_ac = if cfl_params.index == CflIndex::Multi {
+    let luma_ac = if matches!(cfl_params, CflParams::Multi { .. }) {
         None
     } else {
         prepare_cfl_luma_ac_into(
@@ -246,7 +246,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
     bit_depth: BitDepth,
     luma_ac: Option<&[i32]>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    if cfl_params.index == CflIndex::Multi {
+    if let CflParams::Multi { direction } = cfl_params {
         mhccp_prediction_into(
             workspace,
             plane_id,
@@ -254,7 +254,7 @@ fn chroma_cfl_prediction_into<T: ReconSample>(
             y,
             1usize << log2_width,
             1usize << log2_height,
-            cfl_params,
+            direction,
             cfl_ds_filter_index,
             sb_mib,
             neighbours,
@@ -578,7 +578,7 @@ fn mhccp_prediction_into<T: ReconSample>(
     y: usize,
     width: usize,
     height: usize,
-    cfl_params: CflParams,
+    direction: CflMultiDirection,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
     neighbours: NeighbourAvailability,
@@ -586,20 +586,14 @@ fn mhccp_prediction_into<T: ReconSample>(
     prediction: &mut Vec<T>,
     reference_scratch: &mut [Vec<u16>; 2],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    let Some(mh_dir) = cfl_params.mh_dir else {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_multi_missing_mh_dir",
-            },
-        );
-    };
-    if mh_dir > 2 || cfl_filter_index(cfl_ds_filter_index).is_none() {
+    if cfl_filter_index(cfl_ds_filter_index).is_none() {
         return Err(
             GeneralIntraResidualError::UnsupportedTransformToolResidual {
                 reason: "general_intra_cfl_multi_filter",
             },
         );
     }
+    let mh_dir = direction.value();
     let refs = mhccp_references(
         workspace,
         plane_id,
@@ -667,16 +661,16 @@ fn cfl_alpha_q3<T: ReconSample>(
     sb_mib: usize,
     neighbours: NeighbourAvailability,
 ) -> core::result::Result<i32, GeneralIntraResidualError> {
-    let alpha_q3 = match cfl_params.index {
-        CflIndex::Explicit => {
+    let alpha_q3 = match cfl_params {
+        CflParams::Explicit { alpha_u, alpha_v } => {
             let alpha = match plane_id {
-                PlaneId::U => cfl_params.alpha_u,
-                PlaneId::V => cfl_params.alpha_v,
+                PlaneId::U => alpha_u,
+                PlaneId::V => alpha_v,
                 PlaneId::Y => 0,
             };
             i32::from(alpha) * CFL_ALPHA_SCALE
         }
-        CflIndex::DerivedAlpha => derive_cfl_alpha_q3(
+        CflParams::DerivedAlpha => derive_cfl_alpha_q3(
             workspace,
             plane_id,
             x,
@@ -687,7 +681,7 @@ fn cfl_alpha_q3<T: ReconSample>(
             sb_mib,
             neighbours,
         )?,
-        CflIndex::Multi => 0,
+        CflParams::Multi { .. } => 0,
     };
     Ok(alpha_q3)
 }

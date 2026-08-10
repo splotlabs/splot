@@ -408,3 +408,22 @@ fn supported_chroma_mode_non_follow_h_pred_over_dc_luma_resolves_horizontal() {
         Some(SupportedChromaMode::Horizontal)
     );
 }
+
+#[test]
+fn every_valid_y_and_uv_mode_pair_resolves_to_a_typed_chroma_mode() {
+    for y_mode in 0..13u8 {
+        for uv_mode in 0..13u8 {
+            let y_mode = IntraYMode(y_mode);
+            assert!(
+                get_intra_uv_mode_set(y_mode, uv_mode).is_some(),
+                "missing coefficient mode for y_mode {} uv_mode {uv_mode}",
+                y_mode.value()
+            );
+            assert!(
+                supported_chroma_mode(y_mode, uv_mode).is_some(),
+                "missing prediction mode for y_mode {} uv_mode {uv_mode}",
+                y_mode.value()
+            );
+        }
+    }
+}

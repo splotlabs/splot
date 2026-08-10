@@ -49,7 +49,7 @@ pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState, TileCoeff
 #[cfg(test)]
 pub(crate) use general_intra_block::GeneralIntraLumaBlockMode;
 pub(crate) use general_intra_block::{
-    CflIndex, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
+    CflMultiDirection, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,

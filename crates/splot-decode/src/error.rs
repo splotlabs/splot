@@ -90,6 +90,9 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
+    /// A canonical three-symbol MHCCP direction decoded outside its typed domain.
+    #[error("general-intra MHCCP direction state is inconsistent")]
+    InvalidGeneralIntraMhccpDirection,
     /// A complete intra header contradicted its tile-group carrier or frame-kind facts.
     #[error("intra-only tile-group header state is inconsistent")]
     InvalidIntraOnlyTileGroupState,

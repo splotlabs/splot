@@ -8,7 +8,7 @@ use splot_recon::{
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    CflIndex, GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext,
+    CflParams, GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext,
     GeneralIntraChromaToolConfig, GeneralIntraLeafMode, IntraYMode, IsCflContext,
     LumaTransformPartitionContext, LumaTransformTypeContext, SupportedChromaMode,
     SupportedNonDcLumaMode, TransformPartitionUnsupported, TransformToolResidualPolicy,
@@ -477,7 +477,6 @@ pub(crate) fn decode_one_general_intra_block(
         intra_edge,
         work_unit,
         symbols,
-        frontier.has_chroma,
         &modes,
         coeff_ctx,
         deblock_blocks,
@@ -541,8 +540,7 @@ fn parse_one_general_intra_chroma_part_block(
     )
     .map_err(|error| general_intra_block_mode_error(error, tile_offset))?;
     let chroma_plan =
-        chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib)
-            .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?;
+        chroma_plan_for_parts(chroma, y_mode, angle_delta_y, cfl_ds_filter_index, sb_mib);
     let residual_plan = GeneralIntraResidualPlan::chroma(block_ctx, chroma_plan, lossless_luma_fsc)
         .map_err(|error| general_intra_residual_plan_error(error, tile_offset))?;
     let command = parse_general_intra_residual_plan(
@@ -564,11 +562,7 @@ fn parse_one_general_intra_chroma_part_block(
         segment_id,
         tile_offset,
     )?;
-    record_chroma_smooth(
-        chroma_smooth,
-        block_ctx,
-        chroma.supported_chroma_mode(y_mode),
-    );
+    record_chroma_smooth(chroma_smooth, block_ctx, chroma.supported_chroma_mode());
     Ok((GeneralIntraLeafMode::chroma(chroma.is_cfl()), command))
 }
 
@@ -577,7 +571,6 @@ fn parse_one_general_intra_rect_block(
     intra_edge: crate::prediction::intra_edge::IntraEdgeCtx,
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
-    has_chroma: bool,
     modes: &GeneralIntraBlockModes,
     coeff_ctx: &mut crate::bitstream::tile_payload::TileCoeffContextState,
     deblock_blocks: &mut Vec<crate::filters::deblock::DeblockBlock>,
@@ -597,14 +590,7 @@ fn parse_one_general_intra_rect_block(
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
     let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)
         .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
-    let chroma_plan = if has_chroma {
-        Some(
-            rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib)
-                .map_err(|error| general_intra_chroma_capability_error(error, tile_offset))?,
-        )
-    } else {
-        None
-    };
+    let chroma_plan = rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib);
 
     let residual_plan = GeneralIntraResidualPlan::rect(
         block_ctx,
@@ -634,7 +620,7 @@ fn parse_one_general_intra_rect_block(
         segment_id,
         tile_offset,
     )?;
-    Ok((leaf_mode_for_block(modes, has_chroma), command))
+    Ok((leaf_mode_for_block(modes), command))
 }
 
 fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
@@ -649,9 +635,9 @@ fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
     .with_use_dip(modes.use_dip)
 }
 
-fn leaf_mode_for_block(modes: &GeneralIntraBlockModes, has_chroma: bool) -> GeneralIntraLeafMode {
+fn leaf_mode_for_block(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
     let leaf = leaf_mode(modes);
-    if has_chroma {
+    if modes.chroma().is_some() {
         leaf.with_uv_cfl(modes.is_cfl())
     } else {
         leaf
@@ -864,24 +850,16 @@ fn rect_chroma_plan(
     modes: &GeneralIntraBlockModes,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
-    if modes.is_cfl() {
-        return cfl_chroma_plan(
-            modes.cfl_params(),
-            ChromaCapabilityReason::RectCflMissingParams,
+) -> Option<RectChromaPlan> {
+    modes.chroma().map(|chroma| {
+        chroma_plan_for_parts(
+            chroma,
+            modes.y_mode,
+            modes.angle_delta_y,
             cfl_ds_filter_index,
             sb_mib,
-        );
-    }
-    let mode = modes.supported_chroma_mode().ok_or(unsupported_chroma(
-        ChromaCapabilityReason::NonDcChroma,
-        missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
-    ))?;
-    Ok(rect_chroma_plan_for_mode(
-        mode,
-        inherited_chroma_angle_delta(modes.coeff_uv_mode(), modes.y_mode, modes.angle_delta_y),
-        modes.chroma_dpcm_direction(),
-    ))
+        )
+    })
 }
 
 fn rect_chroma_plan_for_mode(
@@ -917,53 +895,29 @@ fn chroma_plan_for_parts(
     angle_delta_y: i8,
     cfl_ds_filter_index: u8,
     sb_mib: usize,
-) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
-    if chroma.is_cfl() {
-        return cfl_chroma_plan(
-            chroma.cfl_params(),
-            ChromaCapabilityReason::ChromaPartCflMissingParams,
-            cfl_ds_filter_index,
-            sb_mib,
-        );
+) -> RectChromaPlan {
+    match chroma {
+        GeneralIntraChromaBlockMode::Prediction {
+            mode,
+            coeff_uv_mode,
+            dpcm,
+        } => rect_chroma_plan_for_mode(
+            mode,
+            inherited_chroma_angle_delta(usize::from(coeff_uv_mode), y_mode, angle_delta_y),
+            dpcm,
+        ),
+        GeneralIntraChromaBlockMode::Cfl(params) => {
+            cfl_chroma_plan(params, cfl_ds_filter_index, sb_mib)
+        }
     }
-    let mode = chroma
-        .supported_chroma_mode(y_mode)
-        .ok_or(unsupported_chroma(
-            ChromaCapabilityReason::ChromaPartNonDcChroma,
-            missing_capability_message!("intra.chroma.mode", mode = "unsupported_non_dc"),
-        ))?;
-    Ok(rect_chroma_plan_for_mode(
-        mode,
-        inherited_chroma_angle_delta(chroma.coeff_uv_mode(), y_mode, angle_delta_y),
-        chroma.chroma_dpcm_direction(),
-    ))
 }
 
-fn cfl_chroma_plan(
-    params: Option<crate::bitstream::tile_payload::CflParams>,
-    missing_reason: ChromaCapabilityReason,
-    cfl_ds_filter_index: u8,
-    sb_mib: usize,
-) -> core::result::Result<RectChromaPlan, ChromaCapabilityUnsupported> {
-    let params = params.ok_or(unsupported_chroma(
-        missing_reason,
-        missing_capability_message!("intra.chroma.cfl", mode = "missing_params"),
-    ))?;
-    let supported = match params.index {
-        CflIndex::Explicit | CflIndex::DerivedAlpha => true,
-        CflIndex::Multi => params.mh_dir.is_some_and(|dir| dir <= 2),
-    };
-    if !supported {
-        return Err(unsupported_chroma(
-            ChromaCapabilityReason::CflNonMulti,
-            missing_capability_message!("intra.chroma.cfl", mode = "unsupported_params"),
-        ));
-    }
-    Ok(RectChromaPlan::Cfl {
+fn cfl_chroma_plan(params: CflParams, cfl_ds_filter_index: u8, sb_mib: usize) -> RectChromaPlan {
+    RectChromaPlan::Cfl {
         params,
         cfl_ds_filter_index,
         sb_mib,
-    })
+    }
 }
 
 pub(crate) fn wide_angle_mapped_p_angle(width: usize, height: usize, p_angle: i32) -> i32 {
@@ -1033,66 +987,6 @@ fn parse_general_intra_residual_plan(
         segment_id,
         tile_offset,
     })
-}
-
-#[derive(Clone, Copy)]
-enum ChromaCapabilityReason {
-    RectCflMissingParams,
-    NonDcChroma,
-    ChromaPartCflMissingParams,
-    ChromaPartNonDcChroma,
-    CflNonMulti,
-}
-
-#[derive(Clone, Copy)]
-struct ChromaCapabilityUnsupported {
-    reason: ChromaCapabilityReason,
-    message: &'static str,
-}
-
-const fn unsupported_chroma(
-    reason: ChromaCapabilityReason,
-    message: &'static str,
-) -> ChromaCapabilityUnsupported {
-    ChromaCapabilityUnsupported { reason, message }
-}
-
-fn general_intra_chroma_capability_error(
-    error: ChromaCapabilityUnsupported,
-    offset: ByteOffset,
-) -> DecodeError {
-    match error.reason {
-        ChromaCapabilityReason::RectCflMissingParams => general_intra_at!(
-            "general_intra_rect_cfl_missing_params",
-            offset,
-            error.message,
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        ChromaCapabilityReason::NonDcChroma => general_intra_at!(
-            "general_intra_non_dc_chroma",
-            offset,
-            error.message,
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        ChromaCapabilityReason::ChromaPartCflMissingParams => general_intra_at!(
-            "general_intra_chroma_part_cfl_missing_params",
-            offset,
-            error.message,
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        ChromaCapabilityReason::ChromaPartNonDcChroma => general_intra_at!(
-            "general_intra_chroma_part_non_dc_chroma",
-            offset,
-            error.message,
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        ChromaCapabilityReason::CflNonMulti => general_intra_at!(
-            "general_intra_cfl_non_multi",
-            offset,
-            error.message,
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-    }
 }
 
 fn general_intra_luma_plan_error(error: IntraLumaUnsupported, offset: ByteOffset) -> DecodeError {
@@ -1230,6 +1124,9 @@ fn general_intra_block_mode_error(
         | GeneralIntraBlockModeError::Literal { .. }
         | GeneralIntraBlockModeError::InvalidUvMode { .. } => {
             malformed_tile_payload(offset, GENERAL_INTRA_MODE_SPEC_SECTION, error)
+        }
+        GeneralIntraBlockModeError::InvalidCflMhDirection { .. } => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraMhccpDirection.into()
         }
         GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_at!(
             "general_intra_unsupported_y_mode",

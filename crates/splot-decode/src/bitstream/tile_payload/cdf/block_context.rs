@@ -231,13 +231,6 @@ pub(crate) fn supported_chroma_mode(
         .flatten()
 }
 
-pub(crate) fn supported_chroma_mode_value(uv_mode_value: u8) -> Option<SupportedChromaMode> {
-    CHROMA_EXPLICIT_BY_MODE
-        .get(usize::from(uv_mode_value))
-        .copied()
-        .flatten()
-}
-
 pub(crate) fn reconstruct_minimal_y_mode(y_mode_set: u8, y_mode_index: u8) -> Option<IntraYMode> {
     let y_mode_index = usize::from(y_mode_index);
     if y_mode_set != 0 || y_mode_index >= NON_DIRECTIONAL_MODES_COUNT {

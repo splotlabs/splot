@@ -205,11 +205,7 @@ fn decodes_dc_luma_mode_and_a_chroma_mode_in_spec_order() {
 
     assert_eq!(modes.y_mode, IntraYMode::DC_PRED);
     assert_eq!(modes.intra_joint_mode, 0);
-    assert!(
-        modes.uv_mode < UV_INTRA_MODES_CFL_NOT_ALLOWED,
-        "uv_mode {} out of range",
-        modes.uv_mode
-    );
+    assert!(modes.supported_chroma_mode().is_some());
 }
 
 #[test]
@@ -461,7 +457,10 @@ fn inactive_palette_y_mode_is_consumed_after_chroma_mode() {
     .unwrap();
 
     assert_eq!(modes.y_mode, IntraYMode::DC_PRED);
-    assert_eq!(modes.uv_mode, 1);
+    assert_eq!(
+        modes.supported_chroma_mode(),
+        Some(SupportedChromaMode::Smooth)
+    );
     assert_eq!(symbols.symbol_count(), 4);
     assert_eq!(symbols.finish().unwrap().symbol_count, 4);
 }
@@ -675,16 +674,10 @@ fn active_cfl_chroma_mode_returns_typed_uv_cfl_pred() {
     .unwrap();
 
     assert!(mode.is_cfl());
-    assert_eq!(mode.uv_mode(), UV_CFL_PRED_MODE);
     assert_eq!(mode.coeff_uv_mode(), usize::from(UV_CFL_PRED_MODE));
     assert_eq!(
-        mode.cfl_params(),
-        Some(CflParams {
-            index: CflIndex::DerivedAlpha,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: None
-        })
+        mode,
+        GeneralIntraChromaBlockMode::Cfl(CflParams::DerivedAlpha)
     );
     assert_eq!(symbols.symbol_count(), 2);
     assert_eq!(symbols.finish().unwrap().symbol_count, 2);
@@ -693,38 +686,37 @@ fn active_cfl_chroma_mode_returns_typed_uv_cfl_pred() {
 #[test]
 fn active_mhccp_chroma_mode_is_admitted_when_cfl_is_disabled() {
     let size_group = cfl_mh_dir_size_group(block_size(BLOCK_16X16));
-    let payload = encode_symbol_sequence(&[
-        (TileCdfSelector::IsCfl { ctx: 0 }, 1),
-        (TileCdfSelector::CflMhDir { size_group }, 2),
-    ]);
-    let mut work_unit = make_work_unit(&payload);
-    let mut symbols = symbol_decoder(&payload);
+    for (symbol, direction) in [
+        (0, CflMultiDirection::Direct),
+        (1, CflMultiDirection::Above),
+        (2, CflMultiDirection::Left),
+    ] {
+        let payload = encode_symbol_sequence(&[
+            (TileCdfSelector::IsCfl { ctx: 0 }, 1),
+            (TileCdfSelector::CflMhDir { size_group }, symbol),
+        ]);
+        let mut work_unit = make_work_unit(&payload);
+        let mut symbols = symbol_decoder(&payload);
 
-    let mode = decode_general_intra_chroma_block_mode(
-        &mut work_unit,
-        &mut symbols,
-        GeneralIntraChromaToolConfig::new(false, true),
-        GeneralIntraChromaModeContext::shared_or_non_sdp(0),
-        IntraYMode::DC_PRED,
-        block_size(BLOCK_16X16),
-        4,
-        4,
-    )
-    .unwrap();
+        let mode = decode_general_intra_chroma_block_mode(
+            &mut work_unit,
+            &mut symbols,
+            GeneralIntraChromaToolConfig::new(false, true),
+            GeneralIntraChromaModeContext::shared_or_non_sdp(0),
+            IntraYMode::DC_PRED,
+            block_size(BLOCK_16X16),
+            4,
+            4,
+        )
+        .unwrap();
 
-    assert!(mode.is_cfl());
-    assert_eq!(mode.uv_mode(), UV_CFL_PRED_MODE);
-    assert_eq!(
-        mode.cfl_params(),
-        Some(CflParams {
-            index: CflIndex::Multi,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: Some(2)
-        })
-    );
-    assert_eq!(symbols.symbol_count(), 2);
-    assert_eq!(symbols.finish().unwrap().symbol_count, 2);
+        assert_eq!(
+            mode,
+            GeneralIntraChromaBlockMode::Cfl(CflParams::Multi { direction })
+        );
+        assert_eq!(symbols.symbol_count(), 2);
+        assert_eq!(symbols.finish().unwrap().symbol_count, 2);
+    }
 }
 
 #[test]
@@ -772,13 +764,10 @@ fn shared_chroma_mhccp_dir_uses_luma_syntax_block_size() {
 
     assert!(modes.is_cfl());
     assert_eq!(
-        modes.cfl_params(),
-        Some(CflParams {
-            index: CflIndex::Multi,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: Some(2),
-        })
+        modes.chroma(),
+        Some(GeneralIntraChromaBlockMode::Cfl(CflParams::Multi {
+            direction: CflMultiDirection::Left,
+        }))
     );
     assert_eq!(symbols.symbol_count(), 4);
     assert_eq!(symbols.finish().unwrap().symbol_count, 4);
@@ -803,7 +792,7 @@ fn sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl() {
     .unwrap();
 
     assert!(!mode.is_cfl());
-    assert_eq!(mode.uv_mode(), 0);
+    assert_eq!(mode.supported_chroma_mode(), Some(SupportedChromaMode::Dc));
     assert_eq!(symbols.symbol_count(), 1);
     assert_eq!(symbols.finish().unwrap().symbol_count, 1);
 }
@@ -916,12 +905,9 @@ fn lossless_420_chroma_4x4_reads_cfl_and_mhccp_syntax() {
 
     assert!(mode.is_cfl());
     assert_eq!(
-        mode.cfl_params(),
-        Some(CflParams {
-            index: CflIndex::Multi,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: Some(2),
+        mode,
+        GeneralIntraChromaBlockMode::Cfl(CflParams::Multi {
+            direction: CflMultiDirection::Left,
         })
     );
     assert_eq!(symbols.symbol_count(), 4);
@@ -958,7 +944,11 @@ fn lossless_chroma_non_4x4_plane_reads_uv_mode_without_is_cfl() {
         );
 
         assert!(!mode.is_cfl(), "{label}");
-        assert_eq!(mode.uv_mode(), 0, "{label}");
+        assert_eq!(
+            mode.supported_chroma_mode(),
+            Some(SupportedChromaMode::Dc),
+            "{label}"
+        );
         assert_eq!(symbol_count, 2, "{label}");
         assert_eq!(finish_count, 2, "{label}");
     }
@@ -983,15 +973,15 @@ fn chroma_dpcm_modes_resolve_direction_and_coeff_mode() {
 
     let vertical = GeneralIntraChromaBlockMode::dpcm(0);
     assert_eq!(
-        vertical.chroma_dpcm_direction(),
-        Some(DpcmDirection::Vertical)
-    );
-    assert_eq!(
-        vertical.supported_chroma_mode(IntraYMode::DC_PRED),
-        Some(SupportedChromaMode::Vertical)
+        vertical,
+        GeneralIntraChromaBlockMode::Prediction {
+            mode: SupportedChromaMode::Vertical,
+            coeff_uv_mode: DPCM_VERTICAL_UV_MODE,
+            dpcm: Some(DpcmDirection::Vertical),
+        }
     );
     let modes = GeneralIntraBlockModes::from_luma_chroma_palette(luma, vertical, None);
-    assert_eq!(modes.chroma_dpcm_direction(), Some(DpcmDirection::Vertical));
+    assert_eq!(modes.chroma(), Some(vertical));
     assert_eq!(
         modes.supported_chroma_mode(),
         Some(SupportedChromaMode::Vertical)
@@ -999,12 +989,12 @@ fn chroma_dpcm_modes_resolve_direction_and_coeff_mode() {
 
     let horizontal = GeneralIntraChromaBlockMode::dpcm(1);
     assert_eq!(
-        horizontal.chroma_dpcm_direction(),
-        Some(DpcmDirection::Horizontal)
-    );
-    assert_eq!(
-        horizontal.supported_chroma_mode(IntraYMode::DC_PRED),
-        Some(SupportedChromaMode::Horizontal)
+        horizontal,
+        GeneralIntraChromaBlockMode::Prediction {
+            mode: SupportedChromaMode::Horizontal,
+            coeff_uv_mode: DPCM_HORIZONTAL_UV_MODE,
+            dpcm: Some(DpcmDirection::Horizontal),
+        }
     );
     assert_eq!(
         GeneralIntraBlockModes::from_luma_chroma_palette(luma, horizontal, None)
@@ -1036,11 +1026,9 @@ fn read_cfl_alphas_consumes_explicit_sign_and_alpha_contexts() {
 
     assert_eq!(
         params,
-        CflParams {
-            index: CflIndex::Explicit,
+        CflParams::Explicit {
             alpha_u: 4,
             alpha_v: 5,
-            mh_dir: None
         }
     );
     assert_eq!(symbols.symbol_count(), 4);

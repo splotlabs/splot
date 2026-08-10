@@ -61,12 +61,7 @@ fn zero_block() -> LumaCoeffBlock {
 }
 
 fn derived_alpha() -> CflParams {
-    CflParams {
-        index: CflIndex::DerivedAlpha,
-        alpha_u: 0,
-        alpha_v: 0,
-        mh_dir: None,
-    }
+    CflParams::DerivedAlpha
 }
 
 #[test]
@@ -210,11 +205,9 @@ fn cfl_above_average_uses_block_left_not_internal_64_pixel_boundaries() {
     .unwrap();
     assert_eq!(luma_ac[65], 31);
 
-    let params = CflParams {
-        index: CflIndex::Explicit,
+    let params = CflParams::Explicit {
         alpha_u: -1,
         alpha_v: 0,
-        mh_dir: None,
     };
     let mut prediction = Vec::new();
     apply_cfl_prediction(
@@ -283,11 +276,9 @@ fn cfl_left_average_uses_block_top_not_internal_64_pixel_boundaries() {
         255
     );
 
-    let params = CflParams {
-        index: CflIndex::Explicit,
+    let params = CflParams::Explicit {
         alpha_u: -16,
         alpha_v: 0,
-        mh_dir: None,
     };
     let mut prediction = Vec::new();
     apply_cfl_prediction(
@@ -507,12 +498,7 @@ fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
         528,
         32,
         16,
-        CflParams {
-            index: CflIndex::Multi,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: Some(0),
-        },
+        CflMultiDirection::Direct,
         0,
         32,
         NeighbourAvailability::new(true, true, 0, 0),

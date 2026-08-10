@@ -331,12 +331,7 @@ fn cfl_chroma_keeps_read_order_and_defers_reconstruction() {
         ctx,
         RectLumaPlan::Dc { use_tcq: true },
         Some(RectChromaPlan::Cfl {
-            params: CflParams {
-                index: crate::bitstream::tile_payload::CflIndex::DerivedAlpha,
-                alpha_u: 0,
-                alpha_v: 0,
-                mh_dir: None,
-            },
+            params: CflParams::DerivedAlpha,
             cfl_ds_filter_index: 0,
             sb_mib: 16,
         }),
@@ -370,12 +365,7 @@ fn maximum_444_cfl_plan_fits_deferred_plane_capacity() {
         ctx,
         RectLumaPlan::Dc { use_tcq: true },
         Some(RectChromaPlan::Cfl {
-            params: CflParams {
-                index: crate::bitstream::tile_payload::CflIndex::DerivedAlpha,
-                alpha_u: 0,
-                alpha_v: 0,
-                mh_dir: None,
-            },
+            params: CflParams::DerivedAlpha,
             cfl_ds_filter_index: 0,
             sb_mib: 16,
         }),

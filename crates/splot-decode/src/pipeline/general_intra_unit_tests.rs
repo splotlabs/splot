@@ -4,7 +4,7 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::bitstream::tile_payload::{CflIndex, CflParams, GeneralIntraChromaBlockMode};
+use crate::bitstream::tile_payload::{CflMultiDirection, CflParams, GeneralIntraChromaBlockMode};
 use crate::{DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeSourceIssueKind};
 
 #[test]
@@ -33,6 +33,21 @@ fn invalid_uv_mode_is_malformed_tile_syntax() {
         report.details,
         DecodeDiagnosticDetails::MalformedSource(_)
     ));
+}
+
+#[test]
+fn impossible_mhccp_direction_is_typed_internal_state() {
+    let error = general_intra_block_mode_error(
+        GeneralIntraBlockModeError::InvalidCflMhDirection { direction: 3 },
+        ByteOffset::new(42),
+    );
+    assert!(matches!(
+        error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraMhccpDirection,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
 }
 
 #[test]
@@ -237,31 +252,26 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
 
 #[test]
 fn chroma_part_cfl_reaches_cfl_plan() {
-    let params = CflParams {
-        index: CflIndex::Explicit,
+    let params = CflParams::Explicit {
         alpha_u: 1,
         alpha_v: -1,
-        mh_dir: None,
     };
     let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
 
     assert_eq!(
-        chroma_plan_for_parts(chroma, IntraYMode::H_PRED_FOR_TEST, 0, 1, 32).ok(),
-        Some(RectChromaPlan::Cfl {
+        chroma_plan_for_parts(chroma, IntraYMode::H_PRED_FOR_TEST, 0, 1, 32),
+        RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index: 1,
             sb_mib: 32,
-        })
+        }
     );
 }
 
 #[test]
 fn lossless_chroma_block_cfl_reaches_cfl_plan() {
-    let params = CflParams {
-        index: CflIndex::Multi,
-        alpha_u: 0,
-        alpha_v: 0,
-        mh_dir: Some(2),
+    let params = CflParams::Multi {
+        direction: CflMultiDirection::Left,
     };
     let luma = crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
         y_mode: IntraYMode::H_PRED_FOR_TEST,
@@ -282,7 +292,7 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
 
     let result = rect_chroma_plan(&modes, 1, 16);
     assert_eq!(
-        result.ok(),
+        result,
         Some(RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index: 1,
@@ -361,6 +371,76 @@ fn plans_every_chroma_mode() {
         assert_eq!(planned, Some(mode));
     }
 }
+
+#[test]
+fn shared_and_chroma_part_planners_are_total_over_typed_chroma_states() {
+    let luma = crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
+        y_mode: IntraYMode::H_PRED_FOR_TEST,
+        angle_delta_y: -2,
+        intra_joint_mode: 0,
+        mrl_index: 0,
+        mrl_sec_index: None,
+        fsc_mode: 0,
+        uses_mrls: 0,
+        use_dip: 0,
+        dip_transpose: 0,
+        dip_mode: 0,
+        use_dpcm_y: 0,
+        dpcm_mode_y: 0,
+    };
+    let prediction = GeneralIntraChromaBlockMode::Prediction {
+        mode: SupportedChromaMode::HorizontalFollow,
+        coeff_uv_mode: IntraYMode::H_PRED_FOR_TEST.value() as u8,
+        dpcm: None,
+    };
+    let expected_prediction = RectChromaPlan::Directional {
+        mode: SupportedChromaMode::HorizontalFollow,
+        angle_delta_uv: -2,
+        dpcm: None,
+    };
+    assert_eq!(
+        chroma_plan_for_parts(prediction, luma.y_mode, luma.angle_delta_y, 1, 32),
+        expected_prediction
+    );
+    let modes = GeneralIntraBlockModes::from_luma_chroma_palette(luma, prediction, None);
+    assert_eq!(rect_chroma_plan(&modes, 1, 32), Some(expected_prediction));
+
+    for params in [
+        CflParams::Explicit {
+            alpha_u: 3,
+            alpha_v: -4,
+        },
+        CflParams::DerivedAlpha,
+        CflParams::Multi {
+            direction: CflMultiDirection::Direct,
+        },
+        CflParams::Multi {
+            direction: CflMultiDirection::Above,
+        },
+        CflParams::Multi {
+            direction: CflMultiDirection::Left,
+        },
+    ] {
+        let chroma = GeneralIntraChromaBlockMode::Cfl(params);
+        let expected = RectChromaPlan::Cfl {
+            params,
+            cfl_ds_filter_index: 1,
+            sb_mib: 32,
+        };
+        assert_eq!(
+            chroma_plan_for_parts(chroma, luma.y_mode, luma.angle_delta_y, 1, 32),
+            expected
+        );
+        let modes = GeneralIntraBlockModes::from_luma_chroma_palette(luma, chroma, None);
+        assert_eq!(rect_chroma_plan(&modes, 1, 32), Some(expected));
+    }
+
+    assert_eq!(
+        rect_chroma_plan(&GeneralIntraBlockModes::luma_only(luma), 1, 32),
+        None
+    );
+}
+
 #[test]
 fn classifies_smooth_luma_plans() {
     use crate::bitstream::tile_payload::SupportedNonDcLumaMode::{
