@@ -138,9 +138,8 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
         motion,
         tile_offset,
     )?;
-    drop(held);
     if placed.block.bawp.enabled {
-        let slot = usize::try_from(placed.block.ref_frame0)
+        let _slot = usize::try_from(placed.block.ref_frame0)
             .ok()
             .and_then(|list_ref| ref_frame_idx.get(list_ref).copied())
             .ok_or_else(|| {
@@ -151,23 +150,16 @@ pub(super) fn reconstruct_placed_inter_block<T: ReconSample>(
                     super::super::SPEC_REFERENCE
                 )
             })?;
-        let ref_frame = reference.hold_slot(slot).ok_or_else(|| {
-            inter_missing!(
-                "inter_missing_bawp_reference_frame",
-                tile_offset,
-                "inter.bawp.reference_frame",
-                super::super::SPEC_REFERENCE
-            )
-        })?;
         super::super::bawp::apply_bawp(
             workspace,
-            ref_frame.samples()?,
+            held.reference0_samples()?,
             placed,
             placed.block.bawp,
             placed.block.mv,
             tile_offset,
         )?;
     }
+    drop(held);
     if let Some(interintra) = placed.block.interintra {
         for (prediction, samples) in interintra_scratch.planes() {
             let blend = match interintra {

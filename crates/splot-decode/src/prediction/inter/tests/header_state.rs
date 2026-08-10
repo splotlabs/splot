@@ -231,6 +231,38 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
 }
 
 #[test]
+fn admitted_reference_samples_survive_a_later_slot_failure() {
+    let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
+    let frame = crate::test_support::decoded_frame(4, 4);
+    let (slot, writer) = crate::pipeline::inflight::RefFrameSlot::pending(frame.info())
+        .expect("pending reference slot");
+    let progress = slot.progress().expect("pending frame progress");
+    assert!(progress.begin(&[(0, 4)]));
+    progress.publish(0);
+    reference
+        .store
+        .put(splot_recon::ReferenceSlot::new(0).expect("slot zero"), slot)
+        .expect("store pending reference");
+
+    let (reference0, reference1) =
+        super::super::hold_reference_pair(&reference, 0, None).expect("published samples");
+    let held = super::super::HeldInterBlockReferences {
+        reference0,
+        reference1,
+        compound: false,
+    };
+    drop(writer);
+
+    assert!(
+        reference
+            .slot(0)
+            .and_then(crate::pipeline::inflight::RefFrameSlot::hold_samples)
+            .is_none()
+    );
+    assert!(held.reference0_samples().is_ok());
+}
+
+#[test]
 fn missing_reference_cdf_context_is_a_typed_reference_state_error() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
     let failed = super::super::FrameCdfHandle::pending();
