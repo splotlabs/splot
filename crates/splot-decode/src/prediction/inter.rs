@@ -640,6 +640,12 @@ pub(in crate::prediction::inter) fn hold_inter_block_references<'a, T: ReconSamp
 }
 
 impl<T: ReconSample> HeldInterBlockReferences<'_, T> {
+    pub(in crate::prediction::inter) fn reference0_samples(
+        &self,
+    ) -> Result<reference::ReferenceSamples<'_, T>> {
+        self.reference0.samples()
+    }
+
     /// Builds the § 7.13.3 prediction parameters for the held block.
     ///
     /// # Errors
