@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
-//! Terminal handles for entropy products named by provisional reference updates.
+//! Publication handles for entropy products owned by the canonical `PipelineFrame`.
 
 use std::sync::Arc;
 

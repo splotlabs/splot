@@ -272,14 +272,27 @@ pub(crate) fn apply_stripe<T: ReconSample>(
     {
         return Err(gdf_state_error());
     }
-    let band_segments = if disable_loopfilters_across_tiles {
-        gdf_band_segments(core, width)?
+    let tile_columns = if disable_loopfilters_across_tiles {
+        gdf_band_segments(
+            core.tile_info
+                .as_ref()
+                .map(|tile| (tile.tile_cols, tile.mi_col_starts.as_slice())),
+            width,
+        )?
     } else {
-        vec![(0, width)]
+        None
     };
+    let segment_count = tile_columns.map_or(1, |starts| starts.len().saturating_sub(1));
     let stripe_row = gdf_stripe_row(core, y, frame_height)?;
     with_reusable_scratch(&GDF_SCRATCH, |scratch| {
-        for &(segment_x, segment_width) in &band_segments {
+        for segment_index in 0..segment_count {
+            let (segment_x, segment_width) = if let Some(starts) = tile_columns {
+                let end = segment_index.checked_add(2).ok_or_else(gdf_state_error)?;
+                let window = starts.get(segment_index..end).ok_or_else(gdf_state_error)?;
+                gdf_band_segment(window, width)?
+            } else {
+                (0, width)
+            };
             let stripe_block = GdfBlock {
                 x: segment_x,
                 y,
@@ -767,46 +780,46 @@ fn preserve_lossless_luma_samples<T: ReconSample>(
     Ok(())
 }
 
-fn gdf_band_segments(core: &FrameHeaderCore, luma_width: usize) -> Result<Vec<(usize, usize)>> {
-    let Some(tile) = core.tile_info.as_ref() else {
-        return Ok(vec![(0, luma_width)]);
+fn gdf_band_segments(tile: Option<(u32, &[u32])>, luma_width: usize) -> Result<Option<&[u32]>> {
+    let Some((tile_cols, mi_col_starts)) = tile else {
+        return Ok(None);
     };
-    let tile_cols = usize::try_from(tile.tile_cols).map_err(|_| gdf_state_error())?;
-    if tile.mi_col_starts.len() != tile_cols.saturating_add(1) || luma_width == 0 {
+    let tile_cols = usize::try_from(tile_cols).map_err(|_| gdf_state_error())?;
+    if mi_col_starts.len() != tile_cols.saturating_add(1) || luma_width == 0 {
         return Err(gdf_state_error());
     }
-    let mut segments: Vec<(usize, usize)> = Vec::with_capacity(tile_cols);
-    for window in tile.mi_col_starts.windows(2) {
-        let start = usize::try_from(window[0])
-            .ok()
-            .and_then(|value| value.checked_mul(MI_SIZE))
-            .ok_or_else(gdf_state_error)?
-            .min(luma_width);
-        let end = usize::try_from(window[1])
-            .ok()
-            .and_then(|value| value.checked_mul(MI_SIZE))
-            .ok_or_else(gdf_state_error)?
-            .min(luma_width);
-        let width = end
-            .checked_sub(start)
-            .filter(|&width| width != 0)
-            .ok_or_else(gdf_state_error)?;
-        if segments
-            .last()
-            .is_some_and(|&(previous_x, previous_width)| {
-                previous_x.checked_add(previous_width) != Some(start)
-            })
-        {
+    let mut first_start = None;
+    let mut previous_end = None;
+    for window in mi_col_starts.windows(2) {
+        let (start, width) = gdf_band_segment(window, luma_width)?;
+        if previous_end.is_some_and(|end| end != start) {
             return Err(gdf_state_error());
         }
-        segments.push((start, width));
+        first_start.get_or_insert(start);
+        previous_end = start.checked_add(width);
     }
-    if segments.first().map(|&(x, _)| x) != Some(0)
-        || segments.last().and_then(|&(x, width)| x.checked_add(width)) != Some(luma_width)
-    {
+    if first_start != Some(0) || previous_end != Some(luma_width) {
         return Err(gdf_state_error());
     }
-    Ok(segments)
+    Ok(Some(mi_col_starts))
+}
+
+fn gdf_band_segment(window: &[u32], luma_width: usize) -> Result<(usize, usize)> {
+    let start = usize::try_from(window[0])
+        .ok()
+        .and_then(|value| value.checked_mul(MI_SIZE))
+        .ok_or_else(gdf_state_error)?
+        .min(luma_width);
+    let end = usize::try_from(window[1])
+        .ok()
+        .and_then(|value| value.checked_mul(MI_SIZE))
+        .ok_or_else(gdf_state_error)?
+        .min(luma_width);
+    let width = end
+        .checked_sub(start)
+        .filter(|&width| width != 0)
+        .ok_or_else(gdf_state_error)?;
+    Ok((start, width))
 }
 
 fn tile_axis_bounds(
@@ -1640,11 +1653,11 @@ mod tests {
     use super::{
         GDF_COORDS, GDF_READ_RADIUS, GDF_WEIGHT, GdfBlock, GdfBlockGrid, GdfReferenceContext,
         GdfSource, RESTRICTED_ORDER_HINT, band_classes, band_classes_from_source, band_gradients,
-        compute_block, copy_base_block, gdf_inter_ref_dst_idx, gdf_inter_ref_dst_idx_from_max_dist,
-        gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end, grad_sum,
-        preserve_lossless_luma_samples, resize_scratch, tile_axis_bounds,
+        compute_block, copy_base_block, gdf_band_segment, gdf_band_segments, gdf_inter_ref_dst_idx,
+        gdf_inter_ref_dst_idx_from_max_dist, gdf_stripe_end_for_tile, gdf_stripe_row_for_tile_end,
+        grad_sum, preserve_lossless_luma_samples, resize_scratch, tile_axis_bounds,
     };
-    use crate::error::DecodeError;
+    use crate::error::{DecodeError, DecodeHeaderStateError};
     use crate::filters::deblock::DeblockBlock;
     use crate::filters::lossless::LosslessBlockGrid;
     use splot_recon::{BitDepth, LoopRestorationSourceBounds};
@@ -1717,6 +1730,93 @@ mod tests {
         assert_eq!(tile_axis_bounds(&starts, 127, 128).ok(), Some((64, 127)));
         assert!(tile_axis_bounds(&starts, 128, 128).is_err());
         assert!(tile_axis_bounds(&[0, 16], 64, 128).is_err());
+    }
+
+    #[test]
+    fn gdf_band_segments_visit_tile_columns_in_exact_order() -> crate::Result<()> {
+        let starts = gdf_band_segments(Some((3, &[0, 16, 24, 32])), 128)?
+            .ok_or_else(super::gdf_state_error)?;
+        let mut actual = [None; 3];
+        let mut len = 0;
+        let result = starts
+            .windows(2)
+            .try_for_each(|window| -> crate::Result<()> {
+                let (x, width) = gdf_band_segment(window, 128)?;
+                let Some(slot) = actual.get_mut(len) else {
+                    return Err(super::gdf_state_error());
+                };
+                *slot = Some((x, width));
+                len += 1;
+                Ok(())
+            });
+
+        assert!(result.is_ok());
+        assert_eq!(len, 3);
+        assert_eq!(actual, [Some((0, 64)), Some((64, 32)), Some((96, 32))]);
+        assert!(matches!(gdf_band_segments(None, 128), Ok(None)));
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_gdf_band_boundaries_fail_before_visiting_any_segment() {
+        let cases: [(&str, &[u32], u32, usize); 8] = [
+            ("empty", &[0], 0, 128),
+            ("zero width", &[0, 16], 1, 0),
+            ("wrong count", &[0, 16], 2, 128),
+            ("duplicate", &[0, 16, 16, 32], 3, 128),
+            ("out of order", &[0, 24, 16, 32], 3, 128),
+            ("nonzero origin", &[4, 16, 32], 2, 128),
+            ("incomplete coverage", &[0, 16], 1, 128),
+            ("out of range interior", &[0, 40, 64], 2, 128),
+        ];
+
+        for (name, starts, tile_cols, width) in cases {
+            let mut visits = 0;
+            let result = gdf_band_segments(Some((tile_cols, starts)), width).and_then(|segments| {
+                if let Some(starts) = segments {
+                    starts
+                        .windows(2)
+                        .try_for_each(|window| -> crate::Result<()> {
+                            gdf_band_segment(window, width)?;
+                            visits += 1;
+                            Ok(())
+                        })?;
+                }
+                Ok(())
+            });
+
+            assert!(
+                matches!(
+                    result,
+                    Err(DecodeError::HeaderState {
+                        source: DecodeHeaderStateError::InvalidGdfFilterState
+                    })
+                ),
+                "{name} returned {result:?}"
+            );
+            assert_eq!(visits, 0, "{name} mutated before validation completed");
+        }
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn overflowing_gdf_band_boundary_fails_before_visiting_any_segment() {
+        let mut visits = 0;
+        let result =
+            gdf_band_segments(Some((1, &[0, u32::MAX])), usize::MAX).and_then(|segments| {
+                if let Some(starts) = segments {
+                    visits += starts.windows(2).count();
+                }
+                Ok(())
+            });
+
+        assert!(matches!(
+            result,
+            Err(DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidGdfFilterState
+            })
+        ));
+        assert_eq!(visits, 0);
     }
 
     #[test]

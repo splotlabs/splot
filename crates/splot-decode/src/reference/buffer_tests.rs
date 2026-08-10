@@ -27,18 +27,6 @@ fn key_update() -> FrameRefUpdate {
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [1, 0, 0],
         lr_frame_filter_taps: None,
-        frame_cdfs: crate::prediction::inter::FrameCdfHandle::settled(Arc::new(
-            crate::bitstream::tile_payload::FrameCdfSubset::from_defaults(),
-        )),
-        ccso_params: None,
-        ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
-        segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
-            crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap(),
-        )),
-        motion_field: crate::prediction::inter::MotionFieldHandle::pending_with_layout(
-            crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
-                .expect("valid motion-field layout"),
-        ),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -63,18 +51,6 @@ fn inter_update() -> FrameRefUpdate {
         saved_gm_params: [GlobalMotionRef::identity().gm_params; 7],
         lr_frame_filter_class_counts: [0, 0, 0],
         lr_frame_filter_taps: None,
-        frame_cdfs: crate::prediction::inter::FrameCdfHandle::settled(Arc::new(
-            crate::bitstream::tile_payload::FrameCdfSubset::from_defaults(),
-        )),
-        ccso_params: None,
-        ccso_grid: crate::prediction::inter::CcsoGridHandle::settled(None),
-        segment_ids: crate::prediction::inter::SegmentIdMapHandle::settled(Arc::new(
-            crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap(),
-        )),
-        motion_field: crate::prediction::inter::MotionFieldHandle::pending_with_layout(
-            crate::prediction::inter::MotionFieldLayout::new(16, 16, 16)
-                .expect("valid motion-field layout"),
-        ),
         long_term_id: None,
         embedded_layer_id: splot_core::types::EmbeddedLayerId::from_bits(0),
     }
@@ -255,6 +231,92 @@ fn reference_refresh_preserves_global_motion_predictor_state() {
 }
 
 #[test]
+fn reference_products_come_from_the_retained_pipeline_frame() {
+    let mut update = inter_update();
+    update.refresh_frame_flags = 1 << 2;
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &update);
+
+    let mut frame = pipeline_frame(64, 64);
+    let frame_cdfs = Arc::new(crate::bitstream::tile_payload::FrameCdfSubset::from_defaults());
+    frame.frame_cdfs = crate::prediction::inter::FrameCdfHandle::settled(Arc::clone(&frame_cdfs));
+
+    let mut reader = splot_core::bitio::BitReader::new(&[], splot_core::span::ByteOffset::new(0));
+    let ccso_params = Arc::new(
+        splot_core::headers::frame::parse_ccso_params(
+            &mut reader,
+            false,
+            3,
+            &splot_core::headers::frame::CoreSeqCcsoView {
+                enable_ccso: false,
+                single_picture_header_flag: false,
+            },
+        )
+        .unwrap(),
+    );
+    frame.ccso_params = Some(Arc::clone(&ccso_params));
+
+    let ccso_grid = Arc::new(
+        crate::filters::ccso::CcsoUnitGrid::new(
+            false,
+            0,
+            [false; 3],
+            std::array::from_fn(|_| Vec::new()),
+            0,
+            0,
+        )
+        .unwrap(),
+    );
+    frame.ccso_grid =
+        crate::prediction::inter::CcsoGridHandle::settled(Some(Arc::clone(&ccso_grid)));
+
+    let segment_ids =
+        Arc::new(crate::bitstream::tile_payload::FrameSegmentIdMap::new(16, 16).unwrap());
+    frame.segment_ids =
+        crate::prediction::inter::SegmentIdMapHandle::settled(Arc::clone(&segment_ids));
+
+    let motion_field = crate::prediction::inter::TemporalMotionField::new(16, 16).unwrap();
+    frame.motion_field = crate::prediction::inter::MotionFieldHandle::settled(motion_field);
+    let motion_field = Arc::clone(frame.motion_field.field().unwrap());
+
+    let frames = vec![Some(frame)];
+    let metadata = buf.build_store_eight(&frames).unwrap().1;
+
+    let stored_cdfs = metadata.ref_frame_cdfs[2]
+        .as_ref()
+        .and_then(crate::prediction::inter::FrameCdfHandle::product)
+        .unwrap();
+    assert!(Arc::ptr_eq(stored_cdfs, &frame_cdfs));
+    assert!(Arc::ptr_eq(
+        metadata.ref_ccso_params[2].as_ref().unwrap(),
+        &ccso_params
+    ));
+    let stored_grid = metadata.ref_ccso_unit_grids[2]
+        .as_ref()
+        .and_then(crate::prediction::inter::CcsoGridHandle::product)
+        .and_then(Option::as_ref)
+        .unwrap();
+    assert!(Arc::ptr_eq(stored_grid, &ccso_grid));
+    let stored_segment_ids = metadata.ref_segment_ids[2]
+        .as_ref()
+        .and_then(crate::prediction::inter::SegmentIdMapHandle::product)
+        .unwrap();
+    assert!(Arc::ptr_eq(stored_segment_ids, &segment_ids));
+    assert!(Arc::ptr_eq(
+        metadata.ref_motion_fields[2]
+            .as_ref()
+            .and_then(crate::prediction::inter::MotionFieldHandle::field)
+            .unwrap(),
+        &motion_field
+    ));
+    assert!(metadata.ref_frame_cdfs[0].is_none());
+    assert!(metadata.ref_ccso_params[0].is_none());
+    assert!(metadata.ref_ccso_unit_grids[0].is_none());
+    assert!(metadata.ref_segment_ids[0].is_none());
+    assert!(metadata.ref_motion_fields[0].is_none());
+}
+
+#[test]
 fn frame_index_is_retained_until_last_slot_is_overwritten() {
     let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
     buf.update(0, &key_update());
@@ -288,6 +350,27 @@ fn zero_slots_rejected() {
                 max_slots: ReferenceSlot::MAX_SLOTS
             }
         }
+    ));
+}
+
+#[test]
+fn frame_index_lookup_rejects_out_of_range_and_missing_slots() {
+    let buf = RuntimeReferenceBuffer::new(8).unwrap();
+
+    assert!(matches!(
+        buf.frame_index_for_slot(8),
+        Err(crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::SlotOutOfRange {
+                slot: 8,
+                slot_count: 8,
+            },
+        })
+    ));
+    assert!(matches!(
+        buf.frame_index_for_slot(0),
+        Err(crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::MissingFrame { slot: 0 },
+        })
     ));
 }
 
@@ -327,6 +410,40 @@ fn valid_slot_with_out_of_range_frame_index_is_reference_state_error() {
                 frame_count: 0,
             },
         }
+    ));
+}
+
+#[test]
+fn valid_slot_with_missing_retained_frame_is_reference_state_error() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+
+    let Err(error) = buf.build_store_eight(&[None]) else {
+        panic!("missing retained frame must be rejected");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::ReferenceState {
+            source: crate::DecodeReferenceStateError::MissingFrame { slot: 0 },
+        }
+    ));
+}
+
+#[test]
+fn valid_slot_with_mismatched_storage_depth_keeps_its_diagnostic() {
+    let mut buf = RuntimeReferenceBuffer::new(8).unwrap();
+    buf.update(0, &key_update());
+    let frames = vec![Some(pipeline_frame(64, 64))];
+
+    let Err(error) = buf.build_store_ten(&frames) else {
+        panic!("8-bit retained frame must not enter a 10-bit reference store");
+    };
+
+    assert!(matches!(
+        error,
+        crate::DecodeError::UnsupportedFeature { unsupported }
+            if unsupported.reason() == "unsupported_8bit_reference_for_10bit_decode"
     ));
 }
 

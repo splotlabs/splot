@@ -16,12 +16,6 @@ use super::max_level::CoeffTransformClass;
 use super::scan_walk::CoeffScanEntry;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CoeffSignCdfSyntax {
-    DcSign,
-    DcSignHorzVert,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CoeffDcSignSelector {
     pub(crate) coeff_cdf_q_ctx: usize,
     pub(crate) plane_type: usize,
@@ -43,10 +37,7 @@ impl CoeffDcSignSelector {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffSignReadSource {
     None,
-    Cdf {
-        syntax: CoeffSignCdfSyntax,
-        selector: CoeffDcSignSelector,
-    },
+    Cdf(CoeffDcSignSelector),
     SignBit,
 }
 
@@ -85,13 +76,8 @@ impl CoeffSignSourceDeriveConfig<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CoeffSignReadSymbol {
     None,
-    Cdf {
-        syntax: CoeffSignCdfSyntax,
-        symbol: u8,
-    },
-    SignBit {
-        bit: bool,
-    },
+    Cdf,
+    SignBit,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,10 +137,7 @@ fn derive_coeff_sign_source(
             config.w4,
             config.h4,
         );
-        return CoeffSignReadSource::Cdf {
-            syntax: CoeffSignCdfSyntax::DcSign,
-            selector: config.dc_selector(ctx),
-        };
+        return CoeffSignReadSource::Cdf(config.dc_selector(ctx));
     }
 
     let uses_axis_cdf = config.plane == 0
@@ -164,10 +147,7 @@ fn derive_coeff_sign_source(
             CoeffTransformClass::TwoD => false,
         };
     if uses_axis_cdf {
-        return CoeffSignReadSource::Cdf {
-            syntax: CoeffSignCdfSyntax::DcSignHorzVert,
-            selector: config.dc_selector(0),
-        };
+        return CoeffSignReadSource::Cdf(config.dc_selector(0));
     }
 
     CoeffSignReadSource::SignBit
@@ -180,18 +160,18 @@ pub(crate) fn read_preflighted_nonzero_coeff_sign(
 ) -> Result<CoeffSignRead, CoeffSignReadError> {
     let (symbol, sign) = match input.source {
         CoeffSignReadSource::None => (CoeffSignReadSymbol::None, false),
-        CoeffSignReadSource::Cdf { syntax, selector } => {
+        CoeffSignReadSource::Cdf(selector) => {
             let symbol = cdfs
                 .read_block_symbol_trace(selector.tile_selector(), symbols)?
                 .get();
-            (CoeffSignReadSymbol::Cdf { syntax, symbol }, symbol != 0)
+            (CoeffSignReadSymbol::Cdf, symbol != 0)
         }
         CoeffSignReadSource::SignBit => {
             let bit = symbols
                 .read_literal(1)
                 .map_err(|source| CoeffSignReadError::LiteralRead { source })?
                 != 0;
-            (CoeffSignReadSymbol::SignBit { bit }, bit)
+            (CoeffSignReadSymbol::SignBit, bit)
         }
     };
     Ok(CoeffSignRead { symbol, sign })

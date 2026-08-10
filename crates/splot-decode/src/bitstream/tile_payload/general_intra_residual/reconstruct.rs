@@ -391,7 +391,7 @@ pub(super) fn dequantize_coeff_block(
     params: &DequantBlockParams,
     out: &mut [i32],
 ) -> Result<(), GeneralIntraResidualError> {
-    if block.all_zero {
+    if block.eob == 0 {
         out.fill(0);
         return Ok(());
     }

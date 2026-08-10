@@ -206,7 +206,7 @@ pub(crate) fn reconstruct_inter_block_residual_rect_into<T: ReconSample>(
         u8::try_from(log2_width).unwrap_or(u8::MAX),
         u8::try_from(log2_height).unwrap_or(u8::MAX),
     )?;
-    if block.all_zero {
+    if block.eob == 0 {
         return Ok(());
     }
     if bit_depth != sink.info().bit_depth() {
@@ -340,7 +340,7 @@ pub(crate) fn commit_intra_prediction<T: ReconSample>(
     dpcm: Option<DpcmDirection>,
     bit_depth: BitDepth,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    if block.all_zero {
+    if block.eob == 0 {
         return workspace
             .write_rect_block(plane_id, x, y, block_size, prediction)
             .map_err(Into::into);

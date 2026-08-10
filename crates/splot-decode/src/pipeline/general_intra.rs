@@ -311,7 +311,6 @@ pub(crate) fn decode_one_general_intra_block(
     )
     .with_tile_bounds(
         mi_row_range.start as usize,
-        mi_row_range.end as usize,
         mi_col_range.start as usize,
         mi_col_range.end as usize,
     );
@@ -647,7 +646,6 @@ fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformT
         modes.y_mode,
         modes.angle_delta_y,
         modes.mrl.index() as u8,
-        modes.mrl.secondary_symbol(),
         modes.luma_dpcm_direction(),
     )
 }

@@ -305,7 +305,10 @@ fn active_intrabc_nearmv_skip_reads_use_skip_mode_and_drl_then_advances() {
             skip_flag: true,
         }
     );
-    assert_eq!(info.unwrap().intrabc_mode, 1);
+    assert_eq!(
+        info.unwrap().block_mv,
+        IntrabcBlockVector { row: -512, col: 0 }
+    );
     assert_eq!(symbol_count, 4);
 }
 
@@ -350,7 +353,6 @@ fn active_intrabc_newmv_nonskip_reads_block_vector_and_returns_info_for_residual
         }
     );
     let info = info.expect("non-skip IntrABC prelude returns parsed mode-info");
-    assert_eq!(info.intrabc_mode, 0);
     assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
     assert_eq!(symbol_count, 8);
 }
@@ -379,7 +381,6 @@ fn intrabc_morph_pred_zero_reads_symbol_and_advances() {
     )
     .unwrap();
 
-    assert_eq!(info.intrabc_mode, 1);
     assert!(!info.morph_pred);
     assert_eq!(info.block_mv, IntrabcBlockVector { row: -512, col: 0 });
     assert_eq!(symbols.symbol_count(), 3);
@@ -685,9 +686,6 @@ fn intrabc_geometry_derives_bilinear_fractional_luma_prediction_region() {
     let block = IntrabcBlockContext::new(8, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 0,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: -132, col: 0 },
     };
@@ -711,9 +709,6 @@ fn intrabc_geometry_admits_fractional_border_extension_at_frame_top() {
     let block = IntrabcBlockContext::new(0, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 0,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: -4, col: 0 },
     };
@@ -740,9 +735,6 @@ fn intrabc_geometry_uses_mi_domain_for_partial_edge_frame() {
     let block = IntrabcBlockContext::new(2, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 2);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
@@ -767,9 +759,6 @@ fn intrabc_geometry_rejects_source_outside_current_tile() {
     let block = IntrabcBlockContext::new(4, 4, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: -128 },
     };
@@ -786,9 +775,6 @@ fn intrabc_geometry_derives_overlapping_integer_copy_region() {
     let block = IntrabcBlockContext::new(8, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
@@ -807,9 +793,6 @@ fn intrabc_geometry_rejects_out_of_frame_source() {
     let block = IntrabcBlockContext::new(0, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: -512, col: 0 },
     };
@@ -826,9 +809,6 @@ fn intrabc_geometry_rejects_out_of_frame_target() {
     let block = IntrabcBlockContext::new(32, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
@@ -858,9 +838,6 @@ fn intrabc_geometry_clamps_bottom_edge_overhang_target_to_visible_region() {
     let block = IntrabcBlockContext::new(2, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
@@ -888,9 +865,6 @@ fn intrabc_geometry_rejects_off_frame_top_left_block() {
     let block = IntrabcBlockContext::new(4, 0, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: -64, col: 0 },
     };
@@ -908,9 +882,6 @@ fn intrabc_geometry_rejects_missing_frame_size() {
     let block = IntrabcBlockContext::new(8, 8, 2, false);
     let geometry = IntrabcBlockGeometry::new(block, 4, 4);
     let info = IntrabcInfo {
-        intrabc_mode: 1,
-        ref_mv_idx: 0,
-        mv_precision: MV_PRECISION_QUARTER_PEL,
         morph_pred: false,
         block_mv: IntrabcBlockVector { row: 0, col: 0 },
     };
@@ -980,9 +951,6 @@ fn intrabc_newmv_one_pel_record_shifts_shell_delta() {
     assert_eq!(
         info,
         IntrabcInfo {
-            intrabc_mode: 0,
-            ref_mv_idx: 0,
-            mv_precision: MV_PRECISION_ONE_PEL,
             morph_pred: false,
             block_mv: IntrabcBlockVector { row: -504, col: 0 },
         }

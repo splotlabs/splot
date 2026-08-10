@@ -231,7 +231,7 @@ fn block_decoded_neighbours_cover_subpartition_above_right() {
 
 #[test]
 fn tile_bounds_make_tile_start_edges_unavailable() {
-    let tile_start = ctx(0, 16, 16, 16).with_tile_bounds(0, 16, 16, 32);
+    let tile_start = ctx(0, 16, 16, 16).with_tile_bounds(0, 16, 32);
     let neighbours = tile_start.neighbours(PlaneId::Y);
 
     assert!(!neighbours.has_above());
@@ -241,7 +241,7 @@ fn tile_bounds_make_tile_start_edges_unavailable() {
 
 #[test]
 fn tile_bounds_clip_above_right_to_tile_end() {
-    let within_tile = ctx(8, 16, 8, 8).with_tile_bounds(0, 16, 16, 24);
+    let within_tile = ctx(8, 16, 8, 8).with_tile_bounds(0, 16, 24);
     let neighbours = within_tile.neighbours(PlaneId::Y);
 
     assert!(neighbours.has_above());

@@ -594,7 +594,7 @@ fn read_inter_residual_chroma_group(
                 residual_tool_policy,
                 tile_offset,
             )?;
-            let u_nonzero = !u.all_zero;
+            let u_nonzero = u.eob != 0;
             let uses_cctx = u.cctx_type.unwrap_or(0) != 0;
             let block_index = push_inter_residual_block(
                 blocks,

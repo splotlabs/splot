@@ -62,8 +62,6 @@ pub(crate) use self::diagnostics::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WienerNsLrTxSkipLookup {
-    pub(crate) x: usize,
-    pub(crate) y: usize,
     pub(crate) row: usize,
     pub(crate) col: usize,
 }
@@ -291,8 +289,6 @@ pub(crate) const fn wienerns_lr_tx_skip_lookup_from_pc(
     lookup: PcWienerTxSkipLookup,
 ) -> WienerNsLrTxSkipLookup {
     WienerNsLrTxSkipLookup {
-        x: lookup.x,
-        y: lookup.y,
         row: lookup.row,
         col: lookup.col,
     }

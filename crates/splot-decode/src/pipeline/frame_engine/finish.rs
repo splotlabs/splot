@@ -39,7 +39,7 @@ pub(crate) struct FrameWalk<T: ReconSample> {
     pub(crate) core: Arc<FrameHeaderCore>,
     /// The frame's end-of-walk CDF subset.
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
-    /// The walk-parsed CCSO unit grid, retained for the reference update.
+    /// The walk-parsed CCSO unit grid retained by the canonical `PipelineFrame`.
     pub(crate) ccso_grid: Option<CcsoUnitGrid>,
     pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     /// The walk-derived temporal motion field.
@@ -148,8 +148,8 @@ impl FilterSinkSetup {
 
     /// Turns one frame's walk output into the driver's [`FrameWalk`].
     ///
-    /// `carries_motion_field` is false for intra frames, whose reference update
-    /// records an empty field whatever the walk derived.
+    /// `carries_motion_field` is false for intra frames, whose canonical
+    /// `PipelineFrame` stores an empty field whatever the walk derived.
     pub(crate) fn frame_walk<T: ReconSample>(
         self,
         workspace: splot_recon::CurrentFrameWorkspace<T>,

@@ -81,7 +81,6 @@ impl DeblockRecorder<'_> {
                 cols: n4w,
                 skip_flag: false,
                 eob,
-                intra_ist: None,
             },
         );
     }

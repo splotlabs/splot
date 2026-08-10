@@ -32,7 +32,7 @@ pub(super) struct InterWalkPrologue<'payload, T: ReconSample> {
     pub(super) workspace: CurrentFrameWorkspace<T>,
     pub(super) setup: FilterSinkSetup,
     pub(super) facts: InterBlockFacts,
-    pub(super) ref_frame_idx: Vec<u32>,
+    pub(super) ref_frame_idx: RefIdxBuf,
     pub(super) quantizer_deltas: splot_recon::QuantizerDeltas,
 }
 
@@ -161,7 +161,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
         gdf_reference: Some(
             crate::filters::gdf::GdfReferenceContext::from_reference_list(
                 core.display_order_hint().unwrap_or(0),
-                ref_frame_idx,
+                ref_frame_idx.as_slice(),
                 &reference.ref_order_hint,
             ),
         ),
@@ -198,7 +198,7 @@ pub(super) fn derive_inter_walk_prologue<'payload, T: ReconSample>(
                 .is_some_and(|tq| tq.enable_inter_ddt),
             bit_depth,
         },
-        ref_frame_idx: ref_frame_idx.to_vec(),
+        ref_frame_idx: ref_frame_idx.clone(),
         quantizer_deltas,
     })
 }
@@ -241,9 +241,9 @@ pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) 
 /// One inter frame whose entropy pass is done and whose reconstruction is
 /// still owed.
 ///
-/// Everything the reconstruction reads is owned here, so the driver can record
-/// the frame's reference update from the parse products and only then run the
-/// reconstruction — after the next frame's entropy pass has already started.
+/// Everything reconstruction reads is owned here. Entropy products publish to
+/// the canonical `PipelineFrame`, while the reference update records header
+/// metadata before reconstruction runs after the next frame's entropy pass.
 pub(crate) struct DeferredInterWalk<T: ReconSample> {
     /// The frame header the walk consumed, shared with the filter phase.
     pub(crate) core: Arc<FrameHeaderCore>,
@@ -254,7 +254,7 @@ pub(crate) struct DeferredInterWalk<T: ReconSample> {
     setup: FilterSinkSetup,
     sequence: Arc<SequenceHeader>,
     reference: InterReferenceState<T>,
-    ref_frame_idx: Vec<u32>,
+    ref_frame_idx: RefIdxBuf,
     quantizer: FrameQuantizerSnapshot,
 }
 
@@ -380,7 +380,7 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
         &core,
         options,
         facts,
-        &ref_frame_idx,
+        ref_frame_idx.as_slice(),
         &reference,
         &workspace,
     )?;
@@ -411,12 +411,12 @@ impl<T: ReconSample> DeferredInterWalk<T> {
         &self.parse.frame_cdfs
     }
 
-    /// The walk-parsed CCSO unit grid, retained for the reference update.
+    /// The walk-parsed CCSO unit grid published to the canonical `PipelineFrame`.
     pub(crate) const fn ccso_grid(&self) -> Option<&crate::filters::ccso::CcsoUnitGrid> {
         self.parse.ccso_grid.as_ref()
     }
 
-    /// The frame's settled segment id map, read by the reference update.
+    /// The segment id map published to the canonical `PipelineFrame`.
     pub(crate) const fn segment_ids(
         &self,
     ) -> &Arc<crate::bitstream::tile_payload::FrameSegmentIdMap> {
@@ -426,7 +426,8 @@ impl<T: ReconSample> DeferredInterWalk<T> {
     /// Shares the reference motion handles that gate this frame's temporal
     /// prelude.
     pub(crate) fn motion_dependencies(&self) -> Vec<MotionFieldHandle> {
-        self.reference.motion_dependencies(&self.ref_frame_idx)
+        self.reference
+            .motion_dependencies(self.ref_frame_idx.as_slice())
     }
 
     /// Runs the temporal prelude and resolve/motion half-pass, returning the
@@ -460,7 +461,7 @@ impl<T: ReconSample> DeferredInterWalk<T> {
             progress,
             sequence,
             core_for_reconstruction,
-            Arc::from(ref_frame_idx),
+            ref_frame_idx,
             Arc::new(reference),
             workspace,
             motion,

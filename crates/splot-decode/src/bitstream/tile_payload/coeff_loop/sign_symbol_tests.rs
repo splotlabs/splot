@@ -56,29 +56,43 @@ fn derives_dc_axis_hidden_and_zero_sources() {
     );
     assert_eq!(
         dc.source,
-        CoeffSignReadSource::Cdf {
-            syntax: CoeffSignCdfSyntax::DcSign,
-            selector: CoeffDcSignSelector {
-                coeff_cdf_q_ctx: 3,
-                plane_type: 0,
-                group: 1,
-                ctx: 2,
-            },
-        }
+        CoeffSignReadSource::Cdf(CoeffDcSignSelector {
+            coeff_cdf_q_ctx: 3,
+            plane_type: 0,
+            group: 1,
+            ctx: 2,
+        })
     );
 
-    let axis = derive_nonzero_coeff_sign_input(
+    let horizontal_axis = derive_nonzero_coeff_sign_input(
         entry(2, 5, 0),
         1,
         source_config(0, CoeffTransformClass::Horizontal, false, 0),
     );
-    assert!(matches!(
-        axis.source,
-        CoeffSignReadSource::Cdf {
-            syntax: CoeffSignCdfSyntax::DcSignHorzVert,
-            ..
-        }
-    ));
+    assert_eq!(
+        horizontal_axis.source,
+        CoeffSignReadSource::Cdf(CoeffDcSignSelector {
+            coeff_cdf_q_ctx: 3,
+            plane_type: 0,
+            group: 0,
+            ctx: 0,
+        })
+    );
+
+    let vertical_axis = derive_nonzero_coeff_sign_input(
+        entry(2, 0, 5),
+        1,
+        source_config(0, CoeffTransformClass::Vertical, false, 0),
+    );
+    assert_eq!(
+        vertical_axis.source,
+        CoeffSignReadSource::Cdf(CoeffDcSignSelector {
+            coeff_cdf_q_ctx: 3,
+            plane_type: 0,
+            group: 0,
+            ctx: 0,
+        })
+    );
 
     let zero = derive_nonzero_coeff_sign_input(
         entry(3, 1, 1),
@@ -113,9 +127,6 @@ fn reads_none_and_literal_sources_in_syntax_order() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        literal.symbol(),
-        CoeffSignReadSymbol::SignBit { .. }
-    ));
+    assert_eq!(literal.symbol(), CoeffSignReadSymbol::SignBit);
     assert!(symbols.consumed_bits() > before);
 }

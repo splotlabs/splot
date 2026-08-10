@@ -21,12 +21,10 @@ struct MotionFieldPublication {
 
 /// One frame's § 7.9 temporal motion field, named before it is derived.
 ///
-/// A frame's reference update is recorded from its header, while the field
-/// itself lands at the end of that frame's reconstruction, which a pipelined
-/// driver runs after the update. The handle bridges the two: the update stores
-/// it unfilled, the reconstruction fills it exactly once, and a later frame's
-/// temporal prelude reads it through [`Self::field`], which fails closed rather
-/// than reporting an absent field as no motion.
+/// The canonical `PipelineFrame` owns this handle before reconstruction derives
+/// the field. Reconstruction fills it exactly once; `RuntimeReferenceBuffer`
+/// resolves it from the retained frame in `build_store`, and [`Self::field`]
+/// fails closed rather than reporting an absent field as no motion.
 #[derive(Clone, Debug)]
 pub(crate) struct MotionFieldHandle(Arc<MotionFieldPublication>);
 

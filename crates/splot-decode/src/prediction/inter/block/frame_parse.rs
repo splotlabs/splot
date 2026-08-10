@@ -15,6 +15,7 @@
 use super::super::MotionFieldHandle;
 use super::super::find_mv_stack::TemporalMotionFieldMetadata;
 use super::*;
+use splot_core::headers::frame::RefIdxBuf;
 use std::sync::Arc;
 
 #[cfg(test)]
@@ -28,11 +29,10 @@ pub(crate) struct InterFrameParse {
     params: tile::TileWalkParams,
     prelude: TemporalPrelude,
     motion_field: TemporalMotionField,
-    /// The frame's end-of-walk CDF subset, which the reference update reads
-    /// while the reconstruction is still owed.
+    /// The end-of-walk CDF subset published to the canonical `PipelineFrame`.
     pub(crate) frame_cdfs: Arc<FrameCdfSubset>,
     cdef_grid: crate::filters::cdef::CdefUnitGrid,
-    /// The walk-parsed CCSO unit grid, retained for the reference update.
+    /// The walk-parsed CCSO unit grid published to the canonical `PipelineFrame`.
     pub(crate) ccso_grid: Option<crate::filters::ccso::CcsoUnitGrid>,
     pub(crate) segment_ids: Arc<FrameSegmentIdMap>,
     gdf_grid: Option<crate::filters::gdf::GdfBlockGrid>,
@@ -220,7 +220,7 @@ impl InterFrameParse {
         progress: Arc<crate::pipeline::frame_progress::FrameProgress<T>>,
         sequence: Arc<SequenceHeader>,
         core: Arc<FrameHeaderCore>,
-        ref_frame_idx: Arc<[u32]>,
+        ref_frame_idx: RefIdxBuf,
         reference: Arc<InterReferenceState<T>>,
         workspace: CurrentFrameWorkspace<T>,
         motion_handle: MotionFieldHandle,
@@ -247,7 +247,7 @@ impl InterFrameParse {
         } = scratch;
         let mut temporal = temporal_context.unwrap_or_else(TemporalMvContext::empty);
         let temporal_plan =
-            prelude.begin_scheduled(&mut temporal, &core, &ref_frame_idx, &reference)?;
+            prelude.begin_scheduled(&mut temporal, &core, ref_frame_idx.as_slice(), &reference)?;
         let temporal_scratch = temporal.take_scratch();
         let temporal = Arc::new(temporal);
         parsed.detach_filter_records(&mut records);

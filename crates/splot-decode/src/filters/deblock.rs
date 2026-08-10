@@ -987,7 +987,7 @@ fn tip_tile_edge(starts: Option<&[u32]>, coordinate: usize, subsampling: usize) 
 
 #[allow(clippy::too_many_arguments)]
 fn apply_tip_filter_edge<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, T>,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
     x: usize,
     y: usize,
     dx: usize,
@@ -1216,8 +1216,8 @@ impl<T> PlaneRows<'_, T> {
     }
 }
 
-struct PlaneCtx<'samples, T: ReconSample> {
-    rows: PlaneRows<'samples, T>,
+struct PlaneCtx<'rows, 'samples, T: ReconSample> {
+    rows: &'rows mut PlaneRows<'samples, T>,
     width: usize,
     height: usize,
     x_origin: usize,
@@ -1264,35 +1264,30 @@ impl<'a, T> PlaneBand<'a, T> {
     }
 }
 
-impl<'samples, T: ReconSample> PlaneCtx<'samples, T> {
+impl<'rows, 'samples, T: ReconSample> PlaneCtx<'rows, 'samples, T> {
     /// Views the plane rows `y_origin..y_origin + rows` of a `height`-row plane.
     ///
     /// Coordinates stay in plane space, so a band filters exactly the samples
     /// the whole-plane view does; a row outside the band is not addressable.
-    fn new(band: &'samples mut PlaneBand<'_, T>) -> Result<Self, DeblockError> {
+    fn new(band: &'rows mut PlaneBand<'samples, T>) -> Result<Self, DeblockError> {
         let (stride, width, height) = (band.stride, band.width, band.height);
         let (y_origin, rows) = (band.y_origin, band.row_count);
         if width > stride || stride == 0 || y_origin.checked_add(rows) > Some(height) {
             return Err(DeblockError::Workspace);
         }
-        let storage = match &mut band.storage {
+        match &mut band.storage {
             PlaneRows::Contiguous { samples, stride } => {
                 let required = stride.checked_mul(rows).ok_or(DeblockError::Workspace)?;
-                let samples = samples.get_mut(..required).ok_or(DeblockError::Workspace)?;
-                PlaneRows::Contiguous {
-                    samples,
-                    stride: *stride,
-                }
+                samples.get_mut(..required).ok_or(DeblockError::Workspace)?;
             }
             PlaneRows::Segmented(segment_rows) => {
                 if segment_rows.len() != rows || segment_rows.iter().any(|row| row.len() < width) {
                     return Err(DeblockError::Workspace);
                 }
-                PlaneRows::Segmented(segment_rows.iter_mut().map(|row| &mut **row).collect())
             }
-        };
+        }
         Ok(Self {
-            rows: storage,
+            rows: &mut band.storage,
             width,
             height,
             x_origin: 0,
@@ -1519,7 +1514,7 @@ fn sub_pu_filter_dimension(tx_size: usize, sub_pu_size: usize, is_tx_edge: bool)
 #[inline(always)]
 #[cfg(test)]
 fn deblock_filter_edge<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, T>,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
@@ -1537,7 +1532,7 @@ fn deblock_filter_edge<T: ReconSample>(
 #[allow(clippy::inline_always, reason = "measured deblock hot path")]
 #[inline(always)]
 fn deblock_filter_edge_specialized<T: ReconSample, const PLANE: usize, const PASS: usize>(
-    plane_ctx: &mut PlaneCtx<'_, T>,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
     grid: &MiGrid,
     ctx: EdgeContext,
     disable_loopfilters_across_tiles: bool,
@@ -1797,7 +1792,7 @@ fn filter_contiguous_edge<T: ReconSample>(
 
 #[allow(clippy::too_many_arguments)]
 fn choose_filter_width<T: ReconSample>(
-    plane_ctx: &PlaneCtx<'_, T>,
+    plane_ctx: &PlaneCtx<'_, '_, T>,
     x_p: usize,
     y_p: usize,
     dx: usize,
@@ -1909,7 +1904,7 @@ impl PerpLine {
 const GATHER_HALF: usize = 8;
 
 fn apply_edge_samples<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, T>,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
     perp: PerpLine,
     lanes: usize,
     params: DeblockSampleFilter,
@@ -2083,7 +2078,7 @@ fn apply_edge_samples<T: ReconSample>(
 }
 
 fn apply_sample_filter<T: ReconSample>(
-    plane_ctx: &mut PlaneCtx<'_, T>,
+    plane_ctx: &mut PlaneCtx<'_, '_, T>,
     perp: PerpLine,
     params: DeblockSampleFilter,
 ) -> Result<(), DeblockError> {
@@ -2107,7 +2102,7 @@ fn apply_sample_filter<T: ReconSample>(
 }
 
 fn gather_line<T: ReconSample>(
-    plane_ctx: &PlaneCtx<'_, T>,
+    plane_ctx: &PlaneCtx<'_, '_, T>,
     perp: PerpLine,
 ) -> [T; 2 * GATHER_HALF] {
     let mut line = [T::default(); 2 * GATHER_HALF];

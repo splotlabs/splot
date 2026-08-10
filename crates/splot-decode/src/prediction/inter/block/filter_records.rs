@@ -107,7 +107,6 @@ pub(crate) fn record_inter_deblock_geometry(
                         cols: tx_w4,
                         skip_flag: true,
                         eob: 0,
-                        intra_ist: None,
                     },
                 );
             }
@@ -166,7 +165,6 @@ pub(crate) fn record_inter_deblock_geometry(
                         cols: tx_w4,
                         skip_flag: false,
                         eob: block.coeffs.eob,
-                        intra_ist: None,
                     },
                 );
             }

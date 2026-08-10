@@ -139,9 +139,6 @@ impl IntrabcBlockGeometry {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct IntrabcInfo {
-    pub(crate) intrabc_mode: u8,
-    pub(crate) ref_mv_idx: usize,
-    pub(crate) mv_precision: u8,
     pub(crate) morph_pred: bool,
     pub(crate) block_mv: IntrabcBlockVector,
 }
@@ -158,8 +155,6 @@ pub(crate) struct IntrabcPredictionGeometry {
     pub(crate) fractional: bool,
     pub(crate) source: PlaneRect,
     pub(crate) target: PlaneRect,
-    pub(crate) ref_mi_cols: i32,
-    pub(crate) ref_mi_rows: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,8 +176,6 @@ pub(crate) struct PendingIntrabcInfo {
 struct IntrabcLumaPredictionDomain {
     storage: PlaneSize,
     tile_bounds: PlaneRect,
-    ref_mi_cols: i32,
-    ref_mi_rows: i32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -709,9 +702,6 @@ pub(crate) fn resolve_pending_intrabc_info(
         None => pred_mv,
     };
     IntrabcInfo {
-        intrabc_mode: u8::try_from(syntax.intrabc_mode).unwrap_or(1),
-        ref_mv_idx: syntax.ref_mv_idx,
-        mv_precision: syntax.mv_precision,
         morph_pred: pending.morph_pred,
         block_mv: block_mv.into(),
     }
@@ -890,8 +880,6 @@ pub(crate) fn derive_intrabc_luma_prediction_geometry(
         fractional,
         source,
         target,
-        ref_mi_cols: domain.ref_mi_cols,
-        ref_mi_rows: domain.ref_mi_rows,
     })
 }
 
@@ -967,8 +955,6 @@ fn intrabc_luma_prediction_domain(
     Ok(IntrabcLumaPredictionDomain {
         storage,
         tile_bounds,
-        ref_mi_cols: mi_cols as i32,
-        ref_mi_rows: mi_rows as i32,
     })
 }
 
