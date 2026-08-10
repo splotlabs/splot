@@ -248,14 +248,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 },
             )?;
         let mv_grid = NeighbourMvGrid::new_for_tile(tile_rows.clone(), tile_cols.clone())
-            .ok_or_else(|| {
-                inter_cap!(
-                    "inter_mv_grid",
-                    tile_offset,
-                    "inter.mv_grid",
-                    SPEC_MODE_INFO
-                )
-            })?;
+            .ok_or(inter_internal!("inter_mv_grid", tile_offset))?;
         let y_smooth = crate::prediction::intra_edge::TileYSmoothGrid::new_for_tile(
             tile_rows.clone(),
             tile_cols.clone(),

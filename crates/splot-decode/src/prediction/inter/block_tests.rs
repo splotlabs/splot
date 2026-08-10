@@ -499,9 +499,10 @@ fn chroma_smooth_tile_ranges_follow_chroma_sampling() {
 }
 
 #[test]
-fn chroma_smooth_tile_ranges_are_arithmetic_safe_at_maximum_frame_size() {
+fn tile_grid_ranges_are_arithmetic_safe_at_maximum_frame_size() {
     let max_frame_dimension = 1_usize << 16;
     let max_mi_dimension = 2 * ((max_frame_dimension + 7) >> 3);
+    assert!(max_mi_dimension.checked_mul(max_mi_dimension).is_some());
     for chroma in [
         ChromaFormatIdc::Yuv420,
         ChromaFormatIdc::Yuv422,
