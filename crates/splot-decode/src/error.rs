@@ -108,6 +108,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its parsed interpolation filter, but it was absent.
     #[error("inter-frame interpolation filter is missing")]
     MissingInterpolationFilter,
+    /// A complete ordinary inter header was missing its derived frame MV precision.
+    #[error("inter-frame motion-vector precision is missing")]
+    MissingInterMotionVectorPrecision,
     /// An inter frame carried an interpolation-filter variant unknown to this decoder.
     #[error("inter-frame interpolation filter is invalid")]
     InvalidInterpolationFilter,

@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, MvPrecision,
-    TipFrameMode, TxMode, get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
+    get_qindex,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -29,8 +29,8 @@ use super::find_mv_stack::{
     find_mv_stack_with_temporal, warp_predicted_mv,
 };
 use super::read_mv::{
-    MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
-    MvReadConfig, apply_inter_mvd_signs, mv_clamp_to_integer, read_newmv_amvd_block_mvd,
+    MV_PRECISION_EIGHTH_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, apply_inter_mvd_signs,
+    mv_clamp_to_integer, read_newmv_amvd_block_mvd,
     read_newmv_block_mvd_magnitude_with_config as read_newmv_block_mvd_magnitude,
 };
 use super::single_ref::SingleRefReadError;

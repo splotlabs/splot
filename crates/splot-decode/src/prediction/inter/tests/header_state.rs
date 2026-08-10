@@ -10,6 +10,22 @@ const BRIDGE_CELU_FIXTURE: &[u8] =
     include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
 
 #[test]
+fn avm_inter_fixtures_parse_quarter_and_eighth_pel_precision() {
+    use splot_core::headers::frame::MvPrecision;
+
+    for (fixture, expected) in [
+        (MULTI_TILE_LR_FIXTURE, MvPrecision::QuarterPel),
+        (TWO_FRAME_SUBPEL_FIXTURE, MvPrecision::EighthPel),
+    ] {
+        let (_, core, _) = parse_inter_core_for_validation(fixture).unwrap();
+        assert_eq!(
+            core.inter.as_ref().and_then(|inter| inter.mv_precision),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
 fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     let mut u_coeffs = all_zero_inter_coeff_block();
     u_coeffs.cctx_type = Some(1);
@@ -97,10 +113,11 @@ fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
 fn missing_inter_header_regions_are_typed_header_state_errors() {
     use DecodeHeaderStateError::{
         IncompleteInterFrame, IncompleteInterFrameTools, MissingDisplayOrderHint, MissingFrameSize,
-        MissingInterControlRegion, MissingInterTail, ZeroFrameSize,
+        MissingInterControlRegion, MissingInterMotionVectorPrecision, MissingInterTail,
+        ZeroFrameSize,
     };
     type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
-    let cases: [MutationCase; 9] = [
+    let cases: [MutationCase; 10] = [
         (
             |core| core.status = FrameHeaderParseStatus::ActivationFieldsOnly,
             IncompleteInterFrame,
@@ -110,6 +127,10 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
         (
             |core| core.inter.as_mut().unwrap().interpolation_filter = None,
             DecodeHeaderStateError::MissingInterpolationFilter,
+        ),
+        (
+            |core| core.inter.as_mut().unwrap().mv_precision = None,
+            MissingInterMotionVectorPrecision,
         ),
         (
             |core| core.inter.as_mut().unwrap().max_drl_bits_minus_1 = None,

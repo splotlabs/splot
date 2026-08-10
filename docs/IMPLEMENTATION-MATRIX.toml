@@ -15359,6 +15359,11 @@ tests = [
     "crates/splot-decode/src/pipeline/mod_tests.rs::in_band_long_term_prelude_rejects_missing_or_visible_reference",
     "crates/splot-decode/src/pipeline/mod_tests.rs::in_band_long_term_prelude_rejects_overwritten_slot_and_clk_after_olk",
     "crates/splot-decode/src/pipeline/mod_tests.rs::in_band_long_term_prelude_does_not_cross_temporal_unit_boundary",
+    "crates/splot-core/src/headers/frame/inter.rs::tests::mv_precision_av2_codes_match_table_6_19",
+    "crates/splot-core/src/headers/frame/inter.rs::tests::inter_mv_precision_paths_preserve_following_bit_alignment",
+    "crates/splot-core/src/headers/frame/info/tests/tail.rs::frame_header_core_inter_mv_precision_eof_boundaries_are_truncation",
+    "crates/splot-decode/src/prediction/inter/tests/header_state.rs::avm_inter_fixtures_parse_quarter_and_eighth_pel_precision",
+    "crates/splot-decode/src/prediction/inter/tests/header_state.rs::missing_inter_header_regions_are_typed_header_state_errors",
     "crates/splot-core/src/headers/frame/info/tests.rs::frame_header_core_eof_in_ref_long_term_id_loop",
     "crates/splot-cli/tests/conformance.rs::conformance_corpus_matches_manifest",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
@@ -15375,6 +15380,8 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-2frame-inter-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-2frame-subpel-inter-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-2frame-lr-switchable-768x256-8bit.ivf",
     "tests/conformance/vectors/valid/syn-3frame-seg-inherit-inter-64x64.ivf",
     "tests/conformance/vectors/valid/syn-2frame-seg-skip-inter-64x64.ivf",
     "tests/conformance/vectors/valid/syn-orderhint-wrap-64x64.ivf",

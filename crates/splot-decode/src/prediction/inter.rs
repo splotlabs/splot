@@ -45,17 +45,6 @@ macro_rules! inter_cap {
     };
 }
 
-macro_rules! inter_missing {
-    ($reason:literal, $offset:expr, $input:literal, $spec_section:expr $(,)?) => {
-        unsupported_at(
-            $reason,
-            $offset,
-            concat!("missing required input: ", $input),
-            $spec_section,
-        )
-    };
-}
-
 macro_rules! inter_internal {
     ($reason:literal, $offset:expr $(,)?) => {
         crate::error::DecodeError::InternalState {
@@ -1983,6 +1972,13 @@ fn validate_inter_frame_core(
     }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
         return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
+    }
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+    if inter.mv_precision.is_none() {
+        return Err(DecodeHeaderStateError::MissingInterMotionVectorPrecision.into());
     }
     if core.order_hint.is_none() {
         return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());
