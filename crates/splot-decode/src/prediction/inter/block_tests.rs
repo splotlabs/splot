@@ -475,6 +475,23 @@ fn chroma_smooth_tile_ranges_follow_chroma_sampling() {
 }
 
 #[test]
+fn chroma_smooth_tile_ranges_are_arithmetic_safe_at_maximum_frame_size() {
+    let max_frame_dimension = 1_usize << 16;
+    let max_mi_dimension = 2 * ((max_frame_dimension + 7) >> 3);
+    for chroma in [
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv422,
+        ChromaFormatIdc::Yuv444,
+    ] {
+        let (rows, cols) =
+            chroma_smooth_tile_ranges(0..max_mi_dimension, 0..max_mi_dimension, chroma);
+        assert!(rows.end.checked_sub(rows.start).is_some());
+        assert!(cols.end.checked_sub(cols.start).is_some());
+        assert!(rows.len().checked_mul(cols.len()).is_some());
+    }
+}
+
+#[test]
 fn warp_interintra_smooth_mode_builds_smooth_mask() -> TestResult {
     let prediction = super::warp::interintra_prediction_mode(
         super::warp::WarpInterIntraSyntax {
