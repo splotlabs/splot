@@ -489,12 +489,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     if context.reference_select {
                         inter_internal!("compound_exit_symbol", tile_offset)
                     } else {
-                        inter_cap!(
-                            "inter_exit_symbol",
-                            tile_offset,
-                            "inter.exit_symbol",
-                            SPEC_MODE_INFO
-                        )
+                        inter_internal!("inter_exit_symbol", tile_offset)
                     }
                 });
                 self.tile_walk_output = Some((active_source_blocks, unit_filters));

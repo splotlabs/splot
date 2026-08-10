@@ -19,11 +19,11 @@ use crate::{DecodeContext, DecodeRuntimeConfig};
 const Q80_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf");
 
-fn unsupported_reason(error: DecodeError) -> &'static str {
-    let DecodeError::UnsupportedFeature { unsupported } = error else {
-        panic!("expected unsupported-feature");
+fn internal_reason(error: &DecodeError) -> &'static str {
+    let DecodeError::InternalState { reason, .. } = error else {
+        panic!("expected internal-state");
     };
-    unsupported.reason()
+    reason
 }
 
 fn decode_intra_fixture_with_core(
@@ -139,7 +139,7 @@ fn intra_gate_rejects_gdf_per_block_frame() {
         gdf.gdf_per_block = Some(true);
     })
     .expect_err("fixture without a use_gdf symbol must fail closed");
-    assert_eq!(unsupported_reason(error), "inter_exit_symbol");
+    assert_eq!(internal_reason(&error), "inter_exit_symbol");
 }
 
 #[test]

@@ -588,58 +588,40 @@ fn raw_annex_b_payload_decodes_to_hash_report() {
 }
 
 #[test]
-fn tile_trace_mismatch_fails_closed_as_unsupported() {
-    let mut bytes = MINIMAL_FIXTURE.to_vec();
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0x01;
+fn tile_symbol_mutations_fail_as_internal_parse_desync() {
+    let cases: [(&[u8], usize, u8, &str); 3] = [
+        (
+            MINIMAL_FIXTURE,
+            MINIMAL_FIXTURE.len() - 1,
+            MINIMAL_FIXTURE[MINIMAL_FIXTURE.len() - 1] ^ 0x01,
+            "inter_exit_symbol",
+        ),
+        (
+            MINIMAL_FIXTURE,
+            MINIMAL_FIXTURE.len() - 2,
+            0xFF,
+            "inter_exit_symbol",
+        ),
+        (
+            COMPOUND_FIXTURE,
+            COMPOUND_FIXTURE.len() - 1,
+            COMPOUND_FIXTURE[COMPOUND_FIXTURE.len() - 1] ^ 0x01,
+            "compound_exit_symbol",
+        ),
+    ];
 
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(&bytes, DecodeOptions::default())
-        .unwrap_err();
+    for (fixture, offset, value, expected_reason) in cases {
+        let mut bytes = fixture.to_vec();
+        bytes[offset] = value;
+        let error = context(ThreadCount::from(1usize))
+            .decode_hash_report_bytes(&bytes, DecodeOptions::default())
+            .unwrap_err();
 
-    assert!(matches!(
-        error,
-        DecodeError::UnsupportedFeature {
-            unsupported
-        } if unsupported.reason() == "inter_exit_symbol"
-    ));
-}
-
-#[test]
-fn partition_symbol_mutation_fails_closed_at_exit_symbol() {
-    let mut bytes = MINIMAL_FIXTURE.to_vec();
-    let tile_start = bytes.len() - 2;
-    bytes[tile_start] = 0xFF;
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(&bytes, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        DecodeError::UnsupportedFeature {
-            unsupported
-        } if unsupported.reason() == "inter_exit_symbol"
-    ));
-}
-
-#[test]
-fn compound_tile_mutation_fails_as_internal_parse_desync() {
-    let mut bytes = COMPOUND_FIXTURE.to_vec();
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0x01;
-
-    let error = context(ThreadCount::from(1usize))
-        .decode_hash_report_bytes(&bytes, DecodeOptions::default())
-        .unwrap_err();
-
-    assert!(matches!(
-        error,
-        DecodeError::InternalState {
-            reason: "compound_exit_symbol",
-            ..
-        }
-    ));
+        assert!(matches!(
+            error,
+            DecodeError::InternalState { reason, .. } if reason == expected_reason
+        ));
+    }
 }
 
 #[test]
