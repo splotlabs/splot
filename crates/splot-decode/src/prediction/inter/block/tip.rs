@@ -570,14 +570,10 @@ fn tip_block_plan<T: ReconSample>(
     let references = temporal
         .tip_references()
         .ok_or_else(|| tip_reference_pair_error(tile_offset))?;
-    let inter = core.inter.as_ref().ok_or_else(|| {
-        inter_missing!(
-            "inter_tip_control",
-            tile_offset,
-            "inter.tip.control",
-            SPEC_MODE_INFO
-        )
-    })?;
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(inter_internal!("inter_tip_control", tile_offset))?;
     let weight_index = usize::from(inter.tip_global_wtd_index.unwrap_or(0));
     let weight = TIP_WEIGHTING_FACTORS
         .get(weight_index)
