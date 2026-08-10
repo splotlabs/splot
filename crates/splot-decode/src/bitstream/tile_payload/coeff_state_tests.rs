@@ -241,6 +241,27 @@ fn allocation_accounting_covers_transform_and_context_lines() {
 }
 
 #[test]
+fn maximum_frame_dimensions_fit_coefficient_context_state() {
+    let max_frame_dimension = 1_usize << 16;
+    let max_mi_dimension = 2 * ((max_frame_dimension + 7) >> 3);
+    for chroma in [
+        ChromaFormatIdc::Monochrome,
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv422,
+        ChromaFormatIdc::Yuv444,
+    ] {
+        assert!(
+            TileCoeffContextState::new_for_tile_chroma(
+                0..max_mi_dimension,
+                0..max_mi_dimension,
+                chroma,
+            )
+            .is_ok()
+        );
+    }
+}
+
+#[test]
 fn tile_context_state_initializes_three_zero_planes() {
     let state =
         TileCoeffContextState::new_for_tile_chroma(0..2, 0..3, ChromaFormatIdc::Yuv444).unwrap();
