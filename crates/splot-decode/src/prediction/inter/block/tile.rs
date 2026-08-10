@@ -221,13 +221,11 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             tile_cols.clone(),
             chroma,
         )
-        .map_err(|_| {
-            inter_cap!(
-                "inter_coeff_context_state",
-                tile_offset,
-                "inter.residual_context_state",
-                SPEC_MODE_INFO
-            )
+        .map_err(|error| match error {
+            TileCoeffStateError::Allocation(_) => {
+                inter_allocation!("inter coefficient context state")
+            }
+            _ => inter_internal!("inter_coeff_context_state", tile_offset),
         })?;
         let delta_q_state = DeltaQState::new(context.sequence, context.core)?;
         let intrabc_state = TileIntrabcPreludeState::new_for_tile(

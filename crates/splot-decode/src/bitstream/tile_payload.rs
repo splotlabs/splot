@@ -45,7 +45,7 @@ pub(crate) use cdf::{
     MvCdfSelector, SavedCdfSubset, TileCdfSelector, TileCdfSubset,
 };
 pub(crate) use coeff_loop::{CoeffLoopContextError, read_quant::CoeffReadQuantError};
-pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState};
+pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState, TileCoeffStateError};
 #[cfg(test)]
 pub(crate) use general_intra_block::GeneralIntraLumaBlockMode;
 pub(crate) use general_intra_block::{
