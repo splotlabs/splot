@@ -75,6 +75,9 @@ COVERAGE = [
       "--profile=31", "--enable-deblocking=0", "--enable-cdef=0", "--enable-restoration=0",
       "--enable-gdf=0", "--enable-ccso=0", "--enable-pc-wiener=0",
       "--enable-wiener-nonsep=0", "--enable-keyframe-filtering=0"], "0", "180"),
+    ("syn-output-multi-brt-16x16",
+     "color=c=gray:size=16x16:rate=30:duration=0.0333333333333333", "yuv420p", "--i420",
+     ["--monochrome", "--timing-info=unspecified"], "8", "240"),
     ("syn-444-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv444p", "--i444", ["--i444"], "8", "120"),
     ("syn-422-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv422p", "--i422", ["--i422"], "8", "120"),
     ("syn-mono-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv420p", "--i420", ["--monochrome"], "8", "120"),
@@ -101,6 +104,15 @@ PINNED_RECIPE_HASHES = {
         "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
         "source_sha256": "83dc7abaa81f46324b7a47fa89b127c1f8891ff2b3d97e4736ac25e45aadb1c6",
         "ivf_sha256": "5cda9a0c51c31721036a23c2601b88770989e9e872c66d32fc5d0a1875b53501",
+    },
+    "syn-output-multi-brt-16x16": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "source_sha256": "1a862fd46eb2b14b9772b8cba7f1ef4a97d833d76e3ad9b4149ed56504366220",
+        "ivf_sha256": "7dd5e609570d7d8be941e684f8e7bf7be669f6e9d39f7c03167b09e9fec4764c",
+        "avm_native_raw_sha256": "5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b",
+        "avm_i420_raw_sha256": "f83545d43c6939ec393b6b8310959b6174fd764b08a12fc22d908408a7e6a43e",
+        "instrumentation_sha256": "6ec529e93ff9ec09ab211e6bc29034937302eb7c686d7fe6c872f88984a41164",
+        "recipe_sha256": "95d423a982a8b0995a4a21d2feae525447f3a69b22dd57c4440602960643bb64",
     },
 }
 
@@ -132,7 +144,10 @@ def cmd_coverage_fixtures(args):
     avmenc = find("avmenc")
     stage = args.stage
     os.makedirs(stage, exist_ok=True)
-    for fid, src, pix, inflag, flags, cpu, qp in COVERAGE:
+    selected = [row for row in COVERAGE if args.only is None or row[0] == args.only]
+    if not selected:
+        sys.exit(f"error: unknown coverage fixture id: {args.only}")
+    for fid, src, pix, inflag, flags, cpu, qp in selected:
         y4m = os.path.join(stage, fid + ".y4m")
         run_checked(["ffmpeg", "-y", "-f", "lavfi", "-i", src, "-pix_fmt", pix, y4m])
         run_checked([avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
@@ -145,7 +160,12 @@ def cmd_coverage_fixtures(args):
             if actual_source != expected["source_sha256"] or actual_ivf != expected["ivf_sha256"]:
                 sys.exit(f"error: {fid} differs from pinned AVM {expected['avm_revision']}: "
                          f"source={actual_source}, ivf={actual_ivf}")
-    print(f"staged {len(COVERAGE)} coverage fixtures in {stage} "
+            if "instrumentation_sha256" in expected:
+                print(f"  {fid}: isolated AVM instrumentation "
+                      f"{expected['instrumentation_sha256']}, recipe {expected['recipe_sha256']}")
+                print(f"  {fid}: AVM native raw {expected['avm_native_raw_sha256']}, "
+                      f"forced I420 raw {expected['avm_i420_raw_sha256']}")
+    print(f"staged {len(selected)} coverage fixtures in {stage} "
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 
 
@@ -154,7 +174,9 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("find").set_defaults(fn=cmd_find)
     h = sub.add_parser("hashes"); h.add_argument("--out"); h.set_defaults(fn=cmd_hashes)
-    c = sub.add_parser("coverage-fixtures"); c.add_argument("--stage", required=True); c.set_defaults(fn=cmd_coverage_fixtures)
+    c = sub.add_parser("coverage-fixtures"); c.add_argument("--stage", required=True)
+    c.add_argument("--only", help="regenerate one fixture id")
+    c.set_defaults(fn=cmd_coverage_fixtures)
     args = p.parse_args()
     args.fn(args)
 

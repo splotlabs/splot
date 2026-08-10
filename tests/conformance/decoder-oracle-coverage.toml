@@ -232,6 +232,14 @@ fixtureable = true
 spec_sections = ["7.3.7", "5.18.2"]
 
 [[capability]]
+id = "frame.output.multiple_brt"
+name = "Multiple buffer removal timing OBUs in one coded output frame unit"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.12", "7.3.3", "7.3.4"]
+notes = "Covered by a pinned, isolated AVM encoder instrumentation that invokes the existing validated BRT writer twice before one immediate-output key frame."
+
+[[capability]]
 id = "frame.random_access_switch"
 name = "Random-access switch frame"
 category = "frame"

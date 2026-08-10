@@ -26,9 +26,9 @@ oracle hashes, but it is not vendored, not required by CI, and not invoked by
 committed tests. Any future live AVM differential harness must be opt-in and
 recorded as a separate conformance row.
 
-The `syn-profile31-mono-intra-16x16` recipe is pinned to AVM `457cd58681a747465661baccb1f32095bc5b7774`; its source, IVF, and raw SHA-256 values are
-`83dc7abaa81f46324b7a47fa89b127c1f8891ff2b3d97e4736ac25e45aadb1c6`, `5cda9a0c51c31721036a23c2601b88770989e9e872c66d32fc5d0a1875b53501`, and
-`5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b`; only the IVF and hashes are committed.
+The `syn-profile31-mono-intra-16x16` and `syn-output-multi-brt-16x16` recipes pin AVM `457cd58681a747465661baccb1f32095bc5b7774`; their complete source, IVF, raw-output, instrumentation, and recipe hashes are recorded in the fixture generator.
+The multiple-BRT fixture uses isolated encoder instrumentation invoking AVM's existing writer twice; native monochrome AVM and splot output is 256-byte SHA-256 `5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b`, while AVM's separate forced-I420 output is 384-byte SHA-256 `f83545d43c6939ec393b6b8310959b6174fd764b08a12fc22d908408a7e6a43e`.
+Only redistributable IVF files and hashes are committed; AVM and the local instrumentation remain opt-in.
 
 ## Committed Corpus
 

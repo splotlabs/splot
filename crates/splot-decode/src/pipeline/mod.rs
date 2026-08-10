@@ -805,8 +805,13 @@ where
         ensure_intra_header_complete(&key_core, key_envelope.offset)?;
     }
     in_band_long_term_prelude.validate_required(&key_core, &reference, key_envelope.offset)?;
-    let key_user_qm =
-        output_effect_state.prepare_frame(key_envelope, &key_core, &sequence, true)?;
+    let key_user_qm = output_effect_state.prepare_frame(
+        key_envelope,
+        &key_core,
+        &sequence,
+        true,
+        key_frame_index,
+    )?;
     let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
     output_effect_state.observe_suffix(frame_suffix_obus(stream, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
@@ -1098,6 +1103,7 @@ where
                     &sef_core,
                     &sequence,
                     first_picture_in_tu,
+                    ivf_frame_index,
                 )?;
                 let display_grain =
                     film_grain_slots.active_for_core(&sef_core, sef_envelope.offset)?;
@@ -1303,6 +1309,7 @@ where
                             &inter_core,
                             &sequence,
                             first_picture_in_tu,
+                            ivf_frame_index,
                         )?;
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
@@ -1531,6 +1538,7 @@ where
                             &inter_core,
                             &sequence,
                             first_picture_in_tu,
+                            ivf_frame_index,
                         )?;
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
@@ -1982,6 +1990,7 @@ where
                     &key_core,
                     &key_sequence,
                     first_picture_in_tu,
+                    next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
                 )?;
                 let key_display_grain =
                     film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;

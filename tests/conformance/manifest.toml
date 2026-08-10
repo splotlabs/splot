@@ -1645,6 +1645,11 @@ description = "Minimal 8-bit 4:2:0 AVMenc key frame with decoder-model sequence 
 expect = "clean"
 
 [[vector]]
+path = "vectors/valid/syn-output-multi-brt-16x16.ivf"
+description = "Deterministic AVM revision 457cd58681a747465661baccb1f32095bc5b7774 8-bit monochrome 16x16 output key frame carrying two source-ordered buffer-removal-timing OBUs, as permitted by AV2 §7.3.3. The isolated encoder instrumentation and complete recipe are pinned in tools/decoder-fixtures/generate.py; validates clean and decodes byte-exact to AVM's 256-byte native monochrome raw SHA-256 5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b. AVM's forced-I420 mode appends neutral U/V and has the distinct 384-byte SHA-256 f83545d43c6939ec393b6b8310959b6174fd764b08a12fc22d908408a7e6a43e."
+expect = "clean"
+
+[[vector]]
 path = "vectors/valid/syn-output-ci-2frame-64x64.ivf"
 description = "Two-frame 8-bit 4:2:0 AVMenc stream with content-interpretation timing state; validates clean and decodes byte-exact to AVM."
 expect = "clean"

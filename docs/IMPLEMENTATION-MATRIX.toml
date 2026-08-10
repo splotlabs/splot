@@ -20075,7 +20075,7 @@ change_id = "decode-output-effect-obus"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Implements the selected-layer output-effect semantics used by the current decoder for multi-frame-header, buffer-removal-timing, content-interpretation, metadata-short, metadata-group, and quantizer-matrix OBUs. Stream planning retains each OBU as selected-layer state; the scheduler enforces §7.3.3/§7.3.4 prefix and suffix placement; per-temporal-unit and per-coded-video-sequence state applies the §7.3.8 lifetimes and identity constraints; multi-frame headers select protected reusable slots; BRT resolves the signaled operating-point set; metadata observes persistence, cancellation, frame association, and applicability to the selected base embedded-layer output (without a generalized cross-layer/dependency-map query); and user-defined quantizer matrices feed §7.14.4 dequantization only for transform dimensions no greater than 8 by 8. Direct output-effect state tests protect the metadata transitions and six minimal AVMenc-derived fixtures validate clean and decode byte-for-byte with local avmdec revision 3935f4bf31ee774177d9300341bbbaf5b6116500."
+notes = "Implements the selected-layer output-effect semantics used by the current decoder for multi-frame-header, buffer-removal-timing, content-interpretation, metadata-short, metadata-group, and quantizer-matrix OBUs. Stream planning retains each OBU as selected-layer state; the scheduler enforces §7.3.3/§7.3.4 prefix and suffix placement; per-temporal-unit and per-coded-video-sequence state applies the §7.3.8 lifetimes and identity constraints; multi-frame headers select protected reusable slots; BRT resolves the signaled operating-point set and preserves every BRT in source order. Coded output frame units admit any BRT count under §7.3.3, while a second BRT in a coded non-output frame unit is a typed malformed frame-unit conformance error under §7.3.4 after output classification and before frame effects. Metadata observes persistence, cancellation, frame association, and applicability to the selected base embedded-layer output; user-defined quantizer matrices feed §7.14.4 dequantization only for transform dimensions no greater than 8 by 8. Direct output-effect state tests protect metadata and BRT transitions, and seven minimal AVMenc-derived fixtures validate clean and decode byte-for-byte. The multi-BRT fixture's native 256-byte monochrome output is SHA-256 5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b in pinned AVM and splot at one and eight threads; AVM's separate forced-I420 projection is 384 bytes with SHA-256 f83545d43c6939ec393b6b8310959b6174fd764b08a12fc22d908408a7e6a43e."
 
 [feature.status]
 mapped = "done"
@@ -20100,6 +20100,8 @@ tests = [
     "crates/splot-decode/src/pipeline/output_effects.rs::tests::basic_and_enhanced_metadata_replace_same_scope_and_cancel",
     "crates/splot-decode/src/pipeline/output_effects.rs::tests::metadata_snapshot_applies_only_to_selected_base_layer",
     "crates/splot-decode/src/pipeline/output_effects.rs::tests::coded_video_sequence_start_prunes_metadata_from_earlier_temporal_units",
+    "crates/splot-decode/src/pipeline/output_effects.rs::tests::multiple_brts_follow_output_classification_and_drain_in_source_order",
+    "crates/splot-decode/src/pipeline/output_effects.rs::tests::malformed_brt_payloads_are_typed_and_fail_closed",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
@@ -20114,6 +20116,7 @@ commands = [
 fixtures = [
     "tests/conformance/vectors/valid/syn-output-mfh-64x64.ivf",
     "tests/conformance/vectors/valid/syn-output-brt-64x64.ivf",
+    "tests/conformance/vectors/valid/syn-output-multi-brt-16x16.ivf",
     "tests/conformance/vectors/valid/syn-output-ci-2frame-64x64.ivf",
     "tests/conformance/vectors/valid/syn-output-metadata-group-64x64.ivf",
     "tests/conformance/vectors/valid/syn-output-metadata-short-prefix-suffix-64x64.ivf",

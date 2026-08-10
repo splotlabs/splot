@@ -11400,3 +11400,70 @@ output_scope = "Complete 12,288-byte raw I420 output"
 kind = "digest-equality"
 left = "avm-seg-skip-inter-raw-sha256"
 right = "splot-seg-skip-inter-raw-sha256"
+
+[[evidence]]
+id = "lref-avm-syn-output-multi-brt-16x16"
+feature_id = "DECODE-OUTPUT-EFFECT-OBUS"
+decoder_support_rows = ["output-effect-obus"]
+kind = "reference-output-agreement"
+summary = "Pinned AVM and splot emit byte-identical complete native monochrome raw output for a deterministic coded output frame unit carrying two source-ordered buffer-removal-timing OBUs."
+recorded_at = "2026-08-10"
+command = '''Use the syn-output-multi-brt-16x16 row in tools/decoder-fixtures/generate.py with AVM revision 457cd58681a747465661baccb1f32095bc5b7774 and the isolated encoder instrumentation SHA-256 6ec529e93ff9ec09ab211e6bc29034937302eb7c686d7fe6c872f88984a41164. The complete local clone, build, source, encode, and decode recipe has SHA-256 95d423a982a8b0995a4a21d2feae525447f3a69b22dd57c4440602960643bb64. Decode {fixture:input} with pinned avmdec --codec=av2 --rawvideo --output-bit-depth=8 and with splot decode --threads 1 and --threads 8 --output-format raw, then compare those three native monochrome outputs byte-for-byte. Separately decode with pinned avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 to record the forced-I420 synthesis digest.'''
+
+[[evidence.fixture]]
+id = "input"
+role = "input-bitstream"
+path = "tests/conformance/vectors/valid/syn-output-multi-brt-16x16.ivf"
+sha256 = "7dd5e609570d7d8be941e684f8e7bf7be669f6e9d39f7c03167b09e9fec4764c"
+size_bytes = 78
+format = "ivf"
+provenance_kind = "avm-generated-from-project-owned-synthetic-input"
+provenance_summary = "Pinned AVMenc revision 457cd58681a747465661baccb1f32095bc5b7774 encoded one project-owned gray 16x16 8-bit monochrome frame from source SHA-256 1a862fd46eb2b14b9772b8cba7f1ef4a97d833d76e3ad9b4149ed56504366220. An isolated encoder-only instrumentation invokes AVM's existing validated BRT writer twice before the immediate-output key frame; AVM, its source patch, and the recipe file remain local and only their hashes are committed."
+license = "PolyForm-Noncommercial-1.0.0"
+
+[[evidence.reference_run]]
+id = "avm-pinned-native"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned AVM checkout revision 457cd58681a747465661baccb1f32095bc5b7774 with unmodified decoder sources."
+command_summary = "Pinned avmdec --codec=av2 --rawvideo --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-multi-brt-native-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b"
+output_scope = "Complete 256-byte native monochrome raw output"
+
+[[evidence.reference_run]]
+id = "avm-pinned-i420"
+tool = "avm"
+executable_name = "avmdec"
+tool_role = "decode-reference"
+source_url = "https://github.com/AOMediaCodec/avm"
+revision = "457cd58681a747465661baccb1f32095bc5b7774"
+version_summary = "Pinned AVM checkout revision 457cd58681a747465661baccb1f32095bc5b7774 with unmodified decoder sources."
+command_summary = "Pinned avmdec --codec=av2 --rawvideo --i420 --output-bit-depth=8 decoded {fixture:input}."
+output_digest_id = "avm-multi-brt-i420-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "f83545d43c6939ec393b6b8310959b6174fd764b08a12fc22d908408a7e6a43e"
+output_scope = "Complete 384-byte raw monochrome output after forced-I420 chroma synthesis"
+
+[[evidence.reference_run]]
+id = "splot"
+tool = "splot"
+executable_name = "splot"
+tool_role = "implementation-under-test"
+source_url = "repository-local"
+revision = "working-tree"
+version_summary = "Repository working tree preserving multiple BRTs in coded output frame units."
+command_summary = "splot decode --output-format raw decoded {fixture:input} at one and eight threads."
+output_digest_id = "splot-multi-brt-native-raw-sha256"
+output_digest_algorithm = "sha256"
+output_digest = "5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b"
+output_scope = "Complete 256-byte native monochrome raw output at both thread counts"
+
+[[evidence.assertion]]
+kind = "digest-equality"
+left = "avm-multi-brt-native-raw-sha256"
+right = "splot-multi-brt-native-raw-sha256"

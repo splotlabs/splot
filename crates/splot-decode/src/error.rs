@@ -120,6 +120,12 @@ pub enum DecodeHeaderStateError {
     /// A frame required its parsed dimensions, but they were absent.
     #[error("frame size is missing")]
     MissingFrameSize,
+    /// A frame reached output-effect validation without both output flags.
+    #[error("frame output classification is missing")]
+    MissingFrameOutputClassification,
+    /// Multiple pending BRTs did not retain the second OBU's source offset.
+    #[error("buffer-removal-timing source offset is missing")]
+    MissingBufferRemovalTimingOffset,
     /// A frame's parsed width or height was zero.
     #[error("frame dimensions must be nonzero")]
     ZeroFrameSize,

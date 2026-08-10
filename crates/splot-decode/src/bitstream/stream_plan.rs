@@ -332,6 +332,10 @@ pub enum DecodeSourceIssueKind {
     SequenceHeaderConformanceError,
     /// Fatal AV2 frame-header conformance error.
     FrameHeaderConformanceError,
+    /// Fatal AV2 OBU payload syntax parse error encountered by the decode runtime.
+    ObuPayloadParseError,
+    /// Fatal coded-frame-unit conformance error.
+    FrameUnitConformanceError,
     /// Fatal AV2 tile-payload syntax decode error.
     TilePayloadParseError,
 }
@@ -392,6 +396,37 @@ impl DecodeSourceIssue {
     ) -> Self {
         Self {
             kind: DecodeSourceIssueKind::FrameHeaderConformanceError,
+            rule_id: None,
+            spec_section: Some(spec_section),
+            offset: Some(offset),
+            frame_index,
+            message,
+        }
+    }
+
+    pub(crate) fn obu_payload_parse(
+        offset: ByteOffset,
+        spec_section: &'static str,
+        message: String,
+    ) -> Self {
+        Self {
+            kind: DecodeSourceIssueKind::ObuPayloadParseError,
+            rule_id: None,
+            spec_section: Some(spec_section),
+            offset: Some(offset),
+            frame_index: None,
+            message,
+        }
+    }
+
+    pub(crate) fn frame_unit_conformance(
+        offset: ByteOffset,
+        frame_index: Option<usize>,
+        spec_section: &'static str,
+        message: String,
+    ) -> Self {
+        Self {
+            kind: DecodeSourceIssueKind::FrameUnitConformanceError,
             rule_id: None,
             spec_section: Some(spec_section),
             offset: Some(offset),
@@ -530,6 +565,8 @@ impl_reason_labels!(pub DecodeSourceIssueKind {
     SequenceHeaderParseError => "sequence_header_parse_error",
     SequenceHeaderConformanceError => "sequence_header_conformance_error",
     FrameHeaderConformanceError => "frame_header_conformance_error",
+    ObuPayloadParseError => "obu_payload_parse_error",
+    FrameUnitConformanceError => "frame_unit_conformance_error",
     TilePayloadParseError => "tile_payload_parse_error",
 });
 
