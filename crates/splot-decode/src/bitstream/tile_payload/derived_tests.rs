@@ -46,6 +46,12 @@ fn annex_b_tile_group_obu() -> Vec<u8> {
     annex_b_tile_group_obu_with_payload(&[0x00, 0x80, 0x00])
 }
 
+fn annex_b_tile_group_obu_for_type(obu_type: ObuType) -> Vec<u8> {
+    let mut bytes = annex_b_tile_group_obu();
+    bytes[1] = obu_type.raw() << 2;
+    bytes
+}
+
 fn annex_b_tile_group_obu_with_payload(payload: &[u8]) -> Vec<u8> {
     let size = u8::try_from(payload.len() + 1).unwrap();
     let mut bytes = vec![size, OBU_CLOSED_LOOP_KEY_HEADER];
@@ -102,6 +108,22 @@ fn candidate_facts(
 
 fn base_candidate_facts(disable_cdf_update: bool) -> FrameCandidateTileFacts<'static> {
     candidate_facts(true, false, 1, BASE_MI_COL_STARTS, None, disable_cdf_update)
+}
+
+fn intra_only_tile_group_facts(obu_type: ObuType) -> FrameCandidateTileFacts<'static> {
+    FrameCandidateTileFacts::new_for_test(
+        obu_type,
+        true,
+        false,
+        1,
+        1,
+        BASE_MI_COL_STARTS,
+        BASE_MI_ROW_STARTS,
+        None,
+        0,
+        42,
+        false,
+    )
 }
 
 fn non_frame_candidate_facts() -> FrameCandidateTileFacts<'static> {
@@ -280,6 +302,22 @@ fn derived_annex_b_tile_payload_preserves_tile_offsets_and_boundary() {
     assert_eq!(unit.mi_col_range(), 0..16);
     assert_first_work_unit_cdf_update(&plan, CdfUpdateMode::Enabled);
     assert!(plan.frame_end().reaches_last_tile_group());
+}
+
+#[test]
+fn derived_boundary_admits_intra_only_regular_and_leading_tile_groups() {
+    let ctx = single_thread_context();
+    for obu_type in [ObuType::RegularTileGroup, ObuType::LeadingTileGroup] {
+        let bytes = annex_b_tile_group_obu_for_type(obu_type);
+        let plan = derive_annex_b_tile_payload_plan(
+            &ctx,
+            &bytes,
+            intra_only_tile_group_facts(obu_type),
+            DecodeLimits::unlimited(),
+        )
+        .unwrap();
+        assert_eq!(plan.work_units().len(), 1);
+    }
 }
 
 #[test]

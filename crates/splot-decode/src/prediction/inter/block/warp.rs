@@ -385,39 +385,14 @@ impl Default for WarpInterIntraSyntax {
 
 pub(crate) fn inter_mv_read_config(
     core: &FrameHeaderCore,
-    tile_offset: ByteOffset,
+    _tile_offset: ByteOffset,
 ) -> Result<MvReadConfig> {
     let precision = core
         .inter
         .as_ref()
         .and_then(|inter| inter.mv_precision)
-        .ok_or_else(|| {
-            inter_missing!(
-                "inter_mv_precision",
-                tile_offset,
-                "inter.mv_precision",
-                SPEC_MODE_INFO
-            )
-        })?;
-    let precision = mv_precision_code(precision).ok_or_else(|| {
-        inter_cap!(
-            "inter_mv_precision_unsupported",
-            tile_offset,
-            "inter.mv_precision unsupported",
-            SPEC_MODE_INFO
-        )
-    })?;
-    Ok(MvReadConfig::inter(precision))
-}
-
-pub(crate) const fn mv_precision_code(precision: MvPrecision) -> Option<u8> {
-    Some(match precision {
-        MvPrecision::OnePel => MV_PRECISION_ONE_PEL,
-        MvPrecision::HalfPel => MV_PRECISION_HALF_PEL,
-        MvPrecision::QuarterPel => MV_PRECISION_QUARTER_PEL,
-        MvPrecision::EighthPel => MV_PRECISION_EIGHTH_PEL,
-        _ => return None,
-    })
+        .ok_or(crate::DecodeHeaderStateError::MissingInterMotionVectorPrecision)?;
+    Ok(MvReadConfig::inter(precision.av2_code()))
 }
 
 pub(crate) fn inter_mvd_sign_derivation_allowed(

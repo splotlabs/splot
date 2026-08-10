@@ -36,8 +36,11 @@ use splot_core::types::ObuType;
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
 pub(crate) use block_decoded_state::TileBlockDecodedState;
+#[cfg(test)]
+pub(crate) use cdf::block_context::IntraJointMode;
 pub(crate) use cdf::block_context::{
-    IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
+    SupportedNonDcLumaMode,
 };
 pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
 pub(crate) use cdf::{
@@ -49,7 +52,7 @@ pub(crate) use coeff_state::{CoeffContextReset, TileCoeffContextState, TileCoeff
 #[cfg(test)]
 pub(crate) use general_intra_block::GeneralIntraLumaBlockMode;
 pub(crate) use general_intra_block::{
-    CflIndex, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
+    CflMultiDirection, CflParams, GeneralIntraBlockModeError, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     decode_general_intra_block_modes_with_fsc_context, decode_general_intra_chroma_block_mode,
     decode_general_intra_luma_block_mode_with_fsc_context, read_general_intra_dip_mode_info,
@@ -90,7 +93,8 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
-    DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+    DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
+    GeneralIntraTreeWalkError,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,
@@ -657,7 +661,13 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         ));
     }
     match (input.frame.obu_type, input.frame.is_frame_intra) {
-        (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, true)
+        (
+            ObuType::ClosedLoopKey
+            | ObuType::OpenLoopKey
+            | ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup,
+            true,
+        )
         | (
             ObuType::LeadingTileGroup
             | ObuType::RegularTileGroup
@@ -665,13 +675,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             | ObuType::RasFrame,
             false,
         ) => {}
-        (
-            ObuType::LeadingTileGroup
-            | ObuType::RegularTileGroup
-            | ObuType::Switch
-            | ObuType::RasFrame,
-            true,
-        )
+        (ObuType::Switch | ObuType::RasFrame, true)
         | (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, false) => {
             return Err(unsupported_boundary_without_tile(
                 TilePayloadUnsupportedReason::NonIntraFrame,

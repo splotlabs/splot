@@ -90,6 +90,15 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
+    /// A decoded general-intra mode escaped its typed AV2 domain.
+    #[error("general-intra mode state is inconsistent")]
+    InvalidGeneralIntraModeState,
+    /// A canonical three-symbol MHCCP direction decoded outside its typed domain.
+    #[error("general-intra MHCCP direction state is inconsistent")]
+    InvalidGeneralIntraMhccpDirection,
+    /// A complete intra header contradicted its tile-group carrier or frame-kind facts.
+    #[error("intra-only tile-group header state is inconsistent")]
+    InvalidIntraOnlyTileGroupState,
     /// A successfully parsed inter frame did not carry complete frame-header state.
     #[error("inter-frame header state is incomplete")]
     IncompleteInterFrame,
@@ -105,6 +114,9 @@ pub enum DecodeHeaderStateError {
     /// An inter frame required its parsed interpolation filter, but it was absent.
     #[error("inter-frame interpolation filter is missing")]
     MissingInterpolationFilter,
+    /// A complete ordinary inter header was missing its derived frame MV precision.
+    #[error("inter-frame motion-vector precision is missing")]
+    MissingInterMotionVectorPrecision,
     /// An inter frame carried an interpolation-filter variant unknown to this decoder.
     #[error("inter-frame interpolation filter is invalid")]
     InvalidInterpolationFilter,
@@ -120,18 +132,51 @@ pub enum DecodeHeaderStateError {
     /// A frame required its parsed dimensions, but they were absent.
     #[error("frame size is missing")]
     MissingFrameSize,
+    /// A frame reached output-effect validation without both output flags.
+    #[error("frame output classification is missing")]
+    MissingFrameOutputClassification,
+    /// Multiple pending BRTs did not retain the second OBU's source offset.
+    #[error("buffer-removal-timing source offset is missing")]
+    MissingBufferRemovalTimingOffset,
     /// A frame's parsed width or height was zero.
     #[error("frame dimensions must be nonzero")]
     ZeroFrameSize,
+    /// A split inter walk received a tile plan inconsistent with its validated header.
+    #[error("split inter walk requires exactly one tile, got {actual}")]
+    InvalidSplitTileCount {
+        /// Number of tile work units materialized by the validated payload plan.
+        actual: usize,
+    },
     /// A validated block-size value could not produce its table-defined geometry.
     #[error("block geometry is inconsistent with the decoded block-size domain")]
     InvalidBlockGeometry,
     /// A decoded frame could not materialize its § 7.23 segmentation map.
     #[error("frame segmentation map is unavailable")]
     MissingSegmentIdMap,
+    /// Validated frame geometry produced an empty segmentation-map dimension.
+    #[error("frame segmentation map dimensions must be nonzero, got {mi_rows}x{mi_cols}")]
+    InvalidSegmentIdMapDimensions {
+        /// Frame height in 4x4 luma units.
+        mi_rows: usize,
+        /// Frame width in 4x4 luma units.
+        mi_cols: usize,
+    },
+    /// Validated frame geometry overflowed while sizing its segmentation map.
+    #[error("frame segmentation map arithmetic overflow in {operation}: {left} * {right}")]
+    SegmentIdMapSizeOverflow {
+        /// Sizing operation that overflowed.
+        operation: &'static str,
+        /// Left operand.
+        left: usize,
+        /// Right operand.
+        right: usize,
+    },
     /// An inter frame's reference count was invalid or did not match its map length.
     #[error("inter-frame reference count and map are inconsistent")]
     InvalidInterReferenceMap,
+    /// The CDF selector or row used by single-reference syntax was internally inconsistent.
+    #[error("single-reference entropy CDF state is inconsistent")]
+    InvalidSingleReferenceCdfState,
     /// A frame required sequence-level quantizer configuration that was absent.
     #[error("sequence transform, quantizer, and entropy configuration is missing")]
     MissingSequenceTransformQuantEntropy,
@@ -150,6 +195,14 @@ pub enum DecodeHeaderStateError {
     /// The loop-restoration filter pipeline state was internally inconsistent.
     #[error("loop-restoration filter pipeline state is inconsistent")]
     InvalidLoopRestorationFilterState,
+    /// An SDP chroma leaf was reached before its collocated luma mode was published.
+    #[error("SDP chroma block at ({mi_row}, {mi_col}) is missing collocated luma mode state")]
+    MissingSdpLumaModeState {
+        /// Block row in 4x4 luma units.
+        mi_row: usize,
+        /// Block column in 4x4 luma units.
+        mi_col: usize,
+    },
 }
 
 /// Runtime reference-frame state consistency failure.

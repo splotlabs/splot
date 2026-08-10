@@ -70,7 +70,6 @@ pub(crate) use stream_schedule::following_inter_envelope;
 pub(crate) use stream_schedule::require_minimal_obu_order;
 use stream_schedule::*;
 
-pub(crate) const GENERAL_INTRA_PARTITION_SPEC_SECTION: &str = "5.20.3.1";
 pub(crate) const GENERAL_INTRA_MODE_SPEC_SECTION: &str = "5.20.5.3";
 pub(crate) const GENERAL_INTRA_RESIDUAL_SPEC_SECTION: &str = "5.20.7.27";
 
@@ -805,8 +804,13 @@ where
         ensure_intra_header_complete(&key_core, key_envelope.offset)?;
     }
     in_band_long_term_prelude.validate_required(&key_core, &reference, key_envelope.offset)?;
-    let key_user_qm =
-        output_effect_state.prepare_frame(key_envelope, &key_core, &sequence, true)?;
+    let key_user_qm = output_effect_state.prepare_frame(
+        key_envelope,
+        &key_core,
+        &sequence,
+        true,
+        key_frame_index,
+    )?;
     let key_display_grain = film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;
     output_effect_state.observe_suffix(frame_suffix_obus(stream, key_candidate)?)?;
     let key_output_effects = output_effect_state.finish_frame();
@@ -1098,6 +1102,7 @@ where
                     &sef_core,
                     &sequence,
                     first_picture_in_tu,
+                    ivf_frame_index,
                 )?;
                 let display_grain =
                     film_grain_slots.active_for_core(&sef_core, sef_envelope.offset)?;
@@ -1303,6 +1308,7 @@ where
                             &inter_core,
                             &sequence,
                             first_picture_in_tu,
+                            ivf_frame_index,
                         )?;
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
@@ -1483,6 +1489,13 @@ where
                                 &mut recon_lane,
                             )?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            let setup = if inter_core.status
+                                == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
+                            {
+                                frame_engine::FrameSetup::Intra
+                            } else {
+                                frame_engine::FrameSetup::Inter(&inter_state)
+                            };
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_eight,
                                 plan,
@@ -1492,7 +1505,7 @@ where
                                 inter_core,
                                 &sequence,
                                 options,
-                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                &setup,
                                 BitDepth::Eight,
                             )?;
                             let inter_core = Arc::clone(&walk.core);
@@ -1531,6 +1544,7 @@ where
                             &inter_core,
                             &sequence,
                             first_picture_in_tu,
+                            ivf_frame_index,
                         )?;
                         if frame_is_output(&inter_core) {
                             let next_output_frame_count = checked_add(
@@ -1711,6 +1725,13 @@ where
                                 &mut recon_lane,
                             )?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            let setup = if inter_core.status
+                                == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
+                            {
+                                frame_engine::FrameSetup::Intra
+                            } else {
+                                frame_engine::FrameSetup::Inter(&inter_state)
+                            };
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_ten,
                                 plan,
@@ -1720,7 +1741,7 @@ where
                                 inter_core,
                                 &sequence,
                                 options,
-                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                &setup,
                                 BitDepth::Ten,
                             )?;
                             let inter_core = Arc::clone(&walk.core);
@@ -1982,6 +2003,7 @@ where
                     &key_core,
                     &key_sequence,
                     first_picture_in_tu,
+                    next_candidate.ivf_frame().map(IvfFrameContext::frame_index),
                 )?;
                 let key_display_grain =
                     film_grain_slots.active_for_core(&key_core, key_envelope.offset)?;

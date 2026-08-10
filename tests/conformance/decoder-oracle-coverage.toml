@@ -134,6 +134,13 @@ fixtureable = true
 spec_sections = ["6.4.1"]
 
 [[capability]]
+id = "seq.profile.configurable"
+name = "Configurable profile (seq_profile_idc 31)"
+category = "sequence"
+fixtureable = true
+spec_sections = ["Annex A.2", "5.4.1", "6.4.1"]
+
+[[capability]]
 id = "seq.chroma.420"
 name = "4:2:0 chroma subsampling"
 category = "sequence"
@@ -197,6 +204,13 @@ fixtureable = true
 spec_sections = ["5.20.7.1", "7.13.3", "6.19.7.1"]
 
 [[capability]]
+id = "frame.intra_only"
+name = "Intra-only non-key frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "5.19", "7.2"]
+
+[[capability]]
 id = "frame.key_closed_loop"
 name = "Closed-loop key (intra) frame"
 category = "frame"
@@ -223,6 +237,14 @@ name = "Multi-frame temporal sequence"
 category = "frame"
 fixtureable = true
 spec_sections = ["7.3.7", "5.18.2"]
+
+[[capability]]
+id = "frame.output.multiple_brt"
+name = "Multiple buffer removal timing OBUs in one coded output frame unit"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.12", "7.3.3", "7.3.4"]
+notes = "Covered by a pinned, isolated AVM encoder instrumentation that invokes the existing validated BRT writer twice before one immediate-output key frame."
 
 [[capability]]
 id = "frame.random_access_switch"

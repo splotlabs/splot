@@ -137,6 +137,18 @@ pub enum MvPrecision {
 }
 
 impl MvPrecision {
+    /// Returns the AV2 v1.0.0 § 5.18.2 / § 6.17.2 motion-vector precision code from Table 6.19
+    /// (`docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-17-2`).
+    #[must_use]
+    pub const fn av2_code(self) -> u8 {
+        match self {
+            Self::OnePel => 3,
+            Self::HalfPel => 4,
+            Self::QuarterPel => 5,
+            Self::EighthPel => 6,
+        }
+    }
+
     /// Returns a stable snake-case label for tools and JSON output.
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -1106,6 +1118,74 @@ mod tests {
             cur_mfh_id_is_zero: true,
             order_hint: Some(0),
             ras_long_term_ref_mask: None,
+        }
+    }
+
+    #[test]
+    fn mv_precision_av2_codes_match_table_6_19() {
+        for (precision, code) in [
+            (MvPrecision::OnePel, 3),
+            (MvPrecision::HalfPel, 4),
+            (MvPrecision::QuarterPel, 5),
+            (MvPrecision::EighthPel, 6),
+        ] {
+            assert_eq!(precision.av2_code(), code);
+        }
+    }
+
+    #[test]
+    fn inter_mv_precision_paths_preserve_following_bit_alignment() {
+        let cases: [(bool, &[u8], MvPrecision, u8); 4] = [
+            (true, &[], MvPrecision::OnePel, 3),
+            (false, &[0, 0], MvPrecision::HalfPel, 4),
+            (false, &[1], MvPrecision::QuarterPel, 5),
+            (false, &[0, 1], MvPrecision::EighthPel, 6),
+        ];
+        for (force_integer_mv, precision_bits, expected, code) in cases {
+            let mut bits = Bits::default();
+            bits.bit(1); // signal_primary_ref_frame
+            bits.bit(0); // disable_cross_frame_cdf_init
+            bits.f(2, 3); // primary_ref_frame
+            bits.f(0, 8); // refresh_frame_flags
+            bits.bit(1); // frame_explicit_ref_frame_map
+            bits.f(1, 3); // num_total_refs
+            bits.f(0, 3); // ref_frame_idx[0]
+            bits.bit(0); // use_ref_frame_mvs
+            bits.bit(0); // allow_intrabc
+            for &bit in precision_bits {
+                bits.bit(bit);
+            }
+            bits.bit(1); // is_filter_switchable sentinel immediately after precision
+            bits.bit(0); // disable_cdf_update
+            let expected_consumed = bits.bit_len() as u64;
+            let data = bits.into_bytes();
+            let mut reader = BitReader::new(&data, ByteOffset::new(0));
+            let mut seq = inter_seq();
+            if force_integer_mv {
+                seq.seq_force_screen_content_tools = 1;
+                seq.seq_force_integer_mv = 1;
+            }
+            let mut control = InterControl::default();
+            parse_inter_control_into(
+                &mut reader,
+                &seq,
+                &inter_ctx(),
+                &FrameReferenceStateView::unknown(),
+                false,
+                &mut control,
+            )
+            .unwrap();
+
+            assert_eq!(control.mv_precision, Some(expected));
+            assert_eq!(expected.av2_code(), code);
+            assert_eq!(control.force_integer_mv, Some(force_integer_mv));
+            assert_eq!(
+                control.interpolation_filter,
+                Some(InterpolationFilter::Switchable),
+                "the sentinel after {expected:?} must remain synchronized"
+            );
+            assert_eq!(reader.consumed_bits(), expected_consumed);
+            assert_eq!(control.stop, Some(InterStop::ReachedSharedTail));
         }
     }
 

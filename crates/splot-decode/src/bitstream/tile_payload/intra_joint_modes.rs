@@ -10,12 +10,9 @@ use std::ops::Range;
 
 use splot_core::symbol::Symbol;
 
-use super::cdf::block_context::IntraYMode;
+use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use crate::support::reusable_scratch::{ErasedVecSlot, recycle_reusable_vec, take_reusable_vec};
 
-const NON_DIRECTIONAL_MODES_COUNT: u8 = 5;
-const DC_PRED_JOINT_MODE: u8 = 0;
-const NO_MRL: u8 = 0;
 const NO_FSC: u8 = 0;
 const NO_DIP: u8 = 0;
 pub(crate) const PALETTE_MAX_SIZE: usize = 8;
@@ -277,7 +274,7 @@ macro_rules! impl_grid_recycle {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileIntraJointModeState {
-    grid: MiGrid<u8>,
+    grid: MiGrid<IntraJointMode>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -414,7 +411,7 @@ impl TileIntraJointModeState {
     ) -> Result<Self, TileIntraJointModeStateError> {
         let grid = mi_grid_new_for_tile!(
             TileIntraJointModeStateError,
-            DC_PRED_JOINT_MODE,
+            IntraJointMode::DC,
             row_range,
             col_range,
             Ok(()),
@@ -422,11 +419,18 @@ impl TileIntraJointModeState {
         Ok(Self { grid })
     }
 
-    fn get_joint_mode(&self, dir: usize, r: usize, c: usize, n4w: usize, n4h: usize) -> u8 {
+    fn get_joint_mode(
+        &self,
+        dir: usize,
+        r: usize,
+        c: usize,
+        n4w: usize,
+        n4h: usize,
+    ) -> IntraJointMode {
         let sample = JOINT_NEIGHBOUR_SAMPLES[usize::from(dir == 1)];
         neighbour_value_or(
             sample,
-            DC_PRED_JOINT_MODE,
+            IntraJointMode::DC,
             (r, c),
             (n4w, n4h),
             |row, col| self.grid.cell(row, col),
@@ -435,8 +439,7 @@ impl TileIntraJointModeState {
 
     pub(crate) fn y_mode_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [left, above] = self.neighbour_joint_modes(r, c, n4w, n4h);
-        (left >= NON_DIRECTIONAL_MODES_COUNT) as usize
-            + (above >= NON_DIRECTIONAL_MODES_COUNT) as usize
+        left.is_directional() as usize + above.is_directional() as usize
     }
 
     pub(crate) fn neighbour_joint_modes(
@@ -445,7 +448,7 @@ impl TileIntraJointModeState {
         c: usize,
         n4w: usize,
         n4h: usize,
-    ) -> [u8; 2] {
+    ) -> [IntraJointMode; 2] {
         [
             self.get_joint_mode(0, r, c, n4w, n4h),
             self.get_joint_mode(1, r, c, n4w, n4h),
@@ -458,20 +461,20 @@ impl TileIntraJointModeState {
         c: usize,
         n4w: usize,
         n4h: usize,
-        joint_mode: u8,
+        joint_mode: IntraJointMode,
     ) {
         self.grid.record_block((r, c), (n4w, n4h), joint_mode);
     }
 
     pub(crate) fn record_non_intra_block(&mut self, r: usize, c: usize, n4w: usize, n4h: usize) {
         self.grid
-            .record_block((r, c), (n4w, n4h), DC_PRED_JOINT_MODE);
+            .record_block((r, c), (n4w, n4h), IntraJointMode::DC);
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct TileUsesMrlsState {
-    grid: MiGrid<u8>,
+    grid: MiGrid<MrlSelection>,
     sb_size4: usize,
 }
 
@@ -483,7 +486,7 @@ impl TileUsesMrlsState {
     ) -> Result<Self, TileUsesMrlsStateError> {
         let grid = mi_grid_new_for_tile!(
             TileUsesMrlsStateError,
-            NO_MRL,
+            MrlSelection::Disabled,
             row_range,
             col_range,
             require_nonzero(sb_size4, TileUsesMrlsStateError::EmptySuperblockSize),
@@ -493,12 +496,12 @@ impl TileUsesMrlsState {
 
     pub(crate) fn mrl_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
-        (first > 0) as usize + (second > 0) as usize
+        first.is_active() as usize + second.is_active() as usize
     }
 
     pub(crate) fn mrl_sec_index_ctx(&self, r: usize, c: usize, n4w: usize, n4h: usize) -> usize {
         let [first, second] = self.neighbour_uses_mrls(r, c, n4w, n4h);
-        (first == 2) as usize + (second == 2) as usize
+        first.is_secondary() as usize + second.is_secondary() as usize
     }
 
     pub(crate) fn neighbour_uses_mrls(
@@ -507,8 +510,16 @@ impl TileUsesMrlsState {
         c: usize,
         n4w: usize,
         n4h: usize,
-    ) -> [u8; 2] {
-        npos_grid_values(NO_MRL, &self.grid, r, c, n4w, n4h, self.sb_size4)
+    ) -> [MrlSelection; 2] {
+        npos_grid_values(
+            MrlSelection::Disabled,
+            &self.grid,
+            r,
+            c,
+            n4w,
+            n4h,
+            self.sb_size4,
+        )
     }
 
     pub(crate) fn record_block(
@@ -517,9 +528,9 @@ impl TileUsesMrlsState {
         c: usize,
         n4w: usize,
         n4h: usize,
-        uses_mrls: u8,
+        selection: MrlSelection,
     ) {
-        self.grid.record_block((r, c), (n4w, n4h), uses_mrls);
+        self.grid.record_block((r, c), (n4w, n4h), selection);
     }
 }
 
@@ -821,27 +832,27 @@ impl TileFscModeState {
     }
 }
 
-fn npos_grid_values(
-    default: u8,
-    grid: &MiGrid<u8>,
+fn npos_grid_values<T: Copy>(
+    default: T,
+    grid: &MiGrid<T>,
     r: usize,
     c: usize,
     n4w: usize,
     n4h: usize,
     sb_size4: usize,
-) -> [u8; 2] {
+) -> [T; 2] {
     npos_neighbour_values(default, (r, c), (n4w, n4h), r, sb_size4, |row, col| {
         grid.cell(row, col)
     })
 }
 
-fn neighbour_value_or(
+fn neighbour_value_or<T: Copy>(
     sample: NeighbourSample,
-    default: u8,
+    default: T,
     pos: (usize, usize),
     extent: (usize, usize),
-    mut cell: impl FnMut(usize, usize) -> Option<u8>,
-) -> u8 {
+    mut cell: impl FnMut(usize, usize) -> Option<T>,
+) -> T {
     let (r, c) = pos;
     let (n4w, n4h) = extent;
     sample
@@ -850,12 +861,12 @@ fn neighbour_value_or(
         .unwrap_or(default)
 }
 
-fn gated_neighbour_values<const N: usize>(
+fn gated_neighbour_values<T: Copy, const N: usize>(
     samples: [(NeighbourSample, bool); N],
-    default: u8,
+    default: T,
     pos: (usize, usize),
-    mut cell: impl FnMut(usize, usize) -> Option<u8>,
-) -> [u8; N] {
+    mut cell: impl FnMut(usize, usize) -> Option<T>,
+) -> [T; N] {
     let mut values = [default; N];
     let (r, c) = pos;
     for (index, (sample, is_available)) in samples.into_iter().enumerate() {
@@ -866,14 +877,14 @@ fn gated_neighbour_values<const N: usize>(
     values
 }
 
-fn npos_neighbour_values(
-    default: u8,
+fn npos_neighbour_values<T: Copy>(
+    default: T,
     pos: (usize, usize),
     extent: (usize, usize),
     current_row: usize,
     sb_size4: usize,
-    mut cell: impl FnMut(usize, usize) -> Option<u8>,
-) -> [u8; 2] {
+    mut cell: impl FnMut(usize, usize) -> Option<T>,
+) -> [T; 2] {
     let mut values = [default; 2];
     let mut len = 0;
     let (r, c) = pos;

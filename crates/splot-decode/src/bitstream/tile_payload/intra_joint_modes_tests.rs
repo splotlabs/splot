@@ -5,9 +5,19 @@
 
 use super::*;
 
-const D135_JOINT_MODE: u8 = 36;
-const SMOOTH_V_JOINT_MODE: u8 = 2;
 const SB_N4: usize = 16;
+
+fn joint_mode(value: usize) -> IntraJointMode {
+    IntraJointMode::try_new(value).expect("test joint mode")
+}
+
+fn primary_mrl() -> MrlSelection {
+    MrlSelection::from_symbols(1, Some(0)).expect("primary MRL")
+}
+
+fn secondary_mrl() -> MrlSelection {
+    MrlSelection::from_symbols(1, Some(1)).expect("secondary MRL")
+}
 
 #[test]
 fn out_of_frame_neighbours_give_context_zero() {
@@ -18,58 +28,61 @@ fn out_of_frame_neighbours_give_context_zero() {
 #[test]
 fn non_directional_neighbour_keeps_context_zero() {
     let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
-    state.record_block(0, 0, 16, 16, SMOOTH_V_JOINT_MODE);
+    state.record_block(0, 0, 16, 16, joint_mode(2));
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
 }
 
 #[test]
 fn directional_left_neighbour_raises_context_to_one() {
     let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
-    state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
+    state.record_block(0, 0, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 1);
 }
 
 #[test]
 fn directional_above_neighbour_raises_context_to_one() {
     let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..16).unwrap();
-    state.record_block(0, 0, 16, 16, D135_JOINT_MODE);
+    state.record_block(0, 0, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(16, 0, 16, 16), 1);
 }
 
 #[test]
 fn directional_both_neighbours_raise_context_to_two() {
     let mut state = TileIntraJointModeState::new_for_tile(0..32, 0..32).unwrap();
-    state.record_block(0, 16, 16, 16, D135_JOINT_MODE);
-    state.record_block(16, 0, 16, 16, D135_JOINT_MODE);
+    state.record_block(0, 16, 16, 16, joint_mode(36));
+    state.record_block(16, 0, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(16, 16, 16, 16), 2);
 }
 
 #[test]
 fn non_intra_block_resets_directional_neighbour_to_dc() {
     let mut state = TileIntraJointModeState::new_for_tile(0..64, 0..64).unwrap();
-    state.record_block(32, 0, 16, 16, D135_JOINT_MODE);
-    state.record_block(16, 16, 16, 16, D135_JOINT_MODE);
+    state.record_block(32, 0, 16, 16, joint_mode(36));
+    state.record_block(16, 16, 16, 16, joint_mode(36));
     assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 2);
 
     state.record_non_intra_block(32, 0, 16, 16);
     state.record_non_intra_block(16, 16, 16, 16);
-    assert_eq!(state.neighbour_joint_modes(32, 16, 16, 16), [0, 0]);
+    assert_eq!(
+        state.neighbour_joint_modes(32, 16, 16, 16),
+        [IntraJointMode::DC; 2]
+    );
     assert_eq!(state.y_mode_index_ctx(32, 16, 16, 16), 0);
 }
 
 #[test]
 fn get_joint_mode_uses_the_spec_neighbour_positions() {
     let mut state = TileIntraJointModeState::new_for_tile(0..8, 0..8).unwrap();
-    state.record_block(3, 1, 1, 1, D135_JOINT_MODE);
-    assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), D135_JOINT_MODE);
-    state.record_block(1, 3, 1, 1, D135_JOINT_MODE);
-    assert_eq!(state.get_joint_mode(1, 2, 2, 2, 2), D135_JOINT_MODE);
+    state.record_block(3, 1, 1, 1, joint_mode(36));
+    assert_eq!(state.get_joint_mode(0, 2, 2, 2, 2), joint_mode(36));
+    state.record_block(1, 3, 1, 1, joint_mode(36));
+    assert_eq!(state.get_joint_mode(1, 2, 2, 2, 2), joint_mode(36));
 }
 
 #[test]
 fn last_non_directional_mode_does_not_raise_the_context() {
     let mut state = TileIntraJointModeState::new_for_tile(0..16, 0..32).unwrap();
-    state.record_block(0, 0, 16, 16, NON_DIRECTIONAL_MODES_COUNT - 1);
+    state.record_block(0, 0, 16, 16, joint_mode(4));
     assert_eq!(state.y_mode_index_ctx(0, 16, 16, 16), 0);
 }
 
@@ -88,8 +101,8 @@ fn empty_dimensions_are_rejected() {
 #[test]
 fn record_block_clips_to_the_grid() {
     let mut state = TileIntraJointModeState::new_for_tile(0..4, 0..4).unwrap();
-    state.record_block(2, 2, 16, 16, D135_JOINT_MODE);
-    assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), D135_JOINT_MODE);
+    state.record_block(2, 2, 16, 16, joint_mode(36));
+    assert_eq!(state.get_joint_mode(0, 2, 3, 1, 1), joint_mode(36));
 }
 
 #[test]
@@ -135,10 +148,13 @@ fn uses_mrls_out_of_frame_neighbours_give_context_zero() {
 #[test]
 fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
     let mut state = TileUsesMrlsState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    state.record_block(7, 11, 1, 1, 2);
-    state.record_block(11, 7, 1, 1, 1);
+    state.record_block(7, 11, 1, 1, secondary_mrl());
+    state.record_block(11, 7, 1, 1, primary_mrl());
 
-    assert_eq!(state.neighbour_uses_mrls(8, 8, 4, 4), [1, 2]);
+    assert_eq!(
+        state.neighbour_uses_mrls(8, 8, 4, 4),
+        [primary_mrl(), secondary_mrl()]
+    );
     assert_eq!(state.mrl_index_ctx(8, 8, 4, 4), 2);
     assert_eq!(state.mrl_sec_index_ctx(8, 8, 4, 4), 1);
 }
@@ -146,11 +162,14 @@ fn uses_mrls_neighbours_select_index_and_secondary_contexts() {
 #[test]
 fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
     let mut state = TileUsesMrlsState::new_for_tile(0..32, 0..32, SB_N4).unwrap();
-    state.record_block(31, 15, 1, 1, 1);
-    state.record_block(15, 31, 1, 1, 2);
-    state.record_block(15, 16, 1, 1, 2);
+    state.record_block(31, 15, 1, 1, primary_mrl());
+    state.record_block(15, 31, 1, 1, secondary_mrl());
+    state.record_block(15, 16, 1, 1, secondary_mrl());
 
-    assert_eq!(state.neighbour_uses_mrls(16, 16, 16, 16), [1, 0]);
+    assert_eq!(
+        state.neighbour_uses_mrls(16, 16, 16, 16),
+        [primary_mrl(), MrlSelection::Disabled]
+    );
     assert_eq!(state.mrl_index_ctx(16, 16, 16, 16), 1);
     assert_eq!(state.mrl_sec_index_ctx(16, 16, 16, 16), 0);
 }
@@ -158,10 +177,13 @@ fn uses_mrls_npos_excludes_above_superblock_row_neighbours() {
 #[test]
 fn uses_mrls_npos_uses_fallback_positions() {
     let mut state = TileUsesMrlsState::new_for_tile(0..16, 0..16, SB_N4).unwrap();
-    state.record_block(7, 3, 1, 1, 1);
-    state.record_block(7, 0, 1, 1, 2);
+    state.record_block(7, 3, 1, 1, primary_mrl());
+    state.record_block(7, 0, 1, 1, secondary_mrl());
 
-    assert_eq!(state.neighbour_uses_mrls(8, 0, 4, 4), [1, 2]);
+    assert_eq!(
+        state.neighbour_uses_mrls(8, 0, 4, 4),
+        [primary_mrl(), secondary_mrl()]
+    );
     assert_eq!(state.mrl_index_ctx(8, 0, 4, 4), 2);
     assert_eq!(state.mrl_sec_index_ctx(8, 0, 4, 4), 1);
 }
@@ -169,9 +191,12 @@ fn uses_mrls_npos_uses_fallback_positions() {
 #[test]
 fn uses_mrls_record_block_clips_to_the_grid() {
     let mut state = TileUsesMrlsState::new_for_tile(0..4, 0..4, SB_N4).unwrap();
-    state.record_block(2, 2, 16, 16, 2);
+    state.record_block(2, 2, 16, 16, secondary_mrl());
 
-    assert_eq!(state.neighbour_uses_mrls(2, 3, 1, 1), [2, 0]);
+    assert_eq!(
+        state.neighbour_uses_mrls(2, 3, 1, 1),
+        [secondary_mrl(), MrlSelection::Disabled]
+    );
     assert_eq!(state.mrl_index_ctx(0, 0, 1, 1), 0);
 }
 
@@ -255,10 +280,10 @@ fn fsc_and_use_dip_empty_dimensions_are_rejected() {
 #[test]
 fn y_mode_state_records_and_clips_blocks() {
     let mut state = TileIntraYModeState::new(4, 4).unwrap();
-    state.record_block(2, 2, 16, 16, IntraYMode::DC_PRED, -3);
+    state.record_block(2, 2, 16, 16, IntraYMode::Dc, -3);
 
     let expected = Some(TileIntraYModeFacts {
-        y_mode: IntraYMode::DC_PRED,
+        y_mode: IntraYMode::Dc,
         angle_delta_y: -3,
     });
     assert_eq!(state.y_mode_facts_at(2, 2), expected);

@@ -133,7 +133,7 @@ fn cardinal_mrl_luma_applies_intra_secondary_transform() {
             0,
             false,
             true,
-            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
+            LumaTransformTypeContext::new(IntraYMode::Dc, 0),
             IntraEdgeAvailability {
                 above: false,
                 left: false,
@@ -723,7 +723,7 @@ fn zone1_d45_mrl_secondary_averages_primary_and_immediate_above_lines() {
             above_mrl_index: 1,
         },
         false,
-        LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
+        LumaTransformTypeContext::new(IntraYMode::Dc, 0),
         IntraEdgeAvailability::all(),
         BitDepth::Eight,
     )
@@ -762,7 +762,7 @@ fn cardinal_mrl_synthesizes_both_missing_edges() {
             0,
             false,
             false,
-            LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0),
+            LumaTransformTypeContext::new(IntraYMode::Dc, 0),
             IntraEdgeAvailability {
                 above: false,
                 left: false,

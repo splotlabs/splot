@@ -10,12 +10,114 @@ use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
 
+use splot_core::symbol::SymbolDecoder;
+use splot_core::symbol_encoder::SymbolEncoder;
 use splot_parallel::{ThreadCount, WorkerPool};
 
 use super::ready_rows::{
     ReadyRowPipelineError, run_ready_row_pipeline_serial, run_ready_row_prepass_with_commit,
 };
 use super::*;
+
+fn terminal_row(error: crate::DecodeError) -> ReconRow {
+    ReconRow {
+        ordinal: 0,
+        superblocks: Vec::new(),
+        entries: Vec::new(),
+        motion_queue: Vec::new(),
+        pending_inter: Vec::new(),
+        residual_blocks: Vec::new(),
+        temporal: Vec::new(),
+        motion_grids: Vec::new(),
+        flag_log: Vec::new(),
+        filter_records: TileFilterRecords::default(),
+        motion_folded: false,
+        motion_derived: false,
+        precompute_error: None,
+        terminal: Some(error),
+    }
+}
+
+#[test]
+fn tile_symbol_exit_accepts_writer_output_and_reports_eof_as_malformed() {
+    let offset = ByteOffset::new(37);
+    let payload = SymbolEncoder::new()
+        .finish()
+        .expect("empty symbol stream must finalize")
+        .into_bytes();
+    finish_tile_symbols(
+        SymbolDecoder::new(&payload).expect("writer output must initialize"),
+        offset,
+    )
+    .expect("writer output must pass exit validation");
+
+    let error = finish_tile_symbols(
+        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
+        offset,
+    )
+    .expect_err("empty payload must fail exit validation");
+    assert!(matches!(
+        error,
+        crate::DecodeError::MalformedSource { issue }
+            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+                && issue.spec_section() == Some("8.2.4")
+                && issue.offset() == Some(offset)
+    ));
+}
+
+#[test]
+fn terminal_parse_error_prevents_resolve_and_remains_first() {
+    let offset = ByteOffset::new(43);
+    let terminal = finish_tile_symbols(
+        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
+        offset,
+    )
+    .expect_err("empty payload must fail exit validation");
+    let mut resolved = false;
+    let step = resolve_parser_step(ParserStep::Last(terminal_row(terminal)), |_| {
+        resolved = true;
+        Err(crate::DecodeHeaderStateError::IncompleteInterFrame.into())
+    });
+
+    assert!(!resolved);
+    assert!(matches!(&step, ParserStep::Last(_)));
+    let ParserStep::Last(mut row) = step else {
+        return;
+    };
+    assert!(matches!(
+        row.terminal.take(),
+        Some(crate::DecodeError::MalformedSource { issue })
+            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+                && issue.spec_section() == Some("8.2.4")
+                && issue.offset() == Some(offset)
+    ));
+}
+
+#[test]
+fn terminal_parse_error_prevents_commit_side_effects() {
+    let offset = ByteOffset::new(47);
+    let terminal = finish_tile_symbols(
+        SymbolDecoder::new(&[]).expect("empty payload initializes bounded decoder"),
+        offset,
+    )
+    .expect_err("empty payload must fail exit validation");
+    let mut row = terminal_row(terminal);
+    let mut published = false;
+    let result: crate::Result<()> = (|| {
+        row.return_terminal_error()?;
+        published = true;
+        Ok(())
+    })();
+
+    assert!(!published);
+    assert!(matches!(
+        result,
+        Err(crate::DecodeError::MalformedSource { issue })
+            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+                && issue.spec_section() == Some("8.2.4")
+                && issue.offset() == Some(offset)
+    ));
+}
 
 #[test]
 fn no_decoded_block_error_stays_reportable() {

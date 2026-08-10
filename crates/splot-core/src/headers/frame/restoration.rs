@@ -1388,6 +1388,25 @@ mod tests {
             Err(crate::error::Error::UnexpectedEof { .. })
         ));
     }
+
+    #[test]
+    fn ccso_inter_eof_mid_reference_index_is_structured_error() {
+        let mut bits = Bits::default();
+        bits.f(0, 3);
+        bits.bit(1); // ccso_frame_flag
+        bits.bit(1); // ccso_planes[0]
+        bits.bit(1); // reuse_ccso[0]
+        bits.bit(1); // sb_reuse_ccso[0]
+        bits.bit(0); // first bit of ccso_ref_idx[0] for NumTotalRefs == 3
+        let data = bits.into_bytes();
+        let mut r = reader(&data);
+        r.read_bits(3).unwrap();
+
+        assert!(matches!(
+            parse_ccso_params_for_inter(&mut r, false, 3, ccso_enabled(), 3),
+            Err(crate::error::Error::UnexpectedEof { .. })
+        ));
+    }
 }
 
 #[cfg(test)]

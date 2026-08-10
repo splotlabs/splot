@@ -361,7 +361,7 @@ pub(super) fn parse_inter_core_for_validation(
     let header = parsed.header.expect("fixture carries an IVF header");
     let first_ivf_frame = parsed.frames.first().expect("fixture carries a key frame");
     let [_, sequence_envelope, key_envelope] =
-        crate::pipeline::require_minimal_obu_order(first_ivf_frame.obus.as_slice())?;
+        crate::pipeline::require_minimal_obu_order(&first_ivf_frame.obus[..3])?;
     let sequence = crate::pipeline::parse_sequence(sequence_envelope)?;
 
     let mut candidates = plan.frame_candidates_all();

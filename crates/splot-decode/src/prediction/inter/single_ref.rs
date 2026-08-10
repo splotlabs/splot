@@ -3,7 +3,7 @@
 
 use splot_core::symbol::SymbolDecoder;
 
-use crate::bitstream::tile_payload::{TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{BlockSymbolTraceReadError, TileCdfSelector, TileCdfSubset};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SingleRefReadError {
@@ -15,8 +15,12 @@ pub(crate) enum SingleRefReadError {
         got: usize,
         num_total_refs: usize,
     },
-    #[error("read_single_ref symbol read failed at ref {ref_idx}")]
-    SymbolRead { ref_idx: usize },
+    #[error("read_single_ref symbol read failed at ref {ref_idx}: {source}")]
+    SymbolRead {
+        ref_idx: usize,
+        #[source]
+        source: BlockSymbolTraceReadError,
+    },
 }
 
 pub(crate) fn read_single_ref(
@@ -40,7 +44,7 @@ pub(crate) fn read_single_ref(
     for (ref_idx, &ctx) in contexts.iter().enumerate() {
         let single_ref = cdfs
             .read_block_symbol_trace(TileCdfSelector::SingleRef { ctx, ref_idx }, symbols)
-            .map_err(|_| SingleRefReadError::SymbolRead { ref_idx })?;
+            .map_err(|source| SingleRefReadError::SymbolRead { ref_idx, source })?;
         if single_ref.get() != 0 {
             return Ok(ref_idx);
         }

@@ -230,7 +230,14 @@ fn run_first_superblock<'payload>(
             let leaf = if frontier.is_chroma_part() {
                 GeneralIntraLeafMode::chroma(false)
             } else {
-                GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0, 0).with_uv_cfl(false)
+                GeneralIntraLeafMode::luma(
+                    IntraJointMode::DC,
+                    IntraYMode::Dc,
+                    0,
+                    0,
+                    MrlSelection::Disabled,
+                )
+                .with_uv_cfl(false)
             };
             Ok((leaf, ()))
         },
@@ -366,7 +373,13 @@ fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
         false,
     );
 
-    let frontier = decode_block_frontier(call, frame(BLOCK_64X64), call.b_size, true, None);
+    let frontier = decode_block_frontier(
+        call,
+        frame(BLOCK_64X64),
+        call.b_size,
+        true,
+        DecodeBlockPart::Shared,
+    );
 
     assert!(frontier.shared_mixed_chroma_ref_forces_inter());
 }

@@ -16,7 +16,7 @@ use splot_core::headers::frame::{
     GlobalMotionRef, parse_frame_header_core,
 };
 use splot_core::headers::sequence::{
-    ChromaFormatIdc, CroppingWindow, SequenceHeader, parse_sequence_header,
+    ChromaFormatIdc, CroppingWindow, ProfileIdc, SequenceHeader, parse_sequence_header,
 };
 use splot_core::hls::MultiFrameHeaderRecord;
 use splot_core::ivf::IvfHeader;
@@ -27,6 +27,7 @@ use splot_recon::DecodedFrame;
 use splot_recon::{PlaneRect, ReconError, SharedFrame};
 
 use super::inflight::{PipelineFrameSlot, RefFrameSlot};
+use crate::bitstream::stream_plan::DecodeSourceIssue;
 use crate::error::{DecodeError, Result};
 use crate::filters::deblock;
 use crate::prediction::inter;
@@ -272,12 +273,12 @@ fn film_grain_config_for_core(core: &FrameHeaderCore) -> Option<FilmGrainConfig>
 
 pub(crate) fn parse_sequence(envelope: ObuEnvelope<'_>) -> Result<SequenceHeader> {
     let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-    parse_sequence_header(&mut reader).map_err(|_| {
-        unsupported_at(
-            "sequence_header_parse",
+    parse_sequence_header(&mut reader).map_err(|error| DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::sequence_header_parse(
             envelope.offset,
-            "decode runtime requires a fully parseable sequence header",
-        )
+            "5.4.1",
+            error.to_string(),
+        ),
     })
 }
 
@@ -290,12 +291,11 @@ pub(super) fn validate_sequence(sequence: &SequenceHeader, offset: ByteOffset) -
             "decode runtime requires a fully parsed sequence header",
         ));
     }
-    if !supported_profile_chroma(general.seq_profile_idc.get(), general.chroma_format_idc) {
-        return Err(unsupported_at(
-            "unsupported_profile",
-            offset,
-            "decode runtime requires a supported Annex A profile/chroma combination",
-        ));
+    if let Err(error) = validate_profile_chroma(general.seq_profile_idc, general.chroma_format_idc)
+    {
+        return Err(DecodeError::MalformedSource {
+            issue: DecodeSourceIssue::sequence_header_conformance(offset, "A.2", error.to_string()),
+        });
     }
     if sequence.intra.is_none() {
         return Err(unsupported_at(
@@ -358,8 +358,28 @@ fn crop_usize(value: u64) -> splot_recon::Result<usize> {
     })
 }
 
-fn supported_profile_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
-    match profile_idc {
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+enum SequenceProfileError {
+    #[error("seq_profile_idc {profile_idc} is reserved by Annex A.2 Table A.1")]
+    Reserved { profile_idc: u8 },
+    #[error(
+        "chroma_format_idc {chroma_format_idc} is not permitted for seq_profile_idc {profile_idc} by Annex A.2 Table A.1"
+    )]
+    ChromaFormatMismatch {
+        profile_idc: u8,
+        chroma_format_idc: u8,
+    },
+}
+
+fn validate_profile_chroma(
+    profile: ProfileIdc,
+    chroma: ChromaFormatIdc,
+) -> core::result::Result<(), SequenceProfileError> {
+    let profile_idc = profile.get();
+    if profile.is_reserved() {
+        return Err(SequenceProfileError::Reserved { profile_idc });
+    }
+    let allowed = match profile_idc {
         0..=2 => matches!(
             chroma,
             ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
@@ -372,7 +392,16 @@ fn supported_profile_chroma(profile_idc: u8, chroma: ChromaFormatIdc) -> bool {
             chroma,
             ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420 | ChromaFormatIdc::Yuv444
         ),
+        31 => true,
         _ => false,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(SequenceProfileError::ChromaFormatMismatch {
+            profile_idc,
+            chroma_format_idc: chroma.get(),
+        })
     }
 }
 
@@ -584,6 +613,156 @@ pub(super) fn ensure_intra_header_complete(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod sequence_profile_tests {
+    #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
+    use super::*;
+    use crate::DecodeSourceIssueKind;
+    use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
+
+    const INTRA_FIXTURE: &[u8] =
+        include_bytes!("../../../../tests/conformance/vectors/valid/syn-intra-64x64-10bit.ivf");
+    const PROFILE31_FIXTURE: &[u8] = include_bytes!(
+        "../../../../tests/conformance/vectors/valid/syn-profile31-mono-intra-16x16.ivf"
+    );
+
+    const ALL_CHROMA: [ChromaFormatIdc; 4] = [
+        ChromaFormatIdc::Monochrome,
+        ChromaFormatIdc::Yuv420,
+        ChromaFormatIdc::Yuv422,
+        ChromaFormatIdc::Yuv444,
+    ];
+
+    fn sequence() -> SequenceHeader {
+        crate::prediction::inter::test_support::fixture_sequence_and_key_core(INTRA_FIXTURE).0
+    }
+
+    #[test]
+    fn oracle_fixture_carries_configurable_monochrome_profile() {
+        let sequence = crate::prediction::inter::test_support::fixture_sequence_and_key_core(
+            PROFILE31_FIXTURE,
+        )
+        .0;
+        assert_eq!(sequence.general.seq_profile_idc, ProfileIdc::Configurable);
+        assert_eq!(
+            sequence.general.chroma_format_idc,
+            ChromaFormatIdc::Monochrome
+        );
+        validate_sequence(&sequence, ByteOffset::new(47)).unwrap();
+    }
+
+    #[test]
+    fn configurable_profile_accepts_every_table_a1_chroma_format() {
+        for chroma in ALL_CHROMA {
+            let mut sequence = sequence();
+            sequence.general.seq_profile_idc = ProfileIdc::Configurable;
+            sequence.general.chroma_format_idc = chroma;
+            validate_sequence(&sequence, ByteOffset::new(47)).unwrap();
+        }
+    }
+
+    #[test]
+    fn fixed_profiles_match_table_a1_chroma_sets() {
+        for profile_idc in 0_u8..=4 {
+            for chroma in ALL_CHROMA {
+                let expected = match profile_idc {
+                    0..=2 => matches!(
+                        chroma,
+                        ChromaFormatIdc::Monochrome | ChromaFormatIdc::Yuv420
+                    ),
+                    3 => matches!(
+                        chroma,
+                        ChromaFormatIdc::Monochrome
+                            | ChromaFormatIdc::Yuv420
+                            | ChromaFormatIdc::Yuv422
+                    ),
+                    4 => matches!(
+                        chroma,
+                        ChromaFormatIdc::Monochrome
+                            | ChromaFormatIdc::Yuv420
+                            | ChromaFormatIdc::Yuv444
+                    ),
+                    _ => false,
+                };
+                assert_eq!(
+                    validate_profile_chroma(ProfileIdc::from_bits(profile_idc), chroma).is_ok(),
+                    expected,
+                    "profile {profile_idc}, chroma {}",
+                    chroma.get()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reserved_profiles_are_malformed_for_every_chroma_format() {
+        for profile_idc in 5_u8..=30 {
+            for chroma in ALL_CHROMA {
+                let error = validate_profile_chroma(ProfileIdc::from_bits(profile_idc), chroma)
+                    .unwrap_err();
+                assert_eq!(error, SequenceProfileError::Reserved { profile_idc });
+            }
+        }
+
+        let mut sequence = sequence();
+        sequence.general.seq_profile_idc = ProfileIdc::from_bits(5);
+        let error = validate_sequence(&sequence, ByteOffset::new(47)).unwrap_err();
+        assert!(matches!(
+            error,
+            DecodeError::MalformedSource { issue }
+                if issue.kind() == DecodeSourceIssueKind::SequenceHeaderConformanceError
+                    && issue.spec_section() == Some("A.2")
+                    && issue.offset() == Some(ByteOffset::new(47))
+                    && issue.message().contains("seq_profile_idc 5 is reserved")
+        ));
+    }
+
+    #[test]
+    fn fixed_profile_chroma_mismatch_is_malformed() {
+        let mut sequence = sequence();
+        sequence.general.seq_profile_idc = ProfileIdc::Main420Ip0;
+        sequence.general.chroma_format_idc = ChromaFormatIdc::Yuv444;
+
+        let error = validate_sequence(&sequence, ByteOffset::new(47)).unwrap_err();
+        assert!(matches!(
+            error,
+            DecodeError::MalformedSource { issue }
+                if issue.kind() == DecodeSourceIssueKind::SequenceHeaderConformanceError
+                    && issue.spec_section() == Some("A.2")
+                    && issue.offset() == Some(ByteOffset::new(47))
+                    && issue.message().contains("chroma_format_idc 2")
+        ));
+    }
+
+    #[test]
+    fn truncated_sequence_header_is_a_typed_parse_error() {
+        let ParsedBitstream::Ivf(parsed) = parse_bitstream_partial(INTRA_FIXTURE) else {
+            panic!("fixture is IVF");
+        };
+        let envelope = parsed
+            .frames
+            .iter()
+            .flat_map(|frame| frame.obus.iter())
+            .find(|envelope| envelope.header.obu_type == ObuType::SequenceHeader)
+            .copied()
+            .expect("fixture carries a sequence header");
+        let truncated = ObuEnvelope {
+            payload: &envelope.payload[..1],
+            ..envelope
+        };
+
+        let error = parse_sequence(truncated).unwrap_err();
+        assert!(matches!(
+            error,
+            DecodeError::MalformedSource { issue }
+                if issue.kind() == DecodeSourceIssueKind::SequenceHeaderParseError
+                    && issue.spec_section() == Some("5.4.1")
+                    && issue.offset() == Some(envelope.offset)
+        ));
+    }
 }
 
 #[cfg(test)]

@@ -9,11 +9,9 @@ use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, MAX_TX_SIZE_RECT, SIZE_GR
 use splot_recon::{DpcmDirection, dpcm_direction};
 
 use super::cdf::block_context::{
-    IntraYMode, MODE_INDEX_COUNT, NON_DIRECTIONAL_MODES_COUNT, SupportedChromaMode,
-    SupportedNonDcLumaMode, YModeEscapeResult, get_intra_uv_mode_set, reconstruct_minimal_y_mode,
-    reconstruct_y_mode_first_set_directional_top_left, reconstruct_y_mode_offset_escape_top_left,
-    reconstruct_y_mode_second_set_top_left, reconstruct_y_mode_with_neighbours,
-    supported_chroma_mode, supported_chroma_mode_value, uv_mode_ctx,
+    IntraJointMode, IntraModeStateError, IntraYMode, MODE_INDEX_COUNT, ModeIndex, MrlSelection,
+    SupportedChromaMode, YModeEscapeResult, get_intra_uv_mode_set, reconstruct_y_mode_top_left,
+    reconstruct_y_mode_with_neighbours, supported_chroma_mode, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -39,8 +37,8 @@ const DPCM_MODE_UV_REASON: &str = "intra_dpcm_mode_uv";
 // AV2 § 5.20.5.5 and § 5.20.5.6 syntax literals for parse-then-fail-closed DPCM.
 const DPCM_VERTICAL_UV_MODE: u8 = 1;
 const DPCM_HORIZONTAL_UV_MODE: u8 = 2;
-const DPCM_VERTICAL_JOINT_MODE: u8 = 22;
-const DPCM_HORIZONTAL_JOINT_MODE: u8 = 50;
+const DPCM_VERTICAL_JOINT_MODE: usize = 22;
+const DPCM_HORIZONTAL_JOINT_MODE: usize = 50;
 const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const Y_MODE_OFFSET_REASON: &str = "intra_y_mode_offset";
 const Y_SECOND_MODE_REASON: &str = "intra_y_second_mode";
@@ -186,87 +184,74 @@ impl GeneralIntraChromaModeContext {
 pub(crate) struct GeneralIntraBlockModes {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
-    pub(crate) uv_mode: u8,
-    coeff_uv_mode: u8,
-    is_cfl: bool,
-    cfl_params: Option<CflParams>,
-    pub(crate) intra_joint_mode: u8,
-    pub(crate) mrl_index: u8,
-    pub(crate) mrl_sec_index: Option<u8>,
+    chroma: Option<GeneralIntraChromaBlockMode>,
+    pub(crate) intra_joint_mode: IntraJointMode,
+    pub(crate) mrl: MrlSelection,
     pub(crate) fsc_mode: u8,
-    pub(crate) uses_mrls: u8,
     pub(crate) use_dip: u8,
     pub(crate) dip_transpose: u8,
     pub(crate) dip_mode: u8,
     use_dpcm_y: u8,
     dpcm_mode_y: u8,
-    use_dpcm_uv: u8,
-    dpcm_mode_uv: u8,
     pub(crate) palette_y: Option<LumaPalette>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct GeneralIntraChromaBlockMode {
-    uv_mode: u8,
-    coeff_uv_mode: u8,
-    is_cfl: bool,
-    cfl_params: Option<CflParams>,
-    use_dpcm_uv: u8,
-    dpcm_mode_uv: u8,
+pub(crate) enum GeneralIntraChromaBlockMode {
+    Prediction {
+        mode: SupportedChromaMode,
+        coeff_uv_mode: u8,
+        dpcm: Option<DpcmDirection>,
+    },
+    Cfl(CflParams),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum CflIndex {
-    Explicit,
+#[repr(u8)]
+pub(crate) enum CflMultiDirection {
+    Direct = 0,
+    Above = 1,
+    Left = 2,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CflParams {
+    Explicit { alpha_u: i8, alpha_v: i8 },
     DerivedAlpha,
-    Multi,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct CflParams {
-    pub(crate) index: CflIndex,
-    pub(crate) alpha_u: i8,
-    pub(crate) alpha_v: i8,
-    pub(crate) mh_dir: Option<u8>,
+    Multi { direction: CflMultiDirection },
 }
 
 impl GeneralIntraChromaBlockMode {
-    const fn no_cfl(uv_mode: u8, coeff_uv_mode: u8) -> Self {
-        Self {
-            uv_mode,
+    const fn prediction(
+        mode: SupportedChromaMode,
+        coeff_uv_mode: u8,
+        dpcm: Option<DpcmDirection>,
+    ) -> Self {
+        Self::Prediction {
+            mode,
             coeff_uv_mode,
-            is_cfl: false,
-            cfl_params: None,
-            use_dpcm_uv: 0,
-            dpcm_mode_uv: 0,
+            dpcm,
         }
     }
 
     const fn dpcm(dpcm_mode_uv: u8) -> Self {
-        let uv_mode = if dpcm_mode_uv == 0 {
-            DPCM_VERTICAL_UV_MODE
+        if dpcm_mode_uv == 0 {
+            Self::prediction(
+                SupportedChromaMode::Vertical,
+                DPCM_VERTICAL_UV_MODE,
+                Some(DpcmDirection::Vertical),
+            )
         } else {
-            DPCM_HORIZONTAL_UV_MODE
-        };
-        Self {
-            uv_mode,
-            coeff_uv_mode: uv_mode,
-            is_cfl: false,
-            cfl_params: None,
-            use_dpcm_uv: 1,
-            dpcm_mode_uv,
+            Self::prediction(
+                SupportedChromaMode::Horizontal,
+                DPCM_HORIZONTAL_UV_MODE,
+                Some(DpcmDirection::Horizontal),
+            )
         }
     }
 
     const fn cfl(cfl_params: CflParams) -> Self {
-        Self {
-            uv_mode: UV_CFL_PRED_MODE,
-            coeff_uv_mode: UV_CFL_PRED_MODE,
-            is_cfl: true,
-            cfl_params: Some(cfl_params),
-            use_dpcm_uv: 0,
-            dpcm_mode_uv: 0,
-        }
+        Self::Cfl(cfl_params)
     }
 
     #[cfg(test)]
@@ -274,35 +259,37 @@ impl GeneralIntraChromaBlockMode {
         Self::cfl(cfl_params)
     }
 
-    #[cfg(test)]
-    pub(crate) const fn uv_mode(self) -> u8 {
-        self.uv_mode
-    }
-
     pub(crate) const fn coeff_uv_mode(self) -> usize {
-        self.coeff_uv_mode as usize
+        match self {
+            Self::Prediction { coeff_uv_mode, .. } => coeff_uv_mode as usize,
+            Self::Cfl(_) => UV_CFL_PRED_MODE as usize,
+        }
     }
 
     pub(crate) const fn is_cfl(self) -> bool {
-        self.is_cfl
+        matches!(self, Self::Cfl(_))
     }
 
-    pub(crate) const fn cfl_params(self) -> Option<CflParams> {
-        self.cfl_params
-    }
-
-    pub(crate) const fn chroma_dpcm_direction(self) -> Option<DpcmDirection> {
-        dpcm_direction(self.use_dpcm_uv != 0, self.dpcm_mode_uv == 0)
-    }
-
-    pub(crate) fn supported_chroma_mode(self, y_mode: IntraYMode) -> Option<SupportedChromaMode> {
-        if self.is_cfl {
-            return None;
+    pub(crate) const fn supported_chroma_mode(self) -> Option<SupportedChromaMode> {
+        match self {
+            Self::Prediction { mode, .. } => Some(mode),
+            Self::Cfl(_) => None,
         }
-        if self.use_dpcm_uv != 0 {
-            return supported_chroma_mode_value(self.coeff_uv_mode);
+    }
+}
+
+impl CflMultiDirection {
+    const fn from_symbol(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Direct),
+            1 => Some(Self::Above),
+            2 => Some(Self::Left),
+            _ => None,
         }
-        supported_chroma_mode(y_mode, self.uv_mode)
+    }
+
+    pub(crate) const fn value(self) -> u8 {
+        self as u8
     }
 }
 
@@ -310,11 +297,9 @@ impl GeneralIntraChromaBlockMode {
 pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
-    pub(crate) intra_joint_mode: u8,
-    pub(crate) mrl_index: u8,
-    pub(crate) mrl_sec_index: Option<u8>,
+    pub(crate) intra_joint_mode: IntraJointMode,
+    pub(crate) mrl: MrlSelection,
     pub(crate) fsc_mode: u8,
-    pub(crate) uses_mrls: u8,
     pub(crate) use_dip: u8,
     pub(crate) dip_transpose: u8,
     pub(crate) dip_mode: u8,
@@ -336,7 +321,7 @@ impl GeneralIntraLumaBlockMode {
 struct DecodedLumaYMode {
     y_mode: IntraYMode,
     angle_delta_y: i8,
-    intra_joint_mode: u8,
+    intra_joint_mode: IntraJointMode,
     use_dpcm_y: u8,
     dpcm_mode_y: u8,
 }
@@ -352,23 +337,23 @@ impl DecodedLumaYMode {
         }
     }
 
-    const fn dpcm(dpcm_mode_y: u8) -> Self {
+    fn dpcm(dpcm_mode_y: u8) -> Result<Self, IntraModeStateError> {
         if dpcm_mode_y == 0 {
-            Self {
-                y_mode: IntraYMode::dpcm_vertical(),
+            Ok(Self {
+                y_mode: IntraYMode::Vertical,
                 angle_delta_y: 0,
-                intra_joint_mode: DPCM_VERTICAL_JOINT_MODE,
+                intra_joint_mode: IntraJointMode::try_new(DPCM_VERTICAL_JOINT_MODE)?,
                 use_dpcm_y: 1,
                 dpcm_mode_y,
-            }
+            })
         } else {
-            Self {
-                y_mode: IntraYMode::dpcm_horizontal(),
+            Ok(Self {
+                y_mode: IntraYMode::Horizontal,
                 angle_delta_y: 0,
-                intra_joint_mode: DPCM_HORIZONTAL_JOINT_MODE,
+                intra_joint_mode: IntraJointMode::try_new(DPCM_HORIZONTAL_JOINT_MODE)?,
                 use_dpcm_y: 1,
                 dpcm_mode_y,
-            }
+            })
         }
     }
 }
@@ -378,22 +363,15 @@ impl GeneralIntraBlockModes {
         Self {
             y_mode: luma.y_mode,
             angle_delta_y: luma.angle_delta_y,
-            uv_mode: 0,
-            coeff_uv_mode: 0,
-            is_cfl: false,
-            cfl_params: None,
+            chroma: None,
             intra_joint_mode: luma.intra_joint_mode,
-            mrl_index: luma.mrl_index,
-            mrl_sec_index: luma.mrl_sec_index,
+            mrl: luma.mrl,
             fsc_mode: luma.fsc_mode,
-            uses_mrls: luma.uses_mrls,
             use_dip: luma.use_dip,
             dip_transpose: luma.dip_transpose,
             dip_mode: luma.dip_mode,
             use_dpcm_y: luma.use_dpcm_y,
             dpcm_mode_y: luma.dpcm_mode_y,
-            use_dpcm_uv: 0,
-            dpcm_mode_uv: 0,
             palette_y: None,
         }
     }
@@ -406,22 +384,15 @@ impl GeneralIntraBlockModes {
         Self {
             y_mode: luma.y_mode,
             angle_delta_y: luma.angle_delta_y,
-            uv_mode: chroma.uv_mode,
-            coeff_uv_mode: chroma.coeff_uv_mode,
-            is_cfl: chroma.is_cfl,
-            cfl_params: chroma.cfl_params,
+            chroma: Some(chroma),
             intra_joint_mode: luma.intra_joint_mode,
-            mrl_index: luma.mrl_index,
-            mrl_sec_index: luma.mrl_sec_index,
+            mrl: luma.mrl,
             fsc_mode: luma.fsc_mode,
-            uses_mrls: luma.uses_mrls,
             use_dip: luma.use_dip,
             dip_transpose: luma.dip_transpose,
             dip_mode: luma.dip_mode,
             use_dpcm_y: luma.use_dpcm_y,
             dpcm_mode_y: luma.dpcm_mode_y,
-            use_dpcm_uv: chroma.use_dpcm_uv,
-            dpcm_mode_uv: chroma.dpcm_mode_uv,
             palette_y,
         }
     }
@@ -431,38 +402,30 @@ impl GeneralIntraBlockModes {
         self
     }
 
-    pub(crate) fn luma_is_dc(&self) -> bool {
-        self.y_mode == IntraYMode::DC_PRED
-    }
-
     pub(crate) const fn is_cfl(&self) -> bool {
-        self.is_cfl
+        matches!(self.chroma, Some(GeneralIntraChromaBlockMode::Cfl(_)))
     }
 
-    pub(crate) const fn cfl_params(&self) -> Option<CflParams> {
-        self.cfl_params
-    }
-
-    pub(crate) fn supported_nondc_luma(&self) -> Option<SupportedNonDcLumaMode> {
-        self.y_mode.supported_nondc()
+    pub(crate) const fn chroma(&self) -> Option<GeneralIntraChromaBlockMode> {
+        self.chroma
     }
 
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
-        if self.is_cfl {
-            return None;
+        match self.chroma {
+            Some(chroma) => chroma.supported_chroma_mode(),
+            None => None,
         }
-        if self.use_dpcm_uv != 0 {
-            return supported_chroma_mode_value(self.coeff_uv_mode);
-        }
-        supported_chroma_mode(self.y_mode, self.uv_mode)
     }
 
     pub(crate) const fn coeff_uv_mode(&self) -> usize {
-        self.coeff_uv_mode as usize
+        match self.chroma {
+            Some(chroma) => chroma.coeff_uv_mode(),
+            None => 0,
+        }
     }
 
     pub(crate) const fn uses_active_mrl(&self) -> bool {
-        self.uses_mrls != 0
+        self.mrl.is_active()
     }
 
     pub(crate) const fn uses_active_fsc(&self) -> bool {
@@ -475,10 +438,6 @@ impl GeneralIntraBlockModes {
 
     pub(crate) const fn luma_dpcm_direction(&self) -> Option<DpcmDirection> {
         dpcm_direction(self.use_dpcm_y != 0, self.dpcm_mode_y == 0)
-    }
-
-    pub(crate) const fn chroma_dpcm_direction(&self) -> Option<DpcmDirection> {
-        dpcm_direction(self.use_dpcm_uv != 0, self.dpcm_mode_uv == 0)
     }
 
     pub(crate) const fn palette_y(&self) -> Option<LumaPalette> {
@@ -498,16 +457,12 @@ pub(crate) enum GeneralIntraBlockModeError {
         reason: &'static str,
         source: CoreError,
     },
-    #[error(
-        "general intra mode-info cannot reconstruct YMode for y_mode_set {y_mode_set}, modeIdx {mode_idx}"
-    )]
-    UnsupportedYMode { y_mode_set: u8, mode_idx: usize },
+    #[error(transparent)]
+    InvalidModeState(#[from] IntraModeStateError),
     #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
     InvalidUvMode { uv_mode: u8 },
-    #[error(
-        "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
-    )]
-    UnsupportedDirectionalNeighbourReorder { ctx: usize, mode_idx: usize },
+    #[error("general intra mode-info decoded out-of-range cfl_mh_dir {direction}")]
+    InvalidCflMhDirection { direction: u8 },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -557,14 +512,11 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
         0
     };
 
-    let mut mrl_index = 0;
-    let mut mrl_sec_index = None;
-    let mut uses_mrls_value = 0;
-    if chroma_tools.enable_mrls
+    let mrl = if chroma_tools.enable_mrls
         && y_mode_result.use_dpcm_y == 0
         && y_mode_result.y_mode.is_directional()
     {
-        mrl_index = read_symbol(
+        let mrl_index = read_symbol(
             cdfs,
             symbols,
             TileCdfSelector::MrlIndex {
@@ -572,8 +524,10 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
             },
             MRL_INDEX_REASON,
         )?;
-        if mrl_index > 0 {
-            let secondary = read_symbol(
+        if mrl_index == 0 {
+            MrlSelection::Disabled
+        } else {
+            let mrl_secondary = read_symbol(
                 cdfs,
                 symbols,
                 TileCdfSelector::MrlSecIndex {
@@ -581,19 +535,18 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
                 },
                 MRL_SEC_INDEX_REASON,
             )?;
-            mrl_sec_index = Some(secondary);
-            uses_mrls_value = if secondary == 0 { 1 } else { 2 };
+            MrlSelection::from_symbols(mrl_index, Some(mrl_secondary))?
         }
-    }
+    } else {
+        MrlSelection::Disabled
+    };
 
     Ok(GeneralIntraLumaBlockMode {
         y_mode: y_mode_result.y_mode,
         angle_delta_y: y_mode_result.angle_delta_y,
         intra_joint_mode: y_mode_result.intra_joint_mode,
-        mrl_index,
-        mrl_sec_index,
+        mrl,
         fsc_mode,
-        uses_mrls: uses_mrls_value,
         use_dip: 0,
         dip_transpose: 0,
         dip_mode: 0,
@@ -929,8 +882,14 @@ pub(crate) fn decode_general_intra_chroma_block_mode(
 
     let coeff_uv_mode = get_intra_uv_mode_set(y_mode, uv_mode)
         .ok_or(GeneralIntraBlockModeError::InvalidUvMode { uv_mode })?;
+    let mode = supported_chroma_mode(y_mode, uv_mode)
+        .ok_or(GeneralIntraBlockModeError::InvalidUvMode { uv_mode })?;
 
-    Ok(GeneralIntraChromaBlockMode::no_cfl(uv_mode, coeff_uv_mode))
+    Ok(GeneralIntraChromaBlockMode::prediction(
+        mode,
+        coeff_uv_mode,
+        None,
+    ))
 }
 
 fn read_cfl_alphas(
@@ -965,21 +924,13 @@ fn read_cfl_alphas(
             TileCdfSelector::CflMhDir { size_group },
             CFL_MH_DIR_REASON,
         )?;
-        return Ok(CflParams {
-            index: CflIndex::Multi,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: Some(mh_dir),
-        });
+        let direction = CflMultiDirection::from_symbol(mh_dir)
+            .ok_or(GeneralIntraBlockModeError::InvalidCflMhDirection { direction: mh_dir })?;
+        return Ok(CflParams::Multi { direction });
     }
 
     if cfl_index != CFL_EXPLICIT {
-        return Ok(CflParams {
-            index: CflIndex::DerivedAlpha,
-            alpha_u: 0,
-            alpha_v: 0,
-            mh_dir: None,
-        });
+        return Ok(CflParams::DerivedAlpha);
     }
 
     let cfl_alpha_signs = read_symbol(cdfs, symbols, TileCdfSelector::CflSign, CFL_SIGN_REASON)?;
@@ -1013,12 +964,7 @@ fn read_cfl_alphas(
     } else {
         0
     };
-    Ok(CflParams {
-        index: CflIndex::Explicit,
-        alpha_u,
-        alpha_v,
-        mh_dir: None,
-    })
+    Ok(CflParams::Explicit { alpha_u, alpha_v })
 }
 
 fn signed_cfl_alpha(sign: u8, alpha_minus_one: u8) -> i8 {
@@ -1031,7 +977,7 @@ fn decode_luma_y_mode(
     symbols: &mut SymbolDecoder<'_>,
     lossless: bool,
     mode_ctx: usize,
-    neighbour_joint_modes: [u8; 2],
+    neighbour_joint_modes: [IntraJointMode; 2],
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<DecodedLumaYMode, GeneralIntraBlockModeError> {
@@ -1044,105 +990,44 @@ fn decode_luma_y_mode(
                 TileCdfSelector::DpcmModeY,
                 DPCM_MODE_Y_REASON,
             )?;
-            return Ok(DecodedLumaYMode::dpcm(dpcm_mode_y));
+            return DecodedLumaYMode::dpcm(dpcm_mode_y).map_err(Into::into);
         }
     }
 
     let y_mode_set = read_symbol(cdfs, symbols, TileCdfSelector::YModeSet, Y_MODE_SET_REASON)?;
-    if y_mode_set != 0 {
+    let mode_idx = if y_mode_set != 0 {
         let y_second_mode = read_literal_u8(symbols, Y_SECOND_MODE_BITS, Y_SECOND_MODE_REASON)?;
-        let mode_idx = FIRST_MODE_COUNT
+        FIRST_MODE_COUNT
             .saturating_add(
                 usize::from(y_mode_set.saturating_sub(1)).saturating_mul(SECOND_MODE_COUNT),
             )
-            .saturating_add(usize::from(y_second_mode));
-        return reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_second_set_top_left(y_mode_set, y_second_mode),
-        )
-        .map(DecodedLumaYMode::from_y_mode);
-    }
-
-    let y_mode_index = read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::YModeIndex { ctx: mode_ctx },
-        Y_MODE_INDEX_REASON,
-    )?;
-    if y_mode_index == MODE_INDEX_COUNT - 1 {
-        let y_mode_offset = read_symbol(
+            .saturating_add(usize::from(y_second_mode))
+    } else {
+        let y_mode_index = read_symbol(
             cdfs,
             symbols,
-            TileCdfSelector::YModeOffset { ctx: mode_ctx },
-            Y_MODE_OFFSET_REASON,
+            TileCdfSelector::YModeIndex { ctx: mode_ctx },
+            Y_MODE_INDEX_REASON,
         )?;
-        let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
-        return reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_offset_escape_top_left(y_mode_offset),
-        )
-        .map(DecodedLumaYMode::from_y_mode);
-    }
-
-    let mode_idx = usize::from(y_mode_index);
-    if mode_idx >= NON_DIRECTIONAL_MODES_COUNT {
-        return reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_first_set_directional_top_left(y_mode_index),
-        )
-        .map(DecodedLumaYMode::from_y_mode);
-    }
-
-    let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
-        GeneralIntraBlockModeError::UnsupportedYMode {
-            y_mode_set,
-            mode_idx,
-        },
-    )?;
-    Ok(DecodedLumaYMode::from_y_mode(YModeEscapeResult {
-        y_mode,
-        angle_delta_y: 0,
-        intra_joint_mode: y_mode_index,
-    }))
-}
-
-fn reconstruct_y_mode_result(
-    y_mode_set: u8,
-    mode_idx: usize,
-    mode_ctx: usize,
-    neighbour_joint_modes: [u8; 2],
-    block_n4w: usize,
-    block_n4h: usize,
-    top_left_result: Option<YModeEscapeResult>,
-) -> Result<YModeEscapeResult, GeneralIntraBlockModeError> {
-    if mode_ctx == 0 {
-        return top_left_result.ok_or(GeneralIntraBlockModeError::UnsupportedYMode {
-            y_mode_set,
-            mode_idx,
-        });
-    }
-
-    reconstruct_y_mode_with_neighbours(mode_idx, neighbour_joint_modes, block_n4w, block_n4h).ok_or(
-        GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder {
-            ctx: mode_ctx,
-            mode_idx,
-        },
-    )
+        if y_mode_index == MODE_INDEX_COUNT - 1 {
+            let y_mode_offset = read_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::YModeOffset { ctx: mode_ctx },
+                Y_MODE_OFFSET_REASON,
+            )?;
+            usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset)
+        } else {
+            usize::from(y_mode_index)
+        }
+    };
+    let mode_idx = ModeIndex::try_new(mode_idx)?;
+    let result = if mode_ctx == 0 {
+        reconstruct_y_mode_top_left(mode_idx)
+    } else {
+        reconstruct_y_mode_with_neighbours(mode_idx, neighbour_joint_modes, block_n4w, block_n4h)
+    }?;
+    Ok(DecodedLumaYMode::from_y_mode(result))
 }
 
 /// § 5.20.5.6 `cflAllowed`, whose non-lossless arm bounds the chroma plane
@@ -1234,7 +1119,7 @@ fn palette_y_mode_allowed(
     block_n4h: usize,
 ) -> bool {
     chroma_tools.allow_screen_content_tools
-        && y_mode == IntraYMode::DC_PRED
+        && y_mode == IntraYMode::Dc
         && block_size_index >= PALETTE_MIN_BLOCK_SIZE_INDEX
         && block_n4w.saturating_mul(4) <= PALETTE_MAX_SAMPLES
         && block_n4h.saturating_mul(4) <= PALETTE_MAX_SAMPLES
@@ -1248,7 +1133,7 @@ fn dip_mode_info_allowed(
     block_n4h: usize,
 ) -> bool {
     chroma_tools.enable_dip
-        && y_mode == IntraYMode::DC_PRED
+        && y_mode == IntraYMode::Dc
         && palette_y.is_none()
         && block_n4w > 1
         && block_n4h > 1

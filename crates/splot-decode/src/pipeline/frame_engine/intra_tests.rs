@@ -19,13 +19,6 @@ use crate::{DecodeContext, DecodeRuntimeConfig};
 const Q80_FIXTURE: &[u8] =
     include_bytes!("../../../../../tests/conformance/vectors/valid/syn-flat-intra-64x64-q80.ivf");
 
-fn internal_reason(error: &DecodeError) -> &'static str {
-    let DecodeError::InternalState { reason, .. } = error else {
-        panic!("expected internal-state");
-    };
-    reason
-}
-
 fn decode_intra_fixture_with_core(
     mutate: impl FnOnce(&mut FrameHeaderCore),
 ) -> crate::Result<(
@@ -139,7 +132,13 @@ fn intra_gate_rejects_gdf_per_block_frame() {
         gdf.gdf_per_block = Some(true);
     })
     .expect_err("fixture without a use_gdf symbol must fail closed");
-    assert_eq!(internal_reason(&error), "inter_exit_symbol");
+    assert!(matches!(
+        error,
+        DecodeError::MalformedSource { issue }
+            if issue.kind() == crate::DecodeSourceIssueKind::TilePayloadParseError
+                && issue.spec_section() == Some("8.2.4")
+                && issue.offset().is_some()
+    ));
 }
 
 #[test]

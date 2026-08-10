@@ -45,23 +45,6 @@ macro_rules! inter_cap {
     };
 }
 
-macro_rules! inter_missing {
-    ($reason:literal, $offset:expr, $input:literal, $spec_section:expr $(,)?) => {
-        unsupported_at(
-            $reason,
-            $offset,
-            concat!("missing required input: ", $input),
-            $spec_section,
-        )
-    };
-}
-
-macro_rules! inter_diag {
-    ($reason:literal, $offset:expr, $message:literal, $spec_section:expr $(,)?) => {
-        unsupported_at($reason, $offset, $message, $spec_section)
-    };
-}
-
 macro_rules! inter_internal {
     ($reason:literal, $offset:expr $(,)?) => {
         crate::error::DecodeError::InternalState {
@@ -87,7 +70,6 @@ const SPEC_TILE_GROUP: &str = "5.19";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
-const SPEC_REFERENCE: &str = "7.23";
 const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
 const SINGLE_MODE_NEARMV: u8 = 0;
 const SINGLE_MODE_GLOBALMV: u8 = 1;
@@ -256,7 +238,7 @@ fn decode_bridge_frame<T: ReconSample>(
     let offset = frame_envelope.offset;
     let frame_size = core
         .frame_size
-        .ok_or(inter_internal!("bridge_missing_frame_size", offset))?;
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
     ensure_runtime_limits(
         options.limits(),
         frame_size.width,
@@ -267,29 +249,23 @@ fn decode_bridge_frame<T: ReconSample>(
     )?;
     let ref_slot = core
         .bridge_frame_ref_idx
-        .ok_or(inter_internal!("bridge_missing_reference_slot", offset))?;
-    let source = reference.hold_slot(ref_slot).ok_or_else(|| {
-        inter_missing!(
-            "bridge_missing_reference_frame",
-            offset,
-            "inter.bridge.reference_frame",
-            SPEC_REFERENCE
-        )
-    })?;
+        .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+    let source = hold_reference_slot(reference, ref_slot)?;
+    let ref_slot_index = usize::try_from(ref_slot).unwrap_or(usize::MAX);
+    let ref_order_hint_count = reference.ref_order_hint.len();
     let reference_order_hint = reference
         .ref_order_hint
-        .get(ref_slot as usize)
+        .get(ref_slot_index)
         .copied()
-        .ok_or(inter_internal!(
-            "bridge_missing_reference_order_hint",
-            offset
-        ))?;
-    let motion_field = bridge::motion_field(
-        frame_size,
-        core.display_order_hint().unwrap_or(0),
-        reference_order_hint,
-    )
-    .ok_or(inter_internal!("bridge_motion_field_dimensions", offset))?;
+        .ok_or(DecodeReferenceStateError::SlotOutOfRange {
+            slot: ref_slot_index,
+            slot_count: ref_order_hint_count,
+        })?;
+    let current_order_hint = core
+        .display_order_hint()
+        .ok_or(DecodeHeaderStateError::MissingDisplayOrderHint)?;
+    let motion_field = bridge::motion_field(frame_size, current_order_hint, reference_order_hint)
+        .ok_or(inter_allocation!("bridge temporal motion field"))?;
     let frame_cdfs = resolve_initial_frame_cdfs(&core, sequence, reference, candidate, offset)?;
     let visible = derive_visible_luma_rect(sequence, frame_size.width, frame_size.height)?;
     let frame = bridge::reconstruct(source.samples()?, frame_size, visible, 0, offset)?;
@@ -1435,11 +1411,6 @@ impl<T: ReconSample> InterReferenceState<T> {
         PixelReferenceGate { slots }
     }
 
-    /// Borrows one reference slot's samples for the returned handle's lifetime.
-    fn hold_slot(&self, slot: u32) -> Option<reference::HeldFrameSamples<'_, T>> {
-        self.slot(slot).and_then(RefFrameSlot::hold_samples)
-    }
-
     fn slot(&self, slot: u32) -> Option<&RefFrameSlot<T>> {
         let slot = ReferenceSlot::new(slot as usize).ok()?;
         self.store.get(slot).ok().flatten()
@@ -1577,8 +1548,11 @@ fn validate_and_resolve_inter_frame_core(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
-    validate_ras_reference_ids(core, reference, offset, frame_index)?;
     validate_inter_frame_parse(core, offset, frame_index)?;
+    if core.status == FrameHeaderParseStatus::IntraHeaderComplete {
+        return Ok(());
+    }
+    validate_ras_reference_ids(core, reference, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
     validate_inter_frame_core(core, sequence, offset)?;
     if core.inter.as_ref().is_some_and(|inter| {
@@ -1835,6 +1809,7 @@ fn resolve_ccso_reference_reuse(
             plane.sb_reuse_ccso,
             plane.ccso_ref_idx.unwrap_or(0),
             offset,
+            frame_index,
         )?
         else {
             continue;
@@ -1876,22 +1851,23 @@ fn ccso_reference_slot(
     sb_reuse_ccso: bool,
     ref_index: u32,
     offset: ByteOffset,
+    frame_index: Option<usize>,
 ) -> Result<Option<u32>> {
     if !reuse_ccso && !sb_reuse_ccso {
         return Ok(None);
     }
-    ref_frame_idx
-        .get(ref_index as usize)
-        .copied()
-        .map(Some)
-        .ok_or_else(|| {
-            inter_diag!(
-                "inter_ccso_reference_index_out_of_range",
-                offset,
-                "CCSO reference index is outside NumTotalRefs",
-                "6.17.7.8"
-            )
-        })
+    let Some(slot) = ref_frame_idx.get(ref_index as usize).copied() else {
+        return Err(malformed_frame_header(
+            offset,
+            frame_index,
+            "6.17.7.8",
+            format!(
+                "ccso_ref_idx {ref_index} must be less than NumTotalRefs {}",
+                ref_frame_idx.len()
+            ),
+        ));
+    };
+    Ok(Some(slot))
 }
 
 fn parse_inter_frame_core(
@@ -1946,12 +1922,14 @@ fn validate_inter_frame_parse(
         "inter-frame header requires unsupported parser coverage",
     )?;
     if core.status == FrameHeaderParseStatus::IntraHeaderComplete {
-        return Err(unsupported_at(
-            "unsupported_tile_boundary",
-            offset,
-            "decode runtime does not support intra-only frames carried by tile-group OBUs",
-            SPEC_HEADER,
-        ));
+        let valid_intra_only = matches!(
+            core.obu_type,
+            ObuType::LeadingTileGroup | ObuType::RegularTileGroup
+        ) && core.frame_type == Some(FrameType::IntraOnly)
+            && core.frame_is_intra == Some(true);
+        if !valid_intra_only {
+            return Err(DecodeHeaderStateError::InvalidIntraOnlyTileGroupState.into());
+        }
     }
     Ok(())
 }
@@ -1987,13 +1965,20 @@ fn validate_frame_header_parse_status(
 fn validate_inter_frame_core(
     core: &FrameHeaderCore,
     sequence: &SequenceHeader,
-    offset: ByteOffset,
+    _offset: ByteOffset,
 ) -> Result<()> {
     if core.obu_type == ObuType::BridgeFrame {
-        return validate_bridge_frame_core(core, offset);
+        return validate_bridge_frame_core(core);
     }
     if core.status != FrameHeaderParseStatus::InterHeaderComplete {
         return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
+    }
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+    if inter.mv_precision.is_none() {
+        return Err(DecodeHeaderStateError::MissingInterMotionVectorPrecision.into());
     }
     if core.order_hint.is_none() {
         return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());
@@ -2074,28 +2059,43 @@ fn validate_ras_reference_ids(
     Ok(())
 }
 
-fn validate_bridge_frame_core(core: &FrameHeaderCore, offset: ByteOffset) -> Result<()> {
-    let reference_map_complete = core.inter.as_ref().is_some_and(|inter| {
-        if core.frame_is_intra == Some(true) {
-            inter.num_total_refs == Some(0)
-        } else {
-            inter.num_total_refs == Some(1)
-                && inter.ref_frame_idx.first() == core.bridge_frame_ref_idx.as_ref()
-        }
-    });
-    let complete = core.status == FrameHeaderParseStatus::InterHeaderComplete
-        && core.frame_is_intra.is_some()
-        && core.show_existing_frame == Some(false)
-        && core.order_hint.is_some()
-        && core
-            .frame_size
-            .is_some_and(|size| size.width != 0 && size.height != 0)
-        && core.tile_info.is_some()
-        && core.quantization_params.is_some()
-        && core.bridge_film_grain.is_some()
-        && reference_map_complete;
-    if !complete {
-        return Err(inter_internal!("bridge_incomplete_state", offset));
+fn validate_bridge_frame_core(core: &FrameHeaderCore) -> Result<()> {
+    if core.status != FrameHeaderParseStatus::InterHeaderComplete
+        || core.frame_is_intra.is_none()
+        || core.show_existing_frame != Some(false)
+    {
+        return Err(DecodeHeaderStateError::IncompleteInterFrame.into());
+    }
+    if core.order_hint.is_none() {
+        return Err(DecodeHeaderStateError::MissingDisplayOrderHint.into());
+    }
+    let frame_size = core
+        .frame_size
+        .ok_or(DecodeHeaderStateError::MissingFrameSize)?;
+    if frame_size.width == 0 || frame_size.height == 0 {
+        return Err(DecodeHeaderStateError::ZeroFrameSize.into());
+    }
+    if core.tile_info.is_none()
+        || core.quantization_params.is_none()
+        || core.bridge_film_grain.is_none()
+    {
+        return Err(DecodeHeaderStateError::IncompleteInterFrameTools.into());
+    }
+    let inter = core
+        .inter
+        .as_ref()
+        .ok_or(DecodeHeaderStateError::MissingInterControlRegion)?;
+    let bridge_frame_ref_idx = core
+        .bridge_frame_ref_idx
+        .ok_or(DecodeHeaderStateError::InvalidInterReferenceMap)?;
+    let reference_map_complete = if core.frame_is_intra == Some(true) {
+        inter.num_total_refs == Some(0)
+    } else {
+        inter.num_total_refs == Some(1)
+            && inter.ref_frame_idx.first() == Some(&bridge_frame_ref_idx)
+    };
+    if !reference_map_complete {
+        return Err(DecodeHeaderStateError::InvalidInterReferenceMap.into());
     }
     Ok(())
 }

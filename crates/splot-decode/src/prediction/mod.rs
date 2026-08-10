@@ -5,5 +5,4 @@
 
 pub(crate) mod chroma;
 pub(crate) mod inter;
-pub(crate) mod intra;
 pub(crate) mod intra_edge;

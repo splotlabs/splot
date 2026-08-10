@@ -220,10 +220,16 @@ pub(super) fn required_inter_quantizer_deltas(
 /// feeds back into. Every other frame keeps the fused walk.
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
-    matches!(
-        obu_type,
-        ObuType::LeadingTileGroup | ObuType::RegularTileGroup | ObuType::Switch | ObuType::RasFrame
-    ) && !block::global_intrabc_enabled(core.intrabc)
+    core.status == splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete
+        && core.frame_is_intra == Some(false)
+        && matches!(
+            obu_type,
+            ObuType::LeadingTileGroup
+                | ObuType::RegularTileGroup
+                | ObuType::Switch
+                | ObuType::RasFrame
+        )
+        && !block::global_intrabc_enabled(core.intrabc)
         && core
             .tile_info
             .as_ref()
@@ -362,8 +368,12 @@ pub(crate) fn parse_inter_frame<T: ReconSample>(
     let _quantizer_delta_scope = FrameQuantizerDeltasScope::install(quantizer_deltas);
     let quantizer = FrameQuantizerSnapshot::capture();
     let started = crate::timing::start();
+    let tile_count = tile_plan.work_units().len();
+    let [tile] = tile_plan.work_units_mut() else {
+        return Err(DecodeHeaderStateError::InvalidSplitTileCount { actual: tile_count }.into());
+    };
     let parse = parse_inter_frame_blocks(
-        &mut tile_plan,
+        tile,
         records,
         frame_envelope,
         &sequence,

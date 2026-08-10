@@ -3,17 +3,14 @@
 
 //! Block-to-plane residual planning.
 
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::PlaneId;
+use splot_recon::{PlaneId, tx_size_index};
 
 use crate::bitstream::tile_payload::SupportedChromaMode;
-use crate::support::capability::missing_capability_message;
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
 
 use super::{
     CHROMA_PLANES, CHUNK_64_N4, GeneralIntraResidualPlan, IDTX, RectChromaPlan, RectLumaPlan,
-    RecycledVec, ResidualPipelineUnsupported, ResidualPipelineUnsupportedReason, ResidualPlanePlan,
-    ResidualReconstructionPlan,
+    RecycledVec, ResidualPlanError, ResidualPlanePlan, ResidualReconstructionPlan,
 };
 
 // AV2 § 9.2 caps a block axis at 64 4x4 units
@@ -29,8 +26,11 @@ std::thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-fn take_residual_plane_plans() -> RecycledVec<ResidualPlanePlan> {
+fn take_residual_plane_plans(
+    plane: PlaneId,
+) -> core::result::Result<RecycledVec<ResidualPlanePlan>, ResidualPlanError> {
     RecycledVec::take(&RESIDUAL_PLANE_PLANS, MAX_RESIDUAL_PLANES)
+        .map_err(|_| ResidualPlanError::Allocation { plane })
 }
 
 impl GeneralIntraResidualPlan {
@@ -41,8 +41,8 @@ impl GeneralIntraResidualPlan {
         luma_fsc_mode: bool,
         luma_lossless_tx_size: Option<usize>,
         lossless: bool,
-    ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
-        let mut planes = take_residual_plane_plans();
+    ) -> core::result::Result<Self, ResidualPlanError> {
+        let mut planes = take_residual_plane_plans(PlaneId::Y)?;
         let chroma_reconstruction = chroma_plan.map(chroma_reconstruction);
         let luma_reconstruction = match luma_plan {
             RectLumaPlan::Palette { palette, use_tcq } => {
@@ -149,9 +149,9 @@ impl GeneralIntraResidualPlan {
         block_ctx: BlockCtx,
         chroma_plan: RectChromaPlan,
         lossless_luma_fsc: bool,
-    ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
+    ) -> core::result::Result<Self, ResidualPlanError> {
         let reconstruction = chroma_reconstruction(chroma_plan);
-        let mut planes = take_residual_plane_plans();
+        let mut planes = take_residual_plane_plans(PlaneId::U)?;
         let chroma_block = block_ctx.plane_block(PlaneId::U);
         let chroma = chroma_plans(
             block_ctx,
@@ -215,14 +215,14 @@ impl ResidualPlanePlan {
         fsc_mode: bool,
         txb_skip_fsc_mode: bool,
         tx_size_override: Option<usize>,
-    ) -> core::result::Result<Self, ResidualPipelineUnsupported> {
+    ) -> core::result::Result<Self, ResidualPlanError> {
         let block = block_ctx.plane_block(plane_id);
         let tx = block.tx();
         Ok(Self {
             plane_id,
             block_ctx,
             coeff_plane: coeff_plane(plane_id),
-            tx_size: tx_size_override.unwrap_or(tx_size_for_plan(tx, plane_id)?),
+            tx_size: tx_size_override.unwrap_or(tx_size_for_plan(tx)?),
             x: block.x(),
             y: block.y(),
             tx,
@@ -260,12 +260,12 @@ fn push_ordered_planes(
     luma_fsc_mode: bool,
     luma_lossless_tx_size: Option<usize>,
     lossless: bool,
-) -> core::result::Result<(), ResidualPipelineUnsupported> {
+) -> core::result::Result<(), ResidualPlanError> {
     let block = block_ctx.block();
     let width_chunks = (block.width4() >> 4).max(1);
     let height_chunks = (block.height4() >> 4).max(1);
     if block.width4() > MAX_RESIDUAL_BLOCK_AXIS_N4 || block.height4() > MAX_RESIDUAL_BLOCK_AXIS_N4 {
-        return Err(UNSUPPORTED_RESIDUAL_PLANE_CAPACITY);
+        return Err(ResidualPlanError::InvalidGeometry);
     }
     let (sub_x, sub_y) = block_ctx.chroma().subsampling(PlaneId::U);
     let double_chroma_w = sub_x != 0 && width_chunks > 1 && !lossless;
@@ -330,7 +330,7 @@ fn residual_chunk_ctx(
     chunk_y: usize,
     chunk_width: usize,
     chunk_height: usize,
-) -> core::result::Result<BlockCtx, ResidualPipelineUnsupported> {
+) -> core::result::Result<BlockCtx, ResidualPlanError> {
     let block = block_ctx.block();
     let (block, tx) = residual_chunk_geometry(block, chunk_x, chunk_y, chunk_width, chunk_height)?;
     let mut chunk_ctx = BlockCtx::new(
@@ -361,33 +361,32 @@ fn residual_chunk_geometry(
     chunk_y: usize,
     chunk_width: usize,
     chunk_height: usize,
-) -> core::result::Result<(BlockRect, TxShape), ResidualPipelineUnsupported> {
+) -> core::result::Result<(BlockRect, TxShape), ResidualPlanError> {
     let offset_x4 = chunk_x
         .checked_mul(CHUNK_64_N4)
-        .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
+        .ok_or(ResidualPlanError::InvalidGeometry)?;
     let offset_y4 = chunk_y
         .checked_mul(CHUNK_64_N4)
-        .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
+        .ok_or(ResidualPlanError::InvalidGeometry)?;
     let width4 = block
         .width4()
         .checked_sub(offset_x4)
-        .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?
+        .ok_or(ResidualPlanError::InvalidGeometry)?
         .min(CHUNK_64_N4.saturating_mul(chunk_width));
     let height4 = block
         .height4()
         .checked_sub(offset_y4)
-        .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?
+        .ok_or(ResidualPlanError::InvalidGeometry)?
         .min(CHUNK_64_N4.saturating_mul(chunk_height));
     let row4 = block
         .row4()
         .checked_add(offset_y4)
-        .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
+        .ok_or(ResidualPlanError::InvalidGeometry)?;
     let col4 = block
         .col4()
         .checked_add(offset_x4)
-        .ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
-    let tx =
-        TxShape::from_luma_4x4(width4, height4).ok_or(UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY)?;
+        .ok_or(ResidualPlanError::InvalidGeometry)?;
+    let tx = TxShape::from_luma_4x4(width4, height4).ok_or(ResidualPlanError::InvalidGeometry)?;
     Ok((BlockRect::new(row4, col4, width4, height4), tx))
 }
 
@@ -398,7 +397,7 @@ fn chroma_plans(
     residual_height4: usize,
     txb_skip_fsc_mode: bool,
     defer_reconstruction: bool,
-) -> core::result::Result<[ResidualPlanePlan; 2], ResidualPipelineUnsupported> {
+) -> core::result::Result<[ResidualPlanePlan; 2], ResidualPlanError> {
     let [u, v] = CHROMA_PLANES.map(|plane_id| {
         let plan = ResidualPlanePlan::new(
             block_ctx,
@@ -427,59 +426,6 @@ pub(super) const fn coeff_plane(plane_id: PlaneId) -> usize {
     }
 }
 
-fn tx_size_for_plan(
-    tx: TxShape,
-    plane_id: PlaneId,
-) -> core::result::Result<usize, ResidualPipelineUnsupported> {
-    tx.square_tx_index()
-        .or_else(|| rect_tx_size_from_log2(tx.width_log2(), tx.height_log2()))
-        .ok_or_else(|| unsupported_tx_size(plane_id))
-}
-
-pub(super) fn rect_tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
-    let w = i32::try_from(w_log2).ok()?;
-    let h = i32::try_from(h_log2).ok()?;
-    TX_WIDTH_LOG2
-        .iter()
-        .zip(TX_HEIGHT_LOG2.iter())
-        .position(|(&tw, &th)| tw == w && th == h)
-}
-
-const fn unsupported_tx_size(plane_id: PlaneId) -> ResidualPipelineUnsupported {
-    match plane_id {
-        PlaneId::Y => unsupported(
-            ResidualPipelineUnsupportedReason::RectTxSize,
-            missing_capability_message!("intra.rect.tx_size", table = "missing"),
-            crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        ),
-        PlaneId::U | PlaneId::V => unsupported(
-            ResidualPipelineUnsupportedReason::RectChromaTxSize,
-            missing_capability_message!("intra.rect.chroma_tx_size", table = "missing"),
-            crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
-        ),
-    }
-}
-
-const UNSUPPORTED_LARGE_BLOCK_CHUNK_GEOMETRY: ResidualPipelineUnsupported = unsupported(
-    ResidualPipelineUnsupportedReason::LargeBlockChunkGeometry,
-    missing_capability_message!("intra.large_block.chunk_geometry"),
-    crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
-);
-
-const UNSUPPORTED_RESIDUAL_PLANE_CAPACITY: ResidualPipelineUnsupported = unsupported(
-    ResidualPipelineUnsupportedReason::ResidualPlaneCapacity,
-    missing_capability_message!("intra.residual_plane.capacity"),
-    crate::pipeline::GENERAL_INTRA_PARTITION_SPEC_SECTION,
-);
-
-const fn unsupported(
-    reason: ResidualPipelineUnsupportedReason,
-    message: &'static str,
-    spec_section: &'static str,
-) -> ResidualPipelineUnsupported {
-    ResidualPipelineUnsupported {
-        reason,
-        message,
-        spec_section,
-    }
+fn tx_size_for_plan(tx: TxShape) -> core::result::Result<usize, ResidualPlanError> {
+    tx_size_index(tx.width_log2(), tx.height_log2()).map_err(|_| ResidualPlanError::InvalidGeometry)
 }

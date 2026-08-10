@@ -6,6 +6,25 @@ use splot_core::bitio::BitReader;
 use splot_core::headers::frame::SefTrailingBits;
 use splot_core::write::{BitWriter, write_annexb_obu};
 
+const BRIDGE_CELU_FIXTURE: &[u8] =
+    include_bytes!("../../../../../../tests/conformance/vectors/valid/syn-bridge-celu-64x64.ivf");
+
+#[test]
+fn avm_inter_fixtures_parse_quarter_and_eighth_pel_precision() {
+    use splot_core::headers::frame::MvPrecision;
+
+    for (fixture, expected) in [
+        (MULTI_TILE_LR_FIXTURE, MvPrecision::QuarterPel),
+        (TWO_FRAME_SUBPEL_FIXTURE, MvPrecision::EighthPel),
+    ] {
+        let (_, core, _) = parse_inter_core_for_validation(fixture).unwrap();
+        assert_eq!(
+            core.inter.as_ref().and_then(|inter| inter.mv_precision),
+            Some(expected)
+        );
+    }
+}
+
 #[test]
 fn inter_residual_cctx_pair_mismatch_is_a_typed_state_error() {
     let mut u_coeffs = all_zero_inter_coeff_block();
@@ -94,10 +113,11 @@ fn repack_first_sef_payload(payload: &[u8]) -> (Vec<u8>, usize) {
 fn missing_inter_header_regions_are_typed_header_state_errors() {
     use DecodeHeaderStateError::{
         IncompleteInterFrame, IncompleteInterFrameTools, MissingDisplayOrderHint, MissingFrameSize,
-        MissingInterControlRegion, MissingInterTail, ZeroFrameSize,
+        MissingInterControlRegion, MissingInterMotionVectorPrecision, MissingInterTail,
+        ZeroFrameSize,
     };
     type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
-    let cases: [MutationCase; 9] = [
+    let cases: [MutationCase; 10] = [
         (
             |core| core.status = FrameHeaderParseStatus::ActivationFieldsOnly,
             IncompleteInterFrame,
@@ -107,6 +127,10 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
         (
             |core| core.inter.as_mut().unwrap().interpolation_filter = None,
             DecodeHeaderStateError::MissingInterpolationFilter,
+        ),
+        (
+            |core| core.inter.as_mut().unwrap().mv_precision = None,
+            MissingInterMotionVectorPrecision,
         ),
         (
             |core| core.inter.as_mut().unwrap().max_drl_bits_minus_1 = None,
@@ -135,21 +159,26 @@ fn missing_inter_header_regions_are_typed_header_state_errors() {
 }
 
 #[test]
-fn truncated_inter_header_is_a_malformed_source_diagnostic() {
+fn truncated_inter_header_regions_are_malformed_source_diagnostics() {
     let (_, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
-    core.status = FrameHeaderParseStatus::StoppedInsideInterControl;
-
-    let error = super::super::validate_inter_frame_parse(&core, offset, Some(3))
-        .expect_err("truncated inter header");
-    let DecodeError::MalformedSource { issue } = &error else {
-        panic!("expected malformed source, got {error}");
-    };
-    assert_eq!(issue.spec_section(), Some("6.2.1"));
-    assert_eq!(issue.frame_index(), Some(3));
-    let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
-        .expect("truncated inter header must remain user-reportable");
-    assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+    for status in [
+        FrameHeaderParseStatus::StoppedInsideInterControl,
+        FrameHeaderParseStatus::StoppedInsideFilterParams,
+        FrameHeaderParseStatus::StoppedInsideIntraTail,
+    ] {
+        core.status = status;
+        let error = super::super::validate_inter_frame_parse(&core, offset, Some(3))
+            .expect_err("truncated frame header");
+        let DecodeError::MalformedSource { issue } = &error else {
+            panic!("expected malformed source, got {error}");
+        };
+        assert_eq!(issue.spec_section(), Some("6.2.1"));
+        assert_eq!(issue.frame_index(), Some(3));
+        let report = crate::DecodeDiagnosticReport::from_decode_error(&error)
+            .expect("truncated frame header must remain user-reportable");
+        assert_eq!(report.diagnostic.rule_id, crate::MALFORMED_SOURCE_RULE_ID);
+    }
 }
 
 #[test]
@@ -169,27 +198,76 @@ fn inter_parser_coverage_preserves_feature_id() {
 }
 
 #[test]
-fn complete_intra_tile_group_remains_reportable() {
-    let (_, mut core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
-    core.obu_type = splot_core::types::ObuType::RegularTileGroup;
-    core.frame_type = Some(splot_core::headers::frame::FrameType::IntraOnly);
+fn complete_intra_only_tile_group_is_admitted_for_regular_and_leading_carriers() {
     let offset = ByteOffset::new(74);
+    for obu_type in [
+        splot_core::types::ObuType::RegularTileGroup,
+        splot_core::types::ObuType::LeadingTileGroup,
+    ] {
+        let (_, mut core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+        core.obu_type = obu_type;
+        core.frame_type = Some(splot_core::headers::frame::FrameType::IntraOnly);
+        core.frame_is_intra = Some(true);
 
-    let error = super::super::validate_inter_frame_parse(&core, offset, Some(4))
-        .expect_err("intra-only tile-group routing");
-    let DecodeError::UnsupportedFeature { unsupported } = &error else {
-        panic!("expected unsupported feature, got {error}");
-    };
-    assert_eq!(unsupported.reason(), "unsupported_tile_boundary");
-    assert_eq!(unsupported.spec_section(), "5.18.2");
-    assert_eq!(unsupported.byte_offset(), Some(offset));
-    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_some());
+        super::super::validate_inter_frame_parse(&core, offset, Some(4))
+            .expect("complete intra-only tile-group header");
+    }
 }
 
 #[test]
-fn block_reference_sample_failures_are_typed_reference_state_errors() {
+fn contradictory_intra_only_tile_group_state_is_typed() {
+    type Mutation = fn(&mut FrameHeaderCore);
+    let cases: [Mutation; 4] = [
+        |core| core.obu_type = splot_core::types::ObuType::ClosedLoopKey,
+        |core| core.frame_type = Some(splot_core::headers::frame::FrameType::Inter),
+        |core| core.frame_is_intra = Some(false),
+        |core| core.frame_is_intra = None,
+    ];
+    for mutate in cases {
+        let (_, mut core) = fixture_sequence_and_key_core(TWO_FRAME_INTER_FIXTURE);
+        core.obu_type = splot_core::types::ObuType::RegularTileGroup;
+        core.frame_type = Some(splot_core::headers::frame::FrameType::IntraOnly);
+        core.frame_is_intra = Some(true);
+        mutate(&mut core);
+
+        let error = super::super::validate_inter_frame_parse(&core, ByteOffset::new(74), Some(4))
+            .expect_err("contradictory intra-only tile-group state");
+        assert!(matches!(
+            error,
+            DecodeError::HeaderState {
+                source: DecodeHeaderStateError::InvalidIntraOnlyTileGroupState
+            }
+        ));
+    }
+}
+
+#[test]
+fn intra_only_tile_group_never_enters_split_inter_walk() {
+    use splot_parallel::{ThreadCount, WorkerPool};
+    use std::num::NonZeroUsize;
+
+    let (_, mut core, _) =
+        parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
+    let pool = WorkerPool::new(ThreadCount::Fixed(NonZeroUsize::new(2).unwrap())).unwrap();
+    pool.install(|| {
+        assert!(super::super::splittable_inter_frame(
+            splot_core::types::ObuType::RegularTileGroup,
+            &core,
+        ));
+        core.status = FrameHeaderParseStatus::IntraHeaderComplete;
+        core.frame_type = Some(splot_core::headers::frame::FrameType::IntraOnly);
+        core.frame_is_intra = Some(true);
+        assert!(!super::super::splittable_inter_frame(
+            splot_core::types::ObuType::RegularTileGroup,
+            &core,
+        ));
+    });
+}
+
+#[test]
+fn shared_reference_sample_failures_are_typed_reference_state_errors() {
     let mut reference = super::super::InterReferenceState::<u8>::empty().expect("reference state");
-    let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
+    let Err(error) = super::super::hold_reference_slot(&reference, 0) else {
         panic!("an empty reference slot must fail closed");
     };
     assert!(matches!(
@@ -199,7 +277,7 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
         }
     ));
 
-    let Err(error) = super::super::hold_reference_pair(&reference, 1, None) else {
+    let Err(error) = super::super::hold_reference_slot(&reference, 1) else {
         panic!("a reference beyond the active store must fail closed");
     };
     assert!(matches!(
@@ -219,7 +297,7 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
         .store
         .put(splot_recon::ReferenceSlot::new(0).expect("slot zero"), slot)
         .expect("store pending reference");
-    let Err(error) = super::super::hold_reference_pair(&reference, 0, None) else {
+    let Err(error) = super::super::hold_reference_slot(&reference, 0) else {
         panic!("an unpublished reference slot must fail closed");
     };
     assert!(matches!(
@@ -228,6 +306,67 @@ fn block_reference_sample_failures_are_typed_reference_state_errors() {
             source: crate::DecodeReferenceStateError::ReferenceSamplesUnavailable { slot: 0 }
         }
     ));
+}
+
+#[test]
+fn bridge_frame_validation_maps_impossible_state_to_typed_errors() {
+    use DecodeHeaderStateError::{
+        IncompleteInterFrame, IncompleteInterFrameTools, InvalidInterReferenceMap,
+        MissingDisplayOrderHint, MissingFrameSize, MissingInterControlRegion, ZeroFrameSize,
+    };
+    type MutationCase = (fn(&mut FrameHeaderCore), DecodeHeaderStateError);
+
+    let (_, core, _) =
+        parse_inter_core_for_validation(BRIDGE_CELU_FIXTURE).expect("complete bridge core");
+    assert_eq!(core.obu_type, splot_core::types::ObuType::BridgeFrame);
+    super::super::validate_bridge_frame_core(&core).expect("valid bridge state");
+
+    let cases: [MutationCase; 12] = [
+        (
+            |core| core.status = FrameHeaderParseStatus::ActivationFieldsOnly,
+            IncompleteInterFrame,
+        ),
+        (|core| core.frame_is_intra = None, IncompleteInterFrame),
+        (
+            |core| core.show_existing_frame = Some(true),
+            IncompleteInterFrame,
+        ),
+        (|core| core.order_hint = None, MissingDisplayOrderHint),
+        (|core| core.frame_size = None, MissingFrameSize),
+        (
+            |core| {
+                core.frame_size = Some(splot_core::headers::frame::FrameSize::new(0, 64));
+            },
+            ZeroFrameSize,
+        ),
+        (|core| core.tile_info = None, IncompleteInterFrameTools),
+        (
+            |core| core.quantization_params = None,
+            IncompleteInterFrameTools,
+        ),
+        (
+            |core| core.bridge_film_grain = None,
+            IncompleteInterFrameTools,
+        ),
+        (|core| core.inter = None, MissingInterControlRegion),
+        (
+            |core| core.bridge_frame_ref_idx = None,
+            InvalidInterReferenceMap,
+        ),
+        (
+            |core| core.inter.as_mut().unwrap().num_total_refs = Some(2),
+            InvalidInterReferenceMap,
+        ),
+    ];
+
+    for (mutate, expected) in cases {
+        let mut mutated = core.clone();
+        mutate(&mut mutated);
+        let error = super::super::validate_bridge_frame_core(&mutated)
+            .expect_err("impossible bridge state");
+        assert!(matches!(error, DecodeError::HeaderState { ref source } if *source == expected));
+        assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
 }
 
 #[test]
@@ -1194,7 +1333,7 @@ fn ras_slot_conformance_precedes_ccso_reference_reuse() {
 }
 
 #[test]
-fn ras_slot_conformance_precedes_parser_coverage() {
+fn parser_coverage_precedes_ras_slot_conformance() {
     let (sequence, mut core, offset) =
         parse_inter_core_for_validation(TWO_FRAME_INTER_FIXTURE).expect("inter core");
     core.obu_type = splot_core::types::ObuType::RasFrame;
@@ -1213,8 +1352,12 @@ fn ras_slot_conformance_precedes_parser_coverage() {
         offset,
         Some(1),
     )
-    .expect_err("RAS conformance must precede parser coverage");
-    assert!(matches!(error, DecodeError::MalformedSource { .. }));
+    .expect_err("parser coverage must precede RAS conformance");
+    let DecodeError::UnsupportedFeature { unsupported } = error else {
+        panic!("expected unsupported feature, got {error}");
+    };
+    assert_eq!(unsupported.reason(), "AV2-5.18.7-SEGMENTATION-TILING");
+    assert_eq!(unsupported.spec_section(), "5.18.2");
 }
 
 #[test]

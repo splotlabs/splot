@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::InterpolationFilter as FrameInterpolationFilter;
 use splot_core::headers::frame::{
-    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, MvPrecision,
-    TipFrameMode, TxMode, get_qindex,
+    CoreSeqQuantView, FrameHeaderCore, FrameType, GlobalMotionRef, GmType, TipFrameMode, TxMode,
+    get_qindex,
 };
 use splot_core::headers::sequence::{ChromaFormatIdc, DrlReorder, SequenceHeader};
 use splot_core::span::ByteOffset;
@@ -29,8 +29,8 @@ use super::find_mv_stack::{
     find_mv_stack_with_temporal, warp_predicted_mv,
 };
 use super::read_mv::{
-    MV_PRECISION_EIGHTH_PEL, MV_PRECISION_HALF_PEL, MV_PRECISION_ONE_PEL, MV_PRECISION_QUARTER_PEL,
-    MvReadConfig, apply_inter_mvd_signs, mv_clamp_to_integer, read_newmv_amvd_block_mvd,
+    MV_PRECISION_EIGHTH_PEL, MV_PRECISION_QUARTER_PEL, MvReadConfig, apply_inter_mvd_signs,
+    mv_clamp_to_integer, read_newmv_amvd_block_mvd,
     read_newmv_block_mvd_magnitude_with_config as read_newmv_block_mvd_magnitude,
 };
 use super::single_ref::SingleRefReadError;
@@ -61,7 +61,7 @@ use crate::filters::wienerns_lr::tx_records::{
     derive_inter_luma_tx_records_for_block, gdf::GdfState,
 };
 use crate::pipeline::effective_allow_screen_content_tools;
-use crate::{DecodeOptions, DecodeReferenceStateError, Result};
+use crate::{DecodeHeaderStateError, DecodeOptions, DecodeReferenceStateError, Result};
 
 const INTERP_FILTER_CTX_NO_NEIGHBOUR_BASE: usize = 3;
 const INTERP_FILTER_CTX_SECOND_REF_INTER_OFFSET: usize = 4;
@@ -545,6 +545,27 @@ fn final_segment_ids<T: ReconSample>(
         return Arc::clone(previous);
     }
     Arc::new(decoded)
+}
+
+fn frame_segment_id_map(mi_rows: usize, mi_cols: usize) -> Result<FrameSegmentIdMap> {
+    FrameSegmentIdMap::new(mi_rows, mi_cols).map_err(|error| match error {
+        TileSegmentIdStateError::EmptyDimensions { mi_rows, mi_cols } => {
+            DecodeHeaderStateError::InvalidSegmentIdMapDimensions { mi_rows, mi_cols }.into()
+        }
+        TileSegmentIdStateError::ArithmeticOverflow {
+            operation,
+            left,
+            right,
+        } => DecodeHeaderStateError::SegmentIdMapSizeOverflow {
+            operation,
+            left,
+            right,
+        }
+        .into(),
+        TileSegmentIdStateError::Allocation { .. } => {
+            inter_allocation!("inter frame segment id map")
+        }
+    })
 }
 
 /// The frame-level inputs of the AV2 § 7.9 temporal prelude, captured so the
@@ -1589,7 +1610,7 @@ fn decode_block<T: ReconSample>(
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         }
         let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
-            .map_err(|error| single_ref_read_error(&error, tile_offset))?;
+            .map_err(|error| single_ref_read_error(error, tile_offset))?;
         selected as i8
     } else {
         SINGLE_REF_FRAME0
@@ -2308,16 +2329,23 @@ fn symbol_read_error(
 }
 
 fn single_ref_read_error(
-    error: &SingleRefReadError,
+    error: SingleRefReadError,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
     match error {
         SingleRefReadError::InsufficientRefs { .. } | SingleRefReadError::MissingContext { .. } => {
             crate::DecodeHeaderStateError::InvalidInterReferenceMap.into()
         }
-        SingleRefReadError::SymbolRead { .. } => {
-            inter_internal!("inter_block_single_ref_read", tile_offset)
-        }
+        SingleRefReadError::SymbolRead {
+            source:
+                BlockSymbolTraceReadError::Cdf(_)
+                | BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. }),
+            ..
+        } => crate::DecodeHeaderStateError::InvalidSingleReferenceCdfState.into(),
+        SingleRefReadError::SymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(error),
+            ..
+        } => crate::pipeline::malformed_tile_payload(tile_offset, "5.20.7.12", error),
     }
 }
 
@@ -2345,6 +2373,13 @@ fn map_inter_multiblock_error(
         )) if error.is_source_read_failure() => {
             crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
         }
+        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::MissingSdpLumaModeState { r, c },
+        )) => crate::DecodeHeaderStateError::MissingSdpLumaModeState {
+            mi_row: r,
+            mi_col: c,
+        }
+        .into(),
         _ => inter_internal!("inter_partition_walk", tile_offset),
     }
 }

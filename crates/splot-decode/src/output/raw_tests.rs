@@ -22,6 +22,9 @@ use crate::{
 
 const MONO_FIXTURE: &[u8] =
     include_bytes!("../../../../tests/conformance/vectors/valid/syn-mono-intra-64x64.ivf");
+const INTRA_ONLY_TILE_GROUP_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-2frame-intra-only-mono-16x16-q255.ivf"
+);
 const TEMPORAL_LAYER_DECLARATION_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-tlayer2-base-only-intra-64x64.ivf"
 );
@@ -380,6 +383,19 @@ fn monochrome_fixture_decodes_to_luma_only_raw_bytes() {
     assert_eq!(&bytes[..12], &[0x4c; 12]);
     assert_eq!(&bytes[12..22], &[0x92; 10]);
     assert_eq!(&bytes[MONO_LUMA_BYTES - 10..], &[0xaa; 10]);
+}
+
+#[test]
+fn intra_only_tile_group_fixture_matches_exact_raw_bytes() {
+    for threads in [1usize, 8] {
+        let bytes = collect_raw(
+            &context(ThreadCount::from(threads)),
+            INTRA_ONLY_TILE_GROUP_FIXTURE,
+            DecodeOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![0x80; 512]);
+    }
 }
 
 #[test]

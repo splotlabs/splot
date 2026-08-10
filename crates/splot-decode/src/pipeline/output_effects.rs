@@ -31,8 +31,9 @@ use splot_core::write::metadata::type_matches_payload;
 use splot_recon::QmUserPlane;
 
 use super::{PipelineFrameRate, unsupported_feature_at};
+use crate::bitstream::stream_plan::DecodeSourceIssue;
 use crate::bitstream::tile_payload::{FrameUserQmLevel, FrameUserQmLevels};
-use crate::error::Result;
+use crate::error::{DecodeError, DecodeHeaderStateError, Result};
 
 const LAYER_GLOBAL: u8 = 1;
 const LAYER_CURRENT: u8 = 2;
@@ -41,7 +42,7 @@ const LAYER_VALUES: u8 = 3;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FrameOutputEffects {
     pub(crate) content_interpretation: Option<ContentInterpretation>,
-    pub(crate) buffer_removal_timing: Option<BufferRemovalTiming>,
+    pub(crate) buffer_removal_timings: Vec<BufferRemovalTiming>,
     pub(crate) metadata: Vec<MetadataUnit>,
 }
 
@@ -50,7 +51,7 @@ impl FrameOutputEffects {
     pub(crate) const fn empty() -> Self {
         Self {
             content_interpretation: None,
-            buffer_removal_timing: None,
+            buffer_removal_timings: Vec::new(),
             metadata: Vec::new(),
         }
     }
@@ -86,17 +87,6 @@ impl FrameOutputEffects {
                 ByteOffset::new(0),
                 "content interpretation reserved bits must be zero",
                 "6.14",
-            ));
-        }
-        if let Some(brt) = &self.buffer_removal_timing
-            && let Some((_, count)) = brt.ops_reference()
-            && brt.op_timings().len() != usize::from(count)
-        {
-            return Err(effect_error(
-                "buffer_removal_timing_count",
-                ByteOffset::new(0),
-                "BRT operating-point entry count does not match br_ops_cnt",
-                "6.11",
             ));
         }
         if self
@@ -179,7 +169,8 @@ pub(crate) struct OutputEffectState {
     qm_obu_seen_since_frame: bool,
     content_interpretation: Option<ContentInterpretation>,
     ci_in_current_tu: Option<ContentInterpretation>,
-    brt: Option<BufferRemovalTiming>,
+    brts: Vec<BufferRemovalTiming>,
+    second_brt_offset: Option<ByteOffset>,
     ops_counts: BTreeMap<(ExtendedLayerId, u8), u8>,
     metadata: Vec<ActiveMetadata>,
     tu_index: u64,
@@ -195,7 +186,8 @@ impl OutputEffectState {
             qm_obu_seen_since_frame: false,
             content_interpretation: None,
             ci_in_current_tu: None,
-            brt: None,
+            brts: Vec::new(),
+            second_brt_offset: None,
             ops_counts: BTreeMap::new(),
             metadata: Vec::new(),
             tu_index: 0,
@@ -305,7 +297,27 @@ impl OutputEffectState {
         core: &FrameHeaderCore,
         sequence: &SequenceHeader,
         first_picture_in_tu: bool,
+        frame_index: Option<usize>,
     ) -> Result<Option<FrameUserQmLevels>> {
+        let (Some(immediate_output), Some(implicit_output)) =
+            (core.immediate_output_frame, core.implicit_output_frame)
+        else {
+            return Err(DecodeHeaderStateError::MissingFrameOutputClassification.into());
+        };
+        if !immediate_output && !implicit_output && self.brts.len() > 1 {
+            let offset = self
+                .second_brt_offset
+                .ok_or(DecodeHeaderStateError::MissingBufferRemovalTimingOffset)?;
+            return Err(DecodeError::MalformedSource {
+                issue: DecodeSourceIssue::frame_unit_conformance(
+                    offset,
+                    frame_index,
+                    "7.3.4",
+                    "a coded non-output frame unit may contain at most one buffer removal timing OBU"
+                        .to_owned(),
+                ),
+            });
+        }
         let starts_cvs = first_picture_in_tu
             && (sequence.general.single_picture_header_flag
                 || matches!(
@@ -346,7 +358,7 @@ impl OutputEffectState {
     pub(crate) fn finish_frame(&mut self) -> FrameOutputEffects {
         let effects = FrameOutputEffects {
             content_interpretation: self.content_interpretation,
-            buffer_removal_timing: self.brt.take(),
+            buffer_removal_timings: std::mem::take(&mut self.brts),
             metadata: self
                 .metadata
                 .iter()
@@ -356,6 +368,7 @@ impl OutputEffectState {
         };
         self.metadata
             .retain(|unit| unit.persistence != MetadataPersistence::No);
+        self.second_brt_offset = None;
         effects
     }
 
@@ -529,15 +542,14 @@ impl OutputEffectState {
 
     fn observe_brt(&mut self, envelope: ObuEnvelope<'_>) -> Result<()> {
         let mut reader = BitReader::new(envelope.payload, envelope.payload_offset());
-        let brt = parse_buffer_removal_timing(&mut reader).map_err(|_| {
-            effect_error(
-                "buffer_removal_timing_parse",
-                envelope.offset,
-                "decode requires a complete buffer removal timing OBU",
-                "5.12",
-            )
-        })?;
-        finish(&mut reader, envelope, "buffer_removal_timing_tail", "5.12")?;
+        let brt = parse_buffer_removal_timing(&mut reader)
+            .map_err(|error| malformed_obu_payload(envelope, "5.12", error))?;
+        finish_obu_payload(
+            &mut reader,
+            envelope.payload,
+            envelope.header.obu_type.is_extensible_obu(),
+        )
+        .map_err(|error| malformed_obu_payload(envelope, "5.12", error))?;
         if let Some((ops_id, ops_count)) = brt.ops_reference() {
             let available = self
                 .ops_counts
@@ -552,14 +564,16 @@ impl OutputEffectState {
                 ));
             }
         }
-        if self.brt.replace(brt).is_some() {
-            return Err(effect_error(
-                "buffer_removal_timing_duplicate",
-                envelope.offset,
-                "only one BRT OBU is allowed in a coded non-output frame unit",
-                "7.3.4",
-            ));
+        self.brts.try_reserve(1).map_err(|_| {
+            DecodeError::from(splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: splot_recon::PlaneId::Y,
+                context: "buffer-removal-timing output-effect state",
+            })
+        })?;
+        if self.brts.len() == 1 {
+            self.second_brt_offset = Some(envelope.offset);
         }
+        self.brts.push(brt);
         Ok(())
     }
 
@@ -828,6 +842,16 @@ fn finish(
     })
 }
 
+fn malformed_obu_payload(
+    envelope: ObuEnvelope<'_>,
+    spec: &'static str,
+    error: impl core::fmt::Display,
+) -> DecodeError {
+    DecodeError::MalformedSource {
+        issue: DecodeSourceIssue::obu_payload_parse(envelope.offset, spec, error.to_string()),
+    }
+}
+
 fn metadata_order_error(envelope: ObuEnvelope<'_>, expected_suffix: bool) -> crate::DecodeError {
     effect_error(
         "metadata_prefix_suffix_order",
@@ -857,6 +881,7 @@ mod tests {
     use splot_core::obu::ObuHeader;
     use splot_core::stream::{ParsedBitstream, parse_bitstream_partial};
     use splot_core::types::TemporalLayerId;
+    use splot_core::write::{BitWriter, write_buffer_removal_timing};
 
     const STANDALONE_OLK_FIXTURE: &[u8] =
         include_bytes!("../../../../tests/conformance/vectors/valid/syn-standalone-olk-64x64.ivf");
@@ -883,6 +908,55 @@ mod tests {
         }
     }
 
+    fn brt_payload(br_time: u32) -> Option<Vec<u8>> {
+        let mut writer = BitWriter::new();
+        write_buffer_removal_timing(&mut writer, &BufferRemovalTiming::ExtendedLayer { br_time })
+            .ok()?;
+        let remainder = writer.bit_len() % 8;
+        let tail_bits = if remainder == 0 { 8 } else { 8 - remainder };
+        writer.write_trailing_bits(tail_bits).ok()?;
+        Some(writer.into_bytes())
+    }
+
+    fn brt_envelope(payload: &[u8], offset: u64) -> ObuEnvelope<'_> {
+        ObuEnvelope {
+            offset: ByteOffset::new(offset),
+            size: u32::try_from(payload.len().saturating_add(1)).unwrap_or(u32::MAX),
+            header: ObuHeader {
+                has_header_extension: false,
+                obu_type: ObuType::BufferRemovalTiming,
+                temporal_layer_id: TemporalLayerId::from_bits(0),
+                embedded_layer_id: EmbeddedLayerId::from_bits(0),
+                extended_layer_id: ExtendedLayerId::from_bits(0),
+                header_size_bytes: 1,
+            },
+            payload,
+        }
+    }
+
+    fn olk_frame() -> Option<(ObuEnvelope<'static>, SequenceHeader, FrameHeaderCore)> {
+        let ParsedBitstream::Ivf(ivf) = parse_bitstream_partial(STANDALONE_OLK_FIXTURE) else {
+            return None;
+        };
+        let sequence_envelope = ivf
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.obus)
+            .find(|obu| obu.header.obu_type == ObuType::SequenceHeader)?;
+        let frame_envelope = ivf
+            .frames
+            .iter()
+            .flat_map(|frame| &frame.obus)
+            .find(|obu| obu.header.obu_type == ObuType::OpenLoopKey)?;
+        let sequence = crate::pipeline::parse_sequence(*sequence_envelope).ok()?;
+        let core = crate::pipeline::parse_frame_core(*frame_envelope, &sequence).ok()?;
+        Some((*frame_envelope, sequence, core))
+    }
+
+    fn observe_brt_time(state: &mut OutputEffectState, payload: &[u8], offset: u64) -> Result<()> {
+        state.observe_brt(brt_envelope(payload, offset))
+    }
+
     fn hdr_cll(max_cll: u16) -> MetadataUnit {
         MetadataUnit {
             metadata_type: MetadataType::HdrCll,
@@ -899,6 +973,151 @@ mod tests {
             MetadataPayload::HdrCll(cll) => Some(cll.max_cll),
             _ => None,
         }
+    }
+
+    #[test]
+    fn multiple_brts_follow_output_classification_and_drain_in_source_order() {
+        let Some((frame_envelope, sequence, base_core)) = olk_frame() else {
+            return;
+        };
+        let (Some(first), Some(second)) = (brt_payload(0), brt_payload(1)) else {
+            return;
+        };
+
+        let mut immediate = OutputEffectState::new();
+        assert!(observe_brt_time(&mut immediate, &first, 10).is_ok());
+        assert!(observe_brt_time(&mut immediate, &second, 20).is_ok());
+        let mut immediate_core = base_core.clone();
+        immediate_core.immediate_output_frame = Some(true);
+        immediate_core.implicit_output_frame = Some(false);
+        assert!(
+            immediate
+                .prepare_frame(frame_envelope, &immediate_core, &sequence, false, Some(4),)
+                .is_ok()
+        );
+        let effects = immediate.finish_frame();
+        assert_eq!(
+            effects
+                .buffer_removal_timings
+                .iter()
+                .filter_map(BufferRemovalTiming::extended_layer_time)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        assert!(immediate.finish_frame().buffer_removal_timings.is_empty());
+
+        let mut implicit = OutputEffectState::new();
+        assert!(observe_brt_time(&mut implicit, &first, 10).is_ok());
+        assert!(observe_brt_time(&mut implicit, &second, 20).is_ok());
+        let mut implicit_core = base_core.clone();
+        implicit_core.immediate_output_frame = Some(false);
+        implicit_core.implicit_output_frame = Some(true);
+        assert!(
+            implicit
+                .prepare_frame(frame_envelope, &implicit_core, &sequence, false, Some(5),)
+                .is_ok()
+        );
+        assert_eq!(implicit.finish_frame().buffer_removal_timings.len(), 2);
+
+        let mut non_output = OutputEffectState::new();
+        assert!(observe_brt_time(&mut non_output, &first, 10).is_ok());
+        let mut non_output_core = base_core;
+        non_output_core.immediate_output_frame = Some(false);
+        non_output_core.implicit_output_frame = Some(false);
+        assert!(
+            non_output
+                .prepare_frame(frame_envelope, &non_output_core, &sequence, false, Some(6),)
+                .is_ok()
+        );
+        assert_eq!(non_output.finish_frame().buffer_removal_timings.len(), 1);
+    }
+
+    #[test]
+    fn non_output_duplicate_brt_is_typed_at_second_offset_before_state_effects() {
+        let Some((frame_envelope, sequence, mut core)) = olk_frame() else {
+            return;
+        };
+        let (Some(first), Some(second)) = (brt_payload(0), brt_payload(1)) else {
+            return;
+        };
+        let mut state = OutputEffectState::new();
+        assert!(observe_brt_time(&mut state, &first, 10).is_ok());
+        assert!(observe_brt_time(&mut state, &second, 20).is_ok());
+        state.store_metadata(metadata_envelope(0, 0), LAYER_CURRENT, 1, None, hdr_cll(10));
+        core.immediate_output_frame = Some(false);
+        core.implicit_output_frame = Some(false);
+
+        let result = state.prepare_frame(frame_envelope, &core, &sequence, true, Some(7));
+
+        assert!(matches!(
+            &result,
+            Err(DecodeError::MalformedSource { issue })
+                if issue.kind() == crate::DecodeSourceIssueKind::FrameUnitConformanceError
+                    && issue.spec_section() == Some("7.3.4")
+                    && issue.offset() == Some(ByteOffset::new(20))
+                    && issue.frame_index() == Some(7)
+        ));
+        let report = result
+            .as_ref()
+            .err()
+            .and_then(crate::DecodeDiagnosticReport::from_decode_error);
+        assert!(matches!(
+            report.map(|report| report.details),
+            Some(crate::DecodeDiagnosticDetails::MalformedSource(_))
+        ));
+        assert_eq!(state.metadata.len(), 1);
+        assert_eq!(state.brts.len(), 2);
+    }
+
+    #[test]
+    fn missing_output_classification_is_typed_header_state() {
+        let Some((frame_envelope, sequence, mut core)) = olk_frame() else {
+            return;
+        };
+        core.implicit_output_frame = None;
+        let result = OutputEffectState::new().prepare_frame(
+            frame_envelope,
+            &core,
+            &sequence,
+            false,
+            Some(8),
+        );
+        assert!(matches!(
+            result,
+            Err(DecodeError::HeaderState {
+                source: DecodeHeaderStateError::MissingFrameOutputClassification,
+            })
+        ));
+    }
+
+    #[test]
+    fn malformed_brt_payloads_are_typed_and_fail_closed() {
+        let Some(valid) = brt_payload(0) else {
+            return;
+        };
+        let mut eof_state = OutputEffectState::new();
+        let eof = observe_brt_time(&mut eof_state, &valid[..0], 30);
+        assert!(matches!(
+            eof,
+            Err(DecodeError::MalformedSource { issue })
+                if issue.kind() == crate::DecodeSourceIssueKind::ObuPayloadParseError
+                    && issue.spec_section() == Some("5.12")
+                    && issue.offset() == Some(ByteOffset::new(30))
+        ));
+        assert!(eof_state.brts.is_empty());
+
+        let mut invalid_tail = valid;
+        invalid_tail.push(0x80);
+        let mut tail_state = OutputEffectState::new();
+        let tail = observe_brt_time(&mut tail_state, &invalid_tail, 40);
+        assert!(matches!(
+            tail,
+            Err(DecodeError::MalformedSource { issue })
+                if issue.kind() == crate::DecodeSourceIssueKind::ObuPayloadParseError
+                    && issue.spec_section() == Some("5.12")
+                    && issue.offset() == Some(ByteOffset::new(40))
+        ));
+        assert!(tail_state.brts.is_empty());
     }
 
     #[test]
@@ -1041,7 +1260,7 @@ mod tests {
 
         assert!(
             state
-                .prepare_frame(*olk_envelope, &core, &sequence, true)
+                .prepare_frame(*olk_envelope, &core, &sequence, true, None)
                 .is_ok()
         );
         assert_eq!(state.metadata.len(), 1);
@@ -1087,7 +1306,7 @@ mod tests {
         state.content_interpretation = Some(active);
         state.ci_in_current_tu = Some(current);
 
-        let result = state.prepare_frame(*olk_envelope, &core, &sequence, false);
+        let result = state.prepare_frame(*olk_envelope, &core, &sequence, false, None);
 
         assert!(matches!(
             result,
