@@ -154,10 +154,7 @@ pub(super) struct TrajectoryState {
     pub(super) positions: Vec<Vec<TrajectoryPositions>>,
     pub(super) projection_offsets: Vec<i32>,
     step: usize,
-    step_mask: usize,
     unit_size8: usize,
-    unit_mask: usize,
-    unit_shift: u32,
     width8: usize,
     height8: usize,
 }
@@ -182,10 +179,7 @@ impl TrajectoryState {
             positions: vec![vec![TrajectoryPositions::EMPTY; cell_count]; reference_count],
             projection_offsets: vec![INVALID_PROJECTION_OFFSET; cell_count],
             step,
-            step_mask: step - 1,
             unit_size8,
-            unit_mask: unit_size8 - 1,
-            unit_shift: unit_size8.trailing_zeros(),
             width8,
             height8,
         })
@@ -219,10 +213,7 @@ impl TrajectoryState {
             .resize(cell_count, INVALID_PROJECTION_OFFSET);
         self.projection_offsets.fill(INVALID_PROJECTION_OFFSET);
         self.step = step.clamp(1, 2);
-        self.step_mask = self.step - 1;
         self.unit_size8 = unit_size8.max(1);
-        self.unit_mask = self.unit_size8 - 1;
-        self.unit_shift = self.unit_size8.trailing_zeros();
         (self.width8, self.height8) = self
             .fields
             .first()
@@ -240,10 +231,7 @@ impl TrajectoryState {
             positions: Vec::new(),
             projection_offsets: Vec::new(),
             step: 1,
-            step_mask: 0,
             unit_size8: 1,
-            unit_mask: 0,
-            unit_shift: 0,
             width8,
             height8,
         }
@@ -270,14 +258,14 @@ impl TrajectoryState {
             positions,
             projection_offsets,
             step,
-            step_mask,
             unit_size8,
-            unit_mask,
-            unit_shift,
             width8,
             height8,
         } = self;
         let (width8, height8) = (*width8, *height8);
+        let step_mask = *step - 1;
+        let unit_mask = *unit_size8 - 1;
+        let unit_shift = unit_size8.trailing_zeros();
         let total = width8.checked_mul(height8)?;
         let stride = band_rows.checked_mul(width8)?;
         if band_rows == 0
@@ -298,10 +286,10 @@ impl TrajectoryState {
                 projection_offsets,
                 row_base: index * band_rows,
                 step: *step,
-                step_mask: *step_mask,
+                step_mask,
                 unit_size8: *unit_size8,
-                unit_mask: *unit_mask,
-                unit_shift: *unit_shift,
+                unit_mask,
+                unit_shift,
                 width8,
                 height8,
             })

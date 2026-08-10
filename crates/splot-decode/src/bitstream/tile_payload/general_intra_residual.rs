@@ -387,14 +387,13 @@ pub(crate) struct LumaTransformTypeContext {
     y_mode: IntraYMode,
     angle_delta_y: i8,
     mrl_index: u8,
-    mrl_sec_index: Option<u8>,
     dpcm: Option<DpcmDirection>,
 }
 
 impl LumaTransformTypeContext {
     #[must_use]
     pub(crate) const fn new(y_mode: IntraYMode, angle_delta_y: i8) -> Self {
-        Self::with_mrl_indices(y_mode, angle_delta_y, 0, None, None)
+        Self::with_mrl_indices(y_mode, angle_delta_y, 0, None)
     }
 
     #[must_use]
@@ -402,14 +401,12 @@ impl LumaTransformTypeContext {
         y_mode: IntraYMode,
         angle_delta_y: i8,
         mrl_index: u8,
-        mrl_sec_index: Option<u8>,
         dpcm: Option<DpcmDirection>,
     ) -> Self {
         Self {
             y_mode,
             angle_delta_y,
             mrl_index,
-            mrl_sec_index,
             dpcm,
         }
     }
@@ -446,7 +443,6 @@ pub(crate) struct IntraIstSyntax {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LumaCoeffBlock {
-    pub(crate) all_zero: bool,
     pub(crate) eob: usize,
     pub(crate) quant: Vec<i32>,
     pub(crate) intra_ist: Option<IntraIstSyntax>,
@@ -1026,7 +1022,6 @@ pub(crate) fn decode_general_intra_plane_coeffs(
             })
             .map_err(coeff_ctx_err)?;
         return Ok(LumaCoeffBlock {
-            all_zero: true,
             eob: 0,
             quant: Vec::new(),
             intra_ist: None,
@@ -1159,7 +1154,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
         )
         .map_err(|source| GeneralIntraResidualError::StagedFscPass { source })?;
         return Ok(LumaCoeffBlock {
-            all_zero: false,
             eob,
             quant: block.into_quant(),
             intra_ist: metadata.intra_ist,
@@ -1184,7 +1178,6 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     )
     .map_err(|source| GeneralIntraResidualError::StagedNonZeroPass { source })?;
     Ok(LumaCoeffBlock {
-        all_zero: false,
         eob,
         quant: block.into_quant(),
         intra_ist: metadata.intra_ist,

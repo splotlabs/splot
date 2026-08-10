@@ -13,8 +13,7 @@ use splot_recon::{BitDepth, max_quantizer_index};
 use std::ops::Range;
 
 use crate::bitstream::tile_payload::{
-    BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, IntraIstSyntax,
-    TileCdfSelector,
+    BlockSymbolTraceReadError, DecodeBlockFrontier, DecodeTileWorkUnit, TileCdfSelector,
 };
 use crate::error::Result;
 use crate::filters::cdef::CdefUnitGrid;
@@ -56,7 +55,6 @@ pub(crate) struct WienerNsLrTxSkipTransformRecord {
     pub(crate) cols: usize,
     pub(crate) skip_flag: bool,
     pub(crate) eob: usize,
-    pub(crate) intra_ist: Option<IntraIstSyntax>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -66,14 +64,10 @@ pub(crate) struct SelectableLumaTxRecord {
     pub(crate) rows: usize,
     pub(crate) cols: usize,
     pub(crate) tx_size: usize,
-    pub(crate) middle: bool,
-    pub(crate) scan_order: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct SelectableLumaTxCell {
-    tx_size: usize,
-    middle: bool,
     scan_order: bool,
 }
 
@@ -547,7 +541,6 @@ impl SelectableLumaTxGrid {
         col: usize,
         h4: usize,
         w4: usize,
-        middle: bool,
         scan_order: bool,
     ) -> std::result::Result<usize, SelectableTransformRecordError> {
         if h4 == 0 || w4 == 0 {
@@ -589,11 +582,7 @@ impl SelectableLumaTxGrid {
                 }
             }
         }
-        let cell = SelectableLumaTxCell {
-            tx_size,
-            middle,
-            scan_order,
-        };
+        let cell = SelectableLumaTxCell { scan_order };
         for r in row..row.saturating_add(h4) {
             if r >= self.rows {
                 break;
@@ -612,8 +601,6 @@ impl SelectableLumaTxGrid {
             rows: h4,
             cols: w4,
             tx_size,
-            middle,
-            scan_order,
         });
         Ok(tx_size)
     }
@@ -725,7 +712,7 @@ pub(crate) fn derive_inter_luma_tx_records_for_block(
     with_selectable_tx_grid(grid_size.0, grid_size.1, |grid| {
         let b_size = frontier.b_size.index();
         if b_size == BLOCK_4X4 {
-            grid.set_tx_size(frontier.r, frontier.c, 1, 1, false, false)
+            grid.set_tx_size(frontier.r, frontier.c, 1, 1, false)
                 .map_err(selectable_transform_record_error)?;
         } else {
             let max_tx_size = table_usize("Max_Tx_Size_Rect", &MAX_TX_SIZE_RECT, b_size)
@@ -913,78 +900,78 @@ fn apply_tx_partition(
     let mut w4 = tx_width / MI_SIZE;
     let mut h4 = tx_height / MI_SIZE;
     match tx_partition {
-        TX_PARTITION_NONE => grid.set_tx_size(row, col, h4, w4, false, false),
+        TX_PARTITION_NONE => grid.set_tx_size(row, col, h4, w4, false),
         TX_PARTITION_HORZ => {
             h4 >>= 1;
-            grid.set_tx_size(row, col, h4, w4, false, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
             row += h4;
-            grid.set_tx_size(row, col, h4, w4, false, false)
+            grid.set_tx_size(row, col, h4, w4, false)
         }
         TX_PARTITION_VERT => {
             w4 >>= 1;
-            grid.set_tx_size(row, col, h4, w4, false, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
             col += w4;
-            grid.set_tx_size(row, col, h4, w4, false, false)
+            grid.set_tx_size(row, col, h4, w4, false)
         }
         TX_PARTITION_HORZ4 => {
             h4 >>= 2;
             for _ in 0..3 {
-                grid.set_tx_size(row, col, h4, w4, false, false)?;
+                grid.set_tx_size(row, col, h4, w4, false)?;
                 row += h4;
             }
-            grid.set_tx_size(row, col, h4, w4, false, false)
+            grid.set_tx_size(row, col, h4, w4, false)
         }
         TX_PARTITION_VERT4 => {
             w4 >>= 2;
             for _ in 0..3 {
-                grid.set_tx_size(row, col, h4, w4, false, false)?;
+                grid.set_tx_size(row, col, h4, w4, false)?;
                 col += w4;
             }
-            grid.set_tx_size(row, col, h4, w4, false, false)
+            grid.set_tx_size(row, col, h4, w4, false)
         }
         TX_PARTITION_HORZ5 => {
             h4 >>= 2;
             w4 >>= 1;
-            grid.set_tx_size(row, col, h4, w4, false, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
             col += w4;
-            grid.set_tx_size(row, col, h4, w4, true, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
             col -= w4;
             row += h4;
             h4 <<= 1;
             w4 <<= 1;
-            grid.set_tx_size(row, col, h4, w4, true, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
             row += h4;
             h4 >>= 1;
             w4 >>= 1;
-            grid.set_tx_size(row, col, h4, w4, true, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
             col += w4;
-            grid.set_tx_size(row, col, h4, w4, true, false)
+            grid.set_tx_size(row, col, h4, w4, false)
         }
         TX_PARTITION_VERT5 => {
             h4 >>= 1;
             w4 >>= 2;
-            grid.set_tx_size(row, col, h4, w4, false, true)?;
+            grid.set_tx_size(row, col, h4, w4, true)?;
             row += h4;
-            grid.set_tx_size(row, col, h4, w4, true, true)?;
+            grid.set_tx_size(row, col, h4, w4, true)?;
             col += w4;
             row -= h4;
             h4 <<= 1;
             w4 <<= 1;
-            grid.set_tx_size(row, col, h4, w4, true, true)?;
+            grid.set_tx_size(row, col, h4, w4, true)?;
             col += w4;
             h4 >>= 1;
             w4 >>= 1;
-            grid.set_tx_size(row, col, h4, w4, true, true)?;
+            grid.set_tx_size(row, col, h4, w4, true)?;
             row += h4;
-            grid.set_tx_size(row, col, h4, w4, true, true)
+            grid.set_tx_size(row, col, h4, w4, true)
         }
         TX_PARTITION_SPLIT => {
             w4 >>= 1;
             h4 >>= 1;
-            grid.set_tx_size(row, col + w4, h4, w4, false, false)?;
-            grid.set_tx_size(row, col, h4, w4, false, false)?;
-            grid.set_tx_size(row + h4, col, h4, w4, false, false)?;
-            grid.set_tx_size(row + h4, col + w4, h4, w4, false, false)
+            grid.set_tx_size(row, col + w4, h4, w4, false)?;
+            grid.set_tx_size(row, col, h4, w4, false)?;
+            grid.set_tx_size(row + h4, col, h4, w4, false)?;
+            grid.set_tx_size(row + h4, col + w4, h4, w4, false)
         }
         _ => Err(SelectableTransformRecordError::Unsupported {
             reason: "tx-partition-type",

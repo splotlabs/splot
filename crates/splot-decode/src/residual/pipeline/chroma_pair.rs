@@ -240,7 +240,6 @@ fn reconstruct_chroma_cctx_pair<T: ReconSample>(
 
 fn prediction_only_coeff_block(coeffs: &LumaCoeffBlock) -> LumaCoeffBlock {
     LumaCoeffBlock {
-        all_zero: true,
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,

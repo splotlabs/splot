@@ -16,7 +16,7 @@ use splot_core::stream::{
 };
 use splot_recon::{
     BitDepth, CurrentFrameWorkspace, DecodedFrameHashInput, PixelFormat, PlaneId, PlaneRect,
-    PlaneSize, ReconError, SharedFrame,
+    PlaneSize, ReconError, ReferenceSlot, SharedFrame,
 };
 
 use super::block::{
@@ -25,8 +25,8 @@ use super::block::{
 };
 use super::test_support::fixture_sequence_and_key_core;
 use super::{
-    CompoundOrderHint, ccso_reference_slot, compound_is_joint_context,
-    compound_is_joint_context_from_order_hints,
+    CompoundOrderHint, MotionFieldHandle, TemporalMotionField, ccso_reference_slot,
+    compound_is_joint_context, compound_is_joint_context_from_order_hints,
 };
 use crate::bitstream::tile_payload::{
     LumaCoeffBlock, reconstruct_general_intra_chroma_cctx_pair_with_predictions,
@@ -54,6 +54,23 @@ fn inter_allocation_errors_stay_operational() {
             },
         }
     ));
+}
+
+#[test]
+fn motion_dependencies_deduplicate_slots_and_ignore_invalid_indices() {
+    let handle = || MotionFieldHandle::settled(TemporalMotionField::new(2, 2).unwrap());
+    let (zero, last) = (handle(), handle());
+    let mut reference = super::InterReferenceState::<u8>::empty().unwrap();
+    reference.ref_motion_fields = vec![None; ReferenceSlot::MAX_SLOTS];
+    reference.ref_motion_fields[0] = Some(zero.clone());
+    reference.ref_motion_fields[15] = Some(last.clone());
+    let deps = reference.motion_dependencies(&[15, 15, 0, 15]);
+    let ptr = |item: &MotionFieldHandle| std::sync::Arc::as_ptr(item.field().unwrap());
+    assert!(deps.iter().map(ptr).eq([ptr(&last), ptr(&zero)]));
+    assert!(reference.motion_dependencies(&[1]).is_empty());
+    assert!(reference.motion_dependencies(&[16, u32::MAX]).is_empty());
+    reference.ref_motion_fields.truncate(8);
+    assert!(reference.motion_dependencies(&[15]).is_empty());
 }
 
 const TWO_FRAME_INTER_FIXTURE: &[u8] =
@@ -300,11 +317,6 @@ fn decode_inter_frame_after_core_mutation_inner(
     let update = crate::pipeline::frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        key_frame.frame_cdfs.clone(),
-        key_frame.ccso_params.clone(),
-        key_frame.ccso_grid.clone(),
-        key_frame.segment_ids.clone(),
-        key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
     reference.update(0, &update);
@@ -388,11 +400,6 @@ pub(super) fn parse_inter_core_for_validation(
     let update = crate::pipeline::frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        key_frame.frame_cdfs.clone(),
-        key_frame.ccso_params.clone(),
-        key_frame.ccso_grid.clone(),
-        key_frame.segment_ids.clone(),
-        key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
     reference.update(0, &update);
@@ -435,7 +442,6 @@ fn unsupported_reason(error: DecodeError) -> &'static str {
 
 fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> LumaCoeffBlock {
     LumaCoeffBlock {
-        all_zero: false,
         eob,
         quant,
         intra_ist: None,
@@ -448,7 +454,6 @@ fn luma_coeff_block(quant: Vec<i32>, eob: usize, cctx_type: Option<usize>) -> Lu
 
 fn all_zero_inter_coeff_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
-        all_zero: true,
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,
@@ -2361,8 +2366,7 @@ fn tip_output_quantization_uses_nearest_valid_reference_slots() {
         reference.ref_valid = vec![true; 4];
         reference.ref_order_hint = vec![6, 9, 12, 15];
         reference.ref_base_q_idx = vec![50, 101, 104, 200];
-        reference.ref_delta_q_u_ac = vec![20, -3, 4, 40];
-        reference.ref_delta_q_v_ac = vec![20, -5, -2, 40];
+        reference.ref_chroma_ac_deltas = vec![[20, 20], [-3, -5], [4, -2], [40, 40]];
 
         super::infer_tip_output_quantization(&mut core, &sequence, &reference, offset, None)
             .unwrap();

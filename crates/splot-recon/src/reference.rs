@@ -18,6 +18,9 @@ pub struct ReferenceSlot(usize);
 
 impl ReferenceSlot {
     /// Maximum reference slot count supported by this source-backed model.
+    ///
+    /// AV2 § 3 defines `NUM_REF_FRAMES` as 16 in
+    /// `docs/spec/av2/1.0.0/03-symbols.md`.
     pub const MAX_SLOTS: usize = 16;
 
     /// Creates a reference slot after validating it against [`Self::MAX_SLOTS`].
@@ -146,7 +149,6 @@ impl Iterator for ReferenceRefreshSlots {
 #[derive(Debug, Eq, PartialEq)]
 pub struct ReferenceFrameStore<F> {
     slots: Vec<Option<F>>,
-    occupied: usize,
 }
 
 impl<F> ReferenceFrameStore<F> {
@@ -165,7 +167,7 @@ impl<F> ReferenceFrameStore<F> {
 
         let mut slots = Vec::with_capacity(capacity);
         slots.resize_with(capacity, || None);
-        Ok(Self { slots, occupied: 0 })
+        Ok(Self { slots })
     }
 
     /// Returns the fixed slot capacity.
@@ -175,12 +177,21 @@ impl<F> ReferenceFrameStore<F> {
 
     /// Returns the number of occupied slots.
     pub const fn occupied(&self) -> usize {
-        self.occupied
+        let slots = self.slots.as_slice();
+        let mut occupied = 0;
+        let mut index = 0;
+        while index < slots.len() {
+            if slots[index].is_some() {
+                occupied += 1;
+            }
+            index += 1;
+        }
+        occupied
     }
 
     /// Returns whether no slots are occupied.
     pub const fn is_empty(&self) -> bool {
-        self.occupied == 0
+        self.occupied() == 0
     }
 
     /// Returns whether `slot` is inside this store's fixed capacity.
@@ -206,11 +217,7 @@ impl<F> ReferenceFrameStore<F> {
     /// this store's fixed capacity.
     pub fn put(&mut self, slot: ReferenceSlot, frame: F) -> Result<Option<F>> {
         self.ensure_slot(slot)?;
-        let previous = self.slots[slot.index()].replace(frame);
-        if previous.is_none() {
-            self.occupied += 1;
-        }
-        Ok(previous)
+        Ok(self.slots[slot.index()].replace(frame))
     }
 
     /// Applies a caller-derived refresh mask to this store.
@@ -234,9 +241,6 @@ impl<F> ReferenceFrameStore<F> {
         let mut replacements = Vec::with_capacity(mask.bits().count_ones() as usize);
         for slot in mask.slots() {
             let previous = self.slots[slot.index()].replace(produce(slot));
-            if previous.is_none() {
-                self.occupied += 1;
-            }
             replacements.push(ReferenceFrameReplacement { slot, previous });
         }
 
@@ -250,11 +254,7 @@ impl<F> ReferenceFrameStore<F> {
     /// this store's fixed capacity.
     pub fn take(&mut self, slot: ReferenceSlot) -> Result<Option<F>> {
         self.ensure_slot(slot)?;
-        let previous = self.slots[slot.index()].take();
-        if previous.is_some() {
-            self.occupied -= 1;
-        }
-        Ok(previous)
+        Ok(self.slots[slot.index()].take())
     }
 
     /// Clears every occupied slot without changing capacity.
@@ -262,7 +262,6 @@ impl<F> ReferenceFrameStore<F> {
         for slot in &mut self.slots {
             *slot = None;
         }
-        self.occupied = 0;
     }
 
     /// Iterates over occupied entries in ascending slot order.
@@ -468,10 +467,13 @@ mod tests {
 
     #[test]
     fn reference_store_starts_empty_with_fixed_capacity() {
+        const fn occupancy(store: &ReferenceFrameStore<u8>) -> (usize, bool) {
+            (store.occupied(), store.is_empty())
+        }
+
         let store = ReferenceFrameStore::<u8>::with_capacity(3).unwrap();
         assert_eq!(store.capacity(), 3);
-        assert_eq!(store.occupied(), 0);
-        assert!(store.is_empty());
+        assert_eq!(occupancy(&store), (0, true));
         assert!(store.contains_slot(ReferenceSlot::new(2).unwrap()));
         assert!(!store.contains_slot(ReferenceSlot::new(3).unwrap()));
     }

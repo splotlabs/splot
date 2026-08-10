@@ -9,6 +9,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use splot_core::headers::frame::RefIdxBuf;
 use splot_parallel::Condition;
 
 use super::*;
@@ -114,7 +115,7 @@ pub(in crate::prediction::inter::block) struct ScheduledTileRecon<T: ReconSample
     temporal: Arc<TemporalMvContext>,
     temporal_plan: TemporalBandPlan,
     reference: Arc<InterReferenceState<T>>,
-    ref_frame_idx: Arc<[u32]>,
+    ref_frame_idx: RefIdxBuf,
     sequence: Arc<SequenceHeader>,
     core: Arc<FrameHeaderCore>,
     tile_offset: ByteOffset,
@@ -176,12 +177,12 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
             &self.sequence,
             &self.core,
             &self.reference,
-            &self.ref_frame_idx,
+            self.ref_frame_idx.as_slice(),
         );
         let row_gate = RowReferenceGate::new(
             &self.reference,
             &self.core,
-            &self.ref_frame_idx,
+            self.ref_frame_idx.as_slice(),
             self.info,
             &self.temporal,
         );
@@ -268,7 +269,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
         RowReferenceGate::new(
             &self.reference,
             &self.core,
-            &self.ref_frame_idx,
+            self.ref_frame_idx.as_slice(),
             self.info,
             &self.temporal,
         )
@@ -315,7 +316,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                 let ready = ready;
                 let shared = deferred_recon::ReconShared {
                     reference: &self.reference,
-                    ref_frame_idx: &self.ref_frame_idx,
+                    ref_frame_idx: self.ref_frame_idx.as_slice(),
                     temporal_context: &self.temporal,
                     sequence: &self.sequence,
                     core: &self.core,
@@ -361,7 +362,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                 &self.quantizer,
                                 &self.temporal,
                                 &self.reference,
-                                &self.ref_frame_idx,
+                                self.ref_frame_idx.as_slice(),
                                 &self.sequence,
                                 &self.core,
                                 self.params.sb_h4,
@@ -405,7 +406,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                                     &self.quantizer,
                                     &self.temporal,
                                     &self.reference,
-                                    &self.ref_frame_idx,
+                                    self.ref_frame_idx.as_slice(),
                                     &self.sequence,
                                     &self.core,
                                     self.params.sb_h4,
@@ -709,7 +710,7 @@ impl<T: ReconSample> ScheduledTileRecon<T> {
                     &mut crate::filters::wienerns_lr::FrameFilterRecords::default(),
                     &self.temporal,
                     &self.reference,
-                    &self.ref_frame_idx,
+                    self.ref_frame_idx.as_slice(),
                     &self.sequence,
                     &self.core,
                     self.params.mi_rows,
@@ -992,7 +993,7 @@ pub(in crate::prediction::inter::block) fn prepare_scheduled_tile<T: ReconSample
     core: Arc<FrameHeaderCore>,
     temporal: Arc<TemporalMvContext>,
     reference: Arc<InterReferenceState<T>>,
-    ref_frame_idx: Arc<[u32]>,
+    ref_frame_idx: RefIdxBuf,
     workspace: CurrentFrameWorkspace<T>,
     filter_setup: crate::filters::wienerns_lr::recon::OwnedFilterSetup<'static, 'static, T>,
     deblock_records: Option<crate::filters::deblock::OwnedDeblockRecords>,

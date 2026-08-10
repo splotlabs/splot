@@ -24,7 +24,7 @@ const TX_4X32: usize = 19;
 /// #566 partition-granularity bug). Verifies both the per-transform count (4) and
 /// the partition-granularity scan (0) over the same live `BlockDecoded` state.
 #[test]
-fn selectable_tx_grid_records_middle_and_scan_order_flags() {
+fn selectable_tx_grid_returns_vertical_five_partition_in_scan_order() {
     let mut grid = SelectableLumaTxGrid::new(8, 8).unwrap();
     apply_tx_partition(&mut grid, 0, 0, TX_32X32, TX_PARTITION_VERT5).unwrap();
 
@@ -43,15 +43,12 @@ fn selectable_tx_grid_records_middle_and_scan_order_flags() {
             (4, 6, 4, 2)
         ]
     );
-    assert!(!records[0].middle);
-    assert!(records[1..].iter().all(|record| record.middle));
-    assert!(records.iter().all(|record| record.scan_order));
 }
 
 #[test]
 fn selectable_tx_grid_records_observed_luma_only_block_8x32_region() {
     let mut grid = SelectableLumaTxGrid::new(16, 32).unwrap();
-    grid.set_tx_size(8, 24, 8, 2, false, false).unwrap();
+    grid.set_tx_size(8, 24, 8, 2, false).unwrap();
 
     let records = grid.records_for_region(8, 24, 8, 2).unwrap();
     assert_eq!(
@@ -62,8 +59,6 @@ fn selectable_tx_grid_records_observed_luma_only_block_8x32_region() {
             rows: 8,
             cols: 2,
             tx_size: TX_8X32,
-            middle: false,
-            scan_order: false,
         }]
     );
 }
@@ -71,7 +66,7 @@ fn selectable_tx_grid_records_observed_luma_only_block_8x32_region() {
 #[test]
 fn selectable_tx_grid_records_luma_only_block_4x32_region() {
     let mut grid = SelectableLumaTxGrid::new(16, 32).unwrap();
-    grid.set_tx_size(8, 24, 8, 1, false, false).unwrap();
+    grid.set_tx_size(8, 24, 8, 1, false).unwrap();
 
     let records = grid.records_for_region(8, 24, 8, 1).unwrap();
     assert_eq!(
@@ -82,8 +77,6 @@ fn selectable_tx_grid_records_luma_only_block_4x32_region() {
             rows: 8,
             cols: 1,
             tx_size: TX_4X32,
-            middle: false,
-            scan_order: false,
         }]
     );
     assert_eq!(
@@ -100,11 +93,11 @@ fn selectable_tx_grid_rejects_empty_transform_dimensions() {
     let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
 
     assert_eq!(
-        grid.set_tx_size(0, 0, 4, 0, false, false).unwrap_err(),
+        grid.set_tx_size(0, 0, 4, 0, false).unwrap_err(),
         SelectableTransformRecordError::EmptyTransform { h4: 4, w4: 0 }
     );
     assert_eq!(
-        grid.set_tx_size(0, 0, 0, 4, false, false).unwrap_err(),
+        grid.set_tx_size(0, 0, 0, 4, false).unwrap_err(),
         SelectableTransformRecordError::EmptyTransform { h4: 0, w4: 4 }
     );
 }
@@ -136,7 +129,7 @@ fn selectable_tx_grid_reset_matches_fresh_grid_and_leaks_nothing() {
 #[test]
 fn selectable_tx_grid_reset_clips_edge_overhanging_records() {
     let mut grid = SelectableLumaTxGrid::new(6, 6).unwrap();
-    grid.set_tx_size(4, 4, 4, 4, false, false).unwrap();
+    grid.set_tx_size(4, 4, 4, 4, false).unwrap();
     grid.reset();
 
     let fresh = SelectableLumaTxGrid::new(6, 6).unwrap();
@@ -172,7 +165,7 @@ fn with_selectable_tx_grid_reuses_scratch_without_cross_block_state() {
 #[test]
 fn selectable_tx_grid_rejects_incomplete_region() {
     let mut grid = SelectableLumaTxGrid::new(4, 4).unwrap();
-    grid.set_tx_size(0, 0, 2, 2, false, false).unwrap();
+    grid.set_tx_size(0, 0, 2, 2, false).unwrap();
 
     assert_eq!(
         grid.records_for_region(0, 0, 4, 4).unwrap_err(),
@@ -193,7 +186,6 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
             cols: 1,
             skip_flag: true,
             eob: 3,
-            intra_ist: None,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -202,7 +194,6 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
             cols: 1,
             skip_flag: false,
             eob: 3,
-            intra_ist: None,
         },
     ];
 
@@ -210,23 +201,13 @@ fn tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record() {
 
     assert_eq!(
         tx_skip
-            .lookup(super::super::WienerNsLrTxSkipLookup {
-                x: 0,
-                y: 0,
-                row: 0,
-                col: 0
-            })
+            .lookup(super::super::WienerNsLrTxSkipLookup { row: 0, col: 0 })
             .unwrap(),
         1
     );
     assert_eq!(
         tx_skip
-            .lookup(super::super::WienerNsLrTxSkipLookup {
-                x: 0,
-                y: 0,
-                row: 0,
-                col: 1
-            })
+            .lookup(super::super::WienerNsLrTxSkipLookup { row: 0, col: 1 })
             .unwrap(),
         0
     );
@@ -248,7 +229,6 @@ fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
             cols: 1,
             skip_flag: true,
             eob: 0,
-            intra_ist: None,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 2,
@@ -257,7 +237,6 @@ fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
             cols: 1,
             skip_flag: false,
             eob: 5,
-            intra_ist: None,
         },
     ];
 
@@ -266,12 +245,7 @@ fn tx_skip_grid_retention_clamps_bottom_edge_overhang() {
     let column: Vec<i32> = (0..4)
         .map(|row| {
             tx_skip
-                .lookup(super::super::WienerNsLrTxSkipLookup {
-                    x: 0,
-                    y: 0,
-                    row,
-                    col: 0,
-                })
+                .lookup(super::super::WienerNsLrTxSkipLookup { row, col: 0 })
                 .unwrap()
         })
         .collect();
@@ -289,7 +263,6 @@ fn tx_skip_grid_retention_clamps_right_edge_overhang() {
         cols: 4, // nominal width overhangs the 2-col grid by 2 cols
         skip_flag: true,
         eob: 0,
-        intra_ist: None,
     }];
 
     let tx_skip = derive_wienerns_lr_tx_skip_grid_retention(1, 2, &records).unwrap();
@@ -297,12 +270,7 @@ fn tx_skip_grid_retention_clamps_right_edge_overhang() {
     for col in 0..2 {
         assert_eq!(
             tx_skip
-                .lookup(super::super::WienerNsLrTxSkipLookup {
-                    x: 0,
-                    y: 0,
-                    row: 0,
-                    col,
-                })
+                .lookup(super::super::WienerNsLrTxSkipLookup { row: 0, col })
                 .unwrap(),
             1
         );
@@ -322,7 +290,6 @@ fn tx_skip_grid_retention_rejects_conflicting_overlapping_records() {
             cols: 2,
             skip_flag: true,
             eob: 3,
-            intra_ist: None,
         },
         WienerNsLrTxSkipTransformRecord {
             row: 0,
@@ -331,7 +298,6 @@ fn tx_skip_grid_retention_rejects_conflicting_overlapping_records() {
             cols: 1,
             skip_flag: false,
             eob: 3,
-            intra_ist: None,
         },
     ];
 
@@ -354,7 +320,6 @@ fn tx_skip_grid_retention_rejects_out_of_frame_origin() {
         cols: 1,
         skip_flag: true,
         eob: 0,
-        intra_ist: None,
     }];
 
     assert!(matches!(
@@ -380,7 +345,6 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
             cols: record.cols,
             skip_flag: false,
             eob: usize::from(index == 0),
-            intra_ist: None,
         })
         .collect::<Vec<_>>();
 
@@ -388,12 +352,7 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
     assert_eq!(
         (0..8)
             .map(|row| tx_skip
-                .lookup(super::super::WienerNsLrTxSkipLookup {
-                    x: 0,
-                    y: 0,
-                    row,
-                    col: 0
-                })
+                .lookup(super::super::WienerNsLrTxSkipLookup { row, col: 0 })
                 .unwrap())
             .collect::<Vec<_>>(),
         vec![0, 0, 0, 0, 1, 1, 1, 1]
@@ -407,14 +366,8 @@ fn selectable_tx_records_populate_live_tx_skip_grid() {
 #[test]
 fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
     let mut grid = SelectableLumaTxGrid::new(270, 272).unwrap();
-    assert_eq!(
-        grid.set_tx_size(256, 0, 16, 16, false, false).unwrap(),
-        TX_64X64
-    );
-    assert_eq!(
-        grid.set_tx_size(256, 16, 16, 16, false, false).unwrap(),
-        TX_64X64
-    );
+    assert_eq!(grid.set_tx_size(256, 0, 16, 16, false).unwrap(), TX_64X64);
+    assert_eq!(grid.set_tx_size(256, 16, 16, 16, false).unwrap(), TX_64X64);
 
     assert_eq!(
         grid.records_for_region(256, 0, 16, 32)
@@ -448,14 +401,14 @@ fn set_tx_size_drops_bottom_edge_cells_past_frame_extent() {
 fn interior_block_records_match_edge_block_minus_dropped_cells() {
     let interior = {
         let mut grid = SelectableLumaTxGrid::new(64, 64).unwrap();
-        grid.set_tx_size(0, 0, 16, 16, false, false).unwrap();
-        grid.set_tx_size(0, 16, 16, 16, false, false).unwrap();
+        grid.set_tx_size(0, 0, 16, 16, false).unwrap();
+        grid.set_tx_size(0, 16, 16, 16, false).unwrap();
         grid.records_for_region(0, 0, 16, 32).unwrap()
     };
     let edge = {
         let mut grid = SelectableLumaTxGrid::new(14, 64).unwrap();
-        grid.set_tx_size(0, 0, 16, 16, false, false).unwrap();
-        grid.set_tx_size(0, 16, 16, 16, false, false).unwrap();
+        grid.set_tx_size(0, 0, 16, 16, false).unwrap();
+        grid.set_tx_size(0, 16, 16, 16, false).unwrap();
         grid.records_for_region(0, 0, 16, 32).unwrap()
     };
     let shape = |records: &[SelectableLumaTxRecord]| {
@@ -481,8 +434,8 @@ fn interior_block_records_match_edge_block_minus_dropped_cells() {
 #[test]
 fn set_tx_size_drops_right_edge_cells_past_frame_extent() {
     let mut grid = SelectableLumaTxGrid::new(32, 30).unwrap();
-    grid.set_tx_size(0, 16, 16, 16, false, false).unwrap();
-    grid.set_tx_size(16, 16, 16, 16, false, false).unwrap();
+    grid.set_tx_size(0, 16, 16, 16, false).unwrap();
+    grid.set_tx_size(16, 16, 16, 16, false).unwrap();
     assert_eq!(
         grid.records_for_region(0, 16, 32, 16)
             .unwrap()
@@ -509,13 +462,13 @@ fn set_tx_size_drops_right_edge_cells_past_frame_extent() {
 #[test]
 fn records_for_region_is_complete_for_clamped_edge_region() {
     let mut grid = SelectableLumaTxGrid::new(270, 272).unwrap();
-    grid.set_tx_size(256, 0, 16, 16, false, false).unwrap();
-    grid.set_tx_size(256, 16, 16, 16, false, false).unwrap();
+    grid.set_tx_size(256, 0, 16, 16, false).unwrap();
+    grid.set_tx_size(256, 16, 16, 16, false).unwrap();
     let records = grid.records_for_region(256, 0, 16, 32).unwrap();
     assert_eq!(records.len(), 2);
 
     let mut interior = SelectableLumaTxGrid::new(8, 8).unwrap();
-    interior.set_tx_size(0, 0, 4, 4, false, false).unwrap();
+    interior.set_tx_size(0, 0, 4, 4, false).unwrap();
     assert_eq!(
         interior
             .records_for_region(0, 0, 4, 4)

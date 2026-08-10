@@ -685,9 +685,13 @@ fn lossless_v_handoff_uses_final_u_unit_flag() {
     .expect("lossless plan")
     .plane_plan(PlaneId::U)
     .expect("chroma U plane");
-    let unit = |all_zero| {
+    let unit = |all_zero: bool| {
         let mut coeffs = empty_luma_coeffs();
-        coeffs.all_zero = all_zero;
+        if !all_zero {
+            coeffs.eob = 1;
+            coeffs.quant = vec![0; 16];
+            coeffs.quant[0] = 1;
+        }
         ParsedTransformUnit {
             block: PositionedLumaCoeffBlock {
                 x: plane.x,
@@ -986,7 +990,6 @@ fn active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping() {
         crate::bitstream::tile_payload::IntraYMode::D45,
         2,
         2,
-        Some(1),
         None,
     );
 
@@ -1047,7 +1050,6 @@ fn left_mrl_replan_preserves_superblock_boundary_above_line() {
         crate::bitstream::tile_payload::IntraYMode::D203,
         2,
         1,
-        Some(1),
         None,
     );
 
@@ -1090,7 +1092,6 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
         crate::bitstream::tile_payload::IntraYMode::D135,
         0,
         3,
-        Some(1),
         None,
     );
 
@@ -1177,7 +1178,6 @@ fn ctx_with_chroma(block: BlockRect, bit_depth: BitDepth, chroma: ChromaSampling
 
 fn empty_luma_coeffs() -> crate::bitstream::tile_payload::LumaCoeffBlock {
     crate::bitstream::tile_payload::LumaCoeffBlock {
-        all_zero: true,
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,
@@ -1258,7 +1258,7 @@ fn tile_top_block_ctx() -> BlockCtx {
         BitDepth::Eight,
         ChromaSampling::Yuv420,
     )
-    .with_tile_bounds(2, 16, 0, 16)
+    .with_tile_bounds(2, 0, 16)
 }
 
 fn workspace_with_tile_boundary_edges(above: u8) -> splot_recon::CurrentFrameWorkspace<u8> {

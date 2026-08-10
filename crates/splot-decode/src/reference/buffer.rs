@@ -18,7 +18,6 @@ use splot_recon::{DecodedFrameInfo, ReferenceFrameStore, ReferenceSlot};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::error::{DecodeReferenceStateError, Result};
-use crate::pipeline::ActiveFilmGrain;
 use crate::pipeline::PipelineFrame;
 use crate::pipeline::inflight::RefFrameSlot;
 use crate::prediction::inter::{
@@ -45,13 +44,7 @@ struct Slot {
     lr_frame_filter_class_counts: [u8; 3],
     lr_frame_filter_taps: SlotFrameFilterTaps,
     frame_index: Option<usize>,
-    frame_cdfs: Option<FrameCdfHandle>,
-    ccso_params: Option<Arc<CcsoParams>>,
-    ccso_grid: Option<CcsoGridHandle>,
-    segment_ids: Option<SegmentIdMapHandle>,
-    motion_field: Option<MotionFieldHandle>,
     long_term_id: Option<u32>,
-    display_grain: Option<ActiveFilmGrain>,
     embedded_layer_id: EmbeddedLayerId,
     output_done: bool,
 }
@@ -76,13 +69,7 @@ impl Slot {
         lr_frame_filter_class_counts: [0; 3],
         lr_frame_filter_taps: None,
         frame_index: None,
-        frame_cdfs: None,
-        ccso_params: None,
-        ccso_grid: None,
-        segment_ids: None,
-        motion_field: None,
         long_term_id: None,
-        display_grain: None,
         embedded_layer_id: EmbeddedLayerId::from_bits(0),
         output_done: false,
     };
@@ -107,13 +94,7 @@ impl Slot {
             lr_frame_filter_class_counts: update.lr_frame_filter_class_counts,
             lr_frame_filter_taps: update.lr_frame_filter_taps.clone(),
             frame_index: Some(frame_index),
-            frame_cdfs: Some(update.frame_cdfs.clone()),
-            ccso_params: update.ccso_params.clone(),
-            ccso_grid: Some(update.ccso_grid.clone()),
-            segment_ids: Some(update.segment_ids.clone()),
-            motion_field: Some(update.motion_field.clone()),
             long_term_id: update.long_term_id,
-            display_grain: None,
             embedded_layer_id: update.embedded_layer_id,
             output_done: false,
         };
@@ -139,11 +120,6 @@ pub(crate) struct FrameRefUpdate {
     pub(crate) saved_gm_params: SavedGlobalMotionParams,
     pub(crate) lr_frame_filter_class_counts: [u8; 3],
     pub(crate) lr_frame_filter_taps: SlotFrameFilterTaps,
-    pub(crate) frame_cdfs: FrameCdfHandle,
-    pub(crate) ccso_params: Option<Arc<CcsoParams>>,
-    pub(crate) ccso_grid: CcsoGridHandle,
-    pub(crate) segment_ids: SegmentIdMapHandle,
-    pub(crate) motion_field: MotionFieldHandle,
     pub(crate) long_term_id: Option<u32>,
     pub(crate) embedded_layer_id: EmbeddedLayerId,
 }
@@ -245,39 +221,6 @@ impl RuntimeReferenceBuffer {
         self.started = true;
     }
 
-    pub(crate) fn save_grain_for_refreshed_slots(
-        &mut self,
-        refresh_frame_flags: u32,
-        display_grain: Option<&ActiveFilmGrain>,
-    ) {
-        for (index, slot) in self.slots.iter_mut().enumerate() {
-            if (refresh_frame_flags >> index) & 1 != 0 {
-                slot.display_grain = display_grain.cloned();
-            }
-        }
-    }
-
-    pub(crate) fn save_grain_for_slot(
-        &mut self,
-        slot: u32,
-        display_grain: Option<ActiveFilmGrain>,
-    ) -> Result<()> {
-        let slot_index = usize::try_from(slot).unwrap_or(usize::MAX);
-        let slot_count = self.slots.len();
-        let stored =
-            self.slots
-                .get_mut(slot_index)
-                .ok_or(DecodeReferenceStateError::SlotOutOfRange {
-                    slot: slot_index,
-                    slot_count,
-                })?;
-        if !stored.valid {
-            return Err(DecodeReferenceStateError::MissingFrame { slot: slot_index }.into());
-        }
-        stored.display_grain = display_grain;
-        Ok(())
-    }
-
     pub(crate) fn restrict_references_for_switch(
         &mut self,
         current_layer: EmbeddedLayerId,
@@ -331,8 +274,8 @@ impl RuntimeReferenceBuffer {
             ReferenceFrameStore::with_capacity(num)?;
         let mut meta = take_reference_metadata(num);
         for (i, slot) in self.slots.iter().enumerate() {
-            meta.push_slot(slot);
             if !slot.valid {
+                meta.push_slot(slot, None);
                 continue;
             }
             let frame_index = slot
@@ -348,9 +291,10 @@ impl RuntimeReferenceBuffer {
                 .as_ref()
                 .ok_or(DecodeReferenceStateError::MissingFrame { slot: i })?;
             let reference_slot = ReferenceSlot::new(i)?;
-            let frame = frame_slot(frame)?;
-            ensure_slot_matches_frame(i, slot, frame_index, frame.info())?;
-            store.put(reference_slot, frame)?;
+            let reference_frame = frame_slot(frame)?;
+            ensure_slot_matches_frame(i, slot, frame_index, reference_frame.info())?;
+            meta.push_slot(slot, Some(frame));
+            store.put(reference_slot, reference_frame)?;
         }
         Ok((store, meta))
     }
@@ -459,8 +403,7 @@ pub(crate) struct ReferenceMetadata {
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
     pub(crate) ref_counter: Vec<u32>,
-    pub(crate) ref_delta_q_u_ac: Vec<i32>,
-    pub(crate) ref_delta_q_v_ac: Vec<i32>,
+    pub(crate) ref_chroma_ac_deltas: Vec<[i32; 2]>,
     pub(crate) ref_is_inter: Vec<bool>,
     pub(crate) ref_long_term_id: Vec<Option<u32>>,
     pub(crate) ref_num_total_refs: Vec<u32>,
@@ -487,8 +430,7 @@ impl ReferenceMetadata {
             ref_frame_height: Vec::with_capacity(num),
             ref_base_q_idx: Vec::with_capacity(num),
             ref_counter: Vec::with_capacity(num),
-            ref_delta_q_u_ac: Vec::with_capacity(num),
-            ref_delta_q_v_ac: Vec::with_capacity(num),
+            ref_chroma_ac_deltas: Vec::with_capacity(num),
             ref_is_inter: Vec::with_capacity(num),
             ref_long_term_id: Vec::with_capacity(num),
             ref_num_total_refs: Vec::with_capacity(num),
@@ -504,7 +446,7 @@ impl ReferenceMetadata {
         }
     }
 
-    fn push_slot(&mut self, slot: &Slot) {
+    fn push_slot(&mut self, slot: &Slot, frame: Option<&PipelineFrame>) {
         self.ref_valid.push(slot.valid);
         self.ref_order_hint.push(slot.order_hint);
         self.ref_order_hint_lsbs.push(slot.order_hint_lsb);
@@ -516,8 +458,8 @@ impl ReferenceMetadata {
         self.ref_frame_height.push(slot.height);
         self.ref_base_q_idx.push(slot.base_q_idx);
         self.ref_counter.push(slot.counter);
-        self.ref_delta_q_u_ac.push(slot.delta_q_u_ac);
-        self.ref_delta_q_v_ac.push(slot.delta_q_v_ac);
+        self.ref_chroma_ac_deltas
+            .push([slot.delta_q_u_ac, slot.delta_q_v_ac]);
         self.ref_is_inter.push(slot.is_inter);
         self.ref_long_term_id.push(slot.long_term_id);
         self.ref_num_total_refs.push(slot.num_total_refs);
@@ -528,11 +470,16 @@ impl ReferenceMetadata {
             .push(slot.lr_frame_filter_class_counts);
         self.lr_frame_filter_taps
             .push(slot.lr_frame_filter_taps.clone());
-        self.ref_frame_cdfs.push(slot.frame_cdfs.clone());
-        self.ref_ccso_params.push(slot.ccso_params.clone());
-        self.ref_ccso_unit_grids.push(slot.ccso_grid.clone());
-        self.ref_segment_ids.push(slot.segment_ids.clone());
-        self.ref_motion_fields.push(slot.motion_field.clone());
+        self.ref_frame_cdfs
+            .push(frame.map(|frame| frame.frame_cdfs.clone()));
+        self.ref_ccso_params
+            .push(frame.and_then(|frame| frame.ccso_params.clone()));
+        self.ref_ccso_unit_grids
+            .push(frame.map(|frame| frame.ccso_grid.clone()));
+        self.ref_segment_ids
+            .push(frame.map(|frame| frame.segment_ids.clone()));
+        self.ref_motion_fields
+            .push(frame.map(|frame| frame.motion_field.clone()));
     }
 
     pub(crate) fn clear(&mut self) {
@@ -545,8 +492,7 @@ impl ReferenceMetadata {
         self.ref_frame_height.clear();
         self.ref_base_q_idx.clear();
         self.ref_counter.clear();
-        self.ref_delta_q_u_ac.clear();
-        self.ref_delta_q_v_ac.clear();
+        self.ref_chroma_ac_deltas.clear();
         self.ref_is_inter.clear();
         self.ref_long_term_id.clear();
         self.ref_num_total_refs.clear();

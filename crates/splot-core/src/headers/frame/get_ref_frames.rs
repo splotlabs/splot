@@ -155,6 +155,12 @@ pub struct RefIdxBuf {
 }
 
 impl RefIdxBuf {
+    /// Returns the active entries.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u32] {
+        &self.entries[..self.len as usize]
+    }
+
     /// Appends `value` unless the buffer already holds `REFS_PER_FRAME` entries.
     pub(crate) fn push(&mut self, value: u32) {
         if let Some(slot) = self.entries.get_mut(self.len as usize) {
@@ -168,7 +174,7 @@ impl core::ops::Deref for RefIdxBuf {
     type Target = [u32];
 
     fn deref(&self) -> &[u32] {
-        &self.entries[..self.len as usize]
+        self.as_slice()
     }
 }
 

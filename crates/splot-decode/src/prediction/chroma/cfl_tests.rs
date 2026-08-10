@@ -49,7 +49,6 @@ fn workspace_10bit_420(width: usize, height: usize) -> CurrentFrameWorkspace<u16
 
 fn zero_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
-        all_zero: true,
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,

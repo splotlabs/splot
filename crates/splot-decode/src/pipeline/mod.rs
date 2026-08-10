@@ -518,7 +518,7 @@ where
         output_effects,
         frame_cdfs: inter::FrameCdfHandle::settled(frame_cdfs),
         motion_field: inter::MotionFieldHandle::settled(motion_field),
-        ccso_params,
+        ccso_params: ccso_params.map(Arc::new),
         ccso_grid: inter::CcsoGridHandle::settled(ccso_grid.map(Arc::new)),
         segment_ids: inter::SegmentIdMapHandle::settled(segment_ids),
         frame_rate_numerator: frame_rate.numerator,
@@ -864,7 +864,7 @@ where
                     output_effects: key_output_effects,
                     frame_cdfs: inter::FrameCdfHandle::settled(walk.frame_cdfs),
                     motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
-                    ccso_params,
+                    ccso_params: ccso_params.map(Arc::new),
                     ccso_grid: inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
                     segment_ids: inter::SegmentIdMapHandle::settled(walk.segment_ids),
                     frame_rate_numerator: rate.numerator,
@@ -909,7 +909,7 @@ where
                     output_effects: key_output_effects,
                     frame_cdfs: inter::FrameCdfHandle::settled(walk.frame_cdfs),
                     motion_field: inter::MotionFieldHandle::settled(walk.motion_field),
-                    ccso_params,
+                    ccso_params: ccso_params.map(Arc::new),
                     ccso_grid: inter::CcsoGridHandle::settled(walk.ccso_grid.map(Arc::new)),
                     segment_ids: inter::SegmentIdMapHandle::settled(walk.segment_ids),
                     frame_rate_numerator: rate.numerator,
@@ -943,14 +943,8 @@ where
     let key_update = frame_ref_update_from_core(
         &key_core,
         key_envelope.offset,
-        key_frame.frame_cdfs.clone(),
-        key_frame.ccso_params.clone(),
-        key_frame.ccso_grid.clone(),
-        key_frame.segment_ids.clone(),
-        key_frame.motion_field.clone(),
         key_envelope.header.embedded_layer_id,
     )?;
-    let key_saved_grain = key_frame.display_grain.clone();
     frames.push(Some(key_frame));
     let key_hint = key_update.order_hint;
     let key_implicit = key_core.implicit_output_frame == Some(true);
@@ -971,8 +965,6 @@ where
         &mut emit,
     )?;
     reference.update(0, &key_update);
-    reference
-        .save_grain_for_refreshed_slots(key_update.refresh_frame_flags, key_saved_grain.as_ref());
     reference.note_frame(
         key_envelope.header.obu_type,
         true,
@@ -1120,7 +1112,6 @@ where
                 if sef_core.derive_sef_order_hint == Some(true) {
                     reference
                         .mark_sef_derive_output(slot, scheduler.already_emitted(source_index))?;
-                    reference.save_grain_for_slot(slot, display_grain.clone())?;
                 }
                 reference.note_show_existing();
                 let source = frames
@@ -1776,22 +1767,17 @@ where
                 let inter_update = frame_ref_update_from_core(
                     &inter_core,
                     inter_envelope.offset,
-                    frame_cdfs,
-                    inter_core.ccso_params.clone(),
-                    ccso_grid,
-                    segment_ids,
-                    motion_field,
                     inter_envelope.header.embedded_layer_id,
                 )?;
                 let inter_frame = PipelineFrame {
                     frame: inter_slot,
                     display_grain: inter_display_grain,
                     output_effects: inter_output_effects,
-                    frame_cdfs: inter_update.frame_cdfs.clone(),
-                    motion_field: inter_update.motion_field.clone(),
-                    ccso_params: inter_core.ccso_params.clone(),
-                    ccso_grid: inter_update.ccso_grid.clone(),
-                    segment_ids: inter_update.segment_ids.clone(),
+                    frame_cdfs,
+                    motion_field,
+                    ccso_params: inter_core.ccso_params.clone().map(Arc::new),
+                    ccso_grid,
+                    segment_ids,
                     frame_rate_numerator: inter_frame_rate.numerator,
                     frame_rate_denominator: inter_frame_rate.denominator,
                 };
@@ -1800,7 +1786,6 @@ where
                     retained_frame_bytes,
                     &inter_frame,
                 )?;
-                let inter_saved_grain = inter_frame.display_grain.clone();
                 frames.push(Some(inter_frame));
                 retained_frame_bytes = next_retained_frame_bytes;
                 let inter_hint = inter_update.order_hint;
@@ -1824,10 +1809,6 @@ where
                     &mut emit,
                 )?;
                 reference.update(frame_index, &inter_update);
-                reference.save_grain_for_refreshed_slots(
-                    inter_update.refresh_frame_flags,
-                    inter_saved_grain.as_ref(),
-                );
                 reference.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,
@@ -2077,14 +2058,8 @@ where
                 let key_update = frame_ref_update_from_core(
                     &key_core,
                     key_envelope.offset,
-                    key_frame.frame_cdfs.clone(),
-                    key_frame.ccso_params.clone(),
-                    key_frame.ccso_grid.clone(),
-                    key_frame.segment_ids.clone(),
-                    key_frame.motion_field.clone(),
                     key_envelope.header.embedded_layer_id,
                 )?;
-                let key_saved_grain = key_frame.display_grain.clone();
                 frames.push(Some(key_frame));
                 retained_frame_bytes = next_retained_frame_bytes;
                 let key_hint = key_update.order_hint;
@@ -2106,10 +2081,6 @@ where
                     &mut emit,
                 )?;
                 reference.update(frame_index, &key_update);
-                reference.save_grain_for_refreshed_slots(
-                    key_update.refresh_frame_flags,
-                    key_saved_grain.as_ref(),
-                );
                 reference.note_frame(
                     next_candidate.obu_type(),
                     first_picture_in_tu,

@@ -19,7 +19,7 @@ const fn prediction(r: usize, c: usize, tx: usize) -> DeblockPredictionUnit {
 fn with_plane_ctx<T: ReconSample, R>(
     ws: &mut CurrentFrameWorkspace<T>,
     plane: PlaneId,
-    f: impl FnOnce(&mut PlaneCtx<'_, T>) -> R,
+    f: impl FnOnce(&mut PlaneCtx<'_, '_, T>) -> R,
 ) -> R {
     let (width, height) = coded_plane_dimensions(ws, plane).unwrap();
     let mut frame = ws.as_frame_mut();

@@ -182,8 +182,6 @@ struct TileParser<'tile, 'payload> {
     filter_records: TileFilterRecords,
     output: TileParserOutput,
     parser_ordinal: usize,
-    entry_capacity: usize,
-    superblock_capacity: usize,
 }
 
 struct TileParserOutput {
@@ -280,8 +278,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 unit_filters: Vec::new(),
             },
             parser_ordinal: 0,
-            entry_capacity: 0,
-            superblock_capacity: 0,
         })
     }
 
@@ -442,10 +438,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
-        self.entry_capacity = self.entry_capacity.max(recon_row.entries.capacity());
-        self.superblock_capacity = self
-            .superblock_capacity
-            .max(recon_row.superblocks.capacity());
         match decoded_row {
             Ok(true) => ParserStep::More(recon_row),
             Err(error) => {

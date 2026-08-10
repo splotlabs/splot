@@ -328,14 +328,6 @@ impl MrlSelection {
     pub(crate) const fn is_secondary(self) -> bool {
         matches!(self, Self::Secondary(_))
     }
-
-    pub(crate) const fn secondary_symbol(self) -> Option<u8> {
-        match self {
-            Self::Disabled => None,
-            Self::Primary(_) => Some(0),
-            Self::Secondary(_) => Some(1),
-        }
-    }
 }
 
 #[rustfmt::skip]

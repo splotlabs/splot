@@ -782,7 +782,6 @@ mod tests {
             log2_height,
             cctx_pair_delta: 0,
             coeffs: LumaCoeffBlock {
-                all_zero: true,
                 eob: 0,
                 quant: Vec::new(),
                 intra_ist: None,

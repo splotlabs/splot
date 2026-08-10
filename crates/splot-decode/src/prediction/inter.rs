@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use splot_core::headers::frame::{
     CoreSeqQuantView, FrameHeaderCore, FrameHeaderParseInput, FrameHeaderParseMode,
-    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams,
+    FrameHeaderParseStatus, FrameReferenceStateView, FrameType, QuantizationParams, RefIdxBuf,
     SefTrailingBits, SlotFrameFilterTaps, TipFrameMode, get_relative_dist, parse_frame_header_core,
 };
 use splot_core::headers::sequence::SequenceHeader;
@@ -70,6 +70,8 @@ const SPEC_TILE_GROUP: &str = "5.19";
 const SPEC_MODE_INFO: &str = "5.20.7.6";
 const SPEC_MV: &str = "7.11";
 const SPEC_MC: &str = "7.13.3.18";
+
+const _: () = assert!(ReferenceSlot::MAX_SLOTS <= u16::BITS as usize);
 const SPEC_TIP_TEMPORAL_SCALE: &str = "7.10.1";
 const SINGLE_MODE_NEARMV: u8 = 0;
 const SINGLE_MODE_GLOBALMV: u8 = 1;
@@ -171,7 +173,7 @@ pub(crate) fn walk_inter_frame<T: ReconSample>(
         &core,
         options,
         facts,
-        &ref_frame_idx,
+        ref_frame_idx.as_slice(),
         reference,
         &mut workspace,
     )?;
@@ -1148,8 +1150,6 @@ pub(crate) struct InterReferenceState<T: ReconSample> {
     pub(crate) ref_frame_height: Vec<u32>,
     pub(crate) ref_base_q_idx: Vec<u32>,
     pub(crate) ref_counter: Vec<u32>,
-    pub(crate) ref_delta_q_u_ac: Vec<i32>,
-    pub(crate) ref_delta_q_v_ac: Vec<i32>,
     ref_chroma_ac_deltas: Vec<[i32; 2]>,
     pub(crate) ref_is_inter: Vec<bool>,
     pub(crate) ref_long_term_id: Vec<Option<u32>>,
@@ -1184,8 +1184,6 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_frame_height: Vec::new(),
             ref_base_q_idx: Vec::new(),
             ref_counter: Vec::new(),
-            ref_delta_q_u_ac: Vec::new(),
-            ref_delta_q_v_ac: Vec::new(),
             ref_chroma_ac_deltas: Vec::new(),
             ref_is_inter: Vec::new(),
             ref_long_term_id: Vec::new(),
@@ -1232,13 +1230,6 @@ impl<T: ReconSample> InterReferenceState<T> {
         store: ReferenceFrameStore<RefFrameSlot<T>>,
         metadata: ReferenceMetadata,
     ) -> Self {
-        let ref_chroma_ac_deltas = metadata
-            .ref_delta_q_u_ac
-            .iter()
-            .copied()
-            .zip(metadata.ref_delta_q_v_ac.iter().copied())
-            .map(|(u, v)| [u, v])
-            .collect();
         Self {
             store,
             ref_valid: metadata.ref_valid,
@@ -1250,9 +1241,7 @@ impl<T: ReconSample> InterReferenceState<T> {
             ref_frame_height: metadata.ref_frame_height,
             ref_base_q_idx: metadata.ref_base_q_idx,
             ref_counter: metadata.ref_counter,
-            ref_delta_q_u_ac: metadata.ref_delta_q_u_ac,
-            ref_delta_q_v_ac: metadata.ref_delta_q_v_ac,
-            ref_chroma_ac_deltas,
+            ref_chroma_ac_deltas: metadata.ref_chroma_ac_deltas,
             ref_is_inter: metadata.ref_is_inter,
             ref_long_term_id: metadata.ref_long_term_id,
             ref_num_total_refs: metadata.ref_num_total_refs,
@@ -1281,8 +1270,7 @@ impl<T: ReconSample> Drop for InterReferenceState<T> {
             ref_frame_height: std::mem::take(&mut self.ref_frame_height),
             ref_base_q_idx: std::mem::take(&mut self.ref_base_q_idx),
             ref_counter: std::mem::take(&mut self.ref_counter),
-            ref_delta_q_u_ac: std::mem::take(&mut self.ref_delta_q_u_ac),
-            ref_delta_q_v_ac: std::mem::take(&mut self.ref_delta_q_v_ac),
+            ref_chroma_ac_deltas: std::mem::take(&mut self.ref_chroma_ac_deltas),
             ref_is_inter: std::mem::take(&mut self.ref_is_inter),
             ref_long_term_id: std::mem::take(&mut self.ref_long_term_id),
             ref_num_total_refs: std::mem::take(&mut self.ref_num_total_refs),
@@ -1367,16 +1355,19 @@ impl<'a, T: ReconSample> PixelReferenceGate<'a, T> {
 impl<T: ReconSample> InterReferenceState<T> {
     /// Shares each distinct motion-field product named by a reference map.
     pub(crate) fn motion_dependencies(&self, ref_frame_idx: &[u32]) -> Vec<MotionFieldHandle> {
-        let mut seen = vec![false; self.ref_motion_fields.len()];
+        let mut seen = 0u16;
         ref_frame_idx
             .iter()
             .filter_map(|&slot| {
-                let index = slot as usize;
-                if *seen.get(index)? {
+                let index = usize::try_from(slot).ok()?;
+                let dependency = self.ref_motion_fields.get(index)?;
+                let slot = ReferenceSlot::new(index).ok()?;
+                let bit = 1u16.checked_shl(u32::try_from(slot.index()).ok()?)?;
+                if seen & bit != 0 {
                     return None;
                 }
-                seen[index] = true;
-                self.ref_motion_fields.get(index).and_then(Option::as_ref)
+                seen |= bit;
+                dependency.as_ref()
             })
             .cloned()
             .collect()
@@ -1717,17 +1708,14 @@ fn infer_tip_output_quantization(
     let past = block_reference_slot(&inter.ref_frame_idx, pair.past_ref)? as usize;
     let future = block_reference_slot(&inter.ref_frame_idx, pair.future_ref)? as usize;
     let quantizer = |slot| -> Result<(u32, i32, i32)> {
-        let Some((&base_q_idx, &delta_q_u_ac, &delta_q_v_ac)) = reference
+        let Some((&base_q_idx, chroma_ac_deltas)) = reference
             .ref_base_q_idx
             .get(slot)
-            .zip(reference.ref_delta_q_u_ac.get(slot))
-            .zip(reference.ref_delta_q_v_ac.get(slot))
-            .map(|((base_q_idx, delta_q_u_ac), delta_q_v_ac)| {
-                (base_q_idx, delta_q_u_ac, delta_q_v_ac)
-            })
+            .zip(reference.ref_chroma_ac_deltas.get(slot))
         else {
             return Err(DecodeReferenceStateError::MissingQuantizerMetadata { slot }.into());
         };
+        let [delta_q_u_ac, delta_q_v_ac] = *chroma_ac_deltas;
         Ok((base_q_idx, delta_q_u_ac, delta_q_v_ac))
     };
     let (past_q, past_u, past_v) = quantizer(past)?;

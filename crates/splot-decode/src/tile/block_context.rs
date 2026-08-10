@@ -226,7 +226,6 @@ pub(crate) struct BlockCtx {
     tile_mi_col_start: usize,
     tile_mi_col_end: usize,
     tile_mi_row_start: usize,
-    tile_mi_row_end: usize,
     bit_depth: BitDepth,
     chroma: ChromaSampling,
 }
@@ -249,7 +248,6 @@ impl BlockCtx {
             tile_mi_col_start: 0,
             tile_mi_col_end: frame_mi_cols,
             tile_mi_row_start: 0,
-            tile_mi_row_end: frame_mi_rows,
             bit_depth,
             chroma,
         }
@@ -274,12 +272,10 @@ impl BlockCtx {
     pub(crate) fn with_tile_bounds(
         mut self,
         row_start: usize,
-        row_end: usize,
         col_start: usize,
         col_end: usize,
     ) -> Self {
         self.tile_mi_row_start = row_start.min(self.frame_mi_rows);
-        self.tile_mi_row_end = row_end.min(self.frame_mi_rows).max(self.tile_mi_row_start);
         self.tile_mi_col_start = col_start.min(self.frame_mi_cols);
         self.tile_mi_col_end = col_end.min(self.frame_mi_cols).max(self.tile_mi_col_start);
         self
@@ -289,7 +285,6 @@ impl BlockCtx {
         self.tile_mi_col_start = other.tile_mi_col_start;
         self.tile_mi_col_end = other.tile_mi_col_end;
         self.tile_mi_row_start = other.tile_mi_row_start;
-        self.tile_mi_row_end = other.tile_mi_row_end;
         self
     }
 

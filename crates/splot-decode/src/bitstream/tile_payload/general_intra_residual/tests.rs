@@ -102,10 +102,11 @@ fn dc_luma_context() -> LumaTransformTypeContext {
 
 #[test]
 fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
+    let mut quant = vec![0i32; 16];
+    quant[0] = 1;
     let block = LumaCoeffBlock {
-        all_zero: false,
-        eob: 0,
-        quant: vec![0i32; 16],
+        eob: 1,
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -138,10 +139,11 @@ fn reconstruct_with_prediction_rejects_wrong_prediction_length() {
 
 #[test]
 fn reconstruct_into_reuses_rectangular_u16_output_storage() {
+    let mut quant = vec![0; 32];
+    quant[0] = 1;
     let block = LumaCoeffBlock {
-        all_zero: false,
-        eob: 0,
-        quant: vec![0; 32],
+        eob: 1,
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -168,16 +170,17 @@ fn reconstruct_into_reuses_rectangular_u16_output_storage() {
     )
     .unwrap();
 
-    assert_eq!(out, prediction);
+    assert_eq!(out, vec![302; 32]);
     assert_eq!(out.as_ptr(), allocation);
 }
 
 #[test]
 fn reconstruct_into_supports_maximum_u8_transform_geometry() {
+    let mut quant = vec![0; 32 * 32];
+    quant[0] = 1;
     let block = LumaCoeffBlock {
-        all_zero: false,
-        eob: 0,
-        quant: vec![0; 32 * 32],
+        eob: 1,
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -210,10 +213,11 @@ fn reconstruct_into_supports_maximum_u8_transform_geometry() {
 #[test]
 fn reconstruct_into_keeps_output_on_truncated_inputs() {
     let prediction = vec![128u8; 16];
+    let mut quant = vec![0; 15];
+    quant[0] = 1;
     let invalid_quant = LumaCoeffBlock {
-        all_zero: false,
-        eob: 0,
-        quant: vec![0; 15],
+        eob: 1,
+        quant,
         intra_ist: None,
         cctx_type: None,
         plane_tx_type: DCT_DCT,
@@ -244,10 +248,8 @@ fn reconstruct_into_keeps_output_on_truncated_inputs() {
     ));
     assert_eq!(out, vec![91; 7]);
 
-    let valid_quant = LumaCoeffBlock {
-        quant: vec![0; 16],
-        ..invalid_quant
-    };
+    let mut valid_quant = invalid_quant;
+    valid_quant.quant.push(0);
     let prediction_result = reconstruct_general_intra_coeff_block_rect_with_prediction_into(
         &valid_quant,
         &prediction[..15],
@@ -866,7 +868,7 @@ fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
         md_idx_luma_tx_type(TX_8X16, LumaTransformTypeContext::new(luma.y_mode, -2), 4).unwrap();
     let active_mrl = md_idx_luma_tx_type(
         TX_8X16,
-        LumaTransformTypeContext::with_mrl_indices(luma.y_mode, -2, 2, None, None),
+        LumaTransformTypeContext::with_mrl_indices(luma.y_mode, -2, 2, None),
         4,
     )
     .unwrap();
@@ -1372,7 +1374,6 @@ fn dctonly_residual_long_set_maps_dct_symbol_only_for_long_side_dct() {
 #[test]
 fn fsc_idtx_block_reconstructs_without_tcq_dequant_shift() {
     let block = LumaCoeffBlock {
-        all_zero: false,
         eob: 16,
         quant: vec![0, 0, 0, 3, 0, 0, 2, 9, 0, 0, 0, 6, 0, 0, 0, 6],
         intra_ist: None,
@@ -1448,7 +1449,6 @@ fn cctx_minus30_rotates_saved_chroma_dequant_pair() {
 #[test]
 fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
     let u_block = LumaCoeffBlock {
-        all_zero: false,
         eob: 7,
         quant: vec![-2, -1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0],
         intra_ist: None,
@@ -1458,7 +1458,6 @@ fn cctx_pair_uses_u_transform_type_for_all_zero_v_block() {
         lossless: false,
     };
     let v_block = LumaCoeffBlock {
-        all_zero: true,
         eob: 0,
         quant: Vec::new(),
         intra_ist: None,
@@ -1510,7 +1509,6 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[1] = -21;
         quant[5] = 9;
         let block = LumaCoeffBlock {
-            all_zero: false,
             eob: 6,
             quant,
             intra_ist: None,
@@ -1542,7 +1540,6 @@ fn residual_scratch_reuse_leaks_nothing_between_consecutive_blocks() {
         quant[0] = -5;
         quant[9] = 61;
         let block = LumaCoeffBlock {
-            all_zero: false,
             eob: 10,
             quant,
             intra_ist: None,

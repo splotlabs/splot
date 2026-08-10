@@ -545,12 +545,12 @@ impl ResidualPlanePlan {
 impl ParsedResidualPlane {
     pub(super) fn u_nonzero(&self) -> bool {
         match &self.kind {
-            ParsedResidualPlaneKind::Single { coeffs, .. } => !coeffs.all_zero,
+            ParsedResidualPlaneKind::Single { coeffs, .. } => coeffs.eob != 0,
             ParsedResidualPlaneKind::Lossless(units) => {
-                units.last().is_some_and(|unit| !unit.block.coeffs.all_zero)
+                units.last().is_some_and(|unit| unit.block.coeffs.eob != 0)
             }
             ParsedResidualPlaneKind::PartitionedLuma(units) => {
-                units.iter().any(|unit| !unit.block.coeffs.all_zero)
+                units.iter().any(|unit| unit.block.coeffs.eob != 0)
             }
         }
     }
