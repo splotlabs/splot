@@ -11536,9 +11536,10 @@ id = "DECODE-SDP-CFL-ALLOWED-FRONTIER"
 name = "SDP CflAllowedInSdp frontier"
 category = "infrastructure"
 kind = "bitstream-syntax"
-spec_sections = ["5.20.3.1", "5.20.5.6", "8.3.2"]
+spec_sections = ["5.20.3.1", "5.20.5.3", "5.20.5.6", "8.3.2"]
 sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-3-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-6",
     "docs/spec/av2/1.0.0/08-parsing-process.md#s-8-3-2",
 ]
@@ -11548,7 +11549,7 @@ change_id = "decode-sdp-cfl-allowed-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Current partial support for retaining AV2 §5.20.3.1 `CflAllowedInSdp` through SDP partition traversal and applying it to §5.20.5.6 chroma mode-info. `CHROMA_PART` leaves whose state disables CfL/MHCCP omit `is_cfl` before `uv_mode`, while admitted leaves carry the selected chroma mode into the same CfL or MHCCP reconstruction used by the generic path. This preserves symbol synchronization without a mission-specific transform-record branch. Focused traversal and mode-info tests protect the state propagation; unsupported SDP, CfL, or MHCCP combinations continue to fail closed at the consuming operation."
+notes = "Current partial support for retaining AV2 §5.20.3.1 `CflAllowedInSdp` through SDP partition traversal and applying it to §5.20.5.6 chroma mode-info. The private decode frontier represents a `CHROMA_PART` only together with the collocated §5.20.5.3 luma mode and angle facts: ordinary SDP pushes chroma then luma onto its LIFO stack, extended SDP schedules the chroma continuation below all luma children, and successful ordinary-intra or IntraBC luma publication records the required mode before chroma construction. A missing collocation is a typed internal header-state error, never an unsupported feature or malformed source. `CHROMA_PART` leaves whose state disables CfL/MHCCP omit `is_cfl` before `uv_mode`, while admitted leaves carry the selected chroma mode into the same CfL or MHCCP reconstruction used by the generic path. Focused traversal and mode-info tests protect ordering, publication, failure isolation, and state propagation; unsupported SDP, CfL, or MHCCP combinations continue to fail closed at the consuming operation."
 
 [feature.status]
 mapped = "done"
@@ -11566,11 +11567,17 @@ perf = "not-applicable"
 tests = [
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs::tests::sdp_cfl_allowed_state_tracks_top_luma_and_chroma_partitions",
     "crates/splot-decode/src/bitstream/tile_payload/partition_traversal.rs::tests::sdp_cfl_allowed_state_propagates_to_chroma_children",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal/tree_walk.rs::row_cursor_tests::ordinary_sdp_publishes_luma_mode_before_chroma_frontier",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal/tree_walk.rs::row_cursor_tests::extended_sdp_schedules_luma_children_before_collocated_chroma",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal/tree_walk.rs::row_cursor_tests::sdp_intrabc_publishes_dc_mode_before_chroma_frontier",
+    "crates/splot-decode/src/bitstream/tile_payload/partition_traversal/tree_walk.rs::row_cursor_tests::failed_sdp_luma_leaf_neither_publishes_mode_nor_reaches_chroma",
+    "crates/splot-decode/src/prediction/inter/block_tests.rs::partition_walk_failures_keep_typed_boundaries",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_block.rs::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl",
     "crates/splot-cli/tests/decode_cli.rs::local_decoder_mission_reaches_current_runtime_gate_without_output",
 ]
 commands = [
     "cargo test -p splot-decode sdp_cfl_allowed_state --locked",
+    "cargo test -p splot-decode bitstream::tile_payload::partition_traversal::tree_walk::row_cursor_tests --locked",
     "cargo test -p splot-decode tile_payload::general_intra_block::tests::sdp_chroma_part_cfl_disallowed_reads_uv_mode_without_is_cfl --locked",
     "cargo test -p splot-cli --test decode_cli local_decoder_mission_reaches_current_runtime_gate_without_output --locked -- --ignored",
     "SPLOT_LOCAL_DECODER_MISSION_IVF=<local mission fixture> cargo run -p splot-cli --locked -- decode --json --output-format hash $SPLOT_LOCAL_DECODER_MISSION_IVF",

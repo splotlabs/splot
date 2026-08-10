@@ -90,7 +90,8 @@ pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
-    DecodeBlockFrontier, DecodedLeafPublication, GeneralIntraLeafMode, GeneralIntraTreeWalkError,
+    DecodeBlockFrontier, DecodeBlockPart, DecodedLeafPublication, GeneralIntraLeafMode,
+    GeneralIntraTreeWalkError,
 };
 pub(crate) use partition_traversal::{
     TilePartitionTraversalError, WienerNsLrSourceBlock, WienerNsLrUnitFilter,

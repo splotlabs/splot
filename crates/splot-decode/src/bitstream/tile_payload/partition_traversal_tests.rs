@@ -366,7 +366,13 @@ fn shared_mixed_chroma_ref_size_mismatch_forces_inter() {
         false,
     );
 
-    let frontier = decode_block_frontier(call, frame(BLOCK_64X64), call.b_size, true, None);
+    let frontier = decode_block_frontier(
+        call,
+        frame(BLOCK_64X64),
+        call.b_size,
+        true,
+        DecodeBlockPart::Shared,
+    );
 
     assert!(frontier.shared_mixed_chroma_ref_forces_inter());
 }

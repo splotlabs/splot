@@ -189,6 +189,14 @@ pub enum DecodeHeaderStateError {
     /// The loop-restoration filter pipeline state was internally inconsistent.
     #[error("loop-restoration filter pipeline state is inconsistent")]
     InvalidLoopRestorationFilterState,
+    /// An SDP chroma leaf was reached before its collocated luma mode was published.
+    #[error("SDP chroma block at ({mi_row}, {mi_col}) is missing collocated luma mode state")]
+    MissingSdpLumaModeState {
+        /// Block row in 4x4 luma units.
+        mi_row: usize,
+        /// Block column in 4x4 luma units.
+        mi_col: usize,
+    },
 }
 
 /// Runtime reference-frame state consistency failure.

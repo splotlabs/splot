@@ -356,7 +356,11 @@ pub(crate) fn decode_one_general_intra_block(
     let cfl_ds_filter_index = sequence_cfl_ds_filter_index(sequence);
     let sb_mib = sequence_sb_mib(sequence);
 
-    if frontier.is_chroma_part() {
+    if let crate::bitstream::tile_payload::DecodeBlockPart::ChromaPart {
+        y_mode,
+        angle_delta_y,
+    } = frontier.part()
+    {
         let lossless_luma_fsc = lossless
             && fsc_modes
                 .fsc_mode_at(frontier.r, frontier.c)
@@ -366,6 +370,8 @@ pub(crate) fn decode_one_general_intra_block(
             work_unit,
             symbols,
             frontier,
+            y_mode,
+            angle_delta_y,
             lossless_luma_fsc,
             chroma_tools,
             is_cfl_ctx,
@@ -501,6 +507,8 @@ fn parse_one_general_intra_chroma_part_block(
     work_unit: &mut crate::bitstream::tile_payload::DecodeTileWorkUnit<'_>,
     symbols: &mut SymbolDecoder<'_>,
     frontier: &crate::bitstream::tile_payload::DecodeBlockFrontier,
+    y_mode: crate::bitstream::tile_payload::IntraYMode,
+    angle_delta_y: i8,
     lossless_luma_fsc: bool,
     chroma_tools: GeneralIntraChromaToolConfig,
     is_cfl_ctx: IsCflContext,
@@ -518,17 +526,6 @@ fn parse_one_general_intra_chroma_part_block(
     segment_id: u8,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
-    let (y_mode, angle_delta_y) = frontier
-        .stored_luma_y_mode()
-        .zip(frontier.stored_luma_angle_delta_y())
-        .ok_or_else(|| {
-            general_intra_at!(
-                "general_intra_missing_sdp_luma_mode",
-                tile_offset,
-                "SDP chroma decode requires the collocated luma-part mode facts (an intraBC luma part records DC_PRED)",
-                GENERAL_INTRA_MODE_SPEC_SECTION,
-            )
-        })?;
     let chroma = crate::bitstream::tile_payload::decode_general_intra_chroma_block_mode(
         work_unit,
         symbols,

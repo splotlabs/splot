@@ -338,6 +338,25 @@ fn partition_walk_failures_keep_typed_boundaries() {
         } if byte_offset == offset
     ));
 
+    let missing_sdp_luma =
+        GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::MissingSdpLumaModeState { r: 7, c: 11 },
+        ));
+    let missing_sdp_luma = map_inter_multiblock_error(missing_sdp_luma, offset);
+    assert!(matches!(
+        missing_sdp_luma,
+        DecodeError::HeaderState {
+            source: DecodeHeaderStateError::MissingSdpLumaModeState {
+                mi_row: 7,
+                mi_col: 11,
+            },
+        }
+    ));
+    assert!(
+        crate::diagnostic::DecodeDiagnosticReport::from_decode_error(&missing_sdp_luma).is_none(),
+        "internal SDP ordering failure must not become an unsupported or source diagnostic"
+    );
+
     for error in [
         GeneralIntraMultiblockError::<DecodeError>::Walk(GeneralIntraTreeWalkError::Traversal(
             TilePartitionTraversalError::Decision(PartitionDecisionError::Literal(

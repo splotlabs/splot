@@ -104,7 +104,7 @@ pub(super) fn publish_intra_leaf_state<E>(
     y_modes: &mut TileIntraYModeState,
     mi_size_state: &mut TileMiSizeState,
 ) -> Result<(), GeneralIntraTreeWalkError<E>> {
-    let tree_type = frontier.tree_type;
+    let tree_type = frontier.tree_type();
     let block_n4w = sub_size
         .num_4x4_wide()
         .map_err(TilePartitionTraversalError::from)?;

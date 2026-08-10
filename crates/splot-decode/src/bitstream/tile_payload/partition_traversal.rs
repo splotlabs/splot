@@ -11,9 +11,9 @@ use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
 use super::intra_joint_modes::{
     IsCflContext, LumaPalette, TileFscModeState, TileFscModeStateError, TileIntraJointModeState,
-    TileIntraYModeFacts, TileIntraYModeState, TileIntraYModeStateError, TileLumaPaletteState,
-    TileLumaPaletteStateError, TileUseDipState, TileUseDipStateError, TileUsesMrlsState,
-    TileUsesMrlsStateError, TileUvCflState,
+    TileIntraYModeState, TileIntraYModeStateError, TileLumaPaletteState, TileLumaPaletteStateError,
+    TileUseDipState, TileUseDipStateError, TileUsesMrlsState, TileUsesMrlsStateError,
+    TileUvCflState,
 };
 use super::mi_size_state::{TileMiSizeState, TileMiSizeStateError};
 use super::partition::{self, PartitionDecisionError, PartitionType};
@@ -364,19 +364,28 @@ pub(crate) struct DecodeBlockFrontier {
     pub(crate) has_chroma: bool,
     pub(crate) chroma_offset: bool,
     chroma_ref: ChromaRefGeometry,
-    tree_type: PartitionTreeType,
+    part: DecodeBlockPart,
     intra_region: bool,
-    stored_luma_y_mode: Option<TileIntraYModeFacts>,
     cfl_allowed_in_sdp: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DecodeBlockPart {
+    Shared,
+    LumaPart,
+    ChromaPart {
+        y_mode: IntraYMode,
+        angle_delta_y: i8,
+    },
 }
 
 impl DecodeBlockFrontier {
     pub(crate) const fn is_luma_part(&self) -> bool {
-        matches!(self.tree_type, PartitionTreeType::LumaPart)
+        matches!(self.part, DecodeBlockPart::LumaPart)
     }
 
     pub(crate) const fn is_chroma_part(&self) -> bool {
-        matches!(self.tree_type, PartitionTreeType::ChromaPart)
+        matches!(self.part, DecodeBlockPart::ChromaPart { .. })
     }
 
     pub(crate) const fn is_mixed_region(&self) -> bool {
@@ -390,17 +399,15 @@ impl DecodeBlockFrontier {
             && self.b_size.index() != self.chroma_ref.size.index()
     }
 
-    pub(crate) const fn stored_luma_y_mode(&self) -> Option<IntraYMode> {
-        match self.stored_luma_y_mode {
-            Some(facts) => Some(facts.y_mode),
-            None => None,
-        }
+    pub(crate) const fn part(&self) -> DecodeBlockPart {
+        self.part
     }
 
-    pub(crate) const fn stored_luma_angle_delta_y(&self) -> Option<i8> {
-        match self.stored_luma_y_mode {
-            Some(facts) => Some(facts.angle_delta_y),
-            None => None,
+    pub(super) const fn tree_type(&self) -> PartitionTreeType {
+        match self.part {
+            DecodeBlockPart::Shared => PartitionTreeType::Shared,
+            DecodeBlockPart::LumaPart => PartitionTreeType::LumaPart,
+            DecodeBlockPart::ChromaPart { .. } => PartitionTreeType::ChromaPart,
         }
     }
 
@@ -571,6 +578,8 @@ pub(crate) enum TilePartitionTraversalError {
     TooManyChildCalls,
     #[error("partition traversal missing intra luma mode state at ({r}, {c})")]
     MissingIntraLumaModeState { r: usize, c: usize },
+    #[error("partition traversal missing collocated SDP luma mode state at ({r}, {c})")]
+    MissingSdpLumaModeState { r: usize, c: usize },
     #[error("partition traversal missing intra UsesMrls state at ({r}, {c})")]
     MissingIntraUsesMrlsState { r: usize, c: usize },
     #[error("partition traversal missing intra FscModes state at ({r}, {c})")]

@@ -2373,6 +2373,13 @@ fn map_inter_multiblock_error(
         )) if error.is_source_read_failure() => {
             crate::pipeline::malformed_tile_payload(tile_offset, SPEC_MODE_INFO, error)
         }
+        GeneralIntraMultiblockError::Walk(GeneralIntraTreeWalkError::Traversal(
+            TilePartitionTraversalError::MissingSdpLumaModeState { r, c },
+        )) => crate::DecodeHeaderStateError::MissingSdpLumaModeState {
+            mi_row: r,
+            mi_col: c,
+        }
+        .into(),
         _ => inter_internal!("inter_partition_walk", tile_offset),
     }
 }
