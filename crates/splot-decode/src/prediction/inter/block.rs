@@ -293,11 +293,9 @@ fn derive_inter_block_setup<T: ReconSample>(
     let offset = frame_envelope.offset;
     let frame_is_intra = core.frame_is_intra == Some(true);
     let Some(first_tile) = work_units.first() else {
-        return Err(inter_cap!(
+        return Err(inter_internal!(
             "inter_walk_unexpected_tile_work_units",
-            offset,
-            "inter.tile_count == 0",
-            SPEC_MODE_INFO
+            offset
         ));
     };
     let first_tile_offset = first_tile.tile_byte_span().start;
