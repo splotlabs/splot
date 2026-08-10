@@ -3,8 +3,7 @@
 
 //! Block-to-plane residual planning.
 
-use splot_core::tables::conversion::{TX_HEIGHT_LOG2, TX_WIDTH_LOG2};
-use splot_recon::PlaneId;
+use splot_recon::{PlaneId, tx_size_index};
 
 use crate::bitstream::tile_payload::SupportedChromaMode;
 use crate::tile::block_context::{BlockCtx, BlockRect, TxShape};
@@ -428,14 +427,5 @@ pub(super) const fn coeff_plane(plane_id: PlaneId) -> usize {
 }
 
 fn tx_size_for_plan(tx: TxShape) -> core::result::Result<usize, ResidualPlanError> {
-    tx_size_from_log2(tx.width_log2(), tx.height_log2()).ok_or(ResidualPlanError::InvalidGeometry)
-}
-
-pub(super) fn tx_size_from_log2(w_log2: u32, h_log2: u32) -> Option<usize> {
-    let w = i32::try_from(w_log2).ok()?;
-    let h = i32::try_from(h_log2).ok()?;
-    TX_WIDTH_LOG2
-        .iter()
-        .zip(TX_HEIGHT_LOG2.iter())
-        .position(|(&tw, &th)| tw == w && th == h)
+    tx_size_index(tx.width_log2(), tx.height_log2()).map_err(|_| ResidualPlanError::InvalidGeometry)
 }

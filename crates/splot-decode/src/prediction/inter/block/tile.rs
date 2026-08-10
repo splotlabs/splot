@@ -176,16 +176,11 @@ struct TileParser<'tile, 'payload> {
     residual_scratch: InterResidualParseScratch,
     delta_q_state: DeltaQState,
     intrabc_state: TileIntrabcPreludeState,
-    segment_id_state: TileSegmentIdState,
     mv_grid: NeighbourMvGrid,
     y_smooth: crate::prediction::intra_edge::TileYSmoothGrid,
     chroma_smooth: crate::prediction::intra_edge::TileChromaSmoothGrid,
-    cdef_state: CdefState,
-    gdf_state: GdfState,
-    ccso_state: CcsoState,
     filter_records: TileFilterRecords,
-    active_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-    unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
+    output: TileParserOutput,
     parser_ordinal: usize,
     entry_capacity: usize,
     superblock_capacity: usize,
@@ -272,16 +267,18 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             residual_scratch: InterResidualParseScratch::default(),
             delta_q_state,
             intrabc_state,
-            segment_id_state,
             mv_grid,
             y_smooth,
             chroma_smooth,
-            cdef_state,
-            gdf_state,
-            ccso_state,
             filter_records: TileFilterRecords::default(),
-            active_source_blocks: Vec::new(),
-            unit_filters: Vec::new(),
+            output: TileParserOutput {
+                cdef_state,
+                gdf_state,
+                ccso_state,
+                segment_id_state,
+                active_source_blocks: Vec::new(),
+                unit_filters: Vec::new(),
+            },
             parser_ordinal: 0,
             entry_capacity: 0,
             superblock_capacity: 0,
@@ -349,12 +346,12 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                         &mut self.coeff_ctx,
                         &mut self.residual_scratch,
                         &mut recon_row.residual_blocks,
-                        &mut self.gdf_state,
-                        &mut self.cdef_state,
-                        &mut self.ccso_state,
+                        &mut self.output.gdf_state,
+                        &mut self.output.cdef_state,
+                        &mut self.output.ccso_state,
                         &mut self.delta_q_state,
                         &mut self.intrabc_state,
-                        &mut self.segment_id_state,
+                        &mut self.output.segment_id_state,
                         &mut self.mv_grid,
                         context.tip_ref_pair,
                         &mut self.y_smooth,
@@ -469,22 +466,15 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     unit_filters,
                 } = walk.into_output();
                 recon_row.terminal = finish_tile_symbols(symbols, tile_offset).err();
-                self.active_source_blocks = active_source_blocks;
-                self.unit_filters = unit_filters;
+                self.output.active_source_blocks = active_source_blocks;
+                self.output.unit_filters = unit_filters;
                 ParserStep::Last(recon_row)
             }
         }
     }
 
     fn into_output(self) -> TileParserOutput {
-        TileParserOutput {
-            cdef_state: self.cdef_state,
-            gdf_state: self.gdf_state,
-            ccso_state: self.ccso_state,
-            segment_id_state: self.segment_id_state,
-            active_source_blocks: self.active_source_blocks,
-            unit_filters: self.unit_filters,
-        }
+        self.output
     }
 }
 

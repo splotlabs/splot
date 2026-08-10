@@ -129,7 +129,7 @@ fn chroma_dc_uses_generic_rect_reconstruction() {
 
 #[test]
 fn deblock_recorder_keeps_chroma_transform_unit_boundaries() {
-    let tx_8x8 = tx_size_from_log2(3, 3).expect("8x8 transform");
+    let tx_8x8 = splot_recon::tx_size_index(3, 3).expect("8x8 transform");
     let mut blocks = Vec::new();
     let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::default();
     let mut tx_skip_records = Vec::new();
@@ -663,10 +663,13 @@ fn transform_size_lookup_rejects_internal_shapes_outside_av2_table() {
     {
         let width_log2 = u32::try_from(width_log2).expect("non-negative AV2 transform width");
         let height_log2 = u32::try_from(height_log2).expect("non-negative AV2 transform height");
-        assert_eq!(tx_size_from_log2(width_log2, height_log2), Some(tx_size));
+        assert_eq!(
+            splot_recon::tx_size_index(width_log2, height_log2),
+            Ok(tx_size)
+        );
     }
-    assert_eq!(tx_size_from_log2(7, 7), None);
-    assert_eq!(tx_size_from_log2(8, 8), None);
+    assert!(splot_recon::tx_size_index(7, 7).is_err());
+    assert!(splot_recon::tx_size_index(8, 8).is_err());
 }
 
 #[test]
@@ -1078,7 +1081,7 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
         .transform_unit_plan(&PositionedLumaCoeffBlock {
             x: 0,
             y: 16,
-            tx_size: tx_size_from_log2(4, 4).expect("16x16 transform size"),
+            tx_size: splot_recon::tx_size_index(4, 4).expect("16x16 transform size"),
             middle: false,
             coeffs: empty_luma_coeffs(),
         })

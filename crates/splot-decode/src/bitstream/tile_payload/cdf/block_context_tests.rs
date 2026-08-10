@@ -60,10 +60,14 @@ fn mode_and_joint_domains_are_bounded_to_zero_through_sixty() {
 
 #[test]
 fn uv_mode_ctx_is_zero_for_dc_pred_and_one_for_directional() {
-    assert_eq!(uv_mode_ctx(IntraYMode::Dc), 0);
-    assert_eq!(uv_mode_ctx(IntraYMode::Vertical), 1);
-    assert_eq!(uv_mode_ctx(IntraYMode::D67), 1);
-    assert_eq!(uv_mode_ctx(IntraYMode::Paeth), 0);
+    for (mode, expected) in [
+        (IntraYMode::Dc, 0),
+        (IntraYMode::Vertical, 1),
+        (IntraYMode::D67, 1),
+        (IntraYMode::Paeth, 0),
+    ] {
+        assert_eq!(uv_mode_ctx(mode), expected);
+    }
 }
 
 #[test]
