@@ -582,14 +582,7 @@ fn tip_block_plan<T: ReconSample>(
     let weight = TIP_WEIGHTING_FACTORS
         .get(weight_index)
         .copied()
-        .ok_or_else(|| {
-            inter_cap!(
-                "inter_tip_weight_index",
-                tile_offset,
-                "inter.tip.global_weight_index",
-                SPEC_MODE_INFO
-            )
-        })?;
+        .ok_or(inter_internal!("inter_tip_weight_index", tile_offset))?;
     let implicit_mask = sequence
         .inter
         .as_ref()
