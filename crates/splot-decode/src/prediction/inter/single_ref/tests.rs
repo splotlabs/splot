@@ -8,7 +8,9 @@ use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoder, SymbolDecoderConf
 use splot_core::symbol_encoder::SymbolEncoder;
 
 use super::{SingleRefReadError, read_single_ref};
-use crate::bitstream::tile_payload::{FrameCdfSubset, TileCdfSelector, TileCdfSubset};
+use crate::bitstream::tile_payload::{
+    BlockSymbolTraceReadError, FrameCdfSubset, TileCdfSelector, TileCdfSubset,
+};
 
 const REFS_PER_FRAME: usize = 7;
 
@@ -206,7 +208,13 @@ fn single_ref_out_of_range_context_is_a_typed_error_not_a_panic() {
     let payload = [0x80u8, 0x00, 0x00];
     let mut symbols = symbol_decoder(&payload);
     let err = read_single_ref(&mut dec_tile, &mut symbols, 2, &[3]).unwrap_err();
-    assert!(matches!(err, SingleRefReadError::SymbolRead { ref_idx: 0 }));
+    assert!(matches!(
+        err,
+        SingleRefReadError::SymbolRead {
+            ref_idx: 0,
+            source: BlockSymbolTraceReadError::Cdf(_),
+        }
+    ));
 }
 
 #[test]
@@ -221,7 +229,10 @@ fn single_ref_short_buffer_does_not_panic() {
         &distinct_contexts(6),
     ) {
         Ok(selection) => assert!(selection < REFS_PER_FRAME),
-        Err(SingleRefReadError::SymbolRead { ref_idx }) => assert!(ref_idx < REFS_PER_FRAME),
+        Err(SingleRefReadError::SymbolRead { ref_idx, source }) => {
+            assert!(ref_idx < REFS_PER_FRAME);
+            assert!(matches!(source, BlockSymbolTraceReadError::Symbol(_)));
+        }
         Err(other) => panic!("unexpected error variant: {other}"),
     }
 }

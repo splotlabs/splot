@@ -1610,7 +1610,7 @@ fn decode_block<T: ReconSample>(
                 .ok_or(crate::DecodeHeaderStateError::InvalidInterReferenceMap)?;
         }
         let selected = super::single_ref::read_single_ref(cdfs, symbols, num_total_refs, &contexts)
-            .map_err(|error| single_ref_read_error(&error, tile_offset))?;
+            .map_err(|error| single_ref_read_error(error, tile_offset))?;
         selected as i8
     } else {
         SINGLE_REF_FRAME0
@@ -2329,16 +2329,23 @@ fn symbol_read_error(
 }
 
 fn single_ref_read_error(
-    error: &SingleRefReadError,
+    error: SingleRefReadError,
     tile_offset: ByteOffset,
 ) -> crate::error::DecodeError {
     match error {
         SingleRefReadError::InsufficientRefs { .. } | SingleRefReadError::MissingContext { .. } => {
             crate::DecodeHeaderStateError::InvalidInterReferenceMap.into()
         }
-        SingleRefReadError::SymbolRead { .. } => {
-            inter_internal!("inter_block_single_ref_read", tile_offset)
-        }
+        SingleRefReadError::SymbolRead {
+            source:
+                BlockSymbolTraceReadError::Cdf(_)
+                | BlockSymbolTraceReadError::Symbol(splot_core::Error::InvalidSymbolCdf { .. }),
+            ..
+        } => crate::DecodeHeaderStateError::InvalidSingleReferenceCdfState.into(),
+        SingleRefReadError::SymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(error),
+            ..
+        } => crate::pipeline::malformed_tile_payload(tile_offset, "5.20.7.12", error),
     }
 }
 
