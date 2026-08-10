@@ -79,9 +79,13 @@ pub(crate) use intra_joint_modes::{
     FrameSegmentIdMap, LumaPalette, TileFscModeState, TileIntraJointModeState,
     TileLumaPaletteState, TileSegmentIdState, TileUseDipState, TileUsesMrlsState, neg_deinterleave,
 };
+#[cfg(test)]
+pub(crate) use partition::PartitionDecisionError;
 pub(crate) use partition_allowed::get_plane_residual_size;
 pub(crate) use partition_size::BlockSize;
 pub(crate) use partition_traversal::LrUnitRestorationType;
+#[cfg(test)]
+pub(crate) use partition_traversal::TilePartitionTraversalUnsupported;
 #[cfg(test)]
 pub(crate) use partition_traversal::tests::make_work_unit as make_test_work_unit;
 pub(crate) use partition_traversal::{
@@ -94,7 +98,7 @@ pub(crate) use partition_traversal::{
 pub(crate) use test_support::encode_symbol_sequence;
 pub(crate) use tile_frontier::{
     GeneralIntraMultiblockCursor, GeneralIntraMultiblockError, GeneralIntraMultiblockOutput,
-    chroma_subsampling, frame_mi_dimensions,
+    TilePartitionFrontierError, chroma_subsampling, frame_mi_dimensions,
 };
 
 #[derive(Clone, Debug)]
