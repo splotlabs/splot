@@ -75,6 +75,9 @@ COVERAGE = [
       "--profile=31", "--enable-deblocking=0", "--enable-cdef=0", "--enable-restoration=0",
       "--enable-gdf=0", "--enable-ccso=0", "--enable-pc-wiener=0",
       "--enable-wiener-nonsep=0", "--enable-keyframe-filtering=0"], "0", "180"),
+    ("syn-2frame-intra-only-mono-16x16-q255",
+     "color=c=gray:size=16x16:rate=1:duration=2", "yuv420p", "--i420",
+     ["--monochrome"], "8", "255"),
     ("syn-output-multi-brt-16x16",
      "color=c=gray:size=16x16:rate=30:duration=0.0333333333333333", "yuv420p", "--i420",
      ["--monochrome", "--timing-info=unspecified"], "8", "240"),
@@ -114,6 +117,18 @@ PINNED_RECIPE_HASHES = {
         "instrumentation_sha256": "6ec529e93ff9ec09ab211e6bc29034937302eb7c686d7fe6c872f88984a41164",
         "recipe_sha256": "95d423a982a8b0995a4a21d2feae525447f3a69b22dd57c4440602960643bb64",
     },
+    "syn-2frame-intra-only-mono-16x16-q255": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "ffmpeg_version": "8.1.2",
+        "source_sha256": "2e8c4d3b8780635c7b7eb83887a21ca35e280d4ac900c62f158201dac89c7186",
+        "ivf_sha256": "74acd49de73519e0d80a4508e5dcaf7548f22669e0aafe2fa62c9f9610289776",
+        "avm_i420_raw_sha256": "0dc50ed6e41c0a4d3eaa8c5a1e850607fd4bf2042596439f6112369e90f58364",
+        "instrumentation_sha256": "b99a7a36c7b143d3af07cc0418a590f461344698dc1d181352bfc17dbab00dcc",
+        "instrumentation_source": "av2/encoder/encode_strategy.c",
+        "avmenc_sha256": "132ff0f7ddd74bfd35c59cb4f50413ead008cc541d8e50f1cd34f905adeb9d68",
+        "avmdec_sha256": "cd465be567e971105695fd3fbff0e277969de5c497ce3bc18c3a7b8185131247",
+        "reproducibility_runs": 2,
+    },
 }
 
 
@@ -148,23 +163,59 @@ def cmd_coverage_fixtures(args):
     if not selected:
         sys.exit(f"error: unknown coverage fixture id: {args.only}")
     for fid, src, pix, inflag, flags, cpu, qp in selected:
+        expected = PINNED_RECIPE_HASHES.get(fid)
+        if expected and "instrumentation_source" in expected:
+            avm_root = os.environ.get("AVM_ROOT") or os.path.dirname(os.path.dirname(avmenc))
+            revision = run_checked(["git", "-C", avm_root, "rev-parse", "HEAD"])
+            revision = revision.stdout.decode().strip()
+            instrumentation = run_checked([
+                "git", "-C", avm_root, "diff", "--", expected["instrumentation_source"]
+            ]).stdout
+            instrumentation_sha256 = hashlib.sha256(instrumentation).hexdigest()
+            if revision != expected["avm_revision"] or instrumentation_sha256 != expected["instrumentation_sha256"]:
+                sys.exit(f"error: {fid} requires pinned instrumented AVM: "
+                         f"revision={revision}, instrumentation={instrumentation_sha256}")
+            avmdec = find("avmdec")
+            if sha(avmenc) != expected["avmenc_sha256"] or sha(avmdec) != expected["avmdec_sha256"]:
+                sys.exit(f"error: {fid} requires the recorded instrumented AVM producer binaries")
+            version = run_checked(["ffmpeg", "-version"]).stdout.decode().splitlines()[0]
+            if not version.startswith("ffmpeg version " + expected["ffmpeg_version"]):
+                sys.exit(f"error: {fid} requires ffmpeg {expected['ffmpeg_version']}: {version}")
         y4m = os.path.join(stage, fid + ".y4m")
-        run_checked(["ffmpeg", "-y", "-f", "lavfi", "-i", src, "-pix_fmt", pix, y4m])
-        run_checked([avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
-                     "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
-                     inflag, *flags, "-o", os.path.join(stage, fid + ".ivf"), y4m])
-        if fid in PINNED_RECIPE_HASHES:
-            expected = PINNED_RECIPE_HASHES[fid]
+        run_checked(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src,
+                     "-pix_fmt", pix, y4m])
+        ivf = os.path.join(stage, fid + ".ivf")
+        encode = [avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
+                  "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
+                  inflag, *flags]
+        run_checked([*encode, "-o", ivf, y4m])
+        if expected:
             actual_source = sha(y4m)
-            actual_ivf = sha(os.path.join(stage, fid + ".ivf"))
+            actual_ivf = sha(ivf)
             if actual_source != expected["source_sha256"] or actual_ivf != expected["ivf_sha256"]:
                 sys.exit(f"error: {fid} differs from pinned AVM {expected['avm_revision']}: "
                          f"source={actual_source}, ivf={actual_ivf}")
+            if expected.get("reproducibility_runs") == 2:
+                repeated_ivf = os.path.join(stage, fid + ".repeat.ivf")
+                run_checked([*encode, "-o", repeated_ivf, y4m])
+                if sha(repeated_ivf) != actual_ivf:
+                    sys.exit(f"error: {fid} is not deterministic across two encodes")
+                os.remove(repeated_ivf)
+            if "avm_i420_raw_sha256" in expected and "instrumentation_source" in expected:
+                raw = os.path.join(stage, fid + ".avm.raw")
+                run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
+                if sha(raw) != expected["avm_i420_raw_sha256"]:
+                    sys.exit(f"error: {fid} differs from its pinned AVM raw output")
             if "instrumentation_sha256" in expected:
                 print(f"  {fid}: isolated AVM instrumentation "
-                      f"{expected['instrumentation_sha256']}, recipe {expected['recipe_sha256']}")
-                print(f"  {fid}: AVM native raw {expected['avm_native_raw_sha256']}, "
-                      f"forced I420 raw {expected['avm_i420_raw_sha256']}")
+                      f"{expected['instrumentation_sha256']}")
+                if "recipe_sha256" in expected:
+                    print(f"  {fid}: recipe {expected['recipe_sha256']}")
+                if "avm_native_raw_sha256" in expected:
+                    print(f"  {fid}: AVM native raw {expected['avm_native_raw_sha256']}, "
+                          f"forced I420 raw {expected['avm_i420_raw_sha256']}")
+                else:
+                    print(f"  {fid}: forced I420 raw {expected['avm_i420_raw_sha256']}")
     print(f"staged {len(selected)} coverage fixtures in {stage} "
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 

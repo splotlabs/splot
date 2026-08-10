@@ -1559,8 +1559,11 @@ fn validate_and_resolve_inter_frame_core(
     offset: ByteOffset,
     frame_index: Option<usize>,
 ) -> Result<()> {
-    validate_ras_reference_ids(core, reference, offset, frame_index)?;
     validate_inter_frame_parse(core, offset, frame_index)?;
+    if core.status == FrameHeaderParseStatus::IntraHeaderComplete {
+        return Ok(());
+    }
+    validate_ras_reference_ids(core, reference, offset, frame_index)?;
     resolve_ccso_reference_reuse(core, reference, offset, frame_index)?;
     validate_inter_frame_core(core, sequence, offset)?;
     if core.inter.as_ref().is_some_and(|inter| {
@@ -1930,12 +1933,14 @@ fn validate_inter_frame_parse(
         "inter-frame header requires unsupported parser coverage",
     )?;
     if core.status == FrameHeaderParseStatus::IntraHeaderComplete {
-        return Err(unsupported_at(
-            "unsupported_tile_boundary",
-            offset,
-            "decode runtime does not support intra-only frames carried by tile-group OBUs",
-            SPEC_HEADER,
-        ));
+        let valid_intra_only = matches!(
+            core.obu_type,
+            ObuType::LeadingTileGroup | ObuType::RegularTileGroup
+        ) && core.frame_type == Some(FrameType::IntraOnly)
+            && core.frame_is_intra == Some(true);
+        if !valid_intra_only {
+            return Err(DecodeHeaderStateError::InvalidIntraOnlyTileGroupState.into());
+        }
     }
     Ok(())
 }

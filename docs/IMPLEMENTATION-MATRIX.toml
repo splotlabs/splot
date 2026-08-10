@@ -15256,6 +15256,45 @@ fixtures = [
 diagnostics = ["decode/unsupported-feature"]
 
 [[feature]]
+id = "DECODE-INTRA-ONLY-TILE-GROUP"
+name = "Intra-only frame in Leading/Regular tile-group carrier"
+category = "infrastructure"
+kind = "infrastructure"
+spec_sections = ["5.18.2", "5.19", "6.2.1", "7.2", "7.23"]
+sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-18-2",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-19",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-2-1",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-2",
+    "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-23",
+]
+crate = "splot-decode"
+module = "crates/splot-decode/src/prediction/inter.rs"
+change_id = "decode-intra-only-tile-group"
+tracking_issue = ""
+owner = "decoder"
+risk = "medium"
+notes = "Carrier/routing-specific support that depends on DECODE-GENERAL-INTRA-FRAME-FRONTIER for block parsing, reconstruction, filters, and output. FrameHeaderParseStatus is validated before frame-kind routing: only IntraHeaderComplete + INTRA_ONLY + frame_is_intra in OBU_REGULAR_TILE_GROUP or OBU_LEADING_TILE_GROUP is admitted; contradictory complete state is typed internal header state, modeled-region truncation is decode/malformed-source at §6.2.1, and UnsupportedUntilFeature remains a coverage stop. The split scheduler explicitly requires InterHeaderComplete and non-intra facts, while the fused 8/10-bit path selects FrameSetup::Intra for the validated intra status and preserves the existing common filter, CDF, reference-refresh, and output lifecycle. The pinned instrumented AVM RegularTileGroup fixture decodes byte-exact to the 512-byte raw oracle at one and eight threads. LeadingTileGroup shares the spec-defined intra header/tile carrier path and has positive status and boundary tests, but no AVM output claim. The fixture does not claim coeff.all_zero or expand the inherited general-intra tool frontier."
+
+[feature.status]
+mapped = "done"
+types = "done"
+parse = "done"
+validate = "not-applicable"
+write = "not-applicable"
+encode = "not-applicable"
+decode_check = "done"
+tests = "done"
+avm_diff = "done"
+perf = "not-applicable"
+
+[feature.proof]
+tests = ["crates/splot-decode/src/prediction/inter/tests/header_state.rs::complete_intra_only_tile_group_is_admitted_for_regular_and_leading_carriers", "crates/splot-decode/src/prediction/inter/tests/header_state.rs::contradictory_intra_only_tile_group_state_is_typed", "crates/splot-decode/src/prediction/inter/tests/header_state.rs::truncated_inter_header_regions_are_malformed_source_diagnostics", "crates/splot-decode/src/prediction/inter/tests/header_state.rs::intra_only_tile_group_never_enters_split_inter_walk", "crates/splot-decode/src/bitstream/tile_payload/derived_tests.rs::derived_boundary_admits_intra_only_regular_and_leading_tile_groups", "crates/splot-decode/src/output/raw.rs::tests::intra_only_tile_group_fixture_matches_exact_raw_bytes", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest"]
+commands = ["cargo test -p splot-decode intra_only --locked", "cargo xtask conformance", "cargo xtask decoder-fixtures verify", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask check-decoder-support", "cargo xtask check-feature-status"]
+fixtures = ["tests/conformance/vectors/valid/syn-2frame-intra-only-mono-16x16-q255.ivf"]
+diagnostics = ["decode/malformed-source"]
+
+[[feature]]
 id = "DECODE-FIRST-INTER-FRAME-FRONTIER"
 name = "First inter frame decode frontier (verified target)"
 category = "infrastructure"

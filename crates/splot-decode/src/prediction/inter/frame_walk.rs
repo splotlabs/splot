@@ -220,10 +220,16 @@ pub(super) fn required_inter_quantizer_deltas(
 /// feeds back into. Every other frame keeps the fused walk.
 #[must_use]
 pub(crate) fn splittable_inter_frame(obu_type: ObuType, core: &FrameHeaderCore) -> bool {
-    matches!(
-        obu_type,
-        ObuType::LeadingTileGroup | ObuType::RegularTileGroup | ObuType::Switch | ObuType::RasFrame
-    ) && !block::global_intrabc_enabled(core.intrabc)
+    core.status == splot_core::headers::frame::FrameHeaderParseStatus::InterHeaderComplete
+        && core.frame_is_intra == Some(false)
+        && matches!(
+            obu_type,
+            ObuType::LeadingTileGroup
+                | ObuType::RegularTileGroup
+                | ObuType::Switch
+                | ObuType::RasFrame
+        )
+        && !block::global_intrabc_enabled(core.intrabc)
         && core
             .tile_info
             .as_ref()

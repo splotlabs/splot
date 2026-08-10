@@ -90,6 +90,9 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
+    /// A complete intra header contradicted its tile-group carrier or frame-kind facts.
+    #[error("intra-only tile-group header state is inconsistent")]
+    InvalidIntraOnlyTileGroupState,
     /// A successfully parsed inter frame did not carry complete frame-header state.
     #[error("inter-frame header state is incomplete")]
     IncompleteInterFrame,

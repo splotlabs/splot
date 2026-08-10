@@ -204,6 +204,13 @@ fixtureable = true
 spec_sections = ["5.20.7.1", "7.13.3", "6.19.7.1"]
 
 [[capability]]
+id = "frame.intra_only"
+name = "Intra-only non-key frame"
+category = "frame"
+fixtureable = true
+spec_sections = ["5.18.2", "5.19", "7.2"]
+
+[[capability]]
 id = "frame.key_closed_loop"
 name = "Closed-loop key (intra) frame"
 category = "frame"

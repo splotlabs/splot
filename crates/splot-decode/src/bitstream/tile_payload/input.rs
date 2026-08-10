@@ -671,7 +671,13 @@ fn validate_supported_frame(
         });
     }
     match (facts.frame_is_intra, candidate.obu_type()) {
-        (true, ObuType::ClosedLoopKey | ObuType::OpenLoopKey)
+        (
+            true,
+            ObuType::ClosedLoopKey
+            | ObuType::OpenLoopKey
+            | ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup,
+        )
         | (
             false,
             ObuType::LeadingTileGroup

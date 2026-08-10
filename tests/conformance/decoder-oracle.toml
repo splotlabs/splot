@@ -23,6 +23,13 @@ ivf_sha256 = "e658f1dfa59c2f7f35ae4ca43f6fac06e9c5394c976b16d00986616bd29f7544"
 avm_raw_sha256 = "92cb67a5828266a983aca929f2c97b1e86ea5047ea9bca6ded0e467c3cb781e2"
 
 [[fixture]]
+id = "syn-2frame-intra-only-mono-16x16-q255"
+status = "must_pass"
+features = ["container.ivf", "frame.intra_only", "frame.key_closed_loop", "frame.multi_frame", "frame.reference_refresh", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i420", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.monochrome", "seq.layers.single", "tile.single"]
+ivf_sha256 = "74acd49de73519e0d80a4508e5dcaf7548f22669e0aafe2fa62c9f9610289776"
+avm_raw_sha256 = "0dc50ed6e41c0a4d3eaa8c5a1e850607fd4bf2042596439f6112369e90f58364"
+
+[[fixture]]
 id = "syn-cfl-444-tilerows-intra-256x128"
 status = "must_pass"
 features = ["container.ivf", "frame.key_closed_loop", "intra.cfl", "intra.cfl.non420", "intra.cfl.tile_boundary", "obu.frame_header", "obu.sequence_header", "obu.temporal_delimiter", "obu.tile_group", "output.raw_i444", "partition.square", "quant.base_q", "seq.bit_depth.8", "seq.chroma.444", "seq.layers.single", "tile.multiple"]

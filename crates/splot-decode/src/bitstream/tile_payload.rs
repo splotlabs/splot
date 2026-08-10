@@ -657,7 +657,13 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
         ));
     }
     match (input.frame.obu_type, input.frame.is_frame_intra) {
-        (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, true)
+        (
+            ObuType::ClosedLoopKey
+            | ObuType::OpenLoopKey
+            | ObuType::LeadingTileGroup
+            | ObuType::RegularTileGroup,
+            true,
+        )
         | (
             ObuType::LeadingTileGroup
             | ObuType::RegularTileGroup
@@ -665,13 +671,7 @@ pub(crate) fn plan_tile_payload_boundary<'a>(
             | ObuType::RasFrame,
             false,
         ) => {}
-        (
-            ObuType::LeadingTileGroup
-            | ObuType::RegularTileGroup
-            | ObuType::Switch
-            | ObuType::RasFrame,
-            true,
-        )
+        (ObuType::Switch | ObuType::RasFrame, true)
         | (ObuType::ClosedLoopKey | ObuType::OpenLoopKey, false) => {
             return Err(unsupported_boundary_without_tile(
                 TilePayloadUnsupportedReason::NonIntraFrame,

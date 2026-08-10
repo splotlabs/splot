@@ -1490,6 +1490,13 @@ where
                                 &mut recon_lane,
                             )?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            let setup = if inter_core.status
+                                == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
+                            {
+                                frame_engine::FrameSetup::Intra
+                            } else {
+                                frame_engine::FrameSetup::Inter(&inter_state)
+                            };
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_eight,
                                 plan,
@@ -1499,7 +1506,7 @@ where
                                 inter_core,
                                 &sequence,
                                 options,
-                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                &setup,
                                 BitDepth::Eight,
                             )?;
                             let inter_core = Arc::clone(&walk.core);
@@ -1719,6 +1726,13 @@ where
                                 &mut recon_lane,
                             )?;
                             ring.reserve(decode_scratch_eight, decode_scratch_ten);
+                            let setup = if inter_core.status
+                                == splot_core::headers::frame::FrameHeaderParseStatus::IntraHeaderComplete
+                            {
+                                frame_engine::FrameSetup::Intra
+                            } else {
+                                frame_engine::FrameSetup::Inter(&inter_state)
+                            };
                             let walk = frame_engine::walk_frame(
                                 decode_scratch_ten,
                                 plan,
@@ -1728,7 +1742,7 @@ where
                                 inter_core,
                                 &sequence,
                                 options,
-                                &frame_engine::FrameSetup::Inter(&inter_state),
+                                &setup,
                                 BitDepth::Ten,
                             )?;
                             let inter_core = Arc::clone(&walk.core);
