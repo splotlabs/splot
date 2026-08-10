@@ -72,8 +72,32 @@ use crate::prediction::inter::{
         BlockPrecisionRecord, INTRABC_REF_FRAME, MvBlockContext, NON_INTER_FLAG_SYNTAX,
         NeighbourFlagSyntax, NeighbourMotionValues, NeighbourMvGrid, RefMvBank,
     },
+    hold_inter_block_references,
     mc::{CompoundBlend, McBlockRect},
 };
+
+#[test]
+fn inter_block_reference_hold_rejects_every_invalid_bawp_list_index() -> TestResult {
+    let reference = InterReferenceState::<u8>::empty()?;
+    for index in [-1, 1] {
+        let mut placed = placed_luma_block(0, 0, 4, 4, InterIntraMode::Dc);
+        placed.block.ref_frame0 = index;
+        placed.block.bawp.enabled = true;
+        let Err(error) = hold_inter_block_references(&[0], &reference, &placed) else {
+            return Err(format!("reference list index {index} must fail before BAWP").into());
+        };
+        assert!(matches!(
+            error,
+            DecodeError::ReferenceState {
+                source: crate::DecodeReferenceStateError::ReferenceListIndexOutOfRange {
+                    index: actual,
+                    list_len: 1,
+                }
+            } if actual == index
+        ));
+    }
+    Ok(())
+}
 
 #[test]
 fn block_reference_dimension_metadata_bounds_are_typed() -> TestResult {
