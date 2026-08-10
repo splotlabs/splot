@@ -90,6 +90,9 @@ pub enum DecodeError {
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[non_exhaustive]
 pub enum DecodeHeaderStateError {
+    /// A decoded general-intra mode escaped its typed AV2 domain.
+    #[error("general-intra mode state is inconsistent")]
+    InvalidGeneralIntraModeState,
     /// A canonical three-symbol MHCCP direction decoded outside its typed domain.
     #[error("general-intra MHCCP direction state is inconsistent")]
     InvalidGeneralIntraMhccpDirection,

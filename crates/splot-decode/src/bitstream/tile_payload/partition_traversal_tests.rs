@@ -230,7 +230,14 @@ fn run_first_superblock<'payload>(
             let leaf = if frontier.is_chroma_part() {
                 GeneralIntraLeafMode::chroma(false)
             } else {
-                GeneralIntraLeafMode::luma(0, IntraYMode::DC_PRED, 0, 0, 0).with_uv_cfl(false)
+                GeneralIntraLeafMode::luma(
+                    IntraJointMode::DC,
+                    IntraYMode::Dc,
+                    0,
+                    0,
+                    MrlSelection::Disabled,
+                )
+                .with_uv_cfl(false)
             };
             Ok((leaf, ()))
         },

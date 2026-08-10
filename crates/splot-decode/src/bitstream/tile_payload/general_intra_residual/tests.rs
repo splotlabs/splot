@@ -97,7 +97,7 @@ fn intra_tx_type_set1_with_sec_tx_payload(
 }
 
 fn dc_luma_context() -> LumaTransformTypeContext {
-    LumaTransformTypeContext::new(IntraYMode::DC_PRED, 0)
+    LumaTransformTypeContext::new(IntraYMode::Dc, 0)
 }
 
 #[test]
@@ -854,11 +854,11 @@ fn inter_dct_idtx_iddct_set4_inverts_per_spec_table() {
 
 #[test]
 fn luma_transform_context_applies_mrl_delta_before_wide_angle_mapping() {
+    let mode_index =
+        crate::bitstream::tile_payload::cdf::block_context::ModeIndex::try_new(19).unwrap();
     let luma =
-        crate::bitstream::tile_payload::cdf::block_context::reconstruct_y_mode_second_set_top_left(
-            1, 6,
-        )
-        .unwrap();
+        crate::bitstream::tile_payload::cdf::block_context::reconstruct_y_mode_top_left(mode_index)
+            .unwrap();
     assert_eq!(luma.y_mode.value(), 8);
     assert_eq!(luma.angle_delta_y, -2);
 

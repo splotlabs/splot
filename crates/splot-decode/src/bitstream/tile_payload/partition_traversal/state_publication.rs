@@ -144,12 +144,13 @@ pub(super) fn publish_intra_leaf_state<E>(
                     c: call.c,
                 },
             )?;
-            let uses_mrls_value = leaf_mode.uses_mrls.ok_or(
-                TilePartitionTraversalError::MissingIntraUsesMrlsState {
-                    r: call.r,
-                    c: call.c,
-                },
-            )?;
+            let mrl =
+                leaf_mode
+                    .mrl
+                    .ok_or(TilePartitionTraversalError::MissingIntraUsesMrlsState {
+                        r: call.r,
+                        c: call.c,
+                    })?;
             let fsc_mode = leaf_mode.fsc_mode.ok_or(
                 TilePartitionTraversalError::MissingIntraFscModeState {
                     r: call.r,
@@ -166,7 +167,7 @@ pub(super) fn publish_intra_leaf_state<E>(
             joint_modes.record_block(call.r, call.c, block_n4w, block_n4h, joint_mode);
             fsc_modes.record_block(call.r, call.c, block_n4w, block_n4h, fsc_mode);
             use_dip.record_block(call.r, call.c, block_n4w, block_n4h, use_dip_value);
-            uses_mrls.record_block(call.r, call.c, block_n4w, block_n4h, uses_mrls_value);
+            uses_mrls.record_block(call.r, call.c, block_n4w, block_n4h, mrl);
             palette_y.record_block(call.r, call.c, block_n4w, block_n4h, leaf_mode.palette_y);
             y_modes.record_block(call.r, call.c, block_n4w, block_n4h, y_mode, angle_delta_y);
         } else {
@@ -187,7 +188,7 @@ pub(super) fn publish_intra_leaf_state<E>(
                     call.c,
                     block_n4w,
                     block_n4h,
-                    IntraYMode::DC_PRED, // § 5.20.5.3 AV2 intraBC mode = DC_PRED (decodemv.c); an SDP chroma-part reads this collocated luma mode
+                    IntraYMode::Dc, // § 5.20.5.3 AV2 intraBC mode = DC_PRED (decodemv.c); an SDP chroma-part reads this collocated luma mode
                     0,
                 );
             }

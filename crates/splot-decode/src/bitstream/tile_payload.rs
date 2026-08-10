@@ -36,8 +36,11 @@ use splot_core::types::ObuType;
 use crate::{DecodeLimitError, DecodeLimitName, DecodeLimitOp, DecodeLimits};
 
 pub(crate) use block_decoded_state::TileBlockDecodedState;
+#[cfg(test)]
+pub(crate) use cdf::block_context::IntraJointMode;
 pub(crate) use cdf::block_context::{
-    IntraYMode, SupportedChromaMode, SupportedDirectionalLumaMode, SupportedNonDcLumaMode,
+    IntraYMode, IntraYModeClass, MrlSelection, SupportedChromaMode, SupportedDirectionalLumaMode,
+    SupportedNonDcLumaMode,
 };
 pub(crate) use cdf::block_read::BlockSymbolTraceReadError;
 pub(crate) use cdf::{

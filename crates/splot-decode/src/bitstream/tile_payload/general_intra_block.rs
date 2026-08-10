@@ -9,11 +9,9 @@ use splot_core::tables::conversion::{ADJUSTED_TX_SIZE, MAX_TX_SIZE_RECT, SIZE_GR
 use splot_recon::{DpcmDirection, dpcm_direction};
 
 use super::cdf::block_context::{
-    IntraYMode, MODE_INDEX_COUNT, NON_DIRECTIONAL_MODES_COUNT, SupportedChromaMode,
-    SupportedNonDcLumaMode, YModeEscapeResult, get_intra_uv_mode_set, reconstruct_minimal_y_mode,
-    reconstruct_y_mode_first_set_directional_top_left, reconstruct_y_mode_offset_escape_top_left,
-    reconstruct_y_mode_second_set_top_left, reconstruct_y_mode_with_neighbours,
-    supported_chroma_mode, uv_mode_ctx,
+    IntraJointMode, IntraModeStateError, IntraYMode, MODE_INDEX_COUNT, ModeIndex, MrlSelection,
+    SupportedChromaMode, YModeEscapeResult, get_intra_uv_mode_set, reconstruct_y_mode_top_left,
+    reconstruct_y_mode_with_neighbours, supported_chroma_mode, uv_mode_ctx,
 };
 use super::cdf::block_read::BlockSymbolTraceReadError;
 use super::cdf::{TileCdfSelector, TileCdfSubset};
@@ -39,8 +37,8 @@ const DPCM_MODE_UV_REASON: &str = "intra_dpcm_mode_uv";
 // AV2 § 5.20.5.5 and § 5.20.5.6 syntax literals for parse-then-fail-closed DPCM.
 const DPCM_VERTICAL_UV_MODE: u8 = 1;
 const DPCM_HORIZONTAL_UV_MODE: u8 = 2;
-const DPCM_VERTICAL_JOINT_MODE: u8 = 22;
-const DPCM_HORIZONTAL_JOINT_MODE: u8 = 50;
+const DPCM_VERTICAL_JOINT_MODE: usize = 22;
+const DPCM_HORIZONTAL_JOINT_MODE: usize = 50;
 const Y_MODE_INDEX_REASON: &str = "intra_y_mode_index";
 const Y_MODE_OFFSET_REASON: &str = "intra_y_mode_offset";
 const Y_SECOND_MODE_REASON: &str = "intra_y_second_mode";
@@ -187,11 +185,9 @@ pub(crate) struct GeneralIntraBlockModes {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
     chroma: Option<GeneralIntraChromaBlockMode>,
-    pub(crate) intra_joint_mode: u8,
-    pub(crate) mrl_index: u8,
-    pub(crate) mrl_sec_index: Option<u8>,
+    pub(crate) intra_joint_mode: IntraJointMode,
+    pub(crate) mrl: MrlSelection,
     pub(crate) fsc_mode: u8,
-    pub(crate) uses_mrls: u8,
     pub(crate) use_dip: u8,
     pub(crate) dip_transpose: u8,
     pub(crate) dip_mode: u8,
@@ -301,11 +297,9 @@ impl CflMultiDirection {
 pub(crate) struct GeneralIntraLumaBlockMode {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
-    pub(crate) intra_joint_mode: u8,
-    pub(crate) mrl_index: u8,
-    pub(crate) mrl_sec_index: Option<u8>,
+    pub(crate) intra_joint_mode: IntraJointMode,
+    pub(crate) mrl: MrlSelection,
     pub(crate) fsc_mode: u8,
-    pub(crate) uses_mrls: u8,
     pub(crate) use_dip: u8,
     pub(crate) dip_transpose: u8,
     pub(crate) dip_mode: u8,
@@ -327,7 +321,7 @@ impl GeneralIntraLumaBlockMode {
 struct DecodedLumaYMode {
     y_mode: IntraYMode,
     angle_delta_y: i8,
-    intra_joint_mode: u8,
+    intra_joint_mode: IntraJointMode,
     use_dpcm_y: u8,
     dpcm_mode_y: u8,
 }
@@ -343,23 +337,23 @@ impl DecodedLumaYMode {
         }
     }
 
-    const fn dpcm(dpcm_mode_y: u8) -> Self {
+    fn dpcm(dpcm_mode_y: u8) -> Result<Self, IntraModeStateError> {
         if dpcm_mode_y == 0 {
-            Self {
-                y_mode: IntraYMode::dpcm_vertical(),
+            Ok(Self {
+                y_mode: IntraYMode::Vertical,
                 angle_delta_y: 0,
-                intra_joint_mode: DPCM_VERTICAL_JOINT_MODE,
+                intra_joint_mode: IntraJointMode::try_new(DPCM_VERTICAL_JOINT_MODE)?,
                 use_dpcm_y: 1,
                 dpcm_mode_y,
-            }
+            })
         } else {
-            Self {
-                y_mode: IntraYMode::dpcm_horizontal(),
+            Ok(Self {
+                y_mode: IntraYMode::Horizontal,
                 angle_delta_y: 0,
-                intra_joint_mode: DPCM_HORIZONTAL_JOINT_MODE,
+                intra_joint_mode: IntraJointMode::try_new(DPCM_HORIZONTAL_JOINT_MODE)?,
                 use_dpcm_y: 1,
                 dpcm_mode_y,
-            }
+            })
         }
     }
 }
@@ -371,10 +365,8 @@ impl GeneralIntraBlockModes {
             angle_delta_y: luma.angle_delta_y,
             chroma: None,
             intra_joint_mode: luma.intra_joint_mode,
-            mrl_index: luma.mrl_index,
-            mrl_sec_index: luma.mrl_sec_index,
+            mrl: luma.mrl,
             fsc_mode: luma.fsc_mode,
-            uses_mrls: luma.uses_mrls,
             use_dip: luma.use_dip,
             dip_transpose: luma.dip_transpose,
             dip_mode: luma.dip_mode,
@@ -394,10 +386,8 @@ impl GeneralIntraBlockModes {
             angle_delta_y: luma.angle_delta_y,
             chroma: Some(chroma),
             intra_joint_mode: luma.intra_joint_mode,
-            mrl_index: luma.mrl_index,
-            mrl_sec_index: luma.mrl_sec_index,
+            mrl: luma.mrl,
             fsc_mode: luma.fsc_mode,
-            uses_mrls: luma.uses_mrls,
             use_dip: luma.use_dip,
             dip_transpose: luma.dip_transpose,
             dip_mode: luma.dip_mode,
@@ -412,20 +402,12 @@ impl GeneralIntraBlockModes {
         self
     }
 
-    pub(crate) fn luma_is_dc(&self) -> bool {
-        self.y_mode == IntraYMode::DC_PRED
-    }
-
     pub(crate) const fn is_cfl(&self) -> bool {
         matches!(self.chroma, Some(GeneralIntraChromaBlockMode::Cfl(_)))
     }
 
     pub(crate) const fn chroma(&self) -> Option<GeneralIntraChromaBlockMode> {
         self.chroma
-    }
-
-    pub(crate) fn supported_nondc_luma(&self) -> Option<SupportedNonDcLumaMode> {
-        self.y_mode.supported_nondc()
     }
 
     pub(crate) fn supported_chroma_mode(&self) -> Option<SupportedChromaMode> {
@@ -443,7 +425,7 @@ impl GeneralIntraBlockModes {
     }
 
     pub(crate) const fn uses_active_mrl(&self) -> bool {
-        self.uses_mrls != 0
+        self.mrl.is_active()
     }
 
     pub(crate) const fn uses_active_fsc(&self) -> bool {
@@ -475,18 +457,12 @@ pub(crate) enum GeneralIntraBlockModeError {
         reason: &'static str,
         source: CoreError,
     },
-    #[error(
-        "general intra mode-info cannot reconstruct YMode for y_mode_set {y_mode_set}, modeIdx {mode_idx}"
-    )]
-    UnsupportedYMode { y_mode_set: u8, mode_idx: usize },
+    #[error(transparent)]
+    InvalidModeState(#[from] IntraModeStateError),
     #[error("general intra mode-info decoded out-of-range uv_mode {uv_mode}")]
     InvalidUvMode { uv_mode: u8 },
     #[error("general intra mode-info decoded out-of-range cfl_mh_dir {direction}")]
     InvalidCflMhDirection { direction: u8 },
-    #[error(
-        "general intra mode-info modeIdx {mode_idx} with directional-neighbour ctx {ctx} requires §5.20.5.5 reorder support"
-    )]
-    UnsupportedDirectionalNeighbourReorder { ctx: usize, mode_idx: usize },
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -536,14 +512,11 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
         0
     };
 
-    let mut mrl_index = 0;
-    let mut mrl_sec_index = None;
-    let mut uses_mrls_value = 0;
-    if chroma_tools.enable_mrls
+    let mrl = if chroma_tools.enable_mrls
         && y_mode_result.use_dpcm_y == 0
         && y_mode_result.y_mode.is_directional()
     {
-        mrl_index = read_symbol(
+        let mrl_index = read_symbol(
             cdfs,
             symbols,
             TileCdfSelector::MrlIndex {
@@ -551,8 +524,10 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
             },
             MRL_INDEX_REASON,
         )?;
-        if mrl_index > 0 {
-            let secondary = read_symbol(
+        if mrl_index == 0 {
+            MrlSelection::Disabled
+        } else {
+            let mrl_secondary = read_symbol(
                 cdfs,
                 symbols,
                 TileCdfSelector::MrlSecIndex {
@@ -560,19 +535,18 @@ pub(crate) fn decode_general_intra_luma_block_mode_with_fsc_context(
                 },
                 MRL_SEC_INDEX_REASON,
             )?;
-            mrl_sec_index = Some(secondary);
-            uses_mrls_value = if secondary == 0 { 1 } else { 2 };
+            MrlSelection::from_symbols(mrl_index, Some(mrl_secondary))?
         }
-    }
+    } else {
+        MrlSelection::Disabled
+    };
 
     Ok(GeneralIntraLumaBlockMode {
         y_mode: y_mode_result.y_mode,
         angle_delta_y: y_mode_result.angle_delta_y,
         intra_joint_mode: y_mode_result.intra_joint_mode,
-        mrl_index,
-        mrl_sec_index,
+        mrl,
         fsc_mode,
-        uses_mrls: uses_mrls_value,
         use_dip: 0,
         dip_transpose: 0,
         dip_mode: 0,
@@ -1003,7 +977,7 @@ fn decode_luma_y_mode(
     symbols: &mut SymbolDecoder<'_>,
     lossless: bool,
     mode_ctx: usize,
-    neighbour_joint_modes: [u8; 2],
+    neighbour_joint_modes: [IntraJointMode; 2],
     block_n4w: usize,
     block_n4h: usize,
 ) -> Result<DecodedLumaYMode, GeneralIntraBlockModeError> {
@@ -1016,105 +990,44 @@ fn decode_luma_y_mode(
                 TileCdfSelector::DpcmModeY,
                 DPCM_MODE_Y_REASON,
             )?;
-            return Ok(DecodedLumaYMode::dpcm(dpcm_mode_y));
+            return DecodedLumaYMode::dpcm(dpcm_mode_y).map_err(Into::into);
         }
     }
 
     let y_mode_set = read_symbol(cdfs, symbols, TileCdfSelector::YModeSet, Y_MODE_SET_REASON)?;
-    if y_mode_set != 0 {
+    let mode_idx = if y_mode_set != 0 {
         let y_second_mode = read_literal_u8(symbols, Y_SECOND_MODE_BITS, Y_SECOND_MODE_REASON)?;
-        let mode_idx = FIRST_MODE_COUNT
+        FIRST_MODE_COUNT
             .saturating_add(
                 usize::from(y_mode_set.saturating_sub(1)).saturating_mul(SECOND_MODE_COUNT),
             )
-            .saturating_add(usize::from(y_second_mode));
-        return reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_second_set_top_left(y_mode_set, y_second_mode),
-        )
-        .map(DecodedLumaYMode::from_y_mode);
-    }
-
-    let y_mode_index = read_symbol(
-        cdfs,
-        symbols,
-        TileCdfSelector::YModeIndex { ctx: mode_ctx },
-        Y_MODE_INDEX_REASON,
-    )?;
-    if y_mode_index == MODE_INDEX_COUNT - 1 {
-        let y_mode_offset = read_symbol(
+            .saturating_add(usize::from(y_second_mode))
+    } else {
+        let y_mode_index = read_symbol(
             cdfs,
             symbols,
-            TileCdfSelector::YModeOffset { ctx: mode_ctx },
-            Y_MODE_OFFSET_REASON,
+            TileCdfSelector::YModeIndex { ctx: mode_ctx },
+            Y_MODE_INDEX_REASON,
         )?;
-        let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
-        return reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_offset_escape_top_left(y_mode_offset),
-        )
-        .map(DecodedLumaYMode::from_y_mode);
-    }
-
-    let mode_idx = usize::from(y_mode_index);
-    if mode_idx >= NON_DIRECTIONAL_MODES_COUNT {
-        return reconstruct_y_mode_result(
-            y_mode_set,
-            mode_idx,
-            mode_ctx,
-            neighbour_joint_modes,
-            block_n4w,
-            block_n4h,
-            reconstruct_y_mode_first_set_directional_top_left(y_mode_index),
-        )
-        .map(DecodedLumaYMode::from_y_mode);
-    }
-
-    let y_mode = reconstruct_minimal_y_mode(y_mode_set, y_mode_index).ok_or(
-        GeneralIntraBlockModeError::UnsupportedYMode {
-            y_mode_set,
-            mode_idx,
-        },
-    )?;
-    Ok(DecodedLumaYMode::from_y_mode(YModeEscapeResult {
-        y_mode,
-        angle_delta_y: 0,
-        intra_joint_mode: y_mode_index,
-    }))
-}
-
-fn reconstruct_y_mode_result(
-    y_mode_set: u8,
-    mode_idx: usize,
-    mode_ctx: usize,
-    neighbour_joint_modes: [u8; 2],
-    block_n4w: usize,
-    block_n4h: usize,
-    top_left_result: Option<YModeEscapeResult>,
-) -> Result<YModeEscapeResult, GeneralIntraBlockModeError> {
-    if mode_ctx == 0 {
-        return top_left_result.ok_or(GeneralIntraBlockModeError::UnsupportedYMode {
-            y_mode_set,
-            mode_idx,
-        });
-    }
-
-    reconstruct_y_mode_with_neighbours(mode_idx, neighbour_joint_modes, block_n4w, block_n4h).ok_or(
-        GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder {
-            ctx: mode_ctx,
-            mode_idx,
-        },
-    )
+        if y_mode_index == MODE_INDEX_COUNT - 1 {
+            let y_mode_offset = read_symbol(
+                cdfs,
+                symbols,
+                TileCdfSelector::YModeOffset { ctx: mode_ctx },
+                Y_MODE_OFFSET_REASON,
+            )?;
+            usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset)
+        } else {
+            usize::from(y_mode_index)
+        }
+    };
+    let mode_idx = ModeIndex::try_new(mode_idx)?;
+    let result = if mode_ctx == 0 {
+        reconstruct_y_mode_top_left(mode_idx)
+    } else {
+        reconstruct_y_mode_with_neighbours(mode_idx, neighbour_joint_modes, block_n4w, block_n4h)
+    }?;
+    Ok(DecodedLumaYMode::from_y_mode(result))
 }
 
 /// § 5.20.5.6 `cflAllowed`, whose non-lossless arm bounds the chroma plane
@@ -1206,7 +1119,7 @@ fn palette_y_mode_allowed(
     block_n4h: usize,
 ) -> bool {
     chroma_tools.allow_screen_content_tools
-        && y_mode == IntraYMode::DC_PRED
+        && y_mode == IntraYMode::Dc
         && block_size_index >= PALETTE_MIN_BLOCK_SIZE_INDEX
         && block_n4w.saturating_mul(4) <= PALETTE_MAX_SAMPLES
         && block_n4h.saturating_mul(4) <= PALETTE_MAX_SAMPLES
@@ -1220,7 +1133,7 @@ fn dip_mode_info_allowed(
     block_n4h: usize,
 ) -> bool {
     chroma_tools.enable_dip
-        && y_mode == IntraYMode::DC_PRED
+        && y_mode == IntraYMode::Dc
         && palette_y.is_none()
         && block_n4w > 1
         && block_n4h > 1

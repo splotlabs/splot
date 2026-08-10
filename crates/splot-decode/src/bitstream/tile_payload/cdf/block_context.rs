@@ -5,92 +5,76 @@
 
 pub(crate) const NON_DIRECTIONAL_MODES_COUNT: usize = 5;
 
-const DC_PRED: usize = 0;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum IntraYMode {
+    Dc = 0,
+    Vertical = 1,
+    Horizontal = 2,
+    D45 = 3,
+    D135 = 4,
+    D113 = 5,
+    D157 = 6,
+    D203 = 7,
+    D67 = 8,
+    Smooth = 9,
+    SmoothVertical = 10,
+    SmoothHorizontal = 11,
+    Paeth = 12,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct IntraYMode(u8);
+pub(crate) enum IntraYModeClass {
+    Dc,
+    Directional { base_angle: u16 },
+    Smooth(SupportedNonDcLumaMode),
+    Paeth,
+}
 
 impl IntraYMode {
-    pub(crate) const DC_PRED: Self = Self(0);
-
-    const V_PRED: u8 = 1;
-    const H_PRED: u8 = 2;
-    const SMOOTH_PRED: u8 = 9;
-    const SMOOTH_V_PRED: u8 = 10;
-    const SMOOTH_H_PRED: u8 = 11;
-    const PAETH_PRED: u8 = 12;
-
     pub(crate) const fn is_directional(self) -> bool {
-        self.0 >= Self::V_PRED && self.0 <= 8
+        matches!(self.class(), IntraYModeClass::Directional { .. })
     }
 
-    pub(crate) fn mode_to_angle(self) -> Option<u16> {
-        MODE_TO_ANGLE.get(self.value()).copied().flatten()
-    }
-
-    pub(crate) const fn dpcm_vertical() -> Self {
-        Self(Self::V_PRED)
-    }
-
-    pub(crate) const fn dpcm_horizontal() -> Self {
-        Self(Self::H_PRED)
+    pub(crate) const fn mode_to_angle(self) -> Option<u16> {
+        match self.class() {
+            IntraYModeClass::Directional { base_angle } => Some(base_angle),
+            IntraYModeClass::Dc | IntraYModeClass::Smooth(_) | IntraYModeClass::Paeth => None,
+        }
     }
 
     pub(crate) const fn is_paeth(self) -> bool {
-        self.0 == Self::PAETH_PRED
+        matches!(self, Self::Paeth)
     }
 
     pub(crate) const fn is_smooth(self) -> bool {
-        matches!(
-            self.0,
-            Self::SMOOTH_PRED | Self::SMOOTH_V_PRED | Self::SMOOTH_H_PRED
-        )
+        matches!(self.class(), IntraYModeClass::Smooth(_))
     }
 
     pub(crate) const fn value(self) -> usize {
-        self.0 as usize
+        self as usize
     }
 
-    #[cfg(test)]
-    pub(crate) const V_PRED_FOR_TEST: Self = Self(Self::V_PRED);
-
-    #[cfg(test)]
-    pub(crate) const H_PRED_FOR_TEST: Self = Self(Self::H_PRED);
-
-    #[cfg(test)]
-    pub(crate) const D45_PRED_FOR_TEST: Self = Self(3);
-
-    #[cfg(test)]
-    pub(crate) const D67_PRED_FOR_TEST: Self = Self(8);
-
-    #[cfg(test)]
-    pub(crate) const SMOOTH_PRED_FOR_TEST: Self = Self(Self::SMOOTH_PRED);
-
-    #[cfg(test)]
-    pub(crate) const D203_PRED_FOR_TEST: Self = Self(7);
-
-    #[cfg(test)]
-    pub(crate) const D135_PRED_FOR_TEST: Self = Self(4);
-
-    #[cfg(test)]
-    pub(crate) const D113_PRED_FOR_TEST: Self = Self(5);
-
-    #[cfg(test)]
-    pub(crate) const D157_PRED_FOR_TEST: Self = Self(6);
-
-    pub(crate) fn supported_nondc(self) -> Option<SupportedNonDcLumaMode> {
-        SUPPORTED_NONDC_LUMA_BY_MODE
-            .get(self.value())
-            .copied()
-            .flatten()
+    pub(crate) const fn class(self) -> IntraYModeClass {
+        match self {
+            Self::Dc => IntraYModeClass::Dc,
+            Self::Vertical => IntraYModeClass::Directional { base_angle: 90 },
+            Self::Horizontal => IntraYModeClass::Directional { base_angle: 180 },
+            Self::D45 => IntraYModeClass::Directional { base_angle: 45 },
+            Self::D135 => IntraYModeClass::Directional { base_angle: 135 },
+            Self::D113 => IntraYModeClass::Directional { base_angle: 113 },
+            Self::D157 => IntraYModeClass::Directional { base_angle: 157 },
+            Self::D203 => IntraYModeClass::Directional { base_angle: 203 },
+            Self::D67 => IntraYModeClass::Directional { base_angle: 67 },
+            Self::Smooth => IntraYModeClass::Smooth(SupportedNonDcLumaMode::Smooth),
+            Self::SmoothVertical => IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothVertical),
+            Self::SmoothHorizontal => {
+                IntraYModeClass::Smooth(SupportedNonDcLumaMode::SmoothHorizontal)
+            }
+            Self::Paeth => IntraYModeClass::Paeth,
+        }
     }
 }
-
-#[rustfmt::skip]
-const MODE_TO_ANGLE: [Option<u16>; 13] = [
-    None, Some(90), Some(180), Some(45), Some(135), Some(113), Some(157),
-    Some(203), Some(67), None, None, None, None,
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedNonDcLumaMode {
@@ -98,15 +82,6 @@ pub(crate) enum SupportedNonDcLumaMode {
     SmoothVertical,
     SmoothHorizontal,
 }
-
-#[rustfmt::skip]
-const SUPPORTED_NONDC_LUMA_BY_MODE: [Option<SupportedNonDcLumaMode>; 13] = [
-    None, None, None, None, None, None, None, None, None,
-    Some(SupportedNonDcLumaMode::Smooth),
-    Some(SupportedNonDcLumaMode::SmoothVertical),
-    Some(SupportedNonDcLumaMode::SmoothHorizontal),
-    None,
-];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SupportedDirectionalLumaMode {
@@ -198,12 +173,12 @@ pub(crate) fn get_intra_uv_mode_set(y_mode: IntraYMode, uv_mode: u8) -> Option<u
     let mut mode_idx = usize::from(uv_mode);
     if y_directional {
         if mode_idx == 0 {
-            return Some(y_mode.0);
+            return u8::try_from(y_mode.value()).ok();
         }
         mode_idx -= 1;
     }
     for &mode in &DEFAULT_MODE_LIST_UV {
-        if mode != y_mode.0 || !y_directional {
+        if usize::from(mode) != y_mode.value() || !y_directional {
             if mode_idx == 0 {
                 return Some(mode);
             }
@@ -231,27 +206,137 @@ pub(crate) fn supported_chroma_mode(
         .flatten()
 }
 
-pub(crate) fn reconstruct_minimal_y_mode(y_mode_set: u8, y_mode_index: u8) -> Option<IntraYMode> {
-    let y_mode_index = usize::from(y_mode_index);
-    if y_mode_set != 0 || y_mode_index >= NON_DIRECTIONAL_MODES_COUNT {
-        return None;
-    }
-    REORDERED_Y_MODE.get(y_mode_index).copied()
-}
-
 pub(crate) const MODE_INDEX_COUNT: u8 = 8;
 
+#[cfg(test)]
 const MODE_OFFSET_COUNT: u8 = 6;
-
-const FIRST_MODE_COUNT: usize = 13;
-
-const SECOND_MODE_COUNT: u8 = 16;
 
 const DIRECTIONAL_MODES_COUNT: usize = 56;
 
 const TOTAL_ANGLE_DELTA_COUNT: usize = 7;
 
 const MAX_ANGLE_DELTA: i8 = 3;
+const INTRA_JOINT_MODE_COUNT: usize = NON_DIRECTIONAL_MODES_COUNT + DIRECTIONAL_MODES_COUNT;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub(crate) enum IntraModeStateError {
+    #[error("general intra mode index {value} exceeds the 0..=60 domain")]
+    InvalidModeIndex { value: usize },
+    #[error("general intra joint mode {value} exceeds the 0..=60 domain")]
+    InvalidJointMode { value: usize },
+    #[error("general intra directional mode list did not contain index {mode_index}")]
+    DirectionalModeListExhausted { mode_index: usize },
+    #[error("general intra MRL index {value} exceeds the 0..=3 domain")]
+    InvalidMrlIndex { value: u8 },
+    #[error("general intra secondary MRL selector {value} exceeds the 0..=1 domain")]
+    InvalidMrlSecondary { value: u8 },
+    #[error("general intra MRL state is missing its secondary selector")]
+    MissingMrlSecondary,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ModeIndex(u8);
+
+impl ModeIndex {
+    pub(crate) fn try_new(value: usize) -> Result<Self, IntraModeStateError> {
+        if value < INTRA_JOINT_MODE_COUNT {
+            Ok(Self(value as u8))
+        } else {
+            Err(IntraModeStateError::InvalidModeIndex { value })
+        }
+    }
+
+    pub(crate) const fn value(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct IntraJointMode(u8);
+
+impl IntraJointMode {
+    pub(crate) const DC: Self = Self(0);
+
+    pub(crate) fn try_new(value: usize) -> Result<Self, IntraModeStateError> {
+        if value < INTRA_JOINT_MODE_COUNT {
+            Ok(Self(value as u8))
+        } else {
+            Err(IntraModeStateError::InvalidJointMode { value })
+        }
+    }
+
+    const fn from_bounded(value: usize) -> Self {
+        Self(value as u8)
+    }
+
+    pub(crate) const fn value(self) -> usize {
+        self.0 as usize
+    }
+
+    pub(crate) const fn is_directional(self) -> bool {
+        self.value() >= NON_DIRECTIONAL_MODES_COUNT
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub(crate) enum MrlIndex {
+    One = 1,
+    Two = 2,
+    Three = 3,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MrlSelection {
+    Disabled,
+    Primary(MrlIndex),
+    Secondary(MrlIndex),
+}
+
+impl MrlSelection {
+    pub(crate) fn from_symbols(
+        index: u8,
+        secondary: Option<u8>,
+    ) -> Result<Self, IntraModeStateError> {
+        if index == 0 {
+            return Ok(Self::Disabled);
+        }
+        let index = match index {
+            1 => MrlIndex::One,
+            2 => MrlIndex::Two,
+            3 => MrlIndex::Three,
+            value => return Err(IntraModeStateError::InvalidMrlIndex { value }),
+        };
+        match secondary.ok_or(IntraModeStateError::MissingMrlSecondary)? {
+            0 => Ok(Self::Primary(index)),
+            1 => Ok(Self::Secondary(index)),
+            value => Err(IntraModeStateError::InvalidMrlSecondary { value }),
+        }
+    }
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::Disabled => 0,
+            Self::Primary(index) | Self::Secondary(index) => index as usize,
+        }
+    }
+
+    pub(crate) const fn is_active(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub(crate) const fn is_secondary(self) -> bool {
+        matches!(self, Self::Secondary(_))
+    }
+
+    pub(crate) const fn secondary_symbol(self) -> Option<u8> {
+        match self {
+            Self::Disabled => None,
+            Self::Primary(_) => Some(0),
+            Self::Secondary(_) => Some(1),
+        }
+    }
+}
 
 #[rustfmt::skip]
 const DEFAULT_MODE_LIST_Y: [usize; DIRECTIONAL_MODES_COUNT] = [
@@ -263,127 +348,100 @@ const DEFAULT_MODE_LIST_Y: [usize; DIRECTIONAL_MODES_COUNT] = [
 
 #[rustfmt::skip]
 const REORDERED_Y_MODE: [IntraYMode; 13] = [
-    IntraYMode(0),  // DC_PRED
-    IntraYMode(9),  // SMOOTH_PRED
-    IntraYMode(10), // SMOOTH_V_PRED
-    IntraYMode(11), // SMOOTH_H_PRED
-    IntraYMode(12), // PAETH_PRED
-    IntraYMode(3),  // D45_PRED
-    IntraYMode(8),  // D67_PRED
-    IntraYMode(1),  // V_PRED
-    IntraYMode(5),  // D113_PRED
-    IntraYMode(4),  // D135_PRED
-    IntraYMode(6),  // D157_PRED
-    IntraYMode(2),  // H_PRED
-    IntraYMode(7),  // D203_PRED
+    IntraYMode::Dc,
+    IntraYMode::Smooth,
+    IntraYMode::SmoothVertical,
+    IntraYMode::SmoothHorizontal,
+    IntraYMode::Paeth,
+    IntraYMode::D45,
+    IntraYMode::D67,
+    IntraYMode::Vertical,
+    IntraYMode::D113,
+    IntraYMode::D135,
+    IntraYMode::D157,
+    IntraYMode::Horizontal,
+    IntraYMode::D203,
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct YModeEscapeResult {
     pub(crate) y_mode: IntraYMode,
     pub(crate) angle_delta_y: i8,
-    pub(crate) intra_joint_mode: u8,
-}
-
-pub(crate) fn reconstruct_y_mode_offset_escape_top_left(
-    y_mode_offset: u8,
-) -> Option<YModeEscapeResult> {
-    if y_mode_offset >= MODE_OFFSET_COUNT {
-        return None;
-    }
-    let mode_idx = usize::from(MODE_INDEX_COUNT - 1) + usize::from(y_mode_offset);
-    resolve_y_mode_top_left(mode_idx)
-}
-
-pub(crate) fn reconstruct_y_mode_first_set_directional_top_left(
-    y_mode_index: u8,
-) -> Option<YModeEscapeResult> {
-    if y_mode_index < (NON_DIRECTIONAL_MODES_COUNT as u8) || y_mode_index >= MODE_INDEX_COUNT - 1 {
-        return None;
-    }
-    resolve_y_mode_top_left(usize::from(y_mode_index))
-}
-
-pub(crate) fn reconstruct_y_mode_second_set_top_left(
-    y_mode_set: u8,
-    y_second_mode: u8,
-) -> Option<YModeEscapeResult> {
-    if y_mode_set == 0 || y_second_mode >= SECOND_MODE_COUNT {
-        return None;
-    }
-    let set_offset =
-        usize::from(y_mode_set.checked_sub(1)?).checked_mul(usize::from(SECOND_MODE_COUNT))?;
-    let mode_idx = FIRST_MODE_COUNT
-        .checked_add(set_offset)?
-        .checked_add(usize::from(y_second_mode))?;
-    resolve_y_mode_top_left(mode_idx)
+    pub(crate) intra_joint_mode: IntraJointMode,
 }
 
 pub(crate) fn reconstruct_y_mode_with_neighbours(
-    mode_idx: usize,
-    neighbour_joint_modes: [u8; 2],
+    mode_idx: ModeIndex,
+    neighbour_joint_modes: [IntraJointMode; 2],
     block_n4w: usize,
     block_n4h: usize,
-) -> Option<YModeEscapeResult> {
+) -> Result<YModeEscapeResult, IntraModeStateError> {
     let mode_delta = get_intra_y_mode_set(mode_idx, neighbour_joint_modes, block_n4w, block_n4h)?;
     resolve_y_mode_delta(mode_delta)
 }
 
-fn resolve_y_mode_top_left(mode_idx: usize) -> Option<YModeEscapeResult> {
+pub(crate) fn reconstruct_y_mode_top_left(
+    mode_idx: ModeIndex,
+) -> Result<YModeEscapeResult, IntraModeStateError> {
     let mode_delta = get_intra_y_mode_set_top_left(mode_idx)?;
     resolve_y_mode_delta(mode_delta)
 }
 
-fn resolve_y_mode_delta(mode_delta: usize) -> Option<YModeEscapeResult> {
-    let intra_joint_mode = u8::try_from(mode_delta).ok()?;
-
+fn resolve_y_mode_delta(
+    intra_joint_mode: IntraJointMode,
+) -> Result<YModeEscapeResult, IntraModeStateError> {
+    let mode_delta = intra_joint_mode.value();
     if mode_delta < NON_DIRECTIONAL_MODES_COUNT {
-        let y_mode = *REORDERED_Y_MODE.get(mode_delta)?;
-        return Some(YModeEscapeResult {
-            y_mode,
+        return Ok(YModeEscapeResult {
+            y_mode: REORDERED_Y_MODE[mode_delta],
             angle_delta_y: 0,
             intra_joint_mode,
         });
     }
-    let mode_delta = mode_delta - NON_DIRECTIONAL_MODES_COUNT;
-    let reorder_index = mode_delta / TOTAL_ANGLE_DELTA_COUNT + NON_DIRECTIONAL_MODES_COUNT;
-    let y_mode = *REORDERED_Y_MODE.get(reorder_index)?;
-    let angle_delta_y = (mode_delta % TOTAL_ANGLE_DELTA_COUNT) as i8 - MAX_ANGLE_DELTA;
-    Some(YModeEscapeResult {
+    let directional_delta = mode_delta - NON_DIRECTIONAL_MODES_COUNT;
+    let reorder_index = directional_delta / TOTAL_ANGLE_DELTA_COUNT + NON_DIRECTIONAL_MODES_COUNT;
+    let Some(&y_mode) = REORDERED_Y_MODE.get(reorder_index) else {
+        return Err(IntraModeStateError::InvalidJointMode { value: mode_delta });
+    };
+    let angle_delta_y = (directional_delta % TOTAL_ANGLE_DELTA_COUNT) as i8 - MAX_ANGLE_DELTA;
+    Ok(YModeEscapeResult {
         y_mode,
         angle_delta_y,
         intra_joint_mode,
     })
 }
 
-fn get_intra_y_mode_set_top_left(mode_idx: usize) -> Option<usize> {
-    get_intra_y_mode_set(mode_idx, [DC_PRED as u8, DC_PRED as u8], 0, 0)
+fn get_intra_y_mode_set_top_left(
+    mode_idx: ModeIndex,
+) -> Result<IntraJointMode, IntraModeStateError> {
+    get_intra_y_mode_set(mode_idx, [IntraJointMode::DC; 2], 0, 0)
 }
 
 fn get_intra_y_mode_set(
-    mode_idx: usize,
-    neighbour_joint_modes: [u8; 2],
+    mode_idx: ModeIndex,
+    neighbour_joint_modes: [IntraJointMode; 2],
     block_n4w: usize,
     block_n4h: usize,
-) -> Option<usize> {
+) -> Result<IntraJointMode, IntraModeStateError> {
+    let original_mode_idx = mode_idx.value();
+    let mut mode_idx = original_mode_idx;
     if mode_idx < NON_DIRECTIONAL_MODES_COUNT {
-        return Some(mode_idx);
+        return Ok(IntraJointMode::from_bounded(mode_idx));
     }
-    let mut mode_idx = mode_idx - NON_DIRECTIONAL_MODES_COUNT;
+    mode_idx -= NON_DIRECTIONAL_MODES_COUNT;
     let mut is_dir_selected = [false; DIRECTIONAL_MODES_COUNT];
     let mut dir_modes = [0usize; 2];
     let mut count = 0usize;
 
     if mi_size_at_least_block_8x8(block_n4w, block_n4h) {
         for joint_mode in neighbour_joint_modes {
-            if usize::from(joint_mode) >= NON_DIRECTIONAL_MODES_COUNT {
-                let mode = usize::from(joint_mode) - NON_DIRECTIONAL_MODES_COUNT;
-                if mode >= DIRECTIONAL_MODES_COUNT {
-                    return None;
-                }
+            if joint_mode.is_directional() {
+                let mode = joint_mode.value() - NON_DIRECTIONAL_MODES_COUNT;
                 if count == 0 || mode != dir_modes[0] {
                     if mode_idx == 0 {
-                        return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
+                        return Ok(IntraJointMode::from_bounded(
+                            mode + NON_DIRECTIONAL_MODES_COUNT,
+                        ));
                     }
                     mode_idx -= 1;
                     is_dir_selected[mode] = true;
@@ -400,7 +458,9 @@ fn get_intra_y_mode_set(
                         let mode = wrap_directional_mode(base_mode, i, sign);
                         if !is_dir_selected[mode] {
                             if mode_idx == 0 {
-                                return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
+                                return Ok(IntraJointMode::from_bounded(
+                                    mode + NON_DIRECTIONAL_MODES_COUNT,
+                                ));
                             }
                             mode_idx -= 1;
                             is_dir_selected[mode] = true;
@@ -414,12 +474,16 @@ fn get_intra_y_mode_set(
     for &mode in &DEFAULT_MODE_LIST_Y {
         if !is_dir_selected[mode] {
             if mode_idx == 0 {
-                return Some(mode + NON_DIRECTIONAL_MODES_COUNT);
+                return Ok(IntraJointMode::from_bounded(
+                    mode + NON_DIRECTIONAL_MODES_COUNT,
+                ));
             }
             mode_idx -= 1;
         }
     }
-    None
+    Err(IntraModeStateError::DirectionalModeListExhausted {
+        mode_index: original_mode_idx,
+    })
 }
 
 fn mi_size_at_least_block_8x8(block_n4w: usize, block_n4h: usize) -> bool {

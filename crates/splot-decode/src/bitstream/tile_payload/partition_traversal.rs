@@ -6,7 +6,7 @@
 use splot_core::symbol::{CdfValidationMode, SymbolDecoder, SymbolDecoderConfig};
 
 use super::DecodeTileWorkUnit;
-use super::cdf::block_context::IntraYMode;
+use super::cdf::block_context::{IntraJointMode, IntraYMode, MrlSelection};
 use super::cdf::context::{PartitionContextInput, SquareSplitContextInput};
 use super::cdf::{self, TileCdfError};
 use super::intra_joint_modes::{
@@ -422,11 +422,11 @@ impl DecodeBlockFrontier {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GeneralIntraLeafMode {
-    intra_joint_mode: Option<u8>,
+    intra_joint_mode: Option<IntraJointMode>,
     y_mode: Option<IntraYMode>,
     angle_delta_y: Option<i8>,
     fsc_mode: Option<u8>,
-    uses_mrls: Option<u8>,
+    mrl: Option<MrlSelection>,
     use_dip: Option<u8>,
     palette_y: Option<LumaPalette>,
     uv_cfl: Option<bool>,
@@ -440,18 +440,18 @@ impl GeneralIntraLeafMode {
 
     #[must_use]
     pub(crate) const fn luma(
-        intra_joint_mode: u8,
+        intra_joint_mode: IntraJointMode,
         y_mode: IntraYMode,
         angle_delta_y: i8,
         fsc_mode: u8,
-        uses_mrls: u8,
+        mrl: MrlSelection,
     ) -> Self {
         Self {
             intra_joint_mode: Some(intra_joint_mode),
             y_mode: Some(y_mode),
             angle_delta_y: Some(angle_delta_y),
             fsc_mode: Some(fsc_mode),
-            uses_mrls: Some(uses_mrls),
+            mrl: Some(mrl),
             use_dip: Some(0),
             palette_y: None,
             uv_cfl: None,
@@ -466,7 +466,7 @@ impl GeneralIntraLeafMode {
             y_mode: None,
             angle_delta_y: None,
             fsc_mode: None,
-            uses_mrls: None,
+            mrl: None,
             use_dip: None,
             palette_y: None,
             uv_cfl: None,
@@ -492,7 +492,7 @@ impl GeneralIntraLeafMode {
             y_mode: None,
             angle_delta_y: None,
             fsc_mode: None,
-            uses_mrls: None,
+            mrl: None,
             use_dip: None,
             palette_y: None,
             uv_cfl: Some(uv_cfl),

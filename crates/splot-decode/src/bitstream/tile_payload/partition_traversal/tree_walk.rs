@@ -525,7 +525,14 @@ mod row_cursor_tests {
     }
 
     fn leaf_mode() -> GeneralIntraLeafMode {
-        GeneralIntraLeafMode::luma(0, super::super::IntraYMode::DC_PRED, 0, 0, 0).with_uv_cfl(false)
+        GeneralIntraLeafMode::luma(
+            super::super::IntraJointMode::DC,
+            super::super::IntraYMode::Dc,
+            0,
+            0,
+            super::super::MrlSelection::Disabled,
+        )
+        .with_uv_cfl(false)
     }
 
     #[test]
@@ -632,11 +639,11 @@ mod row_cursor_tests {
                         GeneralIntraLeafMode::chroma(false)
                     } else {
                         GeneralIntraLeafMode::luma(
-                            0,
-                            super::super::IntraYMode::D67_PRED_FOR_TEST,
+                            super::super::IntraJointMode::DC,
+                            super::super::IntraYMode::D67,
                             2,
                             0,
-                            0,
+                            super::super::MrlSelection::Disabled,
                         )
                     };
                     Ok::<_, ()>((leaf, ()))
@@ -650,7 +657,7 @@ mod row_cursor_tests {
             [
                 DecodeBlockPart::LumaPart,
                 DecodeBlockPart::ChromaPart {
-                    y_mode: super::super::IntraYMode::D67_PRED_FOR_TEST,
+                    y_mode: super::super::IntraYMode::D67,
                     angle_delta_y: 2,
                 },
             ]
@@ -696,7 +703,7 @@ mod row_cursor_tests {
             [
                 DecodeBlockPart::LumaPart,
                 DecodeBlockPart::ChromaPart {
-                    y_mode: super::super::IntraYMode::DC_PRED,
+                    y_mode: super::super::IntraYMode::Dc,
                     angle_delta_y: 0,
                 },
             ]

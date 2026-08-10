@@ -778,15 +778,12 @@ fn assert_large_chroma_order(plan: &GeneralIntraResidualPlan, defer: bool) {
 
 #[test]
 fn chroma_angle_delta_tracks_directional_follow_mode() {
-    let luma = LumaTransformTypeContext::new(
-        crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
-        -3,
-    );
+    let luma = LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::D135, -3);
 
     assert_eq!(
         chroma_angle_delta_uv(
             PlaneId::U,
-            crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST.value(),
+            crate::bitstream::tile_payload::IntraYMode::D135.value(),
             luma,
         ),
         -3
@@ -794,7 +791,7 @@ fn chroma_angle_delta_tracks_directional_follow_mode() {
     assert_eq!(
         chroma_angle_delta_uv(
             PlaneId::V,
-            crate::bitstream::tile_payload::IntraYMode::DC_PRED.value(),
+            crate::bitstream::tile_payload::IntraYMode::Dc.value(),
             luma
         ),
         0
@@ -802,7 +799,7 @@ fn chroma_angle_delta_tracks_directional_follow_mode() {
     assert_eq!(
         chroma_angle_delta_uv(
             PlaneId::Y,
-            crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST.value(),
+            crate::bitstream::tile_payload::IntraYMode::D135.value(),
             luma,
         ),
         0
@@ -953,7 +950,7 @@ fn chroma_directional_plan_uses_transform_unit_wide_angle_mapping() {
     .expect("lossless rectangular plan");
     let plane = plan.plane_plan(PlaneId::U).expect("chroma plane");
     let luma_context =
-        LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::DC_PRED, 0);
+        LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0);
 
     assert_eq!(
         crate::pipeline::general_intra::wide_angle_mapped_p_angle(8, 32, 67),
@@ -983,7 +980,7 @@ fn chroma_directional_plan_uses_transform_unit_wide_angle_mapping() {
 #[test]
 fn active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping() {
     let luma_context = LumaTransformTypeContext::with_mrl_indices(
-        crate::bitstream::tile_payload::IntraYMode::D45_PRED_FOR_TEST,
+        crate::bitstream::tile_payload::IntraYMode::D45,
         2,
         2,
         Some(1),
@@ -1044,7 +1041,7 @@ fn left_mrl_replan_preserves_superblock_boundary_above_line() {
         },
     );
     let luma_context = LumaTransformTypeContext::with_mrl_indices(
-        crate::bitstream::tile_payload::IntraYMode::D203_PRED_FOR_TEST,
+        crate::bitstream::tile_payload::IntraYMode::D203,
         2,
         1,
         Some(1),
@@ -1087,7 +1084,7 @@ fn interior_middle_mrl_unit_uses_local_above_line() {
         })
         .expect("interior transform-unit plan");
     let luma_context = LumaTransformTypeContext::with_mrl_indices(
-        crate::bitstream::tile_payload::IntraYMode::D135_PRED_FOR_TEST,
+        crate::bitstream::tile_payload::IntraYMode::D135,
         0,
         3,
         Some(1),
@@ -1235,7 +1232,7 @@ fn tile_top_reconstruction_samples(plan: RectLumaPlan, above: u8) -> Vec<u8> {
                 chroma_above_smooth: false,
                 chroma_left_smooth: false,
             },
-            LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::DC_PRED, 0),
+            LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
         )
         .expect("tile-top luma reconstruction");
 

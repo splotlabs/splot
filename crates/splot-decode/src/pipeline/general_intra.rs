@@ -8,13 +8,12 @@ use splot_recon::{
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    CflParams, GeneralIntraBlockModes, GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext,
-    GeneralIntraChromaToolConfig, GeneralIntraLeafMode, IntraYMode, IsCflContext,
-    LumaTransformPartitionContext, LumaTransformTypeContext, SupportedChromaMode,
-    SupportedNonDcLumaMode, TransformPartitionUnsupported, TransformToolResidualPolicy,
+    BlockSymbolTraceReadError, CflParams, GeneralIntraBlockModes, GeneralIntraChromaBlockMode,
+    GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig, GeneralIntraLeafMode, IntraYMode,
+    IntraYModeClass, IsCflContext, LumaTransformPartitionContext, LumaTransformTypeContext,
+    MrlSelection, SupportedChromaMode, TransformPartitionUnsupported, TransformToolResidualPolicy,
     read_lossless_luma_tx_size,
 };
-use crate::prediction::intra::{IntraLumaUnsupported, UNSUPPORTED_LUMA_MODE};
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
     ResidualPlanError,
@@ -588,8 +587,7 @@ fn parse_one_general_intra_rect_block(
     segment_id: u8,
     tile_offset: ByteOffset,
 ) -> Result<(GeneralIntraLeafMode, GeneralIntraReconCommand)> {
-    let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)
-        .map_err(|error| general_intra_luma_plan_error(error, tile_offset))?;
+    let luma_plan = rect_luma_plan(modes, block_ctx, luma_use_tcq, sb_mib)?;
     let chroma_plan = rect_chroma_plan(modes, cfl_ds_filter_index, sb_mib);
 
     let residual_plan = GeneralIntraResidualPlan::rect(
@@ -629,7 +627,7 @@ fn leaf_mode(modes: &GeneralIntraBlockModes) -> GeneralIntraLeafMode {
         modes.y_mode,
         modes.angle_delta_y,
         modes.fsc_mode,
-        modes.uses_mrls,
+        modes.mrl,
     )
     .with_palette_y(modes.palette_y())
     .with_use_dip(modes.use_dip)
@@ -648,8 +646,8 @@ fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformT
     LumaTransformTypeContext::with_mrl_indices(
         modes.y_mode,
         modes.angle_delta_y,
-        modes.mrl_index,
-        modes.mrl_sec_index,
+        modes.mrl.index() as u8,
+        modes.mrl.secondary_symbol(),
         modes.luma_dpcm_direction(),
     )
 }
@@ -677,7 +675,7 @@ fn rect_luma_plan(
     block_ctx: BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
-) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
+) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
     if let Some(palette) = modes.palette_y() {
         return Ok(RectLumaPlan::Palette { palette, use_tcq });
     }
@@ -691,12 +689,9 @@ fn rect_luma_plan(
     if modes.uses_active_mrl() {
         return rect_luma_mrl_plan(modes, block_ctx, use_tcq, sb_mib);
     }
-    let directional_p_angle = rect_luma_directional_p_angle(modes, block_ctx);
-    rect_luma_plan_for_parts_ext(
-        modes.y_mode.is_paeth(),
-        modes.supported_nondc_luma(),
-        directional_p_angle,
-        modes.luma_is_dc(),
+    rect_luma_plan_for_mode(
+        modes.y_mode,
+        rect_luma_directional_p_angle(modes, block_ctx)?,
         use_tcq,
     )
 }
@@ -706,12 +701,11 @@ fn rect_luma_mrl_plan(
     block_ctx: BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
-) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
+) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
     rect_luma_mrl_plan_for_parts(
         modes.y_mode,
         modes.angle_delta_y,
-        modes.mrl_index,
-        modes.mrl_sec_index,
+        modes.mrl,
         block_ctx,
         use_tcq,
         sb_mib,
@@ -721,17 +715,22 @@ fn rect_luma_mrl_plan(
 fn rect_luma_mrl_plan_for_parts(
     y_mode: IntraYMode,
     angle_delta_y: i8,
-    mrl_index: u8,
-    mrl_sec_index: Option<u8>,
+    mrl: MrlSelection,
     block_ctx: BlockCtx,
     use_tcq: bool,
     sb_mib: usize,
-) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
-    let nominal = y_mode.mode_to_angle().ok_or(UNSUPPORTED_LUMA_MODE)?;
-    let mrl_index = usize::from(mrl_index);
-    let mrl_delta = *MRL_INDEX_TO_DELTA
-        .get(mrl_index)
-        .ok_or(UNSUPPORTED_LUMA_MODE)?;
+) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
+    let IntraYModeClass::Directional {
+        base_angle: nominal,
+    } = y_mode.class()
+    else {
+        return Err(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState);
+    };
+    if !mrl.is_active() {
+        return Err(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState);
+    }
+    let mrl_index = mrl.index();
+    let mrl_delta = MRL_INDEX_TO_DELTA[mrl_index];
     let block = block_ctx.block();
     let width = block.width4().saturating_mul(MI_SIZE);
     let height = block.height4().saturating_mul(MI_SIZE);
@@ -739,8 +738,9 @@ fn rect_luma_mrl_plan_for_parts(
     let p_angle = wide_angle_mapped_p_angle(width, height, nominal_angle);
     let is_sb_boundary = sb_mib != 0 && block.row4().is_multiple_of(sb_mib);
     let above_mrl_index = if is_sb_boundary { 0 } else { mrl_index };
-    let secondary_mrl = mrl_sec_index == Some(1) && !(width == MI_SIZE && height == MI_SIZE);
-    let p_angle = u16::try_from(p_angle).map_err(|_| UNSUPPORTED_LUMA_MODE)?;
+    let secondary_mrl = mrl.is_secondary() && !(width == MI_SIZE && height == MI_SIZE);
+    let p_angle = u16::try_from(p_angle)
+        .map_err(|_| crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)?;
     match p_angle {
         90 => Ok(RectLumaPlan::CardinalMrl {
             direction: IntraCardinalDirection::Vertical,
@@ -779,25 +779,20 @@ fn rect_luma_mrl_plan_for_parts(
             secondary_mrl,
             use_tcq,
         }),
-        _ => Err(UNSUPPORTED_LUMA_MODE),
+        _ => Err(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState),
     }
 }
 
-fn rect_luma_plan_for_parts_ext(
-    luma_is_paeth: bool,
-    nondc: Option<SupportedNonDcLumaMode>,
+fn rect_luma_plan_for_mode(
+    y_mode: IntraYMode,
     directional_p_angle: Option<u16>,
-    luma_is_dc: bool,
     use_tcq: bool,
-) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
-    if luma_is_dc {
-        return Ok(RectLumaPlan::Dc { use_tcq });
-    }
-    if luma_is_paeth {
-        return Ok(RectLumaPlan::Paeth { use_tcq });
-    }
-    if let Some(mode) = nondc {
-        return Ok(RectLumaPlan::Smooth { mode, use_tcq });
+) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
+    match y_mode.class() {
+        IntraYModeClass::Dc => return Ok(RectLumaPlan::Dc { use_tcq }),
+        IntraYModeClass::Paeth => return Ok(RectLumaPlan::Paeth { use_tcq }),
+        IntraYModeClass::Smooth(mode) => return Ok(RectLumaPlan::Smooth { mode, use_tcq }),
+        IntraYModeClass::Directional { .. } => {}
     }
     match directional_p_angle {
         Some(90) => {
@@ -823,13 +818,13 @@ fn rect_luma_plan_for_parts_ext(
     if let Some(p_angle @ 181..=269) = directional_p_angle {
         return Ok(RectLumaPlan::OneSidedLeft { p_angle, use_tcq });
     }
-    Err(UNSUPPORTED_LUMA_MODE)
+    Err(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)
 }
 
 fn rect_luma_directional_p_angle(
     modes: &GeneralIntraBlockModes,
     block_ctx: BlockCtx,
-) -> Option<u16> {
+) -> core::result::Result<Option<u16>, crate::DecodeHeaderStateError> {
     directional_p_angle_for_luma(modes.y_mode, modes.angle_delta_y, block_ctx)
 }
 
@@ -837,13 +832,25 @@ fn directional_p_angle_for_luma(
     y_mode: IntraYMode,
     angle_delta_y: i8,
     block_ctx: BlockCtx,
-) -> Option<u16> {
-    let base = i32::from(y_mode.mode_to_angle()?);
-    let angle = base.checked_add(i32::from(angle_delta_y) * ANGLE_STEP)?;
+) -> core::result::Result<Option<u16>, crate::DecodeHeaderStateError> {
+    let Some(base) = y_mode.mode_to_angle() else {
+        return Ok(None);
+    };
+    let angle = i32::from(base)
+        .checked_add(i32::from(angle_delta_y) * ANGLE_STEP)
+        .ok_or(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)?;
     let block = block_ctx.block();
-    let width = block.width4().checked_mul(4)?;
-    let height = block.height4().checked_mul(4)?;
-    u16::try_from(wide_angle_mapped_p_angle(width, height, angle)).ok()
+    let width = block
+        .width4()
+        .checked_mul(4)
+        .ok_or(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)?;
+    let height = block
+        .height4()
+        .checked_mul(4)
+        .ok_or(crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)?;
+    u16::try_from(wide_angle_mapped_p_angle(width, height, angle))
+        .map(Some)
+        .map_err(|_| crate::DecodeHeaderStateError::InvalidGeneralIntraModeState)
 }
 
 fn rect_chroma_plan(
@@ -989,17 +996,6 @@ fn parse_general_intra_residual_plan(
     })
 }
 
-fn general_intra_luma_plan_error(error: IntraLumaUnsupported, offset: ByteOffset) -> DecodeError {
-    match error {
-        IntraLumaUnsupported::UnsupportedMode => general_intra_at!(
-            "general_intra_unsupported_luma_mode",
-            offset,
-            error.message(),
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-    }
-}
-
 fn general_intra_residual_plan_error(error: ResidualPlanError, _offset: ByteOffset) -> DecodeError {
     match error {
         ResidualPlanError::InvalidGeometry => {
@@ -1103,30 +1099,36 @@ fn general_intra_block_mode_error(
     offset: ByteOffset,
 ) -> DecodeError {
     match error {
-        GeneralIntraBlockModeError::SymbolRead { .. }
-        | GeneralIntraBlockModeError::Literal { .. }
+        GeneralIntraBlockModeError::SymbolRead {
+            source:
+                BlockSymbolTraceReadError::Cdf(_)
+                | BlockSymbolTraceReadError::Symbol(
+                    splot_core::Error::InvalidSymbolCdf { .. }
+                    | splot_core::Error::InvalidSymbolDecoderState { .. },
+                ),
+            ..
+        }
+        | GeneralIntraBlockModeError::Literal {
+            source: splot_core::Error::InvalidSymbolDecoderState { .. },
+            ..
+        } => crate::DecodeHeaderStateError::InvalidGeneralIntraModeState.into(),
+        GeneralIntraBlockModeError::SymbolRead {
+            source: BlockSymbolTraceReadError::Symbol(_),
+            ..
+        }
+        | GeneralIntraBlockModeError::Literal {
+            source: splot_core::Error::UnexpectedEof { .. },
+            ..
+        }
         | GeneralIntraBlockModeError::InvalidUvMode { .. } => {
             malformed_tile_payload(offset, GENERAL_INTRA_MODE_SPEC_SECTION, error)
         }
+        GeneralIntraBlockModeError::Literal { .. }
+        | GeneralIntraBlockModeError::InvalidModeState(_) => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraModeState.into()
+        }
         GeneralIntraBlockModeError::InvalidCflMhDirection { .. } => {
             crate::DecodeHeaderStateError::InvalidGeneralIntraMhccpDirection.into()
-        }
-        GeneralIntraBlockModeError::UnsupportedYMode { .. } => general_intra_at!(
-            "general_intra_unsupported_y_mode",
-            offset,
-            missing_capability_message!("intra.luma.mode", mode = "unsupported"),
-            GENERAL_INTRA_MODE_SPEC_SECTION,
-        ),
-        GeneralIntraBlockModeError::UnsupportedDirectionalNeighbourReorder { .. } => {
-            general_intra_at!(
-                "general_intra_directional_neighbour_reorder",
-                offset,
-                missing_capability_message!(
-                    "intra.luma.directional_neighbour_reorder",
-                    neighbour = "directional",
-                ),
-                GENERAL_INTRA_MODE_SPEC_SECTION,
-            )
         }
     }
 }

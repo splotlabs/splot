@@ -4,8 +4,11 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
-use crate::bitstream::tile_payload::{CflMultiDirection, CflParams, GeneralIntraChromaBlockMode};
+use crate::bitstream::tile_payload::{
+    CflMultiDirection, CflParams, FrameCdfSubset, GeneralIntraChromaBlockMode, TileCdfSelector,
+};
 use crate::{DecodeDiagnosticDetails, DecodeDiagnosticReport, DecodeSourceIssueKind};
+use splot_core::symbol::SymbolDecoder;
 
 #[test]
 fn invalid_uv_mode_is_malformed_tile_syntax() {
@@ -48,6 +51,127 @@ fn impossible_mhccp_direction_is_typed_internal_state() {
         }
     ));
     assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+}
+
+#[test]
+fn luma_mode_source_eof_contract_is_malformed_at_each_syntax_boundary() {
+    let offset = ByteOffset::new(42);
+    let source_offset = ByteOffset::new(47);
+    let failures = [
+        GeneralIntraBlockModeError::SymbolRead {
+            reason: "intra_y_mode_set",
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: source_offset,
+                needed: 1,
+            }),
+        },
+        GeneralIntraBlockModeError::SymbolRead {
+            reason: "intra_y_mode_offset",
+            source: BlockSymbolTraceReadError::Symbol(splot_core::Error::UnexpectedEof {
+                offset: source_offset,
+                needed: 1,
+            }),
+        },
+        GeneralIntraBlockModeError::Literal {
+            reason: "intra_y_second_mode",
+            source: splot_core::Error::UnexpectedEof {
+                offset: source_offset,
+                needed: 1,
+            },
+        },
+    ];
+
+    for failure in failures {
+        let error = general_intra_block_mode_error(failure, offset);
+        assert!(matches!(
+            &error,
+            DecodeError::MalformedSource { issue }
+                if issue.kind() == DecodeSourceIssueKind::TilePayloadParseError
+                    && issue.spec_section() == Some(GENERAL_INTRA_MODE_SPEC_SECTION)
+                    && issue.offset() == Some(offset)
+                    && issue.message().contains("unexpected end of input at byte 47")
+        ));
+        assert!(matches!(
+            DecodeDiagnosticReport::from_decode_error(&error).map(|report| report.details),
+            Some(DecodeDiagnosticDetails::MalformedSource(_))
+        ));
+    }
+}
+
+#[test]
+fn general_intra_cdf_failures_are_typed_internal_and_do_not_mutate_rows() {
+    let offset = ByteOffset::new(42);
+    let mut selector_tile = FrameCdfSubset::from_defaults().tile_copy();
+    let selector_before = selector_tile.clone();
+    let mut selector_symbols = SymbolDecoder::new(&[0x80]).expect("symbol decoder");
+    let selector_source = selector_tile
+        .read_block_symbol_trace(
+            TileCdfSelector::YModeIndex { ctx: usize::MAX },
+            &mut selector_symbols,
+        )
+        .expect_err("out-of-range selector");
+    assert_eq!(selector_tile, selector_before);
+    let selector_error = general_intra_block_mode_error(
+        GeneralIntraBlockModeError::SymbolRead {
+            reason: "intra_y_mode_index",
+            source: selector_source,
+        },
+        offset,
+    );
+    assert!(matches!(
+        &selector_error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraModeState,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&selector_error).is_none());
+
+    let selector = TileCdfSelector::YModeSet;
+    let mut invalid_tile = FrameCdfSubset::from_defaults().tile_copy();
+    invalid_tile
+        .with_row_mut(selector, |row| row[0] = 0)
+        .expect("YModeSet selector");
+    let invalid_before = invalid_tile.clone();
+    let mut invalid_symbols = SymbolDecoder::new(&[0x80]).expect("symbol decoder");
+    let invalid_source = invalid_tile
+        .read_block_symbol_trace(selector, &mut invalid_symbols)
+        .expect_err("invalid CDF row");
+    assert_eq!(invalid_tile, invalid_before);
+    let invalid_error = general_intra_block_mode_error(
+        GeneralIntraBlockModeError::SymbolRead {
+            reason: "intra_y_mode_set",
+            source: invalid_source,
+        },
+        offset,
+    );
+    assert!(matches!(
+        &invalid_error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraModeState,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&invalid_error).is_none());
+
+    let state_error = general_intra_block_mode_error(
+        GeneralIntraBlockModeError::SymbolRead {
+            reason: "intra_y_mode_set",
+            source: BlockSymbolTraceReadError::Symbol(
+                splot_core::Error::InvalidSymbolDecoderState {
+                    offset: ByteOffset::new(48),
+                    bit_offset: splot_core::span::BitOffset::from_bits(3),
+                    kind: splot_core::error::SymbolDecoderErrorKind::InvalidArithmeticRange,
+                },
+            ),
+        },
+        offset,
+    );
+    assert!(matches!(
+        &state_error,
+        DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidGeneralIntraModeState,
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&state_error).is_none());
 }
 
 #[test]
@@ -136,25 +260,24 @@ fn assert_rect_chroma_plan(
 }
 
 fn assert_rect_luma_plan_for_parts(
-    mode: Option<crate::bitstream::tile_payload::SupportedNonDcLumaMode>,
+    mode: IntraYMode,
     directional_p_angle: Option<u16>,
     expected: RectLumaPlan,
     label: &str,
 ) {
     assert_eq!(
-        rect_luma_plan_for_parts(mode, directional_p_angle, false, false),
+        rect_luma_plan_for_parts(mode, directional_p_angle, false),
         Ok(expected),
         "{label}"
     );
 }
 
 fn rect_luma_plan_for_parts(
-    nondc: Option<SupportedNonDcLumaMode>,
+    mode: IntraYMode,
     directional_p_angle: Option<u16>,
-    luma_is_dc: bool,
     use_tcq: bool,
-) -> core::result::Result<RectLumaPlan, IntraLumaUnsupported> {
-    rect_luma_plan_for_parts_ext(false, nondc, directional_p_angle, luma_is_dc, use_tcq)
+) -> core::result::Result<RectLumaPlan, crate::DecodeHeaderStateError> {
+    rect_luma_plan_for_mode(mode, directional_p_angle, use_tcq)
 }
 
 fn assert_rect_luma_mrl_plan(
@@ -166,16 +289,9 @@ fn assert_rect_luma_mrl_plan(
     expected: RectLumaPlan,
     label: &str,
 ) {
+    let mrl = MrlSelection::from_symbols(mrl_index, mrl_sec_index).expect("valid test MRL");
     assert_eq!(
-        rect_luma_mrl_plan_for_parts(
-            y_mode,
-            angle_delta_y,
-            mrl_index,
-            mrl_sec_index,
-            block,
-            false,
-            32,
-        ),
+        rect_luma_mrl_plan_for_parts(y_mode, angle_delta_y, mrl, block, false, 32,),
         Ok(expected),
         "{label}"
     );
@@ -198,11 +314,9 @@ fn luma_modes_with_parts(
     GeneralIntraBlockModes::luma_only(crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
         y_mode,
         angle_delta_y,
-        intra_joint_mode: 0,
-        mrl_index: 0,
-        mrl_sec_index: None,
+        intra_joint_mode: crate::bitstream::tile_payload::IntraJointMode::DC,
+        mrl: MrlSelection::Disabled,
         fsc_mode: 0,
-        uses_mrls: 0,
         use_dip: 0,
         dip_transpose: 0,
         dip_mode: 0,
@@ -237,15 +351,15 @@ fn lossless_luma_uses_generic_prediction_planner() {
     for bit_depth in [BitDepth::Eight, BitDepth::Ten] {
         let block_ctx = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, bit_depth);
         for mode in [
-            IntraYMode::V_PRED_FOR_TEST,
-            IntraYMode::H_PRED_FOR_TEST,
-            IntraYMode::D45_PRED_FOR_TEST,
-            IntraYMode::D67_PRED_FOR_TEST,
-            IntraYMode::D113_PRED_FOR_TEST,
-            IntraYMode::D135_PRED_FOR_TEST,
-            IntraYMode::D157_PRED_FOR_TEST,
-            IntraYMode::D203_PRED_FOR_TEST,
-            IntraYMode::SMOOTH_PRED_FOR_TEST,
+            IntraYMode::Vertical,
+            IntraYMode::Horizontal,
+            IntraYMode::D45,
+            IntraYMode::D67,
+            IntraYMode::D113,
+            IntraYMode::D135,
+            IntraYMode::D157,
+            IntraYMode::D203,
+            IntraYMode::Smooth,
         ] {
             let modes = luma_modes(mode);
             assert!(
@@ -261,10 +375,10 @@ fn lossless_adjusted_directional_luma_uses_rect_planner() {
     let block_ctx = ctx_with_bit_depth(0, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, BitDepth::Eight);
 
     for (mode, angle_delta_y, p_angle) in [
-        (IntraYMode::V_PRED_FOR_TEST, 1, 93),
-        (IntraYMode::H_PRED_FOR_TEST, -1, 177),
-        (IntraYMode::D135_PRED_FOR_TEST, -1, 132),
-        (IntraYMode::D135_PRED_FOR_TEST, 1, 138),
+        (IntraYMode::Vertical, 1, 93),
+        (IntraYMode::Horizontal, -1, 177),
+        (IntraYMode::D135, -1, 132),
+        (IntraYMode::D135, 1, 138),
     ] {
         let modes = luma_modes_with_angle(mode, angle_delta_y);
 
@@ -287,7 +401,7 @@ fn chroma_part_cfl_reaches_cfl_plan() {
     let chroma = GeneralIntraChromaBlockMode::cfl_for_test(params);
 
     assert_eq!(
-        chroma_plan_for_parts(chroma, IntraYMode::H_PRED_FOR_TEST, 0, 1, 32),
+        chroma_plan_for_parts(chroma, IntraYMode::Horizontal, 0, 1, 32),
         RectChromaPlan::Cfl {
             params,
             cfl_ds_filter_index: 1,
@@ -302,13 +416,11 @@ fn lossless_chroma_block_cfl_reaches_cfl_plan() {
         direction: CflMultiDirection::Left,
     };
     let luma = crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-        y_mode: IntraYMode::H_PRED_FOR_TEST,
+        y_mode: IntraYMode::Horizontal,
         angle_delta_y: 0,
-        intra_joint_mode: 0,
-        mrl_index: 0,
-        mrl_sec_index: None,
+        intra_joint_mode: crate::bitstream::tile_payload::IntraJointMode::DC,
+        mrl: MrlSelection::Disabled,
         fsc_mode: 1,
-        uses_mrls: 0,
         use_dip: 0,
         dip_transpose: 0,
         dip_mode: 0,
@@ -339,14 +451,14 @@ fn directional_luma_always_plans_through_the_rect_planner() {
         ctx_with_bit_depth(FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, 4, 4, BitDepth::Ten),
     ];
     let modes = [
-        IntraYMode::V_PRED_FOR_TEST,
-        IntraYMode::H_PRED_FOR_TEST,
-        IntraYMode::D45_PRED_FOR_TEST,
-        IntraYMode::D67_PRED_FOR_TEST,
-        IntraYMode::D113_PRED_FOR_TEST,
-        IntraYMode::D135_PRED_FOR_TEST,
-        IntraYMode::D157_PRED_FOR_TEST,
-        IntraYMode::D203_PRED_FOR_TEST,
+        IntraYMode::Vertical,
+        IntraYMode::Horizontal,
+        IntraYMode::D45,
+        IntraYMode::D67,
+        IntraYMode::D113,
+        IntraYMode::D135,
+        IntraYMode::D157,
+        IntraYMode::D203,
     ];
 
     for block_ctx in shapes {
@@ -403,13 +515,11 @@ fn plans_every_chroma_mode() {
 #[test]
 fn shared_and_chroma_part_planners_are_total_over_typed_chroma_states() {
     let luma = crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-        y_mode: IntraYMode::H_PRED_FOR_TEST,
+        y_mode: IntraYMode::Horizontal,
         angle_delta_y: -2,
-        intra_joint_mode: 0,
-        mrl_index: 0,
-        mrl_sec_index: None,
+        intra_joint_mode: crate::bitstream::tile_payload::IntraJointMode::DC,
+        mrl: MrlSelection::Disabled,
         fsc_mode: 0,
-        uses_mrls: 0,
         use_dip: 0,
         dip_transpose: 0,
         dip_mode: 0,
@@ -418,7 +528,7 @@ fn shared_and_chroma_part_planners_are_total_over_typed_chroma_states() {
     };
     let prediction = GeneralIntraChromaBlockMode::Prediction {
         mode: SupportedChromaMode::HorizontalFollow,
-        coeff_uv_mode: IntraYMode::H_PRED_FOR_TEST.value() as u8,
+        coeff_uv_mode: IntraYMode::Horizontal.value() as u8,
         dpcm: None,
     };
     let expected_prediction = RectChromaPlan::Directional {
@@ -471,17 +581,25 @@ fn shared_and_chroma_part_planners_are_total_over_typed_chroma_states() {
 
 #[test]
 fn classifies_smooth_luma_plans() {
-    use crate::bitstream::tile_payload::SupportedNonDcLumaMode::{
-        Smooth, SmoothHorizontal, SmoothVertical,
-    };
-
-    for (label, mode) in [
-        ("smooth vertical", SmoothVertical),
-        ("smooth", Smooth),
-        ("smooth horizontal", SmoothHorizontal),
+    for (label, y_mode, mode) in [
+        (
+            "smooth vertical",
+            IntraYMode::SmoothVertical,
+            crate::bitstream::tile_payload::SupportedNonDcLumaMode::SmoothVertical,
+        ),
+        (
+            "smooth",
+            IntraYMode::Smooth,
+            crate::bitstream::tile_payload::SupportedNonDcLumaMode::Smooth,
+        ),
+        (
+            "smooth horizontal",
+            IntraYMode::SmoothHorizontal,
+            crate::bitstream::tile_payload::SupportedNonDcLumaMode::SmoothHorizontal,
+        ),
     ] {
         assert_rect_luma_plan_for_parts(
-            Some(mode),
+            y_mode,
             None,
             RectLumaPlan::Smooth {
                 mode,
@@ -495,7 +613,7 @@ fn classifies_smooth_luma_plans() {
 #[test]
 fn classifies_paeth_luma_plan() {
     assert_eq!(
-        rect_luma_plan_for_parts_ext(true, None, None, false, false),
+        rect_luma_plan_for_mode(IntraYMode::Paeth, None, false),
         Ok(RectLumaPlan::Paeth { use_tcq: false })
     );
 }
@@ -504,13 +622,11 @@ fn classifies_paeth_luma_plan() {
 fn active_dip_luma_routes_before_dc() {
     let modes = GeneralIntraBlockModes::luma_only(
         crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-            y_mode: IntraYMode::DC_PRED,
+            y_mode: IntraYMode::Dc,
             angle_delta_y: 0,
-            intra_joint_mode: 0,
-            mrl_index: 0,
-            mrl_sec_index: None,
+            intra_joint_mode: crate::bitstream::tile_payload::IntraJointMode::DC,
+            mrl: MrlSelection::Disabled,
             fsc_mode: 0,
-            uses_mrls: 0,
             use_dip: 1,
             dip_transpose: 1,
             dip_mode: 2,
@@ -535,7 +651,7 @@ fn admits_rect_luma_mrl_cases() {
     for (label, y_mode, angle_delta_y, mrl_index, mrl_sec_index, block, expected) in [
         (
             "small rect d135 middle",
-            IntraYMode::D135_PRED_FOR_TEST,
+            IntraYMode::D135,
             0,
             3,
             Some(0),
@@ -551,7 +667,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "small square vertical cardinal secondary",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             0,
             3,
             Some(1),
@@ -566,7 +682,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "d45 one-sided above sb boundary",
-            IntraYMode::D45_PRED_FOR_TEST,
+            IntraYMode::D45,
             -2,
             1,
             Some(0),
@@ -581,7 +697,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "small square d157 middle",
-            IntraYMode::D157_PRED_FOR_TEST,
+            IntraYMode::D157,
             3,
             1,
             Some(0),
@@ -597,7 +713,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-row rect d113 middle",
-            IntraYMode::D113_PRED_FOR_TEST,
+            IntraYMode::D113,
             -1,
             2,
             Some(1),
@@ -613,7 +729,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "left-edge active-mrl vpred middle",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             0,
             1,
             Some(0),
@@ -629,7 +745,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-row rect d67 one-sided above from left edge",
-            IntraYMode::D67_PRED_FOR_TEST,
+            IntraYMode::D67,
             -1,
             3,
             Some(0),
@@ -644,7 +760,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "rect d67 one-sided left after wide-angle mapping",
-            IntraYMode::D67_PRED_FOR_TEST,
+            IntraYMode::D67,
             0,
             2,
             Some(0),
@@ -660,7 +776,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-left vertical cardinal without neighbours",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             0,
             3,
             Some(0),
@@ -675,7 +791,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-left horizontal cardinal without neighbours",
-            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::Horizontal,
             0,
             3,
             Some(0),
@@ -690,7 +806,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-left d45 without neighbours",
-            IntraYMode::D45_PRED_FOR_TEST,
+            IntraYMode::D45,
             0,
             3,
             Some(0),
@@ -705,7 +821,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-left d135 without neighbours",
-            IntraYMode::D135_PRED_FOR_TEST,
+            IntraYMode::D135,
             0,
             3,
             Some(0),
@@ -721,7 +837,7 @@ fn admits_rect_luma_mrl_cases() {
         ),
         (
             "top-left d203 without neighbours",
-            IntraYMode::D203_PRED_FOR_TEST,
+            IntraYMode::D203,
             0,
             3,
             Some(0),
@@ -750,7 +866,7 @@ fn admits_rect_luma_mrl_cases() {
 
 #[test]
 fn maps_4x8_d45_to_one_sided_left_luma() {
-    let modes = luma_modes(IntraYMode::D45_PRED_FOR_TEST);
+    let modes = luma_modes(IntraYMode::D45);
 
     assert_eq!(
         rect_luma_plan(&modes, ctx(8, 479, 1, 2), false, FULL_SB_N4_LUMA),
@@ -766,37 +882,37 @@ fn plans_rect_cardinal_luma_from_modes_and_geometry() {
     for (label, mode, block, direction) in [
         (
             "128x64 vertical",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             ctx(FULL_SB_N4_LUMA, 256, 32, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Vertical,
         ),
         (
             "64x64 vertical",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             ctx(0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Vertical,
         ),
         (
             "64x64 horizontal",
-            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::Horizontal,
             ctx(80, 0, FULL_SB_N4_LUMA, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Horizontal,
         ),
         (
             "4x8 vertical",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             ctx(24, 204, 1, 2),
             IntraCardinalDirection::Vertical,
         ),
         (
             "16x64 vertical",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             ctx(0, 0, 4, FULL_SB_N4_LUMA),
             IntraCardinalDirection::Vertical,
         ),
         (
             "64x16 horizontal",
-            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::Horizontal,
             ctx(0, 0, FULL_SB_N4_LUMA, 4),
             IntraCardinalDirection::Horizontal,
         ),
@@ -817,7 +933,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
     for (label, mode, angle_delta, block, expected) in [
         (
             "8x16 d67 +3",
-            IntraYMode::D67_PRED_FOR_TEST,
+            IntraYMode::D67,
             3,
             ctx(28, 216, 2, 4),
             RectLumaPlan::OneSidedAbove {
@@ -827,7 +943,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "32x16 horizontal +2",
-            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::Horizontal,
             2,
             ctx(0, 264, 8, 4),
             RectLumaPlan::OneSidedLeft {
@@ -837,7 +953,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "64x16 horizontal +1",
-            IntraYMode::H_PRED_FOR_TEST,
+            IntraYMode::Horizontal,
             1,
             ctx(80, 0, FULL_SB_N4_LUMA, 4),
             RectLumaPlan::OneSidedLeft {
@@ -847,7 +963,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "16x8 d203",
-            IntraYMode::D203_PRED_FOR_TEST,
+            IntraYMode::D203,
             0,
             ctx(46, 0, 4, 2),
             RectLumaPlan::OneSidedLeft {
@@ -857,7 +973,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "4x8 d157 -2",
-            IntraYMode::D157_PRED_FOR_TEST,
+            IntraYMode::D157,
             -2,
             ctx(26, 204, 1, 2),
             RectLumaPlan::Middle {
@@ -867,7 +983,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "64x32 d67 -2",
-            IntraYMode::D67_PRED_FOR_TEST,
+            IntraYMode::D67,
             -2,
             ctx(8, 336, FULL_SB_N4_LUMA, 8),
             RectLumaPlan::OneSidedAbove {
@@ -877,7 +993,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "32x64 d135 -3",
-            IntraYMode::D135_PRED_FOR_TEST,
+            IntraYMode::D135,
             -3,
             ctx(FULL_SB_N4_LUMA, 320, 8, FULL_SB_N4_LUMA),
             RectLumaPlan::Middle {
@@ -887,7 +1003,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "32x16 vertical +1",
-            IntraYMode::V_PRED_FOR_TEST,
+            IntraYMode::Vertical,
             1,
             ctx(4, 0, 8, 4),
             RectLumaPlan::Middle {
@@ -897,7 +1013,7 @@ fn plans_rect_directional_luma_from_modes_and_geometry() {
         ),
         (
             "8x4 d157",
-            IntraYMode::D157_PRED_FOR_TEST,
+            IntraYMode::D157,
             0,
             ctx(0, 4, 2, 1),
             RectLumaPlan::Middle {
@@ -945,7 +1061,7 @@ fn classifies_rect_directional_luma_angles() {
         ),
     ] {
         assert_eq!(
-            rect_luma_plan_for_parts(None, Some(p_angle), false, false),
+            rect_luma_plan_for_parts(IntraYMode::D135, Some(p_angle), false),
             Ok(expected),
         );
     }
@@ -956,13 +1072,11 @@ fn square_d67_angle_delta_uses_rect_residual_path_when_square_plan_rejects() {
     let first_col_block = ctx(128, 0, 32, 32);
     let modes = GeneralIntraBlockModes::luma_only(
         crate::bitstream::tile_payload::GeneralIntraLumaBlockMode {
-            y_mode: IntraYMode::D67_PRED_FOR_TEST,
+            y_mode: IntraYMode::D67,
             angle_delta_y: -1,
-            intra_joint_mode: 0,
-            mrl_index: 0,
-            mrl_sec_index: None,
+            intra_joint_mode: crate::bitstream::tile_payload::IntraJointMode::DC,
+            mrl: MrlSelection::Disabled,
             fsc_mode: 0,
-            uses_mrls: 0,
             use_dip: 0,
             dip_transpose: 0,
             dip_mode: 0,
@@ -1068,11 +1182,8 @@ fn follows_luma_angle_delta_for_directional_chroma() {
     );
 
     let horizontal_dpcm = Some(DpcmDirection::Horizontal);
-    let angle_delta = inherited_chroma_angle_delta(
-        IntraYMode::H_PRED_FOR_TEST.value(),
-        IntraYMode::H_PRED_FOR_TEST,
-        2,
-    );
+    let angle_delta =
+        inherited_chroma_angle_delta(IntraYMode::Horizontal.value(), IntraYMode::Horizontal, 2);
     assert_eq!(
         rect_chroma_plan_for_mode(
             SupportedChromaMode::Horizontal,

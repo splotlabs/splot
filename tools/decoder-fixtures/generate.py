@@ -100,6 +100,22 @@ COVERAGE = [
     ("syn-pcwiener-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-restoration=1", "--enable-pc-wiener=1"], "2", "90"),
     ("syn-gdf-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-gdf=1"], "2", "90"),
     ("syn-warp-inter-128x128", "testsrc2=size=128x128:rate=1:duration=4", "yuv420p", "--i420", BASE + ["--enable-warped-motion=1", "--enable-global-motion=1"], "2", "90"),
+    ("syn-dirneigh-reorder-128x64-q196",
+     "nullsrc=size=128x64:rate=1:duration=1,format=yuv420p,geq=lum='if(lt(X,64),if(lt(X+Y,64),40,210),30+180*Y/(64-1))':cb=120:cr=130",
+     "yuv420p", "--i420",
+     ["--disable-warning-prompt", "--quiet", "--limit=1", "--passes=1", "--threads=1",
+      "--lag-in-frames=0", "--sb-size=64", "--min-partition-size=64",
+      "--max-partition-size=64", "--enable-gdf=0", "--enable-cdef=0",
+      "--enable-deblocking=0", "--enable-restoration=0", "--enable-cfl-intra=0",
+      "--enable-mhccp=0", "--enable-cctx=0", "--enable-ibp=0", "--enable-angle-delta=0",
+      "--enable-intra-edge-filter=0", "--enable-ist=0", "--enable-intra-dip=0",
+      "--enable-idtx-intra=0", "--enable-mrls=0", "--enable-palette=0",
+      "--enable-bawp=0", "--enable-rect-partitions=0", "--enable-ext-partitions=0",
+      "--enable-uneven-4way-partitions=0", "--enable-sdp=0", "--enable-fsc=0",
+      "--enable-tx-partition=0", "--enable-smooth-intra=0", "--enable-paeth-intra=0",
+      "--enable-ccso=0", "--enable-pc-wiener=0", "--enable-wiener-nonsep=0",
+      "--enable-keyframe-filtering=0", "--enable-intrabc=0", "--enable-parity-hiding=0",
+      "--enable-tcq=0"], "2", "196"),
 ]
 
 PINNED_RECIPE_HASHES = {
@@ -127,6 +143,19 @@ PINNED_RECIPE_HASHES = {
         "instrumentation_source": "av2/encoder/encode_strategy.c",
         "avmenc_sha256": "132ff0f7ddd74bfd35c59cb4f50413ead008cc541d8e50f1cd34f905adeb9d68",
         "avmdec_sha256": "cd465be567e971105695fd3fbff0e277969de5c497ce3bc18c3a7b8185131247",
+        "reproducibility_runs": 2,
+    },
+    "syn-dirneigh-reorder-128x64-q196": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "ffmpeg_version": "8.1.2",
+        "source_sha256": "7dcfe06c50858a36f3227248a7c5da311d7dece274902d6e0a6bd4463f0e2dc8",
+        "ivf_sha256": "c87506fdee597539962c49ad5ced2dfb1b36d7d50919158d73f368b4c6790b25",
+        "obu_sha256": "84bf993e21f6edd790e9f7cc47dc4fe8fd1760a116c701e5aa892fba3c1fbb24",
+        "avm_i420_raw_sha256": "a1500046842354466967cd766ae569ed61927ffcf4617cbc471a3c7644d18edd",
+        "provenance_sha256": "a6850524c0725f28a9cf35605096caad8eea05ac8e71a4d2407853356319d6b0",
+        "instrumentation_sha256": "da3df2afe8e8cedf670a67d551cfd4e95671a0d5d8b3a48d5f0f53233008fc49",
+        "avmenc_sha256": "952af54f32109602ee9315dd36cc5ec3d01adcaae42f2a7d1cfdd11e92815b2e",
+        "avmdec_sha256": "70342f860be8ccb277c6d719c631f3c054f0ec52b1bcf40c5db00941b8a56ab2",
         "reproducibility_runs": 2,
     },
 }
@@ -164,6 +193,24 @@ def cmd_coverage_fixtures(args):
         sys.exit(f"error: unknown coverage fixture id: {args.only}")
     for fid, src, pix, inflag, flags, cpu, qp in selected:
         expected = PINNED_RECIPE_HASHES.get(fid)
+        avmdec = None
+        if expected and "avm_revision" in expected:
+            avm_root = os.environ.get("AVM_ROOT") or os.path.dirname(os.path.dirname(avmenc))
+            revision = run_checked(["git", "-C", avm_root, "rev-parse", "HEAD"])
+            revision = revision.stdout.decode().strip()
+            if revision != expected["avm_revision"]:
+                sys.exit(f"error: {fid} requires AVM revision {expected['avm_revision']}: "
+                         f"found {revision}")
+        if expected and ("avmdec_sha256" in expected or "avm_i420_raw_sha256" in expected):
+            avmdec = find("avmdec")
+        if expected and "avmenc_sha256" in expected and sha(avmenc) != expected["avmenc_sha256"]:
+            sys.exit(f"error: {fid} requires the recorded AVM encoder")
+        if expected and "avmdec_sha256" in expected and sha(avmdec) != expected["avmdec_sha256"]:
+            sys.exit(f"error: {fid} requires the recorded AVM decoder")
+        if expected and "ffmpeg_version" in expected:
+            version = run_checked(["ffmpeg", "-version"]).stdout.decode().splitlines()[0]
+            if not version.startswith("ffmpeg version " + expected["ffmpeg_version"]):
+                sys.exit(f"error: {fid} requires ffmpeg {expected['ffmpeg_version']}: {version}")
         if expected and "instrumentation_source" in expected:
             avm_root = os.environ.get("AVM_ROOT") or os.path.dirname(os.path.dirname(avmenc))
             revision = run_checked(["git", "-C", avm_root, "rev-parse", "HEAD"])
@@ -175,7 +222,6 @@ def cmd_coverage_fixtures(args):
             if revision != expected["avm_revision"] or instrumentation_sha256 != expected["instrumentation_sha256"]:
                 sys.exit(f"error: {fid} requires pinned instrumented AVM: "
                          f"revision={revision}, instrumentation={instrumentation_sha256}")
-            avmdec = find("avmdec")
             if sha(avmenc) != expected["avmenc_sha256"] or sha(avmdec) != expected["avmdec_sha256"]:
                 sys.exit(f"error: {fid} requires the recorded instrumented AVM producer binaries")
             version = run_checked(["ffmpeg", "-version"]).stdout.decode().splitlines()[0]
@@ -201,7 +247,15 @@ def cmd_coverage_fixtures(args):
                 if sha(repeated_ivf) != actual_ivf:
                     sys.exit(f"error: {fid} is not deterministic across two encodes")
                 os.remove(repeated_ivf)
-            if "avm_i420_raw_sha256" in expected and "instrumentation_source" in expected:
+            if "obu_sha256" in expected:
+                obu = os.path.join(stage, fid + ".obu")
+                obu_encode = [avmenc, "--codec=av2", "--obu", "-D", "--cpu-used=" + cpu,
+                              "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
+                              inflag, *flags]
+                run_checked([*obu_encode, "-o", obu, y4m])
+                if sha(obu) != expected["obu_sha256"]:
+                    sys.exit(f"error: {fid} differs from its pinned raw OBU")
+            if "avm_i420_raw_sha256" in expected:
                 raw = os.path.join(stage, fid + ".avm.raw")
                 run_checked([avmdec, "--i420", "--rawvideo", "-o", raw, ivf])
                 if sha(raw) != expected["avm_i420_raw_sha256"]:
