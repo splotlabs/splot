@@ -296,6 +296,20 @@ local_reference_evidence = []
 notes = "Historical support row for the former 8-bit-only pre-decode boundary. AV2 §6.4.1 maps `bit_depth_idc == 0` to a conformant 10-bit sequence, so this milestone moved rejection out of sequence validation and into the now-removed `ensure_8bit_runtime_storage` gate; its no-successful-10-bit-path claim described that earlier state only. The unified runtime now dispatches `BitDepthIdc::Eight` and `BitDepthIdc::Ten` through typed `u8` and `u16` decode scratch, `CurrentFrameWorkspace` and `DecodedFrame` storage, reference stores, output serialization, and the generic final-filter pipeline. The listed `cargo test -p splot-decode prediction::inter --locked` proof includes `ten_bit_flex_mvres_inter_fixture_decodes_avm_bit_exact`, which successfully decodes typed 10-bit key and inter frames to AVM-pinned hashes. Unsupported 10-bit syntax and tool combinations continue to fail closed at their current operation-specific boundaries."
 
 [[row]]
+id = "configurable-profile-runtime"
+name = "Configurable profile runtime admission"
+feature_id = "AV2-A-PROFILES"
+spec_sections = ["Annex A.2", "5.4.1", "6.4.1"]
+parser_source = "crates/splot-core/src/headers/sequence.rs"
+decode_module = "crates/splot-decode/src/pipeline/frame_lifecycle.rs"
+tier = "tier1-intra"
+status = "supported"
+self_contained_tests = ["crates/splot-decode/src/pipeline/frame_lifecycle.rs::sequence_profile_tests", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest", "cargo test -p splot-decode sequence_profile_tests --locked", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask decoder-fixtures verify", "cargo xtask check-decoder-support"]
+diagnostics = ["decode/malformed-source"]
+local_reference_evidence = []
+notes = "The runtime profile-admission boundary implements Annex A.2 Table A.1 for the complete 5-bit seq_profile_idc domain: profiles 0-2 admit monochrome/4:2:0, profile 3 additionally admits 4:2:2, profile 4 additionally admits 4:4:4, and Configurable profile 31 admits every signaled chroma_format_idc. Reserved profiles 5-30 and illegal fixed-profile/chroma pairs are malformed sequence-header conformance errors, never unsupported features; truncated sequence-header syntax is likewise a typed malformed parse error. The committed syn-profile31-mono-intra-16x16 fixture was encoded by pinned AVM revision 457cd58681a747465661baccb1f32095bc5b7774 and matches AVM raw output byte-for-byte at one and eight splot threads. This row claims profile/chroma admission only: other syntax, layer-selection, resource, and tool constraints continue to be enforced by their owning boundaries."
+
+[[row]]
 id = "sequence-chroma-frontier"
 name = "sequence chroma tool frontier"
 feature_id = "DECODE-SEQUENCE-CHROMA-FRONTIER"

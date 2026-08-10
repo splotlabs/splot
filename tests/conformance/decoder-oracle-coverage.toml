@@ -134,6 +134,13 @@ fixtureable = true
 spec_sections = ["6.4.1"]
 
 [[capability]]
+id = "seq.profile.configurable"
+name = "Configurable profile (seq_profile_idc 31)"
+category = "sequence"
+fixtureable = true
+spec_sections = ["Annex A.2", "5.4.1", "6.4.1"]
+
+[[capability]]
 id = "seq.chroma.420"
 name = "4:2:0 chroma subsampling"
 category = "sequence"

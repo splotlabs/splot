@@ -13,8 +13,8 @@ build (avmenc/avmdec) + ffmpeg. See docs/CONFORMANCE.md.
 `hashes` recomputes, for every committed tests/conformance/vectors/valid/*.ivf, the
 .ivf sha256 and the AVM oracle sha256 (avmdec --i420 --rawvideo) and classifies
 splot decode (must_pass / xfail_splot). `coverage-fixtures` re-encodes the small
-capability-coverage fixtures (chroma formats, and one isolated intra tool each) so
-the corpus is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
+capability-coverage fixtures (profiles, chroma formats, and one isolated intra tool
+each) so the corpus is reproducible; move vetted `.ivf` into vectors/valid/ by hand.
 """
 import argparse, hashlib, json, os, shutil, subprocess, sys
 
@@ -69,6 +69,12 @@ BASE = ["--enable-cfl-intra=0", "--enable-intra-dip=0", "--enable-ibp=0", "--ena
 # fixtures byte-distinct from a same-content baseline are committed (see the
 # byte-distinctness guard in `cargo xtask decoder-fixtures verify`).
 COVERAGE = [
+    ("syn-profile31-mono-intra-16x16", "color=c=gray:size=16x16:rate=1:duration=1", "yuv420p", "--i420",
+     ["--disable-warning-prompt", "--quiet", "--limit=1", "--passes=1", "--threads=1",
+      "--lag-in-frames=0", "--monochrome", "--input-bit-depth=8", "--bit-depth=8",
+      "--profile=31", "--enable-deblocking=0", "--enable-cdef=0", "--enable-restoration=0",
+      "--enable-gdf=0", "--enable-ccso=0", "--enable-pc-wiener=0",
+      "--enable-wiener-nonsep=0", "--enable-keyframe-filtering=0"], "0", "180"),
     ("syn-444-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv444p", "--i444", ["--i444"], "8", "120"),
     ("syn-422-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv422p", "--i422", ["--i422"], "8", "120"),
     ("syn-mono-intra-64x64", "testsrc2=size=64x64:rate=1:duration=1", "yuv420p", "--i420", ["--monochrome"], "8", "120"),
@@ -89,6 +95,14 @@ COVERAGE = [
     ("syn-gdf-intra-128x128", "testsrc2=size=128x128:rate=1:duration=1", "yuv420p", "--i420", BASE + ["--enable-gdf=1"], "2", "90"),
     ("syn-warp-inter-128x128", "testsrc2=size=128x128:rate=1:duration=4", "yuv420p", "--i420", BASE + ["--enable-warped-motion=1", "--enable-global-motion=1"], "2", "90"),
 ]
+
+PINNED_RECIPE_HASHES = {
+    "syn-profile31-mono-intra-16x16": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "source_sha256": "83dc7abaa81f46324b7a47fa89b127c1f8891ff2b3d97e4736ac25e45aadb1c6",
+        "ivf_sha256": "5cda9a0c51c31721036a23c2601b88770989e9e872c66d32fc5d0a1875b53501",
+    },
+}
 
 
 def cmd_find(_):
@@ -124,6 +138,13 @@ def cmd_coverage_fixtures(args):
         run_checked([avmenc, "--codec=av2", "--ivf", "-D", "--cpu-used=" + cpu,
                      "--end-usage=q", "--qp=" + qp, "--kf-max-dist=0", "-t", "1",
                      inflag, *flags, "-o", os.path.join(stage, fid + ".ivf"), y4m])
+        if fid in PINNED_RECIPE_HASHES:
+            expected = PINNED_RECIPE_HASHES[fid]
+            actual_source = sha(y4m)
+            actual_ivf = sha(os.path.join(stage, fid + ".ivf"))
+            if actual_source != expected["source_sha256"] or actual_ivf != expected["ivf_sha256"]:
+                sys.exit(f"error: {fid} differs from pinned AVM {expected['avm_revision']}: "
+                         f"source={actual_source}, ivf={actual_ivf}")
     print(f"staged {len(COVERAGE)} coverage fixtures in {stage} "
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 

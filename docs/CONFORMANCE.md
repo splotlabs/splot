@@ -26,6 +26,10 @@ oracle hashes, but it is not vendored, not required by CI, and not invoked by
 committed tests. Any future live AVM differential harness must be opt-in and
 recorded as a separate conformance row.
 
+The `syn-profile31-mono-intra-16x16` recipe is pinned to AVM `457cd58681a747465661baccb1f32095bc5b7774`; its source, IVF, and raw SHA-256 values are
+`83dc7abaa81f46324b7a47fa89b127c1f8891ff2b3d97e4736ac25e45aadb1c6`, `5cda9a0c51c31721036a23c2601b88770989e9e872c66d32fc5d0a1875b53501`, and
+`5a5f307aa9ce504d9235634f15cf382e8914c49fbd8dd4d4c47136c917886f7b`; only the IVF and hashes are committed.
+
 ## Committed Corpus
 
 `tests/conformance/manifest.toml` lists committed validator vectors and their
