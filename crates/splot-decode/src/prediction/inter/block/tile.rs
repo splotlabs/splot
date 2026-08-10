@@ -184,10 +184,8 @@ struct TileParser<'tile, 'payload> {
     gdf_state: GdfState,
     ccso_state: CcsoState,
     filter_records: TileFilterRecords,
-    tile_walk_output: Option<(
-        Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
-        Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
-    )>,
+    active_source_blocks: Vec<crate::bitstream::tile_payload::WienerNsLrSourceBlock>,
+    unit_filters: Vec<crate::bitstream::tile_payload::WienerNsLrUnitFilter>,
     parser_ordinal: usize,
     entry_capacity: usize,
     superblock_capacity: usize,
@@ -282,7 +280,8 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             gdf_state,
             ccso_state,
             filter_records: TileFilterRecords::default(),
-            tile_walk_output: None,
+            active_source_blocks: Vec::new(),
+            unit_filters: Vec::new(),
             parser_ordinal: 0,
             entry_capacity: 0,
             superblock_capacity: 0,
@@ -469,33 +468,31 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     active_source_blocks,
                     unit_filters,
                 } = walk.into_output();
-                recon_row.terminal = symbols.exit_symbol().err().map(|_| {
-                    if context.reference_select {
-                        inter_internal!("compound_exit_symbol", tile_offset)
-                    } else {
-                        inter_internal!("inter_exit_symbol", tile_offset)
-                    }
-                });
-                self.tile_walk_output = Some((active_source_blocks, unit_filters));
+                recon_row.terminal = finish_tile_symbols(symbols, tile_offset).err();
+                self.active_source_blocks = active_source_blocks;
+                self.unit_filters = unit_filters;
                 ParserStep::Last(recon_row)
             }
         }
     }
 
-    fn into_output(self) -> Result<TileParserOutput> {
-        let tile_offset = self.tile.tile_byte_span().start;
-        let Some((active_source_blocks, unit_filters)) = self.tile_walk_output else {
-            return Err(inter_internal!("inter_row_parser_output", tile_offset));
-        };
-        Ok(TileParserOutput {
+    fn into_output(self) -> TileParserOutput {
+        TileParserOutput {
             cdef_state: self.cdef_state,
             gdf_state: self.gdf_state,
             ccso_state: self.ccso_state,
             segment_id_state: self.segment_id_state,
-            active_source_blocks,
-            unit_filters,
-        })
+            active_source_blocks: self.active_source_blocks,
+            unit_filters: self.unit_filters,
+        }
     }
+}
+
+fn finish_tile_symbols(symbols: SymbolDecoder<'_>, tile_offset: ByteOffset) -> Result<()> {
+    symbols
+        .exit_symbol()
+        .map(|_| ())
+        .map_err(|error| crate::pipeline::malformed_tile_payload(tile_offset, "8.2.4", error))
 }
 
 #[derive(Clone, Copy)]
@@ -526,10 +523,7 @@ impl TileResolveState {
     /// Replays one parsed unit's § 7.12 work, in the leaf order the fused walk
     /// used, and completes the inter leaves' reconstruction commands.
     ///
-    /// It runs even when parsing stopped early, because the leaves parsed
-    /// before the failure are exactly the ones the fused walk would have
-    /// resolved; a resolve failure is therefore the earlier one and the caller
-    /// lets it win over any later parse or exit-symbol failure.
+    /// Callers skip this pass for a unit carrying a terminal parser error.
     fn resolve_unit<T: ReconSample>(
         &mut self,
         grid: &mut NeighbourMvGrid,
@@ -588,9 +582,7 @@ fn admit_ready_row<'surface, T: ReconSample>(
     }
 }
 
-/// Runs one parse unit's resolve pass over the step the parse pass produced,
-/// letting a resolve failure end the unit stream ahead of any later parse or
-/// exit-symbol failure the step already carries.
+/// Runs one parse unit's resolve pass unless parsing has already failed.
 fn resolve_parser_step(
     step: ParserStep<ReconRow>,
     resolve: impl FnOnce(&mut ReconRow) -> Result<()>,
@@ -599,7 +591,9 @@ fn resolve_parser_step(
         ParserStep::More(row) => (row, false),
         ParserStep::Last(row) => (row, true),
     };
-    if let Err(error) = resolve(&mut row) {
+    if row.terminal.is_none()
+        && let Err(error) = resolve(&mut row)
+    {
         row.terminal = Some(error);
         return ParserStep::Last(row);
     }
@@ -720,6 +714,15 @@ pub(super) struct ReconRow {
     pub(super) motion_derived: bool,
     pub(super) precompute_error: Option<(usize, crate::DecodeError)>,
     pub(super) terminal: Option<crate::DecodeError>,
+}
+
+impl ReconRow {
+    pub(super) fn return_terminal_error(&mut self) -> Result<()> {
+        if let Some(error) = self.terminal.take() {
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -1050,6 +1053,9 @@ fn precompute_recon_row_on_surface<T: ReconSample>(
     residual_use_ddt: bool,
     bit_depth: BitDepth,
 ) -> ReconRow {
+    if row.terminal.is_some() {
+        return row;
+    }
     let _quantizer_scopes = quantizer.install_frame();
     let info = surface.info();
     if !row.motion_derived {
@@ -1273,6 +1279,8 @@ where
             })
         },
         |ready| {
+            let mut ready = ready;
+            ready.row.return_terminal_error()?;
             let _commit_scope = crate::timing::PhaseScope::new(crate::timing::Phase::Commit);
             if first_commit_ns.load(std::sync::atomic::Ordering::Relaxed) == 0
                 && let Some(started) = timer
@@ -1365,9 +1373,7 @@ pub(super) struct ParsedTile {
     mi_cols: Range<usize>,
     rows: Vec<ReconRow>,
     block_decoded: TileBlockDecodedState,
-    /// `None` when the unit stream ended early, exactly the case in which the
-    /// fused walk never reached its own `into_output`.
-    output: Option<TileParserOutput>,
+    output: TileParserOutput,
 }
 
 impl ParsedTile {
@@ -1404,24 +1410,21 @@ impl ParsedTile {
         segment_ids: &mut FrameSegmentIdMap,
     ) -> Result<()> {
         let tile_offset = self.tile_offset;
-        let output = self
-            .output
-            .take()
-            .ok_or(inter_internal!("inter_parsed_tile_output", tile_offset))?;
+        let output = &mut self.output;
         merge_tile_filter_state(
             cdef_state,
             gdf_state,
             ccso_state,
             segment_ids,
-            &output,
+            output,
             self.mi_rows.clone(),
             self.mi_cols.clone(),
         )?;
         append_lr_records(
             &mut frame_filter_records.lr_source_blocks,
             &mut frame_filter_records.lr_unit_filters,
-            output.active_source_blocks,
-            output.unit_filters,
+            core::mem::take(&mut output.active_source_blocks),
+            core::mem::take(&mut output.unit_filters),
         )
         .ok_or(inter_internal!("inter_lr_filter_index_split", tile_offset))
     }
@@ -1501,10 +1504,11 @@ pub(super) fn parse_tile_units<T: ReconSample>(
             granularity,
             Some(take_retained_recon_row_buffers()),
         );
-        let (row, last) = match step {
+        let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };
+        row.return_terminal_error()?;
         rows.push(row);
         if last {
             break;
@@ -1517,7 +1521,7 @@ pub(super) fn parse_tile_units<T: ReconSample>(
         mi_cols,
         rows,
         block_decoded,
-        output: parser.into_output().ok(),
+        output: parser.into_output(),
     })
 }
 
@@ -1700,10 +1704,11 @@ fn prepare_tile<T: ReconSample>(
                 tile_offset,
             )
         });
-        let (row, last) = match step {
+        let (mut row, last) = match step {
             ParserStep::More(row) => (row, false),
             ParserStep::Last(row) => (row, true),
         };
+        row.return_terminal_error()?;
         rows.push(scratch_pool.with_scratch(|scratch| {
             precompute_recon_row_on_surface(
                 row,
@@ -1738,7 +1743,7 @@ fn prepare_tile<T: ReconSample>(
         rows,
         quantizer,
         block_decoded,
-        output: parser.into_output()?,
+        output: parser.into_output(),
     })
 }
 
@@ -2082,7 +2087,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             };
             run_ready_row_pipeline_serial(parse_row, replay_row)?;
         }
-        let output = parser.into_output()?;
+        let output = parser.into_output();
         merge_tile_filter_state(
             &mut cdef_state,
             &mut gdf_state,

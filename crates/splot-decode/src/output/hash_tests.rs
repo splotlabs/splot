@@ -588,39 +588,52 @@ fn raw_annex_b_payload_decodes_to_hash_report() {
 }
 
 #[test]
-fn tile_symbol_mutations_fail_as_internal_parse_desync() {
-    let cases: [(&[u8], usize, u8, &str); 3] = [
+fn tile_symbol_mutations_are_malformed_identically_across_decode_paths() {
+    let cases: [(&[u8], usize, u8); 3] = [
         (
             MINIMAL_FIXTURE,
             MINIMAL_FIXTURE.len() - 1,
             MINIMAL_FIXTURE[MINIMAL_FIXTURE.len() - 1] ^ 0x01,
-            "inter_exit_symbol",
         ),
-        (
-            MINIMAL_FIXTURE,
-            MINIMAL_FIXTURE.len() - 2,
-            0xFF,
-            "inter_exit_symbol",
-        ),
+        (MINIMAL_FIXTURE, MINIMAL_FIXTURE.len() - 2, 0xFF),
         (
             COMPOUND_FIXTURE,
             COMPOUND_FIXTURE.len() - 1,
             COMPOUND_FIXTURE[COMPOUND_FIXTURE.len() - 1] ^ 0x01,
-            "compound_exit_symbol",
         ),
     ];
 
-    for (fixture, offset, value, expected_reason) in cases {
+    for (fixture, offset, value) in cases {
         let mut bytes = fixture.to_vec();
         bytes[offset] = value;
-        let error = context(ThreadCount::from(1usize))
+        let mut expected = None;
+        for (threads, frame_delay) in [
+            (1usize, FrameDelay::Fixed(NonZeroUsize::MIN)),
+            (8, FrameDelay::Auto),
+        ] {
+            let error = DecodeContext::new(
+                DecodeRuntimeConfig::new(ThreadCount::from(threads)).with_frame_delay(frame_delay),
+            )
+            .unwrap()
             .decode_hash_report_bytes(&bytes, DecodeOptions::default())
             .unwrap_err();
-
-        assert!(matches!(
-            error,
-            DecodeError::InternalState { reason, .. } if reason == expected_reason
-        ));
+            let DecodeError::MalformedSource { issue } = error else {
+                assert!(
+                    matches!(error, DecodeError::MalformedSource { .. }),
+                    "threads {threads}, frame delay {frame_delay:?}: {error}"
+                );
+                continue;
+            };
+            assert_eq!(issue.kind(), DecodeSourceIssueKind::TilePayloadParseError);
+            assert_eq!(issue.spec_section(), Some("8.2.4"));
+            assert!(issue.offset().is_some());
+            let actual = (issue.offset(), issue.message().to_owned());
+            if let Some(expected) = &expected {
+                assert_eq!(&actual, expected);
+            } else {
+                expected = Some(actual);
+            }
+        }
     }
 }
 

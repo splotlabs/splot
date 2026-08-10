@@ -83,9 +83,9 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     if row.ordinal != *expected_ordinal {
         return Err(inter_internal!("inter_row_recon_order", tile_offset));
     }
+    row.return_terminal_error()?;
     let ordinal = row.ordinal;
     *expected_ordinal = expected_ordinal.saturating_add(1);
-    let terminal = row.terminal.take();
     let row_has_entries = !row.superblocks.is_empty();
     let motion_owed = !row.motion_folded;
     let motion_derived = row.motion_derived;
@@ -216,9 +216,6 @@ pub(super) fn replay_recon_row<T: ReconSample>(
     }
     append_row_filter_records(filter_records, &mut row_filter_records);
     *decoded_any |= row_has_entries;
-    if let Some(error) = terminal {
-        return Err(error);
-    }
     superblocks.clear();
     entries.clear();
     motion_queue.clear();
