@@ -123,7 +123,8 @@ pub type Job<'job> = Box<dyn for<'a> FnOnce(&'a dyn Admit<'job>) + Send + 'job>;
 pub trait Admit<'job>: Sync {
     /// Spawns every job that is admissible now, returning how many were
     /// spawned. A publisher calls this after publishing so its dependents start
-    /// before its own body ends.
+    /// before its own body ends; the scheduler drains again once the body
+    /// returns, so a call in tail position only repeats that drain.
     fn admit_ready(&self) -> usize;
 
     /// Submits a successor under the same rules as
@@ -739,6 +740,85 @@ mod tests {
             assert_eq!(ran.load(Ordering::Acquire), 4, "at {threads} thread(s)");
             assert!(
                 observed.load(Ordering::Acquire) >= 2,
+                "at {threads} thread(s)"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tail_publish_needs_no_drain_of_its_own() {
+        for threads in 1..=4 {
+            let rows = WatermarkCell::new();
+            let done = CompletionCell::new();
+            let ran = AtomicUsize::new(0);
+            let nested = AtomicUsize::new(0);
+            let scheduler = AdmissionScheduler::new();
+            let pool = pool(threads);
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        2,
+                        &[Condition::Watermark(&rows, 2), Condition::Completion(&done)],
+                        Box::new(|admit| {
+                            ran.fetch_add(1, Ordering::AcqRel);
+                            admit.submit(
+                                3,
+                                &[],
+                                Box::new(|_| {
+                                    nested.fetch_add(1, Ordering::AcqRel);
+                                }),
+                            );
+                        }),
+                    );
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        Box::new(|_| {
+                            rows.publish(2);
+                            let _ = done.set(());
+                        }),
+                    );
+                })
+            })
+            .unwrap();
+            scheduler.finish().unwrap();
+            assert_eq!(ran.load(Ordering::Acquire), 1, "at {threads} thread(s)");
+            assert_eq!(nested.load(Ordering::Acquire), 1, "at {threads} thread(s)");
+        }
+    }
+
+    #[test]
+    fn a_tail_failure_settlement_needs_no_drain_of_its_own() {
+        for threads in 1..=4 {
+            let rows = WatermarkCell::new();
+            let observed = AtomicUsize::new(0);
+            let scheduler = AdmissionScheduler::new();
+            let pool = pool(threads);
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        1,
+                        &[Condition::Watermark(&rows, 64)],
+                        Box::new(|_| observed.store(rows.current(), Ordering::Release)),
+                    );
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        Box::new(|_| {
+                            rows.publish(WatermarkCell::FAILED);
+                        }),
+                    );
+                })
+            })
+            .unwrap();
+            scheduler.finish().unwrap();
+            assert_eq!(
+                observed.load(Ordering::Acquire),
+                WatermarkCell::FAILED,
                 "at {threads} thread(s)"
             );
         }
