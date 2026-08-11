@@ -601,15 +601,19 @@ mod tests {
         assert_eq!(token.index.load(Ordering::Relaxed), 17);
     }
 
-    /// The four tallies, read after the scope has joined so every drain the run
-    /// performed is already counted.
-    fn counters(scheduler: &AdmissionScheduler<'_>) -> [usize; 4] {
+    /// Every tally in declaration order, read after the scope has joined so all
+    /// of the run's drains are already counted. Tests take the window they are
+    /// about: `[..4]` is the drain policy, `[4..]` the submission paths.
+    fn counters(scheduler: &AdmissionScheduler<'_>) -> [usize; 7] {
         let counters = &scheduler.ready.counters;
         [
             counters.satisfies.load(Ordering::Relaxed),
             counters.transitions.load(Ordering::Relaxed),
             counters.drains.load(Ordering::Relaxed),
             counters.empty_drains.load(Ordering::Relaxed),
+            counters.submitted.load(Ordering::Relaxed),
+            counters.conditionless.load(Ordering::Relaxed),
+            counters.direct.load(Ordering::Relaxed),
         ]
     }
 
@@ -639,17 +643,6 @@ mod tests {
             assert_eq!(ready.pop(), Some(3));
             assert_eq!(ready.pop(), None, "the job is queued exactly once");
         }
-    }
-
-    /// The three submission tallies: jobs the scheduler stored, how many of
-    /// those named no condition, and jobs spawned through the fast path.
-    fn submissions(scheduler: &AdmissionScheduler<'_>) -> [usize; 3] {
-        let counters = &scheduler.ready.counters;
-        [
-            counters.submitted.load(Ordering::Relaxed),
-            counters.conditionless.load(Ordering::Relaxed),
-            counters.direct.load(Ordering::Relaxed),
-        ]
     }
 
     /// Records the order in which jobs ran.
@@ -686,7 +679,7 @@ mod tests {
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
         assert_eq!(
-            counters(&scheduler),
+            counters(&scheduler)[..4],
             [1, 1, 2, 1],
             "submit drains the job it queued; the job's post-body drain finds nothing"
         );
@@ -712,7 +705,7 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
-        assert_eq!(counters(&scheduler), [2, 1, 2, 1]);
+        assert_eq!(counters(&scheduler)[..4], [2, 1, 2, 1]);
     }
 
     #[test]
@@ -741,7 +734,7 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
-        assert_eq!(counters(&scheduler), [4, 1, 2, 1]);
+        assert_eq!(counters(&scheduler)[..4], [4, 1, 2, 1]);
     }
 
     #[test]
@@ -759,7 +752,7 @@ mod tests {
                     Box::new(|_| log.record(0)),
                 );
                 assert_eq!(
-                    counters(&scheduler),
+                    counters(&scheduler)[..4],
                     [1, 0, 0, 0],
                     "nothing was queued, so nothing needed spawning"
                 );
@@ -1169,8 +1162,8 @@ mod tests {
     }
 
     /// Builds the same fan-out twice, once per submission path, and reports the
-    /// tallies plus the ready-heap pushes each cost.
-    fn fan_out(fast: bool) -> ([usize; 3], usize) {
+    /// tallies each cost.
+    fn fan_out(fast: bool) -> [usize; 7] {
         const JOBS: usize = 16;
         let ran = AtomicUsize::new(0);
         let scheduler = AdmissionScheduler::new();
@@ -1199,22 +1192,26 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(ran.load(Ordering::Acquire), JOBS);
-        (submissions(&scheduler), counters(&scheduler)[1])
+        counters(&scheduler)
     }
 
     #[test]
     fn a_directly_spawned_job_costs_no_slot_and_no_heap_round_trip() {
-        let (scheduled, scheduled_pushes) = fan_out(false);
-        let (direct, direct_pushes) = fan_out(true);
+        let scheduled = fan_out(false);
+        let direct = fan_out(true);
 
-        assert_eq!(scheduled, [17, 17, 0], "every job took a scheduler slot");
         assert_eq!(
-            direct,
-            [1, 1, 16],
-            "only the entry job took a scheduler slot"
+            scheduled[4..],
+            [17, 17, 0],
+            "submitting the fan-out stores every job in a scheduler slot"
         );
         assert_eq!(
-            scheduled_pushes - direct_pushes,
+            direct[4..],
+            [1, 1, 16],
+            "spawning it ready stores only the entry job"
+        );
+        assert_eq!(
+            scheduled[1] - direct[1],
             16,
             "each fast-path job skips one ready-heap push, and so one pop"
         );
@@ -1281,7 +1278,7 @@ mod tests {
                 DEPTH + 1,
                 "at {threads} thread(s)"
             );
-            assert_eq!(submissions(&scheduler), [1, 1, DEPTH]);
+            assert_eq!(counters(&scheduler)[4..], [1, 1, DEPTH]);
         }
     }
 
@@ -1323,7 +1320,7 @@ mod tests {
             })
             .unwrap();
             scheduler.finish().unwrap();
-            assert_eq!(submissions(&scheduler), [JOBS + 1, 1, JOBS]);
+            assert_eq!(counters(&scheduler)[4..], [JOBS + 1, 1, JOBS]);
             for index in 0..JOBS {
                 assert_eq!(
                     (
