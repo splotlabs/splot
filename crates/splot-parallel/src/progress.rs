@@ -3,7 +3,7 @@
 
 //! Pool-scoped event state for pipeline-driver waits.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Instant;
 
@@ -66,11 +66,8 @@ impl PoolWaitMetrics {
 #[derive(Debug)]
 pub(crate) struct PoolProgressEvent {
     generation: AtomicU64,
-    waiters: AtomicUsize,
-    state: Mutex<()>,
+    state: Mutex<ProgressState>,
     cond: Condvar,
-    epoch: Instant,
-    last_notification_nanos: AtomicU64,
     assist_calls: AtomicU64,
     assisted_jobs: AtomicU64,
     idle_parks: AtomicU64,
@@ -81,15 +78,17 @@ pub(crate) struct PoolProgressEvent {
     max_wake_to_progress_nanos: AtomicU64,
 }
 
+#[derive(Debug, Default)]
+struct ProgressState {
+    last_notification: Option<Instant>,
+}
+
 impl PoolProgressEvent {
     pub(crate) fn new() -> Self {
         Self {
             generation: AtomicU64::new(0),
-            waiters: AtomicUsize::new(0),
-            state: Mutex::new(()),
+            state: Mutex::new(ProgressState::default()),
             cond: Condvar::new(),
-            epoch: Instant::now(),
-            last_notification_nanos: AtomicU64::new(0),
             assist_calls: AtomicU64::new(0),
             assisted_jobs: AtomicU64::new(0),
             idle_parks: AtomicU64::new(0),
@@ -107,9 +106,8 @@ impl PoolProgressEvent {
 
     pub(crate) fn notify(&self) {
         self.generation.fetch_add(1, Ordering::AcqRel);
-        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        self.last_notification_nanos
-            .store(self.elapsed_nanos(), Ordering::Release);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.last_notification = Some(Instant::now());
         self.cond.notify_all();
         drop(state);
     }
@@ -131,10 +129,8 @@ impl PoolProgressEvent {
         if self.generation() != observed {
             return;
         }
-        self.waiters.fetch_add(1, Ordering::Release);
         setup();
         if self.generation() != observed {
-            self.waiters.fetch_sub(1, Ordering::Release);
             return;
         }
         self.idle_parks.fetch_add(1, Ordering::Relaxed);
@@ -146,10 +142,10 @@ impl PoolProgressEvent {
         let parked = nanos(started.elapsed().as_nanos());
         self.park_nanos.fetch_add(parked, Ordering::Relaxed);
         self.max_park_nanos.fetch_max(parked, Ordering::Relaxed);
-        self.waiters.fetch_sub(1, Ordering::Release);
-        if self.generation() != observed {
-            let notified = self.last_notification_nanos.load(Ordering::Acquire);
-            let latency = self.elapsed_nanos().saturating_sub(notified);
+        if self.generation() != observed
+            && let Some(notified) = state.last_notification
+        {
+            let latency = nanos(notified.elapsed().as_nanos());
             self.progress_wakes.fetch_add(1, Ordering::Relaxed);
             self.wake_to_progress_nanos
                 .fetch_add(latency, Ordering::Relaxed);
@@ -174,10 +170,6 @@ impl PoolProgressEvent {
         }
     }
 
-    fn elapsed_nanos(&self) -> u64 {
-        nanos(self.epoch.elapsed().as_nanos())
-    }
-
     #[cfg(test)]
     fn spurious_notify(&self) {
         let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -200,8 +192,8 @@ mod tests {
 
     use super::*;
 
-    fn wait_until_waiting(event: &PoolProgressEvent) {
-        while event.waiters.load(Ordering::Acquire) == 0 {
+    fn wait_until_park_count(event: &PoolProgressEvent, count: u64) {
+        while event.idle_parks.load(Ordering::Acquire) < count {
             thread::yield_now();
         }
     }
@@ -248,7 +240,7 @@ mod tests {
             let observed = waiter_event.generation();
             waiter_event.wait_if_unchanged(observed);
         });
-        wait_until_waiting(&event);
+        wait_until_park_count(&event, 1);
         event.notify();
         waiter.join().expect("waiter");
         let metrics = event.metrics();
@@ -267,7 +259,7 @@ mod tests {
             waiter_event.wait_if_unchanged(observed);
             waiter_returned.store(true, Ordering::Release);
         });
-        wait_until_waiting(&event);
+        wait_until_park_count(&event, 1);
         event.spurious_notify();
         waiter.join().expect("waiter");
         assert!(returned.load(Ordering::Acquire));
@@ -292,7 +284,7 @@ mod tests {
             while completed.load(Ordering::Acquire) != cycle {
                 thread::yield_now();
             }
-            wait_until_waiting(&event);
+            wait_until_park_count(&event, (cycle + 1) as u64);
             event.notify();
         }
         waiter.join().expect("waiter");
@@ -326,12 +318,12 @@ mod tests {
             })
         };
         barrier.wait();
-        wait_until_waiting(&first);
-        wait_until_waiting(&second);
+        wait_until_park_count(&first, 1);
+        wait_until_park_count(&second, 1);
         first.notify();
         first_waiter.join().expect("first waiter");
         assert_eq!(second.metrics().notifications, 0);
-        assert_eq!(second.waiters.load(Ordering::Acquire), 1);
+        assert_eq!(second.metrics().idle_parks, 1);
         second.notify();
         second_waiter.join().expect("second waiter");
     }
