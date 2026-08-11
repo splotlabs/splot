@@ -282,9 +282,8 @@ impl SchedulerSlots<'_> {
 ///             scope,
 ///             0,
 ///             &[],
-///             Box::new(|admit| {
+///             Box::new(|_| {
 ///                 rows.publish(4);
-///                 admit.admit_ready();
 ///             }),
 ///         );
 ///     })
