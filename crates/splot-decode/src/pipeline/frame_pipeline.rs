@@ -561,23 +561,18 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 break;
             }
             let frame = Arc::clone(self);
-            admit.submit(
-                self.order_base
-                    .saturating_add(u64::try_from(stripe).unwrap_or(u64::MAX / 2) * 2 + 2),
-                &[],
-                Box::new(move |_| {
-                    if let Err(error) = filter.run() {
-                        let mut owed = frame
-                            .filter_error
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner);
-                        if owed.is_none() {
-                            *owed = Some(error);
-                        }
+            admit.spawn_ready(Box::new(move |_| {
+                if let Err(error) = filter.run() {
+                    let mut owed = frame
+                        .filter_error
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    if owed.is_none() {
+                        *owed = Some(error);
                     }
-                    let _ = frame.filtered[stripe].set(());
-                }),
-            );
+                }
+                let _ = frame.filtered[stripe].set(());
+            }));
         }
         let Some(filter) = progress.output else {
             return;
