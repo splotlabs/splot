@@ -186,6 +186,10 @@ impl ReadyQueue {
 ///
 /// Counting down instead of up means the thread that satisfies the last
 /// condition is the one that queues the job, with no lock between the sources.
+/// [`AdmissionScheduler::submit`] seeds the count one above the condition count
+/// and clears that extra unit only once every source has been registered, so a
+/// condition firing mid-registration cannot queue the job early. That closing
+/// satisfy is therefore the only one a submission can observe a transition from.
 #[derive(Debug)]
 struct AdmissionToken {
     pending: AtomicUsize,
@@ -381,13 +385,12 @@ impl<'job> AdmissionScheduler<'job> {
             });
             token
         };
-        let mut queued = false;
         for condition in conditions {
             if !condition.register(Arc::clone(&token) as Arc<dyn AdmissionWaiter>) {
-                queued |= token.satisfy_reporting();
+                token.satisfy();
             }
         }
-        queued |= token.satisfy_reporting();
+        let queued = token.satisfy_reporting();
         drop(token);
         if queued {
             self.admit_ready(scope);
