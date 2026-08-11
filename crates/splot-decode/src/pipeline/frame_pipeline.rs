@@ -176,7 +176,7 @@ where
         scope,
         order_key,
         &conditions,
-        Box::new(move |admit| {
+        Box::new(move |_| {
             let parsed = parse();
             if let Ok(deferred) = &parsed {
                 frame_cdfs.publish(Arc::clone(deferred.frame_cdfs()));
@@ -189,7 +189,6 @@ where
                 failed_motion.fail();
             }
             let _ = result_for_job.set(Mutex::new(Some(parsed)));
-            admit.admit_ready();
         }),
     );
     Ok(result)
@@ -308,7 +307,7 @@ where
         scope,
         order_key,
         &conditions,
-        Box::new(move |admit| {
+        Box::new(move |_| {
             let mut scratch = scratch_for_job
                 .as_deref()
                 .and_then(CompletionCell::get)
@@ -335,7 +334,6 @@ where
                 }
             }
             let _ = scratch_done.set(Mutex::new(Some(T::wrap_scheduled_scratch(scratch))));
-            admit.admit_ready();
         }),
     );
     Ok(())
@@ -465,7 +463,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         if let Some(done) = self.frontier_done.get(row) {
             let _ = done.set(());
         }
-        admit.admit_ready();
     }
 
     fn submit_resolve(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
@@ -481,7 +478,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
 
     fn resolve(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
         if self.failed.load(Ordering::Acquire) {
-            admit.admit_ready();
             return;
         }
         let batches = match self.walk.resolve(index) {
@@ -498,7 +494,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         if next < self.walk.resolve_len() {
             self.submit_resolve(next, admit);
         }
-        admit.admit_ready();
     }
 
     fn precompute(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
@@ -510,7 +505,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         if let Some(prepared) = self.prepared.get(index) {
             let _ = prepared.set(());
         }
-        admit.admit_ready();
     }
 
     fn commit(self: &Arc<Self>, index: usize, admit: &dyn splot_parallel::Admit<'_>) {
@@ -518,7 +512,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             if let Some(committed) = self.committed.get(index) {
                 let _ = committed.set(());
             }
-            admit.admit_ready();
             return;
         }
         match self.walk.commit(index) {
@@ -545,7 +538,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
         if let Some(committed) = self.committed.get(index) {
             let _ = committed.set(());
         }
-        admit.admit_ready();
     }
 
     /// Schedules the filter stripes one frontier link released, and the
@@ -573,7 +565,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                 self.order_base
                     .saturating_add(u64::try_from(stripe).unwrap_or(u64::MAX / 2) * 2 + 2),
                 &[],
-                Box::new(move |admit| {
+                Box::new(move |_| {
                     if let Err(error) = filter.run() {
                         let mut owed = frame
                             .filter_error
@@ -584,7 +576,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                         }
                     }
                     let _ = frame.filtered[stripe].set(());
-                    admit.admit_ready();
                 }),
             );
         }
@@ -608,7 +599,7 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
             admit.submit(
                 self.order_base + u64::from(u32::MAX),
                 &conditions,
-                Box::new(move |admit| {
+                Box::new(move |_| {
                     let error = frame
                         .filter_error
                         .lock()
@@ -620,7 +611,6 @@ impl<T: ScheduledScratchSample + Send + 'static> ScheduledFrame<T> {
                         finish.run_owned_finish(filter);
                     }
                     let _ = filter_done.set(());
-                    admit.admit_ready();
                 }),
             );
         }
@@ -728,7 +718,6 @@ fn schedule_typed<'job, 'scope, T: ScheduledScratchSample + Send + 'static>(
                 let _ = recon_done.set(());
                 let _ = filter_done_for_job.set(());
                 finish.fail(error);
-                admit.admit_ready();
             };
             let Some(progress) = finish.progress_handle() else {
                 settle_prepare_failure(
@@ -822,7 +811,6 @@ where
         Box::new(move |admit| {
             finish.run_finish(walked, Some(admit));
             let _ = done.set(());
-            admit.admit_ready();
         }),
     );
     Ok(())
