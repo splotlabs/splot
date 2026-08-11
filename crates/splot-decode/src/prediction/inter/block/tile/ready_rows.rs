@@ -394,7 +394,11 @@ where
     };
     run_scope()?;
     let drain_timer = crate::timing::start();
-    while ready_rows_await_references(&coordinator) {
+    loop {
+        let progress = splot_parallel::pool_progress_snapshot();
+        if !ready_rows_await_references(&coordinator) {
+            break;
+        }
         let released = {
             let mut state = lock_ready_rows(&coordinator);
             release_ready_rows(&mut state, &gate)
@@ -404,7 +408,7 @@ where
         } else if settled() {
             break;
         } else {
-            splot_parallel::assist_pool_or_park();
+            splot_parallel::assist_pool_or_park(&progress);
         }
     }
     crate::timing::report("walk_refs_drain", drain_timer);

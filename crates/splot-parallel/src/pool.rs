@@ -3,20 +3,23 @@
 
 //! The owned, local Rayon worker pool ([`WorkerPool`]).
 use core::num::NonZeroUsize;
+use core::time::Duration;
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, OnceLock, Weak};
 
 use rayon::{ThreadPool, Yield};
 
-use crate::completion::ASSIST_PARK;
 use crate::error::ParallelError;
+use crate::progress::{PoolProgressEvent, PoolWaitMetrics};
 use crate::thread_count::ThreadCount;
 
 const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
+const OFF_POOL_ASSIST_PARK: Duration = Duration::from_micros(100);
 
 std::thread_local! {
     static ON_SPLOT_WORKER: Cell<bool> = const { Cell::new(false) };
     static INSTALLED_POOL: RefCell<Weak<ThreadPool>> = const { RefCell::new(Weak::new()) };
+    static INSTALLED_PROGRESS: RefCell<Weak<PoolProgressEvent>> = const { RefCell::new(Weak::new()) };
 }
 
 /// A codec context's single owned worker pool, wrapping a *local* Rayon
@@ -24,6 +27,7 @@ std::thread_local! {
 #[derive(Clone, Debug)]
 pub struct WorkerPool {
     inner: Arc<ThreadPool>,
+    progress: Arc<PoolProgressEvent>,
     requested: ThreadCount,
     threads: NonZeroUsize,
 }
@@ -54,6 +58,7 @@ impl WorkerPool {
     /// Returns [`ParallelError::PoolBuild`] if the Rayon pool cannot be built.
     pub fn new(thread_count: ThreadCount) -> Result<Self, ParallelError> {
         let threads = thread_count.resolve();
+        let progress = Arc::new(PoolProgressEvent::new());
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(threads.get())
             .thread_name(|index| format!("splot-worker-{index}"))
@@ -62,11 +67,14 @@ impl WorkerPool {
             .build()?;
         let inner = Arc::new(inner);
         let installed = Arc::downgrade(&inner);
+        let installed_progress = Arc::downgrade(&progress);
         inner.broadcast(|_| {
             INSTALLED_POOL.with(|current| current.replace(Weak::clone(&installed)));
+            INSTALLED_PROGRESS.with(|current| current.replace(Weak::clone(&installed_progress)));
         });
         Ok(Self {
             inner,
+            progress,
             requested: thread_count,
             threads,
         })
@@ -82,6 +90,12 @@ impl WorkerPool {
     #[must_use]
     pub fn requested(&self) -> ThreadCount {
         self.requested
+    }
+
+    /// Returns a cumulative snapshot of this pool's assisted-wait metrics.
+    #[must_use]
+    pub fn wait_metrics(&self) -> PoolWaitMetrics {
+        self.progress.metrics()
     }
 
     /// Runs `f` inside this local pool, so any nested Rayon work uses these
@@ -135,6 +149,31 @@ where
     Ok(pool.scope_fifo(|inner| f(&TaskScope { inner })))
 }
 
+/// One pool-progress generation captured before a driver checks its condition.
+///
+/// Pass the snapshot to [`assist_pool_or_park`] only after checking the waited
+/// condition. A publication between the snapshot and the wait advances the
+/// generation, so the wait is skipped instead of losing the notification.
+pub struct PoolProgressSnapshot {
+    progress: Option<Arc<PoolProgressEvent>>,
+    generation: u64,
+}
+
+/// Captures the current decoder pool's progress generation.
+///
+/// The pipeline driver must call this before checking the condition it may
+/// wait for. Outside a splot-owned pool the returned snapshot preserves the
+/// legacy off-pool fallback in [`assist_pool_or_park`].
+#[must_use]
+pub fn pool_progress_snapshot() -> PoolProgressSnapshot {
+    let progress = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade());
+    let generation = progress.as_deref().map_or(0, PoolProgressEvent::generation);
+    PoolProgressSnapshot {
+        progress,
+        generation,
+    }
+}
+
 /// What one [`assist_installed_pool`] attempt did.
 pub(crate) enum PoolAssist {
     /// One pending pool job ran to completion on the calling thread.
@@ -162,20 +201,65 @@ pub(crate) fn assist_installed_pool() -> PoolAssist {
     }
 }
 
-/// Runs one pending job of the driver's installed pool, or parks briefly when
-/// the pool has nothing to run.
+pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> PoolAssist {
+    if let Some(progress) = snapshot.progress.as_deref() {
+        progress.note_assist();
+    }
+    let assisted = assist_installed_pool();
+    match assisted {
+        PoolAssist::Executed => {
+            if let Some(progress) = snapshot.progress.as_deref() {
+                progress.note_assisted_job();
+            }
+        }
+        PoolAssist::Idle => {
+            if let Some(progress) = snapshot.progress.as_deref() {
+                progress.wait_if_unchanged(snapshot.generation);
+            }
+        }
+        PoolAssist::OffPool => {}
+    }
+    assisted
+}
+
+pub(crate) fn notify_installed_pool_progress() {
+    if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
+        progress.notify();
+    }
+}
+
+pub(crate) fn bind_installed_pool_progress(bound: &OnceLock<Weak<PoolProgressEvent>>) {
+    if bound.get().is_some() {
+        return;
+    }
+    if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
+        let _ = bound.set(Arc::downgrade(&progress));
+    }
+}
+
+pub(crate) fn notify_bound_pool_progress(bound: &OnceLock<Weak<PoolProgressEvent>>) {
+    bind_installed_pool_progress(bound);
+    if let Some(progress) = bound.get().and_then(Weak::upgrade) {
+        progress.notify();
+    }
+}
+
+/// Runs one pending job of the driver's installed pool, or waits for its next
+/// progress event when the pool has nothing to run.
 ///
 /// Like [`crate::CompletionCell::wait_with_pool_assist`] this is reserved for
 /// the pipeline driver thread and carries the same reentrancy contract: the
 /// executed job is arbitrary, so the caller must hold no lock, no thread-local
 /// scope guard, and no borrow such a job could need. A driver waiting on
 /// something no completion cell publishes — a reference frame's row watermark,
-/// say — calls this in a loop and re-tests its own condition between steps, so
-/// its wait is donated to the pool instead of spun.
-pub fn assist_pool_or_park() {
-    match assist_installed_pool() {
-        PoolAssist::Executed => (),
-        PoolAssist::Idle | PoolAssist::OffPool => std::thread::sleep(ASSIST_PARK),
+/// say — captures [`pool_progress_snapshot`], tests its own condition, and then
+/// passes the snapshot here. Watermark, completion, and ready-task publication
+/// advance that generation before notifying the pool-scoped condition variable.
+/// The next loop iteration re-tests both the condition and the pool.
+pub fn assist_pool_or_park(snapshot: &PoolProgressSnapshot) {
+    match assist_installed_pool_or_wait(snapshot) {
+        PoolAssist::Executed | PoolAssist::Idle => (),
+        PoolAssist::OffPool => std::thread::sleep(OFF_POOL_ASSIST_PARK),
     }
 }
 
@@ -373,5 +457,17 @@ mod tests {
             ready_task_scope(|_| ()),
             Err(ParallelError::NotOnWorkerPool)
         ));
+    }
+
+    #[test]
+    fn independent_decoder_pools_keep_progress_events_separate() {
+        let first = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        let second = WorkerPool::new(ThreadCount::Fixed(nz(2))).unwrap();
+        first.install(|| {
+            ready_task_scope(|_| notify_installed_pool_progress()).unwrap();
+        });
+
+        assert!(first.wait_metrics().notifications >= 1);
+        assert_eq!(second.wait_metrics().notifications, 0);
     }
 }

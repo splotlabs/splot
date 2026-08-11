@@ -7,9 +7,11 @@
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 
 use crate::admission::AdmissionWaiter;
+use crate::pool::{bind_installed_pool_progress, notify_bound_pool_progress};
+use crate::progress::PoolProgressEvent;
 
 /// One registered threshold waiter: the admission token fires once the
 /// watermark reaches `threshold`.
@@ -116,6 +118,7 @@ struct MetricsSnapshot {
 #[derive(Debug, Default)]
 pub struct WatermarkCell {
     value: AtomicUsize,
+    progress: OnceLock<Weak<PoolProgressEvent>>,
     waiters: Mutex<BinaryHeap<Reverse<ThresholdWaiter>>>,
     #[cfg(test)]
     metrics: WatermarkMetrics,
@@ -131,6 +134,7 @@ impl WatermarkCell {
     pub const fn new() -> Self {
         Self {
             value: AtomicUsize::new(0),
+            progress: OnceLock::new(),
             waiters: Mutex::new(BinaryHeap::new()),
             #[cfg(test)]
             metrics: WatermarkMetrics::new(),
@@ -140,6 +144,7 @@ impl WatermarkCell {
     /// The highest published value, without blocking.
     #[must_use]
     pub fn current(&self) -> usize {
+        bind_installed_pool_progress(&self.progress);
         self.value.load(Ordering::Acquire)
     }
 
@@ -164,6 +169,7 @@ impl WatermarkCell {
         if previous >= value {
             return self.current();
         }
+        notify_bound_pool_progress(&self.progress);
         let fired = {
             #[cfg(test)]
             self.metrics
@@ -211,6 +217,7 @@ impl WatermarkCell {
     /// satisfied itself. Returning `true` promises exactly one later
     /// [`AdmissionWaiter::satisfy`] call.
     pub fn register(&self, threshold: usize, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+        bind_installed_pool_progress(&self.progress);
         #[cfg(test)]
         self.metrics
             .waiter_lock_acquisitions
@@ -386,6 +393,38 @@ mod tests {
         cell.publish(WatermarkCell::FAILED);
         assert!(waiters.iter().all(|waiter| waiter.count() == 1));
         assert_eq!(cell.current(), WatermarkCell::FAILED);
+    }
+
+    #[test]
+    fn failed_publish_wakes_an_assisted_driver() {
+        use crate::pool::{WorkerPool, assist_pool_or_park, pool_progress_snapshot};
+        use crate::thread_count::ThreadCount;
+
+        let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into().unwrap())).unwrap();
+        let cell = Arc::new(WatermarkCell::new());
+        let publisher_cell = Arc::clone(&cell);
+        let publisher_pool = pool.clone();
+        let publisher = thread::spawn(move || {
+            while publisher_pool.wait_metrics().idle_parks == 0 {
+                thread::yield_now();
+            }
+            publisher_cell.publish(WatermarkCell::FAILED);
+        });
+        pool.install(|| {
+            loop {
+                let progress = pool_progress_snapshot();
+                if cell.current() == WatermarkCell::FAILED {
+                    break;
+                }
+                assist_pool_or_park(&progress);
+            }
+        });
+        publisher.join().unwrap();
+
+        let metrics = pool.wait_metrics();
+        assert_eq!(metrics.idle_parks, 1);
+        assert_eq!(metrics.progress_wakes, 1);
+        assert_eq!(metrics.timeout_wakes, 0);
     }
 
     #[test]

@@ -100,7 +100,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::completion::CompletionCell;
 use crate::error::ParallelError;
-use crate::pool::TaskScope;
+use crate::pool::{TaskScope, notify_installed_pool_progress};
 use crate::watermark::WatermarkCell;
 
 /// The scheduler-side token a condition source notifies once its condition
@@ -617,6 +617,9 @@ impl<'job> AdmissionScheduler<'job> {
                 self.recycle_token(token);
             });
             spawned += 1;
+        }
+        if spawned != 0 {
+            notify_installed_pool_progress();
         }
         #[cfg(test)]
         {
