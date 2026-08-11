@@ -47,6 +47,22 @@
 //! skipping its drain takes no entry's drainer away — it only declines to spawn
 //! work another thread is already bound to drain.
 //!
+//! # Proven-ready jobs
+//!
+//! A job whose caller already knows it may run has nothing for the scheduler to
+//! decide, and [`Admit::spawn_ready`] spawns it into the same scope directly:
+//! no slot, no token, no heap round trip, and none of the lock acquisitions
+//! those three cost. It keeps everything a submitted job has that the rest of
+//! this module reasons about — the same scope and handle, and the same
+//! post-body drain, so its publishes admit their dependents on the thread that
+//! made them. It gives up only the `order_key`, entering the pool in call order
+//! instead of the heap's, which is a scheduling preference and not a
+//! correctness property.
+//!
+//! Nothing is lost to [`AdmissionScheduler::finish`] either: it reports jobs
+//! that never became admissible, and a job spawned this way was admissible when
+//! it was handed over, so it can never be one of them.
+//!
 //! # Reentrancy, panics, and teardown
 //!
 //! Admission runs on arbitrary pool threads inside unrelated jobs. The drain is
@@ -139,9 +155,25 @@ pub trait Admit<'job>: Sync {
     /// [`AdmissionScheduler::submit`]; an empty condition list spawns it at
     /// once.
     fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job>);
+
+    /// Spawns a job the caller has already proven ready, skipping the scheduler
+    /// slot, token, and ready heap that [`Admit::submit`] would spend on it.
+    ///
+    /// The job lands in the same scope, receives the same handle, and is drained
+    /// after exactly as a submitted job is, so it may publish conditions and
+    /// submit gated successors. What it gives up is the `order_key`: it enters
+    /// the pool in call order rather than competing with the heap's queued jobs,
+    /// so reserve it for work whose start order is a matter of indifference.
+    fn spawn_ready(&self, job: Job<'job>);
 }
 
-/// Test-only tally of the work the drain policy is meant to avoid.
+/// Test-only tally of the work the drain and fast paths are meant to avoid.
+///
+/// `transitions` counts ready-heap pushes, and over a joined scope every push
+/// was popped, so the two fast-path savings a caller cares about — the slot a
+/// job did not take and the heap round trip it did not make — are the gap
+/// between `submitted` and `conditionless`, and the drop in `transitions`, when
+/// the same graph is expressed with [`Admit::spawn_ready`].
 #[cfg(test)]
 #[derive(Debug, Default)]
 struct AdmissionCounters {
@@ -149,6 +181,9 @@ struct AdmissionCounters {
     transitions: AtomicUsize,
     drains: AtomicUsize,
     empty_drains: AtomicUsize,
+    submitted: AtomicUsize,
+    conditionless: AtomicUsize,
+    direct: AtomicUsize,
 }
 
 /// The queue of jobs whose conditions all hold, ordered by `order_key`.
@@ -374,6 +409,19 @@ impl<'job> AdmissionScheduler<'job> {
     ) where
         'job: 'scope,
     {
+        #[cfg(test)]
+        {
+            self.ready
+                .counters
+                .submitted
+                .fetch_add(1, Ordering::Relaxed);
+            if conditions.is_empty() {
+                self.ready
+                    .counters
+                    .conditionless
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
         let token = {
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
             let index = slots.entries.len();
@@ -500,11 +548,25 @@ impl<'job> Admit<'job> for ScopeAdmit<'_, '_, '_, 'job> {
         self.scheduler
             .submit(self.scope, order_key, conditions, job);
     }
+
+    fn spawn_ready(&self, job: Job<'job>) {
+        let scheduler = self.scheduler;
+        #[cfg(test)]
+        scheduler
+            .ready
+            .counters
+            .direct
+            .fetch_add(1, Ordering::Relaxed);
+        self.scope.spawn(move |scope| {
+            job(&ScopeAdmit { scheduler, scope });
+            scheduler.admit_ready(scope);
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use crate::pool::{WorkerPool, ready_task_scope};
     use crate::thread_count::ThreadCount;
@@ -539,15 +601,19 @@ mod tests {
         assert_eq!(token.index.load(Ordering::Relaxed), 17);
     }
 
-    /// The four tallies, read after the scope has joined so every drain the run
-    /// performed is already counted.
-    fn counters(scheduler: &AdmissionScheduler<'_>) -> [usize; 4] {
+    /// Every tally in declaration order, read after the scope has joined so all
+    /// of the run's drains are already counted. Tests take the window they are
+    /// about: `[..4]` is the drain policy, `[4..]` the submission paths.
+    fn counters(scheduler: &AdmissionScheduler<'_>) -> [usize; 7] {
         let counters = &scheduler.ready.counters;
         [
             counters.satisfies.load(Ordering::Relaxed),
             counters.transitions.load(Ordering::Relaxed),
             counters.drains.load(Ordering::Relaxed),
             counters.empty_drains.load(Ordering::Relaxed),
+            counters.submitted.load(Ordering::Relaxed),
+            counters.conditionless.load(Ordering::Relaxed),
+            counters.direct.load(Ordering::Relaxed),
         ]
     }
 
@@ -613,7 +679,7 @@ mod tests {
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
         assert_eq!(
-            counters(&scheduler),
+            counters(&scheduler)[..4],
             [1, 1, 2, 1],
             "submit drains the job it queued; the job's post-body drain finds nothing"
         );
@@ -639,7 +705,7 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
-        assert_eq!(counters(&scheduler), [2, 1, 2, 1]);
+        assert_eq!(counters(&scheduler)[..4], [2, 1, 2, 1]);
     }
 
     #[test]
@@ -668,7 +734,7 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
-        assert_eq!(counters(&scheduler), [4, 1, 2, 1]);
+        assert_eq!(counters(&scheduler)[..4], [4, 1, 2, 1]);
     }
 
     #[test]
@@ -686,7 +752,7 @@ mod tests {
                     Box::new(|_| log.record(0)),
                 );
                 assert_eq!(
-                    counters(&scheduler),
+                    counters(&scheduler)[..4],
                     [1, 0, 0, 0],
                     "nothing was queued, so nothing needed spawning"
                 );
@@ -1093,6 +1159,234 @@ mod tests {
                 "at {threads} thread(s)"
             );
         }
+    }
+
+    /// Builds the same fan-out twice, once per submission path, and reports the
+    /// tallies each cost.
+    fn fan_out(fast: bool) -> [usize; 7] {
+        const JOBS: usize = 16;
+        let ran = AtomicUsize::new(0);
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| {
+                        for _ in 0..JOBS {
+                            let job: Job<'_> = Box::new(|_| {
+                                ran.fetch_add(1, Ordering::AcqRel);
+                            });
+                            if fast {
+                                admit.spawn_ready(job);
+                            } else {
+                                admit.submit(1, &[], job);
+                            }
+                        }
+                    }),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(ran.load(Ordering::Acquire), JOBS);
+        counters(&scheduler)
+    }
+
+    #[test]
+    fn a_directly_spawned_job_costs_no_slot_and_no_heap_round_trip() {
+        let scheduled = fan_out(false);
+        let direct = fan_out(true);
+
+        assert_eq!(
+            scheduled[4..],
+            [17, 17, 0],
+            "submitting the fan-out stores every job in a scheduler slot"
+        );
+        assert_eq!(
+            direct[4..],
+            [1, 1, 16],
+            "spawning it ready stores only the entry job"
+        );
+        assert_eq!(
+            scheduled[1] - direct[1],
+            16,
+            "each fast-path job skips one ready-heap push, and so one pop"
+        );
+    }
+
+    #[test]
+    fn a_direct_job_submits_and_admits_a_gated_successor() {
+        for threads in 1..=4 {
+            let gate = CompletionCell::new();
+            let log = RunLog::default();
+            let scheduler = AdmissionScheduler::new();
+            let pool = pool(threads);
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    let (log, gate) = (&log, &gate);
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        Box::new(move |admit| {
+                            admit.spawn_ready(Box::new(move |admit| {
+                                admit.submit(
+                                    2,
+                                    &[Condition::Completion(gate)],
+                                    Box::new(move |_| log.record(2)),
+                                );
+                                log.record(1);
+                                let _ = gate.set(());
+                            }));
+                        }),
+                    );
+                })
+            })
+            .unwrap();
+            scheduler.finish().unwrap();
+            assert_eq!(log.keys(), vec![1, 2], "at {threads} thread(s)");
+        }
+    }
+
+    /// One link of a chain of directly spawned jobs, each spawning the next.
+    fn nest<'job>(admit: &dyn Admit<'job>, visits: &'job AtomicUsize, remaining: usize) {
+        visits.fetch_add(1, Ordering::AcqRel);
+        if remaining > 0 {
+            admit.spawn_ready(Box::new(move |admit| nest(admit, visits, remaining - 1)));
+        }
+    }
+
+    #[test]
+    fn nested_direct_jobs_each_run_once() {
+        const DEPTH: usize = 8;
+        for threads in 1..=4 {
+            let visits = AtomicUsize::new(0);
+            let scheduler = AdmissionScheduler::new();
+            let pool = pool(threads);
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(scope, 0, &[], Box::new(|admit| nest(admit, &visits, DEPTH)));
+                })
+            })
+            .unwrap();
+            scheduler.finish().unwrap();
+            assert_eq!(
+                visits.load(Ordering::Acquire),
+                DEPTH + 1,
+                "at {threads} thread(s)"
+            );
+            assert_eq!(counters(&scheduler)[4..], [1, 1, DEPTH]);
+        }
+    }
+
+    #[test]
+    fn a_direct_and_a_gated_job_share_a_scope_and_each_run_once() {
+        const JOBS: usize = 24;
+        for threads in 1..=4 {
+            let gates: Vec<CompletionCell<()>> = (0..JOBS).map(|_| CompletionCell::new()).collect();
+            let direct: Vec<AtomicUsize> = (0..JOBS).map(|_| AtomicUsize::new(0)).collect();
+            let gated: Vec<AtomicUsize> = (0..JOBS).map(|_| AtomicUsize::new(0)).collect();
+            let scheduler = AdmissionScheduler::new();
+            let pool = pool(threads);
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    let (gates, direct, gated) = (&gates, &direct, &gated);
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        Box::new(move |admit| {
+                            for index in 0..JOBS {
+                                admit.submit(
+                                    (index as u64) * 2 + 2,
+                                    &[Condition::Completion(&gates[index])],
+                                    Box::new(move |_| {
+                                        gated[index].fetch_add(1, Ordering::AcqRel);
+                                    }),
+                                );
+                            }
+                            for index in 0..JOBS {
+                                admit.spawn_ready(Box::new(move |_| {
+                                    direct[index].fetch_add(1, Ordering::AcqRel);
+                                    let _ = gates[index].set(());
+                                }));
+                            }
+                        }),
+                    );
+                })
+            })
+            .unwrap();
+            scheduler.finish().unwrap();
+            assert_eq!(counters(&scheduler)[4..], [JOBS + 1, 1, JOBS]);
+            for index in 0..JOBS {
+                assert_eq!(
+                    (
+                        direct[index].load(Ordering::Acquire),
+                        gated[index].load(Ordering::Acquire),
+                    ),
+                    (1, 1),
+                    "job {index} at {threads} thread(s)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_scope_completes_only_after_its_direct_jobs_have_run() {
+        const JOBS: usize = 8;
+        let ran = AtomicUsize::new(0);
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| {
+                        for _ in 0..JOBS {
+                            admit.spawn_ready(Box::new(|_| {
+                                std::thread::sleep(std::time::Duration::from_millis(5));
+                                ran.fetch_add(1, Ordering::AcqRel);
+                            }));
+                        }
+                    }),
+                );
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            ran.load(Ordering::Acquire),
+            JOBS,
+            "the scope joined every direct job before returning"
+        );
+        scheduler.finish().unwrap();
+    }
+
+    #[test]
+    fn a_panicking_direct_job_unwinds_through_the_scope() {
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[],
+                        Box::new(|admit| {
+                            admit.spawn_ready(Box::new(|_| panic!("direct job")));
+                        }),
+                    );
+                })
+            })
+        }))
+        .expect_err("the scope must not swallow a direct job's panic");
+        assert_eq!(panicked.downcast_ref::<&str>().copied(), Some("direct job"));
+        scheduler.finish().unwrap();
     }
 
     /// A tiny deterministic linear congruential generator: the property test
