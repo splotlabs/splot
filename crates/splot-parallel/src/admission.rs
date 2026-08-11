@@ -32,12 +32,20 @@
 //!
 //! Spawning needs a [`TaskScope`], which a publisher running off the pool (the
 //! driver) or inside another job does not always hold, so satisfying a condition
-//! only queues a job; a *drain* spawns it. Drains run at
-//! [`AdmissionScheduler::submit`], after every scheduler-spawned job body, and
-//! wherever a caller asks for one ([`AdmissionScheduler::admit_ready`], or
-//! [`Admit::admit_ready`] from inside a job that wants its dependents started
-//! before its own body ends). A driver that publishes between drains must call
-//! [`AdmissionScheduler::admit_ready`] itself.
+//! only queues a job; a *drain* spawns it. Drains run after every
+//! scheduler-spawned job body, wherever a caller asks for one
+//! ([`AdmissionScheduler::admit_ready`], or [`Admit::admit_ready`] from inside a
+//! job that wants its dependents started before its own body ends), and at
+//! [`AdmissionScheduler::submit`] when that submission queued its own job.
+//!
+//! Every queued entry is pushed by the single `satisfy` call that cleared its
+//! job's last condition, and that caller drains after it: a publish inside a job
+//! body is followed by the scheduler's post-body drain on the same thread,
+//! `submit`'s own closing satisfy is followed by `submit`'s drain, and a driver
+//! that publishes outside a job must call [`AdmissionScheduler::admit_ready`]
+//! itself. A `submit` that leaves a condition outstanding pushed nothing, so
+//! skipping its drain takes no entry's drainer away — it only declines to spawn
+//! work another thread is already bound to drain.
 //!
 //! # Reentrancy, panics, and teardown
 //!
@@ -133,6 +141,16 @@ pub trait Admit<'job>: Sync {
     fn submit(&self, order_key: u64, conditions: &[Condition<'_>], job: Job<'job>);
 }
 
+/// Test-only tally of the work the drain policy is meant to avoid.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct AdmissionCounters {
+    satisfies: AtomicUsize,
+    transitions: AtomicUsize,
+    drains: AtomicUsize,
+    empty_drains: AtomicUsize,
+}
+
 /// The queue of jobs whose conditions all hold, ordered by `order_key`.
 ///
 /// Shared with the waiter tokens through an `Arc` and free of borrowed state, so
@@ -141,6 +159,8 @@ pub trait Admit<'job>: Sync {
 #[derive(Debug, Default)]
 struct ReadyQueue {
     entries: Mutex<BinaryHeap<Reverse<(u64, usize)>>>,
+    #[cfg(test)]
+    counters: AdmissionCounters,
 }
 
 impl ReadyQueue {
@@ -180,10 +200,19 @@ impl AdmissionToken {
         self.index.store(index, Ordering::Relaxed);
         self.pending.store(pending, Ordering::Release);
     }
-}
 
-impl AdmissionWaiter for AdmissionToken {
-    fn satisfy(&self) {
+    /// Clears one outstanding condition, reporting whether this call is the one
+    /// that took the count to zero and queued the job.
+    ///
+    /// At most one call per token can report `true`, and the thread it reports
+    /// it on is the thread that pushed the ready entry, which is what lets a
+    /// caller holding a [`TaskScope`] tell a drain it owes from one it does not.
+    fn satisfy_reporting(&self) -> bool {
+        #[cfg(test)]
+        self.ready
+            .counters
+            .satisfies
+            .fetch_add(1, Ordering::Relaxed);
         let mut pending = self.pending.load(Ordering::Acquire);
         while pending > 0 {
             match self.pending.compare_exchange_weak(
@@ -193,17 +222,30 @@ impl AdmissionWaiter for AdmissionToken {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    if pending == 1 {
-                        self.ready.push(
-                            self.order_key.load(Ordering::Relaxed),
-                            self.index.load(Ordering::Relaxed),
-                        );
+                    if pending > 1 {
+                        return false;
                     }
-                    return;
+                    #[cfg(test)]
+                    self.ready
+                        .counters
+                        .transitions
+                        .fetch_add(1, Ordering::Relaxed);
+                    self.ready.push(
+                        self.order_key.load(Ordering::Relaxed),
+                        self.index.load(Ordering::Relaxed),
+                    );
+                    return true;
                 }
                 Err(observed) => pending = observed,
             }
         }
+        false
+    }
+}
+
+impl AdmissionWaiter for AdmissionToken {
+    fn satisfy(&self) {
+        self.satisfy_reporting();
     }
 }
 
@@ -316,7 +358,9 @@ impl<'job> AdmissionScheduler<'job> {
     /// call returns, ahead of any lower-keyed job already queued. Otherwise the
     /// job is stored and each unsatisfied source is asked to notify the job's
     /// token; the notification that clears the last condition queues the job,
-    /// and the next drain spawns it.
+    /// and the next drain spawns it. A submission that leaves a condition
+    /// outstanding queued nothing and therefore does not drain — see the
+    /// module's account of which thread owes each queued entry its drain.
     pub fn submit<'scope>(
         &'scope self,
         scope: &TaskScope<'_, 'scope>,
@@ -337,14 +381,17 @@ impl<'job> AdmissionScheduler<'job> {
             });
             token
         };
+        let mut queued = false;
         for condition in conditions {
             if !condition.register(Arc::clone(&token) as Arc<dyn AdmissionWaiter>) {
-                token.satisfy();
+                queued |= token.satisfy_reporting();
             }
         }
-        token.satisfy();
+        queued |= token.satisfy_reporting();
         drop(token);
-        self.admit_ready(scope);
+        if queued {
+            self.admit_ready(scope);
+        }
     }
 
     /// Spawns every job that is admissible now, returning how many were spawned.
@@ -371,6 +418,16 @@ impl<'job> AdmissionScheduler<'job> {
                 self.recycle_token(token);
             });
             spawned += 1;
+        }
+        #[cfg(test)]
+        {
+            self.ready.counters.drains.fetch_add(1, Ordering::Relaxed);
+            if spawned == 0 {
+                self.ready
+                    .counters
+                    .empty_drains
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
         spawned
     }
@@ -479,6 +536,46 @@ mod tests {
         assert_eq!(token.index.load(Ordering::Relaxed), 17);
     }
 
+    /// The four tallies, read after the scope has joined so every drain the run
+    /// performed is already counted.
+    fn counters(scheduler: &AdmissionScheduler<'_>) -> [usize; 4] {
+        let counters = &scheduler.ready.counters;
+        [
+            counters.satisfies.load(Ordering::Relaxed),
+            counters.transitions.load(Ordering::Relaxed),
+            counters.drains.load(Ordering::Relaxed),
+            counters.empty_drains.load(Ordering::Relaxed),
+        ]
+    }
+
+    #[test]
+    fn exactly_one_concurrent_satisfy_reports_the_transition() {
+        for _ in 0..256 {
+            let ready = Arc::new(ReadyQueue::default());
+            let token = Arc::new(AdmissionToken {
+                pending: AtomicUsize::new(4),
+                order_key: AtomicU64::new(7),
+                index: AtomicUsize::new(3),
+                ready: Arc::clone(&ready),
+            });
+            let reported: usize = std::thread::scope(|threads| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| {
+                        let token = Arc::clone(&token);
+                        threads.spawn(move || usize::from(token.satisfy_reporting()))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .sum()
+            });
+            assert_eq!(reported, 1, "only the closing satisfy queues the job");
+            assert_eq!(ready.pop(), Some(3));
+            assert_eq!(ready.pop(), None, "the job is queued exactly once");
+        }
+    }
+
     /// Records the order in which jobs ran.
     #[derive(Debug, Default)]
     struct RunLog(Mutex<Vec<u64>>);
@@ -512,12 +609,16 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
+        assert_eq!(
+            counters(&scheduler),
+            [1, 1, 2, 1],
+            "submit drains the job it queued; the job's post-body drain finds nothing"
+        );
     }
 
     #[test]
-    fn a_job_whose_conditions_already_hold_is_spawned_at_submit() {
+    fn a_job_with_one_already_satisfied_condition_is_spawned_at_submit() {
         let rows = WatermarkCell::new();
-        let done = CompletionCell::completed(7u32);
         let log = RunLog::default();
         let scheduler = AdmissionScheduler::new();
         rows.publish(3);
@@ -527,7 +628,7 @@ mod tests {
                 scheduler.submit(
                     scope,
                     0,
-                    &[Condition::Watermark(&rows, 3), Condition::Completion(&done)],
+                    &[Condition::Watermark(&rows, 3)],
                     Box::new(|_| log.record(0)),
                 );
             })
@@ -535,6 +636,174 @@ mod tests {
         .unwrap();
         scheduler.finish().unwrap();
         assert_eq!(log.keys(), vec![0]);
+        assert_eq!(counters(&scheduler), [2, 1, 2, 1]);
+    }
+
+    #[test]
+    fn a_job_whose_conditions_already_hold_is_spawned_at_submit() {
+        let rows = WatermarkCell::new();
+        let done = CompletionCell::completed(7u32);
+        let settled = CompletionCell::completed(());
+        let log = RunLog::default();
+        let scheduler = AdmissionScheduler::new();
+        rows.publish(3);
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[
+                        Condition::Watermark(&rows, 3),
+                        Condition::Completion(&done),
+                        Condition::Completion(&settled),
+                    ],
+                    Box::new(|_| log.record(0)),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(log.keys(), vec![0]);
+        assert_eq!(counters(&scheduler), [4, 1, 2, 1]);
+    }
+
+    #[test]
+    fn a_submission_with_an_outstanding_condition_does_not_drain() {
+        let rows = WatermarkCell::new();
+        let log = RunLog::default();
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[Condition::Watermark(&rows, 1)],
+                    Box::new(|_| log.record(0)),
+                );
+                assert_eq!(
+                    counters(&scheduler),
+                    [1, 0, 0, 0],
+                    "nothing was queued, so nothing needed spawning"
+                );
+                rows.publish(1);
+                assert_eq!(scheduler.admit_ready(scope), 1);
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(log.keys(), vec![0]);
+    }
+
+    #[test]
+    fn a_queued_unrelated_job_survives_a_submission_that_queues_nothing() {
+        let ready_rows = WatermarkCell::new();
+        let blocked_rows = WatermarkCell::new();
+        let log = RunLog::default();
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[Condition::Watermark(&ready_rows, 1)],
+                    Box::new(|_| log.record(0)),
+                );
+                ready_rows.publish(1);
+                scheduler.submit(
+                    scope,
+                    1,
+                    &[Condition::Watermark(&blocked_rows, 1)],
+                    Box::new(|_| log.record(1)),
+                );
+                assert!(
+                    log.keys().is_empty(),
+                    "the blocked submission spawned nothing"
+                );
+                assert_eq!(
+                    scheduler.admit_ready(scope),
+                    1,
+                    "the publisher's own drain still finds the queued job"
+                );
+                blocked_rows.publish(1);
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(log.keys(), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_condition_settled_concurrently_with_submission_admits_exactly_once() {
+        for threads in 1..=4 {
+            for _ in 0..64 {
+                let done = CompletionCell::new();
+                let ran = AtomicUsize::new(0);
+                let scheduler = AdmissionScheduler::new();
+                let pool = pool(threads);
+                pool.install(|| {
+                    ready_task_scope(|scope| {
+                        scheduler.submit(
+                            scope,
+                            0,
+                            &[],
+                            Box::new(|_| {
+                                let _ = done.set(());
+                            }),
+                        );
+                        scheduler.submit(
+                            scope,
+                            1,
+                            &[Condition::Completion(&done)],
+                            Box::new(|_| {
+                                ran.fetch_add(1, Ordering::AcqRel);
+                            }),
+                        );
+                    })
+                })
+                .unwrap();
+                scheduler.finish().unwrap();
+                assert_eq!(ran.load(Ordering::Acquire), 1, "at {threads} thread(s)");
+            }
+        }
+    }
+
+    #[test]
+    fn a_chain_submitted_before_its_producers_strands_nothing() {
+        const LINKS: usize = 32;
+        for threads in 1..=4 {
+            let gates: Vec<CompletionCell<()>> =
+                (0..LINKS).map(|_| CompletionCell::new()).collect();
+            let ran = AtomicUsize::new(0);
+            let scheduler = AdmissionScheduler::new();
+            let pool = pool(threads);
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    let gates = &gates;
+                    let ran = &ran;
+                    for index in (0..LINKS).rev() {
+                        let conditions: Vec<Condition<'_>> = index
+                            .checked_sub(1)
+                            .map(|previous| vec![Condition::Completion(&gates[previous])])
+                            .unwrap_or_default();
+                        scheduler.submit(
+                            scope,
+                            index as u64,
+                            &conditions,
+                            Box::new(move |_| {
+                                ran.fetch_add(1, Ordering::AcqRel);
+                                let _ = gates[index].set(());
+                            }),
+                        );
+                    }
+                })
+            })
+            .unwrap();
+            scheduler.finish().unwrap();
+            assert_eq!(ran.load(Ordering::Acquire), LINKS, "at {threads} thread(s)");
+        }
     }
 
     #[test]
