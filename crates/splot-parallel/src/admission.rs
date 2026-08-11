@@ -203,11 +203,7 @@ struct AdmissionCounters {
     direct: AtomicUsize,
 }
 
-/// The queue of jobs whose conditions all hold, ordered by key then submission.
-///
-/// Shared with the waiter tokens through an `Arc` and free of borrowed state, so
-/// a condition source that outlives the scheduler can still push into it
-/// harmlessly.
+/// One slot occupancy's identity, incremented before an index is reused.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct SlotGeneration(u64);
 
@@ -219,6 +215,7 @@ impl SlotGeneration {
     }
 }
 
+/// One queued job identity and its stable scheduling order.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct ReadyEntry {
     order_key: u64,
@@ -227,6 +224,11 @@ struct ReadyEntry {
     generation: SlotGeneration,
 }
 
+/// The queue of jobs whose conditions all hold, ordered by key then submission.
+///
+/// Shared with the waiter tokens through an `Arc` and free of borrowed state, so
+/// a condition source that outlives the scheduler can still push into it
+/// harmlessly.
 #[derive(Debug, Default)]
 struct ReadyQueue {
     entries: Mutex<BinaryHeap<Reverse<ReadyEntry>>>,
