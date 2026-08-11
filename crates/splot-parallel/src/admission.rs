@@ -75,6 +75,23 @@
 //! stay unadmitted and [`AdmissionScheduler::finish`] reports them. Jobs left
 //! unadmitted when the scope ends are a bug in the caller's dependency graph;
 //! `finish` surfaces them as a typed error instead of dropping them silently.
+//!
+//! # Slot and token reuse
+//!
+//! A ready entry names both a slot index and its generation. Taking a job moves
+//! the job and waiter handle out under the slot lock before the index reaches
+//! the free list, so the running closure owns everything it needs and the slot
+//! may immediately serve another submission. A generation at `u64::MAX` is
+//! retired instead of wrapped; even at one billion reuses per second reaching
+//! that point would take more than five centuries, and retirement prevents the
+//! theoretical wrap from aliasing an old ready entry.
+//!
+//! Token reuse is separate. Each submission publishes a new, immutable
+//! `AdmissionWaiterHandle` that snapshots its generation. Condition cells
+//! retain weak or strong references to that handle, never to the pooled token
+//! state. The token is pooled only after the job has run and the handle is
+//! uniquely detached; stale weak handles then cannot upgrade to a new job, and
+//! stale strong handles prevent token pooling until they disappear.
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::fmt;
@@ -186,34 +203,55 @@ struct AdmissionCounters {
     direct: AtomicUsize,
 }
 
-/// The queue of jobs whose conditions all hold, ordered by `order_key`.
+/// One slot occupancy's identity, incremented before an index is reused.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct SlotGeneration(u64);
+
+impl SlotGeneration {
+    const INITIAL: Self = Self(0);
+
+    fn next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
+/// One queued job identity and its stable scheduling order.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ReadyEntry {
+    order_key: u64,
+    submission_order: u64,
+    index: usize,
+    generation: SlotGeneration,
+}
+
+/// The queue of jobs whose conditions all hold, ordered by key then submission.
 ///
 /// Shared with the waiter tokens through an `Arc` and free of borrowed state, so
 /// a condition source that outlives the scheduler can still push into it
 /// harmlessly.
 #[derive(Debug, Default)]
 struct ReadyQueue {
-    entries: Mutex<BinaryHeap<Reverse<(u64, usize)>>>,
+    entries: Mutex<BinaryHeap<Reverse<ReadyEntry>>>,
     #[cfg(test)]
     counters: AdmissionCounters,
 }
 
 impl ReadyQueue {
-    /// Queues the slot at `index` for the next drain.
-    fn push(&self, order_key: u64, index: usize) {
+    /// Queues one generation of a slot for the next drain.
+    fn push(&self, entry: ReadyEntry) {
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(Reverse((order_key, index)));
+            .push(Reverse(entry));
     }
 
     /// Takes the queued slot with the lowest `order_key`.
-    fn pop(&self) -> Option<usize> {
+    fn pop(&self) -> Option<ReadyEntry> {
         self.entries
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop()
-            .map(|Reverse((_, index))| index)
+            .map(|Reverse(entry)| entry)
     }
 }
 
@@ -228,15 +266,13 @@ impl ReadyQueue {
 #[derive(Debug)]
 struct AdmissionToken {
     pending: AtomicUsize,
-    order_key: AtomicU64,
-    index: AtomicUsize,
+    generation: AtomicU64,
     ready: Arc<ReadyQueue>,
 }
 
 impl AdmissionToken {
-    fn reset(&self, pending: usize, order_key: u64, index: usize) {
-        self.order_key.store(order_key, Ordering::Relaxed);
-        self.index.store(index, Ordering::Relaxed);
+    fn reset(&self, pending: usize, generation: SlotGeneration) {
+        self.generation.store(generation.0, Ordering::Release);
         self.pending.store(pending, Ordering::Release);
     }
 
@@ -246,12 +282,15 @@ impl AdmissionToken {
     /// At most one call per token can report `true`, and the thread it reports
     /// it on is the thread that pushed the ready entry, which is what lets a
     /// caller holding a [`TaskScope`] tell a drain it owes from one it does not.
-    fn satisfy_reporting(&self) -> bool {
+    fn satisfy_reporting(&self, entry: ReadyEntry) -> bool {
         #[cfg(test)]
         self.ready
             .counters
             .satisfies
             .fetch_add(1, Ordering::Relaxed);
+        if self.generation.load(Ordering::Acquire) != entry.generation.0 {
+            return false;
+        }
         let mut pending = self.pending.load(Ordering::Acquire);
         while pending > 0 {
             match self.pending.compare_exchange_weak(
@@ -269,10 +308,7 @@ impl AdmissionToken {
                         .counters
                         .transitions
                         .fetch_add(1, Ordering::Relaxed);
-                    self.ready.push(
-                        self.order_key.load(Ordering::Relaxed),
-                        self.index.load(Ordering::Relaxed),
-                    );
+                    self.ready.push(entry);
                     return true;
                 }
                 Err(observed) => pending = observed,
@@ -282,7 +318,24 @@ impl AdmissionToken {
     }
 }
 
-impl AdmissionWaiter for AdmissionToken {
+/// One job generation's identity, retained while any condition may notify it.
+///
+/// The token state may be pooled, but this handle is never reset or reused. A
+/// stale weak condition handle therefore cannot upgrade to a later job even if
+/// the allocator and scheduler both reuse their underlying storage.
+#[derive(Debug)]
+struct AdmissionWaiterHandle {
+    entry: ReadyEntry,
+    token: Arc<AdmissionToken>,
+}
+
+impl AdmissionWaiterHandle {
+    fn satisfy_reporting(&self) -> bool {
+        self.token.satisfy_reporting(self.entry)
+    }
+}
+
+impl AdmissionWaiter for AdmissionWaiterHandle {
     fn satisfy(&self) {
         self.satisfy_reporting();
     }
@@ -290,35 +343,137 @@ impl AdmissionWaiter for AdmissionToken {
 
 /// One submitted job and the key it is admitted under.
 struct Slot<'job> {
+    generation: SlotGeneration,
     order_key: u64,
+    occupied_position: Option<usize>,
     job: Option<Job<'job>>,
-    token: Option<Arc<AdmissionToken>>,
+    waiter: Option<Arc<AdmissionWaiterHandle>>,
 }
 
 #[derive(Default)]
 struct SchedulerSlots<'job> {
     entries: Vec<Slot<'job>>,
+    free: Vec<usize>,
+    occupied_indices: Vec<usize>,
     tokens: Vec<Arc<AdmissionToken>>,
+    next_submission_order: u64,
+    #[cfg(test)]
+    peak_occupied: usize,
+    #[cfg(test)]
+    reuses: usize,
 }
 
-impl SchedulerSlots<'_> {
+impl<'job> SchedulerSlots<'job> {
     fn take_token(
         &mut self,
         pending: usize,
-        order_key: u64,
-        index: usize,
+        generation: SlotGeneration,
         ready: &Arc<ReadyQueue>,
     ) -> Arc<AdmissionToken> {
         if let Some(token) = self.tokens.pop() {
-            token.reset(pending, order_key, index);
+            token.reset(pending, generation);
             return token;
         }
         Arc::new(AdmissionToken {
             pending: AtomicUsize::new(pending),
-            order_key: AtomicU64::new(order_key),
-            index: AtomicUsize::new(index),
+            generation: AtomicU64::new(generation.0),
             ready: Arc::clone(ready),
         })
+    }
+
+    fn store_job(
+        &mut self,
+        pending: usize,
+        order_key: u64,
+        job: Job<'job>,
+        ready: &Arc<ReadyQueue>,
+    ) -> Arc<AdmissionWaiterHandle> {
+        let (index, generation) = self.take_slot();
+        let submission_order = self.next_submission_order;
+        self.next_submission_order = self.next_submission_order.wrapping_add(1);
+        let token = self.take_token(pending, generation, ready);
+        let waiter = Arc::new(AdmissionWaiterHandle {
+            entry: ReadyEntry {
+                order_key,
+                submission_order,
+                index,
+                generation,
+            },
+            token,
+        });
+        let occupied_position = self.occupied_indices.len();
+        let slot = &mut self.entries[index];
+        slot.order_key = order_key;
+        slot.occupied_position = Some(occupied_position);
+        slot.job = Some(job);
+        slot.waiter = Some(Arc::clone(&waiter));
+        self.occupied_indices.push(index);
+        #[cfg(test)]
+        {
+            self.peak_occupied = self.peak_occupied.max(self.occupied_indices.len());
+        }
+        waiter
+    }
+
+    fn take_slot(&mut self) -> (usize, SlotGeneration) {
+        while let Some(index) = self.free.pop() {
+            let Some(slot) = self.entries.get_mut(index) else {
+                continue;
+            };
+            let Some(generation) = slot.generation.next() else {
+                continue;
+            };
+            slot.generation = generation;
+            #[cfg(test)]
+            {
+                self.reuses += 1;
+            }
+            return (index, generation);
+        }
+
+        let index = self.entries.len();
+        self.entries.push(Slot {
+            generation: SlotGeneration::INITIAL,
+            order_key: 0,
+            occupied_position: None,
+            job: None,
+            waiter: None,
+        });
+        (index, SlotGeneration::INITIAL)
+    }
+
+    fn take_job(&mut self, ready: ReadyEntry) -> Option<(Job<'job>, Arc<AdmissionWaiterHandle>)> {
+        let slot = self.entries.get_mut(ready.index)?;
+        if slot.generation != ready.generation || slot.job.is_none() || slot.waiter.is_none() {
+            return None;
+        }
+        let occupied_position = slot.occupied_position?;
+        if self.occupied_indices.get(occupied_position) != Some(&ready.index) {
+            return None;
+        }
+        let job = slot.job.take()?;
+        let waiter = slot.waiter.take()?;
+        slot.occupied_position = None;
+        self.occupied_indices.swap_remove(occupied_position);
+        if let Some(&moved_index) = self.occupied_indices.get(occupied_position) {
+            self.entries[moved_index].occupied_position = Some(occupied_position);
+        }
+        self.free.push(ready.index);
+        Some((job, waiter))
+    }
+
+    fn take_stranded(&mut self) -> Vec<(u64, Job<'job>)> {
+        let mut stranded = Vec::with_capacity(self.occupied_indices.len());
+        for index in core::mem::take(&mut self.occupied_indices) {
+            let slot = &mut self.entries[index];
+            if let Some(job) = slot.job.take() {
+                stranded.push((slot.order_key, job));
+            }
+            slot.waiter.take();
+            slot.occupied_position = None;
+            self.free.push(index);
+        }
+        stranded
     }
 }
 
@@ -328,8 +483,8 @@ impl SchedulerSlots<'_> {
 /// its jobs borrow, then share `&scheduler` into the scope: the jobs it holds
 /// borrow that state for `'job`, and a job is spawned into the scope only once
 /// every condition it named already holds. Memory is one small slot per
-/// submitted job plus one token per job, so it is bounded by the jobs the caller
-/// submits; use one scheduler per scope.
+/// concurrently occupied job plus reusable token state, so it tracks peak live
+/// work rather than historical submissions; use one scheduler per scope.
 ///
 /// Call [`AdmissionScheduler::finish`] once the scope has joined. It is the only
 /// report of jobs that were never admitted: dropping the scheduler instead
@@ -424,14 +579,7 @@ impl<'job> AdmissionScheduler<'job> {
         }
         let token = {
             let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-            let index = slots.entries.len();
-            let token = slots.take_token(conditions.len() + 1, order_key, index, &self.ready);
-            slots.entries.push(Slot {
-                order_key,
-                job: Some(job),
-                token: Some(Arc::clone(&token)),
-            });
-            token
+            slots.store_job(conditions.len() + 1, order_key, job, &self.ready)
         };
         for condition in conditions {
             if !condition.register(Arc::clone(&token) as Arc<dyn AdmissionWaiter>) {
@@ -456,8 +604,8 @@ impl<'job> AdmissionScheduler<'job> {
         'job: 'scope,
     {
         let mut spawned = 0;
-        while let Some(index) = self.ready.pop() {
-            let Some((job, token)) = self.take_job(index) else {
+        while let Some(ready) = self.ready.pop() {
+            let Some((job, token)) = self.take_job(ready) else {
                 continue;
             };
             scope.spawn(move |scope| {
@@ -495,15 +643,11 @@ impl<'job> AdmissionScheduler<'job> {
     /// Returns [`ParallelError::JobsNeverAdmitted`] when at least one submitted
     /// job was still waiting on a condition.
     pub fn finish(&self) -> Result<(), ParallelError> {
-        let mut stranded = Vec::new();
-        {
-            let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-            for slot in &mut slots.entries {
-                if let Some(job) = slot.job.take() {
-                    stranded.push((slot.order_key, job));
-                }
-            }
-        }
+        let stranded = self
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_stranded();
         let Some(lowest_order_key) = stranded.iter().map(|(key, _)| *key).min() else {
             return Ok(());
         };
@@ -513,21 +657,23 @@ impl<'job> AdmissionScheduler<'job> {
         })
     }
 
-    /// Takes the job stored in `index`, or `None` when another drain won it.
-    fn take_job(&self, index: usize) -> Option<(Job<'job>, Arc<AdmissionToken>)> {
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        let slot = slots.entries.get_mut(index)?;
-        let token = slot.token.take()?;
-        slot.job.take().map(|job| (job, token))
+    /// Takes one generation's job, or `None` when it is stale or another drain won it.
+    fn take_job(&self, ready: ReadyEntry) -> Option<(Job<'job>, Arc<AdmissionWaiterHandle>)> {
+        self.slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take_job(ready)
     }
 
-    fn recycle_token(&self, token: Arc<AdmissionToken>) {
-        if Arc::strong_count(&token) == 1 {
+    fn recycle_token(&self, waiter: Arc<AdmissionWaiterHandle>) {
+        if let Ok(waiter) = Arc::try_unwrap(waiter)
+            && Arc::strong_count(&waiter.token) == 1
+        {
             self.slots
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .tokens
-                .push(token);
+                .push(waiter.token);
         }
     }
 }
@@ -578,27 +724,38 @@ mod tests {
     }
 
     #[test]
-    fn a_token_with_a_stale_weak_handle_is_reset_and_reused() {
+    fn token_state_is_reused_with_a_new_slot_generation_without_waiter_aba() {
         let scheduler = AdmissionScheduler::new();
         let token = scheduler
             .slots
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take_token(3, 7, 11, &scheduler.ready);
+            .take_token(3, SlotGeneration(4), &scheduler.ready);
         let address = Arc::as_ptr(&token);
-        let stale = Arc::downgrade(&token);
-        scheduler.recycle_token(token);
+        let waiter = Arc::new(AdmissionWaiterHandle {
+            entry: ReadyEntry {
+                order_key: 7,
+                submission_order: 0,
+                index: 11,
+                generation: SlotGeneration(4),
+            },
+            token,
+        });
+        let stale = Arc::downgrade(&waiter);
+        scheduler.recycle_token(waiter);
+        assert!(
+            stale.upgrade().is_none(),
+            "the job-specific handle dies even while its weak allocation remains"
+        );
 
         let token = scheduler
             .slots
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .take_token(2, 13, 17, &scheduler.ready);
+            .take_token(2, SlotGeneration(9), &scheduler.ready);
         assert_eq!(Arc::as_ptr(&token), address);
-        assert_eq!(Arc::as_ptr(&stale.upgrade().unwrap()), address);
         assert_eq!(token.pending.load(Ordering::Acquire), 2);
-        assert_eq!(token.order_key.load(Ordering::Relaxed), 13);
-        assert_eq!(token.index.load(Ordering::Relaxed), 17);
+        assert_eq!(token.generation.load(Ordering::Relaxed), 9);
     }
 
     /// Every tally in declaration order, read after the scope has joined so all
@@ -617,21 +774,167 @@ mod tests {
         ]
     }
 
+    /// Submission and slot-storage metrics, read after the scope has joined.
+    fn slot_metrics(scheduler: &AdmissionScheduler<'_>) -> [usize; 4] {
+        let submitted = scheduler.ready.counters.submitted.load(Ordering::Relaxed);
+        let slots = scheduler
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        [
+            submitted,
+            slots.peak_occupied,
+            slots.entries.len(),
+            slots.reuses,
+        ]
+    }
+
+    fn submit_chain<'job>(admit: &dyn Admit<'job>, ran: &'job AtomicUsize, remaining: usize) {
+        ran.fetch_add(1, Ordering::AcqRel);
+        if remaining > 1 {
+            admit.submit(
+                0,
+                &[],
+                Box::new(move |admit| submit_chain(admit, ran, remaining - 1)),
+            );
+        }
+    }
+
+    #[test]
+    fn one_hundred_thousand_short_jobs_track_peak_live_slots() {
+        const JOBS: usize = 100_000;
+        let ran = AtomicUsize::new(0);
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(4);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    0,
+                    &[],
+                    Box::new(|admit| submit_chain(admit, &ran, JOBS)),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+
+        assert_eq!(ran.load(Ordering::Acquire), JOBS);
+        assert_eq!(slot_metrics(&scheduler), [JOBS, 1, 1, JOBS - 1]);
+    }
+
+    fn store_test_job(
+        scheduler: &AdmissionScheduler<'static>,
+        pending: usize,
+        order_key: u64,
+    ) -> Arc<AdmissionWaiterHandle> {
+        scheduler
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .store_job(pending, order_key, Box::new(|_| {}), &scheduler.ready)
+    }
+
+    #[test]
+    fn a_stale_ready_entry_is_rejected_after_immediate_slot_reuse() {
+        let scheduler = AdmissionScheduler::new();
+        let first = store_test_job(&scheduler, 1, 3);
+        assert!(first.satisfy_reporting());
+        let stale = scheduler.ready.pop().unwrap();
+        let (job, first) = scheduler.take_job(stale).unwrap();
+        drop(job);
+        scheduler.recycle_token(first);
+
+        let second = store_test_job(&scheduler, 1, 5);
+        assert_eq!(second.entry.index, stale.index);
+        assert_ne!(second.entry.generation, stale.generation);
+        scheduler.ready.push(stale);
+        assert!(scheduler.take_job(scheduler.ready.pop().unwrap()).is_none());
+
+        assert!(second.satisfy_reporting());
+        let current = scheduler.ready.pop().unwrap();
+        assert_eq!(current.generation, second.entry.generation);
+        assert!(scheduler.take_job(current).is_some());
+    }
+
+    #[test]
+    fn an_old_waiter_notification_cannot_satisfy_a_reused_slot() {
+        let scheduler = AdmissionScheduler::new();
+        let first = store_test_job(&scheduler, 1, 3);
+        assert!(first.satisfy_reporting());
+        let first_ready = scheduler.ready.pop().unwrap();
+        let (job, first) = scheduler.take_job(first_ready).unwrap();
+        drop(job);
+
+        let second = store_test_job(&scheduler, 2, 5);
+        assert_eq!(second.entry.index, first_ready.index);
+        assert_ne!(second.entry.generation, first.entry.generation);
+        assert!(!second.satisfy_reporting(), "the closing count remains");
+        assert!(
+            !first.satisfy_reporting(),
+            "the old token was already closed"
+        );
+        assert!(scheduler.ready.pop().is_none());
+        assert!(second.satisfy_reporting());
+        assert_eq!(
+            scheduler.ready.pop().unwrap().generation,
+            second.entry.generation
+        );
+    }
+
+    #[test]
+    fn a_generation_at_max_is_retired_instead_of_wrapping() {
+        let scheduler = AdmissionScheduler::new();
+        let first = store_test_job(&scheduler, 1, 0);
+        assert!(first.satisfy_reporting());
+        let ready = scheduler.ready.pop().unwrap();
+        let (job, first) = scheduler.take_job(ready).unwrap();
+        drop(job);
+        scheduler.recycle_token(first);
+        scheduler
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries[ready.index]
+            .generation = SlotGeneration(u64::MAX);
+
+        let second = store_test_job(&scheduler, 1, 1);
+        assert_ne!(second.entry.index, ready.index);
+        assert_eq!(second.entry.generation, SlotGeneration::INITIAL);
+        let slots = scheduler
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert_eq!(slots.entries.len(), 2);
+        assert_eq!(
+            slots.entries[ready.index].generation,
+            SlotGeneration(u64::MAX)
+        );
+    }
+
     #[test]
     fn exactly_one_concurrent_satisfy_reports_the_transition() {
         for _ in 0..256 {
             let ready = Arc::new(ReadyQueue::default());
             let token = Arc::new(AdmissionToken {
                 pending: AtomicUsize::new(4),
-                order_key: AtomicU64::new(7),
-                index: AtomicUsize::new(3),
+                generation: AtomicU64::new(2),
                 ready: Arc::clone(&ready),
+            });
+            let waiter = Arc::new(AdmissionWaiterHandle {
+                entry: ReadyEntry {
+                    order_key: 7,
+                    submission_order: 9,
+                    index: 3,
+                    generation: SlotGeneration(2),
+                },
+                token,
             });
             let reported: usize = std::thread::scope(|threads| {
                 let handles: Vec<_> = (0..4)
                     .map(|_| {
-                        let token = Arc::clone(&token);
-                        threads.spawn(move || usize::from(token.satisfy_reporting()))
+                        let waiter = Arc::clone(&waiter);
+                        threads.spawn(move || usize::from(waiter.satisfy_reporting()))
                     })
                     .collect();
                 handles
@@ -640,7 +943,15 @@ mod tests {
                     .sum()
             });
             assert_eq!(reported, 1, "only the closing satisfy queues the job");
-            assert_eq!(ready.pop(), Some(3));
+            assert_eq!(
+                ready.pop(),
+                Some(ReadyEntry {
+                    order_key: 7,
+                    submission_order: 9,
+                    index: 3,
+                    generation: SlotGeneration(2),
+                })
+            );
             assert_eq!(ready.pop(), None, "the job is queued exactly once");
         }
     }
@@ -937,6 +1248,84 @@ mod tests {
     }
 
     #[test]
+    fn reused_indices_do_not_change_submission_order_ties() {
+        const JOBS: usize = 32;
+        let first_gate = WatermarkCell::new();
+        let second_gate = WatermarkCell::new();
+        let log = RunLog::default();
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(1);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                let log = &log;
+                for _ in 0..JOBS {
+                    scheduler.submit(
+                        scope,
+                        0,
+                        &[Condition::Watermark(&first_gate, 1)],
+                        Box::new(|_| {}),
+                    );
+                }
+                first_gate.publish(1);
+                assert_eq!(scheduler.admit_ready(scope), JOBS);
+
+                for index in 0..JOBS {
+                    scheduler.submit(
+                        scope,
+                        7,
+                        &[Condition::Watermark(&second_gate, 1)],
+                        Box::new(move |_| log.record(index as u64)),
+                    );
+                }
+                second_gate.publish(1);
+                assert_eq!(scheduler.admit_ready(scope), JOBS);
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(log.keys(), (0..JOBS as u64).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn concurrent_drains_take_each_slot_generation_once() {
+        const JOBS: usize = 256;
+        const DRAINS: usize = 8;
+        let gate = WatermarkCell::new();
+        let runs: Vec<AtomicUsize> = (0..JOBS).map(|_| AtomicUsize::new(0)).collect();
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(4);
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                for (index, ran) in runs.iter().enumerate() {
+                    scheduler.submit(
+                        scope,
+                        index as u64,
+                        &[Condition::Watermark(&gate, 1)],
+                        Box::new(move |_| {
+                            ran.fetch_add(1, Ordering::AcqRel);
+                        }),
+                    );
+                }
+                gate.publish(1);
+                let drained: usize = std::thread::scope(|threads| {
+                    let drains: Vec<_> = (0..DRAINS)
+                        .map(|_| threads.spawn(|| scheduler.admit_ready(scope)))
+                        .collect();
+                    drains.into_iter().map(|drain| drain.join().unwrap()).sum()
+                });
+                assert!(
+                    (1..=JOBS).contains(&drained),
+                    "post-body drains may take entries after the concurrent callers spawn"
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert!(runs.iter().all(|ran| ran.load(Ordering::Acquire) == 1));
+        assert_eq!(slot_metrics(&scheduler), [JOBS, JOBS, JOBS, 0]);
+    }
+
+    #[test]
     fn finish_reports_jobs_that_were_never_admitted() {
         let rows = WatermarkCell::new();
         let log = RunLog::default();
@@ -964,6 +1353,15 @@ mod tests {
                 lowest_order_key: 3,
             })
         ));
+        {
+            let slots = scheduler
+                .slots
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            assert!(slots.occupied_indices.is_empty());
+            assert_eq!(slots.entries.len(), 2);
+            assert_eq!(slots.free.len(), 2);
+        }
         assert!(
             scheduler.finish().is_ok(),
             "stranded jobs are released once"
@@ -1387,6 +1785,39 @@ mod tests {
         .expect_err("the scope must not swallow a direct job's panic");
         assert_eq!(panicked.downcast_ref::<&str>().copied(), Some("direct job"));
         scheduler.finish().unwrap();
+    }
+
+    #[test]
+    fn a_panicking_scheduled_job_does_not_corrupt_the_free_list() {
+        let ran = AtomicUsize::new(0);
+        let scheduler = AdmissionScheduler::new();
+        let pool = pool(2);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.install(|| {
+                ready_task_scope(|scope| {
+                    scheduler.submit(scope, 0, &[], Box::new(|_| panic!("scheduled job")));
+                })
+            })
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(slot_metrics(&scheduler), [1, 1, 1, 0]);
+
+        pool.install(|| {
+            ready_task_scope(|scope| {
+                scheduler.submit(
+                    scope,
+                    1,
+                    &[],
+                    Box::new(|_| {
+                        ran.fetch_add(1, Ordering::AcqRel);
+                    }),
+                );
+            })
+        })
+        .unwrap();
+        scheduler.finish().unwrap();
+        assert_eq!(ran.load(Ordering::Acquire), 1);
+        assert_eq!(slot_metrics(&scheduler), [2, 1, 1, 1]);
     }
 
     /// A tiny deterministic linear congruential generator: the property test
