@@ -2,18 +2,15 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 //! A one-shot completion slot ([`CompletionCell`]) for pipeline hand-off.
-use core::time::Duration;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, Weak};
 
 use crate::admission::AdmissionWaiter;
-use crate::pool::{PoolAssist, assist_installed_pool};
-
-/// How long an assisted wait parks when the pool has no job to run, before it
-/// re-polls both the cell and the pool. Short enough that work arriving during
-/// the park is picked up promptly, long enough not to spin a core while the
-/// pool is idle.
-pub(crate) const ASSIST_PARK: Duration = Duration::from_micros(100);
+use crate::pool::{
+    PoolAssist, assist_installed_pool_or_wait, bind_installed_pool_progress,
+    notify_bound_pool_progress, pool_progress_snapshot,
+};
+use crate::progress::PoolProgressBindings;
 
 const ADMISSION_EMPTY: u8 = 0;
 const ADMISSION_REGISTERED: u8 = 1;
@@ -40,6 +37,7 @@ const ADMISSION_SET: u8 = 2;
 #[derive(Debug)]
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
+    progress: PoolProgressBindings,
     admission_waiter: OnceLock<Weak<dyn AdmissionWaiter>>,
     admission_state: AtomicU8,
     wait: OnceLock<CompletionWait>,
@@ -69,6 +67,7 @@ impl<V> CompletionCell<V> {
     pub const fn new() -> Self {
         Self {
             value: OnceLock::new(),
+            progress: PoolProgressBindings::new(),
             admission_waiter: OnceLock::new(),
             admission_state: AtomicU8::new(ADMISSION_EMPTY),
             wait: OnceLock::new(),
@@ -80,6 +79,7 @@ impl<V> CompletionCell<V> {
     pub fn completed(value: V) -> Self {
         Self {
             value: OnceLock::from(value),
+            progress: PoolProgressBindings::new(),
             admission_waiter: OnceLock::new(),
             admission_state: AtomicU8::new(ADMISSION_SET),
             wait: OnceLock::new(),
@@ -99,6 +99,7 @@ impl<V> CompletionCell<V> {
     /// value is never overwritten.
     pub fn set(&self, value: V) -> Result<(), V> {
         self.value.set(value)?;
+        notify_bound_pool_progress(&self.progress);
         if self.admission_state.swap(ADMISSION_SET, Ordering::AcqRel) == ADMISSION_REGISTERED
             && let Some(waiter) = self.admission_waiter.get().and_then(Weak::upgrade)
         {
@@ -133,6 +134,7 @@ impl<V> CompletionCell<V> {
     /// [`AdmissionWaiter::satisfy`] call while the caller retains another
     /// strong reference to `waiter`.
     pub fn register_waiter(&self, waiter: Arc<dyn AdmissionWaiter>) -> bool {
+        bind_installed_pool_progress(&self.progress);
         if self.is_set() {
             return false;
         }
@@ -211,34 +213,17 @@ impl<V> CompletionCell<V> {
     /// that, and it is what keeps the assist deadlock-free.
     #[must_use]
     pub fn wait_with_pool_assist(&self) -> &V {
+        bind_installed_pool_progress(&self.progress);
         loop {
+            let progress = pool_progress_snapshot();
             if let Some(value) = self.value.get() {
                 return value;
             }
-            match assist_installed_pool() {
-                PoolAssist::Executed => (),
-                PoolAssist::Idle => self.park_briefly(),
+            match assist_installed_pool_or_wait(&progress) {
+                PoolAssist::Executed | PoolAssist::Idle => (),
                 PoolAssist::OffPool => return self.wait(),
             }
         }
-    }
-
-    /// Parks for at most [`ASSIST_PARK`], returning early when the value lands.
-    fn park_briefly(&self) {
-        if self.is_set() {
-            return;
-        }
-        let wait = self.wait_state();
-        let mut state = wait.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if self.is_set() {
-            return;
-        }
-        state.parked_waiters += 1;
-        let (mut state, _) = wait
-            .cond
-            .wait_timeout(state, ASSIST_PARK)
-            .unwrap_or_else(PoisonError::into_inner);
-        state.parked_waiters -= 1;
     }
 
     fn wait_state(&self) -> &CompletionWait {
@@ -263,7 +248,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     #[test]
     fn set_publishes_to_get_and_wait() {
@@ -386,6 +371,77 @@ mod tests {
             .unwrap()
         });
         assert_eq!(observed, 23, "the only worker must run the task it awaits");
+        let metrics = pool.wait_metrics();
+        assert_eq!(metrics.assisted_jobs, 1);
+        assert_eq!(metrics.idle_parks, 0, "the producer task never blocks");
+    }
+
+    #[test]
+    fn concurrent_external_install_wakes_a_parked_driver() {
+        use std::time::{Duration, Instant};
+
+        use crate::pool::WorkerPool;
+        use crate::thread_count::ThreadCount;
+
+        let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
+        let cell = Arc::new(CompletionCell::new());
+        let driver_pool = pool.clone();
+        let driver_cell = Arc::clone(&cell);
+        let result = Arc::new(AtomicU32::new(0));
+        let driver_result = Arc::clone(&result);
+        let driver = std::thread::spawn(move || {
+            let value = driver_pool.install(|| *driver_cell.wait_with_pool_assist());
+            driver_result.store(value, Ordering::Release);
+        });
+        while pool.wait_metrics().idle_parks == 0 {
+            std::thread::yield_now();
+        }
+
+        let producer_pool = pool.clone();
+        let producer_cell = Arc::clone(&cell);
+        let producer = std::thread::spawn(move || {
+            producer_pool.install(|| {
+                let _ = producer_cell.set(31u32);
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while result.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let observed = result.load(Ordering::Acquire);
+        if observed == 0 {
+            let _ = cell.set(31u32);
+        }
+        producer.join().unwrap();
+        driver.join().unwrap();
+
+        assert_eq!(observed, 31);
+        assert!(pool.wait_metrics().assisted_jobs >= 1);
+    }
+
+    #[test]
+    fn assisted_wait_wakes_for_failure_published_off_pool() {
+        use crate::pool::WorkerPool;
+        use crate::thread_count::ThreadCount;
+
+        let pool = WorkerPool::new(ThreadCount::Fixed(2.try_into().unwrap())).unwrap();
+        let cell = Arc::new(CompletionCell::new());
+        let publisher_pool = pool.clone();
+        let publisher_cell = Arc::clone(&cell);
+        let publisher = std::thread::spawn(move || {
+            while publisher_pool.wait_metrics().idle_parks == 0 {
+                std::thread::yield_now();
+            }
+            assert_eq!(publisher_cell.set(Err::<(), _>("failed")), Ok(()));
+        });
+        let outcome = pool.install(|| *cell.wait_with_pool_assist());
+        publisher.join().unwrap();
+
+        assert_eq!(outcome, Err("failed"));
+        let metrics = pool.wait_metrics();
+        assert_eq!(metrics.idle_parks, 1);
+        assert_eq!(metrics.progress_wakes, 1);
+        assert_eq!(metrics.timeout_wakes, 0);
     }
 
     /// A waiter that records how often it was satisfied.
