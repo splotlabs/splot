@@ -7,11 +7,11 @@
 use std::cmp::{Ordering as CmpOrdering, Reverse};
 use std::collections::BinaryHeap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::admission::AdmissionWaiter;
 use crate::pool::{bind_installed_pool_progress, notify_bound_pool_progress};
-use crate::progress::PoolProgressEvent;
+use crate::progress::PoolProgressBindings;
 
 /// One registered threshold waiter: the admission token fires once the
 /// watermark reaches `threshold`.
@@ -118,7 +118,7 @@ struct MetricsSnapshot {
 #[derive(Debug, Default)]
 pub struct WatermarkCell {
     value: AtomicUsize,
-    progress: OnceLock<Weak<PoolProgressEvent>>,
+    progress: PoolProgressBindings,
     waiters: Mutex<BinaryHeap<Reverse<ThresholdWaiter>>>,
     #[cfg(test)]
     metrics: WatermarkMetrics,
@@ -134,7 +134,7 @@ impl WatermarkCell {
     pub const fn new() -> Self {
         Self {
             value: AtomicUsize::new(0),
-            progress: OnceLock::new(),
+            progress: PoolProgressBindings::new(),
             waiters: Mutex::new(BinaryHeap::new()),
             #[cfg(test)]
             metrics: WatermarkMetrics::new(),

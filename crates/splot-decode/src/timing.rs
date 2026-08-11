@@ -63,18 +63,16 @@ pub(crate) fn report_pool_wait(metrics: splot_parallel::PoolWaitMetrics) {
     };
     eprintln!(
         "splot.decode_timing pool_wait assist_calls={} assisted_jobs={} idle_parks={} \
-         park_ms={:.3} park_avg_us={average_park_us:.3} park_max_us={:.3} \
+         park_ms={:.3} park_avg_us={average_park_us:.3} \
          timeout_wakes={} notifications={} progress_wakes={} \
-         wake_to_progress_avg_us={average_wake_us:.3} wake_to_progress_max_us={:.3}",
+         wake_to_progress_avg_us={average_wake_us:.3}",
         metrics.assist_calls,
         metrics.assisted_jobs,
         metrics.idle_parks,
         metrics.park_nanos as f64 / 1.0e6,
-        metrics.max_park_nanos as f64 / 1_000.0,
         metrics.timeout_wakes,
         metrics.notifications,
         metrics.progress_wakes,
-        metrics.max_wake_to_progress_nanos as f64 / 1_000.0,
     );
 }
 

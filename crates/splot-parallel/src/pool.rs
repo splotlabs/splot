@@ -5,12 +5,12 @@
 use core::num::NonZeroUsize;
 use core::time::Duration;
 use std::cell::{Cell, RefCell};
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::{Arc, Weak};
 
 use rayon::{ThreadPool, Yield};
 
 use crate::error::ParallelError;
-use crate::progress::{PoolProgressEvent, PoolWaitMetrics};
+use crate::progress::{PoolProgressBindings, PoolProgressEvent, PoolWaitMetrics};
 use crate::thread_count::ThreadCount;
 
 const WORKER_STACK_SIZE_BYTES: usize = 16 * 1024 * 1024;
@@ -120,7 +120,12 @@ impl WorkerPool {
         F: FnOnce() -> R + Send,
         R: Send,
     {
-        self.inner.install(f)
+        self.progress.install_submitted();
+        let progress = &self.progress;
+        self.inner.install(move || {
+            progress.install_started();
+            f()
+        })
     }
 }
 
@@ -214,7 +219,11 @@ pub(crate) fn assist_installed_pool_or_wait(snapshot: &PoolProgressSnapshot) -> 
         }
         PoolAssist::Idle => {
             if let Some(progress) = snapshot.progress.as_deref() {
-                progress.wait_if_unchanged(snapshot.generation);
+                if progress.has_pending_install() {
+                    std::thread::yield_now();
+                } else {
+                    progress.wait_if_unchanged(snapshot.generation);
+                }
             }
         }
         PoolAssist::OffPool => {}
@@ -228,20 +237,13 @@ pub(crate) fn notify_installed_pool_progress() {
     }
 }
 
-pub(crate) fn bind_installed_pool_progress(bound: &OnceLock<Weak<PoolProgressEvent>>) {
-    if bound.get().is_some() {
-        return;
-    }
-    if let Some(progress) = INSTALLED_PROGRESS.with(|installed| installed.borrow().upgrade()) {
-        let _ = bound.set(Arc::downgrade(&progress));
-    }
+pub(crate) fn bind_installed_pool_progress(bound: &PoolProgressBindings) {
+    INSTALLED_PROGRESS.with(|installed| bound.bind(&installed.borrow()));
 }
 
-pub(crate) fn notify_bound_pool_progress(bound: &OnceLock<Weak<PoolProgressEvent>>) {
+pub(crate) fn notify_bound_pool_progress(bound: &PoolProgressBindings) {
     bind_installed_pool_progress(bound);
-    if let Some(progress) = bound.get().and_then(Weak::upgrade) {
-        progress.notify();
-    }
+    bound.notify();
 }
 
 /// Runs one pending job of the driver's installed pool, or waits for its next

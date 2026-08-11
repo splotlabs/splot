@@ -10,7 +10,7 @@ use crate::pool::{
     PoolAssist, assist_installed_pool_or_wait, bind_installed_pool_progress,
     notify_bound_pool_progress, pool_progress_snapshot,
 };
-use crate::progress::PoolProgressEvent;
+use crate::progress::PoolProgressBindings;
 
 const ADMISSION_EMPTY: u8 = 0;
 const ADMISSION_REGISTERED: u8 = 1;
@@ -37,7 +37,7 @@ const ADMISSION_SET: u8 = 2;
 #[derive(Debug)]
 pub struct CompletionCell<V> {
     value: OnceLock<V>,
-    progress: OnceLock<Weak<PoolProgressEvent>>,
+    progress: PoolProgressBindings,
     admission_waiter: OnceLock<Weak<dyn AdmissionWaiter>>,
     admission_state: AtomicU8,
     wait: OnceLock<CompletionWait>,
@@ -67,7 +67,7 @@ impl<V> CompletionCell<V> {
     pub const fn new() -> Self {
         Self {
             value: OnceLock::new(),
-            progress: OnceLock::new(),
+            progress: PoolProgressBindings::new(),
             admission_waiter: OnceLock::new(),
             admission_state: AtomicU8::new(ADMISSION_EMPTY),
             wait: OnceLock::new(),
@@ -79,7 +79,7 @@ impl<V> CompletionCell<V> {
     pub fn completed(value: V) -> Self {
         Self {
             value: OnceLock::from(value),
-            progress: OnceLock::new(),
+            progress: PoolProgressBindings::new(),
             admission_waiter: OnceLock::new(),
             admission_state: AtomicU8::new(ADMISSION_SET),
             wait: OnceLock::new(),
@@ -248,7 +248,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
     #[test]
     fn set_publishes_to_get_and_wait() {
@@ -374,6 +374,49 @@ mod tests {
         let metrics = pool.wait_metrics();
         assert_eq!(metrics.assisted_jobs, 1);
         assert_eq!(metrics.idle_parks, 0, "the producer task never blocks");
+    }
+
+    #[test]
+    fn concurrent_external_install_wakes_a_parked_driver() {
+        use std::time::{Duration, Instant};
+
+        use crate::pool::WorkerPool;
+        use crate::thread_count::ThreadCount;
+
+        let pool = WorkerPool::new(ThreadCount::Fixed(1.try_into().unwrap())).unwrap();
+        let cell = Arc::new(CompletionCell::new());
+        let driver_pool = pool.clone();
+        let driver_cell = Arc::clone(&cell);
+        let result = Arc::new(AtomicU32::new(0));
+        let driver_result = Arc::clone(&result);
+        let driver = std::thread::spawn(move || {
+            let value = driver_pool.install(|| *driver_cell.wait_with_pool_assist());
+            driver_result.store(value, Ordering::Release);
+        });
+        while pool.wait_metrics().idle_parks == 0 {
+            std::thread::yield_now();
+        }
+
+        let producer_pool = pool.clone();
+        let producer_cell = Arc::clone(&cell);
+        let producer = std::thread::spawn(move || {
+            producer_pool.install(|| {
+                let _ = producer_cell.set(31u32);
+            });
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while result.load(Ordering::Acquire) == 0 && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        let observed = result.load(Ordering::Acquire);
+        if observed == 0 {
+            let _ = cell.set(31u32);
+        }
+        producer.join().unwrap();
+        driver.join().unwrap();
+
+        assert_eq!(observed, 31);
+        assert!(pool.wait_metrics().assisted_jobs >= 1);
     }
 
     #[test]
