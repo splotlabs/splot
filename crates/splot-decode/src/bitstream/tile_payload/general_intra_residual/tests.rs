@@ -821,13 +821,44 @@ fn frame_facts_input() -> TileCoeffFrameFactsInput {
     }
 }
 
-fn unsupported_reason<T>(result: &Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
+fn invalid_state_context<T>(result: &Result<T, GeneralIntraResidualError>) -> Option<&'static str> {
     match result {
-        Err(GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }) => {
-            Some(*reason)
-        }
+        Err(GeneralIntraResidualError::InvalidReconstructionState { context }) => Some(*context),
         _ => None,
     }
+}
+
+fn assert_missing_luma_context_is_atomic(
+    facts: TileCoeffFrameFacts,
+    tx_size: usize,
+    expected_context: &'static str,
+) {
+    let mut cdfs = tile_cdfs();
+    let cdfs_before = cdfs.clone();
+    let mut symbols = symbol_decoder_for_payload(&PAYLOAD);
+    let symbol_count_before = symbols.symbol_count();
+    let consumed_bits_before = symbols.consumed_bits();
+
+    let result = ensure_transform_tool_residual_handoff(
+        &mut cdfs,
+        &mut symbols,
+        TransformToolResidualInput {
+            frame_facts: facts,
+            plane: 0,
+            tx_size,
+            is_inter: false,
+            lossless: false,
+            fsc_mode: false,
+            eob: 2,
+            cctx_allowed: true,
+            luma_transform_type_context: None,
+        },
+    );
+
+    assert_eq!(invalid_state_context(&result), Some(expected_context));
+    assert_eq!(symbols.symbol_count(), symbol_count_before);
+    assert_eq!(symbols.consumed_bits(), consumed_bits_before);
+    assert_eq!(cdfs, cdfs_before);
 }
 
 fn ensure_with_test_state(
@@ -995,20 +1026,10 @@ fn fsc_mode_luma_transform_handoff_derives_idtx_without_luma_context() {
 
 #[test]
 fn non_fsc_luma_transform_handoff_still_requires_luma_context() {
-    let result = ensure_with_test_payload_fsc_and_policy(
+    assert_missing_luma_context_is_atomic(
         frame_facts_with_fsc(),
-        0,
         TX_8X8,
-        false,
-        false,
-        2,
-        None,
-        &PAYLOAD,
-    );
-
-    assert_eq!(
-        unsupported_reason(&result),
-        Some("unsupported_dctonly_residual_luma_transform_context")
+        "active luma transform context",
     );
 }
 
@@ -1042,12 +1063,85 @@ fn dctonly_residual_admits_luma_when_intra_ist_reads_zero_sec_tx_type() {
 
 #[test]
 fn dctonly_residual_rejects_intra_ist_without_luma_context() {
-    let result =
-        ensure_with_test_state(frame_facts(true, false, false), 0, TX_32X32, false, 2, None);
+    assert_missing_luma_context_is_atomic(
+        frame_facts(true, false, false),
+        TX_32X32,
+        "intra IST luma context",
+    );
+}
+
+#[test]
+fn typed_transform_and_ist_domains_do_not_reach_invalid_state() {
+    let modes = [
+        IntraYMode::Dc,
+        IntraYMode::Vertical,
+        IntraYMode::Horizontal,
+        IntraYMode::D45,
+        IntraYMode::D135,
+        IntraYMode::D113,
+        IntraYMode::D157,
+        IntraYMode::D203,
+        IntraYMode::D67,
+        IntraYMode::Smooth,
+        IntraYMode::SmoothVertical,
+        IntraYMode::SmoothHorizontal,
+        IntraYMode::Paeth,
+    ];
+    for tx_size in 0..TX_WIDTH.len() {
+        let (width, height) = tx_size_dimensions(tx_size).unwrap();
+        for mode in modes {
+            for angle_delta in -3..=3 {
+                for mrl_index in 0..=3 {
+                    let context = LumaTransformTypeContext::with_mrl_indices(
+                        mode,
+                        angle_delta,
+                        mrl_index,
+                        None,
+                    );
+                    assert!(luma_transform_intra_dir(tx_size, context).is_ok());
+                    assert!(intra_secondary_transform_mode(context, width, height).is_ok());
+                }
+            }
+        }
+    }
+    for (mode, row) in INV_MOST_PROBABLE_STX_MAPPING.iter().enumerate() {
+        for set in 0..row.len() {
+            assert!(intra_secondary_transform_kernel(mode, DCT_DCT, set, 8, 8).is_ok());
+        }
+    }
+    for (mode, row) in INV_MOST_PROBABLE_STX_MAPPING_ADST.iter().enumerate() {
+        for set in 0..row.len() {
+            assert!(intra_secondary_transform_kernel(mode, ADST_ADST, set, 8, 8).is_ok());
+        }
+    }
+}
+
+#[test]
+fn invalid_ist_shape_is_reconstruction_state() {
+    let block = LumaCoeffBlock {
+        eob: 2,
+        quant: vec![0; 16],
+        intra_ist: Some(IntraIstSyntax {
+            sec_tx_type: 1,
+            most_probable_stx_set: Some(0),
+        }),
+        cctx_type: None,
+        plane_tx_type: DCT_DCT,
+        use_tcq: false,
+        lossless: false,
+    };
+
+    let result = reconstruct::resolve_secondary_inverse_transform(
+        &block,
+        1,
+        2,
+        BitDepth::Eight,
+        Some(dc_luma_context()),
+    );
 
     assert_eq!(
-        unsupported_reason(&result),
-        Some("unsupported_dctonly_residual_intra_ist_context")
+        invalid_state_context(&result),
+        Some("intra IST transform shape")
     );
 }
 

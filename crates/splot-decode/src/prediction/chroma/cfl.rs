@@ -297,13 +297,6 @@ fn cfl_prediction_into<T: ReconSample>(
     luma_ac: Option<&[i32]>,
     prediction: &mut Vec<T>,
 ) -> core::result::Result<(), GeneralIntraResidualError> {
-    if cfl_filter_index(cfl_ds_filter_index).is_none() {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_filter",
-            },
-        );
-    }
     let width = 1usize << log2_width;
     let height = 1usize << log2_height;
     let block_size = IntraRectBlockSize::new(
@@ -405,11 +398,9 @@ fn prepare_cfl_luma_ac_into<T: ReconSample>(
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     let timer = crate::timing::start();
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_filter",
-            },
-        );
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CfL filter",
+        });
     }
     let pixel_format = workspace.info().pixel_format();
     let sub_x = usize::from(pixel_format.subsampling_x());
@@ -587,11 +578,9 @@ fn mhccp_prediction_into<T: ReconSample>(
     reference_scratch: &mut [Vec<u16>; 2],
 ) -> core::result::Result<(), GeneralIntraResidualError> {
     if cfl_filter_index(cfl_ds_filter_index).is_none() {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_cfl_multi_filter",
-            },
-        );
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "MHCCP filter",
+        });
     }
     let mh_dir = direction.value();
     let refs = mhccp_references(
@@ -939,11 +928,9 @@ fn mhccp_references<T: ReconSample>(
         .min(128 >> sub_y)
         .min(above.saturating_add(frame_bottom));
     if frame_right == 0 || frame_bottom == 0 {
-        return Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_mhccp_reference_geometry",
-            },
-        );
+        return Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "MHCCP reference geometry",
+        });
     }
     let ref_width = reference_width.max(left.saturating_add(width));
     let ref_height = reference_height.max(above.saturating_add(height));

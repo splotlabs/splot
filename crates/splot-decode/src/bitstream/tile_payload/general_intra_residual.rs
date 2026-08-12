@@ -499,8 +499,8 @@ pub(crate) enum GeneralIntraResidualError {
         color_index: usize,
         palette_size: usize,
     },
-    #[error("general intra residual requires unsupported active transform-tool syntax: {reason}")]
-    UnsupportedTransformToolResidual { reason: &'static str },
+    #[error("general intra reconstruction state is invalid: {context}")]
+    InvalidReconstructionState { context: &'static str },
     #[error("general intra luma nonzero coefficient pass produced an unexpected branch result")]
     UnexpectedBranch,
     #[error("general intra luma reconstruction expected {expected} quant entries, got {actual}")]
@@ -1084,9 +1084,9 @@ fn decode_staged_transform_tool_nonzero_coeffs(
     .map_err(|source| GeneralIntraResidualError::NonZeroStart { source })?;
     let eob = start.eob_read().eob().eob();
     let segment_id = current_frame_qm_segment_id();
-    let lossless = frame_facts.lossless_for_segment(segment_id).ok_or(
-        unsupported_transform_tool_residual_error("unsupported_dctonly_residual_segment_id"),
-    )?;
+    let lossless = frame_facts
+        .lossless_for_segment(segment_id)
+        .ok_or(invalid_reconstruction_state_error("residual segment id"))?;
     let metadata = ensure_transform_tool_residual_handoff(
         work_unit.cdf_mut().tile_cdfs_mut(),
         symbols,
@@ -1368,10 +1368,7 @@ fn read_intra_ist_sec_tx(
     tx_size: usize,
     luma_tx_type: usize,
 ) -> Result<Option<IntraIstSyntax>, GeneralIntraResidualError> {
-    let luma_context = require_luma_context(
-        luma_context,
-        "unsupported_dctonly_residual_intra_ist_context",
-    )?;
+    let luma_context = require_luma_context(luma_context, "intra IST luma context")?;
     if luma_context.y_mode.is_paeth() {
         return Ok(None);
     }
@@ -1447,10 +1444,7 @@ fn read_active_luma_transform_type(
     tx_size: usize,
     tx_set: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
-    let luma_context = require_luma_context(
-        luma_context,
-        "unsupported_dctonly_residual_luma_transform_context",
-    )?;
+    let luma_context = require_luma_context(luma_context, "active luma transform context")?;
     let tx_size_sqr = tx_size_table_usize(&TX_SIZE_SQR, "Tx_Size_Sqr", tx_size)?;
     let tx_type = match tx_set {
         TX_SET_INTRA_2 => {
@@ -1677,7 +1671,7 @@ fn read_inter_tx_type_signaling_set(
 }
 
 const fn invalid_inter_tx_type() -> GeneralIntraResidualError {
-    unsupported_transform_tool_residual_error("unsupported_dctonly_residual_invalid_inter_tx_type")
+    invalid_reconstruction_state_error("inter transform type")
 }
 
 /// § 8.3.2 `InterTxTypeLong` context from the last coefficient position.
@@ -1730,16 +1724,11 @@ fn md_idx_luma_tx_type(
     let mode_row = MD_IDX_TO_TYPE
         .get(size_info)
         .and_then(|size| size.get(intra_dir))
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_invalid_intra_mode",
-        ))?;
-    let tx_type =
-        mode_row
-            .get(intra_tx_type)
-            .copied()
-            .ok_or(unsupported_transform_tool_residual_error(
-                "unsupported_dctonly_residual_invalid_intra_tx_type",
-            ))?;
+        .ok_or(invalid_reconstruction_state_error("intra transform mode"))?;
+    let tx_type = mode_row
+        .get(intra_tx_type)
+        .copied()
+        .ok_or(invalid_reconstruction_state_error("intra transform type"))?;
     Ok(tx_type.unsigned_abs() as usize)
 }
 
@@ -1755,21 +1744,16 @@ fn luma_transform_intra_dir(
         MODE_TO_ANGLE
             .get(intra_dir)
             .copied()
-            .ok_or(unsupported_transform_tool_residual_error(
-                "unsupported_dctonly_residual_invalid_intra_mode",
+            .ok_or(invalid_reconstruction_state_error(
+                "directional intra transform mode",
             ))?;
     let mrl_delta = MRL_INDEX_TO_DELTA
         .get(usize::from(luma_context.mrl_index))
         .copied()
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_invalid_mrl_index",
+        .ok_or(invalid_reconstruction_state_error(
+            "intra transform MRL index",
         ))?;
-    let p_angle = mode_to_angle
-        .checked_add(i32::from(luma_context.angle_delta_y) * ANGLE_STEP)
-        .and_then(|angle| angle.checked_add(mrl_delta))
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_luma_angle_overflow",
-        ))?;
+    let p_angle = mode_to_angle + i32::from(luma_context.angle_delta_y) * ANGLE_STEP + mrl_delta;
     let (tx_width, tx_height) = tx_size_dimensions(tx_size)?;
     Ok(wide_angle_mapping(intra_dir, tx_width, tx_height, p_angle))
 }
@@ -1878,16 +1862,8 @@ fn tx_size_table_usize(
     let value = table
         .get(tx_size)
         .copied()
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_invalid_tx_size",
-        ))?;
-    usize::try_from(value).map_err(|_| {
-        let reason = match table_name {
-            "Tx_Size_Sqr" => "unsupported_dctonly_residual_invalid_tx_size_sqr",
-            _ => "unsupported_dctonly_residual_invalid_tx_size_sqr_up",
-        };
-        unsupported_transform_tool_residual_error(reason)
-    })
+        .ok_or(invalid_reconstruction_state_error("transform size"))?;
+    usize::try_from(value).map_err(|_| invalid_reconstruction_state_error(table_name))
 }
 
 fn tx_size_dimensions(tx_size: usize) -> Result<(usize, usize), GeneralIntraResidualError> {
@@ -1908,21 +1884,17 @@ fn tx_size_from_dimensions(width: usize, height: usize) -> Option<usize> {
 
 fn require_luma_context(
     luma_context: Option<LumaTransformTypeContext>,
-    reason: &'static str,
+    context: &'static str,
 ) -> Result<LumaTransformTypeContext, GeneralIntraResidualError> {
-    luma_context.ok_or(unsupported_transform_tool_residual_error(reason))
+    luma_context.ok_or(invalid_reconstruction_state_error(context))
 }
 
-const fn unsupported_transform_tool_residual_error(
-    reason: &'static str,
-) -> GeneralIntraResidualError {
-    GeneralIntraResidualError::UnsupportedTransformToolResidual { reason }
+const fn invalid_reconstruction_state_error(context: &'static str) -> GeneralIntraResidualError {
+    GeneralIntraResidualError::InvalidReconstructionState { context }
 }
 
-fn unsupported_transform_tool_residual<T>(
-    reason: &'static str,
-) -> Result<T, GeneralIntraResidualError> {
-    Err(unsupported_transform_tool_residual_error(reason))
+fn invalid_reconstruction_state<T>(context: &'static str) -> Result<T, GeneralIntraResidualError> {
+    Err(invalid_reconstruction_state_error(context))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2020,25 +1992,15 @@ fn intra_secondary_transform_mode(
     if !luma_context.y_mode.is_directional() {
         return Ok(mode);
     }
-    let mode_to_angle =
-        MODE_TO_ANGLE
-            .get(mode)
-            .copied()
-            .ok_or(unsupported_transform_tool_residual_error(
-                "unsupported_dctonly_residual_intra_ist_invalid_intra_mode",
-            ))?;
+    let mode_to_angle = MODE_TO_ANGLE
+        .get(mode)
+        .copied()
+        .ok_or(invalid_reconstruction_state_error("intra IST mode"))?;
     let mrl_delta = MRL_INDEX_TO_DELTA
         .get(usize::from(luma_context.mrl_index))
         .copied()
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_intra_ist_invalid_mrl_index",
-        ))?;
-    let p_angle = mode_to_angle
-        .checked_add(i32::from(luma_context.angle_delta_y) * ANGLE_STEP)
-        .and_then(|angle| angle.checked_add(mrl_delta))
-        .ok_or(unsupported_transform_tool_residual_error(
-            "unsupported_dctonly_residual_intra_ist_angle_overflow",
-        ))?;
+        .ok_or(invalid_reconstruction_state_error("intra IST MRL index"))?;
+    let p_angle = mode_to_angle + i32::from(luma_context.angle_delta_y) * ANGLE_STEP + mrl_delta;
     Ok(wide_angle_mapping(mode, tx_width, tx_height, p_angle))
 }
 
@@ -2050,9 +2012,7 @@ fn intra_secondary_transform_kernel(
     tx_height: usize,
 ) -> Result<usize, GeneralIntraResidualError> {
     if mode >= INV_MOST_PROBABLE_STX_MAPPING.len() {
-        return unsupported_transform_tool_residual(
-            "unsupported_dctonly_residual_intra_ist_invalid_intra_mode",
-        );
+        return invalid_reconstruction_state("intra IST mode");
     }
     let base = if plane_tx_type == ADST_ADST && tx_width >= 8 && tx_height >= 8 {
         INV_MOST_PROBABLE_STX_MAPPING_ADST[mode]
@@ -2063,14 +2023,9 @@ fn intra_secondary_transform_kernel(
             .get(most_probable_stx_set)
             .copied()
     }
-    .ok_or(unsupported_transform_tool_residual_error(
-        "unsupported_dctonly_residual_intra_ist_invalid_most_probable_stx_set",
-    ))?;
+    .ok_or(invalid_reconstruction_state_error("intra IST set"))?;
     if plane_tx_type == ADST_ADST {
-        base.checked_add(7)
-            .ok_or(unsupported_transform_tool_residual_error(
-                "unsupported_dctonly_residual_intra_ist_kernel_overflow",
-            ))
+        Ok(base + 7)
     } else {
         Ok(base)
     }

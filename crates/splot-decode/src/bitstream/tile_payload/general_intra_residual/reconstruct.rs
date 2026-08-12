@@ -16,8 +16,7 @@ use super::{
     ADST_ADST, D67_PRED, D157_PRED, DCT_DCT, GeneralIntraResidualError, H_PRED, IST_4X4_HEIGHT,
     IST_8X8_HEIGHT, IST_8X8_HEIGHT_RED, LumaCoeffBlock, LumaTransformTypeContext, SMOOTH_H_PRED,
     current_quantizer_deltas, intra_secondary_transform_kernel, intra_secondary_transform_mode,
-    resolve_block_qm, unsupported_transform_tool_residual,
-    unsupported_transform_tool_residual_error,
+    invalid_reconstruction_state, invalid_reconstruction_state_error, resolve_block_qm,
 };
 
 pub(super) struct ReconstructBlockSetup {
@@ -53,11 +52,9 @@ pub(super) fn resolve_secondary_inverse_transform(
         IST_8X8_HEIGHT
     };
     let (kernel, transpose) = if let Some(luma_context) = luma_context {
-        let most_probable_stx_set =
-            ist.most_probable_stx_set
-                .ok_or(unsupported_transform_tool_residual_error(
-                    "unsupported_dctonly_residual_intra_ist_missing_most_probable_stx_set",
-                ))?;
+        let most_probable_stx_set = ist
+            .most_probable_stx_set
+            .ok_or(invalid_reconstruction_state_error("active intra IST set"))?;
         let mode = intra_secondary_transform_mode(luma_context, tx_width, tx_height)?;
         (
             intra_secondary_transform_kernel(
@@ -75,9 +72,7 @@ pub(super) fn resolve_secondary_inverse_transform(
             || tx_height < 16
             || ist.most_probable_stx_set.is_some()
         {
-            return unsupported_transform_tool_residual(
-                "unsupported_dctonly_residual_inter_ist_context",
-            );
+            return invalid_reconstruction_state("inter IST context");
         }
         (0, false)
     };
@@ -311,9 +306,7 @@ fn dct_dc_residual(quant: i32, setup: &ReconstructBlockSetup) -> i32 {
 
 fn transform_dimension(log2_dim: u32) -> Result<usize, GeneralIntraResidualError> {
     if !(2..=6).contains(&log2_dim) {
-        return unsupported_transform_tool_residual(
-            "unsupported_dctonly_residual_intra_ist_invalid_transform_shape",
-        );
+        return invalid_reconstruction_state("intra IST transform shape");
     }
     Ok(1usize << log2_dim)
 }
