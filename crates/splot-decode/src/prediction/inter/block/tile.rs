@@ -171,7 +171,7 @@ struct TileDecodeContext<'a, T: ReconSample> {
 
 struct TileParser<'tile, 'payload> {
     tile: &'tile mut DecodeTileWorkUnit<'payload>,
-    walk: Option<GeneralIntraMultiblockCursor<'payload>>,
+    walk: TileParserWalk<GeneralIntraMultiblockCursor<'payload>>,
     coeff_ctx: TileCoeffContextState,
     residual_scratch: InterResidualParseScratch,
     delta_q_state: DeltaQState,
@@ -182,6 +182,31 @@ struct TileParser<'tile, 'payload> {
     filter_records: TileFilterRecords,
     output: TileParserOutput,
     parser_ordinal: usize,
+}
+
+enum TileParserWalk<T> {
+    Active(T),
+    Finished,
+}
+
+impl<T> TileParserWalk<T> {
+    fn active_mut(&mut self) -> Result<&mut T> {
+        match self {
+            Self::Active(walk) => Ok(walk),
+            Self::Finished => {
+                Err(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into())
+            }
+        }
+    }
+
+    fn finish(&mut self) -> Result<T> {
+        match core::mem::replace(self, Self::Finished) {
+            Self::Active(walk) => Ok(walk),
+            Self::Finished => {
+                Err(crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into())
+            }
+        }
+    }
 }
 
 struct TileParserOutput {
@@ -260,7 +285,7 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 })?;
         Ok(Self {
             tile,
-            walk: Some(walk),
+            walk: TileParserWalk::Active(walk),
             coeff_ctx,
             residual_scratch: InterResidualParseScratch::default(),
             delta_q_state,
@@ -322,7 +347,14 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
             terminal: None,
         };
         self.parser_ordinal = self.parser_ordinal.saturating_add(1);
-        let decoded_row = if let Some(walk) = self.walk.as_mut() {
+        let walk = match self.walk.active_mut() {
+            Ok(walk) => walk,
+            Err(error) => {
+                recon_row.terminal = Some(error);
+                return ParserStep::Last(recon_row);
+            }
+        };
+        let decoded_row = {
             let mut decode_leaf =
                 |work_unit: &mut DecodeTileWorkUnit<'_>,
                  symbols: &mut SymbolDecoder<'_>,
@@ -429,12 +461,6 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                     .decode_next_superblock(self.tile, &mut decode_leaf, &mut on_published)
                     .map(|superblock| superblock.is_some()),
             }
-        } else {
-            recon_row.terminal = Some(inter_internal!(
-                "inter_row_parser_missing_walk",
-                tile_offset
-            ));
-            return ParserStep::Last(recon_row);
         };
         recon_row.filter_records = core::mem::take(&mut self.filter_records);
         self.mv_grid.take_flag_log(&mut recon_row.flag_log);
@@ -445,12 +471,12 @@ impl<'tile, 'payload> TileParser<'tile, 'payload> {
                 ParserStep::Last(recon_row)
             }
             Ok(false) => {
-                let Some(walk) = self.walk.take() else {
-                    recon_row.terminal = Some(inter_internal!(
-                        "inter_row_parser_finish_missing_walk",
-                        tile_offset
-                    ));
-                    return ParserStep::Last(recon_row);
+                let walk = match self.walk.finish() {
+                    Ok(walk) => walk,
+                    Err(error) => {
+                        recon_row.terminal = Some(error);
+                        return ParserStep::Last(recon_row);
+                    }
                 };
                 let crate::bitstream::tile_payload::GeneralIntraMultiblockOutput {
                     symbols,
@@ -1739,8 +1765,8 @@ fn prepare_tile<T: ReconSample>(
 /// parse-then-reconstruct loop.
 const PARSE_AHEAD_POOL_WIDTH: usize = 2;
 
-fn no_decoded_block_error(offset: ByteOffset) -> crate::DecodeError {
-    inter_internal!("inter_no_decoded_block", offset)
+fn no_decoded_block_error() -> crate::DecodeError {
+    crate::DecodeHeaderStateError::InvalidInterTileTraversalState.into()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1923,7 +1949,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
             }
         }
         if !decoded_any {
-            return Err(no_decoded_block_error(chunk_offset));
+            return Err(no_decoded_block_error());
         }
         return Ok(TileDecodeOutput {
             cdef_state,
@@ -2088,7 +2114,7 @@ pub(super) fn decode_tiles<T: ReconSample>(
         .ok_or(inter_internal!("inter_lr_filter_index_serial", tile_offset))?;
     }
     if !decoded_any {
-        return Err(no_decoded_block_error(chunk_offset));
+        return Err(no_decoded_block_error());
     }
 
     Ok(TileDecodeOutput {

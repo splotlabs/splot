@@ -6,6 +6,7 @@
 
 #![allow(clippy::expect_used)]
 
+use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Mutex};
@@ -120,16 +121,93 @@ fn terminal_parse_error_prevents_commit_side_effects() {
 }
 
 #[test]
-fn no_decoded_block_error_stays_reportable() {
-    let offset = ByteOffset::new(23);
-    let error = no_decoded_block_error(offset);
+fn tile_parser_walk_reuse_and_second_finish_are_typed_errors() {
+    let mut walk = TileParserWalk::Active(23);
+    assert_eq!(*walk.active_mut().expect("walk starts active"), 23);
+    assert_eq!(walk.finish().expect("active walk finishes once"), 23);
+
+    for error in [
+        walk.active_mut()
+            .expect_err("finished walk cannot be reused"),
+        walk.finish()
+            .expect_err("finished walk cannot finish twice"),
+    ] {
+        assert!(matches!(
+            error,
+            crate::DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
+            }
+        ));
+    }
+}
+
+#[test]
+fn no_decoded_block_error_is_typed_and_has_no_diagnostic() {
+    let error = no_decoded_block_error();
     assert!(matches!(
-        error,
-        crate::DecodeError::InternalState {
-            reason: "inter_no_decoded_block",
-            byte_offset,
-        } if byte_offset == offset
+        &error,
+        crate::DecodeError::HeaderState {
+            source: crate::DecodeHeaderStateError::InvalidInterTileTraversalState,
+        }
     ));
+    assert!(crate::DecodeDiagnosticReport::from_decode_error(&error).is_none());
+}
+
+#[test]
+fn serial_pipeline_calls_a_terminal_parser_exactly_once() {
+    let parsed = Cell::new(0);
+    let committed = Cell::new(0);
+
+    run_ready_row_pipeline_serial(
+        || {
+            parsed.set(parsed.get() + 1);
+            ParserStep::Last(())
+        },
+        |()| {
+            committed.set(committed.get() + 1);
+            Ok::<_, ()>(())
+        },
+    )
+    .expect("terminal row commits");
+
+    assert_eq!(parsed.get(), 1);
+    assert_eq!(committed.get(), 1);
+}
+
+#[test]
+fn ready_row_pipeline_calls_a_terminal_parser_exactly_once() {
+    let parsed = Arc::new(AtomicUsize::new(0));
+    let parsed_by_callback = Arc::clone(&parsed);
+    let committed = Arc::new(AtomicUsize::new(0));
+    let committed_by_callback = Arc::clone(&committed);
+    let pool = WorkerPool::new(ThreadCount::Fixed(
+        NonZeroUsize::new(2).expect("two workers"),
+    ))
+    .expect("worker pool");
+
+    let stats = pool
+        .install(|| {
+            run_ready_row_prepass_with_commit(
+                move || {
+                    parsed_by_callback.fetch_add(1, Ordering::SeqCst);
+                    ParserStep::Last(0usize)
+                },
+                |row| row,
+                move |_| {
+                    committed_by_callback.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, ()>(())
+                },
+                1,
+                |_: &usize| true,
+                || true,
+                || Ok(()),
+            )
+        })
+        .expect("terminal row commits");
+
+    assert_eq!(stats.committed, 1);
+    assert_eq!(parsed.load(Ordering::SeqCst), 1);
+    assert_eq!(committed.load(Ordering::SeqCst), 1);
 }
 
 #[test]
