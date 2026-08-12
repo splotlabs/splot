@@ -47,6 +47,15 @@ fn workspace_10bit_420(width: usize, height: usize) -> CurrentFrameWorkspace<u16
     CurrentFrameWorkspace::new(info, 0).unwrap()
 }
 
+fn seeded_cfl_scratch() -> crate::pipeline::general_intra::GeneralIntraReconScratch<u8> {
+    let mut scratch = crate::pipeline::general_intra::GeneralIntraReconScratch::default();
+    scratch.cfl_luma_ac.extend([11, 12]);
+    scratch.cfl_prediction.extend([21, 22]);
+    scratch.mhccp_refs[0].extend([31, 32]);
+    scratch.mhccp_refs[1].extend([41, 42]);
+    scratch
+}
+
 fn zero_block() -> LumaCoeffBlock {
     LumaCoeffBlock {
         eob: 0,
@@ -61,6 +70,94 @@ fn zero_block() -> LumaCoeffBlock {
 
 fn derived_alpha() -> CflParams {
     CflParams::DerivedAlpha
+}
+
+#[test]
+fn invalid_cfl_filter_preserves_prediction_scratch() {
+    let mut frame = workspace(PixelFormat::Yuv420);
+    let mut scratch = seeded_cfl_scratch();
+    let before = (
+        scratch.cfl_luma_ac.clone(),
+        scratch.cfl_prediction.clone(),
+        scratch.mhccp_refs.clone(),
+    );
+
+    let result = reconstruct_general_intra_chroma_cfl_block_into(
+        &mut scratch,
+        &mut frame,
+        &zero_block(),
+        PlaneId::U,
+        0,
+        0,
+        2,
+        2,
+        128,
+        derived_alpha(),
+        4,
+        4,
+        interior(),
+        BitDepth::Eight,
+    );
+
+    assert!(matches!(
+        result,
+        Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "CfL filter"
+        })
+    ));
+    assert_eq!(
+        (
+            scratch.cfl_luma_ac,
+            scratch.cfl_prediction,
+            scratch.mhccp_refs
+        ),
+        before
+    );
+}
+
+#[test]
+fn invalid_mhccp_filter_preserves_prediction_scratch() {
+    let mut frame = workspace(PixelFormat::Yuv420);
+    let mut scratch = seeded_cfl_scratch();
+    let before = (
+        scratch.cfl_luma_ac.clone(),
+        scratch.cfl_prediction.clone(),
+        scratch.mhccp_refs.clone(),
+    );
+
+    let result = reconstruct_general_intra_chroma_cfl_block_into(
+        &mut scratch,
+        &mut frame,
+        &zero_block(),
+        PlaneId::U,
+        0,
+        0,
+        2,
+        2,
+        128,
+        CflParams::Multi {
+            direction: CflMultiDirection::Direct,
+        },
+        4,
+        4,
+        interior(),
+        BitDepth::Eight,
+    );
+
+    assert!(matches!(
+        result,
+        Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "MHCCP filter"
+        })
+    ));
+    assert_eq!(
+        (
+            scratch.cfl_luma_ac,
+            scratch.cfl_prediction,
+            scratch.mhccp_refs
+        ),
+        before
+    );
 }
 
 #[test]
@@ -514,6 +611,8 @@ fn mhccp_bottom_edge_keeps_full_prediction_with_clipped_reference_extent() {
 #[test]
 fn mhccp_rejects_reference_origin_outside_frame() {
     let frame = workspace_sized(PixelFormat::Yuv420, 1920, 1080);
+    let mut references = [vec![11, 12], vec![21, 22]];
+    let before = references.clone();
     let result = mhccp_references(
         &frame,
         PlaneId::U,
@@ -524,15 +623,14 @@ fn mhccp_rejects_reference_origin_outside_frame() {
         0,
         32,
         NeighbourAvailability::new(false, true, 0, 0),
-        &mut Default::default(),
+        &mut references,
     );
 
     assert!(matches!(
         result,
-        Err(
-            GeneralIntraResidualError::UnsupportedTransformToolResidual {
-                reason: "general_intra_mhccp_reference_geometry"
-            }
-        )
+        Err(GeneralIntraResidualError::InvalidReconstructionState {
+            context: "MHCCP reference geometry"
+        })
     ));
+    assert_eq!(references, before);
 }

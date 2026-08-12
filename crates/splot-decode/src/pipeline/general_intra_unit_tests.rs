@@ -541,6 +541,9 @@ fn general_intra_reconstruction_failures_have_typed_taxonomy() {
             expected: 64,
             actual: 63,
         },
+        GeneralIntraResidualError::InvalidReconstructionState {
+            context: "test reconstruction state",
+        },
     ];
     for failure in length_failures {
         let error = general_intra_residual_error(failure, offset);

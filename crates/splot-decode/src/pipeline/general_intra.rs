@@ -1063,18 +1063,11 @@ fn general_intra_residual_error(
         GeneralIntraResidualError::PaletteColorIndex { .. } => {
             crate::DecodeHeaderStateError::InvalidGeneralIntraPaletteColorState.into()
         }
-        GeneralIntraResidualError::UnsupportedTransformToolResidual { .. } => {
-            general_intra_at!(
-                "general_intra_transform_tool_residual",
-                offset,
-                missing_capability_message!("intra.residual.transform_tools", residual = "nonzero"),
-                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            )
-        }
         GeneralIntraResidualError::UnexpectedBranch => {
             general_intra_internal!("general_intra_luma_coeff_unexpected_branch", offset,)
         }
-        GeneralIntraResidualError::QuantLength { .. }
+        GeneralIntraResidualError::InvalidReconstructionState { .. }
+        | GeneralIntraResidualError::QuantLength { .. }
         | GeneralIntraResidualError::PredictionLength { .. } => {
             crate::DecodeHeaderStateError::InvalidGeneralIntraReconstructionState.into()
         }

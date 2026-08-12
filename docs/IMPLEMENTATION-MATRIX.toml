@@ -10383,18 +10383,18 @@ change_id = "decode-luma-txtype-residual-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical luma transform-type handoff milestone now used directly by the generic residual and reconstruction path. The decoder resolves active §5.20.8.2/§5.20.8.3 syntax to `plane_tx_type`, uses its transform class for §5.20.7.30 scan order and §8.3.2 coefficient contexts, carries block-local TCQ/FSC facts, and invokes the matching inverse transform before residual addition. The current FSC branch derives IDTX and reconstructs supported FSC blocks, including committed 8-bit and 10-bit must-pass fixtures. Tx-skip records reuse the same decoded block facts, and unsupported transform shapes or tool combinations remain operation-specific fail-closed cases."
+notes = "Historical luma transform-type handoff milestone now used directly by the generic residual and reconstruction path. The decoder resolves active §5.20.8.2/§5.20.8.3 syntax to `plane_tx_type`, uses its transform class for §5.20.7.30 scan order and §8.3.2 coefficient contexts, carries block-local TCQ/FSC facts, and invokes the matching inverse transform before residual addition. The FSC branch derives IDTX and reconstructs FSC blocks, including committed 8-bit and 10-bit must-pass fixtures. Tx-skip records reuse the same decoded block facts; typed context and generated-table escapes now map to InvalidGeneralIntraReconstructionState without a public diagnostic."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -10424,7 +10424,7 @@ fixtures = [
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-10BIT-SEQUENCE-FRONTIER"
@@ -10491,7 +10491,7 @@ change_id = "decode-sequence-chroma-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical frontier for the former coarse sequence-level CfL/MHCCP gate. AV2 §5.4.5 carries `enable_cfl_intra` and `enable_mhccp`, while §5.20.5.6 reaches the corresponding mode-info syntax only when block conditions select those tools. The retired `ensure_sequence_chroma_tools_before_tile_decode` gate rejected a stream merely because either sequence capability flag was set; the unified `decode_frame` path supersedes that pre-tile veto by carrying the flags into block parsing and reconstruction. Supported CfL/MHCCP operations now run on the current path, while unsupported geometry fails closed at the consuming operation, such as `general_intra_mhccp_reference_geometry`. The existing `cargo test -p splot-decode prediction::chroma --locked` proof below covers the current per-operation CfL/MHCCP implementation and fail-closed cases. This row records the retired boundary rather than claiming complete CfL/MHCCP coverage."
+notes = "Historical frontier for the former coarse sequence-level CfL/MHCCP gate. AV2 §5.4.5 carries `enable_cfl_intra` and `enable_mhccp`, while §5.20.5.6 reaches the corresponding mode-info syntax only when block conditions select those tools. The retired `ensure_sequence_chroma_tools_before_tile_decode` gate rejected a stream merely because either sequence capability flag was set; the unified `decode_frame` path supersedes that pre-tile veto by carrying the flags into block parsing and reconstruction. Supported CfL/MHCCP operations now run on the current path, while an MHCCP origin outside the current-frame plane is a typed reconstruction-state invariant. The existing `cargo test -p splot-decode prediction::chroma --locked` proof below covers the current per-operation CfL/MHCCP implementation and fail-closed cases. This row records the retired boundary rather than claiming complete CfL/MHCCP coverage."
 
 [feature.status]
 mapped = "done"
@@ -11419,18 +11419,18 @@ change_id = "decode-cfl-chroma-mode-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical CfL syntax-frontier milestone now exercised through the current general-intra path. The decoder consumes AV2 §5.20.5.6 `is_cfl` and `UV_CFL_PRED`, reads §5.20.7.32 alpha syntax with the generated §9.3 CDF rows and §8.3.2 contexts, retains the typed mode through residual parsing, and passes it to the shared CfL reconstruction path for `CflRef` capture, alpha application, and chroma sample output. Committed 4:2:0, 4:2:2, and 4:4:4 must-pass oracle fixtures cover successful CfL decode, including 10-bit 4:2:0 output. Unsupported parameter or geometry combinations fail closed at their current operation-specific boundaries; the removed live-transform frontier diagnostics are no longer reachable evidence."
+notes = "Historical CfL syntax-frontier milestone now exercised through the current general-intra path. The decoder consumes AV2 §5.20.5.6 `is_cfl` and `UV_CFL_PRED`, reads §5.20.7.32 alpha syntax with the generated §9.3 CDF rows and §8.3.2 contexts, retains the typed mode through residual parsing, and passes it to the shared CfL reconstruction path for `CflRef` capture, alpha application, and chroma sample output. Committed 4:2:0, 4:2:2, and 4:4:4 must-pass oracle fixtures cover successful CfL decode, including 10-bit 4:2:0 output. The filter index is a two-bit syntax value, including index 3 aliasing index 0; an out-of-domain value is a typed reconstruction-state invariant and leaves prediction scratch unchanged."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -11456,7 +11456,7 @@ fixtures = [
     "crates/splot-decode/src/filters/wienerns_lr.rs",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-GENERAL-INTRA-CFL-NON-420"
@@ -11535,7 +11535,7 @@ change_id = "decode-mhccp-frame-edge-reference-extent"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Separates the full MHCCP prediction buffer geometry from the captured in-frame CflRef extent at the right and bottom frame edges. AV2 §7.13.2.1 initializes enough CflRef storage for the whole transform prediction but limits CflRefWidth/CflRefHeight to the available coded-frame region; §7.13.7 derives multiParams only from that captured extent. The decoder now retains the full transform-sized zero-initialized buffer required by §7.13.6 prediction, fills and derives parameters from only the captured extent, and continues relying on CurrentFrameWorkspace to drop out-of-frame output samples. The external 1920x1080 10-bit local mission stream's bottom-edge U-plane TX_32X16 MHCCP block at chroma (128,528) advances from `general_intra_mhccp_reference_geometry` at byte 1195349 to a malformed §8.2.4 exit-symbol diagnostic at byte 1242698. Focused tests prove full bottom-edge prediction, ignored uncaptured padding during parameter derivation, retained non-edge behavior, and rejection when the transform origin itself is outside the frame. This row does not claim padded current-frame storage, out-of-frame sample retention, a committed AVMenc fixture, the following compound exit-symbol branch, or full-file decode success."
+notes = "Separates the full MHCCP prediction buffer geometry from the captured in-frame CflRef extent at the right and bottom frame edges. AV2 §7.13.2.1 initializes enough CflRef storage for the whole transform prediction but limits CflRefWidth/CflRefHeight to the available coded-frame region; §7.13.7 derives multiParams only from that captured extent. The decoder retains the full transform-sized zero-initialized buffer required by §7.13.6 prediction, fills and derives parameters from only the captured extent, and continues relying on CurrentFrameWorkspace to drop out-of-frame output samples. An origin outside the current-frame plane is a typed reconstruction-state invariant and preserves reference scratch; right or bottom overhang from an in-frame origin remains valid. Focused tests prove full bottom-edge prediction, ignored uncaptured padding during parameter derivation, retained non-edge behavior, and rejection when the transform origin itself is outside the frame. This row does not claim padded current-frame storage, out-of-frame sample retention, a committed AVMenc fixture, the following compound exit-symbol branch, or full-file decode success."
 
 [feature.status]
 mapped = "done"
@@ -11563,7 +11563,7 @@ commands = [
     "cargo xtask check-feature-status",
 ]
 fixtures = []
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-SDP-CFL-ALLOWED-FRONTIER"
@@ -11771,18 +11771,18 @@ change_id = "decode-dctonly-residual-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical DCT-only admission frontier superseded by the shared transform-tool residual path. The decoder threads sequence facts into tile coefficient state, consumes `all_zero` and EOB syntax, resolves the active luma or chroma transform type from the generated tables and CDF rows, then sends FSC or ordinary coefficient output to reconstruction. DCT_DCT remains the forced result for the spec-defined DCT-only cases, while supported non-DCT, CCTX, and IST cases now continue through inverse transforms and sample output. Focused syntax/reconstruction tests and the decoder-oracle corpus protect the current path; unsupported transform combinations still fail closed at their owning operation."
+notes = "Historical DCT-only admission frontier superseded by the shared transform-tool residual path. The decoder threads sequence facts into tile coefficient state, consumes `all_zero` and EOB syntax, resolves the active luma or chroma transform type from the generated tables and CDF rows, then sends FSC or ordinary coefficient output to reconstruction. DCT_DCT remains the forced result for the spec-defined DCT-only cases, while non-DCT, CCTX, and IST cases continue through inverse transforms and sample output. Generated-table and typed-context escapes are reconstruction-state invariants, while transform symbol read failures retain their syntax taxonomy. Focused syntax/reconstruction tests and the one- and eight-thread decoder-oracle corpus protect the path."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -11816,7 +11816,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop/ordinary_pass/geometry.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-INTRA-IST-ZERO-FRONTIER"
@@ -11835,18 +11835,18 @@ change_id = "decode-intra-ist-zero-frontier"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical zero-IST frontier retained as a syntax/CDF milestone. The tile CDF subset still lifecycle-manages `TileSecTxTypeCdf`, `TileMostProbableStxSetCdf`, and `TileMostProbableStxSetAdstCdf`, and §5.20.7.29 still admits `sec_tx_type == 0` without a secondary transform. Active values now continue through `resolve_secondary_inverse_transform` and the reconstruction kernels rather than a syntax-only LR handoff. Focused CDF and residual tests protect the zero case, while committed IST oracle fixtures protect successful active secondary-transform reconstruction and output."
+notes = "Historical zero-IST frontier retained as a syntax/CDF milestone. The tile CDF subset lifecycle-manages `TileSecTxTypeCdf`, `TileMostProbableStxSetCdf`, and `TileMostProbableStxSetAdstCdf`, and §5.20.7.29 admits `sec_tx_type == 0` without a secondary transform. Active values continue through `resolve_secondary_inverse_transform` and the reconstruction kernels. Missing typed luma context is a reconstruction-state invariant checked without consuming a symbol or mutating CDF state. Focused CDF and residual tests protect the zero case, while committed IST oracle fixtures protect successful active secondary-transform reconstruction and output."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -11873,7 +11873,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-ACTIVE-INTRA-IST-HANDOFF"
@@ -11894,18 +11894,18 @@ change_id = "decode-active-intra-ist-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical active-IST handoff milestone now part of reconstruction. The residual path reads AV2 §5.20.7.29 `sec_tx_type` and `most_probable_stx_set`, stores the typed metadata on `LumaCoeffBlock`, and `resolve_secondary_inverse_transform` derives the §7.15.3 kernel used by `secondary_inverse_transform` before residual addition. Transform records and §7.20.4 tx-skip derivation reuse the same parsed block facts instead of taking a syntax-only side path. Focused syntax and reconstruction tests plus the committed `syn-ist-intra-128x128` and `syn-ist-largest-intra-128x128` fixtures protect successful output; unsupported shapes or contexts remain fail closed."
+notes = "Historical active-IST handoff milestone now part of reconstruction. The residual path reads AV2 §5.20.7.29 `sec_tx_type` and `most_probable_stx_set`, stores the typed metadata on `LumaCoeffBlock`, and `resolve_secondary_inverse_transform` derives the §7.15.3 kernel used by `secondary_inverse_transform` before residual addition. Transform records and §7.20.4 tx-skip derivation reuse the same parsed block facts instead of taking a syntax-only side path. Typed mode, set, context, and shape escapes are reconstruction-state invariants. Focused syntax and reconstruction tests plus the committed `syn-ist-intra-128x128` and `syn-ist-largest-intra-128x128` fixtures protect successful output."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -11925,7 +11925,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-CHROMA-CCTX-HANDOFF"
@@ -11946,18 +11946,18 @@ change_id = "decode-chroma-cctx-handoff"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Historical CCTX syntax-handoff milestone now integrated with chroma reconstruction. The tile CDF subset lifecycle-manages `TileCctxTypeCdf`; the residual path reads active U-plane §5.20.7.27 `cctx_type`, derives the chroma transform type, and retains paired U/V coefficient blocks. `reconstruct_general_intra_chroma_cctx_pair_into` dequantizes both blocks, applies the cross-chroma matrix, runs the inverse transforms, and adds both residuals to their predictions. Tx-skip derivation reuses the same block facts. Focused syntax and reconstruction tests plus the committed `syn-cctx-444-intra-128x128` fixture protect successful output; unsupported CCTX geometry remains fail closed."
+notes = "Historical CCTX syntax-handoff milestone now integrated with chroma reconstruction. The tile CDF subset lifecycle-manages `TileCctxTypeCdf`; the residual path reads active U-plane §5.20.7.27 `cctx_type`, derives the chroma transform type, and retains paired U/V coefficient blocks. `reconstruct_general_intra_chroma_cctx_pair_into` dequantizes both blocks, applies the cross-chroma matrix, runs the inverse transforms, and adds both residuals to their predictions. Tx-skip derivation reuses the same block facts. Derived geometry and table escapes are reconstruction-state invariants. Focused syntax and reconstruction tests plus the committed `syn-cctx-444-intra-128x128` fixture protect successful output."
 
 [feature.status]
 mapped = "done"
 types = "done"
-parse = "partial"
+parse = "done"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "done"
 perf = "not-applicable"
 
 [feature.proof]
@@ -11988,7 +11988,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/cdf/tests.rs",
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
 ]
-diagnostics = ["decode/unsupported-feature"]
+diagnostics = []
 
 [[feature]]
 id = "DECODE-Y4M-RUNTIME-OUTPUT"
@@ -13826,7 +13826,7 @@ change_id = "decode-general-intra-luma-coeffs"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Completes the former general_intra_luma_coeff_parse marker with shared recursive taxonomy used by both general-intra and inter. Reserved Pt512 and strict post-parity/post-TCQ Quant magnitude escapes are malformed §6.19.7.23; an overlong Golomb prefix is malformed §6.19.7.24; allocation is a typed reconstruction resource failure; invalid CDF/arithmetic state and geometry/table/scan/context escapes are narrow typed header-state invariants without global reason ids. Direct SymbolDecoder reads zero-pad, so direct UnexpectedEof is a defensive syntax-specific mapping; live truncation remains terminal exit_symbol §8.2.4. Two redundant ordinary-branch error variants were deleted. The pinned AVM 457cd586 68-byte monochrome lossless fixture reaches one extended-Golomb tail (m=1, cMax=5, q=5, prefix 1), is deterministic and strict-clean, and splot at one and eight threads matches its 256-byte raw SHA-256 673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1. The coefficient-context and reconstruction state boundaries are now typed too, but the umbrella remains partial because the independently tracked transform-tool residual marker remains."
+notes = "Completes the former coefficient-parse and transform-tool residual markers with shared recursive taxonomy used by both general-intra and inter. Reserved Pt512 and strict post-parity/post-TCQ Quant magnitude escapes are malformed §6.19.7.23; an overlong Golomb prefix is malformed §6.19.7.24; allocation is a typed reconstruction resource failure; invalid CDF/arithmetic state and geometry/table/scan/context/reconstruction escapes are narrow typed header-state invariants without global reason ids. TransformTypeRead and CctxTypeRead retain their owning syntax sections, and UnexpectedBranch retains its existing internal-state route. Direct SymbolDecoder reads zero-pad, while live truncation remains terminal exit_symbol §8.2.4. The pinned AVM extended-Golomb fixture and complete decoder-oracle corpus are byte-exact at one and eight threads."
 
 [feature.status]
 mapped = "done"
@@ -13835,7 +13835,7 @@ parse = "done"
 validate = "done"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
 avm_diff = "done"
 perf = "not-applicable"
@@ -13848,7 +13848,7 @@ fixtures = [
     "tests/conformance/decoder-oracle.toml",
     "tools/decoder-fixtures/generate.py",
 ]
-diagnostics = ["decode/malformed-source", "decode/unsupported-feature"]
+diagnostics = ["decode/malformed-source"]
 
 [[feature]]
 id = "DECODE-GENERAL-INTRA-FRAME-RECON"
