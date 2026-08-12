@@ -13200,7 +13200,7 @@ change_id = "tile-coeff-state-buffers"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Current live coefficient storage: TransformCoeffBlockState carries local Level, QuantSign, and Quant arrays, while TileCoeffContextState supplies and commits above/left level and DC contexts for both staged branches."
+notes = "TransformCoeffBlockState carries local Level, QuantSign, and Quant arrays, while TileCoeffContextState supplies and commits above/left level and DC contexts for both staged branches. The former general_intra_luma_coeff_state capability marker is removed: allocation maps to a typed luma WorkspaceAllocationFailed resource error, while every non-allocation TileCoeffStateError maps to the narrow InvalidGeneralIntraCoefficientContextState header invariant without a global reason id or public diagnostic. Context updates validate zero extents, coordinate arithmetic, and both ranges before their first write, with mutation tests proving zero-width, zero-height, and coordinate-overflow failures leave all four context lines unchanged. No AVM fixture is warranted because the change admits no new conforming syntax path; the existing one- and eight-thread decoder-oracle corpus remains byte-exact."
 
 [feature.status]
 mapped = "done"
@@ -13209,17 +13209,18 @@ parse = "not-applicable"
 validate = "not-applicable"
 write = "not-applicable"
 encode = "not-applicable"
-decode_check = "partial"
+decode_check = "done"
 tests = "done"
 avm_diff = "not-applicable"
 perf = "not-applicable"
 
 [feature.proof]
-tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_state_tests.rs::update_after_coeffs_writes_above_and_left_ranges_only", "crates/splot-decode/src/bitstream/tile_payload/coeff_state_tests.rs::update_after_coeffs_rejects_bad_facts_without_mutation"]
-commands = ["cargo test -p splot-decode coeff_loop --locked", "cargo test -p splot-decode general_intra_residual --locked", "cargo xtask check-feature-status"]
+tests = ["crates/splot-decode/src/bitstream/tile_payload/coeff_state_tests.rs::update_after_coeffs_writes_above_and_left_ranges_only", "crates/splot-decode/src/bitstream/tile_payload/coeff_state_tests.rs::update_after_coeffs_rejects_bad_facts_without_mutation", "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::coefficient_context_state_failures_have_exhaustive_typed_taxonomy", "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest"]
+commands = ["cargo test -p splot-decode coeff_state --locked", "cargo test -p splot-decode coefficient_context_state --locked", "cargo xtask decoder-fixtures verify", "cargo test -p splot-cli --test decoder_oracle --locked", "cargo xtask check-feature-status"]
 fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_state.rs",
+    "crates/splot-decode/src/pipeline/general_intra.rs",
 ]
 diagnostics = []
 
@@ -13825,7 +13826,7 @@ change_id = "decode-general-intra-luma-coeffs"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Completes the former general_intra_luma_coeff_parse marker with shared recursive taxonomy used by both general-intra and inter. Reserved Pt512 and strict post-parity/post-TCQ Quant magnitude escapes are malformed §6.19.7.23; an overlong Golomb prefix is malformed §6.19.7.24; allocation is a typed reconstruction resource failure; invalid CDF/arithmetic state and geometry/table/scan/context escapes are narrow typed header-state invariants without global reason ids. Direct SymbolDecoder reads zero-pad, so direct UnexpectedEof is a defensive syntax-specific mapping; live truncation remains terminal exit_symbol §8.2.4. Two redundant ordinary-branch error variants were deleted. The pinned AVM 457cd586 68-byte monochrome lossless fixture reaches one extended-Golomb tail (m=1, cMax=5, q=5, prefix 1), is deterministic and strict-clean, and splot at one and eight threads matches its 256-byte raw SHA-256 673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1. The feature remains partial only because general_intra_luma_coeff_state is independently tracked."
+notes = "Completes the former general_intra_luma_coeff_parse marker with shared recursive taxonomy used by both general-intra and inter. Reserved Pt512 and strict post-parity/post-TCQ Quant magnitude escapes are malformed §6.19.7.23; an overlong Golomb prefix is malformed §6.19.7.24; allocation is a typed reconstruction resource failure; invalid CDF/arithmetic state and geometry/table/scan/context escapes are narrow typed header-state invariants without global reason ids. Direct SymbolDecoder reads zero-pad, so direct UnexpectedEof is a defensive syntax-specific mapping; live truncation remains terminal exit_symbol §8.2.4. Two redundant ordinary-branch error variants were deleted. The pinned AVM 457cd586 68-byte monochrome lossless fixture reaches one extended-Golomb tail (m=1, cMax=5, q=5, prefix 1), is deterministic and strict-clean, and splot at one and eight threads matches its 256-byte raw SHA-256 673f62a095962fe0413e3fa044af24b3f8ec6919a0b61132187e7257ad38afb1. The coefficient-context state boundary is now typed too, but the umbrella remains partial because independently tracked transform-tool residual and reconstruction capability markers remain."
 
 [feature.status]
 mapped = "done"

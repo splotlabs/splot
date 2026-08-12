@@ -454,6 +454,82 @@ fn coefficient_parse_failures_have_typed_recursive_taxonomy() {
 }
 
 #[test]
+fn coefficient_context_state_failures_have_exhaustive_typed_taxonomy() {
+    let mut allocation = Vec::<u8>::new();
+    let allocation = general_intra_coeff_context_error(
+        &crate::bitstream::tile_payload::TileCoeffStateError::Allocation(
+            allocation
+                .try_reserve(usize::MAX)
+                .expect_err("oversized allocation must fail"),
+        ),
+    );
+    assert!(matches!(
+        &allocation,
+        DecodeError::Reconstruction {
+            source: splot_recon::ReconError::WorkspaceAllocationFailed {
+                plane: PlaneId::Y,
+                context: "general-intra coefficient context state",
+            },
+        }
+    ));
+    assert!(DecodeDiagnosticReport::from_decode_error(&allocation).is_none());
+
+    let invariant_failures = [
+        crate::bitstream::tile_payload::TileCoeffStateError::EmptyTileDimensions {
+            mi_rows: 0,
+            mi_cols: 1,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::InvalidAdjustedTransformExtent {
+            axis: "width",
+            value: 0,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::ArithmeticOverflow {
+            operation: "test",
+            left: usize::MAX,
+            right: 1,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::InvalidPlane { plane: 3 },
+        crate::bitstream::tile_payload::TileCoeffStateError::InvalidDcCategory { dc_category: 3 },
+        crate::bitstream::tile_payload::TileCoeffStateError::EmptyContextRange { axis: "columns" },
+        crate::bitstream::tile_payload::TileCoeffStateError::CoordinateOverflow {
+            coordinate: "above",
+            base: 1,
+            offset: usize::MAX,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::ContextRangeOutOfBounds {
+            context: "above",
+            start: 2,
+            end: 3,
+            len: 2,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::TransformCoordinateOutOfBounds {
+            row: 4,
+            col: 0,
+            height: 4,
+            width: 4,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::QuantPositionOutOfBounds {
+            pos: 16,
+            len: 16,
+        },
+        crate::bitstream::tile_payload::TileCoeffStateError::InvalidSubsampling {
+            axis: "x",
+            value: 2,
+        },
+    ];
+    for failure in invariant_failures {
+        let error = general_intra_coeff_context_error(&failure);
+        assert!(matches!(
+            &error,
+            DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientContextState,
+            }
+        ));
+        assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+}
+
+#[test]
 fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
     let offset = ByteOffset::new(42);
     let selector = TileCdfSelector::IdentityRowY { ctx: usize::MAX };

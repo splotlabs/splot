@@ -11,8 +11,8 @@ use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CflParams, CoeffParseErrorClass, GeneralIntraBlockModes,
     GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
     GeneralIntraLeafMode, IntraYMode, IntraYModeClass, IsCflContext, LumaTransformPartitionContext,
-    LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TransformToolResidualPolicy,
-    classify_coeff_parse_error, read_lossless_luma_tx_size,
+    LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TileCoeffStateError,
+    TransformToolResidualPolicy, classify_coeff_parse_error, read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
     GeneralIntraResidualPlan, ParsedGeneralIntraResidual, RectChromaPlan, RectLumaPlan,
@@ -1032,12 +1032,9 @@ fn general_intra_residual_error(
         GeneralIntraResidualError::InvalidTransformPartitionDimensions { .. } => {
             malformed_tile_payload(offset, "6.19.6.3", error)
         }
-        GeneralIntraResidualError::CoeffContextState { .. } => general_intra_at!(
-            "general_intra_luma_coeff_state",
-            offset,
-            "general intra luma coefficient context state could not be derived from the tile work unit",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
+        GeneralIntraResidualError::CoeffContextState { source } => {
+            general_intra_coeff_context_error(&source)
+        }
         GeneralIntraResidualError::PaletteSymbolRead {
             source:
                 BlockSymbolTraceReadError::Cdf(_)
@@ -1091,6 +1088,29 @@ fn general_intra_residual_error(
             missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+    }
+}
+
+fn general_intra_coeff_context_error(error: &TileCoeffStateError) -> DecodeError {
+    match error {
+        TileCoeffStateError::Allocation(_) => splot_recon::ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "general-intra coefficient context state",
+        }
+        .into(),
+        TileCoeffStateError::EmptyTileDimensions { .. }
+        | TileCoeffStateError::InvalidAdjustedTransformExtent { .. }
+        | TileCoeffStateError::ArithmeticOverflow { .. }
+        | TileCoeffStateError::InvalidPlane { .. }
+        | TileCoeffStateError::InvalidDcCategory { .. }
+        | TileCoeffStateError::EmptyContextRange { .. }
+        | TileCoeffStateError::CoordinateOverflow { .. }
+        | TileCoeffStateError::ContextRangeOutOfBounds { .. }
+        | TileCoeffStateError::TransformCoordinateOutOfBounds { .. }
+        | TileCoeffStateError::QuantPositionOutOfBounds { .. }
+        | TileCoeffStateError::InvalidSubsampling { .. } => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraCoefficientContextState.into()
+        }
     }
 }
 
