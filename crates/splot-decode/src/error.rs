@@ -204,6 +204,9 @@ pub enum DecodeHeaderStateError {
     /// General-intra tile coefficient neighbour state was internally inconsistent.
     #[error("general-intra coefficient context state is inconsistent")]
     InvalidGeneralIntraCoefficientContextState,
+    /// General-intra prediction, dequantization, or transform state was inconsistent.
+    #[error("general-intra reconstruction state is inconsistent")]
+    InvalidGeneralIntraReconstructionState,
     /// An admitted EXTENDWARP neighbour was absent from resolved motion state.
     #[error("EXTENDWARP neighbour motion state is inconsistent")]
     InvalidExtendWarpNeighbourState,

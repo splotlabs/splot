@@ -1075,19 +1075,26 @@ fn general_intra_residual_error(
             general_intra_internal!("general_intra_luma_coeff_unexpected_branch", offset,)
         }
         GeneralIntraResidualError::QuantLength { .. }
-        | GeneralIntraResidualError::PredictionLength { .. }
-        | GeneralIntraResidualError::Reconstruct { .. } => general_intra_at!(
-            "general_intra_luma_reconstruct",
-            offset,
-            "general intra luma transform-block reconstruction could not be composed from the decoded coefficients",
-            GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-        ),
+        | GeneralIntraResidualError::PredictionLength { .. } => {
+            crate::DecodeHeaderStateError::InvalidGeneralIntraReconstructionState.into()
+        }
+        GeneralIntraResidualError::Reconstruct { source } => {
+            general_intra_reconstruction_error(source)
+        }
         GeneralIntraResidualError::UnsupportedDirectionalAboveEdge => general_intra_at!(
             "general_intra_directional_above_edge",
             offset,
             missing_capability_message!("intra.luma.directional.above_edge", neighbour = "corner",),
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+    }
+}
+
+fn general_intra_reconstruction_error(error: splot_recon::ReconError) -> DecodeError {
+    match error {
+        error @ (splot_recon::ReconError::WorkspaceAllocationFailed { .. }
+        | splot_recon::ReconError::IntraPredictionAllocationFailed { .. }) => error.into(),
+        _ => crate::DecodeHeaderStateError::InvalidGeneralIntraReconstructionState.into(),
     }
 }
 

@@ -530,6 +530,65 @@ fn coefficient_context_state_failures_have_exhaustive_typed_taxonomy() {
 }
 
 #[test]
+fn general_intra_reconstruction_failures_have_typed_taxonomy() {
+    let offset = ByteOffset::new(42);
+    let length_failures = [
+        GeneralIntraResidualError::QuantLength {
+            expected: 64,
+            actual: 63,
+        },
+        GeneralIntraResidualError::PredictionLength {
+            expected: 64,
+            actual: 63,
+        },
+    ];
+    for failure in length_failures {
+        let error = general_intra_residual_error(failure, offset);
+        assert!(matches!(
+            &error,
+            DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidGeneralIntraReconstructionState,
+            }
+        ));
+        assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+
+    let invariant_failures = [
+        splot_recon::ReconError::InvalidPlaneTxType { plane_tx_type: 16 },
+        splot_recon::ReconError::WorkspaceRectOutOfBounds {
+            plane: PlaneId::Y,
+            storage: splot_recon::PlaneSize::new(4, 4).expect("valid plane size"),
+            rect: splot_recon::PlaneRect::new(4, 0, 1, 1).expect("valid plane rectangle"),
+        },
+    ];
+    for failure in invariant_failures {
+        let error = general_intra_reconstruction_error(failure);
+        assert!(matches!(
+            &error,
+            DecodeError::HeaderState {
+                source: crate::DecodeHeaderStateError::InvalidGeneralIntraReconstructionState,
+            }
+        ));
+        assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+
+    let resource_failures = [
+        splot_recon::ReconError::WorkspaceAllocationFailed {
+            plane: PlaneId::Y,
+            context: "general-intra reconstruction test",
+        },
+        splot_recon::ReconError::IntraPredictionAllocationFailed {
+            context: "general-intra prediction test",
+        },
+    ];
+    for failure in resource_failures {
+        let error = general_intra_reconstruction_error(failure);
+        assert!(matches!(&error, DecodeError::Reconstruction { .. }));
+        assert!(DecodeDiagnosticReport::from_decode_error(&error).is_none());
+    }
+}
+
+#[test]
 fn coefficient_entropy_and_geometry_failures_are_typed_header_state() {
     let offset = ByteOffset::new(42);
     let selector = TileCdfSelector::IdentityRowY { ctx: usize::MAX };
