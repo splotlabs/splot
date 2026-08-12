@@ -863,7 +863,6 @@ fn compound_local_warp_derives_a_model_per_explicit_reference_list() {
         block.mi_col,
         block.bw4,
         block.bh4,
-        TILE_OFFSET,
     )
     .unwrap();
 
@@ -910,7 +909,6 @@ fn compound_local_warp_uses_translation_for_a_list_without_samples() {
         2,
         2,
         2,
-        TILE_OFFSET,
     )
     .unwrap();
 

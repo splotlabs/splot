@@ -34,17 +34,6 @@ use crate::{
     Result,
 };
 
-macro_rules! inter_cap {
-    ($reason:literal, $offset:expr, $capability:literal, $spec_section:expr $(,)?) => {
-        unsupported_at(
-            $reason,
-            $offset,
-            concat!("unsupported capability: ", $capability),
-            $spec_section,
-        )
-    };
-}
-
 macro_rules! inter_internal {
     ($reason:literal, $offset:expr $(,)?) => {
         crate::error::DecodeError::InternalState {

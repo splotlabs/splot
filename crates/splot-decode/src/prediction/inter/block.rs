@@ -38,7 +38,6 @@ use super::{
     BawpSyntax, CcsoGridHandle, InterBlock, InterIntraPrediction, InterReferenceState,
     InterResidual, InterResidualBlock, MotionFieldHandle, Mv, PlacedInterBlock,
     SINGLE_MODE_GLOBALMV, SINGLE_MODE_NEARMV, SINGLE_MODE_NEWMV, SPEC_MODE_INFO, mc,
-    unsupported_at,
 };
 use crate::bitstream::tile_payload::{
     BlockSize, BlockSymbolTraceReadError, CoeffContextReset, DecodeBlockFrontier,
@@ -1328,7 +1327,7 @@ fn decode_block<T: ReconSample>(
                 lossless,
                 tile_offset,
             )?;
-            let precision = frame_mv_precision(core, tile_offset)?;
+            let precision = frame_mv_precision(core)?;
             mv_grid.record_flags(
                 mi_row,
                 mi_col,
@@ -1423,10 +1422,7 @@ fn decode_block<T: ReconSample>(
                 n4h,
                 NeighbourFlagSyntax {
                     interp_filter: interp_filter_no_neighbour_ctx(false) as u8,
-                    precision: BlockPrecisionRecord::explicit(frame_mv_precision(
-                        core,
-                        tile_offset,
-                    )?),
+                    precision: BlockPrecisionRecord::explicit(frame_mv_precision(core)?),
                     ..NON_INTER_FLAG_SYNTAX
                 },
             );
@@ -1649,7 +1645,7 @@ fn decode_block<T: ReconSample>(
                 current_order_hint,
                 ref_frame0,
             );
-        let mv_config = inter_mv_read_config(core, tile_offset)?;
+        let mv_config = inter_mv_read_config(core)?;
         let motion_mode = if warp_mode == WarpInterMode::WarpNewmv {
             read_warp_newmv_motion_mode_syntax(
                 cdfs,
@@ -1784,7 +1780,7 @@ fn decode_block<T: ReconSample>(
                 placed_geometry,
                 PendingInterKind::Single,
                 block_qindex,
-                frame_mv_precision(core, tile_offset)?,
+                frame_mv_precision(core)?,
             ),
         ));
     }
@@ -1896,7 +1892,7 @@ fn decode_block<T: ReconSample>(
     } else {
         0
     };
-    let frame_mv_config = inter_mv_read_config(core, tile_offset)?;
+    let frame_mv_config = inter_mv_read_config(core)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
@@ -2058,7 +2054,7 @@ fn decode_block<T: ReconSample>(
             placed_geometry,
             kind,
             block_qindex,
-            frame_mv_precision(core, tile_offset)?,
+            frame_mv_precision(core)?,
         ),
     ))
 }

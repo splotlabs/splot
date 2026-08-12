@@ -204,7 +204,7 @@ pub(super) fn decode_compound_inter_block<T: ReconSample>(
             )?;
         }
     }
-    let frame_mv_config = inter_mv_read_config(core, tile_offset)?;
+    let frame_mv_config = inter_mv_read_config(core)?;
     let precision = read_block_mv_precision_syntax(
         cdfs,
         symbols,
@@ -489,7 +489,6 @@ pub(super) fn compound_local_warp_models(
     mi_col: usize,
     n4w: usize,
     n4h: usize,
-    tile_offset: ByteOffset,
 ) -> Result<[Option<[i32; 6]>; 2]> {
     let model0 = compound_ref_warp_model(
         mv_grid,
@@ -500,18 +499,9 @@ pub(super) fn compound_local_warp_models(
         mi_col,
         n4w,
         n4h,
-        tile_offset,
     )?;
     let model1 = compound_ref_warp_model(
-        mv_grid,
-        block_ctx,
-        ref_frame1,
-        mv1,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        tile_offset,
+        mv_grid, block_ctx, ref_frame1, mv1, mi_row, mi_col, n4w, n4h,
     )?;
     Ok([model0, model1])
 }
@@ -526,20 +516,13 @@ fn compound_ref_warp_model(
     mi_col: usize,
     n4w: usize,
     n4h: usize,
-    tile_offset: ByteOffset,
 ) -> Result<Option<[i32; 6]>> {
     let samples = super::super::find_mv_stack::find_warp_samples(mv_grid, block_ctx, target_ref);
     if samples.is_empty() {
         return Ok(None);
     }
     Ok(Some(local_warp_estimation(
-        &samples,
-        mv,
-        mi_row,
-        mi_col,
-        n4w,
-        n4h,
-        tile_offset,
+        &samples, mv, mi_row, mi_col, n4w, n4h,
     )?))
 }
 
@@ -1028,7 +1011,7 @@ pub(super) fn decode_skip_mode_inter_block<T: ReconSample>(
         max_drl_bits_minus_1,
         tile_offset,
     )?;
-    let precision = frame_mv_precision(core, tile_offset)?;
+    let precision = frame_mv_precision(core)?;
     finish_compound_inter_block(
         work_unit,
         symbols,

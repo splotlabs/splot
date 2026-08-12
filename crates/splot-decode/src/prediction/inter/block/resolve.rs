@@ -871,7 +871,6 @@ fn resolve_warp(
     state: &mut MvResolutionState<'_>,
 ) -> Result<ResolvedInterBlock> {
     let block = &syntax.block_ctx;
-    let tile_offset = state.tile_offset;
     let global_mv = global_motion_mv(state.core, block.ref_frame0, block, state.frame_precision);
     let stack = find_mv_stack_with_temporal(
         state.grid,
@@ -908,13 +907,12 @@ fn resolve_warp(
                 block.mi_col,
                 block.bw4,
                 block.bh4,
-                tile_offset,
             )?;
             (mv, params)
         }
         source => {
             let mv = warp_newmv(syntax, warp, &stack);
-            let params = warp_newmv_model(source, warp, block, &stack, mv, state, tile_offset)?;
+            let params = warp_newmv_model(source, warp, block, &stack, mv, state)?;
             (mv, params)
         }
     };
@@ -938,7 +936,6 @@ fn warp_newmv_model(
     stack: &MvStack,
     mv: Mv,
     state: &MvResolutionState<'_>,
-    tile_offset: ByteOffset,
 ) -> Result<[i32; 6]> {
     match source {
         WarpModelSource::LocalSamples => {
@@ -950,7 +947,6 @@ fn warp_newmv_model(
                 block.mi_col,
                 block.bw4,
                 block.bh4,
-                tile_offset,
             )
         }
         WarpModelSource::Extended => extend_warp_estimation(
@@ -963,15 +959,10 @@ fn warp_newmv_model(
             stack,
             warp.ref_mv_idx,
             mv,
-            tile_offset,
         ),
-        WarpModelSource::Delta(delta) => apply_warp_delta(
-            stack.warp_candidate(warp.ref_warp_idx),
-            *delta,
-            mv,
-            block,
-            tile_offset,
-        ),
+        WarpModelSource::Delta(delta) => {
+            apply_warp_delta(stack.warp_candidate(warp.ref_warp_idx), *delta, mv, block)
+        }
         WarpModelSource::Candidate => Ok(DEFAULT_WARP_PARAMS),
     }
 }
@@ -1047,7 +1038,6 @@ fn resolve_compound(
             block.mi_col,
             block.bw4,
             block.bh4,
-            state.tile_offset,
         )?
     } else if compound.is_global() {
         compound.global_warp

@@ -200,11 +200,11 @@ pub(super) fn effective_force_integer_mv(core: &FrameHeaderCore) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn frame_mv_precision(core: &FrameHeaderCore, tile_offset: ByteOffset) -> Result<u8> {
+pub(super) fn frame_mv_precision(core: &FrameHeaderCore) -> Result<u8> {
     if core.frame_is_intra == Some(true) {
         return Ok(0);
     }
-    Ok(inter_mv_read_config(core, tile_offset)?.precision())
+    Ok(inter_mv_read_config(core)?.precision())
 }
 
 fn use_per_block_mv_precision(sequence: &SequenceHeader, core: &FrameHeaderCore) -> bool {

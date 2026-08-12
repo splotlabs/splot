@@ -210,6 +210,12 @@ pub enum DecodeHeaderStateError {
     /// General-intra directional edge geometry or derived neighbour state was inconsistent.
     #[error("general-intra directional edge state is inconsistent")]
     InvalidGeneralIntraDirectionalEdgeState,
+    /// Derived inter warp geometry, divisor, delta, or translation state was inconsistent.
+    #[error("inter warp model state is inconsistent")]
+    InvalidInterWarpModelState,
+    /// Derived inter-intra wedge angle or table state was inconsistent.
+    #[error("inter-intra wedge state is inconsistent")]
+    InvalidInterWedgeState,
     /// An admitted EXTENDWARP neighbour was absent from resolved motion state.
     #[error("EXTENDWARP neighbour motion state is inconsistent")]
     InvalidExtendWarpNeighbourState,
