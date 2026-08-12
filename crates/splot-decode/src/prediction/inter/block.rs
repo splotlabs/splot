@@ -1690,7 +1690,7 @@ fn decode_block<T: ReconSample>(
         } else {
             WarpInterIntraSyntax::default()
         };
-        let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra, tile_offset)?;
+        let warp_interintra_mode = interintra_prediction_mode(warp_inter_intra);
         let residual = if skip == 0 {
             Some(read_inter_residual(
                 work_unit,
@@ -1860,7 +1860,7 @@ fn decode_block<T: ReconSample>(
     } else if !bawp.enabled {
         let syntax =
             read_inter_intra_syntax(cdfs, symbols, core, frontier.b_size, n4w, n4h, tile_offset)?;
-        interintra_prediction_mode(syntax, tile_offset)?
+        interintra_prediction_mode(syntax)
     } else {
         None
     };
