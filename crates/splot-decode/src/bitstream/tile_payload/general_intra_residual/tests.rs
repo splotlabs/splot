@@ -9,6 +9,7 @@ use splot_core::segment::MAX_SEGMENTS;
 use splot_core::span::ByteOffset;
 use splot_core::symbol::{CdfUpdateMode, Symbol, SymbolDecoderConfig};
 use splot_core::symbol_encoder::{SymbolEncoder, SymbolEncoderConfig};
+use splot_core::tables::conversion::MAX_TX_SIZE_RECT;
 
 use super::*;
 use crate::bitstream::tile_payload::TileCoeffFrameFactsInput;
@@ -349,19 +350,381 @@ fn five_way_luma_transform_partition_fills_bounded_storage() {
 }
 
 #[test]
-fn luma_transform_partition_storage_rejects_a_sixth_unit() {
-    let mut units = LumaTransformPartitionUnits::new();
-    for unit in 0..MAX_LUMA_TRANSFORM_PARTITION_UNITS {
-        units.push(unit).unwrap();
-    }
+fn every_transform_partition_has_spec_geometry_order_and_middle_flags() {
+    type RecordGeometry = (usize, usize, usize, usize, bool);
+    let cases: &[(LumaTxPartition, &[RecordGeometry])] = &[
+        (LumaTxPartition::None, &[(64, 32, 16, 16, false)]),
+        (
+            LumaTxPartition::Split,
+            &[
+                (64, 32, 8, 8, false),
+                (72, 32, 8, 8, false),
+                (64, 40, 8, 8, false),
+                (72, 40, 8, 8, false),
+            ],
+        ),
+        (
+            LumaTxPartition::Horz,
+            &[(64, 32, 16, 8, false), (64, 40, 16, 8, false)],
+        ),
+        (
+            LumaTxPartition::Vert,
+            &[(64, 32, 8, 16, false), (72, 32, 8, 16, false)],
+        ),
+        (
+            LumaTxPartition::Horz4,
+            &[
+                (64, 32, 16, 4, false),
+                (64, 36, 16, 4, false),
+                (64, 40, 16, 4, false),
+                (64, 44, 16, 4, false),
+            ],
+        ),
+        (
+            LumaTxPartition::Vert4,
+            &[
+                (64, 32, 4, 16, false),
+                (68, 32, 4, 16, false),
+                (72, 32, 4, 16, false),
+                (76, 32, 4, 16, false),
+            ],
+        ),
+        (
+            LumaTxPartition::Horz5,
+            &[
+                (64, 32, 8, 4, false),
+                (72, 32, 8, 4, true),
+                (64, 36, 16, 8, true),
+                (64, 44, 8, 4, true),
+                (72, 44, 8, 4, true),
+            ],
+        ),
+        (
+            LumaTxPartition::Vert5,
+            &[
+                (64, 32, 4, 8, false),
+                (64, 40, 4, 8, true),
+                (68, 32, 8, 16, true),
+                (76, 32, 4, 8, true),
+                (76, 40, 4, 8, true),
+            ],
+        ),
+    ];
 
-    assert!(matches!(
-        units.push(MAX_LUMA_TRANSFORM_PARTITION_UNITS),
-        Err(GeneralIntraResidualError::UnsupportedTransformPartition {
-            reason: TransformPartitionUnsupported::RecordCapacity,
+    for &(partition, expected) in cases {
+        let records = luma_transform_records_for_partition(64, 32, TX_16X16, partition).unwrap();
+        let actual: Vec<_> = records
+            .iter()
+            .map(|record| {
+                let (width, height) = tx_size_dimensions(record.tx_size).unwrap();
+                (record.x, record.y, width, height, record.middle)
+            })
+            .collect();
+        assert_eq!(actual, expected, "partition {partition:?}");
+    }
+}
+
+#[test]
+fn luma_transform_partition_storage_has_only_syntax_cardinalities() {
+    for (units, expected) in [
+        (LumaTransformPartitionUnits::one(0), vec![0]),
+        (LumaTransformPartitionUnits::two([0, 1]), vec![0, 1]),
+        (
+            LumaTransformPartitionUnits::four([0, 1, 2, 3]),
+            vec![0, 1, 2, 3],
+        ),
+        (
+            LumaTransformPartitionUnits::five([0, 1, 2, 3, 4]),
+            vec![0, 1, 2, 3, 4],
+        ),
+    ] {
+        assert_eq!(units.len(), expected.len());
+        assert!(units.iter().copied().eq(expected));
+    }
+}
+
+#[test]
+fn every_block_size_context_derives_its_table_max_tx_size() {
+    for (block_size_index, &max_tx_size) in MAX_TX_SIZE_RECT.iter().enumerate() {
+        let block_size = BlockSize::new(block_size_index).unwrap();
+        let context = LumaTransformPartitionContext::new(block_size);
+        assert_eq!(context.block_size(), block_size);
+        assert_eq!(context.max_tx_size(), max_tx_size as usize);
+    }
+}
+
+#[test]
+fn writer_uses_sequence_selected_transform_partition_cdf() {
+    for reduced_tx_part_set in [false, true] {
+        let payload = encode_transform_symbols(&[
+            (
+                TileCdfSelector::TxDoPartition {
+                    fsc_mode: 0,
+                    is_inter: 0,
+                    txfm_split_group: 1,
+                },
+                1,
+            ),
+            (
+                TileCdfSelector::TxPartitionType {
+                    fsc_mode: 0,
+                    is_inter: 0,
+                    ctx: 0,
+                    reduced: reduced_tx_part_set,
+                },
+                3,
+            ),
+        ]);
+        let mut symbols = symbol_decoder_for_payload(&payload);
+        let partition = read_luma_tx_partition_type(
+            &mut tile_cdfs(),
+            &mut symbols,
+            3,
+            false,
+            false,
+            true,
+            true,
+            reduced_tx_part_set,
+        )
+        .unwrap();
+
+        assert_eq!(partition, LumaTxPartition::Horz4);
+        symbols.exit_symbol().unwrap();
+    }
+}
+
+#[test]
+fn sequence_partition_reduction_suppresses_one_axis_four_way_symbol() {
+    let full_payload = encode_transform_symbols(&[
+        (
+            TileCdfSelector::TxDoPartition {
+                fsc_mode: 0,
+                is_inter: 0,
+                txfm_split_group: 8,
+            },
+            1,
+        ),
+        (
+            TileCdfSelector::Tx2Or3PartitionType {
+                fsc_mode: 0,
+                is_inter: 0,
+                ctx: 0,
+            },
+            1,
+        ),
+    ]);
+    let mut full_symbols = symbol_decoder_for_payload(&full_payload);
+    assert_eq!(
+        read_luma_tx_partition_type(
+            &mut tile_cdfs(),
+            &mut full_symbols,
+            19,
+            false,
+            false,
+            true,
+            false,
+            false,
+        )
+        .unwrap(),
+        LumaTxPartition::Horz4
+    );
+    full_symbols.exit_symbol().unwrap();
+
+    let reduced_payload = encode_transform_symbols(&[(
+        TileCdfSelector::TxDoPartition {
+            fsc_mode: 0,
+            is_inter: 0,
+            txfm_split_group: 8,
+        },
+        1,
+    )]);
+    let mut reduced_symbols = symbol_decoder_for_payload(&reduced_payload);
+    assert_eq!(
+        read_luma_tx_partition_type(
+            &mut tile_cdfs(),
+            &mut reduced_symbols,
+            19,
+            false,
+            false,
+            true,
+            false,
+            true,
+        )
+        .unwrap(),
+        LumaTxPartition::Horz
+    );
+    reduced_symbols.exit_symbol().unwrap();
+}
+
+#[test]
+fn sequence_partition_and_frame_transform_type_reductions_are_independent() {
+    let mut input = frame_facts_input();
+    input.reduced_tx_set = 3;
+    let frame_type_reduced = TileCoeffFrameFacts::new(input);
+    assert_eq!(frame_type_reduced.reduced_tx_set(), 3);
+    assert!(!frame_type_reduced.reduced_tx_part_set());
+
+    input.reduced_tx_set = 0;
+    input.reduced_tx_part_set = true;
+    let sequence_partition_reduced = TileCoeffFrameFacts::new(input);
+    assert_eq!(sequence_partition_reduced.reduced_tx_set(), 0);
+    assert!(sequence_partition_reduced.reduced_tx_part_set());
+}
+
+#[test]
+fn writer_produced_narrow_four_and_five_way_partitions_are_nonconforming() {
+    let cases = [
+        (
+            3,
+            vec![
+                (
+                    TileCdfSelector::TxDoPartition {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        txfm_split_group: 1,
+                    },
+                    1,
+                ),
+                (
+                    TileCdfSelector::TxPartitionType {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        ctx: 0,
+                        reduced: false,
+                    },
+                    3,
+                ),
+            ],
+            LumaTxPartition::Horz4,
+            (8, 0),
+        ),
+        (
+            3,
+            vec![
+                (
+                    TileCdfSelector::TxDoPartition {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        txfm_split_group: 1,
+                    },
+                    1,
+                ),
+                (
+                    TileCdfSelector::TxPartitionType {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        ctx: 0,
+                        reduced: false,
+                    },
+                    4,
+                ),
+            ],
+            LumaTxPartition::Vert4,
+            (0, 8),
+        ),
+        (
+            3,
+            vec![
+                (
+                    TileCdfSelector::TxDoPartition {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        txfm_split_group: 1,
+                    },
+                    1,
+                ),
+                (
+                    TileCdfSelector::TxPartitionType {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        ctx: 0,
+                        reduced: false,
+                    },
+                    5,
+                ),
+            ],
+            LumaTxPartition::Horz5,
+            (4, 0),
+        ),
+        (
+            3,
+            vec![
+                (
+                    TileCdfSelector::TxDoPartition {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        txfm_split_group: 1,
+                    },
+                    1,
+                ),
+                (
+                    TileCdfSelector::TxPartitionType {
+                        fsc_mode: 0,
+                        is_inter: 0,
+                        ctx: 0,
+                        reduced: false,
+                    },
+                    6,
+                ),
+            ],
+            LumaTxPartition::Vert5,
+            (0, 4),
+        ),
+    ];
+
+    for (block_size_index, sequence, expected_partition, (width, height)) in cases {
+        let payload = encode_transform_symbols(&sequence);
+        let mut symbols = symbol_decoder_for_payload(&payload);
+        let mut cdfs = tile_cdfs();
+        let block_size = BlockSize::new(block_size_index).unwrap();
+        let max_tx_size = LumaTransformPartitionContext::new(block_size).max_tx_size();
+        let (tx_width, tx_height) = tx_size_dimensions(max_tx_size).unwrap();
+        let partition = read_luma_tx_partition_type(
+            &mut cdfs,
+            &mut symbols,
+            block_size_index,
+            false,
+            false,
+            tx_size_from_dimensions(tx_width, tx_height >> 1).is_some(),
+            tx_size_from_dimensions(tx_width >> 1, tx_height).is_some(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(partition, expected_partition);
+        symbols.exit_symbol().unwrap();
+        let result = luma_transform_records_for_partition(0, 0, max_tx_size, partition);
+        assert!(
+            matches!(
+                result,
+                Err(GeneralIntraResidualError::InvalidTransformPartitionDimensions {
+                    width: actual_width,
+                    height: actual_height,
+                }) if actual_width == width && actual_height == height
+            ),
+            "block {block_size_index} partition {partition:?} produced {result:?}"
+        );
+    }
+}
+
+#[test]
+fn sparse_partition_filter_keeps_record_order_and_original_count() {
+    let records =
+        luma_transform_records_for_partition(320, 64, TX_64X64, LumaTxPartition::Split).unwrap();
+    let record_count = records.len();
+    let visible = records
+        .try_filter_map::<_, ()>(|record| {
+            Ok(luma_transform_record_starts_in_frame(&record, 352, 288).then_some(record))
         })
-    ));
-    assert!(units.iter().copied().eq(0..5));
+        .unwrap();
+
+    assert_eq!(record_count, 4);
+    assert_eq!(visible.len(), 2);
+    assert!(
+        visible
+            .iter()
+            .map(|record| (record.x, record.y))
+            .eq([(320, 64), (320, 96),])
+    );
 }
 
 #[test]
@@ -449,6 +812,7 @@ fn frame_facts_input() -> TileCoeffFrameFactsInput {
         enable_inter_ist: false,
         enable_chroma_dctonly: false,
         enable_cctx: false,
+        reduced_tx_part_set: false,
         reduced_tx_set: 0,
         lossless_array: [false; MAX_SEGMENTS],
         allow_tcq: false,

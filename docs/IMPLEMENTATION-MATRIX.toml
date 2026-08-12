@@ -324,10 +324,16 @@ id = "DECODE-GENERAL-INTRA-TRANSFORM-UNIT-PREDICTION"
 name = "Per-transform-unit intra prediction"
 category = "conformance"
 kind = "bitstream-semantics"
-spec_sections = ["5.20.7.24", "5.20.7.27", "7.13.2.1", "7.13.2.7", "7.13.2.8"]
+spec_sections = ["5.4.8", "5.20.6.1", "5.20.6.3", "5.20.7.24", "5.20.7.27", "6.4.8", "6.19.2.1", "6.19.6.3", "7.13.2.1", "7.13.2.7", "7.13.2.8"]
 sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-24",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-6-3",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-1",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-7",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-2-8",
@@ -338,7 +344,7 @@ change_id = "decode-general-intra-transform-unit-prediction"
 tracking_issue = ""
 owner = "decoder"
 risk = "high"
-notes = "Completes the transform-partition prediction handoff with an exhaustive match and removes the generic general_intra_partitioned_interior_edge_prediction fallback. Existing rectangular luma/chroma plans, including CfL, retain their reconstruction while unit geometry and availability are re-scoped. Square palette, DC, DIP, PAETH, smooth, cardinal, and directional plans map to the corresponding rectangular kernels, and MRL plans update unit-local above-line and superblock-boundary state. The newly completed DirectionalFirst arm handles D45, D67, D113, D135, D157, and D203, including a rectangular transform at the coding-block origin; §5.20.7.24 reconstructs units in raster order so §7.13.2.1 reads already reconstructed siblings before §5.20.7.27 residual addition. Invalid transform-table geometry remains fail-closed. The 68-byte current-AVMenc D135 fixture was a strict first-hit reproducer at byte 64. Fixed splot, pinned avmdec revision 457cd58681a747465661baccb1f32095bc5b7774, and current avmdec revision 3935f4bf31ee774177d9300341bbbaf5b6116500 produce identical 6,144-byte raw I420 output at SHA-256 5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1."
+notes = "Completes transform-partition syntax and prediction without policy gaps. The §5.20.6.1 context retains validated BlockSize and derives Max_Tx_Size_Rect internally; §5.20.6.3 records have only one, two, four, or five units and preserve raster order, middle flags, sparse clipping, and the pre-clipping record count. SequenceHeader.reduced_tx_part_set independently selects the reduced TxPartitionType CDF and suppresses tx_2or3 on one-axis geometry; FrameHeader.reduced_tx_set remains a transform-type restriction. Writer tests prove both CDF banks, flag independence, one-axis suppression, and §6.19.6.3 malformed narrow four/five-way geometry. The §5.20.7.24 walk retains unit geometry even when a four-unit edge partition clips to one visible unit, through prediction, reconstruction, deblock, and publication. The pinned 66-byte reduced-set D135 witness fails exact base at terminal entropy validation; fixed splot at one and eight threads matches pinned/current AVM raw SHA-256 608619fe3b10c3464841b2269baa417c29d48d7e4793ca38913a68c107caa0a9. A byte-distinct full-set control decodes successfully on exact base with identical raw output. A 96-stream official-AVMenc geometry/QP sweep did not isolate the one-axis branch, so that branch is writer-proven without hand-edited syntax."
 
 [feature.status]
 mapped = "done"
@@ -354,16 +360,28 @@ perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::every_block_size_context_derives_its_table_max_tx_size",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::every_transform_partition_has_spec_geometry_order_and_middle_flags",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::writer_uses_sequence_selected_transform_partition_cdf",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::sequence_partition_reduction_suppresses_one_axis_four_way_symbol",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::sequence_partition_and_frame_transform_type_reductions_are_independent",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::writer_produced_narrow_four_and_five_way_partitions_are_nonconforming",
+    "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual/tests.rs::sparse_partition_filter_keeps_record_order_and_original_count",
+    "crates/splot-decode/src/pipeline/general_intra_unit_tests.rs::invalid_transform_partition_dimensions_are_a_typed_conformance_error",
     "crates/splot-decode/src/residual/pipeline/tests.rs::cfl_chroma_keeps_read_order_and_defers_reconstruction",
     "crates/splot-decode/src/residual/pipeline/tests.rs::palette_map_is_sliced_for_each_partitioned_transform_size",
     "crates/splot-decode/src/residual/pipeline/tests.rs::smooth_first_partition_handoff_replans_the_origin_transform_unit",
     "crates/splot-decode/src/residual/pipeline/tests.rs::active_mrl_directional_plan_uses_transform_unit_wide_angle_mapping",
     "crates/splot-decode/src/residual/pipeline/tests.rs::mrl_chunk_rows_use_transform_local_superblock_boundary",
+    "crates/splot-decode/src/residual/pipeline/tests.rs::four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_geometry",
+    "crates/splot-decode/src/output/hash_tests.rs::reduced_tx_partition_fixtures_match_reference_output_hashes_at_one_and_eight_threads",
+    "crates/splot-decode/src/output/hash_tests.rs::reduced_tx_partition_fixtures_eof_fail_closed",
     "crates/splot-decode/src/output/hash_tests.rs::directional_tx_partition_fixture_matches_reference_output_hash",
     "crates/splot-decode/src/output/hash_tests.rs::directional_tx_partition_fixture_eof_fails_closed",
     "crates/splot-cli/tests/decoder_oracle.rs::decoder_oracle_corpus_matches_manifest",
 ]
 commands = [
+    "cargo test -p splot-decode --lib transform_partition --locked",
     "cargo test -p splot-decode partition_handoff --locked",
     "cargo test -p splot-decode directional_tx_partition_fixture --locked",
     "cargo test -p splot-cli --test decoder_oracle --locked",
@@ -373,6 +391,7 @@ commands = [
 ]
 fixtures = [
     "tests/conformance/vectors/valid/syn-txpart-d135-intra-64x64-q100.ivf",
+    "tests/conformance/vectors/valid/syn-reduced-txpart-d135-intra-64x64-q160.ivf",
     "docs/LOCAL-REFERENCE-EVIDENCE.toml",
 ]
 diagnostics = ["decode/malformed-source"]
@@ -11202,6 +11221,7 @@ name = "selectable transform-record frontier"
 category = "infrastructure"
 kind = "bitstream-syntax"
 spec_sections = [
+    "5.4.8",
     "5.20.5.3",
     "5.20.5.4",
     "5.20.6.1",
@@ -11213,6 +11233,9 @@ spec_sections = [
     "5.20.7.27",
     "5.20.7.30",
     "5.20.8.2",
+    "6.4.8",
+    "6.19.2.1",
+    "6.19.6.3",
     "6.19.7.12",
     "7.12.2",
     "7.13.3.18",
@@ -11220,6 +11243,7 @@ spec_sections = [
     "8.3.2",
 ]
 sources = [
+    "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-4-8",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-3",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-5-4",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-6-1",
@@ -11231,6 +11255,9 @@ sources = [
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-27",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-7-30",
     "docs/spec/av2/1.0.0/05-syntax-structures.md#s-5-20-8-2",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-4-8",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-2-1",
+    "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-6-3",
     "docs/spec/av2/1.0.0/06-syntax-structures-semantics.md#s-6-19-7-12",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-12-2",
     "docs/spec/av2/1.0.0/07-decoding-process.md#s-7-13-3-18",
@@ -11243,7 +11270,7 @@ change_id = "decode-intra-recon-bridge"
 tracking_issue = ""
 owner = "decoder"
 risk = "medium"
-notes = "Partial current-path support for supported IntrABC mode-info and TX_MODE_SELECT luma transform records. Tile-payload parsing retains transform extents plus skip and EOB facts; the generic reconstruction sink writes admitted blocks into CurrentFrameWorkspace and derives the bounded Wiener NS tx-skip grid. Current grid tests cover selectable records and narrow or clamped regions, while the general-intra oracle and decoder-oracle corpus cover surviving reconstruction and output behavior. Dedicated frontier bridge and oracle tests and their fixture were removed, so this row no longer cites them. Unsupported transform or reconstruction subsets still fail closed."
+notes = "Partial current-path support for IntrABC mode-info and TX_MODE_SELECT luma transform records. The duplicated inter §5.20.6.3 reader independently uses SequenceHeader.reduced_tx_part_set for the full/reduced TxPartitionType CDF and one-axis tx_2or3 suppression; FrameHeader.reduced_tx_set remains a transform-type restriction. Writer tests prove both CDFs, suppression, flag independence, and offset-aware §6.19.6.3 malformed classification for entropy-valid narrow four/five-way geometry. The pinned 104-byte two-frame witness reaches only the inter reader and fails exact base at terminal entropy validation; fixed splot at one and eight threads matches pinned/current AVM raw SHA-256 9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3. Its byte-distinct full-set control decodes on exact base with identical output. Official AVMenc sweeps did not isolate one-axis syntax, so that branch is writer-proven. Unsupported transform or reconstruction subsets still fail closed."
 
 [feature.status]
 mapped = "done"
@@ -11254,11 +11281,16 @@ write = "not-applicable"
 encode = "not-applicable"
 decode_check = "partial"
 tests = "done"
-avm_diff = "not-applicable"
+avm_diff = "partial"
 perf = "not-applicable"
 
 [feature.proof]
 tests = [
+    "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::inter_partition_reader_uses_sequence_selected_reduced_cdf",
+    "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::inter_reduced_partition_set_suppresses_one_axis_four_way_symbol",
+    "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::writer_produced_inter_narrow_four_and_five_way_partitions_are_malformed",
+    "crates/splot-decode/src/output/hash_tests.rs::reduced_tx_partition_fixtures_match_reference_output_hashes_at_one_and_eight_threads",
+    "crates/splot-decode/src/output/hash_tests.rs::reduced_tx_partition_fixtures_eof_fail_closed",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_grid_records_observed_luma_only_block_8x32_region",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records_grid_tests.rs::selectable_tx_grid_rejects_empty_transform_dimensions",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs::tests::tx_skip_grid_retention_preserves_skip_flag_for_nonzero_eob_record",
@@ -11296,6 +11328,8 @@ commands = [
     "cargo test -p splot-decode general_intra_residual --locked",
 ]
 fixtures = [
+    "tests/conformance/vectors/valid/syn-2frame-reduced-txpart-inter-64x64-q160.ivf",
+    "docs/LOCAL-REFERENCE-EVIDENCE.toml",
     "local decoder mission fixture",
     "crates/splot-cli/tests/decode_cli.rs",
     "crates/splot-decode/src/filters/wienerns_lr/tx_records.rs",
@@ -11306,7 +11340,7 @@ fixtures = [
     "crates/splot-decode/src/bitstream/tile_payload/general_intra_residual.rs",
     "crates/splot-decode/src/bitstream/tile_payload/coeff_loop_tests.rs",
 ]
-diagnostics = ["decode/unsupported-feature", "decode/resource-limit"]
+diagnostics = ["decode/unsupported-feature", "decode/resource-limit", "decode/malformed-source"]
 
 [[feature]]
 id = "DECODE-SELECTABLE-NARROW-LUMA-RECORDS"

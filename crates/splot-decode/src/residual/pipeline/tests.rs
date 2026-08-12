@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2026 Bartosz Tomczyk <bartekplus@gmail.com>
 
 use super::*;
-use crate::bitstream::tile_payload::TileBlockDecodedState;
+use crate::bitstream::tile_payload::{LumaTransformPartitionUnits, TileBlockDecodedState};
 use crate::tile::block_context::{BlockRect, ChromaSampling, TxShape};
 use splot_core::symbol::Symbol;
 use splot_core::tables::conversion::{NUM_4X4_BLOCKS_HIGH, NUM_4X4_BLOCKS_WIDE, TX_HEIGHT_LOG2};
@@ -905,6 +905,136 @@ fn smooth_first_partition_handoff_replans_the_origin_transform_unit() {
             use_tcq: false,
         }
     );
+}
+
+#[test]
+fn four_way_partition_clipped_to_one_unit_keeps_unit_reconstruction_and_deblock_geometry() {
+    let block = BlockRect::new(8, 8, 16, 16);
+    let block_ctx = BlockCtx::new(
+        block,
+        TxShape::from_luma_4x4(block.width4(), block.height4())
+            .expect("64x64 block has a transform shape"),
+        16,
+        16,
+        BitDepth::Eight,
+        ChromaSampling::Yuv420,
+    );
+    let plane = GeneralIntraResidualPlan::rect(
+        block_ctx,
+        RectLumaPlan::Dc { use_tcq: false },
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("64x64 residual plan is valid")
+    .plane_plan(PlaneId::Y)
+    .expect("luma plane is present");
+    let tx_32x32 = splot_recon::tx_size_index(5, 5).expect("32x32 has a transform index");
+    let unit = |x, y| PositionedLumaCoeffBlock {
+        x,
+        y,
+        tx_size: tx_32x32,
+        middle: false,
+        coeffs: empty_luma_coeffs(),
+    };
+    let partition =
+        LumaTransformPartitionUnits::four([unit(32, 32), unit(64, 32), unit(32, 64), unit(64, 64)]);
+    let original_count = partition.len();
+    let visible = partition
+        .try_filter_map::<_, ()>(|unit| Ok((unit.x < 64 && unit.y < 64).then_some(unit)))
+        .expect("infallible clipping predicate");
+    assert_eq!(original_count, 4);
+    assert_eq!(visible.len(), 1);
+    let mut deblock_blocks = Vec::new();
+    let mut chroma_blocks = crate::filters::deblock::ChromaDeblockRecords::new();
+    let mut tx_skip_records = Vec::new();
+    let mut deblock = DeblockRecorder {
+        blocks: &mut deblock_blocks,
+        chroma_blocks: &mut chroma_blocks,
+        tx_skip_records: &mut tx_skip_records,
+        block_r: 8,
+        block_c: 8,
+        chroma_tx: None,
+        chroma_subsampling: (1, 1),
+        qindex: 0,
+        lossless: false,
+    };
+
+    let parsed = plane
+        .retain_partitioned_luma(visible, None, &mut deblock)
+        .expect("visible transform unit has valid geometry");
+    assert_eq!(deblock_blocks.len(), 1);
+    assert_eq!(
+        (
+            deblock_blocks[0].r,
+            deblock_blocks[0].c,
+            deblock_blocks[0].n4w,
+            deblock_blocks[0].n4h,
+            deblock_blocks[0].luma_tx,
+        ),
+        (8, 8, 8, 8, tx_32x32)
+    );
+    assert_eq!(
+        tx_skip_records
+            .iter()
+            .map(|record| (record.row, record.col, record.rows, record.cols))
+            .collect::<Vec<_>>(),
+        [(8, 8, 8, 8)]
+    );
+
+    let mut workspace = crate::pipeline::reconstruct::new_general_intra_workspace::<u8>(
+        96,
+        96,
+        BitDepth::Eight,
+        splot_recon::PixelFormat::Yuv420,
+    )
+    .expect("96x96 workspace is valid");
+    workspace
+        .write_rect_block(
+            PlaneId::Y,
+            32,
+            28,
+            splot_recon::IntraRectBlockSize::new(5, 2).expect("32x4 is valid"),
+            &[192; 128],
+        )
+        .expect("above reference write is in bounds");
+    workspace
+        .write_rect_block(
+            PlaneId::Y,
+            28,
+            32,
+            splot_recon::IntraRectBlockSize::new(2, 5).expect("4x32 is valid"),
+            &[64; 128],
+        )
+        .expect("left reference write is in bounds");
+    let mut block_decoded =
+        TileBlockDecodedState::new(3, 1, 1, 16, 24, 24).expect("tile state is valid");
+    block_decoded.clear_superblock(0, 0);
+    let mut expected_decoded = block_decoded.clone();
+    expected_decoded.set_luma_transform(32, 32, 8, 8);
+    parsed
+        .reconstruct(
+            &mut crate::pipeline::general_intra::GeneralIntraReconScratch::default(),
+            &mut workspace,
+            &mut block_decoded,
+            0,
+            crate::prediction::intra_edge::IntraEdgeCtx {
+                enable_ibp: false,
+                enable_intra_edge_filter: false,
+                above_smooth: false,
+                left_smooth: false,
+                chroma_above_smooth: false,
+                chroma_left_smooth: false,
+            },
+            LumaTransformTypeContext::new(crate::bitstream::tile_payload::IntraYMode::Dc, 0),
+        )
+        .expect("visible transform unit reconstructs");
+
+    assert_eq!(block_decoded, expected_decoded);
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 32, 32), Ok(128));
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 63, 63), Ok(128));
+    assert_eq!(workspace.reconstructed_sample(PlaneId::Y, 64, 32), Ok(0));
 }
 
 #[test]

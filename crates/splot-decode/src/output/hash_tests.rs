@@ -39,6 +39,12 @@ const REFERENCE_SCALING_FIXTURE: &[u8] = include_bytes!(
 const DIRECTIONAL_TX_PARTITION_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-txpart-d135-intra-64x64-q100.ivf"
 );
+const REDUCED_TX_PARTITION_INTRA_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-reduced-txpart-d135-intra-64x64-q160.ivf"
+);
+const REDUCED_TX_PARTITION_INTER_FIXTURE: &[u8] = include_bytes!(
+    "../../../../tests/conformance/vectors/valid/syn-2frame-reduced-txpart-inter-64x64-q160.ivf"
+);
 const RECT_NOEDGE_D113FOLLOW_CHROMA_FIXTURE: &[u8] = include_bytes!(
     "../../../../tests/conformance/vectors/valid/syn-rect-noedge-d113follow-chroma-64x64-q7.ivf"
 );
@@ -91,6 +97,12 @@ const REFERENCE_SCALING_EXPECTED_DIGESTS: [&str; 2] = [
 ];
 const DIRECTIONAL_TX_PARTITION_EXPECTED_DIGEST: &str =
     "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1";
+const REDUCED_TX_PARTITION_INTRA_EXPECTED_DIGEST: &str =
+    "608619fe3b10c3464841b2269baa417c29d48d7e4793ca38913a68c107caa0a9";
+const REDUCED_TX_PARTITION_INTER_EXPECTED_DIGESTS: [&str; 2] = [
+    "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1",
+    "a9737f02c3d0b7cbd208527ad35b750d0866f8c6c6a8c1d1b17d6ea63f2b6355",
+];
 const RECT_NOEDGE_D113FOLLOW_CHROMA_EXPECTED_DIGEST: &str =
     "f831430d302267653add61fbc5054c1f3ab193a10ab7529fbcda74be6cdff70e";
 const RECT_CHROMA_CHUNKS_444_EXPECTED_DIGEST: &str =
@@ -444,6 +456,48 @@ fn directional_tx_partition_fixture_eof_fails_closed() {
         .unwrap_err();
 
     assert!(matches!(error, DecodeError::MalformedSource { .. }));
+}
+
+#[test]
+fn reduced_tx_partition_fixtures_match_reference_output_hashes_at_one_and_eight_threads() {
+    for threads in [1usize, 8] {
+        let intra = context(ThreadCount::from(threads))
+            .decode_hash_report_bytes(REDUCED_TX_PARTITION_INTRA_FIXTURE, DecodeOptions::default())
+            .unwrap();
+        assert_eq!(intra.frames.len(), 1);
+        assert_eq!(
+            intra.frames[0].hashes[0].digest_hex,
+            REDUCED_TX_PARTITION_INTRA_EXPECTED_DIGEST
+        );
+
+        let inter = context(ThreadCount::from(threads))
+            .decode_hash_report_bytes(REDUCED_TX_PARTITION_INTER_FIXTURE, DecodeOptions::default())
+            .unwrap();
+        assert_eq!(inter.frames.len(), 2);
+        for (frame, expected) in inter
+            .frames
+            .iter()
+            .zip(REDUCED_TX_PARTITION_INTER_EXPECTED_DIGESTS)
+        {
+            assert_eq!(frame.hashes[0].digest_hex, expected);
+        }
+    }
+}
+
+#[test]
+fn reduced_tx_partition_fixtures_eof_fail_closed() {
+    for fixture in [
+        REDUCED_TX_PARTITION_INTRA_FIXTURE,
+        REDUCED_TX_PARTITION_INTER_FIXTURE,
+    ] {
+        let truncated = &fixture[..fixture.len() - 1];
+        for threads in [1usize, 8] {
+            let error = context(ThreadCount::from(threads))
+                .decode_hash_report_bytes(truncated, DecodeOptions::default())
+                .unwrap_err();
+            assert!(matches!(error, DecodeError::MalformedSource { .. }));
+        }
+    }
 }
 
 #[test]

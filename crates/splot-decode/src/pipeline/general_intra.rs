@@ -8,10 +8,10 @@ use splot_recon::{
 
 use super::*;
 use crate::bitstream::tile_payload::{
-    BlockSymbolTraceReadError, CflParams, GeneralIntraBlockModes, GeneralIntraChromaBlockMode,
-    GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig, GeneralIntraLeafMode, IntraYMode,
-    IntraYModeClass, IsCflContext, LumaTransformPartitionContext, LumaTransformTypeContext,
-    MrlSelection, SupportedChromaMode, TransformPartitionUnsupported, TransformToolResidualPolicy,
+    BlockSize, BlockSymbolTraceReadError, CflParams, GeneralIntraBlockModes,
+    GeneralIntraChromaBlockMode, GeneralIntraChromaModeContext, GeneralIntraChromaToolConfig,
+    GeneralIntraLeafMode, IntraYMode, IntraYModeClass, IsCflContext, LumaTransformPartitionContext,
+    LumaTransformTypeContext, MrlSelection, SupportedChromaMode, TransformToolResidualPolicy,
     read_lossless_luma_tx_size,
 };
 use crate::residual::pipeline::{
@@ -485,7 +485,7 @@ pub(crate) fn decode_one_general_intra_block(
         lossless,
         luma_lossless_tx_size,
         transform_tool_residual_policy,
-        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size.index(), lossless),
+        luma_tx_partition_context(frame_tx_mode(core), frontier.b_size, lossless),
         block_ctx,
         cfl_ds_filter_index,
         sb_mib,
@@ -652,13 +652,13 @@ fn luma_transform_type_context(modes: &GeneralIntraBlockModes) -> LumaTransformT
 
 fn luma_tx_partition_context(
     tx_mode: Option<TxMode>,
-    block_size_index: usize,
+    block_size: BlockSize,
     lossless: bool,
 ) -> Option<LumaTransformPartitionContext> {
     if tx_mode != Some(TxMode::Select) || lossless {
         return None;
     }
-    Some(LumaTransformPartitionContext::new(block_size_index))
+    Some(LumaTransformPartitionContext::new(block_size))
 }
 
 fn frame_tx_mode(core: &FrameHeaderCore) -> Option<TxMode> {
@@ -1028,6 +1028,9 @@ fn general_intra_residual_error(
             "general intra luma transform-block coefficient syntax could not be parsed from the tile payload",
             GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
         ),
+        GeneralIntraResidualError::InvalidTransformPartitionDimensions { .. } => {
+            malformed_tile_payload(offset, "6.19.6.3", error)
+        }
         GeneralIntraResidualError::CoeffContextState { .. } => general_intra_at!(
             "general_intra_luma_coeff_state",
             offset,
@@ -1070,26 +1073,6 @@ fn general_intra_residual_error(
                 GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
             )
         }
-        GeneralIntraResidualError::UnsupportedTransformPartition { reason } => match reason {
-            TransformPartitionUnsupported::RecordCapacity => general_intra_at!(
-                "unsupported_general_intra_tx_partition_record_capacity",
-                offset,
-                missing_capability_message!("intra.residual.transform_partition"),
-                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            ),
-            TransformPartitionUnsupported::NonMaxTxSize => general_intra_at!(
-                "unsupported_general_intra_tx_partition_non_max_tx_size",
-                offset,
-                missing_capability_message!("intra.residual.transform_partition"),
-                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            ),
-            TransformPartitionUnsupported::Empty => general_intra_at!(
-                "unsupported_general_intra_tx_partition_empty",
-                offset,
-                missing_capability_message!("intra.residual.transform_partition"),
-                GENERAL_INTRA_RESIDUAL_SPEC_SECTION,
-            ),
-        },
         GeneralIntraResidualError::UnexpectedBranch => {
             general_intra_internal!("general_intra_luma_coeff_unexpected_branch", offset,)
         }

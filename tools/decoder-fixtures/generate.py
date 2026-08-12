@@ -64,6 +64,56 @@ BASE = ["--enable-cfl-intra=0", "--enable-intra-dip=0", "--enable-ibp=0", "--ena
         "--enable-parity-hiding=0", "--enable-tcq=0", "--enable-restoration=0",
         "--enable-wiener-nonsep=0", "--enable-pc-wiener=0", "--enable-gdf=0"]
 
+TX_PARTITION_INTRA = [
+    "--limit=1", "--passes=1", "--threads=1", "--bit-depth=8", "--input-bit-depth=8",
+    "--sb-size=64", "--min-partition-size=64", "--max-partition-size=64", "--enable-sdp=0",
+    "--enable-extended-sdp=0", "--enable-cfl-intra=0", "--enable-mhccp=0", "--enable-cctx=0",
+    "--enable-chroma-dctonly=0", "--enable-cdef=0", "--enable-deblocking=0",
+    "--enable-restoration=0", "--enable-ccso=0", "--enable-gdf=0", "--enable-pc-wiener=0",
+    "--enable-wiener-nonsep=0", "--enable-qm=0", "--enable-tcq=0",
+    "--enable-parity-hiding=0", "--enable-trellis-quant=0", "--enable-fsc=0",
+    "--enable-flip-idtx=0", "--enable-idtx-intra=0", "--enable-ist=0", "--enable-inter-ist=0",
+    "--enable-intra-dip=0", "--enable-ibp=0", "--enable-mrls=0",
+    "--enable-intra-edge-filter=0", "--enable-angle-delta=0", "--enable-palette=0",
+    "--enable-intrabc=0", "--enable-intrabc-ext=0", "--enable-paeth-intra=0",
+    "--enable-smooth-intra=0", "--enable-rect-partitions=0", "--enable-ext-partitions=0",
+    "--enable-uneven-4way-partitions=0", "--enable-tx-partition=1",
+    "--reduced-tx-part-set=1", "--deltaq-mode=0", "--aq-mode=0",
+    "--enable-chroma-deltaq=0", "--enable-keyframe-filtering=0", "--lag-in-frames=0",
+    "--force-video-mode=0", "--test-decode=fatal", "--quiet", "--disable-warning-prompt",
+]
+
+TX_PARTITION_INTER = [
+    "--limit=2", "--passes=1", "--threads=1", "--bit-depth=8", "--input-bit-depth=8",
+    "--sb-size=64", "--min-partition-size=64", "--max-partition-size=64", "--kf-min-dist=9999",
+    "--kf-max-dist=9999", "--lag-in-frames=0", "--max-reference-frames=1",
+    "--cdf-update-mode=0", "--aq-mode=0", "--deltaq-mode=0", "--enable-chroma-deltaq=0",
+    "--enable-tpl-model=0", "--enable-sdp=0", "--enable-extended-sdp=0",
+    "--enable-cfl-intra=0", "--enable-mhccp=0", "--enable-cctx=0",
+    "--enable-chroma-dctonly=1", "--enable-qm=0", "--enable-deblocking=0",
+    "--enable-cdef=0", "--enable-cdef-on-skip-txfm=0", "--enable-restoration=0",
+    "--enable-wiener-nonsep=0", "--enable-pc-wiener=0", "--enable-gdf=0", "--enable-ccso=0",
+    "--enable-ibp=0", "--enable-angle-delta=0", "--enable-intra-edge-filter=0",
+    "--enable-ist=0", "--enable-inter-ist=0", "--enable-inter-ddt=0", "--enable-intra-dip=0",
+    "--enable-idtx-intra=0", "--enable-flip-idtx=0", "--enable-mrls=0", "--enable-palette=0",
+    "--enable-intrabc=0", "--enable-fsc=0", "--enable-tx-partition=1",
+    "--reduced-tx-part-set=1", "--enable-rect-partitions=0", "--enable-ext-partitions=0",
+    "--enable-uneven-4way-partitions=0", "--enable-parity-hiding=0", "--enable-tcq=0",
+    "--enable-trellis-quant=0", "--enable-keyframe-filtering=0", "--enable-smooth-intra=0",
+    "--enable-paeth-intra=0", "--enable-fwd-kf=0", "--enable-overlay=0", "--enable-bawp=0",
+    "--enable-cwp=0", "--enable-masked-comp=0", "--enable-interinter-wedge=0",
+    "--enable-diff-wtd-comp=0", "--enable-imp-msk-bld=0", "--enable-interintra-comp=0",
+    "--enable-interintra-wedge=0", "--enable-smooth-interintra=0", "--enable-tip=0",
+    "--enable-tip-refinemv=0", "--enable-refinemv=0", "--enable-opfl-refine=0",
+    "--enable-global-motion=0", "--enable-warped-motion=0", "--enable-warp-causal=0",
+    "--enable-warp-delta=0", "--enable-six-param-warp-delta=0", "--enable-warp-extend=0",
+    "--enable-ref-frame-mvs=0", "--enable-refmvbank=0", "--enable-drl-reorder=0",
+    "--enable-mv-traj=0", "--enable-high-motion=0", "--enable-adaptive-mvd=0",
+    "--enable-flex-mvres=0", "--enable-joint-mvd=0", "--enable-mvd-sign-derive=0",
+    "--enable-skip-mode=0", "--enable-bru=0", "--enable-onesided-comp=0",
+    "--monotonic-output-order=1", "--test-decode=fatal", "--quiet", "--disable-warning-prompt",
+]
+
 # The COMPLETE recipe for every committed coverage fixture, deterministic via `-D`.
 # Each row: (id, lavfi_src, pix_fmt, input_flag, avmenc_flags, cpu, qp[, source]).
 # `source` defaults to Y4M; the optional mapping selects deterministic raw input.
@@ -152,6 +202,26 @@ COVERAGE = [
          "[0:v]split=2[f0][rotate_input];[rotate_input]rotate=angle=0.06:fillcolor=gray:bilinear=1,split=2[bg][pin];[pin]crop=w=12:h=12:x=27:y=18[patch];[bg][patch]overlay=x=24:y=18[f1];[f0][f1]concat=n=2:v=1:a=0,format=yuv420p[v]",
          "-map", "[v]", "-r", "1", "-pix_fmt", "yuv420p",
      ]}),
+    ("syn-reduced-txpart-d135-intra-64x64-q160", "", "yuv420p", "--i420",
+     TX_PARTITION_INTRA, "0", "160", {
+         "format": "rawvideo", "width": 64, "height": 64,
+         "decode_fixture": "syn-lossless-nondc-luma-d135-chroma-follow-intra-64x64.ivf",
+         "decode_args": ["--codec=av2", "--rawvideo", "--i420", "--output-bit-depth=8",
+                         "--limit=1"],
+     }),
+    ("syn-2frame-reduced-txpart-inter-64x64-q160", "", "yuv420p", "--i420",
+     TX_PARTITION_INTER, "0", "160", {
+         "format": "rawvideo", "width": 64, "height": 64,
+         "decode_fixture": "syn-lossless-nondc-luma-d135-chroma-follow-intra-64x64.ivf",
+         "decode_args": ["--codec=av2", "--rawvideo", "--i420", "--output-bit-depth=8",
+                         "--limit=1"],
+         "ffmpeg_args": [
+             "-f", "rawvideo", "-pix_fmt", "yuv420p", "-s", "64x64", "-r", "1",
+             "-i", "{decoded}", "-filter_complex",
+             "[0:v]split=2[f0][f1in];[f1in]geq=lum='clip(p(X,Y)+if(lt(Y,32),4,0),0,255)':cb='p(X,Y)':cr='p(X,Y)'[f1];[f0][f1]concat=n=2:v=1:a=0[out]",
+             "-map", "[out]", "-frames:v", "2", "-f", "rawvideo",
+         ],
+     }),
 ]
 
 PINNED_RECIPE_HASHES = {
@@ -215,6 +285,25 @@ PINNED_RECIPE_HASHES = {
         "instrumentation_sha256": "45b59603751de012c9b5a29073fdd60da86bbd72906ba9ae55c56c3783c8811f",
         "reproducibility_runs": 2,
     },
+    "syn-reduced-txpart-d135-intra-64x64-q160": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "source_sha256": "5fffbdc79140da104a1721ed649130f0a2409fadeeb58632cdba54a1add778a1",
+        "ivf_sha256": "fb5d3cd1abeb033e8de489f9daa90dbfbbc5c624ab92fb927c860d860420dfa7",
+        "avm_i420_raw_sha256": "608619fe3b10c3464841b2269baa417c29d48d7e4793ca38913a68c107caa0a9",
+        "trace_sha256": "cacde0da746b7fd66cb0326ca64a24f42631e843086b1b4c6017a70e749d33b3",
+        "full_set_control_ivf_sha256": "01b26c7f9468a079ffb798398aad63b2224354498790189d7260ffccee64db59",
+        "reproducibility_runs": 2,
+    },
+    "syn-2frame-reduced-txpart-inter-64x64-q160": {
+        "avm_revision": "457cd58681a747465661baccb1f32095bc5b7774",
+        "ffmpeg_version": "8.1.2",
+        "source_sha256": "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3",
+        "ivf_sha256": "06fbf0a02c027d3336e9c90e1b8f35c0ed21c367196129266b14504a34a0fe96",
+        "avm_i420_raw_sha256": "9e9707974cbbb48461ae6e9e4e512918ff5057e2d3ed068c862f67a5881074d3",
+        "trace_sha256": "32453fd5d10f17eec9f69551cb3408d2794e91bfb658965ac64761bb538ab2a3",
+        "full_set_control_ivf_sha256": "176aa168708fd3afbe5b842ef364bafa19d1e07c4b58ddcdad6793cdec020ec6",
+        "reproducibility_runs": 2,
+    },
 }
 
 
@@ -260,7 +349,8 @@ def cmd_coverage_fixtures(args):
             if revision != expected["avm_revision"]:
                 sys.exit(f"error: {fid} requires AVM revision {expected['avm_revision']}: "
                          f"found {revision}")
-        if expected and ("avmdec_sha256" in expected or "avm_i420_raw_sha256" in expected):
+        if (expected and ("avmdec_sha256" in expected or "avm_i420_raw_sha256" in expected)
+                or "decode_fixture" in source):
             avmdec = find("avmdec")
         if expected and "avmenc_sha256" in expected and sha(avmenc) != expected["avmenc_sha256"]:
             sys.exit(f"error: {fid} requires the recorded AVM encoder")
@@ -289,10 +379,16 @@ def cmd_coverage_fixtures(args):
         suffix = ".yuv" if source["format"] == "rawvideo" else ".y4m"
         y4m = os.path.join(stage, fid + suffix)
         source_args = ["-frames:v", "1", "-f", "rawvideo"] if source["format"] == "rawvideo" else []
+        decoded = None
+        if "decode_fixture" in source:
+            decoded = y4m if "ffmpeg_args" not in source else os.path.join(stage, fid + ".decoded.yuv")
+            run_checked([avmdec, *source.get("decode_args", []), "-o", decoded,
+                         os.path.join(VALID, source["decode_fixture"])])
         if "ffmpeg_args" in source:
+            ffmpeg_args = [decoded if arg == "{decoded}" else arg for arg in source["ffmpeg_args"]]
             run_checked(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                         *source["ffmpeg_args"], y4m])
-        else:
+                         *ffmpeg_args, y4m])
+        elif decoded is None:
             run_checked(["ffmpeg", "-loglevel", "error", "-y", "-f", "lavfi", "-i", src,
                          "-pix_fmt", pix, *source_args, y4m])
         ivf = os.path.join(stage, fid + ".ivf")
@@ -344,6 +440,11 @@ def cmd_coverage_fixtures(args):
                           f"forced I420 raw {expected['avm_i420_raw_sha256']}")
                 else:
                     print(f"  {fid}: forced I420 raw {expected['avm_i420_raw_sha256']}")
+            if "trace_sha256" in expected:
+                print(f"  {fid}: isolated AVM trace {expected['trace_sha256']}")
+            if "full_set_control_ivf_sha256" in expected:
+                print(f"  {fid}: full-set control IVF "
+                      f"{expected['full_set_control_ivf_sha256']}")
     print(f"staged {len(selected)} coverage fixtures in {stage} "
           f"(move vetted `.ivf` into {os.path.relpath(VALID, REPO)}/ and refresh hashes)")
 

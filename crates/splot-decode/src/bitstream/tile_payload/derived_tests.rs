@@ -147,7 +147,7 @@ fn base_cdf_facts() -> FrameCandidateCdfFacts {
 }
 
 fn base_coeff_facts() -> FrameCandidateCoeffFacts {
-    FrameCandidateCoeffFacts::new(false, false, false, false, false)
+    FrameCandidateCoeffFacts::new(false, false, false, false, false, false)
 }
 
 fn derive_tile_payload_plan<'a>(
@@ -440,6 +440,7 @@ fn derived_boundary_threads_parser_coeff_frame_facts() {
         tq.enable_chroma_dctonly
     );
     assert_eq!(coeff_facts.enable_cctx(), tq.enable_cctx);
+    assert_eq!(coeff_facts.reduced_tx_part_set(), tq.reduced_tx_part_set);
     assert_eq!(
         coeff_facts.reduced_tx_set(),
         usize::from(tail.reduced_tx_set)
